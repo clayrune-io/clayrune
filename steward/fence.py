@@ -150,27 +150,44 @@ def _mask_inert_prose(cmd: str) -> str:
     return out
 
 
+_SHELL_SPLIT_RE = re.compile(r'&&|\|\||[|;\n]')
+
+
+_NET_TOOL_RE = re.compile(
+    r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr)\b', re.I)
+
+
 def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     """Block external network SENDS (mutating HTTP verbs / uploads to a non-local
-    host). Reads (plain GET) and anything targeting localhost are allowed."""
-    low = cmd.lower()
-    if not re.search(r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr)\b', low):
-        return FenceDecision(False, '')
-    # Checked BEFORE the mutating gate: the browser API is the browser
-    # capability regardless of which verb reaches it, and "looks like a GET"
-    # must not be a way around the block below.
-    if re.search(r'/api/browser/(launch|read|input|navigate)', low):
-        return FenceDecision(True, "autonomous web browsing is out of steward scope — "
-                                   "the browser HTTP API is the same capability as the "
-                                   "browser MCP tools, which are blocked")
-    mutating = bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', cmd, re.I)) or \
-        bool(re.search(r'(^|\s)(--data\b|--data-raw\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b)', cmd)) or \
-        bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', cmd, re.I))
-    if not mutating:
-        return FenceDecision(False, '')
-    if any(h in low for h in _LOCAL_HOSTS):
-        return FenceDecision(False, '')  # steward's own API calls
-    return FenceDecision(True, "external network send (mutating HTTP to a non-local host)")
+    host). Reads (plain GET) and anything targeting localhost are allowed.
+
+    Scoped PER shell segment (false-positive precision fix, 2026-07-23): the
+    mutating-flag short forms (-d/-F/-T) also name flags of OTHER tools
+    (`cut -d','`, `grep -F`, `tar -T`), so checking them against the whole
+    command made a GET download read as a mutating send whenever such a flag
+    appeared anywhere on the line (real incident: `curl ... -o installer.exe;
+    sha256sum ... | cut -d' '`). The mutating flag must now sit in the SAME
+    segment as the curl/wget/http invocation.
+
+    The browser-API check is deliberately NOT inside the mutating gate
+    (2026-09-10): Clayrune's own HTTP API is the browser capability, so
+    `curl localhost:5199/api/browser/launch` + `/read` handed a steward any
+    hostile page straight past the mcp__browser__* block. Verb-shape must not
+    be a way round it, and neither must segment position."""
+    for seg in _SHELL_SPLIT_RE.split(cmd):
+        if not _NET_TOOL_RE.search(seg):
+            continue
+        if re.search(r'/api/browser/(launch|read|input|navigate)', seg, re.I):
+            return FenceDecision(True, "autonomous web browsing is out of steward scope - "
+                                       "the browser HTTP API is the same capability as the "
+                                       "browser MCP tools, which are blocked")
+        mutating = bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I)) or             bool(re.search(r'(^|\s)(--data|--data-raw|-d|--upload-file|-T|-F|--form)', seg)) or             bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
+        if not mutating:
+            continue
+        if any(h in seg.lower() for h in _LOCAL_HOSTS):
+            continue  # steward's own API calls
+        return FenceDecision(True, "external network send (mutating HTTP to a non-local host)")
+    return FenceDecision(False, '')
 
 
 def classify_bash(command: str) -> FenceDecision:
