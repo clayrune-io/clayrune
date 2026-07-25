@@ -14,11 +14,14 @@
 
 Ron explicitly called out **1, 2, 3** (three-dot menu, main menu, Settings). Everything is scoped as *simulated / no-backend* — structurally faithful, not functionally live.
 
-**P0 — Ron called these out**
+**P0 — Ron called these out (see §0.5 for exact mobile ground truth + reference shots)**
 1. **Left sidebar / main nav** (desktop) — the biggest "missing menu". §1
-2. **Mobile hamburger + drawer** — currently only a bottom tab bar. §2
-3. **Three-dot (⋮) menu on the project view** — the deep project menu + window chrome. §3
-4. **Settings → drill-down master/detail** (replace the flat 5-toggle modal). §4
+2. **Mobile hamburger + drawer** — currently only a bottom tab bar. §2 / §0.5
+3. **Three-dot (⋮) menu on the project view** — the deep project menu + window chrome. §3 / §0.5
+4. **Settings → drill-down master/detail** (replace the flat 5-toggle modal). §4 / §0.5
+4a. **Filter pills** `All · Needs you · Working` → `All · Working · Done · Resting`. §0.5
+4b. **Bottom tab** `Home` → `Inbox` (unread badge) + wire it. §0.5 / §7 / §19
+4c. **Model selector** — match the real `MODEL <name> ▾` pill. §0.5 / §15
 
 **P1 — core pitch surfaces / high visibility**
 5. Command palette (Ctrl+K) + header search-command pill. §5
@@ -39,6 +42,39 @@ Ron explicitly called out **1, 2, 3** (three-dot menu, main menu, Settings). Eve
 18. Power/Update/System-status/Terminal/Media/Shared Rules/Incognito stubs (reachable once sidebar exists). §18
 
 **Correctness cautions — do NOT get these wrong:** §19
+
+---
+
+## 0.5. MOBILE GROUND TRUTH — from Ron's phone, 2026-07-25 (AUTHORITATIVE)
+
+Captured on Ron's real phone against the shipped app; these override any inference. Reference screenshots ship alongside the demo at `demo/_ground-truth-mobile/` (real-01…05 + the current wrong demo). **Apply on BOTH mobile and desktop.** It stays a simulation — but every menu/surface below must be present and navigate like the real one; surfaces with no backing can show a tasteful "available in the full app" state.
+
+**The 6 concrete divergences Ron called out (fix these first):**
+
+| # | Real app | Demo now (WRONG) | Fix |
+|---|----------|------------------|-----|
+| 1 | **Hamburger (☰)** top-left → main nav drawer | no hamburger at all | add drawer (rows below) |
+| 2 | **Three-dot (⋮) kebab** in chat app bar | no kebab | add kebab (rows below) |
+| 3 | **Settings screen** (gear / "You") | no settings screen | add drill-down (cards below) |
+| 4 | Filter pills **`All · Working · Done · Resting`** | `All · Needs you · Working` | rename/reorder pills |
+| 5 | Bottom first tab **`Inbox`** (with unread badge) | `Home` | Home→Inbox + badge, wire it |
+| 6 | Model selector **`MODEL <name> ▾`** pill | mismatched styling | match the real pill |
+
+**Real dashboard** (real-01): ☰ top-left · greeting `SATURDAY AFTERNOON / Hi 👋` · filter pills `All · Working · Done · Resting` · bottom tabs `Inbox(badge) · Search · ＋ New · Claydo · You`.
+
+**Hamburger drawer** (real-02) — title **`Clayrune`** (C logo + ✕), each row has an icon, in this exact order:
+`Dashboard · Skills & MCP · Backlog · Hivemind · Automation · History · Shared Rules · Processes · Usage & limits` — **divider** — `Incognito`.
+
+**Chat app bar** (real-03): title (project name) · **wand** icon · **⋮ kebab** · minimize (—) · close (✕). Status row = status pill (e.g. `● COMPLETED`) · **`MODEL Opus 4.8 ▾`** pill · **Stop** button. Composer = text field · 📎 paperclip · 🎤 mic · ↑ send-arrow.
+
+**⋮ kebab menu** (real-04) — icons per row, exact order:
+`Agent · Backlog (count) · Agent Log · Plans · Activity · Workflows` — **divider** — `Change Status ▸ · Appearance ▸ · Edit Profile… · Agent Settings (shows current model, e.g. Opus 4.8)` — **divider** — `Advanced ▾ · GitHub Sync (status) ▸ · Code Sync (status) ▸` — **divider** — `Skills · MCP servers`.
+
+**Settings screen** (real-05) — app bar `Settings` (— / ✕) · **`Search settings…`** field · profile header `[R] Ron / Agent: Vector · tap to edit identity`. Then two cards:
+- Card 1: **Providers** (Claude, Gemini, Codex — sign-in & API) · **Agent** (Identity, model, behavior & integration) · **Memory** (Auto-condense & tuning).
+- Card 2: **Appearance** (Theme, accent, density & writing style) · **Connectivity** (Remote access, push & mobile pairing) · **System** (Paths, advanced features, server & help).
+
+Each card row has a leading icon and a `›` chevron (drill-down). "You" bottom tab opens this screen.
 
 ---
 
