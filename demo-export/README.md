@@ -118,7 +118,7 @@ website change needed.
   `clayrune_demo_*` namespace (never to a server). Interactively changeable:
   **Theme** (Dark / Warm / Editorial), **Accent** (6 options), **Density**,
   **Writing style**, **Background** (Theme / solid Color — applied live),
-  **Model** (Auto / Opus 4.8 / Sonnet 4.6 / Haiku 4.5 —
+  **Model** (Auto / Opus 4.8 / Sonnet 5 / Haiku 4.5 —
   reflected live in the console’s model badge), **Effort**, **Permissions**,
   **Streaming (Mode B)** toggle, **Sticky settings**, **Enter-key** behavior,
   **Port**, **Auto-condense** + threshold, and the **Advanced features**

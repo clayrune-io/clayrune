@@ -151,7 +151,7 @@ class TestBuildClaudeFlagsEquivalence:
     def test_all_options(self):
         rt = _fresh_claude()
         flags = rt.build_command(
-            model='claude-sonnet-4-6',
+            model='claude-sonnet-5',
             max_turns=5,
             streaming=True,
             perm_mode='bypassPermissions',
@@ -159,7 +159,7 @@ class TestBuildClaudeFlagsEquivalence:
             remote_control=True,
         )[1:]
         expected = self._legacy_flags(
-            model='claude-sonnet-4-6',
+            model='claude-sonnet-5',
             max_turns=5,
             streaming=True,
             perm_mode='bypassPermissions',

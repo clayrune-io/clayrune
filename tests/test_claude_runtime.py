@@ -215,10 +215,10 @@ def test_build_command_streaming_adds_input_format():
 def test_build_command_model():
     from agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
-    cmd = rt.build_command(model='claude-sonnet-4-6')
+    cmd = rt.build_command(model='claude-sonnet-5')
     flags = cmd[1:]
     assert '--model' in flags
-    assert flags[flags.index('--model') + 1] == 'claude-sonnet-4-6'
+    assert flags[flags.index('--model') + 1] == 'claude-sonnet-5'
 
 
 def test_build_command_model_empty_omitted():
