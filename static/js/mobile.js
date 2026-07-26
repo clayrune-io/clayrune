@@ -9,11 +9,20 @@
 // ≤960px media query, and the var falls back to 100dvh until first set.
 (function mcViewportHeightSync() {
   const vv = window.visualViewport || null;
-  let _raf = 0;
+  const _isField = t => t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT');
+  let _raf = 0, _lastApplied = 0;
   function apply() {
     _raf = 0;
-    const h = (vv && vv.height) ? vv.height : window.innerHeight;
-    document.documentElement.style.setProperty('--mc-app-vh', Math.round(h) + 'px');
+    const iv = window.innerHeight || 0;
+    const vh = (vv && vv.height) ? vv.height : iv;
+    // The soft keyboard can only occupy space while a text field is focused.
+    // When nothing is focused, use the FULL layout viewport — never a stale or
+    // shrunk visualViewport.height, which is what pinned the modal at keyboard
+    // height (the "split screen"). While a field is focused, follow the visual
+    // viewport so the composer stays above the keyboard.
+    const h = _isField(document.activeElement) ? (vh || iv) : Math.max(iv, vh);
+    _lastApplied = Math.round(h);
+    document.documentElement.style.setProperty('--mc-app-vh', _lastApplied + 'px');
   }
   function schedule() { if (!_raf) _raf = requestAnimationFrame(apply); }
   // Re-apply across a settle window: some Android WebViews report a stale
@@ -31,9 +40,19 @@
   window.addEventListener('orientationchange', () => setTimeout(apply, 200));
   // Keyboard show/hide tracks focus entering/leaving a text field — the most
   // reliable signal when the vv event is flaky. Settle on both.
-  const _isField = t => t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT');
   document.addEventListener('focusin', e => { if (_isField(e.target)) settle(); });
   document.addEventListener('focusout', e => { if (_isField(e.target)) settle(); });
+  // Down-button keyboard dismiss keeps focus ON the field and fires NEITHER a
+  // focusout NOR (on some Android WebViews) a visualViewport 'resize' — so
+  // nothing re-runs apply() and the modal stays pinned short (the reported
+  // half-screen). A light watchdog catches it: whenever the visual viewport is
+  // meaningfully taller than what we've allocated, there is unused room (the
+  // keyboard is gone) → re-sync. It only ever expands, so it can't fight a
+  // legitimately open keyboard.
+  if (vv) setInterval(() => { if (vv.height - _lastApplied > 6) schedule(); }, 500);
+  // A tap/scroll after dismissing the keyboard is another chance to re-read a
+  // now-fresh viewport height.
+  document.addEventListener('touchend', schedule, { passive: true });
 })();
 
 // ── Mobile UI: app bar greeting + filter pills (≤960px, warm tone) ──────────
