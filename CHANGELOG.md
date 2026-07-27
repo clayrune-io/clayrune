@@ -34,6 +34,32 @@ chat got misread as a system chat and dropped from the list on every rebuild
   top-of-list bubbling immediately on reload, before the `/agent/status` poll
   repopulates the live cache (takes effect after the next server restart).
 
+## [2026-07-27c] — Rail: sibling conversations sharing one mc_session_id
+
+Reported on Day Trading Scanner: several rail rows highlighted white at once,
+and clicking some of them did nothing.
+
+Root cause — a **resumed** session reuses ONE `mc_session_id` across multiple
+Claude transcripts (a live idle tail + the completed run it continued from both
+carry the same mc id). Two independent bugs fell out of that:
+
+- **Highlight:** `isActive` matched rows on `mc_session_id`, so every row sharing
+  the open tab's mc id lit up white. Now, when the open conversation's
+  `claude_session_id` is known, the highlight disambiguates on that (unique per
+  transcript) and only falls back to the mc-id match when the csid is unknown.
+- **Click does nothing:** `openConversation()` opened the fast path
+  `switchAgentTab(mcSessionId)` whenever that mc id was cached — but for a
+  *sibling* row that mc id is already the open tab, so it re-selected the same
+  tab and nothing changed. It now takes the fast path only when the cached tab
+  actually represents THIS conversation (`claude_session_id` matches, or the row
+  has no csid); otherwise it opens the specific transcript by csid. The
+  csid-reconstruct logic was split into `_openConversationByCsid()` so both
+  paths share it. (The mc-based `/session/<id>/reconstruct` route resolves to the
+  mc id's *current* transcript, so it can't be used for a sibling — hence the
+  csid route.)
+
+Frontend-only (`static/js/conversation.js`); hard reload to activate.
+
 ## [2026-07-27b] — Model list cleanup, first-run onboarding on upgrades, tour steps that pointed at nothing
 
 **1. Opus 4.8 retired from the pickers; Opus 5 is the new-install default.**

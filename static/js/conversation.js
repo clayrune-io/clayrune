@@ -1590,7 +1590,14 @@ function mobileUserConversationsHTML(p, convos) {
     const hideBtn = isHidden
       ? `<button class="conv-hide" onclick="unhideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
       : `<button class="conv-hide" onclick="hideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
-    const isActive = (mcsid && mcsid === activeSid) || (csid && activeCsid && csid === activeCsid);
+    // A RESUMED session reuses ONE mc_session_id across several claude
+    // transcripts, so multiple rail rows can carry the same mcsid. Matching on
+    // mcsid alone then lit up every sibling row white at once. When we know the
+    // open conversation's claude_session_id, disambiguate on THAT (unique per
+    // transcript); only fall back to the mcsid match when the csid is unknown.
+    const isActive = (csid && activeCsid)
+      ? (csid === activeCsid)
+      : (mcsid && mcsid === activeSid);
     // Split-view affordance (desktop only): open this conversation as a 2nd pane
     // beside the current one. Only offered for a LIVE conversation that isn't the
     // one already open. Hidden on mobile (single-pane drill-down there).
@@ -1632,9 +1639,24 @@ function mobileUserConversationsHTML(p, convos) {
 // Deliberately does NOT reuse openProjectAtSession — its `activeAgentTab || sid`
 // fallback dumped every tap back onto the currently-open chat.
 async function openConversation(projectId, csid, mcSessionId, isLive) {
+  // A resumed session reuses ONE mc_session_id across MULTIPLE claude
+  // transcripts (e.g. a live idle tail + the completed run it continued from),
+  // so several rail rows share this mcSessionId. Reusing the open tab blindly
+  // meant clicking a *sibling* row just re-selected the already-open tab —
+  // "clicking does nothing". Only take the fast open-tab path when the cached
+  // tab actually represents THIS conversation (its claude_session_id matches
+  // the row's, or the row carries no csid to distinguish by). Otherwise fall
+  // through to the csid-keyed transcript reconstruct below.
   if (mcSessionId && agentStatusCache[mcSessionId]) {
-    switchAgentTab(projectId, mcSessionId);
-    return;
+    const _cachedCsid = agentStatusCache[mcSessionId].claudeSessionId || '';
+    if (!csid || !_cachedCsid || _cachedCsid === csid) {
+      switchAgentTab(projectId, mcSessionId);
+      return;
+    }
+    // Shared mc id but a DIFFERENT transcript — skip the mc-based routes (both
+    // the live seed and /session/<mc>/reconstruct resolve to the mc id's
+    // CURRENT transcript, not this row's) and open it by csid instead.
+    if (csid) { await _openConversationByCsid(projectId, csid); return; }
   }
   // SERVER-AUTHORITATIVE LIVE ROUTE. `live` comes from /conversations (the row's
   // claude_session_id matched an in-memory agent_session), so the chat IS alive
@@ -1689,57 +1711,62 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
     } catch (e) { /* fall through to resume */ }
   }
   // Transcript-only conversation (no MC session id, e.g. an interrupted chat or
-  // a fresh-start continuation): reconstruct straight from the claude_session_id
-  // transcript into the SAME read-only thread view the tracked chats use. Keyed
-  // on the csid as a synthetic session id. This avoids the resume-compose path,
-  // which renders a blank page on Android WebView — and matches "tap opens it in
-  // chat mode ready to continue". Falls back to arming a resume if unreconstructable.
-  if (csid) {
-    // A live conversation can reach here with NO mc_session_id (its
-    // claude_session_id matched a running agent_session, but this row never
-    // carried the MC id, so the live route at 1454 was skipped). If any cache
-    // entry already tracks THIS transcript as live (running / awaiting the
-    // user), open that real tab. Otherwise we fabricate a read-only "STOPPED"
-    // tab keyed on the csid while the sidebar badge — driven by the same byCsid
-    // signal — correctly shows "Working…", a desync that only a hard reload
-    // cleared. Predicate mirrors _liveConvStates().
-    const liveSid = Object.keys(agentStatusCache).find(sid => {
-      const s = agentStatusCache[sid];
-      return s && s.projectId === projectId && s.claudeSessionId === csid &&
-        (s.status === 'running' || s.waitingForQuestion || s.waitingForPlanApproval);
-    });
-    if (liveSid) { switchAgentTab(projectId, liveSid); return; }
-    if (agentStatusCache[csid]) { switchAgentTab(projectId, csid); return; }
-    try {
-      const rr = await fetch(API_BASE + `/api/project/${projectId}/transcript/${encodeURIComponent(csid)}/reconstruct`);
-      if (rr.status === 409) {
-        // Server says this transcript belongs to a live session (race: the
-        // cache scan above missed it). Open the live tab it points us at.
-        const rd = await rr.json().catch(() => ({}));
-        if (rd.session_id) { switchAgentTab(projectId, rd.session_id); return; }
-      }
-      if (rr.ok) {
-        const rd = await rr.json();
-        agentStatusCache[csid] = {
-          status: 'completed', task: rd.task || '', projectId,
-          startedAt: rd.started_at || '', claudeSessionId: csid,
-          _readOnlyRevived: true,
-        };
-        agentOutputBuffers[csid] = rd.log_lines || [];
-        agentServerLines[csid] = (rd.log_lines || []).length;
-        if (!agentHistory.find(h => h.sessionId === csid)) {
-          const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
-          agentHistory.unshift({ projectId, sessionId: csid, projectName: pName,
-            task: rd.task || '', status: 'completed', startedAt: rd.started_at || '' });
-        }
-        switchAgentTab(projectId, csid);
-        return;
-      }
-    } catch (e) { /* fall through to resume */ }
-    selectResumeSession(projectId, csid);
-  }
+  // a fresh-start continuation): reconstruct straight from the claude_session_id.
+  if (csid) { await _openConversationByCsid(projectId, csid); }
 }
 window.openConversation = openConversation;
+
+// Open a conversation identified purely by its claude_session_id: reconstruct
+// the transcript into the SAME read-only thread view the tracked chats use,
+// keyed on the csid as a synthetic session id. This avoids the resume-compose
+// path (which renders a blank page on Android WebView) and matches "tap opens it
+// in chat mode ready to continue". Falls back to arming a resume if
+// unreconstructable. Split out of openConversation so the shared-mc-id
+// disambiguation path can reach it directly.
+async function _openConversationByCsid(projectId, csid) {
+  // A live conversation can reach here with NO mc_session_id (its
+  // claude_session_id matched a running agent_session, but this row never
+  // carried the MC id). If any cache entry already tracks THIS transcript as
+  // live (running / awaiting the user), open that real tab. Otherwise we
+  // fabricate a read-only "STOPPED" tab keyed on the csid while the sidebar
+  // badge — driven by the same byCsid signal — correctly shows "Working…", a
+  // desync that only a hard reload cleared. Predicate mirrors _liveConvStates().
+  const liveSid = Object.keys(agentStatusCache).find(sid => {
+    const s = agentStatusCache[sid];
+    return s && s.projectId === projectId && s.claudeSessionId === csid &&
+      (s.status === 'running' || s.waitingForQuestion || s.waitingForPlanApproval);
+  });
+  if (liveSid) { switchAgentTab(projectId, liveSid); return; }
+  if (agentStatusCache[csid]) { switchAgentTab(projectId, csid); return; }
+  try {
+    const rr = await fetch(API_BASE + `/api/project/${projectId}/transcript/${encodeURIComponent(csid)}/reconstruct`);
+    if (rr.status === 409) {
+      // Server says this transcript belongs to a live session (race: the
+      // cache scan above missed it). Open the live tab it points us at.
+      const rd = await rr.json().catch(() => ({}));
+      if (rd.session_id) { switchAgentTab(projectId, rd.session_id); return; }
+    }
+    if (rr.ok) {
+      const rd = await rr.json();
+      agentStatusCache[csid] = {
+        status: 'completed', task: rd.task || '', projectId,
+        startedAt: rd.started_at || '', claudeSessionId: csid,
+        _readOnlyRevived: true,
+      };
+      agentOutputBuffers[csid] = rd.log_lines || [];
+      agentServerLines[csid] = (rd.log_lines || []).length;
+      if (!agentHistory.find(h => h.sessionId === csid)) {
+        const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
+        agentHistory.unshift({ projectId, sessionId: csid, projectName: pName,
+          task: rd.task || '', status: 'completed', startedAt: rd.started_at || '' });
+      }
+      switchAgentTab(projectId, csid);
+      return;
+    }
+  } catch (e) { /* fall through to resume */ }
+  selectResumeSession(projectId, csid);
+}
+window._openConversationByCsid = _openConversationByCsid;
 
 function conversationListHTML(p, sessions) {
   // Pinned chats (keyed on the durable claude_session_id) lead the list.
