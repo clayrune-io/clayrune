@@ -2916,8 +2916,33 @@ if ('serviceWorker' in navigator) {
 const _modulesReady = new Promise(r =>
   document.addEventListener('DOMContentLoaded', r, { once: true }));
 
+// Boot/restore timeline. The dashboard tiles render fast (fetchProjects), but a
+// report of "chats + modals take ~2 min to fill in after a server restart"
+// pointed at the CLIENT restore path, not server boot — and the code has enough
+// poll/reconcile timers that the stall is timing-dependent and can't be read off
+// statically. These marks name which stage eats the wall-clock. Zero cost when
+// nothing's slow; open DevTools console after a restart to read them, or inspect
+// window.__mcBootTimeline. Each mark logs its delta from boot AND from the prior
+// mark so a single slow stage stands out.
+window.__mcBootTimeline = [];
+let _mcBootPrev = performance.now();
+const _mcBootT0 = _mcBootPrev;
+function _mcBootMark(stage) {
+  const now = performance.now();
+  const sinceStart = Math.round(now - _mcBootT0);
+  const sincePrev = Math.round(now - _mcBootPrev);
+  _mcBootPrev = now;
+  window.__mcBootTimeline.push({ stage, sinceStart, sincePrev });
+  // Only shout about a stage that actually took a beat (>250ms) so a clean boot
+  // stays quiet; the full timeline is always in window.__mcBootTimeline.
+  const tag = sincePrev > 250 ? 'warn' : 'info';
+  console[tag](`[boot] ${stage}: +${sincePrev}ms (t=${sinceStart}ms)`);
+}
+
 fetchProjects().then(async () => {
+  _mcBootMark('fetchProjects resolved');
   await _modulesReady;
+  _mcBootMark('modules ready');
   // Hydrate _globalConfig once on boot. fetchProjects() doesn't touch it
   // (and the 30s poll uses fetchProjects, not refreshSilent), so without
   // this the cache stays {} until the first mutation or SSE-driven
@@ -2927,15 +2952,18 @@ fetchProjects().then(async () => {
     const cfgRes = await fetch(API_BASE + '/api/config');
     if (cfgRes.ok) _globalConfig = await cfgRes.json();
   } catch (e) { /* non-fatal — feature gates fall back to off */ }
+  _mcBootMark('config hydrated');
   // Restore previously-open project modals (refresh persistence).
   // Skip on mobile: modals are full-screen there and bottom-tab nav assumes a clean slate.
   if (!_isMobileDevice && window.innerWidth > 960) {
     const snapshot = _loadOpenModalsSnapshot();
     const knownIds = new Set(allProjects.map(p => p.id));
+    let _restored = 0;
     for (const s of snapshot) {
       if (!knownIds.has(s.projectId)) continue; // project deleted
-      try { openProjectModal(s.projectId, s); } catch (e) { console.warn('restore modal failed', s.projectId, e); }
+      try { openProjectModal(s.projectId, s); _restored++; } catch (e) { console.warn('restore modal failed', s.projectId, e); }
     }
+    _mcBootMark(`restored ${_restored} modal(s) of ${snapshot.length} in snapshot`);
   }
   // Restore agent sessions into the console — LAZILY. The old code awaited
   // fetchAgentStatus() for EVERY project, serially: a 30+-link sequential chain
@@ -2949,11 +2977,10 @@ fetchProjects().then(async () => {
   // load in PARALLEL, not serially; one failure can't stall the rest.
   {
     const _openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
-    await Promise.all(
-      allProjects
-        .filter(p => p.project_path && (p.live_agent || _openIds.has(p.id)))
-        .map(p => fetchAgentStatus(p.id).catch(() => {}))
-    );
+    const _statusTargets = allProjects
+      .filter(p => p.project_path && (p.live_agent || _openIds.has(p.id)));
+    await Promise.all(_statusTargets.map(p => fetchAgentStatus(p.id).catch(() => {})));
+    _mcBootMark(`fetchAgentStatus ×${_statusTargets.length}`);
   }
   // Deep-link from push notifications: ?project=X&session=Y opens the
   // project modal (or activates it on mobile) + focuses the session tab.
@@ -2986,6 +3013,7 @@ fetchProjects().then(async () => {
   if (realProjectCount === 0 && !localStorage.getItem('walkthrough_done')) {
     setTimeout(() => startWalkthrough(), 600);
   }
+  _mcBootMark('boot continuation done');
 });
 startRefresh();
 
