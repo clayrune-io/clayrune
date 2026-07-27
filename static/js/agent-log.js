@@ -197,13 +197,20 @@ function renderPlansTab(projectId) {
     `;
   }
 
+  // Escape for an inline single-quoted JS-string arg inside an HTML attribute:
+  // JS-escape (\ and ') FIRST so the apostrophe can't terminate the string
+  // early, THEN HTML-escape so entities survive attribute parsing. Plain esc()
+  // alone is a bug — the browser decodes &#39; back to ' before JS runs, so a
+  // title like `Desktop's "…"` broke the onclick and the card wouldn't open.
+  const jsAttr = s => esc(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
   container.innerHTML = plans.map(p => {
-    const pathEsc = esc(p.plan_file.replace(/\\/g,'\\\\'));
+    const pathEsc = jsAttr(p.plan_file);
+    const titleEsc = jsAttr(p.title);
     const checked = sel.has(p.plan_file) ? 'checked' : '';
     return `
     <div class="plan-history-card">
       <input type="checkbox" class="plan-cb" ${checked} onchange="togglePlanSelection('${esc(projectId)}','${pathEsc}',this.checked)" onclick="event.stopPropagation()">
-      <div class="plan-card-body" onclick="openPlanFromHistory('${pathEsc}','${esc(p.title)}')">
+      <div class="plan-card-body" onclick="openPlanFromHistory('${pathEsc}','${titleEsc}')">
         <div class="plan-history-title">${esc(p.title)}</div>
         <div class="plan-history-meta">
           <span>${esc(p.ts_relative || '')}</span>
@@ -211,7 +218,7 @@ function renderPlansTab(projectId) {
         </div>
         <div class="plan-history-filename">${esc(p.filename || '')}</div>
       </div>
-      <button class="plan-card-delete" onclick="event.stopPropagation();deleteSinglePlan('${esc(projectId)}','${pathEsc}','${esc(p.title)}')" title="Delete plan">&times;</button>
+      <button class="plan-card-delete" onclick="event.stopPropagation();deleteSinglePlan('${esc(projectId)}','${pathEsc}','${titleEsc}')" title="Delete plan">&times;</button>
     </div>`;
   }).join('');
 }
