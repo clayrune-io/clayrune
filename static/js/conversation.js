@@ -1075,7 +1075,7 @@ function agentPanelHTML(p) {
       _provBadge = `<span class="provider-badge prov-${esc(_provName.replace(/[^a-z]/g,''))}" title="${esc(_provTitle)}">${esc(_provText)}${_routerSuffixHTML}</span>`;
     } else {
       // The current model to show on the control: pinned wins, else the routed/
-      // configured model, else "Default". Friendly label (Opus 4.8, not the id).
+      // configured model, else "Default". Friendly label (Opus 5, not the id).
       const _curLabel = _pinnedModel
         ? _mShort(_pinnedModel)
         : (_provModel ? _mShort(_provModel) : 'Default');

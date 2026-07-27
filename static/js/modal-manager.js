@@ -723,7 +723,6 @@ const MC_MODEL_CHOICES = [
   ['claude-fable-5', 'Fable 5'],
   ['claude-sonnet-5', 'Sonnet 5'],
   ['claude-opus-5', 'Opus 5'],
-  ['claude-opus-4-8', 'Opus 4.8'],
   ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
 ];
 const MC_EFFORT_CHOICES = [
@@ -731,9 +730,20 @@ const MC_EFFORT_CHOICES = [
   ['high', 'High'], ['xhigh', 'Extra high'], ['max', 'Max'],
 ];
 
+// Retired model ids: no longer offered in any picker, but still need a friendly
+// label — an existing project/conversation may be pinned to one, and showing the
+// raw `claude-opus-4-8` id in the badge reads like a bug. Lookup-only.
+const MC_LEGACY_MODEL_LABELS = {
+  'claude-opus-4-8': 'Opus 4.8',
+  'claude-opus-4-6': 'Opus 4.6',
+  'claude-sonnet-4-6': 'Sonnet 4.6',
+  'claude-sonnet-4-5-20250929': 'Sonnet 4.5',
+};
+
 function _modelShortLabel(id) {
   const m = MC_MODEL_CHOICES.find(c => c[0] === id);
-  return m ? m[1] : id;
+  if (m) return m[1];
+  return MC_LEGACY_MODEL_LABELS[id] || id;
 }
 // Cross-module: the composer's Model picker (conversation.js) reuses this list —
 // single source of truth for the model ids/labels.

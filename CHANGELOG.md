@@ -6,6 +6,68 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-07-27b] — Model list cleanup, first-run onboarding on upgrades, tour steps that pointed at nothing
+
+**1. Opus 4.8 retired from the pickers; Opus 5 is the new-install default.**
+- `MC_MODEL_CHOICES` (`modal-manager.js`) and the Settings model picker
+  (`settings-drill.js`) no longer offer `claude-opus-4-8`.
+- Retiring an id from the list has two edges, both now covered:
+  a project or conversation still *pinned* to it would have rendered the raw
+  `claude-opus-4-8` string in its badge (new `MC_LEGACY_MODEL_LABELS` lookup
+  keeps the friendly label), and merely *opening* Settings with a retired model
+  saved would have silently snapped the `<select>` to its first option and
+  written that back on the next save (the picker now appends the saved value as
+  a "… (retired)" option).
+- `CONFIG['agent_model']` default flips `''` → `'claude-opus-5'`, so a fresh
+  install starts on the flagship instead of inheriting whatever the CLI happens
+  to default to. Existing `config.json` files keep their saved value.
+
+**2. First-run onboarding never fired on installs carrying the legacy starter.**
+The `sample-project` starter (pre-2026-05-08 name for what is now `clayrune`)
+counted as a real user project on both sides of the check — so
+`_has_real_user_project()` skipped the startup seed *and* the frontend's
+`realProjectCount === 0` gate never opened. The result on an upgraded install:
+no Clayrune project, and no auto-starting tour; the project only appeared if the
+user manually ran the tour, whose step 6 creates it. Both
+`_has_real_user_project()` (`guide_routes.py`) and `isOnboardingProject()`
+(`index.html`) now treat `sample-project` the same as `clayrune`. The existing
+one-shot heal marker (`onboarding_heal_v1.flag`) carries the repair.
+
+**3. Three tour steps spotlighted invisible elements.** All three drew a small
+glowing box in the top-left corner instead of highlighting anything — the
+"screens with no action on screen" report.
+- **Hivemind step** targeted `[data-nav="hivemind"]`, which lives in the
+  sidebar's `Advanced` group — `display:none` by default. The step now expands
+  the group on enter and restores it on leave (without touching the user's
+  saved preference).
+- **Tabs step** targeted `.modal-tab-bar`, which the conversation redesign made
+  `display:none !important` on desktop *and* mobile; the tabs moved into the
+  three-dot menu. The step now spotlights the in-menu tab section and its copy
+  says so.
+- **Three-dot-menu step** asked for `demo: 'modal'`, so the dropdown that the
+  step describes was never rendered — `wtDemoMenuHTML()` had been dead code.
+  Now `demo: 'modal-menu'`.
+- **Generic guard:** `wtShow` treats any target measuring 0×0 as absent, so this
+  whole class degrades to a plain centered card instead of a highlight pointing
+  at the corner. A CSS change can no longer silently break a tour step.
+- The demo modal also stopped rendering the `.card-summary` and `.modal-tab-bar`
+  rows that the real app hides, and the sidebar / scheduler step copy was
+  refreshed for the current nav (Inbox, Automation, the Advanced group).
+
+**4. A restarted server logged nowhere (observability).** The launcher holds
+`data/logs/clayrune.log` open with a share mode that denies a second writer, so
+the windowless restart path's `open(log_path, 'ab')` reliably raised
+`PermissionError` — and the handler only logged the failure *to the dying
+process*. Every restart since blinded us to exactly the boot we most wanted to
+read. It now falls back to `clayrune-restart-<pid>.log` and announces the path.
+
+**5. Boot-phase timings** (`_boot_phase` in `server.py`): each pre-serve startup
+phase logs its duration when ≥0.25s, plus a `[boot] ready to serve after Ns`
+line. Added to make "the app took two minutes to come back" a measurable claim —
+nothing in the warm-server measurements (import 0.34s, `/api/projects` 43ms,
+transcript endpoint 0.13s on a 59MB session, full transcript scan 1.3s across 20
+projects) accounted for it.
+
 ## [2026-07-24] — First-run UX: Claude auth gate + walkthrough auto-start
 
 Three first-run fixes surfaced by a clean-VM install test (the installer flow

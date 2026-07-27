@@ -699,7 +699,13 @@ def _has_real_user_project() -> bool:
     counts that incognito file and mis-classifies a fresh install as
     established, so the onboarding project never gets seeded when the tour is
     skipped. Mirrors the UI's realProjectCount filter
-    (isIncognitoProject + isStewardWorkspace)."""
+    (isIncognitoProject + isStewardWorkspace + isOnboardingProject).
+
+    Also excludes the pre-2026-05-08 starter (`sample-project`), which the
+    walkthrough used to create in place of `clayrune`. Installs old enough to
+    carry one counted as "established", so the upgrade seeded no Clayrune
+    project and the first-run tour never auto-started — the starter was
+    standing in for a real project it never was."""
     from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
     for f in DATA_DIR.glob('*.json'):
         if f.name.endswith(EXCLUDED_SIDECAR_SUFFIXES):
@@ -711,6 +717,8 @@ def _has_real_user_project() -> bool:
         if not isinstance(p, dict):
             continue
         if p.get('_is_incognito_project') or p.get('_is_steward_workspace'):
+            continue
+        if p.get('_is_onboarding_project') or p.get('id') in ('clayrune', 'sample-project'):
             continue
         return True
     return False

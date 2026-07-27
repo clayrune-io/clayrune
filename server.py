@@ -79,7 +79,11 @@ def _load_config():
         'shared_rules_path': str(_DATA_ROOT / 'data' / 'SHARED_RULES.md'),
         'projects_base': str(Path.home()),
         'auto_workspace_base': str(Path.home() / 'MissionControl'),
-        'agent_model': '',
+        # Flagship model for new installs (2026-07-27). '' would mean "whatever
+        # the CLI defaults to", which drifts with the CLI and left fresh installs
+        # on an older tier than the picker advertises. Only applies to configs
+        # that predate the key — the merge below preserves an existing choice.
+        'agent_model': 'claude-opus-5',
         'agent_effort': '',
         'agent_max_turns': 0,
         'agent_permission_mode': '',
@@ -2209,26 +2213,45 @@ def _serve_dual_stack(port):
     srv.serve_forever()
 
 
+def _boot_phase(label, fn):
+    """Run one startup phase, logging how long it took.
+
+    Everything between process start and `_serve_dual_stack` is dead air for the
+    user — the browser is sitting on the "Restarting…" overlay. Without per-phase
+    timings a slow boot is indistinguishable from a slow page, so a "the app took
+    two minutes to come back" report has nowhere to land. Exceptions are logged
+    and swallowed: no single phase may take the server down with it.
+    """
+    t0 = _time.time()
+    try:
+        fn()
+    except Exception as e:
+        _log(f"[boot] {label} FAILED after {_time.time() - t0:.2f}s: {e}")
+        return
+    dt = _time.time() - t0
+    # Only the slow ones — a clean boot shouldn't spam 15 near-zero lines.
+    if dt >= 0.25:
+        _log(f"[boot] {label}: {dt:.2f}s")
+
+
 if __name__ == '__main__':
+    _BOOT_T0 = _time.time()
     _register_claude_runtime_hooks()
-    _check_port_conflict()
+    _boot_phase('port-conflict wait', _check_port_conflict)
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run
     # before any subsystem spawns its own children. [leak fix 2026-06-03]
-    try:
-        process_ledger._reap_prior_instance_strays()
-    except Exception as e:
-        _log(f"[reaper] startup reap failed: {e}")
+    _boot_phase('reap prior strays', process_ledger._reap_prior_instance_strays)
     _bp_sched._start_scheduler()
     _start_hivemind_orchestrator()
     _start_session_guardian()
     # Install built-in skills bundled with MC into ~/.claude/skills/.
     # Checksum-aware: user edits to managed skills are preserved.
-    _install_builtin_skills()
+    _boot_phase('install builtin skills', _install_builtin_skills)
     # Install/backfill built-in MCP servers (filesystem per-project,
     # sequential-thinking global). Same checksum-preservation pattern.
-    _install_builtin_mcps()
+    _boot_phase('install builtin MCPs', _install_builtin_mcps)
     # Sweep stale Git-import staging dirs (>24h old) so they don't accumulate.
     try:
         n = _skills.cleanup_stale_staging(max_age_hours=24)
@@ -2238,14 +2261,11 @@ if __name__ == '__main__':
         _log(f"[skills] staging cleanup failed: {e}")
     # Ensure the global incognito pseudo-project exists so it shows up in
     # /api/projects without the FE needing a first-touch bootstrap.
-    try:
-        _ensure_incognito_project()
-    except Exception as e:
-        _log(f"[incognito] bootstrap failed: {e}")
+    _boot_phase('incognito bootstrap', _ensure_incognito_project)
     # First-boot onboarding project (marker-gated): skipping the tour used to
     # mean a fresh install had zero projects. Swallows internally; never blocks
     # startup.
-    _bp_guide.seed_onboarding_on_startup()
+    _boot_phase('onboarding seed', _bp_guide.seed_onboarding_on_startup)
     # First-run Claude auth gate: actively probe auth once at startup (background,
     # best-effort) so _claude_auth_state reflects reality BEFORE the user dispatches.
     # The state defaults optimistically to ok:True and is only flipped by a failing
@@ -2262,10 +2282,7 @@ if __name__ == '__main__':
     # (no live sessions exist yet at startup). Flip those to 'interrupted' so
     # they don't show as forever-running in the Agent Log / Runs panels.
     # Cheap, synchronous; runs before backfill so the two helpers don't race.
-    try:
-        _reconcile_pending_agent_log_entries()
-    except Exception as e:
-        _log(f"[reconcile-pending] bootstrap failed: {e}")
+    _boot_phase('reconcile pending agent_log', _reconcile_pending_agent_log_entries)
     # Backfill agent_log from Claude transcripts: makes mid-flight sessions that
     # never finalized (server killed before stream reader's finally) visible in
     # the Agent Log tab. Runs once, in the background, so app.run() isn't blocked.
@@ -2273,10 +2290,7 @@ if __name__ == '__main__':
     threading.Thread(target=_startup_memory_maintenance, daemon=True).start()
     # One-shot: transition orphaned 'active' hiveminds to 'stale'. Cheap, runs
     # synchronously before app.run().
-    try:
-        _hm_reconcile_stale_on_startup()
-    except Exception as e:
-        _log(f"[hivemind-reconcile] bootstrap failed: {e}")
+    _boot_phase('hivemind stale reconcile', _hm_reconcile_stale_on_startup)
     # Auto-cleanup unnamed CF Access sessions (per-session revoke, strict mode).
     # Roll back: set auto_revoke_unnamed_sessions=false in data/config.json.
     threading.Thread(target=_session_label_enforcer_loop, daemon=True).start()
@@ -2314,5 +2328,6 @@ if __name__ == '__main__':
             _qchan.start_poller(int(CONFIG.get('question_channel_poll_s', 120)))
         except Exception as e:
             _log(f"[question-channel] poller not started: {e}")
+    _log(f"[boot] ready to serve after {_time.time() - _BOOT_T0:.2f}s")
     _log(f"Clayrune running at http://localhost:{PORT}")
     _serve_dual_stack(PORT)

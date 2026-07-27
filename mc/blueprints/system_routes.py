@@ -912,14 +912,36 @@ def _perform_server_restart_async(audit_entry):
                 )
                 if _windowless:
                     # No console to print into — persist logs like the VBS path.
-                    try:
-                        log_path = os.path.join(os.getcwd(), 'data', 'logs', 'clayrune.log')
-                        os.makedirs(os.path.dirname(log_path), exist_ok=True)
-                        _restart_log = open(log_path, 'ab')  # leaked intentionally; we os._exit shortly
-                        popen_kwargs['stdout'] = _restart_log
-                        popen_kwargs['stderr'] = subprocess.STDOUT
-                    except Exception as e:
-                        _log(f"[restart] windowless log redirect failed: {e}")
+                    #
+                    # The launcher (start.bat / start-hidden.vbs) already holds
+                    # clayrune.log open with a share mode that denies a second
+                    # writer, so on Windows this open() reliably raises
+                    # PermissionError — and until 2026-07-27 that meant the
+                    # restarted server logged NOWHERE. Every restart silently
+                    # blinded us to exactly the boot we most wanted to inspect.
+                    # Fall back to a per-instance file rather than losing the
+                    # output; the path is echoed into the OLD process's log so
+                    # it's findable.
+                    _log_dir = os.path.join(os.getcwd(), 'data', 'logs')
+                    _candidates = [
+                        os.path.join(_log_dir, 'clayrune.log'),
+                        os.path.join(_log_dir, f'clayrune-restart-{os.getpid()}.log'),
+                    ]
+                    _restart_log = None
+                    for _cand in _candidates:
+                        try:
+                            os.makedirs(_log_dir, exist_ok=True)
+                            # leaked intentionally; we os._exit shortly
+                            _restart_log = open(_cand, 'ab')
+                            popen_kwargs['stdout'] = _restart_log
+                            popen_kwargs['stderr'] = subprocess.STDOUT
+                            if _cand != _candidates[0]:
+                                _log(f"[restart] main log busy; new instance logs to {_cand}")
+                            break
+                        except Exception as e:
+                            _log(f"[restart] log redirect to {_cand} failed: {e}")
+                    if _restart_log is None:
+                        _log("[restart] no writable log target; new instance output is discarded")
             else:
                 popen_kwargs['start_new_session'] = True
             subprocess.Popen([sys.executable] + sys.argv, **popen_kwargs)

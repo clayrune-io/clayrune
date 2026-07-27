@@ -27,7 +27,7 @@ const WT_STEPS = [
   {
     id: 'sidebar',
     title: 'Sidebar Navigation',
-    body: 'The sidebar is your top-level navigation: <strong>Dashboard</strong>, <strong>Backlog</strong> (cross-project task list), <strong>\ud83d\udc1d Hivemind</strong> (cross-project multi-agent runs), <strong>Scheduler</strong>, <strong>Settings</strong>, <strong>Shared Rules</strong>, and <strong>Processes</strong>. Hover to expand. Recent projects also pin here for quick jump.',
+    body: 'The sidebar is your top-level navigation: <strong>Dashboard</strong>, <strong>Inbox</strong> (anything waiting on you), <strong>+ New Project</strong>, then a workspace group \u2014 <strong>Backlog</strong> (cross-project task list), <strong>Automation</strong> (recurring agent runs) and <strong>History</strong>. Power surfaces (\ud83d\udc1d Hivemind, Skills &amp; MCP, Personas, Media, Shared Rules, Processes, Incognito) sit under <strong>Advanced</strong> \u2014 click it to expand. Hover to expand the sidebar itself.',
     target: '#sidebar', pos: 'right',
     skip: () => window.innerWidth <= 960, // hidden on mobile
   },
@@ -66,8 +66,8 @@ const WT_STEPS = [
   {
     id: 'tabs',
     title: 'Tabs',
-    body: '<strong>Agent</strong> (dispatch + active sessions), <strong>Backlog</strong> (tasks for this project), <strong>Agent Log</strong> (completed sessions, click any to view its transcript), <strong>Plans</strong>, <strong>Activity</strong>. On mobile these tabs move into the three-dot menu.',
-    target: null, pos: 'bottom', demo: 'modal', demoTarget: '.modal-tab-bar',
+    body: 'A project modal has five tabs: <strong>Agent</strong> (the conversation + dispatch), <strong>Backlog</strong> (tasks for this project), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Plans</strong>, and <strong>Activity</strong>. They live at the top of the <strong>three-dot menu</strong> so the chat gets the full window.',
+    target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.wt-menu-tabs',
   },
   {
     id: 'agent',
@@ -86,20 +86,25 @@ const WT_STEPS = [
       '<li><strong>GitHub</strong> &amp; <strong>Code Sync</strong></li>' +
       '<li><strong>Memory</strong>, <strong>Rules</strong>, <strong>Skills</strong> &amp; <strong>MCP servers</strong></li>' +
       '</ul>' +
-      '<div style="margin-top:8px">On mobile, the project tabs (Agent / Backlog / etc.) move to the top of this menu.</div>',
-    target: null, pos: 'bottom', demo: 'modal', demoTarget: '.modal-menu-btn',
+      '<div style="margin-top:8px">The project tabs (Agent / Backlog / …) sit at the top of this same menu.</div>',
+    target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.modal-menu-dropdown',
   },
   {
     id: 'hivemind-sidebar',
     title: '\ud83d\udc1d Hivemind \u2014 multi-agent runs',
     body: 'Hivemind is Clayrune\u2019s signature feature: an orchestrator agent decomposes a goal into workstreams, then parallel worker agents tackle them in coordination. The <strong>\ud83d\udc1d Hivemind</strong> sidebar entry shows every hivemind across every project \u2014 each card has a planner-to-workers tree, status pill, and stats. Long-idle "active" hiveminds auto-mark themselves <strong>stale</strong> with a Restart control.',
     target: '[data-nav="hivemind"]', pos: 'right',
+    // Hivemind lives in the sidebar's "Advanced" group, which is collapsed
+    // (display:none) by default — without this the step spotlighted a 0x0
+    // element and read as a blank screen.
+    onEnter: () => { wtExpandAdvancedSidebar(); },
+    onLeave: () => { wtRestoreAdvancedSidebar(); },
     skip: () => window.innerWidth <= 960, // mobile uses bottom-tab; covered separately
   },
   {
     id: 'scheduler',
-    title: 'Scheduler \u2014 recurring agents',
-    body: 'Set up tasks that fire on a daily / cron / interval schedule. Each schedule has a <strong>\u25b6 Run Now</strong> button to fire immediately and a <strong>Runs</strong> button that opens an inline panel listing the most recent runs (50 per page). Click any run row to read its transcript.',
+    title: 'Automation \u2014 recurring agents',
+    body: 'The <strong>Automation</strong> sidebar entry sets up tasks that fire on a daily / cron / interval schedule. Each schedule has a <strong>\u25b6 Run Now</strong> button to fire immediately and a <strong>Runs</strong> button that opens an inline panel listing the most recent runs (50 per page). Click any run row to read its transcript.',
     target: '[data-nav="scheduler"]', pos: 'right',
     skip: () => window.innerWidth <= 960, // mobile bottom-tab covers this
   },
@@ -234,13 +239,6 @@ function wtDemoTileHTML() {
 }
 
 function wtDemoModalHTML(activeTab) {
-  const tabs = ['Agent','Backlog','Agent Log','Plans','Activity','Hivemind'];
-  const tabBar = tabs.map(t => {
-    const key = t.toLowerCase().replace(' ', '-');
-    const active = (activeTab === key) ? ' active' : '';
-    return `<div class="modal-tab${active}">${t}</div>`;
-  }).join('');
-
   let bodyContent = '';
   if (activeTab === 'backlog') {
     bodyContent = `
@@ -293,23 +291,24 @@ function wtDemoModalHTML(activeTab) {
           <span class="domain-tag" style="background:var(--surface3);color:var(--text-dim)">General</span>
         </div>
       </div>
-      <div class="card-summary" style="pointer-events:none">
-        <div class="summary-item"><span class="summary-label">Current Task</span><span class="summary-value current-task">Learn how to use Clayrune</span></div>
-        <div class="summary-item"><span class="summary-label">Status</span><span class="status-pill status-active">active</span></div>
-      </div>
-      <div class="modal-tab-bar" style="pointer-events:none">${tabBar}</div>
       <div class="modal-scroll-body" style="flex:1;overflow:hidden">${bodyContent}</div>
     </div>
   </div>`;
 }
 
-function wtDemoMenuHTML() {
-  const tabs = ['Agent','Backlog','Agent Log','Plans','Activity','Hivemind'];
-  const tabBar = tabs.map(t => {
+// The tab strip the demo shows lives INSIDE the three-dot menu — that's where
+// the real app puts it now (`.mc-tabs-in-menu`; the old `.modal-tab-bar` is
+// display:none on both desktop and mobile). `wtTabsSectionHTML` is spotlighted
+// by the "Tabs" step and reused as the top of the menu step.
+function wtTabsSectionHTML(activeTab) {
+  const tabs = ['Agent','Backlog','Agent Log','Plans','Activity'];
+  return `<div class="mc-tabs-in-menu wt-menu-tabs">` + tabs.map(t => {
     const key = t.toLowerCase().replace(' ', '-');
-    return `<div class="modal-tab${key === 'agent' ? ' active' : ''}">${t}</div>`;
-  }).join('');
+    return `<button class="modal-menu-item${key === activeTab ? ' active' : ''}" style="pointer-events:none">${t}</button>`;
+  }).join('') + `</div>`;
+}
 
+function wtDemoMenuHTML(activeTab) {
   return `<div class="modal-window focused" style="width:700px;height:520px;pointer-events:none;position:relative;border-radius:12px;overflow:visible">
     <div class="modal-content" style="display:flex;flex-direction:column;height:100%;overflow:hidden;border-radius:12px;background:var(--surface)">
       <div class="modal-header" style="position:relative">
@@ -319,6 +318,8 @@ function wtDemoMenuHTML() {
           <button class="modal-close" style="pointer-events:none">&#10005;</button>
         </div>
           <div class="modal-menu-dropdown" style="display:block;pointer-events:none;position:absolute;top:44px;right:8px;min-width:220px;z-index:50">
+            ${wtTabsSectionHTML(activeTab || 'agent')}
+            <div class="modal-menu-sep"></div>
             <button class="modal-menu-item wt-menu-status" style="pointer-events:none">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-status"/></svg></span> Change Status <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
             </button>
@@ -352,16 +353,37 @@ function wtDemoMenuHTML() {
           <span class="domain-tag" style="background:var(--surface3);color:var(--text-dim)">General</span>
         </div>
       </div>
-      <div class="card-summary" style="pointer-events:none">
-        <div class="summary-item"><span class="summary-label">Current Task</span><span class="summary-value current-task">Learn how to use Clayrune</span></div>
-        <div class="summary-item"><span class="summary-label">Status</span><span class="status-pill status-active">active</span></div>
-      </div>
-      <div class="modal-tab-bar" style="pointer-events:none">${tabBar}</div>
       <div class="modal-scroll-body" style="flex:1;overflow:hidden">
         <div style="padding:40px;text-align:center;color:var(--text-faint);font-size:13px">Tab content appears here</div>
       </div>
     </div>
   </div>`;
+}
+
+// A spotlight target is only usable if it actually occupies space on screen.
+function wtIsMeasurable(el) {
+  if (!el) return false;
+  const r = el.getBoundingClientRect();
+  return r.width > 1 && r.height > 1;
+}
+
+// Steps that spotlight something inside the collapsed-by-default "Advanced"
+// sidebar group have to open it first, or they point at a display:none element.
+function wtExpandAdvancedSidebar() {
+  const grp = document.getElementById('sidebar-advanced-group');
+  const tog = document.getElementById('sidebar-adv-toggle');
+  if (!grp || grp.classList.contains('expanded')) return;
+  grp.dataset.wtExpanded = '1';
+  grp.classList.add('expanded');
+  if (tog) tog.classList.add('expanded');
+}
+function wtRestoreAdvancedSidebar() {
+  const grp = document.getElementById('sidebar-advanced-group');
+  const tog = document.getElementById('sidebar-adv-toggle');
+  if (!grp || grp.dataset.wtExpanded !== '1') return;
+  delete grp.dataset.wtExpanded;
+  grp.classList.remove('expanded');
+  if (tog) tog.classList.remove('expanded');
 }
 
 function startWalkthrough() {
@@ -406,6 +428,14 @@ async function wtShow(idx) {
   document.querySelectorAll('.wt-elevated').forEach(el => el.classList.remove('wt-elevated'));
 
   let targetEl = step.target ? document.querySelector(step.target) : null;
+
+  // A target that exists in the DOM but has no box (display:none — e.g. the
+  // collapsed "Advanced" sidebar group, or a row a media query hides) measures
+  // 0x0. Highlighting it drew a small glowing rectangle in the top-left corner
+  // with the card clamped beside it — the "step that points at nothing" bug.
+  // Treat unmeasurable as absent so the step falls back to its demo, or to a
+  // plain centered card.
+  if (targetEl && !wtIsMeasurable(targetEl)) targetEl = null;
 
   // Inject virtual demo element if step uses one — but only when the real
   // target (if any) isn't in the DOM; a found real target always wins.
@@ -467,6 +497,15 @@ async function wtShow(idx) {
         targetEl = demo.firstElementChild;
       }
     }
+  }
+
+  // Same guard for a demo sub-target: `demoTarget` is resolved against markup we
+  // control, but the app's CSS still applies to it, so a selector that used to
+  // resolve can silently go zero-height when a media query hides that element.
+  if (targetEl && !wtIsMeasurable(targetEl)) {
+    const _demoRoot = targetEl.closest('.wt-demo');
+    targetEl = _demoRoot ? _demoRoot.firstElementChild : null;
+    if (targetEl && !wtIsMeasurable(targetEl)) targetEl = null;
   }
 
   // Elevate the target (or its modal-window ancestor) above the backdrop.

@@ -285,10 +285,19 @@ async function _renderSettings() {
     ['', 'Default'],
     ['claude-fable-5', 'Fable 5'],
     ['claude-opus-5', 'Opus 5'],
-    ['claude-opus-4-8', 'Opus 4.8'],
     ['claude-sonnet-5', 'Sonnet 5'],
     ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
   ];
+  // If the saved model has since been retired from the list (e.g. Opus 4.8),
+  // keep it as a one-off option so the picker still reflects the live config
+  // instead of silently snapping to the first entry — and so merely OPENING
+  // Settings can't rewrite the user's model behind their back.
+  const _savedModel = cfg.agent_model || '';
+  if (!_autoModel && _savedModel && !modelOptions.some(([v]) => v === _savedModel)) {
+    const _lbl = (typeof window._modelShortLabel === 'function')
+      ? window._modelShortLabel(_savedModel) : _savedModel;
+    modelOptions.push([_savedModel, _lbl + ' (retired)']);
+  }
   const modelSel = modelOptions.map(([v, l]) => {
     const sel = v === '__auto__' ? _autoModel : (!_autoModel && (cfg.agent_model || '') === v);
     return `<option value="${v}" ${sel ? 'selected' : ''}>${l}</option>`;

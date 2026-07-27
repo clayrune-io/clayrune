@@ -1260,8 +1260,11 @@ function isStewardWorkspace(p) {
 // detection — the seed guarantees count >= 1, which would otherwise suppress the
 // auto-start walkthrough on the exact fresh installs it's meant for. The id
 // fallback covers installs seeded before the _is_onboarding_project marker.
+// `sample-project` is the pre-2026-05-08 name for the same starter; installs old
+// enough to still carry one were counted as "already has a real project", which
+// is exactly what suppressed the first-run tour on those upgrades.
 function isOnboardingProject(p) {
-  return !!(p && (p._is_onboarding_project || p.id === 'clayrune'));
+  return !!(p && (p._is_onboarding_project || p.id === 'clayrune' || p.id === 'sample-project'));
 }
 
 function filterProjects() {
