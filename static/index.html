@@ -944,20 +944,33 @@ const modalZoomLevels = {}; // modalId → current font-size in px
 // ── /STORE ──────────────────────────────────────────────────────────────────
 
 
+// Single-flight in-flight promise. The `_agentProviders !== null` guard alone
+// only dedupes AFTER the fetch resolves — during restore, every open modal's
+// render (render-core.js) calls this in the SAME tick while the value is still
+// null, so each fired its own /api/agent/providers fetch (observed: 69 identical
+// requests on one boot). Caching the promise collapses the herd to one request;
+// concurrent callers await the same in-flight fetch. Cleared on resolve so a
+// FAILED fetch still retries next time (the null-on-error contract below).
+let _agentProvidersPromise = null;
 async function _ensureAgentProviders() {
   if (_agentProviders !== null) return _agentProviders;
-  try {
-    const r = await fetch(API_BASE + '/api/agent/providers');
-    if (r.ok) {
-      const d = await r.json();
-      _agentProviders = d.providers || [];
-    }
-    // On a non-ok response, leave _agentProviders null so a later call
-    // retries instead of caching an empty list forever — that would
-    // permanently hide the provider picker after one failed fetch
-    // (e.g. a mobile cold-boot before the network/tunnel is ready).
-  } catch(e) { /* leave _agentProviders null → retry on next call */ }
-  return _agentProviders || [];
+  if (_agentProvidersPromise) return _agentProvidersPromise;
+  _agentProvidersPromise = (async () => {
+    try {
+      const r = await fetch(API_BASE + '/api/agent/providers');
+      if (r.ok) {
+        const d = await r.json();
+        _agentProviders = d.providers || [];
+      }
+      // On a non-ok response, leave _agentProviders null so a later call
+      // retries instead of caching an empty list forever — that would
+      // permanently hide the provider picker after one failed fetch
+      // (e.g. a mobile cold-boot before the network/tunnel is ready).
+    } catch(e) { /* leave _agentProviders null → retry on next call */ }
+    finally { _agentProvidersPromise = null; }
+    return _agentProviders || [];
+  })();
+  return _agentProvidersPromise;
 }
 // Prime on load so the per-project menu can render the dropdown without an
 // extra round-trip. Errors are benign — menu degrades to claude-only.
