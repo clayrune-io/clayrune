@@ -34,6 +34,27 @@ chat got misread as a system chat and dropped from the list on every rebuild
   top-of-list bubbling immediately on reload, before the `/agent/status` poll
   repopulates the live cache (takes effect after the next server restart).
 
+## [2026-07-27d] — Desktop Inbox: Outlook-style mail list (Sender · Subject · Time)
+
+Reworked the desktop Inbox surface from a stacked timeline into a mail-client
+list, on Ron's request to "view by conversation or by sender like Outlook."
+
+- **Columns:** Sender (the project) · Subject · Time, unread shown with an accent
+  dot + bold, hover-reveal dismiss. Every field already existed on the
+  `/api/notifications` payload — no backend change.
+- **Subject derivation:** turn-complete notifications set `title` to the project
+  name (== sender), so it was useless as a subject. `_inboxSubjectPreview()` now
+  pulls the subject from the first sentence/line of the body and shows the
+  remainder as a greyed "— preview…", the way a mail client does.
+- **View toggle:** `Conversation | Sender` in the header (persisted to
+  `mc_inbox_view`). The store already collapses to one row per conversation
+  thread, so **Conversation** is the flat, day-grouped, newest-first list, and
+  **Sender** re-groups those same rows under a per-project header (with a
+  `N · M new` count), groups ordered by most-recent activity.
+- Scoped entirely to `#desktop-inbox-list` + new `.dib-*` classes; the mobile
+  `.mib-*` overlay is untouched. `static/js/mobile.js` + `static/css/app.css`.
+  Frontend-only; hard reload to activate.
+
 ## [2026-07-27c] — Rail: sibling conversations sharing one mc_session_id
 
 Reported on Day Trading Scanner: several rail rows highlighted white at once,

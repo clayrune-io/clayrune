@@ -312,7 +312,113 @@ async function _renderInboxList(list) {
   });
 }
 function renderInbox() { return _renderInboxList(document.getElementById('mobile-inbox-list')); }
-function renderDesktopInbox() { return _renderInboxList(document.getElementById('desktop-inbox-list')); }
+
+// ── Desktop Inbox — Outlook-style mail list ──────────────────────────────────
+// Sender (project) · Subject · Time, with a Conversation | Sender view toggle.
+// The server already collapses the notification store to one row per
+// conversation thread, so "Conversation" is the flat time-sorted list (each row
+// IS a thread) and "Sender" re-groups those same rows under each project.
+let _inboxView = 'conversation';
+try { _inboxView = localStorage.getItem('mc_inbox_view') === 'sender' ? 'sender' : 'conversation'; } catch (e) {}
+
+function setInboxView(v) {
+  _inboxView = (v === 'sender') ? 'sender' : 'conversation';
+  try { localStorage.setItem('mc_inbox_view', _inboxView); } catch (e) {}
+  document.querySelectorAll('.dib-view-btn').forEach(b =>
+    b.classList.toggle('active', b.dataset.view === _inboxView));
+  renderDesktopInbox();
+}
+window.setInboxView = setInboxView;
+
+// Notifications carry `title` and `body`. For turn-complete events the title is
+// just the project name (== sender), so it's useless as a subject. Derive a real
+// subject from the first sentence/line of the body in that case; the remainder
+// becomes the preview — mirroring how a mail client shows "Subject — preview…".
+function _inboxSubjectPreview(it) {
+  const proj = (it.project_name || 'Clayrune').trim();
+  let subj = (it.title || '').trim();
+  let body = (it.body || '').replace(/\s+/g, ' ').trim();
+  if (!subj || subj === proj) {
+    const firstLine = ((it.body || '').split('\n')[0] || body).replace(/\s+/g, ' ').trim();
+    const m = firstLine.match(/^(.{0,80}?[.!?])(\s|$)/);
+    subj = (m ? m[1] : firstLine).slice(0, 90).trim();
+    const rest = body.slice(subj.length).replace(/^[\s—–-]+/, '').trim();
+    body = rest;
+  }
+  return { subject: subj || '(no summary)', preview: (body || '').slice(0, 140) };
+}
+
+function _desktopInboxRowHTML(it) {
+  const { subject, preview } = _inboxSubjectPreview(it);
+  const when = timeAgoJS(new Date((it.ts || 0) * 1000).toISOString()) || '';
+  return `<div class="dib-row${it.read ? '' : ' dib-unread'}" data-id="${esc(it.id)}"
+      data-project-id="${esc(it.project_id || '')}" data-session-id="${esc(it.session_id || '')}"
+      title="${esc(it.project_name || 'Clayrune')}">
+    <span class="dib-dot" aria-hidden="true"></span>
+    <span class="dib-sender">${esc(it.project_name || 'Clayrune')}</span>
+    <div class="dib-body"><span class="dib-subject">${esc(subject)}</span>${preview ? `<span class="dib-preview"> — ${esc(preview)}</span>` : ''}</div>
+    <span class="dib-time">${esc(when)}</span>
+    <button class="dib-del" data-id="${esc(it.id)}" title="Dismiss" aria-label="Dismiss">&#10005;</button>
+  </div>`;
+}
+
+async function _renderDesktopInboxList(list) {
+  if (!list) return;
+  const seq = ++_inboxSeq;
+  const q = _inboxQuery.trim();
+  if (!list.dataset.loaded) list.innerHTML = '<div class="dib-empty">Loading…</div>';
+  let data = { items: [], unread: 0 };
+  try {
+    const res = await fetch(API_BASE + '/api/notifications?limit=200'
+      + (q ? '&q=' + encodeURIComponent(q) : ''));
+    if (res.ok) data = await res.json();
+  } catch (e) { /* offline → keep whatever's shown */ }
+  if (seq !== _inboxSeq) return;  // a newer render superseded this one
+  list.dataset.loaded = '1';
+  setInboxBadge(data.unread || 0);
+  const items = data.items || [];
+  list.classList.toggle('dib-grouped', _inboxView === 'sender');
+  if (!items.length) {
+    list.innerHTML = `<div class="dib-empty">${q ? 'No updates match &ldquo;' + esc(q) + '&rdquo;.' : 'No updates yet.'}</div>`;
+    return;
+  }
+  let html = '';
+  if (_inboxView === 'sender') {
+    // Group by sender (project); groups ordered by most-recent activity, rows
+    // within a group stay newest-first (items arrive newest-first).
+    const groups = new Map();
+    for (const it of items) {
+      const k = it.project_name || 'Clayrune';
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(it);
+    }
+    const ordered = [...groups.entries()].sort((a, b) => (b[1][0].ts || 0) - (a[1][0].ts || 0));
+    for (const [sender, rows] of ordered) {
+      const unread = rows.filter(r => !r.read).length;
+      html += `<div class="dib-group-head"><span class="dib-group-name">${esc(sender)}</span>`
+        + `<span class="dib-group-meta">${rows.length}${unread ? ` · ${unread} new` : ''}</span></div>`;
+      html += rows.map(_desktopInboxRowHTML).join('');
+    }
+  } else {
+    // Conversation view: flat, day-grouped, newest-first.
+    let cur = null;
+    for (const it of items) {
+      const label = _inboxDayLabel(it.ts);
+      if (label !== cur) { cur = label; html += `<div class="dib-day">${esc(label)}</div>`; }
+      html += _desktopInboxRowHTML(it);
+    }
+  }
+  list.innerHTML = html;
+  list.querySelectorAll('.dib-row').forEach(row => {
+    row.addEventListener('click', () => openNotification(row.dataset.id,
+      row.dataset.projectId, row.dataset.sessionId));
+  });
+  list.querySelectorAll('.dib-del').forEach(btn => {
+    btn.addEventListener('click', e => { e.stopPropagation(); deleteNotification(btn.dataset.id); });
+  });
+}
+
+function renderDesktopInbox() { return _renderDesktopInboxList(document.getElementById('desktop-inbox-list')); }
 // Re-render whichever inbox is currently on screen (desktop modal wins if open).
 function _renderActiveInbox() {
   return document.getElementById('desktop-inbox-list') ? renderDesktopInbox() : renderInbox();
@@ -410,6 +516,10 @@ function openInboxSurface() {
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;gap:12px;padding:16px 20px 12px 24px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">Inbox</span>
+      <div class="dib-viewtoggle" title="Arrange the inbox by">
+        <button class="dib-view-btn${_inboxView === 'conversation' ? ' active' : ''}" data-view="conversation" onclick="setInboxView('conversation')">Conversation</button>
+        <button class="dib-view-btn${_inboxView === 'sender' ? ' active' : ''}" data-view="sender" onclick="setInboxView('sender')">Sender</button>
+      </div>
       <input type="text" id="desktop-inbox-search" placeholder="Search updates&hellip;" value="${esc(_inboxQuery || '')}" spellcheck="false"
         style="flex:1;min-width:120px;padding:7px 12px;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;color:var(--text);outline:none"
         oninput="onInboxSearchInput(this.value)">
