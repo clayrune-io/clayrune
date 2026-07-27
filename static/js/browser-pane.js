@@ -52,12 +52,15 @@ async function openBrowserPane(url, projectId) {
   // ── DOM ──
   const win = document.createElement('div');
   win.id = 'mc-browser-pane';
+  const W = Math.min(window.innerWidth * 0.96, 1120);
+  const H = Math.min(window.innerHeight * 0.92, 760);
   win.style.cssText =
-    'position:fixed;inset:0;margin:auto;width:min(96vw,1120px);height:min(92vh,760px);' +
+    `position:fixed;left:${Math.max(4, (window.innerWidth - W) / 2)}px;` +
+    `top:${Math.max(4, (window.innerHeight - H) / 2)}px;width:${W}px;height:${H}px;` +
     'background:#1e1e1e;border:1px solid var(--border,#444);border-radius:10px;z-index:100000;' +
     'display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.5);overflow:hidden';
   win.innerHTML = `
-    <div style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:#2a2a2a;flex:0 0 auto">
+    <div data-bp="bar" style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:#2a2a2a;flex:0 0 auto;cursor:move;touch-action:none;user-select:none">
       <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8592;</button>
       <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
@@ -70,7 +73,9 @@ async function openBrowserPane(url, projectId) {
     <div style="flex:1;background:#000;display:flex;align-items:center;justify-content:center;overflow:hidden">
       <img data-bp="screen" tabindex="0"
         style="max-width:100%;max-height:100%;aspect-ratio:${BP_VIEW_W}/${BP_VIEW_H};outline:none;cursor:default;user-select:none" draggable="false">
-    </div>`;
+    </div>
+    <div data-bp="grip" title="Drag to resize"
+      style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
   document.body.appendChild(win);
 
   const $ = sel => win.querySelector(`[data-bp="${sel}"]`);
@@ -83,6 +88,38 @@ async function openBrowserPane(url, projectId) {
   urlInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); img.focus(); }
   });
+
+  // ── move (drag the toolbar) + resize (corner grip) — pointer events cover
+  //    mouse and touch alike; setPointerCapture keeps the gesture even off-element.
+  const bar = $('bar'), grip = $('grip');
+  let drag = null, rz = null;
+  bar.addEventListener('pointerdown', e => {
+    if (e.target.closest('button') || e.target.tagName === 'INPUT') return;  // let controls work
+    drag = { sx: e.clientX, sy: e.clientY, l: win.offsetLeft, t: win.offsetTop };
+    bar.setPointerCapture(e.pointerId);
+  });
+  bar.addEventListener('pointermove', e => {
+    if (!drag) return;
+    const nl = Math.max(80 - win.offsetWidth, Math.min(window.innerWidth - 60, drag.l + e.clientX - drag.sx));
+    const nt = Math.max(0, Math.min(window.innerHeight - 40, drag.t + e.clientY - drag.sy));
+    win.style.left = nl + 'px'; win.style.top = nt + 'px';
+  });
+  const _endDrag = () => { drag = null; };
+  bar.addEventListener('pointerup', _endDrag);
+  bar.addEventListener('pointercancel', _endDrag);
+  grip.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    rz = { sx: e.clientX, sy: e.clientY, w: win.offsetWidth, h: win.offsetHeight };
+    grip.setPointerCapture(e.pointerId);
+  });
+  grip.addEventListener('pointermove', e => {
+    if (!rz) return;
+    win.style.width = Math.max(320, Math.min(window.innerWidth, rz.w + e.clientX - rz.sx)) + 'px';
+    win.style.height = Math.max(240, Math.min(window.innerHeight, rz.h + e.clientY - rz.sy)) + 'px';
+  });
+  const _endRz = () => { rz = null; };
+  grip.addEventListener('pointerup', _endRz);
+  grip.addEventListener('pointercancel', _endRz);
 
   // ── input forwarding ──
   img.addEventListener('mousedown', e => {
