@@ -607,6 +607,13 @@ function connectAgentStream(projectId, sessionId) {
           }
           return; // don't render this line in agent chat
         }
+        // Detect browser-pane marker from agent: [browser:https://…] opens the
+        // visible in-tab browser (Part B) on that URL.
+        const browMatch = msg.text && msg.text.match(/^\[browser:(https?:\/\/[^\]]+|about:[^\]]+)\]$/);
+        if (browMatch && typeof openBrowserPane === 'function') {
+          openBrowserPane(browMatch[1], projectId);
+          return; // don't render this line in agent chat
+        }
         // Show toast for auto-fresh session notification
         if (msg.text && msg.text.startsWith('[Session transcript too large')) {
           const pName = (allProjects.find(p => p.id === projectId) || {}).name || projectId;

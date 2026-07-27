@@ -26,3 +26,10 @@ firebase-admin>=6.5.0
 # so the agent doesn't trip the limit mid-conversation. Optional — if Pillow
 # is missing, uploads save as-is.
 Pillow>=12.2.0
+
+# ── Browser pane (Part B) ────────────────────────────────────────────────────
+# The in-tab visible browser (mc/blueprints/browser_routes.py) drives a headless
+# Chromium over CDP via a websocket. Small pure-python client; the heavy piece
+# (the Chromium binary) is NOT a dependency — it comes from the Playwright MCP
+# install and is resolved at runtime, so the pane 501s gracefully without it.
+websocket-client>=1.9.0
