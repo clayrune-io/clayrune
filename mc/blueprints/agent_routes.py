@@ -6070,6 +6070,8 @@ def get_project_conversations(project_id):
                 'status': s.get('status', 'unknown'),
                 'session_id': s.get('session_id', ''),
                 'task': s.get('task', ''),
+                'waiting_for_question': bool(s.get('waiting_for_question')),
+                'waiting_for_plan_approval': bool(s.get('waiting_for_plan_approval')),
             }
 
     log_by_csid = {}
@@ -6121,6 +6123,12 @@ def get_project_conversations(project_id):
             'ts': ts_iso,
             'ts_relative': time_ago(ts_iso) if ts_iso else '',
             'live': bool(live),
+            # Awaiting-input state, so a list REBUILT after a page reload (before
+            # the /agent/status poll repopulates agentStatusCache) still knows the
+            # card needs the user — otherwise a waiting chat looks plain-idle and
+            # loses its "Waiting for you" badge + top-of-list bubbling on refresh.
+            'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
+            'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
             # trigger_type + source let the mobile list show ONLY user-initiated
             # chats and route agent/scheduled runs to the Agent Log side flow.
             # Empty (transcript-only / manual, no 'agent' source) = user-initiated.

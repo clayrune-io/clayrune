@@ -1389,6 +1389,23 @@ const _AGENT_LABEL_RE = /^\s*(\[scheduled run|\[task-notification|<task-notifica
 // not conversations worth surfacing. Whole-label match, source-less rows only.
 const _NOISE_RESUME_RE = /^continue (?:where we|from where you) left off\.?$/i;
 const _TRIVIAL_ACK_RE = /^(ok(ay)?|kk?|yes|yep|yeah|ya|no|nope|nvm|sure|thanks|thank you|ty|thx|continue|go|go on|go ahead|proceed|done|got it)[.!]?$/i;
+// A conversation's display/filter label, resilient to a mid-conversation SKILL or
+// system turn polluting `last_user`. When the user runs a /skill (or the harness
+// injects a turn) AFTER their real message, that injected turn becomes the most
+// recent "user" text — e.g. "Base directory for this skill: …" — which both
+// mislabels the card AND makes _AGENT_LABEL_RE below filter the whole genuine
+// chat out of the list (the "I refreshed and my awaiting-input chat vanished"
+// bug). Prefer the cleaned last user message; if it's empty or is itself an
+// injected agent/system turn, fall back to the FIRST real user message
+// ("Few things…"). A truly-agent chat (first AND last are markers) still resolves
+// to a marker, so the filter keeps hiding it — no regression.
+function _bestConvLabel(c) {
+  const last = stripSysPreamble((c && (c.last_user || c.label)) || '').trim();
+  if (last && !_AGENT_LABEL_RE.test(last)) return last;
+  const first = stripSysPreamble((c && c.first_user) || '').trim();
+  if (first && !_AGENT_LABEL_RE.test(first)) return first;
+  return last || first || '';
+}
 // A steward is a persistent conversational agent you WANT in your chat list —
 // unlike a fire-once scheduled/agent run. So it's the one exception to the
 // user-initiated gate. Recognised by the backend `steward` flag OR (for
@@ -1416,7 +1433,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
     // Test the label with agent-facing preambles (resume/continue + the per-turn
     // brevity directive) stripped, so a genuine user chat whose message merely
     // CARRIES a prepended "[BINDING…]" directive isn't misread as a system chat.
-    const label = stripSysPreamble(c.label || '').trim();
+    const label = _bestConvLabel(c);
     if (!src && !label) return false;                              // nothing but a system preamble
     if (!src && _AGENT_LABEL_RE.test(label)) return false;         // legacy agent/system chat
     if (!src && _NOISE_RESUME_RE.test(label)) return false;         // empty-task "Continue where we left off."
@@ -1484,7 +1501,13 @@ function _liveConvStates(p) {
   return { byCsid, byMcid };
 }
 function _convLiveState(live, c) {
-  return live.byCsid[c.claude_session_id || ''] || live.byMcid[c.mc_session_id || ''] || null;
+  const s = live.byCsid[c.claude_session_id || ''] || live.byMcid[c.mc_session_id || ''];
+  if (s) return s;
+  // Reload fallback: the /conversations row itself carries the awaiting-input
+  // state (server-authoritative), so a chat waiting on the user keeps its badge
+  // + top bubbling even before the /agent/status poll repopulates the live cache.
+  if (c && (c.waiting_for_question || c.waiting_for_plan_approval)) return 'waiting';
+  return null;
 }
 
 // Layer-2 list rows for the user's conversations. Tapping opens it in chat mode
@@ -1497,7 +1520,7 @@ function _convLiveState(live, c) {
 function _convSearchText(c) {
   const label = _isStewardConvo(c)
     ? '🧭 Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 60) : '')
-    : (stripSysPreamble(c.label || '') || '(empty conversation)').substring(0, 90);
+    : (_bestConvLabel(c) || '(empty conversation)').substring(0, 90);
   const meta = [c.ts_relative || '', c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
   return `${label} ${meta}`.toLowerCase();
 }
@@ -1547,7 +1570,7 @@ function mobileUserConversationsHTML(p, convos) {
     // and unrecognisable. Render a clean, identifiable name instead.
     const label = _isStewardConvo(c)
       ? esc('🧭 Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 60) : ''))
-      : esc((stripSysPreamble(c.label || '') || '(empty conversation)').substring(0, 90));
+      : esc((_bestConvLabel(c) || '(empty conversation)').substring(0, 90));
     const liveSt = _convLiveState(live, c);
     let dot, badge = '';
     if (liveSt === 'waiting') {

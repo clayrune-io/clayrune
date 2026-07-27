@@ -6,6 +6,34 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-07-27c] — Awaiting-input conversation vanished from the list after a page refresh
+
+A conversation that was **waiting on the user** (an `mc:question` was pending)
+disappeared from the conversation list after a reload, so there was no card to
+click to answer — the project tile still flagged `AWAITING INPUT`, but the chat
+itself was gone.
+
+**Root cause: a mid-conversation `/skill` turn poisoned the card's label.** The
+list label is the last user-role turn. When the user (or the harness) runs a
+skill after their real message, the skill's injected turn —
+`Base directory for this skill: …` — becomes the most recent "user" text. That
+string matches `_AGENT_LABEL_RE`, and `_userInitiatedConvos` filters out any
+source-less row whose label looks like an agent/system marker. So a genuine user
+chat got misread as a system chat and dropped from the list on every rebuild
+(before the refresh it survived only via the transient live-session/SSE path).
+
+- **`_bestConvLabel(c)` (`conversation.js`)** — new label resolver used by the
+  filter, the row render, and the search text. Prefers the cleaned last user
+  message; if that's empty or is itself an injected marker, falls back to the
+  FIRST real user message (`Few things…`). A true agent chat (first *and* last
+  are markers) still resolves to a marker, so it stays hidden — no regression.
+  Fixes the disappearance on a hard reload with no server restart.
+- **`/api/project/<id>/conversations`** now carries `waiting_for_question` /
+  `waiting_for_plan_approval` per row, and **`_convLiveState`** honors them as a
+  fallback — so an awaiting-input chat keeps its "Waiting for you" badge and
+  top-of-list bubbling immediately on reload, before the `/agent/status` poll
+  repopulates the live cache (takes effect after the next server restart).
+
 ## [2026-07-27b] — Model list cleanup, first-run onboarding on upgrades, tour steps that pointed at nothing
 
 **1. Opus 4.8 retired from the pickers; Opus 5 is the new-install default.**
