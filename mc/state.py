@@ -81,6 +81,15 @@ _scribe_lock = threading.Lock()
 terminal_sessions = {}
 terminal_lock = threading.Lock()
 
+# ── Browser session tracking (Part B: visible in-tab browser pane) ───────────
+# session_id → {proc, port, status, url, frame(b64 jpeg), frame_seq, cmd_queue,
+#               thread, project_id, started_at, error}
+# A headless Chromium is driven over CDP (websocket): a reader thread receives
+# Page.screencastFrame events into `frame`; input/navigate commands are queued
+# and dispatched by the same thread (single CDP sender → thread-safe).
+browser_sessions = {}
+browser_lock = threading.Lock()
+
 # ── Process tracker (PID registry) ────────────────────────────────────────────
 # pid (int) → {pid, name, type, session_id, project_id, project_name,
 #              command_preview, started_at, proc}

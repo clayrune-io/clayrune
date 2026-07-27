@@ -1975,6 +1975,21 @@ app.register_blueprint(_bp_terminal.bp)
 # _kill_terminal_session cross-blueprint instead.)
 _kill_terminal_session = _bp_terminal._kill_terminal_session
 
+# ── Browser pane (Part B) ── mc/blueprints/browser_routes.py: a headless
+# Chromium driven over CDP, screencast-streamed into a Clayrune tab. Same
+# late-wire shape as terminal (process-ledger + Popen consts). Optional/lazy:
+# websocket-client + Chromium are resolved at call time, not import.
+from mc.blueprints import browser_routes as _bp_browser  # noqa: E402
+
+_bp_browser.wire(
+    register_process_fn=_bp_agent._register_process,
+    unregister_process_fn=_bp_agent._unregister_process,
+    popen_flags=_POPEN_FLAGS,
+    startupinfo=_STARTUPINFO,
+)
+app.register_blueprint(_bp_browser.bp)
+_kill_browser_session = _bp_browser._kill_browser_session
+
 # ── AgentRuntime hook registration ──────────────────────────────────────────
 # Wire ClaudeRuntime delegates back into server.py so external callers (future
 # workstreams, tests) can use get_runtime('claude').dispatch() etc. and have
