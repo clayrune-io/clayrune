@@ -39,7 +39,10 @@ function _bpCoords(img, e) {
 //              server-side session into the user's UI — see the
 //              `[browser-attach:<sid>]` marker in resume-preview.js.
 async function openBrowserPane(url, projectId, sessionId) {
-  if (_bpSession) closeBrowserPane();
+  // Detach the current VIEW without stopping its backend session — opening or
+  // switching must not kill a session another agent (or you) may still want.
+  // Only the × button / per-session stop actually ends a session.
+  _bpDetachView();
   const pid = projectId || window.currentProjectId ||
     (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
   if (sessionId) {
@@ -88,6 +91,7 @@ async function openBrowserPane(url, projectId, sessionId) {
       <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8592;</button>
       <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
+      <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
       <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
         placeholder="Enter URL and press Enter"
         style="flex:1;min-width:60px;padding:6px 10px;font-size:13px;background:#111;border:1px solid #444;border-radius:6px;color:#eee;outline:none">
@@ -136,6 +140,7 @@ async function openBrowserPane(url, projectId, sessionId) {
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
+  $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   urlInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); img.focus(); }
   });
@@ -263,6 +268,163 @@ function closeBrowserPane() {
   if (win) win.remove();
 }
 
+// ── Multi-session switcher ──────────────────────────────────────────────────
+// One pane, many sessions. The pane is a VIEWER: switching just re-binds it to
+// another running session (never stops one); a badge + poll surface sessions
+// that agents launch via the API so they are all discoverable and viewable.
+let _bpKnownSids = null;   // sids seen by the poller (null until first poll)
+let _bpPollTimer = null;
+let _bpPollPid = null;     // project the poller last looked at (re-baseline on change)
+
+function _bpEsc(s) {
+  return String(s == null ? '' : s).replace(/[&<>"']/g,
+    c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+}
+function _bpActivePid() {
+  return window.currentProjectId ||
+    (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
+}
+async function _bpFetchSessions(pid) {
+  try {
+    const st = await fetch((window.API_BASE || '') +
+      `/api/project/${encodeURIComponent(pid || _bpActivePid())}/browser/status`).then(r => r.json());
+    return (st.sessions || []).filter(s => s.status === 'running');
+  } catch (e) { return []; }
+}
+
+// Detach the pane VIEW (close the stream, remove the window) WITHOUT stopping
+// the backend session or clearing the restore flag. Used on switch/re-open.
+function _bpDetachView() {
+  if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
+  const w = document.getElementById('mc-browser-pane');
+  if (w) w.remove();
+}
+
+// Re-bind the pane to another running session (view-only; nothing is stopped).
+function switchBrowserSession(sid, pid) {
+  if (!sid) return;
+  if (sid === _bpSession && document.getElementById('mc-browser-pane')) return;
+  openBrowserPane(null, pid || _bpActivePid(), sid);
+}
+
+// Stop a specific backend session. If it is the one being viewed, close the view too.
+function stopBrowserSession(sid, pid) {
+  fetch((window.API_BASE || '') + '/api/browser/stop', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ session_id: sid }),
+  }).catch(() => {});
+  if (sid === _bpSession) {
+    if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
+    try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
+    _bpSession = null;
+    const w = document.getElementById('mc-browser-pane'); if (w) w.remove();
+  }
+  setTimeout(_bpPollStatus, 250);
+}
+
+function _bpToggleSessionMenu(win, pid) {
+  const existing = win.querySelector('[data-bp="sessmenu"]');
+  if (existing) { existing.remove(); return; }
+  const menu = document.createElement('div');
+  menu.setAttribute('data-bp', 'sessmenu');
+  menu.style.cssText =
+    'position:absolute;top:42px;left:8px;min-width:280px;max-width:92%;background:#242424;' +
+    'border:1px solid #444;border-radius:8px;box-shadow:0 8px 28px rgba(0,0,0,.5);z-index:5;' +
+    'padding:6px;font-size:12px;color:#eee';
+  win.appendChild(menu);
+  _bpRenderSessionMenu(menu, pid);
+  setTimeout(() => {
+    const off = (ev) => {
+      if (!menu.contains(ev.target) && !ev.target.closest('[data-bp="sessions"]')) {
+        menu.remove(); document.removeEventListener('mousedown', off, true);
+      }
+    };
+    document.addEventListener('mousedown', off, true);
+  }, 0);
+}
+
+async function _bpRenderSessionMenu(menu, pid) {
+  const sessions = await _bpFetchSessions(pid);
+  if (!menu.isConnected) return;
+  const rows = sessions.map(s => {
+    const active = s.session_id === _bpSession;
+    const label = (s.url && s.url !== 'about:blank') ? s.url : 'about:blank';
+    return `<div data-sid="${_bpEsc(s.session_id)}" style="display:flex;align-items:center;gap:6px;padding:6px;border-radius:6px;cursor:pointer;${active ? 'background:#2f3a2f' : ''}">
+      <span style="width:8px;height:8px;border-radius:50%;background:${active ? '#4caf50' : '#666'};flex:0 0 auto"></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_bpEsc(label)}">${_bpEsc(label)}</span>
+      <span data-stop="${_bpEsc(s.session_id)}" title="Stop this session" style="color:#e57373;cursor:pointer;padding:0 4px;flex:0 0 auto">&#10005;</span>
+    </div>`;
+  }).join('') || '<div style="padding:8px;color:#999">No running sessions</div>';
+  menu.innerHTML = rows +
+    `<div data-newbp="1" style="margin-top:4px;padding:6px;border-top:1px solid #3a3a3a;color:#8ab4f8;cursor:pointer">&#43; New browser</div>`;
+  menu.querySelectorAll('[data-sid]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-stop]')) return;
+      switchBrowserSession(row.dataset.sid, pid);
+    });
+  });
+  menu.querySelectorAll('[data-stop]').forEach(x => {
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      stopBrowserSession(x.dataset.stop, pid);
+      _bpRenderSessionMenu(menu, pid);
+    });
+  });
+  const nb = menu.querySelector('[data-newbp]');
+  if (nb) nb.addEventListener('click', () => { menu.remove(); openBrowserPane('about:blank', pid); });
+}
+
+// Poll so agent-launched sessions are discoverable even when the pane is shut:
+// keep the Browser-button badge current and toast genuinely new sessions.
+async function _bpPollStatus() {
+  const pid = _bpActivePid();
+  // Switching projects re-baselines silently so we don't toast the new
+  // project's pre-existing sessions as if they just opened.
+  if (pid !== _bpPollPid) { _bpKnownSids = null; _bpPollPid = pid; }
+  const sessions = await _bpFetchSessions(pid);
+  const badge = document.getElementById('bp-badge');
+  if (badge) {
+    if (sessions.length) { badge.textContent = sessions.length; badge.style.display = ''; }
+    else badge.style.display = 'none';
+  }
+  const win = document.getElementById('mc-browser-pane');
+  if (win) {
+    const c = win.querySelector('[data-bp="sesscount"]');
+    if (c) { if (sessions.length > 1) { c.textContent = sessions.length; c.style.display = ''; } else c.style.display = 'none'; }
+  }
+  const cur = new Set(sessions.map(s => s.session_id));
+  if (_bpKnownSids !== null) {
+    for (const s of sessions) {
+      if (!_bpKnownSids.has(s.session_id) && s.session_id !== _bpSession) {
+        const where = (s.url && s.url !== 'about:blank') ? s.url : 'a new browser';
+        if (typeof showToast === 'function') showToast(`\u{1F310} A browser session opened (${where}) — click Browser to view`);
+      }
+    }
+  }
+  _bpKnownSids = cur;
+}
+function _bpStartPoll() {
+  if (_bpPollTimer) return;
+  _bpPollStatus();
+  _bpPollTimer = setInterval(_bpPollStatus, 5000);
+}
+
+// The 🌐 Browser button: attach to the most-recent running session if any
+// (so you don't spawn duplicates), otherwise launch a fresh one.
+async function browserButtonClick(pid) {
+  const p = pid || _bpActivePid();
+  const sessions = await _bpFetchSessions(p);
+  if (sessions.length) {
+    const byRecent = sessions.slice().sort((a, b) => (b.started_at || '').localeCompare(a.started_at || ''));
+    // Prefer the most-recent session that's actually on a page, so clicking
+    // Browser doesn't land you on a stray about:blank when a real one exists.
+    const pick = byRecent.find(s => s.url && s.url !== 'about:blank') || byRecent[0];
+    openBrowserPane(null, p, pick.session_id);
+  } else {
+    openBrowserPane('about:blank', p);
+  }
+}
+
 // On SPA boot, restore the pane if its backend session is still running (i.e.
 // the user refreshed rather than closing it). A dead session — e.g. after a
 // server restart, which kills all panes — clears the flag so no ghost pane
@@ -281,10 +443,16 @@ function _bpRestoreOnLoad() {
     })
     .catch(() => {});
 }
-if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _bpRestoreOnLoad);
-else setTimeout(_bpRestoreOnLoad, 0);
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', () => { _bpRestoreOnLoad(); _bpStartPoll(); });
+} else {
+  setTimeout(() => { _bpRestoreOnLoad(); _bpStartPoll(); }, 0);
+}
 
 window.openBrowserPane = openBrowserPane;
 window.closeBrowserPane = closeBrowserPane;
 // Attach the UI pane to an already-running session (agent-launched via API).
 window.attachBrowserPane = (sessionId, projectId) => openBrowserPane(null, projectId, sessionId);
+window.browserButtonClick = browserButtonClick;
+window.switchBrowserSession = switchBrowserSession;
+window.stopBrowserSession = stopBrowserSession;
