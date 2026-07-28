@@ -1227,6 +1227,20 @@ _resolve_dispatch_model = _bp_agent._resolve_dispatch_model
 _router_stat = _bp_agent._router_stat
 _AUTO_MODEL_VALID = _bp_agent._AUTO_MODEL_VALID
 
+# ── Topics Digest (topics_routes.py) ── one cheap-model pass clusters a
+# project's chats into deduplicated TOPICS with gists. Wired here so _bp_agent's
+# transcript/agent-log readers (bound just above) are available.
+from mc.blueprints import topics_routes as _bp_topics  # noqa: E402
+_bp_topics.wire(
+    scribe_call_fn=memory._scribe_call,
+    load_project_fn=_bp_projects.load_project,
+    recent_transcripts_fn=memory._recent_claude_transcripts,
+    load_agent_log_fn=_bp_agent._load_agent_log,
+    data_dir=DATA_DIR,
+    model='haiku',
+)
+app.register_blueprint(_bp_topics.bp)
+
 # ── PID-ledger reaper wiring (mop-up: mc/process_ledger.py) ──────────────────
 # wire() runs HERE — after _bp_agent's _pid_is_alive/_kill_pid are bound above
 # (the reaper calls them). No inbound shims: every caller uses process_ledger.*
