@@ -1680,7 +1680,10 @@ function _threadTitle(c) {
 
 function _threadCardHTML(pid, c, kind) {
   const csid = c.claude_session_id || '', mcsid = c.mc_session_id || '';
-  const open = `openConversation('${esc(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'});closeThreadsBoard()`;
+  // Open the conversation but LEAVE the board open (it's a triage surface — the
+  // user picks the next thread from it). openConversation raises the project
+  // modal; the board stays a click away.
+  const open = `openConversation('${esc(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})`;
   const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
   let acts;
   if (kind === 'waiting') acts = `<button class="tb-act p" onclick="${open}">${c.waiting_for_plan_approval ? 'Review plan' : 'Answer'}</button>`;
@@ -1748,13 +1751,51 @@ function openThreadsBoard(projectId) {
   content.innerHTML = _threadsBoardHTML(projectId);
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
-  content.style.width = Math.min(1040, window.innerWidth - 40) + 'px';
-  content.style.height = Math.min(600, window.innerHeight - 90) + 'px';
   const z = nextModalZ++;
   win.style.zIndex = z;
   openModals.set(mid, { projectId: null, element: win, minimized: false, zIndex: z });
-  centerModalElement(win);
+  // Restore the user's remembered size / position / text-zoom. The manager's
+  // own persistence (_setModalPref/_setModalZoom) skips "__" ids, so the board
+  // keeps its own (mc_threads_state). Desktop only — mobile is full-screen.
+  const desktop = !(window.innerWidth <= 960);
+  const st = desktop ? _threadsLoadState() : null;
+  content.style.width = (st && st.w ? Math.min(st.w, window.innerWidth - 20) : Math.min(1040, window.innerWidth - 40)) + 'px';
+  content.style.height = (st && st.h ? Math.min(st.h, window.innerHeight - 40) : Math.min(600, window.innerHeight - 90)) + 'px';
+  if (st && typeof st.left === 'number') {
+    win.style.left = Math.max(0, Math.min(window.innerWidth - 100, st.left)) + 'px';
+    win.style.top = Math.max(0, Math.min(window.innerHeight - 50, st.top)) + 'px';
+  } else {
+    centerModalElement(win);
+  }
+  if (st && st.font && typeof applyModalZoom === 'function') { modalZoomLevels[mid] = st.font; applyModalZoom(win, st.font); }
   focusModal(mid);
+  // Persist size + position + zoom on any change. One MutationObserver on the
+  // win/content style attributes catches drag (win left/top), resize (content
+  // w/h) AND ctrl+wheel zoom (content font-size) — debounced.
+  if (_threadsGeomMO) { try { _threadsGeomMO.disconnect(); } catch (e) {} }
+  _threadsGeomMO = new MutationObserver(() => {
+    clearTimeout(_threadsGeomTimer);
+    _threadsGeomTimer = setTimeout(() => _threadsSaveState(win), 300);
+  });
+  _threadsGeomMO.observe(win, { attributes: true, attributeFilter: ['style'] });
+  _threadsGeomMO.observe(content, { attributes: true, attributeFilter: ['style'] });
+}
+let _threadsGeomMO = null, _threadsGeomTimer = null;
+function _threadsLoadState() {
+  try { return JSON.parse(localStorage.getItem('mc_threads_state') || 'null'); } catch (e) { return null; }
+}
+function _threadsSaveState(win) {
+  if (!win || !win.isConnected || window.innerWidth <= 960) return;
+  try {
+    const c = win.querySelector('.modal-content');
+    if (!c) return;
+    const r = win.getBoundingClientRect();
+    localStorage.setItem('mc_threads_state', JSON.stringify({
+      left: Math.round(r.left), top: Math.round(r.top),
+      w: Math.round(c.offsetWidth), h: Math.round(c.offsetHeight),
+      font: parseFloat(c.style.fontSize) || 0,
+    }));
+  } catch (e) {}
 }
 function refreshThreadsBoard(projectId) {
   const entry = (typeof openModals !== 'undefined') ? openModals.get('__threads_' + projectId) : null;
@@ -1783,34 +1824,37 @@ function _ensureThreadsCss() {
   const s = document.createElement('style');
   s.id = 'mc-threads-css';
   s.textContent = `
-    .tb-modal{display:flex;flex-direction:column;min-width:560px;min-height:320px;padding:0}
+    /* --tbf drives every text size off the modal-zoom var (Ctrl/⌘+wheel or
+       pinch sets --mc-zoom-font on .modal-content), so the board zooms like
+       every other window; falls back to 13px when unzoomed. */
+    .tb-modal{display:flex;flex-direction:column;min-width:560px;min-height:320px;padding:0;--tbf:var(--mc-zoom-font,13px)}
     .tb-head{cursor:move;display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);flex:0 0 auto}
     .tb-htext{flex:1;min-width:0}
     .tb-hrow{display:flex;align-items:baseline;gap:8px}
-    .tb-h1{font-size:16px;font-weight:800;color:var(--text)}
-    .tb-h2{font-size:12px;color:var(--text-faint)}
-    .tb-summary{font-size:11.5px;color:var(--text-dim);margin-top:3px}
+    .tb-h1{font-size:calc(var(--tbf)*1.23);font-weight:800;color:var(--text)}
+    .tb-h2{font-size:calc(var(--tbf)*0.92);color:var(--text-faint)}
+    .tb-summary{font-size:calc(var(--tbf)*0.88);color:var(--text-dim);margin-top:3px}
     .tb-summary b{color:var(--text)} .tb-muted{color:var(--text-faint)}
     .tb-body{flex:1;min-height:0;overflow:auto;padding:14px}
     .tb-cols{display:flex;gap:12px;align-items:flex-start}
     .tb-col{flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden}
-    .tb-colhead{padding:11px 13px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+    .tb-colhead{padding:11px 13px;font-size:calc(var(--tbf)*0.92);font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
     .tb-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
-    .tb-n{margin-left:auto;font-size:11px;font-weight:700;color:var(--text-faint);background:var(--surface);border-radius:10px;padding:1px 8px}
+    .tb-n{margin-left:auto;font-size:calc(var(--tbf)*0.85);font-weight:700;color:var(--text-faint);background:var(--surface);border-radius:10px;padding:1px 8px}
     .tb-colhead.amber{color:var(--amber)} .tb-colhead.amber .tb-dot{background:var(--amber)}
     .tb-colhead.green{color:var(--green)} .tb-colhead.green .tb-dot{background:var(--green)}
     .tb-colhead.slate{color:var(--text-dim)} .tb-colhead.slate .tb-dot{background:var(--text-faint)}
     .tb-card{padding:11px 13px;border-top:1px solid var(--border);cursor:pointer}
     .tb-card:first-of-type{border-top:none}
     .tb-card:hover{background:var(--surface)}
-    .tb-title{font-size:13px;font-weight:600;color:var(--text);line-height:1.35;word-break:break-word}
-    .tb-meta{font-size:11px;color:var(--text-faint);margin-top:4px}
+    .tb-title{font-size:var(--tbf);font-weight:600;color:var(--text);line-height:1.35;word-break:break-word}
+    .tb-meta{font-size:calc(var(--tbf)*0.85);color:var(--text-faint);margin-top:4px}
     .tb-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
-    .tb-act{font-size:11px;font-weight:600;padding:4px 10px;border-radius:7px;border:1px solid var(--border);color:var(--text-dim);background:var(--surface);cursor:pointer}
+    .tb-act{font-size:calc(var(--tbf)*0.85);font-weight:600;padding:4px 10px;border-radius:7px;border:1px solid var(--border);color:var(--text-dim);background:var(--surface);cursor:pointer}
     .tb-act:hover{border-color:var(--accent);color:var(--text)}
     .tb-act.go{border-color:var(--green);color:var(--green)}
     .tb-act.p{border-color:var(--amber);color:var(--amber)}
-    .tb-empty{padding:22px 14px;text-align:center;color:var(--text-faint);font-size:12px;line-height:1.5}
+    .tb-empty{padding:22px 14px;text-align:center;color:var(--text-faint);font-size:calc(var(--tbf)*0.92);line-height:1.5}
     .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
     .agent-rail-threads{display:block;width:100%;margin-top:6px;padding:7px 10px;font-size:12.5px;font-weight:600;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);cursor:pointer;text-align:left}
     .agent-rail-threads:hover{border-color:var(--accent);color:var(--text)}`;
