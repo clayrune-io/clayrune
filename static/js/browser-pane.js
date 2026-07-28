@@ -8,6 +8,12 @@
 
 const BP_VIEW_W = 1280, BP_VIEW_H = 800;
 let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
+// The mouseup handler lives on `window` (a drag can end off the image), so it
+// must be tracked and removed on teardown — otherwise every re-open stacks
+// another listener bound to a now-detached <img>. The oldest stale one wins the
+// shared _bpPressed flag and reports the release at a detached-rect corner, so
+// clicks land in the corner instead of where the user clicked (feels dead).
+let _bpUpHandler = null;
 
 const _bpKeyCodes = {
   Enter: 13, Backspace: 8, Tab: 9, Escape: 27, Delete: 46,
@@ -183,12 +189,14 @@ async function openBrowserPane(url, projectId, sessionId) {
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
   });
-  window.addEventListener('mouseup', _bpUp);
-  function _bpUp(e) {
+  // Replace any prior handler so exactly one mouseup listener is ever live.
+  if (_bpUpHandler) window.removeEventListener('mouseup', _bpUpHandler);
+  _bpUpHandler = function _bpUp(e) {
     if (!_bpPressed) return; _bpPressed = false;
     const c = _bpCoords(img, e);
     _bpSend({ type: 'mouse', action: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...c });
-  }
+  };
+  window.addEventListener('mouseup', _bpUpHandler);
   img.addEventListener('mousemove', e => {
     const now = Date.now(); if (now - _bpMoveTs < 55) return; _bpMoveTs = now;
     const c = _bpCoords(img, e);
@@ -255,6 +263,8 @@ async function openBrowserPane(url, projectId, sessionId) {
 
 function closeBrowserPane() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
+  if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  _bpPressed = false;
   // Explicit close ends the backend session — so don't restore it on next load.
   try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
   if (_bpSession) {
@@ -296,6 +306,8 @@ async function _bpFetchSessions(pid) {
 // the backend session or clearing the restore flag. Used on switch/re-open.
 function _bpDetachView() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
+  if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
+  _bpPressed = false;
   const w = document.getElementById('mc-browser-pane');
   if (w) w.remove();
 }
