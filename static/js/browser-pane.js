@@ -78,6 +78,24 @@ async function openBrowserPane(url, projectId) {
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
   document.body.appendChild(win);
 
+  // Restore the last size/position the user left the pane at (clamped so a
+  // resized-down window can't strand it off-screen).
+  try {
+    const g = JSON.parse(localStorage.getItem('mc_browser_pane_geom') || 'null');
+    if (g && g.w > 240 && g.h > 180) {
+      win.style.width = Math.min(g.w, window.innerWidth) + 'px';
+      win.style.height = Math.min(g.h, window.innerHeight) + 'px';
+      win.style.left = Math.max(0, Math.min(g.l, window.innerWidth - 60)) + 'px';
+      win.style.top = Math.max(0, Math.min(g.t, window.innerHeight - 40)) + 'px';
+    }
+  } catch (e) {}
+  const _bpSaveGeom = () => {
+    try {
+      localStorage.setItem('mc_browser_pane_geom', JSON.stringify(
+        { l: win.offsetLeft, t: win.offsetTop, w: win.offsetWidth, h: win.offsetHeight }));
+    } catch (e) {}
+  };
+
   const $ = sel => win.querySelector(`[data-bp="${sel}"]`);
   const img = $('screen'), urlInput = $('url'), spin = $('spin');
 
@@ -104,7 +122,7 @@ async function openBrowserPane(url, projectId) {
     const nt = Math.max(0, Math.min(window.innerHeight - 40, drag.t + e.clientY - drag.sy));
     win.style.left = nl + 'px'; win.style.top = nt + 'px';
   });
-  const _endDrag = () => { drag = null; };
+  const _endDrag = () => { if (drag) { drag = null; _bpSaveGeom(); } };
   bar.addEventListener('pointerup', _endDrag);
   bar.addEventListener('pointercancel', _endDrag);
   grip.addEventListener('pointerdown', e => {
@@ -117,7 +135,7 @@ async function openBrowserPane(url, projectId) {
     win.style.width = Math.max(320, Math.min(window.innerWidth, rz.w + e.clientX - rz.sx)) + 'px';
     win.style.height = Math.max(240, Math.min(window.innerHeight, rz.h + e.clientY - rz.sy)) + 'px';
   });
-  const _endRz = () => { rz = null; };
+  const _endRz = () => { if (rz) { rz = null; _bpSaveGeom(); } };
   grip.addEventListener('pointerup', _endRz);
   grip.addEventListener('pointercancel', _endRz);
 
@@ -148,6 +166,38 @@ async function openBrowserPane(url, projectId) {
     if (e.key.length === 1) _bpSend({ type: 'text', text: e.key });
     else if (_bpKeyCodes[e.key] != null)
       _bpSend({ type: 'key', key: e.key, code: e.code, keyCode: _bpKeyCodes[e.key] });
+  });
+
+  // ── touch: drag-to-scroll, tap-to-click (mouse events don't map on phones) ──
+  // preventDefault on move/end also suppresses the synthetic mouse events so a
+  // scroll isn't mis-fired as a click.
+  let touch = null;
+  img.addEventListener('touchstart', e => {
+    if (e.touches.length !== 1) { touch = null; return; }
+    const t = e.touches[0];
+    touch = { x: t.clientX, y: t.clientY, sx: t.clientX, sy: t.clientY, moved: false };
+    img.focus();
+  }, { passive: true });
+  img.addEventListener('touchmove', e => {
+    if (!touch || e.touches.length !== 1) return;
+    e.preventDefault();
+    const t = e.touches[0], r = img.getBoundingClientRect();
+    if (Math.abs(t.clientX - touch.sx) > 6 || Math.abs(t.clientY - touch.sy) > 6) touch.moved = true;
+    // finger up → content scrolls down: deltaY = (prev - current), scaled to page px
+    _bpSend({
+      type: 'wheel', ..._bpCoords(img, t),
+      deltaX: (touch.x - t.clientX) * (BP_VIEW_W / r.width),
+      deltaY: (touch.y - t.clientY) * (BP_VIEW_H / r.height),
+    });
+    touch.x = t.clientX; touch.y = t.clientY;
+  }, { passive: false });
+  img.addEventListener('touchend', e => {
+    if (touch && !touch.moved) {  // a tap → click at the start point
+      const c = _bpCoords(img, { clientX: touch.sx, clientY: touch.sy });
+      _bpSend({ type: 'mouse', action: 'mousePressed', button: 'left', buttons: 1, clickCount: 1, ...c });
+      _bpSend({ type: 'mouse', action: 'mouseReleased', button: 'left', buttons: 0, clickCount: 1, ...c });
+    }
+    touch = null;
   });
 
   // ── frame stream ──

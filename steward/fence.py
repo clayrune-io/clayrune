@@ -223,6 +223,17 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
                 or low.endswith('_skill_stats_archive.jsonl')):
             return FenceDecision(True, "editing learning-loop artifacts/telemetry "
                                        "(loadout supply chain — human-owned)")
+    # Autonomous web browsing is high blast-radius for an unattended agent: the
+    # browser MCP is unrestricted (all sites) with in-page JS execution, so
+    # prompt-injecting page content can steer a steward cycle. The steward does
+    # not need to browse; block the browser MCP tools (mcp__browser__* /
+    # mcp__playwright__*). A cycle that genuinely needs a page is an escalation,
+    # not a silent autonomous fetch. Asymmetric-risk: a false block just makes
+    # the steward ask.
+    if name.startswith('mcp__browser__') or name.startswith('mcp__playwright__'):
+        return FenceDecision(True, "autonomous web browsing is out of steward scope "
+                                   "(unrestricted browser + in-page JS = prompt-injection "
+                                   "blast radius)")
     return FenceDecision(False, '')
 
 

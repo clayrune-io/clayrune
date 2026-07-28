@@ -1515,8 +1515,24 @@ def _cleanup_terminals():
         if session['status'] == 'running':
             _kill_terminal_session(session)
 
+def _cleanup_browsers():
+    """Kill any headless Chromium panes on shutdown so they don't orphan.
+    Self-contained (late import) so a crash before the blueprint wired can't
+    break the exit hook."""
+    try:
+        from mc.blueprints import browser_routes as _b
+        from mc.state import browser_sessions as _bs
+    except Exception:
+        return
+    for sid, session in list(_bs.items()):
+        try:
+            _b._kill_browser_session(session)
+        except Exception:
+            pass
+
 atexit.register(_cleanup_persistent_agents)
 atexit.register(_cleanup_terminals)
+atexit.register(_cleanup_browsers)
 atexit.register(_scheduler_stop.set)
 atexit.register(_hivemind_orchestrator_stop.set)
 
