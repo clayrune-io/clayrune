@@ -114,8 +114,8 @@ def _gather_signals(project_id, limit=50):
 _INSTRUCTION = (
     "You review a software project's chat history and produce a concise TOPIC "
     "digest for the project owner. Input (stdin) is a JSON array of chats, each "
-    "with: csid, ask (the opening request), summary (a one-line recap if any), "
-    "turns (message count).\n\n"
+    "with: id (a short handle like \"c3\"), ask (the opening request), summary "
+    "(a one-line recap if any), turns (message count).\n\n"
     "Cluster the chats into DISTINCT TOPICS — a subject / feature / issue / "
     "effort. A subject discussed across several chats MUST become ONE topic; "
     "merge aggressively and never emit two topics for the same subject. Collapse "
@@ -127,7 +127,9 @@ _INSTRUCTION = (
     "- gist: ONE sentence on the current state / what it is about\n"
     "- status: \"open\" (active or unresolved), \"resolved\" (looks done), or "
     "\"automated\" (recurring background work)\n"
-    "- chat_csids: array of the csid values of the chats in this topic\n\n"
+    "- chat_ids: array of the id handles (e.g. [\"c1\",\"c7\"]) of the chats in "
+    "this topic. EVERY input chat must appear in exactly one topic — copy the "
+    "id values verbatim.\n\n"
     "Return ONLY a JSON object {\"topics\": [ ... ]} — no markdown, no prose. "
     "Order by importance: unresolved/active first, automated last. Aim for 6-15 "
     "topics."
@@ -135,15 +137,21 @@ _INSTRUCTION = (
 
 
 def _synthesize(sigs):
-    body = json.dumps(sigs, ensure_ascii=False)
-    raw = _scribe_call(_MODEL, _INSTRUCTION, body)
+    # Hand the model SHORT ids (c0, c1, …) not the 36-char session UUIDs — LLMs
+    # mangle long ids, which silently zeroed every topic's chat list. Map back.
+    idmap = {}
+    payload = []
+    for i, s in enumerate(sigs):
+        sid = f'c{i}'
+        idmap[sid] = s['csid']
+        payload.append({'id': sid, 'ask': s['ask'], 'summary': s['summary'], 'turns': s['turns']})
+    raw = _scribe_call(_MODEL, _INSTRUCTION, json.dumps(payload, ensure_ascii=False))
     txt = (raw or '').strip()
     m = re.search(r'\{.*\}', txt, re.S)       # tolerate ```json fences / stray prose
     if m:
         txt = m.group(0)
     data = json.loads(txt)
     topics = data.get('topics', []) if isinstance(data, dict) else []
-    valid = {s['csid'] for s in sigs}
     out, seen = [], set()
     for t in topics:
         title = str(t.get('title', '')).strip()
@@ -156,7 +164,8 @@ def _synthesize(sigs):
         status = t.get('status', 'open')
         if status not in ('open', 'resolved', 'automated'):
             status = 'open'
-        csids = [c for c in (t.get('chat_csids') or []) if c in valid]
+        ids = t.get('chat_ids') or t.get('chat_csids') or []
+        csids = [idmap[x] for x in ids if x in idmap]
         out.append({
             'id': slug,
             'title': title[:80],

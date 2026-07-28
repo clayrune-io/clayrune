@@ -2006,8 +2006,11 @@ function _ensureThreadsCss() {
     .tb-linkbtn{background:none;border:none;color:var(--accent);font-size:calc(var(--tbf)*0.85);cursor:pointer;padding:2px 4px}
     .tb-archline{padding:8px 2px}
     .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
-    .agent-rail-threads{display:block;width:100%;margin-top:6px;padding:7px 10px;font-size:12.5px;font-weight:600;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);cursor:pointer;text-align:left}
-    .agent-rail-threads:hover{border-color:var(--accent);color:var(--text)}`;
+    /* Sibling to the "+ New conversation" pill (.agent-rail-new): same frame /
+       size / margins, secondary (outline) colour so it reads as a related but
+       distinct action right beneath it. */
+    .agent-rail-threads{display:block;width:auto;margin:0 12px 10px;padding:9px 12px;border-radius:10px;font-size:13px;font-weight:600;line-height:1.2;text-align:center;cursor:pointer;background:var(--surface);color:var(--accent);border:1px solid var(--accent)}
+    .agent-rail-threads:hover{background:var(--accent);color:#fff}`;
   document.head.appendChild(s);
 }
 
