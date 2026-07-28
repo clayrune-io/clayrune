@@ -165,6 +165,22 @@ def _run_cdp(session):
         send('Page.enable')
         send('Emulation.setDeviceMetricsOverride',
              {'width': VIEW_W, 'height': VIEW_H, 'deviceScaleFactor': 1, 'mobile': False})
+        # Present a normal (non-headless) User-Agent. Chromium's --headless=new
+        # advertises "HeadlessChrome/…", which sites like Hacker News block with
+        # a "Sorry." page. Derive from the real browser UA (so the Chrome version
+        # always matches) and just strip the Headless marker; also drop the
+        # navigator.webdriver bot flag on every new document. Set BEFORE navigate
+        # so the first request already carries the clean UA.
+        try:
+            ver = json.load(urllib.request.urlopen(
+                f'http://127.0.0.1:{port}/json/version', timeout=2))
+            ua = (ver.get('User-Agent') or '').replace('HeadlessChrome', 'Chrome')
+            if ua:
+                send('Network.setUserAgentOverride', {'userAgent': ua})
+        except Exception as e:
+            session['error'] = f'UA override failed: {e}'
+        send('Page.addScriptToEvaluateOnNewDocument',
+             {'source': 'Object.defineProperty(navigator, "webdriver", {get: () => undefined});'})
         send('Page.navigate', {'url': session['url']})
         start_screencast()
 
