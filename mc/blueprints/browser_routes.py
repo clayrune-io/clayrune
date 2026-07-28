@@ -421,6 +421,49 @@ def browser_input():
     return jsonify({'ok': True})
 
 
+def _read_page_selection(session):
+    """Read the page's current text selection via a short-lived CDP connection,
+    kept OFF the reader thread's single-sender websocket to avoid races."""
+    import urllib.request
+    websocket = _import_ws()
+    if websocket is None:
+        return ''
+    port = session.get('port')
+    try:
+        targets = json.load(urllib.request.urlopen(
+            f'http://127.0.0.1:{port}/json/list', timeout=2))
+        page = next((t for t in targets if t.get('type') == 'page'), None)
+        if not page or not page.get('webSocketDebuggerUrl'):
+            return ''
+        ws = websocket.create_connection(page['webSocketDebuggerUrl'],
+                                         max_size=None, timeout=3)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Runtime.evaluate', 'params': {
+                'expression': 'window.getSelection().toString()', 'returnByValue': True}}))
+            for _ in range(20):
+                r = json.loads(ws.recv())
+                if r.get('id') == 1:
+                    return (r.get('result', {}).get('result', {}) or {}).get('value') or ''
+        finally:
+            ws.close()
+    except Exception:
+        return ''
+    return ''
+
+
+@bp.route('/api/browser/selection', methods=['POST'])
+def browser_selection():
+    """Return the page's current text selection (for copy-out to the host
+    clipboard). Paste-in needs no endpoint — the pane inserts host-clipboard
+    text via the existing 'text' input type."""
+    data = request.get_json(silent=True) or {}
+    sid = data.get('session_id')
+    session = browser_sessions.get(sid)
+    if not session or session['status'] != 'running':
+        return jsonify({'error': 'unknown or stopped session'}), 404
+    return jsonify({'text': _read_page_selection(session)})
+
+
 @bp.route('/api/browser/stop', methods=['POST'])
 def browser_stop():
     data = request.get_json(silent=True) or {}

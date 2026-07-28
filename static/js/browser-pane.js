@@ -206,8 +206,39 @@ async function openBrowserPane(url, projectId, sessionId) {
     e.preventDefault(); const c = _bpCoords(img, e);
     _bpSend({ type: 'wheel', deltaX: e.deltaX, deltaY: e.deltaY, ...c });
   }, { passive: false });
-  img.addEventListener('keydown', e => {
-    if (e.ctrlKey || e.metaKey || e.altKey) return;  // let shortcuts through
+  img.addEventListener('keydown', async e => {
+    const mod = (e.ctrlKey || e.metaKey) && !e.altKey;
+    const k = (e.key || '').toLowerCase();
+    // ── clipboard bridge (host clipboard <-> the page in the pane) ──
+    if (mod && k === 'v') {                       // paste: host clipboard → page
+      e.preventDefault();
+      try {
+        const t = await navigator.clipboard.readText();
+        if (t) _bpSend({ type: 'text', text: t });
+      } catch (err) {
+        if (typeof showToast === 'function')
+          showToast('Paste blocked — allow clipboard access for this site, then retry');
+      }
+      return;
+    }
+    if (mod && (k === 'c' || k === 'x')) {          // copy / cut: page selection → host
+      e.preventDefault();
+      try {
+        const r = await fetch((window.API_BASE || '') + '/api/browser/selection', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: _bpSession }),
+        });
+        const d = await r.json();
+        if (d && d.text) {
+          await navigator.clipboard.writeText(d.text);
+          if (k === 'x') _bpSend({ type: 'key', key: 'Delete', code: 'Delete', keyCode: 46 });
+        }
+      } catch (err) {
+        if (typeof showToast === 'function') showToast('Copy failed: ' + (err && err.message || err));
+      }
+      return;
+    }
+    if (e.ctrlKey || e.metaKey || e.altKey) return;  // let other shortcuts through
     e.preventDefault();
     if (e.key.length === 1) _bpSend({ type: 'text', text: e.key });
     else if (_bpKeyCodes[e.key] != null)
