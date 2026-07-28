@@ -1165,7 +1165,7 @@ function agentPanelHTML(p) {
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
-        <button class="agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="Topic digest — deduplicated subjects across this project's chats">&#9638;&nbsp; Topics</button>
+        <button class="conv-newbtn agent-rail-new agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="Topic digest — deduplicated subjects across this project's chats">&#9638;&nbsp; Topics</button>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="Search conversations&hellip;"
@@ -2006,11 +2006,12 @@ function _ensureThreadsCss() {
     .tb-linkbtn{background:none;border:none;color:var(--accent);font-size:calc(var(--tbf)*0.85);cursor:pointer;padding:2px 4px}
     .tb-archline{padding:8px 2px}
     .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
-    /* Sibling to the "+ New conversation" pill (.agent-rail-new): same frame /
-       size / margins, secondary (outline) colour so it reads as a related but
-       distinct action right beneath it. */
-    .agent-rail-threads{display:block;width:auto;margin:0 12px 10px;padding:9px 12px;border-radius:10px;font-size:13px;font-weight:600;line-height:1.2;text-align:center;cursor:pointer;background:var(--surface);color:var(--accent);border:1px solid var(--accent)}
-    .agent-rail-threads:hover{background:var(--accent);color:#fff}`;
+    /* Shares the "+ New conversation" pill frame (.conv-newbtn.agent-rail-new)
+       so it is EXACTLY the same size; we only override the colour to a
+       secondary outline. Scoped to .agent-3pane so it beats .agent-3pane
+       .agent-rail-new (equal specificity, later source order wins). */
+    .agent-3pane .agent-rail-threads{margin-top:0;background:var(--surface);color:var(--accent);border-color:var(--accent)}
+    .agent-3pane .agent-rail-threads:hover{background:var(--accent);color:#fff}`;
   document.head.appendChild(s);
 }
 
