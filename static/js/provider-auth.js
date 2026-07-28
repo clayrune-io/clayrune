@@ -77,6 +77,22 @@ async function refreshProviderAuthStatus(providerName) {
   } catch (e) { /* ignore blips */ }
 }
 
+// A live claude run is itself proof the CLI is authenticated — so a claude auth
+// error CANNOT be real while a claude agent is actively running or idle-waiting.
+// Suppresses the false-positive banner (Ron saw "Authenticate Claude" while
+// mid-conversation with a running agent — the auth probe had tripped over
+// "Reached max turns" and latched ok:false). Other providers keep their own
+// signal; read-only revived tabs aren't live processes.
+function _hasLiveClaudeAgent() {
+  try {
+    const cache = window.agentStatusCache || {};
+    return Object.values(cache).some(s => s
+      && (s.status === 'running' || s.status === 'idle')
+      && ((s.provider || 'claude') === 'claude')
+      && !s._readOnlyRevived);
+  } catch (e) { return false; }
+}
+
 function _renderAuthBanner(state) {
   const banner = document.getElementById('auth-banner');
   if (!banner) return;
@@ -84,6 +100,11 @@ function _renderAuthBanner(state) {
   if (ok) {
     banner.classList.add('hidden');
     _authBannerLastReason = null;
+    return;
+  }
+  const _prov = (state && state._provider) || 'claude';
+  if (_prov === 'claude' && _hasLiveClaudeAgent()) {
+    banner.classList.add('hidden');
     return;
   }
   // If we already dismissed this exact reason, stay hidden until reason changes.

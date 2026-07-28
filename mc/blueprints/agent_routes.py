@@ -896,6 +896,10 @@ _AUTH_ERROR_PATTERNS = [
     (_re_auth.compile(r'(?:error|status|http)[^0-9]{0,8}401\b', _re_auth.I), 'invalid_api_key'),
     (_re_auth.compile(r'\b401\b[^0-9]{0,20}(?:unauthorized|authentication|oauth|api\s*key)', _re_auth.I), 'invalid_api_key'),
 ]
+# "Reached max turns" — an OPERATIONAL (not auth) non-zero exit. Reaching the
+# turn limit proves the CLI authenticated and the model actually ran, so the
+# auth probe treats it as a positive signal instead of failing closed.
+_MAX_TURNS_RE = _re_auth.compile(r'reached\s+max\s+turns', _re_auth.I)
 # _claude_auth_state / _claude_auth_lock moved to mc/state.py (Phase 0).
 
 
@@ -1159,6 +1163,16 @@ def _run_claude_auth_probe() -> dict:
         if reason:
             _mark_claude_auth_error(reason, combined)
         elif result.returncode == 0:
+            _mark_claude_auth_ok()
+        elif _MAX_TURNS_RE.search(combined):
+            # Non-zero exit, but "Reached max turns" is a POSITIVE auth signal,
+            # not a failure: the CLI authenticated, the model ran, and it simply
+            # exhausted the 1-turn budget (e.g. it chose to call a tool, which
+            # needs a 2nd turn). Marking this as an auth error latched the
+            # "Authenticate Claude" banner ON for a fully signed-in user — the
+            # exact false positive Ron hit, with last_error_text literally
+            # "Error: Reached max turns (1)". Same `--max-turns 1 → rc=1`
+            # brittleness the oneshot path already documents.
             _mark_claude_auth_ok()
         else:
             # Non-zero exit with no recognized sentinel — the CLI itself failed

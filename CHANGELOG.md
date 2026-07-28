@@ -34,6 +34,33 @@ chat got misread as a system chat and dropped from the list on every rebuild
   top-of-list bubbling immediately on reload, before the `/agent/status` poll
   repopulates the live cache (takes effect after the next server restart).
 
+## [2026-07-27e] — Auth banner false positive: "Reached max turns" misread as sign-out
+
+Ron saw the "Authenticate Claude" banner while mid-conversation with a running
+agent. Live state confirmed the bug:
+`{ok:false, reason:"unknown", last_error_text:"Error: Reached max turns (1)"}`.
+
+Root cause — the startup auth probe runs `claude -p ok --max-turns 1`. When the
+CLI wants a second turn (e.g. it calls a tool), it hits the 1-turn limit, prints
+"Error: Reached max turns (1)", and exits **non-zero**. The probe's fail-closed
+`else` branch then marked it as an `unknown` auth error and latched the banner
+ON — but reaching max turns *proves* the CLI authenticated and the model ran.
+Same `--max-turns 1 → rc=1` brittleness the oneshot path already documents.
+
+- **Backend** (`agent_routes.py`): the probe now treats a `_MAX_TURNS_RE`
+  ("reached max turns") non-zero exit as a POSITIVE auth signal
+  (`_mark_claude_auth_ok`), not a failure. Real auth sentinels and other
+  non-zero exits still fail closed. Four regression tests
+  (`test_agent_routes.py`): max-turns→ok, clean→ok, real-auth-error→fail,
+  unknown-nonzero→fail-closed.
+- **Frontend** (`provider-auth.js`): `_hasLiveClaudeAgent()` — the banner is now
+  suppressed whenever a claude session is running/idle, since a live run is
+  itself proof of working auth. Belt-and-suspenders against any future
+  probe/telemetry false positive.
+
+Backend needs a restart; the frontend guard activates on a hard reload and also
+clears the currently-latched banner as soon as a running agent is detected.
+
 ## [2026-07-27d] — Desktop Inbox: Outlook-style mail list (Sender · Subject · Time)
 
 Reworked the desktop Inbox surface from a stacked timeline into a mail-client

@@ -311,3 +311,47 @@ def test_model_pin_session_not_found(client):
     r = client.post('/api/project/mdl-proj/agent/nope/model',
                     json={'model': 'claude-opus-4-8'})
     assert r.status_code == 404
+
+
+# ── Auth probe: "Reached max turns" must not be read as an auth failure ───────
+
+def _run_probe_with(monkeypatch, *, returncode, stdout='', stderr=''):
+    """Drive _run_claude_auth_probe with a faked subprocess result."""
+    import types
+    from mc.blueprints import agent_routes as ar
+
+    r = types.SimpleNamespace(returncode=returncode, stdout=stdout, stderr=stderr)
+    monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
+    monkeypatch.setattr(ar.subprocess, 'run', lambda *a, **k: r)
+    # Reset to a known-bad state so a no-op would be visible as a failure.
+    with ar._claude_auth_lock:
+        ar._claude_auth_state.update(ok=False, reason='unknown',
+                                     last_error_text='seed', last_probe_at=None)
+    return ar._run_claude_auth_probe()
+
+
+def test_auth_probe_max_turns_is_ok(client, monkeypatch):
+    # rc=1 + "Reached max turns" = the CLI authenticated and ran; NOT an auth error.
+    state = _run_probe_with(monkeypatch, returncode=1,
+                            stderr='Error: Reached max turns (1)')
+    assert state['ok'] is True
+    assert state['reason'] is None
+
+
+def test_auth_probe_clean_exit_is_ok(client, monkeypatch):
+    state = _run_probe_with(monkeypatch, returncode=0, stdout='ok')
+    assert state['ok'] is True
+
+
+def test_auth_probe_real_auth_error_still_fails(client, monkeypatch):
+    state = _run_probe_with(monkeypatch, returncode=1,
+                            stderr='Invalid API key · please run /login')
+    assert state['ok'] is False
+    assert state['reason'] == 'not_logged_in'
+
+
+def test_auth_probe_unknown_nonzero_fails_closed(client, monkeypatch):
+    # A non-zero exit with no recognized signal must still fail closed.
+    state = _run_probe_with(monkeypatch, returncode=1, stderr='segfault')
+    assert state['ok'] is False
+    assert state['reason'] == 'unknown'
