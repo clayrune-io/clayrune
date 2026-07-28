@@ -31,23 +31,43 @@ function _bpCoords(img, e) {
   };
 }
 
-async function openBrowserPane(url, projectId) {
+// url        — page to open (launch mode) or the label to seed the bar with.
+// projectId  — owning project (defaults to the active one).
+// sessionId  — OPTIONAL. When given, ATTACH the pane to that already-running
+//              session (e.g. one an agent launched via /api/browser/launch)
+//              instead of spawning a new one. This is how an agent surfaces a
+//              server-side session into the user's UI — see the
+//              `[browser-attach:<sid>]` marker in resume-preview.js.
+async function openBrowserPane(url, projectId, sessionId) {
   if (_bpSession) closeBrowserPane();
   const pid = projectId || window.currentProjectId ||
     (typeof activeProjectId !== 'undefined' ? activeProjectId : null) || 'mission_control';
-  let data;
-  try {
-    const res = await fetch((window.API_BASE || '') + '/api/browser/launch', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ project_id: pid, url: url || 'about:blank' }),
-    });
-    data = await res.json();
-    if (!res.ok) throw new Error(data.error || 'launch failed');
-  } catch (e) {
-    alert('Browser pane unavailable: ' + e.message);
-    return;
+  if (sessionId) {
+    // Attach mode: adopt the existing session, read its current URL for the bar.
+    _bpSession = sessionId;
+    if (!url) {
+      try {
+        const st = await fetch((window.API_BASE || '') +
+          `/api/project/${encodeURIComponent(pid)}/browser/status`).then(r => r.json());
+        const s = (st.sessions || []).find(x => x.session_id === sessionId);
+        if (s) url = s.url;
+      } catch (e) {}
+    }
+  } else {
+    let data;
+    try {
+      const res = await fetch((window.API_BASE || '') + '/api/browser/launch', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ project_id: pid, url: url || 'about:blank' }),
+      });
+      data = await res.json();
+      if (!res.ok) throw new Error(data.error || 'launch failed');
+    } catch (e) {
+      alert('Browser pane unavailable: ' + e.message);
+      return;
+    }
+    _bpSession = data.session_id;
   }
-  _bpSession = data.session_id;
 
   // ── DOM ──
   const win = document.createElement('div');
@@ -240,3 +260,5 @@ function closeBrowserPane() {
 
 window.openBrowserPane = openBrowserPane;
 window.closeBrowserPane = closeBrowserPane;
+// Attach the UI pane to an already-running session (agent-launched via API).
+window.attachBrowserPane = (sessionId, projectId) => openBrowserPane(null, projectId, sessionId);
