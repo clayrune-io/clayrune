@@ -102,11 +102,21 @@ def _gather_signals(project_id, limit=50):
         if turns < 2 and len(ask) < 12:        # trivial "ok" / stray fragments
             continue
         summary = (log_by_csid.get(csid, {}) or {}).get('summary', '') or ''
+        ts = ''
+        try:
+            if c.get('mtime'):
+                ts = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
+        except Exception:
+            ts = ''
         sigs.append({
             'csid': csid,
             'ask': ask[:220],
             'summary': summary[:220],
             'turns': turns,
+            # display label carried into the topic cache so the UI never has to
+            # resolve a csid against its (limited) loaded conversation list.
+            'label': (ask or last or '(chat)')[:90],
+            'ts': ts,
         })
     return sigs
 
@@ -140,10 +150,12 @@ def _synthesize(sigs):
     # Hand the model SHORT ids (c0, c1, …) not the 36-char session UUIDs — LLMs
     # mangle long ids, which silently zeroed every topic's chat list. Map back.
     idmap = {}
+    meta = {}          # csid -> {label, ts} for the UI (no client-side lookup needed)
     payload = []
     for i, s in enumerate(sigs):
         sid = f'c{i}'
         idmap[sid] = s['csid']
+        meta[s['csid']] = {'label': s.get('label', ''), 'ts': s.get('ts', '')}
         payload.append({'id': sid, 'ask': s['ask'], 'summary': s['summary'], 'turns': s['turns']})
     raw = _scribe_call(_MODEL, _INSTRUCTION, json.dumps(payload, ensure_ascii=False))
     txt = (raw or '').strip()
@@ -173,6 +185,8 @@ def _synthesize(sigs):
             'status': status,
             'chat_csids': csids,
             'chat_count': len(csids),
+            'chats': [{'csid': c, 'label': meta.get(c, {}).get('label', ''),
+                       'ts': meta.get(c, {}).get('ts', '')} for c in csids],
         })
     return out
 

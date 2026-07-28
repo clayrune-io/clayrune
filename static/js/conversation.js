@@ -1755,11 +1755,18 @@ function _agoShort(iso) {
 function _topicChatsHTML(pid, t) {
   const byCsid = {};
   (conversationsCache[pid] || []).forEach(c => { if (c.claude_session_id) byCsid[c.claude_session_id] = c; });
-  const rows = (t.chat_csids || []).map(cs => {
+  // Prefer the label/ts the backend stored in the topic cache, so an older chat
+  // that's no longer in the loaded conversation list still shows a real title
+  // (no more "not in recent cache"). If it IS loaded, use the richer live label.
+  const list = (t.chats && t.chats.length) ? t.chats : (t.chat_csids || []).map(cs => ({ csid: cs }));
+  const rows = list.map(ch => {
+    const cs = ch.csid;
     const c = byCsid[cs];
-    if (!c) return `<div class="tb-chat tb-chat-empty">${esc(cs)} · not in recent cache</div>`;
-    const label = esc((_bestConvLabel(c) || '(chat)').slice(0, 80));
-    return `<div class="tb-chat" onclick="event.stopPropagation();openConversation('${esc(pid)}','${esc(cs)}','${esc(c.mc_session_id || '')}',${c.live ? 'true' : 'false'})">${label}<span class="tb-chat-meta">${esc(c.ts_relative || '')}</span></div>`;
+    const label = esc((((c ? _bestConvLabel(c) : '') || ch.label || '(chat)')).slice(0, 80));
+    const ts = c ? (c.ts_relative || '') : (ch.ts ? _agoShort(ch.ts) : '');
+    const mcid = c ? (c.mc_session_id || '') : '';
+    const live = c && c.live ? 'true' : 'false';
+    return `<div class="tb-chat" onclick="event.stopPropagation();openConversation('${esc(pid)}','${esc(cs)}','${esc(mcid)}',${live})">${label}<span class="tb-chat-meta">${esc(ts)}</span></div>`;
   }).join('');
   return `<div class="tb-chats">${rows || '<div class="tb-chat-empty">no chats</div>'}</div>`;
 }
