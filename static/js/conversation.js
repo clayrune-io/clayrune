@@ -1165,7 +1165,7 @@ function agentPanelHTML(p) {
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
-        <button class="agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="See all open threads — running, waiting, stalled">&#9638;&nbsp; Open threads${_openThreadsBadge(p.id)}</button>
+        <button class="agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="Topic digest — deduplicated subjects across this project's chats">&#9638;&nbsp; Topics</button>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="Search conversations&hellip;"
@@ -1734,12 +1734,133 @@ function _threadsBoardHTML(pid) {
     </div>`;
 }
 
+// ── Topics digest (the board's content) ────────────────────────────────────
+// Instead of one card per chat, show agent-synthesized TOPICS (GET/POST
+// /api/project/<id>/topics). A subject discussed across many chats appears once
+// with a gist; the user can mark topics done/archived.
+let _topicsData = {};        // pid -> {topics|null, generated_at, error, loading}
+let _topicsExpanded = {};    // "pid/topicId" -> bool (chat list open)
+let _topicsShowArchived = {};
+
+function _agoShort(iso) {
+  try {
+    const s = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (s < 60) return 'just now';
+    if (s < 3600) return Math.floor(s / 60) + 'm ago';
+    if (s < 86400) return Math.floor(s / 3600) + 'h ago';
+    return Math.floor(s / 86400) + 'd ago';
+  } catch (e) { return ''; }
+}
+
+function _topicChatsHTML(pid, t) {
+  const byCsid = {};
+  (conversationsCache[pid] || []).forEach(c => { if (c.claude_session_id) byCsid[c.claude_session_id] = c; });
+  const rows = (t.chat_csids || []).map(cs => {
+    const c = byCsid[cs];
+    if (!c) return `<div class="tb-chat tb-chat-empty">${esc(cs)} · not in recent cache</div>`;
+    const label = esc((_bestConvLabel(c) || '(chat)').slice(0, 80));
+    return `<div class="tb-chat" onclick="event.stopPropagation();openConversation('${esc(pid)}','${esc(cs)}','${esc(c.mc_session_id || '')}',${c.live ? 'true' : 'false'})">${label}<span class="tb-chat-meta">${esc(c.ts_relative || '')}</span></div>`;
+  }).join('');
+  return `<div class="tb-chats">${rows || '<div class="tb-chat-empty">no chats</div>'}</div>`;
+}
+
+function _topicCardHTML(pid, t) {
+  const st = ['open', 'resolved', 'automated'].includes(t.status) ? t.status : 'open';
+  const badgeCls = st === 'resolved' ? 'green' : st === 'automated' ? 'slate' : 'amber';
+  const us = t.user_state || 'open';
+  const chip = us === 'done' ? '<span class="tb-us done">Done</span>'
+    : us === 'archived' ? '<span class="tb-us arch">Archived</span>' : '';
+  const acts = us === 'open'
+    ? `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','done')">Mark done</button>
+       <button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','archived')">Archive</button>`
+    : `<button class="tb-act" onclick="event.stopPropagation();setTopicState('${esc(pid)}','${esc(t.id)}','open')">Reopen</button>`;
+  const exp = _topicsExpanded[pid + '/' + t.id];
+  return `<div class="tb-topic${us !== 'open' ? ' tb-topic-muted' : ''}">
+      <div class="tb-topic-head" onclick="toggleTopic('${esc(pid)}','${esc(t.id)}')">
+        <span class="tb-badge ${badgeCls}">${esc(st)}</span>
+        <div class="tb-topic-main">
+          <div class="tb-topic-title">${esc(t.title)}${chip}</div>
+          <div class="tb-topic-gist">${esc(t.gist || '')}</div>
+        </div>
+        <span class="tb-topic-count">${t.chat_count} chat${t.chat_count !== 1 ? 's' : ''}</span>
+      </div>
+      <div class="tb-topic-acts">${acts}</div>
+      ${exp ? _topicChatsHTML(pid, t) : ''}
+    </div>`;
+}
+
+function _topicsBoardHTML(pid) {
+  const mid = '__threads_' + pid;
+  const name = esc((allProjects.find(x => x.id === pid) || {}).name || pid);
+  const d = _topicsData[pid] || {};
+  const all = d.topics || [];
+  const archivedN = all.filter(t => (t.user_state || 'open') === 'archived').length;
+  const shown = all.filter(t => (t.user_state || 'open') !== 'archived' || _topicsShowArchived[pid]);
+  const updated = d.loading ? 'Reviewing…' : (d.generated_at ? `updated ${_agoShort(d.generated_at)}` : 'not reviewed yet');
+  const summary = (d.topics ? `${shown.length} topic${shown.length !== 1 ? 's' : ''} · ${updated}` : updated)
+    + (d.error ? ` · <span style="color:var(--red,#f06060)">${esc(d.error)}</span>` : '');
+  const header = `<div class="modal-header tb-head">
+      <div class="tb-htext">
+        <div class="tb-hrow"><span class="tb-h1">${name}</span> <span class="tb-h2">Topics</span></div>
+        <div class="tb-summary">${summary}</div>
+      </div>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:6px;align-items:center">
+        <button class="tb-review" onclick="reviewTopics('${esc(pid)}')" ${d.loading ? 'disabled' : ''}>${d.loading ? 'Reviewing…' : '&#8635; Review'}</button>
+        <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
+        <button class="modal-close" onclick="closeThreadsBoard('${esc(pid)}')" title="Close (Esc)">&#10005;</button>
+      </div>
+    </div>`;
+  let body;
+  if (d.loading && !d.topics) body = '<div class="tb-empty">Reviewing your chats…</div>';
+  else if (!d.topics) body = `<div class="tb-empty">No topic review yet.<br><br><button class="tb-act go" onclick="reviewTopics('${esc(pid)}')">Review chats now</button></div>`;
+  else if (!shown.length) body = `<div class="tb-empty">No open topics.${archivedN ? ` <button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">Show ${archivedN} archived</button>` : ''}</div>`;
+  else body = `<div class="tb-topics">${shown.map(t => _topicCardHTML(pid, t)).join('')}</div>`
+    + (archivedN ? `<div class="tb-archline"><button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">${_topicsShowArchived[pid] ? 'Hide' : 'Show'} ${archivedN} archived</button></div>` : '');
+  return header + `<div class="tb-body">${body}</div>`;
+}
+
+async function _loadTopics(pid) {
+  try {
+    const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics`);
+    const d = await r.json();
+    _topicsData[pid] = { topics: d.stale ? null : (d.topics || []), generated_at: d.generated_at, error: d.error || null, loading: false };
+  } catch (e) { _topicsData[pid] = { topics: null, loading: false, error: String(e) }; }
+  refreshThreadsBoard(pid);
+}
+async function reviewTopics(pid) {
+  _topicsData[pid] = Object.assign({ topics: null }, _topicsData[pid], { loading: true });
+  refreshThreadsBoard(pid);
+  try {
+    const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/refresh`, { method: 'POST' });
+    const d = await r.json();
+    _topicsData[pid] = { topics: d.topics || [], generated_at: d.generated_at, error: d.error || null, loading: false };
+  } catch (e) {
+    _topicsData[pid] = Object.assign({}, _topicsData[pid], { loading: false, error: String(e) });
+  }
+  refreshThreadsBoard(pid);
+}
+async function setTopicState(pid, topicId, state) {
+  const d = _topicsData[pid];
+  if (d && d.topics) { const t = d.topics.find(x => x.id === topicId); if (t) t.user_state = state; }
+  refreshThreadsBoard(pid);
+  try {
+    await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/${encodeURIComponent(topicId)}/state`,
+      { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ state }) });
+  } catch (e) {}
+}
+function toggleTopic(pid, topicId) { const k = pid + '/' + topicId; _topicsExpanded[k] = !_topicsExpanded[k]; refreshThreadsBoard(pid); }
+function toggleTopicsArchived(pid) { _topicsShowArchived[pid] = !_topicsShowArchived[pid]; refreshThreadsBoard(pid); }
+window.reviewTopics = reviewTopics;
+window.setTopicState = setTopicState;
+window.toggleTopic = toggleTopic;
+window.toggleTopicsArchived = toggleTopicsArchived;
+
 function openThreadsBoard(projectId) {
   const mid = '__threads_' + projectId;
   _ensureThreadsCss();
   if (!conversationsCache[projectId]) loadConversations(projectId);
   if (!agentLogCache[projectId]) loadAgentLog(projectId);
-  if (openModals.has(mid)) { focusModal(mid); refreshThreadsBoard(projectId); return; }
+  if (openModals.has(mid)) { focusModal(mid); _loadTopics(projectId); return; }
   // Build as a managed .modal-window so it inherits drag (.modal-header),
   // resize (#modal-layer observer → makeResizable), focus/z-order, minimize and
   // Esc-close — i.e. behaves exactly like every other MC window.
@@ -1748,7 +1869,7 @@ function openThreadsBoard(projectId) {
   win.dataset.modalId = mid;
   const content = document.createElement('div');
   content.className = 'modal-content tb-modal';
-  content.innerHTML = _threadsBoardHTML(projectId);
+  content.innerHTML = _topicsBoardHTML(projectId);
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
   const z = nextModalZ++;
@@ -1769,6 +1890,7 @@ function openThreadsBoard(projectId) {
   }
   if (st && st.font && typeof applyModalZoom === 'function') { modalZoomLevels[mid] = st.font; applyModalZoom(win, st.font); }
   focusModal(mid);
+  _loadTopics(projectId);   // pull the cached digest (or show "review now")
   // Persist size + position + zoom on any change. One MutationObserver on the
   // win/content style attributes catches drag (win left/top), resize (content
   // w/h) AND ctrl+wheel zoom (content font-size) — debounced.
@@ -1800,7 +1922,7 @@ function _threadsSaveState(win) {
 function refreshThreadsBoard(projectId) {
   const entry = (typeof openModals !== 'undefined') ? openModals.get('__threads_' + projectId) : null;
   const content = entry && entry.element.querySelector('.modal-content');
-  if (content) content.innerHTML = _threadsBoardHTML(projectId);
+  if (content) content.innerHTML = _topicsBoardHTML(projectId);
 }
 // projectId omitted → close whichever threads board is open (used after opening
 // a conversation from a card).
@@ -1855,6 +1977,34 @@ function _ensureThreadsCss() {
     .tb-act.go{border-color:var(--green);color:var(--green)}
     .tb-act.p{border-color:var(--amber);color:var(--amber)}
     .tb-empty{padding:22px 14px;text-align:center;color:var(--text-faint);font-size:calc(var(--tbf)*0.92);line-height:1.5}
+    /* ── topic digest ── */
+    .tb-review{font-size:calc(var(--tbf)*0.85);font-weight:600;padding:4px 10px;border-radius:7px;border:1px solid var(--accent);color:var(--accent);background:transparent;cursor:pointer}
+    .tb-review:disabled{opacity:.55;cursor:default;border-color:var(--border);color:var(--text-faint)}
+    .tb-topics{display:flex;flex-direction:column;gap:8px}
+    .tb-topic{background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .tb-topic-muted{opacity:.62}
+    .tb-topic-head{display:flex;align-items:flex-start;gap:10px;padding:11px 13px;cursor:pointer}
+    .tb-topic-head:hover{background:var(--surface)}
+    .tb-topic-main{flex:1;min-width:0}
+    .tb-topic-title{font-size:var(--tbf);font-weight:700;color:var(--text);display:flex;align-items:center;gap:7px;flex-wrap:wrap}
+    .tb-topic-gist{font-size:calc(var(--tbf)*0.88);color:var(--text-dim);margin-top:3px;line-height:1.4}
+    .tb-topic-count{font-size:calc(var(--tbf)*0.8);color:var(--text-faint);white-space:nowrap;flex:0 0 auto;margin-top:2px}
+    .tb-badge{font-size:calc(var(--tbf)*0.72);font-weight:700;text-transform:uppercase;letter-spacing:.03em;padding:2px 7px;border-radius:20px;flex:0 0 auto;margin-top:1px}
+    .tb-badge.amber{background:var(--amber-dim,rgba(240,180,41,.15));color:var(--amber)}
+    .tb-badge.green{background:var(--green-dim,rgba(52,211,153,.15));color:var(--green)}
+    .tb-badge.slate{background:var(--surface);color:var(--text-faint);border:1px solid var(--border)}
+    .tb-us{font-size:calc(var(--tbf)*0.72);font-weight:700;padding:1px 6px;border-radius:20px}
+    .tb-us.done{background:var(--green-dim,rgba(52,211,153,.15));color:var(--green)}
+    .tb-us.arch{background:var(--surface);color:var(--text-faint);border:1px solid var(--border)}
+    .tb-topic-acts{display:flex;gap:6px;padding:0 13px 11px;flex-wrap:wrap}
+    .tb-chats{border-top:1px solid var(--border);padding:6px 13px 10px}
+    .tb-chat{font-size:calc(var(--tbf)*0.85);color:var(--text-dim);padding:5px 6px;border-radius:6px;cursor:pointer;display:flex;justify-content:space-between;gap:8px}
+    .tb-chat:hover{background:var(--surface);color:var(--text)}
+    .tb-chat-meta{color:var(--text-faint);white-space:nowrap}
+    .tb-chat-empty{color:var(--text-faint);cursor:default}
+    .tb-chat-empty:hover{background:none;color:var(--text-faint)}
+    .tb-linkbtn{background:none;border:none;color:var(--accent);font-size:calc(var(--tbf)*0.85);cursor:pointer;padding:2px 4px}
+    .tb-archline{padding:8px 2px}
     .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
     .agent-rail-threads{display:block;width:100%;margin-top:6px;padding:7px 10px;font-size:12.5px;font-weight:600;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);cursor:pointer;text-align:left}
     .agent-rail-threads:hover{border-color:var(--accent);color:var(--text)}`;
