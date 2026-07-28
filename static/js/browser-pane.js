@@ -243,10 +243,15 @@ async function openBrowserPane(url, projectId, sessionId) {
   };
   _bpES.onerror = () => { if (spin) spin.style.color = '#e57373'; };
   setTimeout(() => img.focus(), 100);
+  // Remember the open session so a page refresh (which wipes the SPA DOM but
+  // leaves the backend Chromium running) can re-attach instead of orphaning it.
+  try { localStorage.setItem('mc_browser_pane_open', JSON.stringify({ sid: _bpSession, pid })); } catch (e) {}
 }
 
 function closeBrowserPane() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
+  // Explicit close ends the backend session — so don't restore it on next load.
+  try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
   if (_bpSession) {
     fetch((window.API_BASE || '') + '/api/browser/stop', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -257,6 +262,27 @@ function closeBrowserPane() {
   const win = document.getElementById('mc-browser-pane');
   if (win) win.remove();
 }
+
+// On SPA boot, restore the pane if its backend session is still running (i.e.
+// the user refreshed rather than closing it). A dead session — e.g. after a
+// server restart, which kills all panes — clears the flag so no ghost pane
+// pops up. This also stops refreshes from leaking orphaned Chromiums.
+function _bpRestoreOnLoad() {
+  let saved;
+  try { saved = JSON.parse(localStorage.getItem('mc_browser_pane_open') || 'null'); } catch (e) { saved = null; }
+  if (!saved || !saved.sid) return;
+  const pid = saved.pid || 'mission_control';
+  fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/browser/status`)
+    .then(r => r.json())
+    .then(st => {
+      const s = (st.sessions || []).find(x => x.session_id === saved.sid && x.status === 'running');
+      if (s) openBrowserPane(null, pid, saved.sid);
+      else { try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {} }
+    })
+    .catch(() => {});
+}
+if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', _bpRestoreOnLoad);
+else setTimeout(_bpRestoreOnLoad, 0);
 
 window.openBrowserPane = openBrowserPane;
 window.closeBrowserPane = closeBrowserPane;
