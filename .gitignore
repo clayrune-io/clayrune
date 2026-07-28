@@ -296,5 +296,12 @@ docs/play-store/assets/screenshots/
 docs/play-store/assets/screenshots-padded/
 docs/play-store/assets/thumbs/
 
-# Internal campaign planning/execution — not for public git
+# Internal marketing/campaign planning + execution — not for public git.
+# (docs/_campaign/ was ignored earlier but the files stayed TRACKED — gitignore
+# doesn't untrack. Untracked for real 2026-07-28 via `git rm --cached`, ahead of
+# the Show HN launch, so the public repo tree carries no marketing playbooks.)
 docs/_campaign/
+docs/MARKETING_CAMPAIGN_PLAN.md
+docs/LAUNCH_PLAN.md
+docs/LAUNCH_COPY.md
+docs/MARKETING_ASSETS_SPEC.md
