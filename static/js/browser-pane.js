@@ -57,7 +57,11 @@ async function openBrowserPane(url, projectId) {
   win.style.cssText =
     `position:fixed;left:${Math.max(4, (window.innerWidth - W) / 2)}px;` +
     `top:${Math.max(4, (window.innerHeight - H) / 2)}px;width:${W}px;height:${H}px;` +
-    'background:#1e1e1e;border:1px solid var(--border,#444);border-radius:10px;z-index:100000;' +
+    // No hard-coded z-index: the pane joins the shared modal stacking order
+    // (nextModalZ) below, so it behaves like every other pop-up instead of
+    // pinning itself above everything. pointer-events:auto is required because
+    // the #modal-layer host is pointer-events:none.
+    'background:#1e1e1e;border:1px solid var(--border,#444);border-radius:10px;pointer-events:auto;' +
     'display:flex;flex-direction:column;box-shadow:0 12px 48px rgba(0,0,0,.5);overflow:hidden';
   win.innerHTML = `
     <div data-bp="bar" style="display:flex;align-items:center;gap:6px;padding:8px 10px;background:#2a2a2a;flex:0 0 auto;cursor:move;touch-action:none;user-select:none">
@@ -76,7 +80,16 @@ async function openBrowserPane(url, projectId) {
     </div>
     <div data-bp="grip" title="Drag to resize"
       style="position:absolute;right:1px;bottom:1px;width:22px;height:22px;cursor:nwse-resize;touch-action:none;background:linear-gradient(135deg,transparent 45%,#777 45%,#777 55%,transparent 55%,transparent 70%,#777 70%,#777 80%,transparent 80%);border-radius:0 0 9px 0"></div>`;
-  document.body.appendChild(win);
+  // Live inside #modal-layer (z-300 stacking context) alongside terminals and
+  // other pop-ups, and take the next slot in the shared modal z-order so it
+  // opens on top but does NOT stay pinned above later-focused windows.
+  (document.getElementById('modal-layer') || document.body).appendChild(win);
+  try { win.style.zIndex = nextModalZ++; } catch (e) { win.style.zIndex = 1000; }
+  // Raise-to-front on interaction, exactly like focusModal does for modals, so
+  // clicking another window brings it forward and this stops being always-on-top.
+  win.addEventListener('mousedown', () => {
+    try { win.style.zIndex = nextModalZ++; } catch (e) {}
+  }, true);
 
   // Restore the last size/position the user left the pane at (clamped so a
   // resized-down window can't strand it off-screen).
