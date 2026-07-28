@@ -1707,47 +1707,68 @@ function _threadsBoardHTML(pid) {
   const open = b.waiting.length + b.running.length + b.stalled.length;
   const archived = _hiddenConvSet(pid).size;
   const name = esc((allProjects.find(x => x.id === pid) || {}).name || pid);
-  const summary = `<b>${open} open</b> · ${b.running.length} running · ${b.stalled.length} stalled · ${b.waiting.length} waiting on you`
+  const mid = '__threads_' + pid;
+  const summary = `<b>${open} open</b> · ${b.stalled.length} stalled · ${b.running.length} running · ${b.waiting.length} waiting on you`
     + `<span class="tb-muted"> — ${b.doneCount} done${archived ? `, ${archived} archived` : ''}</span>`;
-  return `<div class="tb-head">
-      <div><span class="tb-h1">${name}</span> <span class="tb-h2">Open Threads</span></div>
-      <button class="tb-close" onclick="closeThreadsBoard()" title="Close" aria-label="Close">&#10005;</button>
+  // .modal-header is the manager's drag handle; .modal-content gets resize from
+  // the #modal-layer observer (interactions.js). Header buttons are drag-excluded.
+  return `<div class="modal-header tb-head">
+      <div class="tb-htext">
+        <div class="tb-hrow"><span class="tb-h1">${name}</span> <span class="tb-h2">Open Threads</span></div>
+        <div class="tb-summary">${summary}</div>
+      </div>
+      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
+        <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
+        <button class="modal-close" onclick="closeThreadsBoard('${esc(pid)}')" title="Close (Esc)">&#10005;</button>
+      </div>
     </div>
-    <div class="tb-summary">${summary}</div>
-    <div class="tb-cols">
-      ${_threadColHTML(pid, 'Waiting on you', 'amber', b.waiting, 'waiting', 'Nothing needs a decision right now.<br>Questions &amp; plan-approvals land here.')}
-      ${_threadColHTML(pid, 'Running', 'green', b.running, 'running', 'No agents working right now.')}
-      ${_threadColHTML(pid, 'Stalled', 'slate', b.stalled, 'stalled', 'No stalled threads — you’re caught up.')}
+    <div class="tb-body">
+      <div class="tb-cols">
+        ${_threadColHTML(pid, 'Stalled', 'slate', b.stalled, 'stalled', 'No stalled threads — you’re caught up.')}
+        ${_threadColHTML(pid, 'Running', 'green', b.running, 'running', 'No agents working right now.')}
+        ${_threadColHTML(pid, 'Waiting on you', 'amber', b.waiting, 'waiting', 'Nothing needs a decision right now.<br>Questions &amp; plan-approvals land here.')}
+      </div>
     </div>`;
 }
 
 function openThreadsBoard(projectId) {
-  closeThreadsBoard();
+  const mid = '__threads_' + projectId;
   _ensureThreadsCss();
   if (!conversationsCache[projectId]) loadConversations(projectId);
   if (!agentLogCache[projectId]) loadAgentLog(projectId);
-  const back = document.createElement('div');
-  back.id = 'mc-threads-back';
-  back.className = 'tb-backdrop';
-  back.onclick = (e) => { if (e.target === back) closeThreadsBoard(); };
+  if (openModals.has(mid)) { focusModal(mid); refreshThreadsBoard(projectId); return; }
+  // Build as a managed .modal-window so it inherits drag (.modal-header),
+  // resize (#modal-layer observer → makeResizable), focus/z-order, minimize and
+  // Esc-close — i.e. behaves exactly like every other MC window.
   const win = document.createElement('div');
-  win.id = 'mc-threads-board';
-  win.className = 'tb-board';
-  win.innerHTML = _threadsBoardHTML(projectId);
-  back.appendChild(win);
-  (document.getElementById('modal-layer') || document.body).appendChild(back);
-  try { back.style.zIndex = nextModalZ++; } catch (e) { back.style.zIndex = 3000; }
-  document.addEventListener('keydown', _threadsEsc, true);
+  win.className = 'modal-window';
+  win.dataset.modalId = mid;
+  const content = document.createElement('div');
+  content.className = 'modal-content tb-modal';
+  content.innerHTML = _threadsBoardHTML(projectId);
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  content.style.width = Math.min(1040, window.innerWidth - 40) + 'px';
+  content.style.height = Math.min(600, window.innerHeight - 90) + 'px';
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(mid, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(mid);
 }
-function _threadsEsc(e) { if (e.key === 'Escape') closeThreadsBoard(); }
 function refreshThreadsBoard(projectId) {
-  const win = document.getElementById('mc-threads-board');
-  if (win) win.innerHTML = _threadsBoardHTML(projectId);
+  const entry = (typeof openModals !== 'undefined') ? openModals.get('__threads_' + projectId) : null;
+  const content = entry && entry.element.querySelector('.modal-content');
+  if (content) content.innerHTML = _threadsBoardHTML(projectId);
 }
-function closeThreadsBoard() {
-  const back = document.getElementById('mc-threads-back');
-  if (back) back.remove();
-  document.removeEventListener('keydown', _threadsEsc, true);
+// projectId omitted → close whichever threads board is open (used after opening
+// a conversation from a card).
+function closeThreadsBoard(projectId) {
+  if (typeof closeModalById !== 'function') return;
+  if (projectId) { closeModalById('__threads_' + projectId); return; }
+  for (const id of Array.from(openModals.keys())) {
+    if (String(id).startsWith('__threads_')) closeModalById(id);
+  }
 }
 function archiveThread(event, projectId, csid) {
   if (event) { event.stopPropagation(); event.preventDefault(); }
@@ -1762,26 +1783,26 @@ function _ensureThreadsCss() {
   const s = document.createElement('style');
   s.id = 'mc-threads-css';
   s.textContent = `
-    .tb-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:40px 20px;overflow:auto;pointer-events:auto}
-    .tb-board{background:var(--bg);border:1px solid var(--border);border-radius:14px;width:min(1120px,96vw);max-height:calc(100vh - 80px);overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:20px 22px}
-    .tb-head{display:flex;align-items:center;margin-bottom:5px}
-    .tb-h1{font-size:19px;font-weight:800;color:var(--text)}
-    .tb-h2{font-size:13px;color:var(--text-faint);margin-left:8px}
-    .tb-close{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:17px;cursor:pointer;padding:3px 9px;border-radius:8px}
-    .tb-close:hover{background:var(--surface)}
-    .tb-summary{font-size:12.5px;color:var(--text-dim);margin-bottom:16px}
+    .tb-modal{display:flex;flex-direction:column;min-width:560px;min-height:320px;padding:0}
+    .tb-head{cursor:move;display:flex;align-items:flex-start;gap:12px;padding:12px 14px;border-bottom:1px solid var(--border);flex:0 0 auto}
+    .tb-htext{flex:1;min-width:0}
+    .tb-hrow{display:flex;align-items:baseline;gap:8px}
+    .tb-h1{font-size:16px;font-weight:800;color:var(--text)}
+    .tb-h2{font-size:12px;color:var(--text-faint)}
+    .tb-summary{font-size:11.5px;color:var(--text-dim);margin-top:3px}
     .tb-summary b{color:var(--text)} .tb-muted{color:var(--text-faint)}
-    .tb-cols{display:flex;gap:14px;align-items:flex-start}
-    .tb-col{flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
-    .tb-colhead{padding:12px 14px;font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+    .tb-body{flex:1;min-height:0;overflow:auto;padding:14px}
+    .tb-cols{display:flex;gap:12px;align-items:flex-start}
+    .tb-col{flex:1;min-width:0;background:var(--bg);border:1px solid var(--border);border-radius:10px;overflow:hidden}
+    .tb-colhead{padding:11px 13px;font-size:12px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
     .tb-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
-    .tb-n{margin-left:auto;font-size:11px;font-weight:700;color:var(--text-faint);background:var(--bg);border-radius:10px;padding:1px 8px}
+    .tb-n{margin-left:auto;font-size:11px;font-weight:700;color:var(--text-faint);background:var(--surface);border-radius:10px;padding:1px 8px}
     .tb-colhead.amber{color:var(--amber)} .tb-colhead.amber .tb-dot{background:var(--amber)}
     .tb-colhead.green{color:var(--green)} .tb-colhead.green .tb-dot{background:var(--green)}
     .tb-colhead.slate{color:var(--text-dim)} .tb-colhead.slate .tb-dot{background:var(--text-faint)}
-    .tb-card{padding:11px 14px;border-top:1px solid var(--border);cursor:pointer}
+    .tb-card{padding:11px 13px;border-top:1px solid var(--border);cursor:pointer}
     .tb-card:first-of-type{border-top:none}
-    .tb-card:hover{background:var(--bg)}
+    .tb-card:hover{background:var(--surface)}
     .tb-title{font-size:13px;font-weight:600;color:var(--text);line-height:1.35;word-break:break-word}
     .tb-meta{font-size:11px;color:var(--text-faint);margin-top:4px}
     .tb-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
