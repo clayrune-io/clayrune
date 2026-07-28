@@ -144,8 +144,14 @@ def _run_cdp(session):
             session['error'] = 'Chromium devtools endpoint did not come up'
             return
 
+        # connect timeout is generous; the per-recv poll timeout is set below.
         ws = websocket.create_connection(page['webSocketDebuggerUrl'],
-                                         max_size=None, timeout=0.15)
+                                         max_size=None, timeout=5)
+        # 0.5s recv poll: long enough that an 80KB screencast frame is never
+        # clipped mid-transfer on loopback (a 0.15s timeout firing mid-frame
+        # corrupted the ws stream and silently killed this thread — the black-
+        # pane bug), short enough to keep queued input latency ≤0.5s.
+        ws.settimeout(0.5)
         session['ws'] = ws
 
         def send(method, params=None):
@@ -159,6 +165,7 @@ def _run_cdp(session):
              {'format': 'jpeg', 'quality': 55, 'maxWidth': VIEW_W, 'maxHeight': VIEW_H, 'everyNthFrame': 1})
 
         q = session['cmd_queue']
+        errors = 0  # consecutive non-timeout recv errors before we give up
         while session['status'] == 'running':
             # 1. drain queued outbound commands (input / navigate)
             try:
@@ -170,13 +177,26 @@ def _run_cdp(session):
                         session['error'] = f'send failed: {e}'
             except queue.Empty:
                 pass
-            # 2. read one inbound message (short timeout so we loop back to send)
+            # 2. read one inbound message (poll timeout so we loop back to send)
             try:
                 raw = ws.recv()
+                errors = 0
             except websocket.WebSocketTimeoutException:
                 continue
-            except Exception:
+            except websocket.WebSocketConnectionClosedException:
+                session['status'] = 'error'
+                session['error'] = 'CDP websocket closed'
                 break
+            except Exception as e:
+                # Transient recv error — do NOT die silently (that froze the
+                # pane on a blank frame with status still 'running'). Tolerate a
+                # few in a row, then surface an error so the SSE can end.
+                errors += 1
+                session['error'] = f'recv error: {e}'
+                if errors >= 10:
+                    session['status'] = 'error'
+                    break
+                continue
             if not raw:
                 continue
             try:
@@ -191,12 +211,20 @@ def _run_cdp(session):
                     ws.send(json.dumps({'id': _next_id(),
                                         'method': 'Page.screencastFrameAck',
                                         'params': {'sessionId': p['sessionId']}}))
-                except Exception:
+                except Exception as e:
+                    session['status'] = 'error'
+                    session['error'] = f'ack failed: {e}'
                     break
     except Exception as e:
         session['status'] = 'error'
         session['error'] = str(e)
     finally:
+        # If we fell out of the loop for any reason other than an explicit
+        # /stop, make it observable — never leave status 'running' with a dead
+        # reader (that is exactly the silent black-pane failure).
+        if session.get('status') == 'running':
+            session['status'] = 'error'
+            session.setdefault('error', 'CDP reader exited unexpectedly')
         try:
             if session.get('ws'):
                 session['ws'].close()
