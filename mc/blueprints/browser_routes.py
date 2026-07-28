@@ -157,12 +157,16 @@ def _run_cdp(session):
         def send(method, params=None):
             ws.send(json.dumps({'id': _next_id(), 'method': method, 'params': params or {}}))
 
+        def start_screencast():
+            send('Page.startScreencast',
+                 {'format': 'jpeg', 'quality': 55, 'maxWidth': VIEW_W,
+                  'maxHeight': VIEW_H, 'everyNthFrame': 1})
+
         send('Page.enable')
         send('Emulation.setDeviceMetricsOverride',
              {'width': VIEW_W, 'height': VIEW_H, 'deviceScaleFactor': 1, 'mobile': False})
         send('Page.navigate', {'url': session['url']})
-        send('Page.startScreencast',
-             {'format': 'jpeg', 'quality': 55, 'maxWidth': VIEW_W, 'maxHeight': VIEW_H, 'everyNthFrame': 1})
+        start_screencast()
 
         q = session['cmd_queue']
         errors = 0  # consecutive non-timeout recv errors before we give up
@@ -203,7 +207,8 @@ def _run_cdp(session):
                 msg = json.loads(raw)
             except Exception:
                 continue
-            if msg.get('method') == 'Page.screencastFrame':
+            method = msg.get('method')
+            if method == 'Page.screencastFrame':
                 p = msg['params']
                 session['frame'] = p.get('data')
                 session['frame_seq'] = session.get('frame_seq', 0) + 1
@@ -215,6 +220,15 @@ def _run_cdp(session):
                     session['status'] = 'error'
                     session['error'] = f'ack failed: {e}'
                     break
+            elif method == 'Page.frameStoppedLoading':
+                # A cross-document navigation (typed URL, clicked link, or a
+                # queued Page.navigate) STOPS the active screencast on this ws.
+                # Re-arm it on every load, else the pane freezes/blacks after
+                # the first navigation away from the launch page.
+                try:
+                    start_screencast()
+                except Exception as e:
+                    session['error'] = f'rearm failed: {e}'
     except Exception as e:
         session['status'] = 'error'
         session['error'] = str(e)
