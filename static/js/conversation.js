@@ -1161,9 +1161,11 @@ function agentPanelHTML(p) {
     const _mainInner = _splitActive
       ? `${splitPaneHTML(p, activeSessionId, true)}<div class="agent-split-divider"></div>${splitPaneHTML(p, _splitSid, false)}`
       : `${tabContent}${dispatchRow}`;
+    try { _ensureThreadsCss(); } catch (e) {}  // never let a board bug break the panel render
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
+        <button class="agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="See all open threads — running, waiting, stalled">&#9638;&nbsp; Open threads${_openThreadsBadge(p.id)}</button>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
           <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="Search conversations&hellip;"
@@ -1633,6 +1635,170 @@ function mobileUserConversationsHTML(p, convos) {
     <div class="conv-list">${rows}</div>
     ${toggle}`;
 }
+
+// ── Open Threads board (project-level) ──────────────────────────────────────
+// A full-width overlay that groups a project's OPEN conversations into three
+// buckets — Waiting on you / Running / Stalled — so interrupted work stops being
+// buried under the recency list. Reuses the rail's own data + open/hide helpers;
+// "Archive" IS the existing hide mechanism (localStorage 'mc_hidden_convos').
+// Frontend-only.
+
+function _threadState(c, live) {
+  const ls = _convLiveState(live, c);
+  if (ls === 'waiting' || c.waiting_for_question || c.waiting_for_plan_approval) return 'waiting';
+  if (ls === 'working' || (c.live && (c.status === 'running' || c.status === 'idle' || !c.status))) return 'running';
+  if ((c.status || '') === 'completed') return null;               // done — not "open"
+  const st = c.status || '';
+  if ((c.turns || 0) >= 2 && ['interrupted', 'stopped', 'error', 'idle', ''].includes(st)) return 'stalled';
+  return null;                                                       // too trivial / empty
+}
+
+// Bucket a project's open threads. {waiting, running, stalled, doneCount}.
+function _openThreads(projectId) {
+  const live = _liveConvStates({ id: projectId });
+  const b = { waiting: [], running: [], stalled: [], doneCount: 0 };
+  for (const c of _userInitiatedConvos(projectId)) {                // excludes hidden + noise
+    const st = _threadState(c, live);
+    if (st) b[st].push(c);
+    else if ((c.status || '') === 'completed') b.doneCount++;
+  }
+  return b;
+}
+
+function _openThreadsBadge(projectId) {
+  try {
+    const b = _openThreads(projectId);
+    const n = b.waiting.length + b.running.length + b.stalled.length;
+    return n ? `<span class="rail-threads-badge">${n}</span>` : '';
+  } catch (e) { return ''; }
+}
+
+function _threadTitle(c) {
+  if (_isStewardConvo(c)) return '\u{1F9ED} Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 50) : '');
+  return (_bestConvLabel(c) || '(empty conversation)').slice(0, 90);
+}
+
+function _threadCardHTML(pid, c, kind) {
+  const csid = c.claude_session_id || '', mcsid = c.mc_session_id || '';
+  const open = `openConversation('${esc(pid)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'});closeThreadsBoard()`;
+  const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+  let acts;
+  if (kind === 'waiting') acts = `<button class="tb-act p" onclick="${open}">${c.waiting_for_plan_approval ? 'Review plan' : 'Answer'}</button>`;
+  else if (kind === 'running') acts = `<button class="tb-act go" onclick="${open}">Open</button>`;
+  else acts = `<button class="tb-act" onclick="${open}">Resume</button><button class="tb-act" onclick="archiveThread(event,'${esc(pid)}','${esc(csid)}')">Archive</button>`;
+  return `<div class="tb-card" onclick="${open}">
+      <div class="tb-title">${esc(_threadTitle(c))}</div>
+      <div class="tb-meta">${meta}</div>
+      <div class="tb-acts" onclick="event.stopPropagation()">${acts}</div>
+    </div>`;
+}
+
+function _threadColHTML(pid, label, cls, items, kind, emptyMsg) {
+  const cards = items.length ? items.map(c => _threadCardHTML(pid, c, kind)).join('')
+    : `<div class="tb-empty">${emptyMsg}</div>`;
+  return `<div class="tb-col">
+      <div class="tb-colhead ${cls}"><span class="tb-dot"></span>${label}<span class="tb-n">${items.length}</span></div>
+      ${cards}
+    </div>`;
+}
+
+function _threadsBoardHTML(pid) {
+  const b = _openThreads(pid);
+  const open = b.waiting.length + b.running.length + b.stalled.length;
+  const archived = _hiddenConvSet(pid).size;
+  const name = esc((allProjects.find(x => x.id === pid) || {}).name || pid);
+  const summary = `<b>${open} open</b> · ${b.running.length} running · ${b.stalled.length} stalled · ${b.waiting.length} waiting on you`
+    + `<span class="tb-muted"> — ${b.doneCount} done${archived ? `, ${archived} archived` : ''}</span>`;
+  return `<div class="tb-head">
+      <div><span class="tb-h1">${name}</span> <span class="tb-h2">Open Threads</span></div>
+      <button class="tb-close" onclick="closeThreadsBoard()" title="Close" aria-label="Close">&#10005;</button>
+    </div>
+    <div class="tb-summary">${summary}</div>
+    <div class="tb-cols">
+      ${_threadColHTML(pid, 'Waiting on you', 'amber', b.waiting, 'waiting', 'Nothing needs a decision right now.<br>Questions &amp; plan-approvals land here.')}
+      ${_threadColHTML(pid, 'Running', 'green', b.running, 'running', 'No agents working right now.')}
+      ${_threadColHTML(pid, 'Stalled', 'slate', b.stalled, 'stalled', 'No stalled threads — you’re caught up.')}
+    </div>`;
+}
+
+function openThreadsBoard(projectId) {
+  closeThreadsBoard();
+  _ensureThreadsCss();
+  if (!conversationsCache[projectId]) loadConversations(projectId);
+  if (!agentLogCache[projectId]) loadAgentLog(projectId);
+  const back = document.createElement('div');
+  back.id = 'mc-threads-back';
+  back.className = 'tb-backdrop';
+  back.onclick = (e) => { if (e.target === back) closeThreadsBoard(); };
+  const win = document.createElement('div');
+  win.id = 'mc-threads-board';
+  win.className = 'tb-board';
+  win.innerHTML = _threadsBoardHTML(projectId);
+  back.appendChild(win);
+  (document.getElementById('modal-layer') || document.body).appendChild(back);
+  try { back.style.zIndex = nextModalZ++; } catch (e) { back.style.zIndex = 3000; }
+  document.addEventListener('keydown', _threadsEsc, true);
+}
+function _threadsEsc(e) { if (e.key === 'Escape') closeThreadsBoard(); }
+function refreshThreadsBoard(projectId) {
+  const win = document.getElementById('mc-threads-board');
+  if (win) win.innerHTML = _threadsBoardHTML(projectId);
+}
+function closeThreadsBoard() {
+  const back = document.getElementById('mc-threads-back');
+  if (back) back.remove();
+  document.removeEventListener('keydown', _threadsEsc, true);
+}
+function archiveThread(event, projectId, csid) {
+  if (event) { event.stopPropagation(); event.preventDefault(); }
+  hideConversation(event, projectId, csid);   // existing: persists to mc_hidden_convos + refreshModal
+  refreshThreadsBoard(projectId);
+}
+
+// Inject the board's CSS once. Themed entirely via CSS vars so it tracks the
+// active light/dark theme.
+function _ensureThreadsCss() {
+  if (document.getElementById('mc-threads-css')) return;
+  const s = document.createElement('style');
+  s.id = 'mc-threads-css';
+  s.textContent = `
+    .tb-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.45);display:flex;align-items:flex-start;justify-content:center;padding:40px 20px;overflow:auto;pointer-events:auto}
+    .tb-board{background:var(--bg);border:1px solid var(--border);border-radius:14px;width:min(1120px,96vw);max-height:calc(100vh - 80px);overflow:auto;box-shadow:0 20px 60px rgba(0,0,0,.45);padding:20px 22px}
+    .tb-head{display:flex;align-items:center;margin-bottom:5px}
+    .tb-h1{font-size:19px;font-weight:800;color:var(--text)}
+    .tb-h2{font-size:13px;color:var(--text-faint);margin-left:8px}
+    .tb-close{margin-left:auto;background:none;border:none;color:var(--text-dim);font-size:17px;cursor:pointer;padding:3px 9px;border-radius:8px}
+    .tb-close:hover{background:var(--surface)}
+    .tb-summary{font-size:12.5px;color:var(--text-dim);margin-bottom:16px}
+    .tb-summary b{color:var(--text)} .tb-muted{color:var(--text-faint)}
+    .tb-cols{display:flex;gap:14px;align-items:flex-start}
+    .tb-col{flex:1;min-width:0;background:var(--surface);border:1px solid var(--border);border-radius:12px;overflow:hidden}
+    .tb-colhead{padding:12px 14px;font-size:12.5px;font-weight:700;display:flex;align-items:center;gap:8px;border-bottom:1px solid var(--border)}
+    .tb-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto}
+    .tb-n{margin-left:auto;font-size:11px;font-weight:700;color:var(--text-faint);background:var(--bg);border-radius:10px;padding:1px 8px}
+    .tb-colhead.amber{color:var(--amber)} .tb-colhead.amber .tb-dot{background:var(--amber)}
+    .tb-colhead.green{color:var(--green)} .tb-colhead.green .tb-dot{background:var(--green)}
+    .tb-colhead.slate{color:var(--text-dim)} .tb-colhead.slate .tb-dot{background:var(--text-faint)}
+    .tb-card{padding:11px 14px;border-top:1px solid var(--border);cursor:pointer}
+    .tb-card:first-of-type{border-top:none}
+    .tb-card:hover{background:var(--bg)}
+    .tb-title{font-size:13px;font-weight:600;color:var(--text);line-height:1.35;word-break:break-word}
+    .tb-meta{font-size:11px;color:var(--text-faint);margin-top:4px}
+    .tb-acts{margin-top:8px;display:flex;gap:6px;flex-wrap:wrap}
+    .tb-act{font-size:11px;font-weight:600;padding:4px 10px;border-radius:7px;border:1px solid var(--border);color:var(--text-dim);background:var(--surface);cursor:pointer}
+    .tb-act:hover{border-color:var(--accent);color:var(--text)}
+    .tb-act.go{border-color:var(--green);color:var(--green)}
+    .tb-act.p{border-color:var(--amber);color:var(--amber)}
+    .tb-empty{padding:22px 14px;text-align:center;color:var(--text-faint);font-size:12px;line-height:1.5}
+    .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
+    .agent-rail-threads{display:block;width:100%;margin-top:6px;padding:7px 10px;font-size:12.5px;font-weight:600;background:var(--surface);border:1px solid var(--border);border-radius:8px;color:var(--text-dim);cursor:pointer;text-align:left}
+    .agent-rail-threads:hover{border-color:var(--accent);color:var(--text)}`;
+  document.head.appendChild(s);
+}
+
+window.openThreadsBoard = openThreadsBoard;
+window.closeThreadsBoard = closeThreadsBoard;
+window.archiveThread = archiveThread;
 
 // Open a conversation in chat mode. Live/tracked → its thread; past chat with an
 // MC session id → reconstruct its transcript into a read-only thread (ready to
