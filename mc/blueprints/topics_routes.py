@@ -221,6 +221,81 @@ def refresh_topics(project_id):
                         'chat_count': len(sigs), 'stale': False})
 
 
+def _open_backlog(project_id):
+    p = _load_project(project_id) or {}
+    return [{'id': i.get('id'), 'text': (i.get('text') or '').strip()[:200]}
+            for i in (p.get('backlog') or [])
+            if i.get('status') != 'done' and i.get('id') and (i.get('text') or '').strip()]
+
+
+def _done_topics(project_id):
+    cache = _load_json(_topics_path(project_id), None) or {}
+    state = _load_json(_state_path(project_id), {})
+    out = []
+    for t in cache.get('topics', []):
+        if (state.get(t['id']) or {}).get('state') == 'done':
+            out.append({'title': t.get('title', ''), 'gist': t.get('gist', '')})
+    return out
+
+
+_SWEEP_INSTRUCTION = (
+    "You match COMPLETED work topics against a project's OPEN backlog. Input "
+    "(stdin) is a JSON object {\"done_topics\": [{title, gist}], \"backlog\": "
+    "[{id, text}]}.\n\n"
+    "For each backlog item that is clearly addressed / completed by one of the "
+    "done topics, output a match. Be CONSERVATIVE: only match when the item is "
+    "genuinely covered by a done topic; when unsure, OMIT it. Never match an "
+    "item to a topic it only loosely relates to.\n\n"
+    "For each match output: id (the backlog id, copied verbatim), topic (the "
+    "matching topic title), confidence (\"high\"|\"medium\"|\"low\"), reason "
+    "(one short clause on why it's covered).\n\n"
+    "Return ONLY {\"matches\": [ ... ]} — no markdown, no prose. Omit items with "
+    "no clear match; an empty list is a valid answer."
+)
+
+
+def _match_backlog(done_topics, backlog):
+    body = json.dumps({'done_topics': done_topics, 'backlog': backlog}, ensure_ascii=False)
+    raw = _scribe_call(_MODEL, _SWEEP_INSTRUCTION, body)
+    txt = (raw or '').strip()
+    mm = re.search(r'\{.*\}', txt, re.S)
+    if mm:
+        txt = mm.group(0)
+    data = json.loads(txt)
+    matches = data.get('matches', []) if isinstance(data, dict) else []
+    valid = {b['id']: b['text'] for b in backlog}
+    out = []
+    for mt in matches:
+        bid = mt.get('id')
+        if bid not in valid:
+            continue
+        conf = mt.get('confidence', 'medium')
+        if conf not in ('high', 'medium', 'low'):
+            conf = 'medium'
+        out.append({'id': bid, 'text': valid[bid], 'topic': str(mt.get('topic', ''))[:80],
+                    'confidence': conf, 'reason': str(mt.get('reason', ''))[:160]})
+    return out
+
+
+@bp.route('/api/project/<project_id>/topics/backlog-sweep', methods=['POST'])
+def backlog_sweep(project_id):
+    """PROPOSE (never close) backlog items covered by topics the user marked
+    done. The caller confirms, then closes each via the existing
+    PATCH /backlog/<id> {status:done}. Best-effort, cheap-model."""
+    with _lock:
+        done = _done_topics(project_id)
+        backlog = _open_backlog(project_id)
+    if not done:
+        return jsonify({'matches': [], 'note': 'No topics marked done yet — mark a topic done first.'})
+    if not backlog:
+        return jsonify({'matches': [], 'note': 'No open backlog items.'})
+    try:
+        matches = _match_backlog(done, backlog)
+    except Exception as e:
+        return jsonify({'matches': [], 'error': f'sweep failed: {e}'}), 200
+    return jsonify({'matches': matches, 'done_topics': len(done), 'open_backlog': len(backlog)})
+
+
 @bp.route('/api/project/<project_id>/topics/<topic_id>/state', methods=['POST'])
 def set_topic_state(project_id, topic_id):
     """Mark a topic done / archived / open (open clears it). Persists by slug so

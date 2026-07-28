@@ -1806,6 +1806,7 @@ function _topicsBoardHTML(pid) {
       </div>
       <div class="modal-window-controls" style="position:static;display:flex;gap:6px;align-items:center">
         <button class="tb-review" onclick="reviewTopics('${esc(pid)}')" ${d.loading ? 'disabled' : ''}>${d.loading ? 'Reviewing…' : '&#8635; Review'}</button>
+        <button class="tb-review tb-sweep-btn" onclick="sweepBacklog('${esc(pid)}')" title="Propose closing backlog items covered by topics you marked done">&#129529; Sweep backlog</button>
         <button class="modal-minimize" onclick="minimizeModal('${esc(mid)}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeThreadsBoard('${esc(pid)}')" title="Close (Esc)">&#10005;</button>
       </div>
@@ -1816,8 +1817,78 @@ function _topicsBoardHTML(pid) {
   else if (!shown.length) body = `<div class="tb-empty">No open topics.${archivedN ? ` <button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">Show ${archivedN} archived</button>` : ''}</div>`;
   else body = `<div class="tb-topics">${shown.map(t => _topicCardHTML(pid, t)).join('')}</div>`
     + (archivedN ? `<div class="tb-archline"><button class="tb-linkbtn" onclick="toggleTopicsArchived('${esc(pid)}')">${_topicsShowArchived[pid] ? 'Hide' : 'Show'} ${archivedN} archived</button></div>` : '');
-  return header + `<div class="tb-body">${body}</div>`;
+  const sw = _topicsSweep[pid];
+  const sweep = (sw && (sw.loading || sw.matches || sw.note || sw.error)) ? _sweepPanelHTML(pid) : '';
+  return header + `<div class="tb-body">${sweep}${body}</div>`;
 }
+
+// ── Phase 3: backlog sweep (propose-then-confirm; never auto-closes) ─────────
+let _topicsSweep = {};   // pid -> {matches, selected:Set, loading, note, error}
+function _sweepPanelHTML(pid) {
+  const s = _topicsSweep[pid] || {};
+  const dismiss = `<button class="tb-linkbtn" onclick="dismissSweep('${esc(pid)}')">Dismiss</button>`;
+  if (s.loading && !s.matches) return `<div class="tb-sweep"><div class="tb-sweep-head">Scanning backlog…</div></div>`;
+  if (s.error) return `<div class="tb-sweep"><div class="tb-sweep-head">Sweep failed: ${esc(s.error)} ${dismiss}</div></div>`;
+  if (!(s.matches || []).length) return `<div class="tb-sweep"><div class="tb-sweep-head">${esc(s.note || 'No matching backlog items.')} ${dismiss}</div></div>`;
+  const rows = s.matches.map(m => {
+    const on = s.selected && s.selected.has(m.id);
+    return `<label class="tb-sweep-row">
+        <input type="checkbox" ${on ? 'checked' : ''} onchange="toggleSweepItem('${esc(pid)}','${esc(m.id)}')">
+        <span class="tb-sweep-main"><span class="tb-sweep-text">${esc(m.text)}</span>
+          <span class="tb-sweep-meta"><span class="tb-conf ${esc(m.confidence)}">${esc(m.confidence)}</span> &nbsp;${esc(m.topic)} — ${esc(m.reason)}</span></span>
+      </label>`;
+  }).join('');
+  const n = s.selected ? s.selected.size : 0;
+  return `<div class="tb-sweep">
+      <div class="tb-sweep-head">Backlog items covered by done topics — review &amp; confirm ${dismiss}</div>
+      ${rows}
+      <div class="tb-sweep-foot"><button class="tb-act go" ${n && !s.loading ? '' : 'disabled'} onclick="confirmSweep('${esc(pid)}')">${s.loading ? 'Closing…' : `Close ${n} selected`}</button></div>
+    </div>`;
+}
+async function sweepBacklog(pid) {
+  _topicsSweep[pid] = { loading: true };
+  refreshThreadsBoard(pid);
+  try {
+    const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/backlog-sweep`, { method: 'POST' });
+    const d = await r.json();
+    const sel = new Set((d.matches || []).filter(m => m.confidence !== 'low').map(m => m.id));  // pre-check high+medium
+    _topicsSweep[pid] = { matches: d.matches || [], note: d.note || null, error: d.error || null, selected: sel, loading: false };
+  } catch (e) { _topicsSweep[pid] = { loading: false, error: String(e) }; }
+  refreshThreadsBoard(pid);
+}
+function toggleSweepItem(pid, id) {
+  const s = _topicsSweep[pid]; if (!s || !s.selected) return;
+  if (s.selected.has(id)) s.selected.delete(id); else s.selected.add(id);
+  refreshThreadsBoard(pid);
+}
+function dismissSweep(pid) { delete _topicsSweep[pid]; refreshThreadsBoard(pid); }
+async function confirmSweep(pid) {
+  const s = _topicsSweep[pid]; if (!s || !s.selected || !s.selected.size) return;
+  const ids = Array.from(s.selected);
+  const byId = {}; (s.matches || []).forEach(m => byId[m.id] = m);
+  _topicsSweep[pid] = Object.assign({}, s, { loading: true });
+  refreshThreadsBoard(pid);
+  let ok = 0;
+  for (const id of ids) {
+    try {
+      await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}`,
+        { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ status: 'done' }) });
+      try {
+        await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/backlog/${encodeURIComponent(id)}/note`,
+          { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ text: 'Closed via topic sweep' + (byId[id] && byId[id].topic ? ` (topic: ${byId[id].topic})` : '') }) });
+      } catch (e) {}
+      ok++;
+    } catch (e) {}
+  }
+  delete _topicsSweep[pid];
+  if (typeof showToast === 'function') showToast(`Closed ${ok} backlog item${ok !== 1 ? 's' : ''} from the sweep`);
+  if (typeof refreshProjectBacklog === 'function') { try { refreshProjectBacklog(pid); } catch (e) {} }
+  refreshThreadsBoard(pid);
+}
+window.sweepBacklog = sweepBacklog;
+window.confirmSweep = confirmSweep;
+window.toggleSweepItem = toggleSweepItem;
+window.dismissSweep = dismissSweep;
 
 async function _loadTopics(pid) {
   try {
@@ -2005,6 +2076,18 @@ function _ensureThreadsCss() {
     .tb-chat-empty:hover{background:none;color:var(--text-faint)}
     .tb-linkbtn{background:none;border:none;color:var(--accent);font-size:calc(var(--tbf)*0.85);cursor:pointer;padding:2px 4px}
     .tb-archline{padding:8px 2px}
+    /* ── backlog sweep ── */
+    .tb-sweep-btn{border-color:var(--amber);color:var(--amber)}
+    .tb-sweep{background:var(--bg);border:1px solid var(--amber);border-radius:10px;padding:10px 12px;margin-bottom:12px}
+    .tb-sweep-head{font-size:calc(var(--tbf)*0.9);font-weight:700;color:var(--text);display:flex;justify-content:space-between;gap:8px;align-items:center;margin-bottom:6px}
+    .tb-sweep-row{display:flex;gap:9px;align-items:flex-start;padding:6px 2px;cursor:pointer}
+    .tb-sweep-row input{margin-top:3px;flex:0 0 auto}
+    .tb-sweep-main{flex:1;min-width:0}
+    .tb-sweep-text{font-size:calc(var(--tbf)*0.9);color:var(--text);display:block}
+    .tb-sweep-meta{font-size:calc(var(--tbf)*0.8);color:var(--text-faint);display:block;margin-top:2px}
+    .tb-conf{font-weight:700;text-transform:uppercase;font-size:calc(var(--tbf)*0.72)}
+    .tb-conf.high{color:var(--green)} .tb-conf.medium{color:var(--amber)} .tb-conf.low{color:var(--text-faint)}
+    .tb-sweep-foot{margin-top:8px}
     .rail-threads-badge{margin-left:6px;background:var(--accent);color:#fff;font-size:10px;font-weight:700;border-radius:10px;padding:0 6px}
     /* Shares the "+ New conversation" pill frame (.conv-newbtn.agent-rail-new)
        so it is EXACTLY the same size; we only override the colour to a
