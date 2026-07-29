@@ -36,11 +36,11 @@ bp = Blueprint('local_auth', __name__)
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────
 # LOCAL_AUTH_PATH derives from _DATA_ROOT, which still lives in server.py;
-# _is_cf_tunneled_request is remote-family (CF JWT machinery) and migrates to
-# mc/blueprints/remote.py at step 1.7. Until those extractions land, server.py
-# injects both via wire() before registering the blueprint. Annotated with
-# their wired types; the None defaults are import-time-only (wire() runs
-# before the first request can touch them).
+# _is_cf_tunneled_request is remote-family (CF JWT machinery) and now lives in
+# mc/blueprints/remote_routes.py. server.py injects both via wire() before
+# registering the blueprint (keeping the injection avoids a blueprint-to-
+# blueprint import). Annotated with their wired types; the None defaults are
+# import-time-only (wire() runs before the first request can touch them).
 LOCAL_AUTH_PATH: Path = None  # type: ignore[assignment]
 _is_cf_tunneled_request: Callable[[], bool] = None  # type: ignore[assignment]
 

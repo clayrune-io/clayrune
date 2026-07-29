@@ -507,7 +507,7 @@ def _structured_log(line: str) -> None:
 # ── Kill-switch gate (D6 enumeration — §4.6) ─────────────────────────────────
 
 # Enumerated entry points. Unit test
-# tests/test_distiller_kill_switch_enumeration.py asserts every code path
+# tests/test_distiller_kill_switch.py asserts every code path
 # that touches Distiller state routes through _distiller_should_proceed.
 ENTRY_POINTS = frozenset({
     'session_end_extract',     # _distill_extract_and_aggregate
