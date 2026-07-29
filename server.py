@@ -178,6 +178,13 @@ def _load_config():
         # the cache-warmed context stays lean.
         'exploration_readback_enabled': True,
         'exploration_read_floor_topk': 2,
+        # Cross-agent coordination layer — Phase 0 (awareness-only). Surfaces
+        # OTHER live agents' current tasks + recently-landed commits into a
+        # session's read-floor so concurrent siblings on one project stop
+        # duplicating/contradicting each other. Best-effort, never load-bearing;
+        # ships default-OFF. Design: docs/COORDINATION_LAYER_DESIGN.md (9518ec62).
+        'coordination_enabled': False,
+        'coordination_read_floor_topk': 3,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,
@@ -1317,6 +1324,23 @@ app.register_blueprint(_bp_hivemind.bp)
 # in mc/state.py since Phase 0).
 _start_hivemind_orchestrator = _bp_hivemind._start_hivemind_orchestrator
 _hm_reconcile_stale_on_startup = _bp_hivemind._hm_reconcile_stale_on_startup
+
+
+# ── Cross-agent coordination layer (Phase 0 — awareness-only) ────────────────
+# docs/COORDINATION_LAYER_DESIGN.md, backlog 9518ec62. Reuses the Hivemind
+# bus/SSE patterns but scoped per-project (not per-hivemind): surfaces other
+# live agents' tasks + landed commits into a session's read-floor so concurrent
+# siblings stop duplicating each other. Wired AFTER _bp_agent (get_manager) and
+# _proj_sync (git_run, imported above at the code-sync register()). Default-OFF.
+from mc.blueprints import coordination_routes as _bp_coord  # noqa: E402
+
+_bp_coord.wire(
+    coord_dir=_DATA_ROOT / 'data' / 'coordination',
+    load_project_fn=_bp_projects.load_project,
+    get_manager_fn=_bp_agent.get_manager,
+    git_run_fn=_proj_sync.git_run,
+)
+app.register_blueprint(_bp_coord.bp)
 
 
 # ── Run history (recent-runs/search-chats/conversations/plans/usage) ──

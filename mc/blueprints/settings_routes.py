@@ -127,6 +127,9 @@ _CONFIG_EDITABLE_KEYS = {
     # want to be able to switch off from a phone, without a config edit and a
     # restart. Per-turn (read at dispatch) → no respawn needed.
     'exploration_readback_enabled', 'exploration_read_floor_topk',
+    # Cross-agent coordination layer (Phase 0, default-OFF). Per-turn read at
+    # the next context build — no respawn needed (like read_floor_topk).
+    'coordination_enabled', 'coordination_read_floor_topk',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',

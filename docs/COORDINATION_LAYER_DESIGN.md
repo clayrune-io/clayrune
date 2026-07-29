@@ -388,34 +388,25 @@ Distiller/Scribe "best-effort, never load-bearing" posture.
 
 ---
 
-## 8. Open questions (need Ron's decision)
+## 8. Decisions (locked 2026-07-29 with Ron)
 
-1. **Worktree ordering.** This design assumes `b264200a` (per-agent worktrees)
-   lands to make Phases 2–3 real. Do we build coordination **awareness-first**
-   (Phase 0–1 on the *shared* tree, worktrees later) — or block on `b264200a`
-   and build them together? *(Recommendation: awareness-first — Phase 0 delivers
-   value with zero worktree work and de-risks the rest.)*
-2. **Auto-publish vs. explicit-only.** Is server-side auto-publish of
-   INTENTIONS/COMPLETIONS acceptable (it's the tier that makes this frictionless),
-   or do you want agents to publish **explicitly** so nothing is inferred? *(Rec:
-   auto-publish as default, explicit as enrichment.)*
-3. **Interrupt budget.** Are you OK with the layer **interrupting a live turn**
-   (mode-3) on a hard conflict, or should even hard conflicts wait for the next
-   turn boundary? *(Rec: allow interrupt, strictly target-overlap-gated.)*
-4. **Planner vs. peer-to-peer.** Do we want an orchestrator that *decomposes*
-   interdependent features into aware subtasks (Hivemind-style), or keep this
-   purely peer-to-peer (agents dispatched independently, coordinating as
-   equals)? *(Rec: peer-to-peer first; a planner is a separate, later layer that
-   can sit on top.)*
-5. **Reuse Hivemind wholesale, or fork the primitives?** Extend
-   `hivemind_routes.py` to a project-scoped mode, or a new sibling module
-   (`coordination_routes.py`) that copies the bus/SSE/daemon patterns? *(Rec: new
-   module — Hivemind's DAG/serialize/report-don't-edit semantics are load-bearing
-   for *its* use and we don't want to entangle them; copy the patterns, don't
-   overload the routes.)*
-6. **Scope of "targets."** Files, modules, or symbols? Symbol-level overlap is
-   the most precise relevance signal but the hardest to derive. *(Rec: start
-   file/path-level from `git diff --name-only`; add symbol-level later.)*
+All six resolved in favor of the recommendations; build proceeds on these:
+
+1. **Worktree ordering → awareness-first.** Build Phase 0–1 on the *shared*
+   tree now; do **not** block on `b264200a`. Per-agent worktrees (Phase 2) and
+   rebase (Phase 3) follow. Phase 0 delivers value with zero worktree work.
+2. **Publish → auto-publish default + explicit enrichment.** Server auto-derives
+   INTENTIONS (on dispatch) and COMPLETIONS (on commit/turn_complete); an
+   explicit `coord-publish` capability lets agents sharpen forward-looking intent.
+3. **Interrupt → allowed, strictly target-overlap-gated.** Mode-3 interrupt is
+   reserved for a sibling COMPLETION overlapping this agent's *open* INTENTION.
+4. **Topology → peer-to-peer first.** No decomposing planner in this layer; a
+   planner is a separate later layer that can sit on top.
+5. **Code shape → new module, don't overload Hivemind.** Copy the bus/SSE/daemon
+   *patterns* into a new `coordination.py` + `coordination_routes.py`; leave
+   Hivemind's DAG/serialize/report-don't-edit semantics untouched.
+6. **Targets → file/path-level first.** Derive from `git diff --name-only`;
+   symbol-level overlap is a later refinement.
 
 ---
 

@@ -1739,6 +1739,26 @@ def _build_agent_context(project, incognito=False, task='', character_body=''):
                 "investigated something like this; read the full file before "
                 "re-deriving) ---\n" + el)
 
+    # Sibling activity — cross-agent coordination read-floor (Phase 0). Surfaces
+    # OTHER live agents' current tasks (open intentions) + recently-landed
+    # commits (completions) on THIS project, ranked by overlap with this task,
+    # so concurrent siblings stop duplicating/contradicting each other. Same
+    # delivery shape as RELEVANT MEMORY; gated behind coordination_enabled
+    # (default OFF); best-effort, never load-bearing. Skipped for incognito.
+    # Design: docs/COORDINATION_LAYER_DESIGN.md. Backlog 9518ec62.
+    if task and not incognito and state.CONFIG.get('coordination_enabled', False):
+        try:
+            from mc.blueprints import coordination_routes as _coord
+            _coord.reconcile_commits(project)  # publish any just-landed commits
+            sib = _coord.sibling_activity(
+                project['id'], (project.get('_coord_session_id') or ''), task,
+                int(state.CONFIG.get('coordination_read_floor_topk', 3) or 3))
+            block = _coord.render_readfloor(sib)
+            if block:
+                parts.append(block)
+        except Exception as e:
+            _log(f"[coord] read-floor injection failed: {e}")
+
     # Recent activity — Claude-only: a non-Claude agent reads these past
     # "Agent dispatched: <task>" lines as things it still has to do.
     log = project.get('activity_log', [])[:3]
