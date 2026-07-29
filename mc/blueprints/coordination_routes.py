@@ -35,7 +35,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
-from mc import state
+from mc import obs, state
 from mc.core import _log, now_iso, time_ago
 
 bp = Blueprint('coordination_routes', __name__)
@@ -58,6 +58,20 @@ _RECONCILE_WALK_LIMIT = 50
 # A completion older than this is stale for read-floor purposes (the change has
 # long since propagated; showing it just adds noise).
 _COMPLETION_TTL_SECS = 6 * 3600
+# A recent completion whose targets/summary overlap a live agent's task at or
+# above this many tokens is a CONFLICT (⚠) — the sibling likely just changed
+# ground under this agent's feet. Freshness bounds it to "just landed".
+_CONFLICT_MIN_OVERLAP = 2
+_CONFLICT_FRESH_SECS = 45 * 60
+# Coordination daemon cadence (mirrors the Hivemind orchestrator's 10s tick).
+_LOOP_INTERVAL_SECS = 15
+
+
+def interrupt_enabled() -> bool:
+    """Opt-in escalation: let the daemon actively INTERRUPT a live agent on a
+    hard conflict (default OFF — interrupting a turn is disruptive; the ⚠ line
+    in the read-floor is the non-disruptive default surface)."""
+    return bool(state.CONFIG.get('coordination_interrupt_enabled', False))
 
 
 def wire(*, coord_dir, load_project_fn, get_manager_fn, git_run_fn):
@@ -358,12 +372,26 @@ def sibling_activity(project_id: str, my_session_id: str, task: str,
         return []
 
 
+def _is_conflict(item: dict, now: float | None = None) -> bool:
+    """A landed change that strongly overlaps this agent's task AND is fresh —
+    the sibling likely just changed ground under this agent's feet."""
+    if item.get('kind') != 'completion':
+        return False
+    if item.get('score', 0) < _CONFLICT_MIN_OVERLAP:
+        return False
+    age = _age_secs(item.get('ts', ''), now if now is not None else _time.time())
+    return age is None or age <= _CONFLICT_FRESH_SECS
+
+
 def render_readfloor(items: list[dict]) -> str:
     """Format sibling_activity() items as the SIBLING ACTIVITY read-floor block.
-    Returns '' when there's nothing worth showing."""
+    Strong-overlap fresh completions are promoted to a ⚠ CONFLICT line (the
+    non-disruptive conflict surface — no interrupt needed). Returns '' when
+    there's nothing worth showing."""
     if not items:
         return ''
-    lines = []
+    now = _time.time()
+    conflicts, lines = [], []
     for it in items:
         if it['kind'] == 'intention':
             lines.append(f"  • [working now] {it['agent']}: {it['summary']}")
@@ -371,13 +399,17 @@ def render_readfloor(items: list[dict]) -> str:
             tgt = it.get('targets') or []
             tgt_s = f" (touched: {', '.join(tgt)})" if tgt else ''
             who = f"{it['agent']} " if it.get('agent') else ''
-            lines.append(
-                f"  • [landed {it.get('short','')}] {who}{it['summary']}{tgt_s}")
-    return (
+            body = f"[landed {it.get('short','')}] {who}{it['summary']}{tgt_s}"
+            if _is_conflict(it, now):
+                conflicts.append(f"  ⚠ {body} — OVERLAPS your task; re-check "
+                                 f"this before continuing.")
+            else:
+                lines.append(f"  • {body}")
+    header = (
         "--- SIBLING ACTIVITY (other agents on THIS project right now — do NOT "
         "duplicate or contradict their in-flight work; coordinate via the "
-        "coord bus if you overlap) ---\n" + "\n".join(lines)
-    )
+        "coord bus if you overlap) ---")
+    return "\n".join([header] + conflicts + lines)
 
 
 def _short_label(sid: str, s: dict) -> str:
@@ -393,6 +425,129 @@ def _age_secs(ts: str, now: float):
         return max(0.0, now - t)
     except Exception:
         return None
+
+
+# ── Coordination daemon (continuous freshness + opt-in interrupt) ────────────
+# Mirrors _hivemind_orchestrator_loop: a daemon thread, obs.heartbeat, best-
+# effort. Engages ONLY for projects with ≥2 live agents (single-agent projects
+# pay nothing). Keeps completions fresh between turns (a persistent Mode-B
+# conversation would otherwise only reconcile at its own turn boundaries, so it
+# could miss a sibling landing work mid-conversation) and — when the opt-in
+# sub-flag is on — escalates a hard conflict to a live interrupt.
+
+_stop = threading.Event()
+
+
+def _live_by_project() -> dict[str, list[tuple[str, dict]]]:
+    out: dict[str, list[tuple[str, dict]]] = {}
+    try:
+        for sid, s in list(state.agent_sessions.items()):
+            if not isinstance(s, dict):
+                continue
+            if s.get('status') not in ('running', 'idle'):
+                continue
+            if s.get('housekeeping'):
+                continue
+            pid = s.get('project_id') or ''
+            if pid:
+                out.setdefault(pid, []).append((sid, s))
+    except Exception:
+        pass
+    return out
+
+
+def _deliver_interrupt(project_id: str, session_id: str, ev: dict) -> bool:
+    """Escalation: inject a coordination notice into a live session via the
+    normal /agent/send path (interrupt-and-resume). Best-effort, opt-in."""
+    try:
+        import urllib.request
+        port = int(state.CONFIG.get('port', 5199) or 5199)
+        tgt = ev.get('targets') or []
+        tgt_s = f" touching {', '.join(tgt[:5])}" if tgt else ''
+        notice = (
+            f"⚠ COORDINATION: a sibling agent just landed commit "
+            f"{ev.get('short','')} — \"{ev.get('summary','')}\"{tgt_s}. This "
+            f"overlaps your current task. Re-check that work before continuing; "
+            f"do not duplicate or contradict it.")
+        body = json.dumps({'message': notice, 'session_id': session_id}).encode()
+        req = urllib.request.Request(
+            f'http://127.0.0.1:{port}/api/project/{project_id}/agent/send',
+            data=body, headers={'Content-Type': 'application/json'},
+            method='POST')
+        urllib.request.urlopen(req, timeout=10).read()
+        _log(f"[coord] interrupted {session_id[:8]} re conflict {ev.get('short','')}")
+        return True
+    except Exception as e:
+        _log(f"[coord] interrupt delivery failed for {session_id[:8]}: {e}")
+        return False
+
+
+def _detect_and_interrupt(project_id: str, sessions: list[tuple[str, dict]]) -> None:
+    """For each actively-running session, if a completion that landed AFTER it
+    started strongly overlaps its task, fire one interrupt (deduped by
+    sha|session so it never re-fires)."""
+    now = _time.time()
+    completions = [e for e in _read_events(project_id, last_n=50)
+                   if e.get('type') == 'completion'
+                   and (_age_secs(e.get('ts', ''), now) or 0) <= _CONFLICT_FRESH_SECS]
+    if not completions:
+        return
+    st = _load_state(project_id)
+    fired = set(st.get('interrupted') or [])
+    changed = False
+    for sid, s in sessions:
+        if s.get('status') != 'running':
+            continue  # only interrupt an agent mid-turn; idle picks it up via read-floor
+        started = s.get('started_at', '')
+        my_tokens = _tokens(s.get('task', ''))
+        if not my_tokens:
+            continue
+        for ev in completions:
+            # Only a change that landed AFTER this agent started is plausibly a
+            # sibling's (not its own pre-existing baseline).
+            if started and ev.get('ts', '') <= started:
+                continue
+            score = _overlap(my_tokens, _tokens(
+                ev.get('summary', '') + ' ' + ' '.join(ev.get('targets', []) or [])))
+            if score < _CONFLICT_MIN_OVERLAP:
+                continue
+            key = f"{ev.get('commit_sha','')}|{sid}"
+            if key in fired:
+                continue
+            if _deliver_interrupt(project_id, sid, ev):
+                fired.add(key)
+                changed = True
+            break  # one interrupt per session per tick
+    if changed:
+        st['interrupted'] = list(fired)[-200:]
+        _save_state(project_id, st)
+
+
+def _coordination_loop():
+    """Background daemon. No-op unless coordination is enabled; only touches
+    projects with ≥2 live agents."""
+    while not _stop.is_set():
+        obs.heartbeat('coordination')
+        try:
+            if enabled() and COORD_DIR is not None:
+                for pid, sess in _live_by_project().items():
+                    if len(sess) < 2:
+                        continue  # coordination only matters with ≥2 live agents
+                    p = load_project(pid)
+                    if not p:
+                        continue
+                    reconcile_commits(p)          # keep completions fresh
+                    if interrupt_enabled():
+                        _detect_and_interrupt(pid, sess)
+        except Exception as e:
+            _log(f"[coord] loop error: {e}")
+        _stop.wait(_LOOP_INTERVAL_SECS)
+
+
+def start_coordination_loop():
+    """Start the coordination daemon thread (called once at startup)."""
+    threading.Thread(target=_coordination_loop, daemon=True,
+                     name='coordination').start()
 
 
 # ── Endpoints (explicit enrichment tier + UI/testing) ────────────────────────

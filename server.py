@@ -185,6 +185,11 @@ def _load_config():
         # ships default-OFF. Design: docs/COORDINATION_LAYER_DESIGN.md (9518ec62).
         'coordination_enabled': False,
         'coordination_read_floor_topk': 3,
+        # Opt-in escalation: let the coordination daemon actively INTERRUPT a
+        # live agent on a hard conflict (a fresh sibling commit overlapping its
+        # task). Default OFF — the ⚠ CONFLICT line in the read-floor is the
+        # non-disruptive default surface; this turns on the disruptive push.
+        'coordination_interrupt_enabled': False,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,
@@ -1573,6 +1578,7 @@ atexit.register(_cleanup_terminals)
 atexit.register(_cleanup_browsers)
 atexit.register(_scheduler_stop.set)
 atexit.register(_hivemind_orchestrator_stop.set)
+atexit.register(_bp_coord._stop.set)  # stop the coordination daemon on exit
 
 # ── Session Guardian check family ── moved to mc/blueprints/agent_routes.py
 # (1.12). atexit.register(_guardian_stop.set) stays below (1.8 LIFO lesson).
@@ -2299,6 +2305,7 @@ if __name__ == '__main__':
     _boot_phase('reap prior strays', process_ledger._reap_prior_instance_strays)
     _bp_sched._start_scheduler()
     _start_hivemind_orchestrator()
+    _bp_coord.start_coordination_loop()  # cross-agent coordination daemon (9518ec62)
     _start_session_guardian()
     # Install built-in skills bundled with MC into ~/.claude/skills/.
     # Checksum-aware: user edits to managed skills are preserved.

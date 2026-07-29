@@ -130,6 +130,7 @@ _CONFIG_EDITABLE_KEYS = {
     # Cross-agent coordination layer (Phase 0, default-OFF). Per-turn read at
     # the next context build — no respawn needed (like read_floor_topk).
     'coordination_enabled', 'coordination_read_floor_topk',
+    'coordination_interrupt_enabled',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',

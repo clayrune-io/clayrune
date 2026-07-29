@@ -329,7 +329,11 @@ per-agent worktree lifecycle inside MC; (5) turn-gated continuous rebase.
 
 ## 6. Phased implementation plan
 
-**Phase 0 — PoC: awareness-only, no worktrees, no rebase (smallest useful slice).**
+**Status (2026-07-29): Phase 0 + Phase 1 SHIPPED & live.** Phases 2–3 are gated
+on `b264200a` (per-agent worktrees) and deliberately NOT built speculatively —
+see §11. Implementation: `mc/blueprints/coordination_routes.py`.
+
+**Phase 0 — PoC: awareness-only, no worktrees, no rebase (smallest useful slice).**  ✅ SHIPPED
 Prove the loop end-to-end with the least surface.
 - Project-scoped coord bus: `events.jsonl` + `/coord/publish` + `/coord/events`.
 - **Auto-publish** an INTENTION on dispatch (from the task) and a COMPLETION on
@@ -343,19 +347,42 @@ Prove the loop end-to-end with the least surface.
   section (mitigated by the relevance gate + a `coordination_enabled` global
   default-OFF flag).
 
-**Phase 1 — live delivery.** Turn-boundary digest (mode-2) + severity-gated
-interrupt (mode-3) via `agent/send`. Roster + heartbeat + SSE stream for the UI.
+**Phase 1 — live delivery.**  ✅ SHIPPED
+As-built (differs slightly from the original sketch, for lower risk):
+- **Coordination daemon** (`_coordination_loop`, mirrors
+  `_hivemind_orchestrator_loop`: daemon thread, `obs.heartbeat('coordination')`,
+  15 s tick). Engages **only for projects with ≥2 live agents**; single-agent
+  projects cost nothing. Runs `reconcile_commits` continuously so a persistent
+  Mode-B conversation sees a sibling's commit that lands *between* its own turns
+  (not only at its turn boundaries).
+- **⚠ CONFLICT surface (default, non-disruptive).** In `render_readfloor`, a
+  completion that overlaps this agent's task at ≥`_CONFLICT_MIN_OVERLAP` tokens
+  and is fresh (≤45 min) is promoted to a `⚠ … OVERLAPS your task; re-check`
+  line, sorted to the top of `SIBLING ACTIVITY`. This *is* mode-2/3 delivered
+  the cheap way: the colliding agent sees it on its next turn, no interrupt.
+- **Opt-in interrupt (mode-3, default OFF).** When
+  `coordination_interrupt_enabled` is on, the daemon actively injects a
+  coordination notice into an *actively-running* colliding session via the
+  `/agent/send` interrupt-and-resume path. Guards: only `running` sessions
+  (idle ones get it via the read-floor); only completions that landed *after*
+  the session started (not its own baseline); deduped by `(sha, session_id)` so
+  it never re-fires. Reserved as the disruptive escalation.
+- Roster + SSE stream (`/coord/roster`, `/coord/stream`) shipped for the UI;
+  liveness derived from `agent_sessions` (no separate heartbeat needed at this
+  scale).
 
-**Phase 2 — per-agent worktrees (needs `b264200a`).** Per-session worktree
-lifecycle; roster maps session→worktree; agents run isolated. Coordination bus
-now spans isolated trees (the case that matters).
+**Phase 2 — per-agent worktrees (needs `b264200a`).**  ⏸ GATED — see §11.
+Per-session worktree lifecycle; roster maps session→worktree; agents run
+isolated. Coordination bus now spans isolated trees (the case that matters).
 
-**Phase 3 — continuous rebase.** Coordination daemon; turn-gated
+**Phase 3 — continuous rebase.**  ⏸ GATED — see §11. Turn-gated
 merge/rebase of siblings' landed commits into other worktrees; conflict →
 COORD event, never auto-resolve.
 
 **Phase 4 — polish.** UI panel (live sibling map, event timeline — reuse the
-Hivemind SSE UI shape); operator controls; per-project override of the global flag.
+Hivemind SSE UI shape); operator controls; per-project override of the global
+flag. API surface (`/coord/roster`, `/coord/events`, `/coord/stream`) is done;
+the frontend panel is the remaining piece.
 
 Each phase is independently shippable and default-OFF until proven, matching the
 Distiller/Scribe "best-effort, never load-bearing" posture.
@@ -410,7 +437,102 @@ All six resolved in favor of the recommendations; build proceeds on these:
 
 ---
 
-## 9. Summary
+## 10. Overlap with the Clayrune memory system
+
+The coordination layer and the memory system (Scribe + read-floor + Distiller)
+both **inject read-floor sections into `_build_agent_context`** and both answer
+some form of "what has happened on this project?" — so the overlap is real and
+worth stating precisely, because getting the boundary wrong would either
+duplicate work or pollute the curated memory index.
+
+### 10.1 They sit on the same timeline but answer different tenses
+
+| | Memory system | Coordination layer |
+|---|---|---|
+| **Tense** | **Past** — "what was learned / done in prior sessions" | **Present** — "what a sibling is doing / just did *right now*" |
+| **Lifetime** | **Durable** — curated MEMORY.md + permanent archive | **Volatile** — completions expire (`_COMPLETION_TTL_SECS` = 6 h); intentions vanish when the session ends |
+| **Source** | Scribe summarizes finished transcripts; Distiller mines recurrence | Live `agent_sessions` tasks + `git log` deltas |
+| **Scope** | Cross-**session** (and cross-project for learnings) | Strictly intra-project, cross-**concurrent-agent** |
+| **Read-floor section** | `RELEVANT MEMORY`, `RELEVANT PAST EXPLORATIONS` | `SIBLING ACTIVITY` |
+| **Delivery** | Per-spawn / per-respawn (static) | Per-spawn **+ continuous daemon** (a sibling landing work mid-conversation is inherently a live signal memory can't carry) |
+
+The one-liner: **memory is the durable record of the past; coordination is the
+ephemeral awareness of the present.** A change flows *through* coordination (a
+fresh COMPLETION, TTL-bounded) and *settles into* memory (git history + the next
+Scribe pass). No datum needs to live in both — they are consecutive stages of
+one lifecycle, not two copies of the same fact.
+
+### 10.2 The load-bearing boundary — no cross-contamination
+
+**Coordination events are NEVER written to MEMORY.md, and the memory pipeline
+never reads coordination state.** This is deliberate and load-bearing:
+
+- Writing ephemeral operational chatter ("ws_x is editing foo.py") into the
+  curated memory index is exactly the "learned-behavior drift in MEMORY.md's
+  curated section" the Skills-Curation design rules **out of scope**. It would
+  bloat the ~24 KB byte-capped index (see the index-byte-cap discovery) with
+  facts that are stale within hours.
+- **Enforcement is structural, already in place:** coordination state lives under
+  `data/coordination/<pid>/`, **outside `DATA_DIR`** (`data/projects/`). Scribe,
+  `load_projects()`, and the Distiller only ever touch `DATA_DIR` +
+  `~/.claude/skills/`, so they cannot pick up coordination events. This is the
+  same DATA_DIR-pollution rule that governs `_agent_log.json` / `_scribe_stats.json`.
+- The **durable** trace of anything coordination surfaces already exists without
+  it: a COMPLETION *is* a git commit (permanent), and the session that made it is
+  Scribed into MEMORY.md at teardown. Coordination is deliberately **forgetful**;
+  it adds no new durable store to keep in sync.
+
+### 10.3 Shared mechanisms we intentionally did *not* merge
+
+- **Ranking.** Memory's read-floor uses `_memory_search` (ranked grep over
+  files); coordination uses in-memory token-overlap against *live* session tasks
+  and *un-committed-to-disk* deltas. They rank different corpora with different
+  latency budgets (coordination must be cheap enough to run every daemon tick),
+  so a shared ranker would couple them for no gain. Kept separate.
+- **Read-floor budget.** Both append to the same `parts[]`. To avoid prompt
+  bloat, coordination is capped small (`coordination_read_floor_topk` = 3) and
+  its `SIBLING ACTIVITY` block is visually distinct from `RELEVANT MEMORY`, so an
+  agent can tell "a peer is doing this **now**" from "this was learned before."
+  If the combined read-floor ever grows too large, the byte-floor discipline
+  from the memory system (`index_line_hard_floor` et al.) is the model to copy.
+
+### 10.4 Where they *could* compose later (not now)
+
+- A repeated coordination **conflict** on the same targets across many sessions
+  is a *cross-session recurrence* — exactly the Distiller's job. A future bridge
+  could let the Distiller observe conflict density and propose a PREFERENCE
+  ("these two areas are coupled; change them together"). That is a deliberate,
+  human-promoted artifact — **not** an automatic write-back — so it respects the
+  learning-safety authority guard. Out of scope for Phases 0–1.
+
+---
+
+## 11. Remaining work — Phases 2–3 gated on `b264200a`
+
+Phases 2 (per-agent worktrees) and 3 (continuous rebase) are **intentionally not
+built yet.** They mutate the working tree and depend on per-agent worktree
+isolation, whose *design* is owned by backlog `b264200a`. Building
+tree-mutating rebase code before that lands would be speculative and risky —
+the opposite of the "best-effort, never load-bearing" posture the rest of the
+layer holds. The awareness layer (Phases 0–1) delivers the core value on the
+shared tree today; availability (Phases 2–3) is the second act.
+
+**Concrete plan when `b264200a` is scheduled** (the machinery already sketched in
+§5c–d): per-session worktree lifecycle wrapping `git worktree add/remove`
+(the `project_sync.ensure_worktree` pattern); the roster maps session→worktree;
+the coordination daemon — which *already exists and already ticks* — grows a
+turn-gated rebase step (reusing `project_sync._dirty/_ahead_behind/_commits_between`)
+that merges a sibling's landed commit into other worktrees **only** in the
+quiescent window between their turns, escalating conflicts as COORD events
+rather than auto-resolving. Because the daemon, the bus, and the git plumbing are
+all in place, Phases 2–3 are additive, not a rebuild.
+
+**Also remaining (not tree-related, lower risk):** the Phase 4 frontend panel
+(the `/coord/*` API is done) and, optionally, the §10.4 Distiller bridge.
+
+---
+
+## 12. Summary
 
 Clayrune already has the coordination **substrate** — Hivemind's durable
 file-backed bus, shared knowledge, SSE fan-out, and a daemon-loop pattern — plus
@@ -422,4 +544,3 @@ worktree isolation, and a turn-gated rebase that turns awareness into
 availability. Phase 0 (awareness-only, shared tree, auto-published, read-floor
 delivered) is a small, low-risk slice that already kills the most common
 duplication — and de-risks everything after it.
-```
