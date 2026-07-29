@@ -3415,6 +3415,18 @@ _BRIEF_REPLY_DIRECTIVE_SYSTEM = (
 )
 
 
+# A leading slash command the CLI should parse: `/name`, `/multi-word`, or a
+# plugin skill `/plugin:name`, followed by whitespace, args, or end-of-line.
+# Deliberately does NOT match a bare unix path like `/usr/bin/x` (the second
+# `/` breaks the token), so real slash commands are caught without eating paths.
+_SLASH_COMMAND_RE = _re_auth.compile(r'^/[A-Za-z][\w-]*(:[\w-]+)?(\s|$)')
+
+
+def _looks_like_slash_command(message: str) -> bool:
+    """True when `message` begins with a CLI slash command (ignoring leading WS)."""
+    return bool(_SLASH_COMMAND_RE.match(message.lstrip()))
+
+
 def _apply_mobile_brief(message: str, request_data: dict) -> str:
     """Return `message` augmented with a hidden brief-reply directive.
 
@@ -3428,7 +3440,16 @@ def _apply_mobile_brief(message: str, request_data: dict) -> str:
     Callers MUST use the returned (augmented) string for whatever reaches
     claude (stdin write, spawn arg, _dispatch_agent_internal task) and keep
     the ORIGINAL `message` for anything user-visible (log_lines, telemetry).
+
+    SLASH-COMMAND CARVE-OUT: the CLI only parses a message as a slash command
+    (`/goal`, `/context`, …) when the command is the FIRST bytes of the turn.
+    Prepending the brief directive would push it off the front, so the command
+    silently degrades to plain text the model just reads. When the message is a
+    slash command, skip the prepend entirely so it dispatches as intended — a
+    command turn produces no prose reply to keep brief anyway.
     """
+    if isinstance(message, str) and _looks_like_slash_command(message):
+        return message
     if state.CONFIG.get('brief_replies_always_enabled'):
         # When sticky_agent_settings is on, this directive is baked into the
         # spawn-time system prompt (_build_agent_context) — don't also prepend
