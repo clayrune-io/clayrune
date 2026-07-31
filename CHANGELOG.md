@@ -6,6 +6,38 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-07-31] — Modal header: pin button and status row removed
+
+The project-modal header carried a second line (`● IN PROGRESS · 2m ago`) and a
+**pin** button in the window controls. The pin was originally a data-sheet
+collapse — it hid the path row, summary, description, and the Current task /
+Next up cards. The `[2026-07-06]` desktop header cleanup then hid all of those
+*unconditionally* (min-width:961px block), and the mobile rules already did the
+same below 960px. What was left: the pin toggled exactly one row, and that row
+duplicated status the conversation panel already shows (COMPLETED / Stop /
+token counts). It cost ~48px of vertical space on every project, every session
+— most visible on mobile, where screen height is scarcest.
+
+Both are gone. The header is now permanently compact: back button → name row →
+content.
+
+- **`render-core.js`** — dropped the `.modal-pin` button and the
+  `.modal-status-row` div from `modalContentHTML`. The now-unused
+  `const fs = friendlyStatus(p)` went with it; tiles, mobile rows, and list
+  rows still call `friendlyStatus` — this is a modal-only removal.
+- **`interactions.js`** — `toggleModalPin()` and its `window.` bridge deleted.
+- **`modal-manager.js`** — pin-state restore removed, and `unpinned` dropped
+  from the `mc_open_modals` snapshot. Stale `unpinned` keys left in
+  `mc_modal_prefs` / `mc_open_modals` from before this change are ignored, not
+  migrated — no `is-unpinned` class exists to apply them to.
+- **`app.css`** — `.modal-pin`, all `.modal-window.is-unpinned` rules, and the
+  now-dead mobile `.modal-status-row` hide deleted. `.modal-dashboard-btn`
+  margin-bottom folded to the tight 6px the unpinned state used to set.
+
+Verified with `tools/smoke/boot-smoke.mjs` (5 scenarios + dispatch guard) and
+`inline-handler-scope-check.mjs` (39 modules, no inline handler left pointing at
+the removed `toggleModalPin`).
+
 ## [2026-07-27c] — Awaiting-input conversation vanished from the list after a page refresh
 
 A conversation that was **waiting on the user** (an `mc:question` was pending)

@@ -309,13 +309,11 @@ function tileHTML(p, slotIndex) {
 // ── Modal HTML (full detail view) ───────────────────────────────────────────
 
 function modalContentHTML(p) {
-  // Modal header status MUST come from the single consolidated resolver
-  // (same as the tile / mobile row / list row), NOT raw p.status. Otherwise
-  // a lifecycle-'active' project with no live agent shows "IN PROGRESS" in
-  // the open modal while the tile correctly shows "IDLE" — same project,
-  // same moment, two answers. Opening a modal is a VIEW action; it must
-  // never change the status badge.
-  const fs = friendlyStatus(p);
+  // NOTE: the header no longer carries a status pill / time-ago row. Live
+  // status is already shown by the conversation panel itself (COMPLETED /
+  // Stop / token counts), so the second header line was a duplicate that
+  // only cost vertical space. The tile / mobile row / list row still use
+  // friendlyStatus(p) — this is a modal-only removal.
   const showDone = showDoneMap[p.id] || false;
   const backlog = p.backlog || [];
   const openItems = backlog.filter(i => i.status === 'open');
@@ -441,12 +439,6 @@ function modalContentHTML(p) {
         <span class="mdb-arrow" aria-hidden="true">&#8592;</span> Dashboard
       </button>
       <div class="modal-window-controls">
-        <button class="modal-pin" onclick="toggleModalPin('${esc(p.id)}')" title="Collapse / expand data sheet">
-          <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true">
-            <path d="M9 1.2L12.8 5L10 7.8L9.3 7.1L6.7 9.7L4.3 7.3L6.9 4.7L6.2 4L9 1.2Z" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
-            <line x1="6.7" y1="9.7" x2="1.5" y2="12.5" stroke="currentColor" stroke-width="1.2" stroke-linecap="round"/>
-          </svg>
-        </button>
         <button class="modal-menu-btn" onclick="toggleModalMenu(event,'${esc(p.id)}')" title="Menu">&#x22EE;</button>
         <button class="modal-minimize" onclick="minimizeModal('${esc(p.id)}')" title="Minimize">&#x2015;</button>
         ${(() => {
@@ -647,10 +639,6 @@ function modalContentHTML(p) {
           oninput="autoSizeNameInput(this)"
         >
         ${(() => { const cfg = getDomainConfig(p.domain||'general'); return `<span class="domain-tag" style="background:${cfg.bg};color:${cfg.color}">${esc(cfg.label||p.domain||'general')}</span>`; })()}
-      </div>
-      <div class="modal-status-row" style="display:flex;align-items:center;gap:10px">
-        <span class="status-pill friendly-${fs}"><span class="status-dot"></span>${esc(vl(FRIENDLY_TO_VOICE[fs]))}</span>
-        <span class="time-ago">${esc(p.last_updated_relative||'')}</span>
       </div>
       <div class="path-row">
         <span class="path-label">Path</span>

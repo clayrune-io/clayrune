@@ -403,22 +403,9 @@ function applySnap(modalId, zoneId) {
   _syncMaximizeBtn(modalId);
 }
 
-// Toggle the modal "pin" state. Pinned (default) shows the full data sheet;
-// unpinned collapses everything between the name row and the tab body — handy
-// when several modals are tiled and you only need the title bars visible.
-// State persists in mc_modal_prefs.unpinned (per-project).
-function toggleModalPin(modalId) {
-  const entry = openModals.get(modalId);
-  if (!entry) return;
-  const win = entry.element;
-  const becomingUnpinned = !win.classList.contains('is-unpinned');
-  win.classList.toggle('is-unpinned', becomingUnpinned);
-  entry.unpinned = becomingUnpinned;
-  if (entry.projectId && !modalId.startsWith('__')) {
-    _setModalPref(entry.projectId, { unpinned: becomingUnpinned });
-  }
-  _saveOpenModalsSnapshot();
-}
+// (The modal "pin" toggle was removed — by the time the desktop header cleanup
+// landed, the only thing it still collapsed was the status/time-ago row, and
+// that row is gone too. The header is now permanently in its compact form.)
 
 // Restore a snapped modal to its pre-snap geometry. If preSnap is missing
 // (shouldn't happen, but defensive), center the modal at its previous size.
@@ -1129,7 +1116,6 @@ window.trimTrailingNulls = trimTrailingNulls;
 window.persistGridOrder = persistGridOrder;
 window._snapEnabled = _snapEnabled;
 window._zoneRect = _zoneRect;
-window.toggleModalPin = toggleModalPin;
 window.toggleModalMaximize = toggleModalMaximize;
 window._syncMaximizeBtn = _syncMaximizeBtn;
 window._maxBtnInner = _maxBtnInner;

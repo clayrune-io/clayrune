@@ -63,7 +63,6 @@ function _saveOpenModalsSnapshot() {
       minimized: !!entry.minimized,
       snap: entry.snap || null,
       preSnap: entry.preSnap || null,
-      unpinned: !!entry.unpinned,
     });
   }
   try { localStorage.setItem('mc_open_modals', JSON.stringify(list)); } catch {}
@@ -260,15 +259,8 @@ function openProjectModal(projectId, restoreState) {
     modalZoomLevels[projectId] = savedZoom;
     applyModalZoom(win, savedZoom);
   }
-  // Restore pin state (snapshot wins over saved pref for per-instance memory)
-  const unpinnedToRestore = (restoreState && typeof restoreState.unpinned === 'boolean')
-    ? restoreState.unpinned
-    : !!(pref && pref.unpinned);
-  if (unpinnedToRestore) {
-    win.classList.add('is-unpinned');
-    const e = openModals.get(projectId);
-    if (e) e.unpinned = true;
-  }
+  // (No pin state to restore — the header is permanently compact. Stale
+  // `unpinned` keys in mc_modal_prefs / mc_open_modals are simply ignored.)
 
   // Restore snap state. Snap geometry from `_zoneRect` wins over both the
   // saved width/height (used as "free" size) and any restoreState left/top.
