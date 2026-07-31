@@ -6,6 +6,53 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-07-31b] — Worktree-isolated chats wouldn't open: the CLI flattens dots too
+
+A conversation run by a worktree-isolated agent could not be opened from the
+conversation list. Clicking it did nothing; the row rendered fine and every
+*other* chat in the same project opened normally.
+
+**Root cause: `_encode_project_path` doesn't substitute `.`.** It maps `:`, `\`
+and `/` to `-`, and call sites separately try an `_`→`-` variant. The CLI
+flattens **both** `_` and `.`. That difference never mattered, because no
+project path had a dot-prefixed directory component — until per-agent worktree
+isolation (`b264200a`) started running agents from
+`<project>/.clayrune/agents/<sid>`. The CLI keys its transcript directory on the
+process CWD, so it wrote to:
+
+```
+…-engulfing-scanner--clayrune-agents-0f7687efce3f    ← CLI (dot flattened)
+…-engulfing-scanner-.clayrune-agents-0f7687efce3f    ← what MC looked for
+```
+
+The worktree fallback added in `mc.memory._find_transcript_file` was therefore
+**dead on arrival** — it scanned `<project>/.clayrune/agents/*` and handed each
+worktree path to the same encoder that produced the wrong name. Both
+`/session/<mc>/reconstruct` and `/transcript/<csid>/reconstruct` returned
+`404 transcript not found or empty`, and `openConversation()` has no
+error branch past that — it exhausts its routes and returns, which is exactly
+"clicking does nothing".
+
+- **`ClaudeRuntime._encoded_dir_candidates()` (new)** — returns every plausible
+  encoded directory name (base, `_`→`-`, `.`→`-`, both), deduped, most-likely
+  first. `transcript_path()` and `list_sessions()` now use it instead of each
+  hand-rolling the underscore variant.
+- The base encoding is **unchanged**. Only the *lookup* candidate set widened,
+  so `_build_transcript_path()` (used for writes: size checks, watermarks) and
+  `_native_memory_path()` keep their existing behaviour.
+
+**Blast radius: one session** — worktree isolation ships default-OFF and only
+arms for the 2nd+ concurrent agent, so this was its first real occurrence.
+Nothing was lost: Scribe still wrote a full memory entry for the session via its
+documented stdout-tail fallback (the transcript is its preferred, higher-fidelity
+source, not its only one). The 2 MB / 863-line transcript was intact on disk the
+whole time and opens once the server is restarted onto this build.
+
+Regression tests in `tests/test_claude_runtime.py`
+(`test_transcript_path_checks_dot_dash_variant`,
+`test_encoded_dir_candidates_covers_both_substitutions`), mutation-verified —
+the first fails with `assert None == …` against the previous encoder.
+
 ## [2026-07-31] — Modal header: pin button and status row removed
 
 The project-modal header carried a second line (`● IN PROGRESS · 2m ago`) and a

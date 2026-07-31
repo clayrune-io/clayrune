@@ -970,12 +970,41 @@ class ClaudeRuntime(AgentRuntime):
 
     # ── Transcript path — lifted from _find_transcript_file() in server.py ────
 
+    @classmethod
+    def _encoded_dir_candidates(cls, project_path: str) -> List[str]:
+        """All plausible ~/.claude/projects/<dir> names for a project path.
+
+        `_encode_project_path` only substitutes `:` and the path separators, but
+        the CLI flattens more than that. Two substitutions are known:
+
+        - `_` → `-`  (long-standing; `…\\_claude\\…` → `…--claude-…`)
+        - `.` → `-`  (found 2026-07-31; `…\\.clayrune\\agents\\<sid>` →
+          `…--clayrune-agents-<sid>`)
+
+        The dot case never mattered until per-agent worktree isolation
+        (b264200a) started running agents from `<project>/.clayrune/agents/<sid>`
+        — the first path we hand the CLI with a dot-prefixed directory in it.
+        Because the lookup missed, the worktree fallback in
+        `mc.memory._find_transcript_file` was dead on arrival: isolated sessions
+        were invisible to /reconstruct (chat wouldn't open), to resume, and to
+        Scribe. Returns the variants in most- to least-likely order, deduped.
+        """
+        encoded = cls._encode_project_path(project_path)
+        if not encoded:
+            return []
+        out: List[str] = []
+        for v in (encoded, encoded.replace('_', '-'), encoded.replace('.', '-'),
+                  encoded.replace('_', '-').replace('.', '-')):
+            if v not in out:
+                out.append(v)
+        return out
+
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
         """Locate the Claude Code transcript JSONL for a given session, or None.
 
         Mirrors _find_transcript_file() in server.py exactly.
-        Checks both the canonical encoded path and the underscore→dash variant
-        that Claude Code sometimes uses.
+        Checks every encoded-directory variant the CLI is known to produce —
+        see _encoded_dir_candidates().
 
         Returns the Path if the file exists, None otherwise. Callers that need
         to build the path without existence-checking should use
@@ -983,13 +1012,9 @@ class ClaudeRuntime(AgentRuntime):
         """
         if not session_id:
             return None
-        encoded = self._encode_project_path(project_path)
-        if not encoded:
+        candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
+        if not candidates:
             return None
-        candidates = [_CLAUDE_HOME / encoded]
-        encoded_alt = encoded.replace('_', '-')
-        if encoded_alt != encoded:
-            candidates.append(_CLAUDE_HOME / encoded_alt)
         for d in candidates:
             f = d / f'{session_id}.jsonl'
             try:
@@ -1019,18 +1044,14 @@ class ClaudeRuntime(AgentRuntime):
 
         Mirrors _recent_claude_transcripts() in server.py. Uses parse_event()
         so the user-text extraction stays consistent with the live stream reader.
-        Checks both path-encoded variants (underscore and dash).
+        Checks every path-encoded variant — see _encoded_dir_candidates().
 
         Returns [{session_id, mtime, first_user, last_user, turns, size}]
         sorted by mtime desc, at most `limit` entries.
         """
-        encoded = self._encode_project_path(project_path)
-        if not encoded:
+        candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
+        if not candidates:
             return []
-        candidates = [_CLAUDE_HOME / encoded]
-        encoded_alt = encoded.replace('_', '-')
-        if encoded_alt != encoded:
-            candidates.append(_CLAUDE_HOME / encoded_alt)
 
         seen: set = set()
         files: List = []

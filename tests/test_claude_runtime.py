@@ -405,6 +405,59 @@ def test_transcript_path_finds_existing_file(tmp_path, monkeypatch):
     assert result == jsonl_file
 
 
+def test_transcript_path_checks_dot_dash_variant(tmp_path, monkeypatch):
+    """transcript_path() finds a transcript written under a DOT-flattened dir.
+
+    Regression for the worktree-isolation blind spot (found 2026-07-31): an
+    agent isolated into `<project>/.clayrune/agents/<sid>` makes the CLI encode
+    its transcript dir with the dot flattened to a dash (`…--clayrune-agents-…`),
+    while `_encode_project_path` only substitutes `:` and the separators — so it
+    looked for `…-.clayrune-agents-…` and missed. The chat wouldn't open
+    (/reconstruct 404'd), and Scribe/resume were blind to the session too.
+    """
+    from agent_runtime import ClaudeRuntime
+    import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+
+    # The real shape: a per-agent worktree under a dot-prefixed directory.
+    worktree = str(tmp_path / 'proj' / '.clayrune' / 'agents' / '0f7687efce3f')
+    session_id = '41ee10c4-7594-4e17-b92b-6308102c1750'
+
+    encoded = rt._encode_project_path(worktree)
+    assert encoded and '.' in encoded, 'expected the dot to survive the base encoding'
+
+    # Create ONLY the dot-flattened dir — what the CLI actually writes.
+    cli_dir = fake_home / encoded.replace('.', '-')
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+    jsonl_file.write_text('{"type":"user"}')
+
+    assert not (fake_home / encoded).exists(), 'base-encoded dir must NOT exist'
+    result = rt.transcript_path(worktree, session_id)
+    assert result == jsonl_file
+
+
+def test_encoded_dir_candidates_covers_both_substitutions(tmp_path):
+    """Candidate list covers _→-, .→-, and both together, deduped and ordered."""
+    from agent_runtime import ClaudeRuntime
+    rt = ClaudeRuntime()
+
+    # Contains BOTH an underscore and a dot, so all four variants are distinct
+    # regardless of what pytest's own tmp_path happens to be named.
+    p = str(tmp_path / 'my_proj' / '.clayrune')
+    cands = rt._encoded_dir_candidates(p)
+
+    assert len(cands) == 4
+    assert len(cands) == len(set(cands)), 'candidates must be deduped'
+    assert cands[0] == rt._encode_project_path(p), 'base encoding must be tried first'
+    # The fully-flattened variant (both substitutions) must be reachable.
+    assert any('_' not in c and '.' not in c for c in cands)
+    assert rt._encoded_dir_candidates('') == []
+
+
 def test_transcript_path_checks_underscore_dash_variant(tmp_path, monkeypatch):
     """transcript_path() also checks the encoded path with _ replaced by - (Claude variant)."""
     from agent_runtime import ClaudeRuntime
