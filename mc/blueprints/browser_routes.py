@@ -28,6 +28,7 @@ import glob
 import json
 import os
 import queue
+import shutil
 import socket
 import subprocess
 import threading
@@ -58,6 +59,46 @@ def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
+    sweep_orphan_profiles()
+
+
+def _profiles_root():
+    return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_profiles')
+
+
+def sweep_orphan_profiles():
+    """Delete Chromium profile dirs left behind by sessions that are gone.
+
+    Teardown removes a session's own profile, but a hard kill of MC (or a crash
+    before _kill_browser_session ran) strands the dir forever — they had grown
+    to 56 dirs / 922 MB on the dev box before this existed. Runs once at wire()
+    time, i.e. before any session in THIS process exists; it still skips any
+    live session's dir defensively so it can also be called later.
+    """
+    root = _profiles_root()
+    if not os.path.isdir(root):
+        return
+    with browser_lock:
+        live = {s.get('user_data_dir') for s in browser_sessions.values()}
+    removed = freed = 0
+    for name in os.listdir(root):
+        path = os.path.join(root, name)
+        if path in live or not os.path.isdir(path):
+            continue
+        try:
+            for dirpath, _dirs, files in os.walk(path):
+                for f in files:
+                    try:
+                        freed += os.path.getsize(os.path.join(dirpath, f))
+                    except OSError:
+                        pass
+            shutil.rmtree(path, ignore_errors=True)
+            removed += 1
+        except Exception as e:
+            print(f'[browser] orphan profile sweep failed for {path}: {e}', flush=True)
+    if removed:
+        print(f'[browser] swept {removed} orphaned profile dir(s), '
+              f'freed {freed // (1024 * 1024)} MB', flush=True)
 
 
 def _find_chromium():
@@ -291,6 +332,9 @@ def _launch_browser(project_id, url):
         'url': url or 'about:blank', 'status': 'running', 'frame': None,
         'frame_seq': 0, 'cmd_queue': queue.Queue(), 'ws': None, 'error': None,
         'started_at': datetime.now(timezone.utc).isoformat(),
+        # Remembered so teardown can delete this throwaway profile. Without it
+        # the dirs accumulated forever (56 dirs / 922 MB observed 2026-07-31).
+        'user_data_dir': udd,
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -325,6 +369,15 @@ def _kill_browser_session(session):
             proc.wait(timeout=5)
         except Exception:
             pass
+    # Drop the throwaway Chromium profile. Must happen AFTER the process is
+    # dead, or Chromium rewrites the dir as we delete it (and Windows holds
+    # locks on the open files).
+    udd = session.get('user_data_dir')
+    if udd:
+        try:
+            shutil.rmtree(udd, ignore_errors=True)
+        except Exception as e:
+            print(f'[browser] profile cleanup failed for {udd}: {e}', flush=True)
 
 
 @bp.route('/api/browser/launch', methods=['POST'])
