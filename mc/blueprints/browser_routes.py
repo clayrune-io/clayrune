@@ -51,6 +51,8 @@ _register_process: Callable[..., Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[..., Any] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
+# One-shot guard: the orphan-profile sweep runs on first real browser launch.
+_swept_orphans: bool = False
 
 
 def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo):
@@ -59,7 +61,6 @@ def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
-    sweep_orphan_profiles()
 
 
 def _profiles_root():
@@ -71,9 +72,14 @@ def sweep_orphan_profiles():
 
     Teardown removes a session's own profile, but a hard kill of MC (or a crash
     before _kill_browser_session ran) strands the dir forever — they had grown
-    to 56 dirs / 922 MB on the dev box before this existed. Runs once at wire()
-    time, i.e. before any session in THIS process exists; it still skips any
-    live session's dir defensively so it can also be called later.
+    to 56 dirs / 922 MB on the dev box before this existed.
+
+    Deliberately NOT called from wire(): this deletes real files under the
+    user's home, and wire() also runs under import/test harnesses — doing it
+    there made a plain `pytest` run destroy 4 real profile dirs (130 MB) and
+    pollute stdout. It is now invoked lazily from _launch_browser(), so it only
+    ever runs in a process that is genuinely using the browser pane. Live
+    sessions' dirs are skipped regardless.
     """
     root = _profiles_root()
     if not os.path.isdir(root):
@@ -311,9 +317,15 @@ def _launch_browser(project_id, url):
         return None, 'Chromium not found (install: pip install playwright && playwright install chromium)'
     if not _import_ws():
         return None, 'websocket-client not installed (pip install websocket-client)'
+    global _swept_orphans
+    if not _swept_orphans:
+        # Lazy, once per process, and only when the pane is actually used —
+        # never from wire()/import (see sweep_orphan_profiles' docstring).
+        _swept_orphans = True
+        sweep_orphan_profiles()
     sid = uuid.uuid4().hex[:12]
     port = _free_port()
-    udd = os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_profiles', sid)
+    udd = os.path.join(_profiles_root(), sid)
     os.makedirs(udd, exist_ok=True)
     args = [
         chromium, '--headless=new', f'--remote-debugging-port={port}',
