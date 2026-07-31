@@ -295,14 +295,105 @@ def create(project: dict, session_id: str, base_ref: str = 'HEAD'):
         return True, str(wt)
 
 
-def remove(project: dict, session_id: str, delete_branch: bool = False):
+def has_unmerged_work(project: dict, session_id: str, target_ref: str = '') -> bool:
+    """True when this worktree holds work that would be DESTROYED by a delete:
+    either uncommitted changes, or commits not reachable from target_ref.
+
+    Guards the teardown paths. Losing an agent's work to an automatic cleanup
+    would be the same class of silent data loss this whole feature exists to
+    prevent — only worse, because we'd be the ones causing it.
+    """
+    wt = worktree_path(project, session_id)
+    if wt is None or not wt.exists():
+        return False
+    wts = str(wt)
+    try:
+        if _sync._dirty(wts):
+            return True
+        ref = target_ref or _base_ref(project)
+        ok, _ = _sync.git_run(wts, ['rev-parse', '--verify', ref], timeout=10)
+        if not ok:
+            return True  # can't prove it's merged → assume it isn't (fail safe)
+        ahead, _behind = _sync._ahead_behind(wts, 'HEAD', ref)
+        return ahead > 0
+    except Exception:
+        return True  # fail closed
+
+
+def _base_ref(project: dict) -> str:
+    """The branch an agent's work merges back into."""
+    b = (project.get('worktree_base_branch')
+         or project.get('code_sync_branch') or 'master').strip() or 'master'
+    return 'master' if b.startswith('-') else b
+
+
+def merge_back(project: dict, session_id: str, target_ref: str = ''):
+    """Merge one agent's committed work back into the project's base branch.
+
+    Without this an agent's commits sit stranded on clayrune/agent/<sid> and
+    never reach the user's tree — isolation would silently become work loss.
+
+    Returns (status, detail):
+      'nothing'  — no commits to merge
+      'dirty'    — uncommitted changes; nothing merged, worktree preserved
+      'clean'    — merged into the base branch
+      'conflict' — overlapping edits; merge ABORTED, branch preserved for the
+                   human. Never auto-resolved.
+      'skipped'  — base tree busy/unmergeable; branch preserved
+    """
+    base = project.get('project_path') or ''
+    wt = worktree_path(project, session_id)
+    if wt is None or not wt.exists():
+        return 'nothing', 'no worktree'
+    wts = str(wt)
+    ref = target_ref or _base_ref(project)
+    if _sync._dirty(wts):
+        return 'dirty', 'uncommitted changes in agent worktree'
+    ok, _ = _sync.git_run(wts, ['rev-parse', '--verify', ref], timeout=10)
+    if not ok:
+        return 'skipped', f'unknown base ref {ref}'
+    ahead, _ = _sync._ahead_behind(wts, 'HEAD', ref)
+    if ahead <= 0:
+        return 'nothing', 'no new commits'
+    # Merge happens in the MAIN tree, so it must be clean — never fight the
+    # user's own uncommitted edits.
+    if _sync._dirty(base):
+        return 'skipped', 'main working tree is dirty'
+    cur = _sync.git_run(base, ['rev-parse', '--abbrev-ref', 'HEAD'])[1].strip()
+    if cur != ref:
+        return 'skipped', f'main tree is on {cur}, not {ref}'
+    branch = branch_name(session_id)
+    ok, msg = _sync.git_run(base, ['merge', '--no-edit', branch], timeout=120)
+    if ok:
+        _plog(f"[worktree] merged {branch} into {ref}")
+        if _log_activity:
+            _log_activity(project.get('id', ''),
+                          f'Agent worktree merged back: {session_id[:8]} → {ref}')
+        return 'clean', msg
+    _sync.git_run(base, ['merge', '--abort'], timeout=30)
+    _plog(f"[worktree] CONFLICT merging {branch} into {ref} — branch preserved")
+    if _log_activity:
+        _log_activity(project.get('id', ''),
+                      f'Agent worktree CONFLICT: {session_id[:8]} — '
+                      f'branch {branch} preserved for manual merge')
+    return 'conflict', msg
+
+
+def remove(project: dict, session_id: str, delete_branch: bool = False,
+           force: bool = False):
     """Tear down an agent worktree. Unlinks runtime junctions FIRST so the
-    delete can never follow one into the real .venv / data/projects."""
+    delete can never follow one into the real .venv / data/projects.
+
+    REFUSES to delete a worktree holding unmerged/uncommitted work unless
+    force=True — an automatic cleanup must never destroy an agent's output.
+    """
     pid = project.get('id', '')
     base = project.get('project_path') or ''
     wt = worktree_path(project, session_id)
     if wt is None or not wt.exists():
         return True, 'nothing to remove'
+    if not force and has_unmerged_work(project, session_id):
+        return False, 'refused: worktree has unmerged or uncommitted work'
     with _lock(pid):
         unlink_runtime(project, wt)          # MUST precede any delete
         ok, msg = _sync.git_run(base, ['worktree', 'remove', '--force', str(wt)],
@@ -328,23 +419,37 @@ def list_worktrees(project: dict) -> list[str]:
     return [d.name for d in root.iterdir() if d.is_dir()]
 
 
-def gc_stale(project: dict, live_session_ids) -> int:
-    """Remove worktrees whose session is no longer live. Called at startup and
-    periodically — a hard kill (or an MC crash) otherwise leaks them forever,
-    the same failure class as the watermark-GC gap that truncated the memory
-    index. NEVER removes a live session's tree."""
+def gc_stale(project: dict, live_session_ids, merge_first: bool = True) -> dict:
+    """Reap worktrees whose session is no longer live — a hard kill or an MC
+    crash otherwise leaks them forever (the same failure class as the
+    watermark-GC gap that truncated the memory index).
+
+    NEVER removes a live session's tree, and never destroys work: each orphan
+    is merged back first, and anything still holding unmerged/uncommitted work
+    is PRESERVED for the human rather than deleted.
+
+    Returns {'removed': n, 'merged': n, 'preserved': [session_ids]}.
+    """
     live = set(live_session_ids or ())
-    removed = 0
+    out = {'removed': 0, 'merged': 0, 'preserved': []}
     for sid in list_worktrees(project):
         if sid in live:
             continue
-        ok, _ = remove(project, sid, delete_branch=False)
+        if merge_first:
+            status, _ = merge_back(project, sid)
+            if status == 'clean':
+                out['merged'] += 1
+        # remove() refuses (force=False) when work would be lost.
+        ok, msg = remove(project, sid, delete_branch=True)
         if ok:
-            removed += 1
-    if removed:
-        _plog(f"[worktree] gc removed {removed} stale worktree(s) "
-              f"for {project.get('id','')}")
-    return removed
+            out['removed'] += 1
+        else:
+            out['preserved'].append(sid)
+            _plog(f"[worktree] gc PRESERVED {sid[:12]} — {msg}")
+    if out['removed'] or out['preserved']:
+        _plog(f"[worktree] gc {project.get('id','')}: removed={out['removed']} "
+              f"merged={out['merged']} preserved={len(out['preserved'])}")
+    return out
 
 
 # ── Propagation (Phase 3 — turn-gated sync) ─────────────────────────────────

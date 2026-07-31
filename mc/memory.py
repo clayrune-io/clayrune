@@ -209,9 +209,33 @@ def _recent_claude_transcripts(project_path, limit=5):
 def _find_transcript_file(project_path, claude_session_id):
     """Locate the Claude Code transcript JSONL for a given csid, or None.
     Delegates to ClaudeRuntime.transcript_path() — path logic lives in the runtime.
+
+    Worktree fallback (b264200a): the CLI keys its transcript directory on the
+    process CWD, so an agent isolated in `<project>/.clayrune/agents/<sid>/`
+    writes its transcript under the WORKTREE-encoded path, not the project's.
+    Without this fallback every isolated session would be invisible to Scribe
+    (no memory captured), to resume, and to /reconstruct. Resolved centrally
+    here so all ~9 call sites are fixed at once; the scan only runs when the
+    primary lookup misses, and only over worktree dirs that actually exist.
     """
-    return _agent_runtime.get_runtime('claude').transcript_path(
+    f = _agent_runtime.get_runtime('claude').transcript_path(
         project_path, claude_session_id)
+    if f:
+        return f
+    try:
+        agents_dir = Path(project_path) / '.clayrune' / 'agents'
+        if not agents_dir.is_dir():
+            return None
+        for wt in agents_dir.iterdir():
+            if not wt.is_dir():
+                continue
+            f = _agent_runtime.get_runtime('claude').transcript_path(
+                str(wt), claude_session_id)
+            if f:
+                return f
+    except Exception:
+        pass
+    return None
 
 
 def _parse_transcript_messages(f, max_messages=2000):

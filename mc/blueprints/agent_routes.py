@@ -87,6 +87,7 @@ from mc.state import (
 import agent_runtime as _agent_runtime  # Multi-provider abstraction
 import distiller as _distiller          # exploration read-floor (registered by server.py)
 import skills as _skills                # _skills_catalog_block
+import agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -682,6 +683,84 @@ def get_manager(project_id):
 
 
 # _harden_secret_perms moved to mc/core.py (step 1.1).
+
+
+def _live_agent_count(project_id):
+    """Non-housekeeping sessions currently running/idle for a project."""
+    try:
+        return sum(1 for _sid, s in get_manager(project_id).iter_sessions()
+                   if s.get('status') in ('running', 'idle')
+                   and not s.get('housekeeping'))
+    except Exception:
+        return 0
+
+
+def _maybe_isolate_worktree(project, session_id, incognito=False):
+    """Resolve the working directory for a new agent — the shared project tree,
+    or a private git worktree when this is a CONCURRENT agent.
+
+    Returns (cwd, isolated). Best-effort by design: ANY failure falls back to
+    the shared tree (today's behavior), so isolation can never break a dispatch.
+
+    Only the 2nd+ concurrent agent is isolated. A project with one agent — the
+    overwhelmingly common case — takes the identical code path it always has,
+    which is what keeps this safe to enable globally. Backlog b264200a; design
+    docs/COORDINATION_LAYER_DESIGN.md §5d.
+    """
+    pp = project.get('project_path', '')
+    if incognito:
+        return pp, False
+    if not state.CONFIG.get('worktree_isolation_enabled', False):
+        return pp, False
+    if project.get('worktree_isolation') is False:  # per-project opt-out
+        return pp, False
+    try:
+        if _live_agent_count(project.get('id', '')) < 1:
+            return pp, False  # first agent — no sibling to collide with
+        ok, path = _agent_worktree.create(project, session_id)
+        if not ok:
+            _log(f"[worktree] isolation unavailable, using shared tree: {path}")
+            return pp, False
+        # Cosmetic logging gets its OWN guard: a failure here must never
+        # discard a worktree we already built successfully (that bug sent an
+        # isolated agent back to the shared tree — silently un-isolating it).
+        try:
+            _log_agent_activity(project.get('id', ''),
+                                f'Agent isolated in worktree: {session_id[:8]}')
+        except Exception as e:
+            _log(f"[worktree] activity log failed (non-fatal): {e}")
+        return path, True
+    except Exception as e:
+        _log(f"[worktree] isolation failed, using shared tree: {e}")
+        return pp, False
+
+
+def _worktree_merge_back_on_end(session):
+    """Merge an isolated agent's committed work back into the base branch when
+    its session ends. Without this the work sits stranded on the agent branch
+    and isolation silently becomes work loss. Best-effort; on conflict the
+    branch is preserved and the user is told."""
+    if not session or not session.get('_worktree_isolated'):
+        return
+    sid = session.get('session_id', '')
+    pid = session.get('project_id', '')
+    try:
+        p = load_project(pid)
+        if not p:
+            return
+        status, detail = _agent_worktree.merge_back(p, sid)
+        if status == 'clean':
+            _agent_worktree.remove(p, sid, delete_branch=True)
+        elif status in ('conflict', 'dirty'):
+            # Preserve everything and surface it — never auto-resolve, never
+            # delete work.
+            _log_agent_activity(
+                pid, f'Agent worktree needs manual merge ({status}): '
+                     f'branch {_agent_worktree.branch_name(sid)} — {detail[:120]}')
+        elif status == 'nothing':
+            _agent_worktree.remove(p, sid, delete_branch=True)
+    except Exception as e:
+        _log(f"[worktree] merge-back failed for {sid[:12]}: {e}")
 
 
 def get_manager_for_session(session_id):
@@ -3060,6 +3139,18 @@ def _log_agent_completion(session):
     if not project_id:
         return
 
+    # Worktree isolation (b264200a): merge this agent's committed work back
+    # into the base branch before anything else. Runs FIRST and outside the
+    # incognito/housekeeping early-returns below, because stranding an agent's
+    # commits on a private branch would turn isolation into silent work loss —
+    # the exact failure this feature exists to prevent. Best-effort; a conflict
+    # preserves the branch and tells the user rather than auto-resolving.
+    if session.get('_worktree_isolated'):
+        try:
+            _worktree_merge_back_on_end(session)
+        except Exception as e:
+            _log(f"[worktree] merge-back hook failed: {e}")
+
     # Incognito sessions are fully ephemeral from MC's perspective: no agent_log
     # entry, no memory append, no condense trigger. The Claude transcript on
     # disk is unaffected (that's outside MC's control).
@@ -3792,13 +3883,26 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
+
+    # ── Per-agent worktree isolation (b264200a) ─────────────────────────────
+    # Decided and CREATED OUTSIDE mgr.lock: `git worktree add` takes seconds
+    # and must never pin the project lock (the RC-2 constraint above). The id
+    # is pre-minted here so the worktree can be named before we take the lock;
+    # if the lock path ends up choosing reuse_session_id instead, the unused
+    # tree is reaped by gc_stale (it holds no work).
+    _fresh_sid = uuid.uuid4().hex[:12]
+    _planned_sid = (reuse_session_id
+                    if (reuse_session_id and reuse_session_id not in agent_sessions)
+                    else _fresh_sid)
+    _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
+
     with mgr.lock:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
         if reuse_session_id and reuse_session_id not in agent_sessions:
             session_id = reuse_session_id
         else:
-            session_id = uuid.uuid4().hex[:12]
+            session_id = _fresh_sid
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -3812,7 +3916,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 stdin=subprocess.PIPE,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                cwd=pp,
+                cwd=_agent_cwd,  # worktree when isolated, else pp
                 text=True,
                 encoding='utf-8',
                 errors='replace',
@@ -3846,6 +3950,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
+                # Worktree isolation (b264200a): the cwd this agent actually
+                # runs in, and whether it is a private worktree. Read by the
+                # merge-back-on-end path and by respawns so a resumed turn
+                # stays in the SAME tree it started in.
+                '_agent_cwd': _agent_cwd,
+                '_worktree_isolated': _isolated,
                 'mode': 'B',
                 'stdin_lock': threading.Lock(),
                 'process_alive': True,
@@ -3924,7 +4034,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                cwd=pp,
+                cwd=_agent_cwd,  # worktree when isolated, else pp
                 text=True,
                 encoding='utf-8',
                 errors='replace',
@@ -3945,6 +4055,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
+                # Worktree isolation (b264200a) — see the Mode B note above.
+                '_agent_cwd': _agent_cwd,
+                '_worktree_isolated': _isolated,
                 'mode': 'A',
                 'last_output_time': _time.time(),
                 'last_status_change_time': _time.time(),

@@ -131,6 +131,9 @@ _CONFIG_EDITABLE_KEYS = {
     # the next context build — no respawn needed (like read_floor_topk).
     'coordination_enabled', 'coordination_read_floor_topk',
     'coordination_interrupt_enabled',
+    # Per-agent worktree isolation (b264200a). Read at dispatch — takes effect
+    # for the next agent started, no respawn or restart needed.
+    'worktree_isolation_enabled',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',

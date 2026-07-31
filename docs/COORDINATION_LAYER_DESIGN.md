@@ -1,8 +1,10 @@
 # Cross-Agent Coordination Layer — Design
 
-**Status:** DRAFT v1 (design only — no product code changed)
-**Backlog:** `9518ec62` (this) · sibling `b264200a` (per-agent worktree isolation)
-**Date:** 2026-07-29
+**Status:** SHIPPED — Phases 0–2 live, Phase 3 mechanism built (auto-trigger deferred)
+**Backlog:** `9518ec62` (awareness) · `b264200a` (per-agent worktree isolation)
+**Date:** 2026-07-29 (design) · updated 2026-07-30 (implementation + safety evidence)
+**Implementation:** `mc/blueprints/coordination_routes.py` (awareness) ·
+`agent_worktree.py` (isolation) · safety evidence in §14
 **Author:** Vector (side task for Ron)
 
 ---
@@ -371,13 +373,22 @@ As-built (differs slightly from the original sketch, for lower risk):
   liveness derived from `agent_sessions` (no separate heartbeat needed at this
   scale).
 
-**Phase 2 — per-agent worktrees (needs `b264200a`).**  ⏸ GATED — see §11.
-Per-session worktree lifecycle; roster maps session→worktree; agents run
-isolated. Coordination bus now spans isolated trees (the case that matters).
+**Phase 2 — per-agent worktrees (`b264200a`).**  ✅ SHIPPED — `agent_worktree.py`.
+Per-session worktree + branch (`clayrune/agent/<sid>`) under
+`<project>/.clayrune/agents/<sid>/`, wired into dispatch via
+`_maybe_isolate_worktree()`. **Containment is the safety property:** only the
+**2nd+ concurrent** agent is isolated, so a project running one agent takes the
+identical code path it always has. Work is merged back into the base branch
+when the session ends; a conflict preserves the branch for the human and is
+never auto-resolved. See §13 for the two non-obvious requirements this
+uncovered and §14 for the safety evidence.
 
-**Phase 3 — continuous rebase.**  ⏸ GATED — see §11. Turn-gated
-merge/rebase of siblings' landed commits into other worktrees; conflict →
-COORD event, never auto-resolve.
+**Phase 3 — propagation.**  ✅ SHIPPED (`sync_into`) / ⏸ daemon step deferred.
+`sync_into()` merges a sibling's landed work into another agent's worktree with
+the full turn-gated contract: skips a dirty tree (agent mid-edit), and on
+conflict **aborts and restores** the tree exactly. Wiring it to fire
+automatically from the coordination daemon is the remaining piece — the
+mechanism is proven and tested, only the automatic trigger is deferred.
 
 **Phase 4 — polish.** UI panel (live sibling map, event timeline — reuse the
 Hivemind SSE UI shape); operator controls; per-project override of the global
@@ -507,15 +518,75 @@ never reads coordination state.** This is deliberate and load-bearing:
 
 ---
 
-## 11. Remaining work — Phases 2–3 gated on `b264200a`
+## 13. Worktree isolation — the two non-obvious requirements
 
-Phases 2 (per-agent worktrees) and 3 (continuous rebase) are **intentionally not
-built yet.** They mutate the working tree and depend on per-agent worktree
-isolation, whose *design* is owned by backlog `b264200a`. Building
-tree-mutating rebase code before that lands would be speculative and risky —
-the opposite of the "best-effort, never load-bearing" posture the rest of the
-layer holds. The awareness layer (Phases 0–1) delivers the core value on the
-shared tree today; availability (Phases 2–3) is the second act.
+Both were found by *running* it, not by reading code. Both are load-bearing;
+removing either silently breaks isolated agents.
+
+**1. A worktree receives only TRACKED files.** Everything gitignored stays
+behind. On this repo that is `.venv` (117 MB), `node_modules` (16 MB),
+`data/projects/` (103 files — project records + backlog) and `config.json`. An
+agent dropped into a bare worktree cannot run the test suite, import deps, or
+read the backlog. `link_runtime()` junctions the directories back in (Windows
+junctions need no admin or Developer Mode; symlinks elsewhere) and **copies**
+the config files, so an agent can't mutate the live install's config.
+
+*Gotcha inside the gotcha:* `data/projects` arrives from git as a **real
+directory containing `.gitkeep`**, so an "already exists → skip" check leaves an
+empty dir that merely *looks* present. It is replaced only when it holds
+nothing but placeholders; real content is never clobbered.
+
+**2. `.mcp.json` is gitignored AND pins absolute paths.** It therefore never
+reaches a worktree on its own — so the agent silently loses **every**
+per-project MCP server (filesystem, browser). Copying it verbatim is worse: the
+agent edits the worktree via Edit/Bash while reading and writing the **main**
+tree via MCP — a split brain strictly worse than the clobbering we're fixing.
+`retarget_mcp()` copies it and rewrites the paths to the worktree.
+
+**3. Transcripts follow the CWD.** The CLI keys its transcript directory on the
+process working directory, so an isolated agent's transcript lands under the
+*worktree*-encoded path. Left alone, every isolated session would be invisible
+to Scribe (no memory captured), to resume, and to `/reconstruct`. Fixed
+centrally in `_find_transcript_file()` with a worktree fallback that only runs
+when the primary lookup misses — one fix covering all ~9 call sites.
+
+---
+
+## 14. Safety evidence (why this can be enabled)
+
+Measured, reproducible, and re-runnable:
+
+| Property | Evidence |
+|---|---|
+| The bug is real | `tools/worktree-sandbox/sandbox_test.py` — shared tree loses 1 of 2 agents' work, stable across runs |
+| Isolation fixes it | same harness — worktrees: **2/2 survive**, merge `clean` |
+| End-to-end under real dispatch | two real concurrent processes through `_maybe_isolate_worktree` + merge-back: **2/2 survive**, worktree reaped |
+| Containment | `tests/test_worktree_dispatch.py` — flag OFF, first agent, incognito, per-project opt-out, finished siblings and housekeeping siblings ALL stay on the shared tree |
+| Fail-safe | non-git project and a simulated `create()` exception both degrade to the shared tree without raising |
+| No work loss | `remove()` refuses to delete uncommitted **or** unmerged work; `gc_stale` preserves orphans holding work and never touches a live session |
+| No destruction of real dirs | teardown unlinks junctions first — real `.venv` verified intact after removal |
+| Conflicts are safe | `sync_into` and `merge_back` both abort and restore; branch preserved; main tree left clean |
+| Tests aren't vacuous | **mutation-tested** — disabling the unlink guard fails the `.venv` test; disabling the work-loss guard fails 3 tests |
+| No regressions | full suite **1050 passed, 2 skipped** (both pre-existing) |
+
+**Residual risk, stated plainly.** Isolation only engages for concurrent agents,
+so the common single-agent path is untouched — that is the core of the safety
+argument. It ships **default-OFF** (`worktree_isolation_enabled`) with a
+per-project opt-out. The automatic daemon-driven `sync_into` trigger is
+deliberately *not* wired yet: propagation is proven and tested but only runs
+when called, which keeps the first live exposure to the well-understood
+create → isolate → merge-back path.
+
+---
+
+## 11. Remaining work — Phase 3 automatic trigger
+
+Phase 2 shipped (see §13/§14). What remains is the **automatic trigger** for
+Phase 3: `sync_into()` is built, tested, and safe, but nothing calls it on a
+schedule yet. Wiring it means the coordination daemon marks a worktree
+"sync-pending" when a sibling lands work and performs the merge in the
+quiescent window between that agent's turns — never while its session is
+`running`.
 
 **Concrete plan when `b264200a` is scheduled** (the machinery already sketched in
 §5c–d): per-session worktree lifecycle wrapping `git worktree add/remove`

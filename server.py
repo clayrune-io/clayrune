@@ -190,6 +190,12 @@ def _load_config():
         # task). Default OFF — the ⚠ CONFLICT line in the read-floor is the
         # non-disruptive default surface; this turns on the disruptive push.
         'coordination_interrupt_enabled': False,
+        # Per-agent git worktree isolation (b264200a). When on, the 2nd+
+        # CONCURRENT agent on a project runs in its own worktree+branch so two
+        # agents can no longer silently clobber each other's edits; work is
+        # merged back when the session ends. A project with one live agent is
+        # completely unaffected. Default OFF.
+        'worktree_isolation_enabled': False,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,
@@ -739,6 +745,30 @@ import project_sync as _proj_sync
 _proj_sync.register(_POPEN_FLAGS, _STARTUPINFO,
                     _log_agent_activity, load_project, save_project, now_iso,
                     _DATA_ROOT)
+
+# ── Per-agent worktree isolation (b264200a) ─────────────────────────────────
+# Builds on project_sync's git plumbing, so it registers right after it.
+import agent_worktree as _agent_worktree
+_agent_worktree.register(_log_agent_activity, load_project, _log)
+
+
+def _worktree_gc_on_startup():
+    """Reap agent worktrees orphaned by a hard kill / crash. Merges each
+    orphan's work back first and PRESERVES anything still holding unmerged or
+    uncommitted changes — a cleanup must never destroy an agent's output."""
+    if not CONFIG.get('worktree_isolation_enabled', False):
+        return
+    try:
+        for p in load_projects():
+            try:
+                if not p.get('project_path'):
+                    continue
+                # No sessions survive a restart, so every worktree is an orphan.
+                _agent_worktree.gc_stale(p, live_session_ids=())
+            except Exception as e:
+                _log(f"[worktree] startup gc failed for {p.get('id','')}: {e}")
+    except Exception as e:
+        _log(f"[worktree] startup gc failed: {e}")
 
 
 # _load_agent_log / _save_agent_log ── moved to mc/blueprints/agent_routes.py
@@ -2306,6 +2336,7 @@ if __name__ == '__main__':
     _bp_sched._start_scheduler()
     _start_hivemind_orchestrator()
     _bp_coord.start_coordination_loop()  # cross-agent coordination daemon (9518ec62)
+    _boot_phase('worktree gc', _worktree_gc_on_startup)  # reap orphaned agent worktrees
     _start_session_guardian()
     # Install built-in skills bundled with MC into ~/.claude/skills/.
     # Checksum-aware: user edits to managed skills are preserved.
