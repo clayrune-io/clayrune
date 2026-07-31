@@ -1250,7 +1250,10 @@
   .minimized-chip .chip-close:hover { color: var(--red); }
 
   .modal-header {
-    padding: 16px 24px 12px 28px;
+    /* Bottom padding is deliberately tight: the name row is the LAST thing in
+       the header now (status row removed, path/summary hidden unconditionally),
+       so 12px here read as dead space between the header and the content. */
+    padding: 12px 24px 6px 28px;
     border-bottom: 1px solid var(--border);
     background: var(--surface2);
     cursor: grab;
@@ -2055,7 +2058,9 @@
     .modal-header { padding: 8px 16px 6px 20px !important; }
     .modal-header .path-row { display: none !important; }
     .modal-header .description { display: none !important; }
-    .modal-header .card-title-row { margin-bottom: 4px !important; }
+    /* (No card-title-row margin override here any more — it used to compact 8px
+       down to 4px, but the base is now 0, so re-stating it would ADD space on
+       exactly the viewports this block exists to tighten.) */
     .card-summary { display: none !important; }
     .modal-tab-bar { padding: 0 14px !important; }
     .modal-tab { padding: 6px 12px 4px !important; }

@@ -38,6 +38,22 @@ Verified with `tools/smoke/boot-smoke.mjs` (5 scenarios + dispatch guard) and
 `inline-handler-scope-check.mjs` (39 modules, no inline handler left pointing at
 the removed `toggleModalPin`).
 
+**Follow-up — the gap left underneath.** With the status row gone the name row
+became the *last* element in the header, so the spacing that used to separate it
+from the row below turned into dead space above the content. Measured against
+the live server with Playwright rather than eyeballed: header was **99px**, now
+**81px** (short viewports ≤750px: **77px**), gap under the name row 21px → 7px.
+
+- `.card-title-row` in `modalContentHTML` lost its inline `margin-bottom:8px`.
+  The base `.card-title-row` rule has no bottom margin, so the modal title row
+  is now flush; moving it out of an inline style also lets media queries win
+  normally instead of needing `!important`.
+- `.modal-header` padding `16px 24px 12px 28px` → `12px 24px 6px 28px`.
+- Dropped `.modal-header .card-title-row { margin-bottom: 4px !important }` from
+  the `@media (max-height: 750px)` compaction block. It existed to compact 8px
+  down to 4px; with the base now 0 it would have *added* 4px on exactly the
+  short viewports that block exists to tighten.
+
 ## [2026-07-27c] — Awaiting-input conversation vanished from the list after a page refresh
 
 A conversation that was **waiting on the user** (an `mc:question` was pending)

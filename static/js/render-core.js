@@ -632,7 +632,7 @@ function modalContentHTML(p) {
           </button>
         </div>
       </div>
-      <div class="card-title-row" style="margin-bottom:8px">
+      <div class="card-title-row">
         <input class="name-edit" type="text" value="${esc(p.name||p.id)}"
           onblur="saveProjectName('${esc(p.id)}',this)"
           onkeydown="if(event.key==='Enter'){this.blur()}"
