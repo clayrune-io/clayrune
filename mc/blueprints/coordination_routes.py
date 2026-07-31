@@ -36,7 +36,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 from mc import obs, state
-from mc.core import _log, now_iso, time_ago
+from mc.core import _atomic_write_text, _log, now_iso, time_ago
 
 bp = Blueprint('coordination_routes', __name__)
 
@@ -138,6 +138,36 @@ def _read_events(project_id: str, last_n: int = 100) -> list[dict]:
     return out
 
 
+# state.json is read-modify-written by TWO concurrent writers: the coordination
+# daemon (reconcile + interrupt-dedup) and any dispatch thread building a
+# read-floor (reconcile). Unlocked RMW loses one side's update — a lost commit
+# watermark re-publishes duplicate completions; a lost dedup entry re-fires an
+# interrupt. Per-project lock + atomic write, same discipline as the MEMORY.md
+# writers (CLAUDE.md: lock + _atomic_write_text, never an unlocked writer).
+_state_locks: dict[str, threading.Lock] = {}
+_state_locks_guard = threading.Lock()
+
+
+def _state_lock(project_id: str) -> threading.Lock:
+    with _state_locks_guard:
+        lk = _state_locks.get(project_id)
+        if lk is None:
+            lk = threading.Lock()
+            _state_locks[project_id] = lk
+        return lk
+
+
+def _mutate_state(project_id: str, fn):
+    """Atomically read-modify-write this project's state.json under its lock.
+    `fn(st)` mutates the dict in place; return False to skip the write."""
+    with _state_lock(project_id):
+        st = _load_state(project_id)
+        if fn(st) is False:
+            return st
+        _save_state(project_id, st)
+        return st
+
+
 def _load_state(project_id: str) -> dict:
     p = _state_path(project_id)
     if not p.exists():
@@ -152,8 +182,8 @@ def _save_state(project_id: str, st: dict) -> None:
     d = _coord_dir(project_id)
     d.mkdir(parents=True, exist_ok=True)
     try:
-        _state_path(project_id).write_text(
-            json.dumps(st, ensure_ascii=False), encoding='utf-8')
+        _atomic_write_text(_state_path(project_id),
+                           json.dumps(st, ensure_ascii=False))
     except Exception as e:
         _log(f"[coord] save_state failed for {project_id}: {e}")
 
@@ -248,35 +278,40 @@ def reconcile_commits(project: dict) -> int:
         ok, _ = git_run(pp, ['rev-parse', '--is-inside-work-tree'], timeout=5)
         if not ok:
             return 0
-        st = _load_state(pid)
-        since = st.get('last_seen_sha', '')
-        commits = _new_commits(pp, since)
-        if not commits:
-            return 0
-        # git log returns newest-first; publish oldest-first so the log reads
-        # chronologically, and record the newest as the new watermark.
-        published = 0
-        for c in reversed(commits):
-            if c['sha'] == since:
-                continue
-            ev = {
-                'id': 'c_' + uuid.uuid4().hex[:8],
-                'ts': now_iso(),
-                'type': 'completion',
-                'agent': c.get('author', ''),
-                'session_id': '',           # commit-derived, not session-scoped
-                'commit_sha': c['sha'],
-                'short': c.get('short', ''),
-                'summary': c.get('subject', ''),
-                'targets': c.get('targets', []),
-                'authored_at': c.get('authored_at', ''),
-            }
-            _append_event(pid, ev)
-            _push_sse(pid, {'type': 'coord_completion', 'event': ev})
-            published += 1
-        st['last_seen_sha'] = commits[0]['sha']  # newest
-        _save_state(pid, st)
-        return published
+        # The ENTIRE read-watermark → publish → write-watermark sequence is one
+        # critical section. Holding the lock only around the write would let two
+        # threads read the same `since`, then both publish the SAME commits as
+        # duplicate events. Cost is a short `git log` under a per-project lock.
+        with _state_lock(pid):
+            st = _load_state(pid)
+            since = st.get('last_seen_sha', '')
+            commits = _new_commits(pp, since)
+            if not commits:
+                return 0
+            # git log returns newest-first; publish oldest-first so the log reads
+            # chronologically, and record the newest as the new watermark.
+            published = 0
+            for c in reversed(commits):
+                if c['sha'] == since:
+                    continue
+                ev = {
+                    'id': 'c_' + uuid.uuid4().hex[:8],
+                    'ts': now_iso(),
+                    'type': 'completion',
+                    'agent': c.get('author', ''),
+                    'session_id': '',       # commit-derived, not session-scoped
+                    'commit_sha': c['sha'],
+                    'short': c.get('short', ''),
+                    'summary': c.get('subject', ''),
+                    'targets': c.get('targets', []),
+                    'authored_at': c.get('authored_at', ''),
+                }
+                _append_event(pid, ev)
+                _push_sse(pid, {'type': 'coord_completion', 'event': ev})
+                published += 1
+            st['last_seen_sha'] = commits[0]['sha']  # newest
+            _save_state(pid, st)
+            return published
     except Exception as e:
         _log(f"[coord] reconcile failed for {pid}: {e}")
         return 0
@@ -492,35 +527,57 @@ def _detect_and_interrupt(project_id: str, sessions: list[tuple[str, dict]]) -> 
                    and (_age_secs(e.get('ts', ''), now) or 0) <= _CONFLICT_FRESH_SECS]
     if not completions:
         return
-    st = _load_state(project_id)
-    fired = set(st.get('interrupted') or [])
-    changed = False
-    for sid, s in sessions:
-        if s.get('status') != 'running':
-            continue  # only interrupt an agent mid-turn; idle picks it up via read-floor
-        started = s.get('started_at', '')
-        my_tokens = _tokens(s.get('task', ''))
-        if not my_tokens:
-            continue
-        for ev in completions:
-            # Only a change that landed AFTER this agent started is plausibly a
-            # sibling's (not its own pre-existing baseline).
-            if started and ev.get('ts', '') <= started:
+    # CLAIM under the lock, DELIVER outside it. _deliver_interrupt POSTs to our
+    # own /agent/send, which can rebuild a read-floor → reconcile_commits →
+    # _state_lock(project_id) on a Flask thread. Holding the lock across that
+    # HTTP call would deadlock until the timeout. So we reserve the dedup keys
+    # first (atomically), then deliver, then release any that failed.
+    claimed: list[tuple[str, dict]] = []
+
+    def _claim(st: dict) -> bool:
+        fired = set(st.get('interrupted') or [])
+        for sid, s in sessions:
+            if s.get('status') != 'running':
+                continue  # only interrupt mid-turn; idle picks it up via read-floor
+            started = s.get('started_at', '')
+            my_tokens = _tokens(s.get('task', ''))
+            if not my_tokens:
                 continue
-            score = _overlap(my_tokens, _tokens(
-                ev.get('summary', '') + ' ' + ' '.join(ev.get('targets', []) or [])))
-            if score < _CONFLICT_MIN_OVERLAP:
-                continue
-            key = f"{ev.get('commit_sha','')}|{sid}"
-            if key in fired:
-                continue
-            if _deliver_interrupt(project_id, sid, ev):
+            for ev in completions:
+                # Only a change that landed AFTER this agent started is plausibly
+                # a sibling's (not its own pre-existing baseline).
+                if started and ev.get('ts', '') <= started:
+                    continue
+                score = _overlap(my_tokens, _tokens(
+                    ev.get('summary', '') + ' '
+                    + ' '.join(ev.get('targets', []) or [])))
+                if score < _CONFLICT_MIN_OVERLAP:
+                    continue
+                key = f"{ev.get('commit_sha','')}|{sid}"
+                if key in fired:
+                    continue
                 fired.add(key)
-                changed = True
-            break  # one interrupt per session per tick
-    if changed:
+                claimed.append((sid, ev))
+                break  # one interrupt per session per tick
+        if not claimed:
+            return False  # nothing to write
         st['interrupted'] = list(fired)[-200:]
-        _save_state(project_id, st)
+        return True
+
+    _mutate_state(project_id, _claim)
+
+    failed = []
+    for sid, ev in claimed:
+        if not _deliver_interrupt(project_id, sid, ev):
+            failed.append(f"{ev.get('commit_sha','')}|{sid}")
+    if failed:
+        # Delivery failed — release the claims so a later tick can retry.
+        def _release(st: dict) -> bool:
+            fired = set(st.get('interrupted') or [])
+            fired.difference_update(failed)
+            st['interrupted'] = list(fired)[-200:]
+            return True
+        _mutate_state(project_id, _release)
 
 
 def _coordination_loop():
