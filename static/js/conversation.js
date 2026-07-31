@@ -3139,7 +3139,11 @@ async function sendFollowup(projectId, sessionId) {
   const echoEl = document.getElementById(`agent-output-${sessionId}`);
   if (echoEl) {
     const div = document.createElement('div');
-    div.className = 'agent-line agent-line-prompt agent-echo';
+    // Badge slash commands in the optimistic echo too, so the styling doesn't
+    // pop in only once the server round-trips the line back over SSE.
+    const _isCmd = window.isSlashCommandLine && window.isSlashCommandLine(`> ${message}`);
+    div.className = 'agent-line agent-line-prompt agent-echo'
+      + (_isCmd ? ' agent-line-cmd' : '');
     div.textContent = `> ${message}`;
     div.style.whiteSpace = 'pre-wrap';
     echoEl.appendChild(div);

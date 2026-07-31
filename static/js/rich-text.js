@@ -181,10 +181,34 @@ function buildPipeTable(rawLines) {
   return html;
 }
 
+// Mirrors the server's _SLASH_COMMAND_RE (agent_routes.py) so a message the
+// backend treats as a slash command is exactly the one we badge as such.
+const SLASH_COMMAND_RE = /^\/[A-Za-z][\w-]*(:[\w-]+)?(\s|$)/;
+
+// A user line arrives as "> <Label>: <message>". Strip the "> Label: " prefix
+// and test what the user actually typed. The label is user-configurable
+// (config.user_name), so match the first ": " rather than a fixed name — and
+// fall back to the raw body when there's no label at all.
+function isSlashCommandLine(text) {
+  const t = (text || '').trim();
+  if (!t.startsWith('> ')) return false;
+  const body = t.slice(2);
+  const sep = body.indexOf(': ');
+  const msg = sep === -1 ? body : body.slice(sep + 2);
+  return SLASH_COMMAND_RE.test(msg.trimStart());
+}
+
 function agentLineCls(text) {
   const t = text.trim();
   if (t.startsWith('> [queued]')) return 'agent-line agent-line-queued';
-  if (t.startsWith('> ')) return 'agent-line agent-line-prompt';
+  // Slash commands get an extra marker class so they read as a command, not
+  // as prose the agent should answer. Keeps agent-line-prompt so every
+  // existing prompt-bubble rule/selector still applies.
+  if (t.startsWith('> ')) {
+    return isSlashCommandLine(t)
+      ? 'agent-line agent-line-prompt agent-line-cmd'
+      : 'agent-line agent-line-prompt';
+  }
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';
@@ -284,6 +308,10 @@ window.formatTableLine = formatTableLine;
 window.isPipeTable = isPipeTable;
 window.buildPipeTable = buildPipeTable;
 window.agentLineCls = agentLineCls;
+// Exported for the optimistic-echo paths in conversation.js, which build the
+// bubble className directly instead of going through agentLineCls().
+window.isSlashCommandLine = isSlashCommandLine;
+window.SLASH_COMMAND_RE = SLASH_COMMAND_RE;
 window.collapseIntoPlanButton = collapseIntoPlanButton;
 window.expandAgentOutput = expandAgentOutput;
 window._isAgentOutputPinned = _isAgentOutputPinned;

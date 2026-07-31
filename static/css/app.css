@@ -3582,6 +3582,18 @@
     max-width: 84%;
     white-space: pre-wrap;
   }
+  /* Slash commands — still a user bubble, but rendered as a command: deeper
+     accent, monospace, and a leading "/" rail. Uses --accent-soft so it stays
+     distinct from the normal prompt bubble in every accent theme and tone. */
+  .agent-output .agent-line-prompt.agent-line-cmd {
+    background: var(--accent-soft);
+    font-family: 'JetBrains Mono', ui-monospace, monospace;
+    font-size: calc(var(--mc-zoom-font, 13px) - 0.5px);
+    font-weight: 600;
+    letter-spacing: 0.2px;
+    box-shadow: inset 3px 0 0 rgba(255, 255, 255, 0.55);
+    padding-left: 15px;
+  }
   .agent-output .agent-echo-queued { opacity: 0.7; }
   .agent-output .agent-echo-queued::after {
     content: '  ⏳ queued — will send when current response completes';
