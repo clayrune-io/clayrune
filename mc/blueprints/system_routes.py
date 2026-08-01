@@ -24,7 +24,9 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+import agent_runtime as _agent_runtime
 from mc import obs, state
+from mc import slash_commands as slash_cmds
 from mc.core import _atomic_write_text, _log, now_iso, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
@@ -100,6 +102,38 @@ def system_loops():
     """Background-loop heartbeat ages (mc/obs.py, Phase 2). A loop missing
     from this map after boot, or with a runaway age, is silently dead."""
     return jsonify(obs.snapshot())
+
+
+@bp.route('/api/slash-commands')
+def slash_commands():
+    """Built-in CLI slash commands the composer's `/` autocomplete may offer.
+
+    Only `supportsNonInteractive` commands are returned: MC always spawns the
+    CLI with `--print`, so anything else would be suggested and then silently
+    do nothing. Read from the user's OWN binary (the list is version-specific)
+    and cached against its fingerprint — see mc/slash_commands.py.
+
+    `?all=1`   include interactive-only commands (diagnostics).
+    `?refresh=1` force a re-scan, ignoring the cache.
+    """
+    try:
+        binary = _agent_runtime.get_runtime('claude').resolve_binary()
+    except Exception:
+        binary = None
+    inv = slash_cmds.load_inventory(
+        Path(str(binary)) if binary else None,
+        _DATA_ROOT / 'data' / 'slash_commands.json',
+        force=request.args.get('refresh') in ('1', 'true'),
+        log=_log,
+    )
+    want_all = request.args.get('all') in ('1', 'true')
+    cmds = inv.get('commands', []) if want_all else slash_cmds.headless_commands(inv)
+    return jsonify({
+        'commands': cmds,
+        'source': inv.get('source'),
+        'extracted_at': inv.get('extracted_at'),
+        'total_known': len(inv.get('commands', [])),
+    })
 
 
 # ── Process Tracker endpoints ─────────────────────────────────────────────────

@@ -27,6 +27,9 @@ config.json
 data/settings.json
 data/grid_layout.json
 data/schedules.json
+# Extracted from the operator's own claude binary — version-specific, so it is
+# machine state, not source (see mc/slash_commands.py).
+data/slash_commands.json
 data/restart_log.json
 data/memory/
 data/beacon/

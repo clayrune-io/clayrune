@@ -3038,6 +3038,34 @@
   .composer-provider-select:hover { border-color: var(--text-dim); }
 
   .agent-input-row { display: flex; gap: 8px; margin-bottom: 10px; }
+  /* ── Slash-command autocomplete (static/js/slash-autocomplete.js) ──────────
+     Fixed-position: the composer sits inside a draggable, scrollable modal, so
+     the popup is positioned in viewport coords and re-placed on scroll/resize
+     rather than anchored to a parent that moves under it. */
+  .slash-ac {
+    position: fixed; z-index: 10000; overflow-y: auto;
+    background: var(--surface); border: 1px solid var(--border2);
+    border-radius: 10px; box-shadow: 0 8px 28px rgba(0,0,0,0.18);
+    padding: 4px; font-family: 'Inter', sans-serif;
+  }
+  .slash-ac-row {
+    display: flex; align-items: baseline; gap: 8px;
+    padding: 6px 10px; border-radius: 7px; cursor: pointer;
+  }
+  .slash-ac-row.active { background: var(--accent-dim); }
+  .slash-ac-name { font-size: 13px; font-weight: 700; color: var(--accent); white-space: nowrap; }
+  .slash-ac-hint { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+  .slash-ac-desc {
+    font-size: 11.5px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  /* Touch targets + room for the description to wrap onto its own line. */
+  @media (max-width: 960px) {
+    .slash-ac-row { padding: 10px 12px; flex-wrap: wrap; }
+    .slash-ac-name { font-size: 15px; }
+    .slash-ac-desc { font-size: 12.5px; flex-basis: 100%; }
+  }
+
   .agent-task-input {
     flex: 1; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px;

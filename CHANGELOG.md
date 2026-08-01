@@ -6,6 +6,61 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-01] — `/` autocomplete in the composers, from the installed CLI
+
+Typing `/` at the start of a composer now opens a picker of the Claude CLI's
+built-in slash commands, filtered as you type. Enter or Tab completes; ↑/↓ move;
+Esc dismisses.
+
+**Why it was worth building.** A mistyped or non-existent slash command doesn't
+error — it degrades to plain text the model just reads, which looks like it
+worked. There was no way to discover the real names from inside MC.
+
+**Two rules the implementation is built around:**
+
+1. **Only headless-capable commands are offered.** MC always spawns the CLI with
+   `--print` (`ClaudeRuntime.build_command`). The CLI tags each command with
+   `supportsNonInteractive`; of ~96 built-ins only ~32 carry it. Offering the
+   rest would suggest commands that silently do nothing — the exact failure the
+   feature exists to prevent. Verified empirically first: driving the CLI through
+   both spawn shapes MC uses, `/cost` returns `num_turns=0` (a real local
+   command, no model inference).
+2. **The trigger mirrors the server's own rule.** The CLI only parses a slash
+   command when it is the FIRST bytes of the turn — already encoded in
+   `_SLASH_COMMAND_RE` (`agent_routes.py`). The popup fires only when the caret
+   sits in a leading `/token`, so it never appears where the command wouldn't
+   dispatch. `hello /go` and `/usr/bin` don't trigger it.
+
+- **`mc/slash_commands.py` (new)** — extracts the registry from the user's own
+  `claude` binary (the list is version-specific, so a list baked into MC would
+  be wrong for anyone on a different Claude Code release). Cached against a
+  path+size+mtime fingerprint: a cold scan of the 265 MB binary takes ~0.2s, and
+  every later boot is a `stat()` (~7ms). A CLI upgrade invalidates it
+  automatically. Degrades to the last good cache, then to a small hand-verified
+  fallback — never to nothing.
+- **`GET /api/slash-commands`** — headless subset by default; `?all=1` includes
+  interactive-only entries, `?refresh=1` forces a re-scan.
+- **`static/js/slash-autocomplete.js` (new)** — fully delegated from `document`,
+  because `refreshModal()` rebuilds the composers wholesale and per-element
+  listeners would not survive. keydown is bound in **capture** phase so it beats
+  the textarea's inline `onkeydown="handleInputEnter(…)"`; in bubble phase Enter
+  would dispatch the half-typed command as a chat message.
+- Internal plumbing (`__remote-workflow`, `workflow-launch-exec`, `heapdump`)
+  and entries the CLI itself marks `(removed)` / `Renamed to …` are kept in the
+  inventory but out of the picker.
+
+**Naming constraint worth knowing:** every module-scoped binding is `_sac`-
+prefixed. `tools/smoke/inline-handler-scope-check.mjs` builds a single map of
+module-scoped names across all modules, so a bare `esc` or `active` here made it
+report *pre-existing* inline handlers in five other files as unbridged.
+
+Tests: `tests/test_slash_commands.py` (11, incl. chunk-boundary and
+headless-variant-wins-over-interactive-duplicate) and
+`tools/smoke/slash-autocomplete.mjs` (11 behaviours, incl. "Enter completes and
+does NOT dispatch" and the two negative triggers).
+
+**Requires a server restart** — the endpoint is new.
+
 ## [2026-07-31b] — Worktree-isolated chats wouldn't open: the CLI flattens dots too
 
 A conversation run by a worktree-isolated agent could not be opened from the
