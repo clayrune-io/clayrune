@@ -80,6 +80,64 @@ chatty tool that prints its own password cannot leak it into the transcript. If
 a secret cannot be resolved the child is **never started** (exit 2) — a missing
 credential must not silently become an anonymous login attempt.
 
+## Two-factor codes (TOTP)
+
+Most real logins need a second factor, so the vault generates them —
+`mc/totp.py`, tests in `tests/test_totp.py`.
+
+**There is no "sync with Google Authenticator", and none is needed.** Google
+Authenticator is not a service; it is a client for an open standard (TOTP,
+RFC 6238). It and Clayrune hold the same shared seed and each derive the same
+6-digit code from the current 30-second window, independently and offline.
+Nothing is fetched from Google. Correctness is pinned against the RFC 6238
+reference vectors — agreeing with those is what "agrees with the phone" means.
+
+Three ways to get a seed in, all through the same **Value** field:
+
+| Paste this | Result |
+|---|---|
+| `otpauth://totp/…` | one code generator (this is what the enrolment QR encodes — use the site's "can't scan it?" link) |
+| `otpauth-migration://offline?data=…` | every account at once, from Google Authenticator's *Transfer accounts → Export* QR |
+| a bare base32 seed | one code generator (pick "2FA" explicitly) |
+
+Grouped, lowercase, and padded seeds are all accepted — sites print them
+inconsistently, and rejecting a correct paste over formatting is a bad trade.
+
+Reference a code with `{{totp:name}}`, or inject one:
+
+```bash
+python tools/with-secret.py --env GH_PASS=github.password \
+                           --totp GH_OTP=github.totp -- python tools/login.py
+```
+
+If the current code has under 5 seconds left, the runner waits for the next
+window rather than handing out one that expires mid-form.
+
+`{{totp:name}}` yields a **code**; `{{secret:name}}` on the same entry yields the
+**seed** (for re-enrolling elsewhere). They are separate keywords on purpose —
+substituting a seed into a login form would fail confusingly, and generating a
+code where a seed was wanted would too.
+
+`POST /api/secrets/totp/<name>` checks a code you read off your phone and
+returns only whether it matched. It never returns our own code: a route that
+minted live second factors would be exactly the plaintext hole the rest of this
+design refuses.
+
+### The tradeoff, stated plainly
+
+Storing the TOTP seed beside the password **collapses two factors into one** —
+anything that can read the vault can now produce both. That is inherent to
+unattended 2FA automation, not a flaw in this implementation; every CI system
+holding an OTP seed makes the same trade.
+
+It is made visible rather than hidden: TOTP entries are a distinct `kind`, the
+UI badges them, and `allow_unattended` can be turned off per secret. For a
+high-value account — a bank, a domain registrar, the Apple developer account —
+the right answer is usually to leave 2FA un-automated and let the agent ask.
+
+HOTP (counter-based) is deliberately unsupported: handing out codes without
+tracking the counter would desynchronise the account.
+
 ## Policy controls
 
 Per secret:

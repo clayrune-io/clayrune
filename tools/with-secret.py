@@ -14,7 +14,15 @@ The values land in the child process's environment. They are never printed,
 never echoed into the command line the agent typed, and so never reach the
 transcript, MEMORY.md, or a distilled skill.
 
-Two more injection shapes for tools that don't read env vars:
+Second factors work the same way — `--totp CODE=github.totp` injects a freshly
+generated 6-digit code, waiting for the next window if the current one is about
+to expire:
+
+    python tools/with-secret.py \
+        --env GH_PASS=github.password --totp GH_OTP=github.totp \
+        -- python tools/login.py
+
+More injection shapes for tools that don't read env vars:
 
     --stdin gh.token        pipe one secret to the child's stdin
                             (e.g. `gh auth login --with-token`)
@@ -38,6 +46,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
@@ -64,6 +73,10 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument('--env', action='append', type=_pair, default=[],
                     metavar='VAR=secret.name',
                     help='inject a secret as an environment variable (repeatable)')
+    ap.add_argument('--totp', action='append', type=_pair, default=[],
+                    metavar='VAR=secret.name',
+                    help='inject a freshly generated 2FA code as an environment '
+                         'variable (repeatable)')
     ap.add_argument('--stdin', metavar='secret.name',
                     help="pipe a secret to the child's stdin")
     ap.add_argument('--project', default=None,
@@ -91,6 +104,19 @@ def main(argv: list[str] | None = None) -> int:
         env = dict(os.environ)
         env.update(vault.env_for(args.env, consumer='with-secret',
                                  project_id=project, unattended=unattended))
+        for var, sec in args.totp:
+            code, remaining = vault.generate_totp_code(
+                sec, consumer='with-secret', project_id=project,
+                unattended=unattended)
+            # A code with a couple of seconds left will expire while the child
+            # is still filling in the form. Wait for the next window rather
+            # than hand out one that is about to fail.
+            if remaining < 5:
+                time.sleep(remaining + 1)
+                code, remaining = vault.generate_totp_code(
+                    sec, consumer='with-secret', project_id=project,
+                    unattended=unattended)
+            env[var] = code
         # Resolve placeholders inside the command line itself.
         cmd = [vault.resolve_placeholders(a, consumer='with-secret',
                                           project_id=project,

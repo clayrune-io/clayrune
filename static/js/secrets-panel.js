@@ -123,6 +123,10 @@ async function refreshSecretsList() {
     const scopeBadge = s.scope === 'global'
       ? '<span style="font-size:10px;color:var(--text-faint)">all projects</span>'
       : `<span style="font-size:10px;color:var(--text-faint)">only ${esc(s.scope)}</span>`;
+    const totpBadge = s.kind === 'totp' ? `
+      <span title="Two-factor code generator${s.issuer ? ' — ' + esc(s.issuer) : ''}"
+            style="font-size:10px;padding:1px 6px;border:1px solid var(--border);
+                   border-radius:99px;color:var(--text-faint)">2FA code</span>` : '';
     const attended = s.allow_unattended ? '' : `
       <span title="Steward and scheduled runs are refused this credential"
             style="font-size:10px;padding:1px 6px;border:1px solid var(--border);
@@ -136,7 +140,7 @@ async function refreshSecretsList() {
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <code style="font-size:13px;color:var(--text);font-family:var(--mono)">${esc(s.name)}</code>
-            ${scopeBadge}${attended}
+            ${scopeBadge}${totpBadge}${attended}
           </div>
           ${s.description ? `<div style="font-size:11px;color:var(--text-faint);margin-top:3px">${esc(s.description)}</div>` : ''}
           <div style="font-size:10px;color:var(--text-faint);margin-top:3px">${used}</div>
@@ -290,6 +294,18 @@ async function openSecretEditor(name) {
           Once saved it cannot be displayed again — there is no route that hands
           a value back. Rotate it here if you lose it.
         </div>
+        <div style="font-size:10px;color:var(--text-faint);margin-top:5px;line-height:1.5">
+          <strong>For 2FA:</strong> paste an <code>otpauth://</code> setup link
+          (the "can't scan the QR?" text on the enrolment page) and it becomes a
+          code generator. Google Authenticator's
+          <em>Transfer accounts &rarr; Export</em> link
+          (<code>otpauth-migration://</code>) imports every account at once.
+          <div style="margin-top:3px">
+            Storing the 2FA seed next to the password does put both factors in
+            one place. For a bank or a registrar, consider leaving 2FA off here
+            and letting the agent ask you.
+          </div>
+        </div>
       </div>
 
       <div>
@@ -378,7 +394,10 @@ async function saveSecret(modalId, isNew) {
   const scope = scopeIsProject ? (document.getElementById('sec-project')?.value || '') : 'global';
 
   const fail = (msg) => { if (status) { status.textContent = msg; status.style.color = 'var(--danger,#c0553f)'; } };
-  if (!name) return fail('Give it a name.');
+  // A Google Authenticator export names its own accounts, so the name field is
+  // not required (and would be meaningless) for that path.
+  const isBulkImport = /^otpauth-migration:\/\//i.test(value.trim());
+  if (!name && !isBulkImport) return fail('Give it a name.');
   if (isNew && !value) return fail('Paste the value you want stored.');
   if (scopeIsProject && !scope) return fail('Pick a project, or choose “Every project”.');
 
@@ -395,6 +414,25 @@ async function saveSecret(modalId, isNew) {
   if (btn) { btn.disabled = true; btn.textContent = 'Saving…'; }
   if (status) { status.textContent = ''; status.style.color = 'var(--text-faint)'; }
   try {
+    // A Google Authenticator export carries MANY accounts, so it can't go
+    // through the single-secret path — route it to the importer instead of
+    // storing the whole payload as one useless blob.
+    if (/^otpauth-migration:\/\//i.test(value.trim())) {
+      const r = await fetch(API_BASE + '/api/secrets/import-authenticator', {
+        method: 'POST', headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          uri: value.trim(), commit: true, scope,
+          allow_unattended: body.allow_unattended,
+        })
+      });
+      const d = await r.json();
+      if (!r.ok) throw new Error(d.error || r.statusText);
+      if (valueEl) valueEl.value = '';
+      closeModalById(modalId);
+      showToast(`Imported ${d.imported.length} account(s) from Google Authenticator`);
+      refreshSecretsList();
+      return;
+    }
     const res = isNew
       ? await fetch(API_BASE + '/api/secrets', {
           method: 'POST', headers: { 'Content-Type': 'application/json' },

@@ -15,11 +15,20 @@ Routes:
     GET    /api/secrets/audit                  recent access records
     POST   /api/secrets/check                  which names does this text use,
                                                and are they all resolvable?
+    POST   /api/secrets/import-authenticator   Google Authenticator export QR
+    POST   /api/secrets/totp/<name>            does this code match? (yes/no)
+
+The TOTP probe returns a boolean, never our own code — a route that minted live
+second factors would be the plaintext hole this design otherwise refuses.
 """
+
+import hmac
+import re
 
 from flask import Blueprint, jsonify, request
 
 from mc import secrets_store as vault
+from mc import totp as _totp
 from mc.core import _log
 
 bp = Blueprint('secrets_routes', __name__)
@@ -64,6 +73,7 @@ def api_secrets_set():
             hint=data.get('hint') or '',
             scope=(data.get('scope') or 'global').strip() or 'global',
             allow_unattended=bool(data.get('allow_unattended', True)),
+            kind=(data.get('kind') or vault.KIND_PASSWORD).strip(),
         )
     except vault.SecretsError as e:
         return _err(e)
@@ -95,6 +105,10 @@ def api_secrets_patch(name: str):
             scope=data.get('scope', current['scope']),
             allow_unattended=bool(
                 data.get('allow_unattended', current['allow_unattended'])),
+            # Carry the kind forward. Defaulting here would silently turn a TOTP
+            # entry into a password on a description edit, and the breakage
+            # would only surface as a failed login much later.
+            kind=data.get('kind', current.get('kind', vault.KIND_PASSWORD)),
         )
     except vault.SecretNotFound as e:
         return _err(e, 404)
@@ -112,6 +126,85 @@ def api_secrets_delete(name: str):
     if not ok:
         return jsonify({'error': f"no secret named '{name}'"}), 404
     return jsonify({'ok': True, 'deleted': name})
+
+
+@bp.route('/api/secrets/import-authenticator', methods=['POST'])
+def api_secrets_import_authenticator():
+    """Import from a Google Authenticator *Transfer accounts → Export* QR.
+
+    Two-step, both driven by the same ``otpauth-migration://`` URI the user
+    pasted: without ``commit`` we return a preview (issuer/account/suggested
+    name — **no seeds**), and with it we store the selected entries. The URI is
+    re-posted rather than parked in server-side state because the browser
+    already holds it by construction, so re-sending leaks nothing new, and the
+    decoded seeds never travel back out.
+    """
+    data = request.get_json(silent=True) or {}
+    uri = (data.get('uri') or '').strip()
+    if not uri:
+        return jsonify({'error': 'uri is required'}), 400
+    try:
+        entries = _totp.parse_migration_uri(uri)
+    except _totp.TotpError as e:
+        return _err(e)
+
+    chosen = data.get('names') or {}          # suggested_name -> final name ('' = skip)
+    preview = []
+    for entry in entries:
+        suggested = _totp.suggested_name(entry)
+        preview.append({
+            'suggested_name': suggested,
+            'issuer': entry.get('issuer', ''),
+            'account': entry.get('account', ''),
+            'digits': entry.get('digits', 6),
+            'period': entry.get('period', 30),
+        })
+
+    if not data.get('commit'):
+        return jsonify({'accounts': preview, 'count': len(preview)})
+
+    scope = (data.get('scope') or 'global').strip() or 'global'
+    allow_unattended = bool(data.get('allow_unattended', True))
+    imported, skipped = [], []
+    for entry, shown in zip(entries, preview):
+        target = (chosen.get(shown['suggested_name'], shown['suggested_name']) or '').strip()
+        if not target:
+            skipped.append(shown['suggested_name'])
+            continue
+        try:
+            rec = vault.set_secret(
+                target, entry['secret'], kind=vault.KIND_TOTP, scope=scope,
+                allow_unattended=allow_unattended,
+                description=' — '.join(x for x in (entry.get('issuer'),
+                                                   entry.get('account')) if x))
+            imported.append(rec['name'])
+        except vault.SecretsError as e:
+            _log(f"[secrets] authenticator import of '{target}' failed: {e}")
+            skipped.append(target)
+    return jsonify({'imported': imported, 'skipped': skipped})
+
+
+@bp.route('/api/secrets/totp/<name>', methods=['POST'])
+def api_secrets_totp_probe(name: str):
+    """Confirm a stored TOTP seed is right, by checking a code the user reads
+    off their phone.
+
+    Returns only whether it matched — never our own generated code. Otherwise
+    this would be the plaintext-returning route the design deliberately lacks:
+    anyone who could reach the vault page could mint live second factors.
+    """
+    data = request.get_json(silent=True) or {}
+    expect = re.sub(r'\s', '', str(data.get('code') or ''))
+    if not expect:
+        return jsonify({'error': 'code is required'}), 400
+    try:
+        code, remaining = vault.generate_totp_code(name, consumer='api:verify')
+    except vault.SecretNotFound as e:
+        return _err(e, 404)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'match': hmac.compare_digest(code, expect),
+                    'seconds_remaining': remaining})
 
 
 @bp.route('/api/secrets/audit')

@@ -58,6 +58,7 @@ import threading
 from pathlib import Path
 from typing import Any, Iterable
 
+from mc import totp as _totp
 from mc.core import _harden_secret_perms, _log, now_iso
 
 
@@ -127,6 +128,15 @@ _lock = threading.RLock()
 _NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
 
 _PLACEHOLDER_RE = re.compile(r'\{\{\s*secret:\s*([a-z0-9][a-z0-9._-]{0,63})\s*\}\}')
+
+# `{{totp:name}}` yields a freshly generated 6-digit code rather than the stored
+# seed. Deliberately a different keyword: the seed itself must never be
+# substitutable into a login form, and a caller that types the wrong one should
+# get an error, not a silently useless value.
+_TOTP_PLACEHOLDER_RE = re.compile(r'\{\{\s*totp:\s*([a-z0-9][a-z0-9._-]{0,63})\s*\}\}')
+
+KIND_PASSWORD = 'password'
+KIND_TOTP = 'totp'
 
 
 def valid_name(name: str) -> bool:
@@ -394,7 +404,15 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
         'updated_at': rec.get('updated_at'),
         'last_used_at': rec.get('last_used_at'),
         'use_count': int(rec.get('use_count', 0) or 0),
-        'placeholder': '{{secret:%s}}' % name,
+        'kind': rec.get('kind', KIND_PASSWORD),
+        # A TOTP entry's params are not sensitive (they're printed next to the
+        # QR code on every enrolment page) and the UI needs them to label it.
+        'issuer': rec.get('issuer', ''),
+        'account': rec.get('account', ''),
+        'digits': int(rec.get('digits', 6) or 6),
+        'period': int(rec.get('period', 30) or 30),
+        'placeholder': ('{{totp:%s}}' if rec.get('kind') == KIND_TOTP
+                        else '{{secret:%s}}') % name,
     }
 
 
@@ -423,15 +441,43 @@ def set_secret(name: str,
                description: str = '',
                hint: str = '',
                scope: str = 'global',
-               allow_unattended: bool = True) -> dict[str, Any]:
+               allow_unattended: bool = True,
+               kind: str = KIND_PASSWORD) -> dict[str, Any]:
     """Create or replace a secret. Human-initiated only — no agent path calls
-    this (see the module docstring's authority note)."""
+    this (see the module docstring's authority note).
+
+    An ``otpauth://totp/...`` URI pasted as the value is detected and unpacked
+    into a TOTP entry automatically — that string is what the enrolment QR code
+    encodes, so pasting it is the path of least resistance and it would
+    otherwise be stored as a useless literal password.
+    """
     if not valid_name(name):
         raise SecretsError(
             f"invalid secret name '{name}' — use lowercase letters, digits, "
             f"'.', '-', '_' (e.g. reddit.password)")
     if not isinstance(value, str) or value == '':
         raise SecretsError('secret value must be a non-empty string')
+
+    extra: dict[str, Any] = {}
+    if _totp.looks_like_otpauth(value):
+        try:
+            parsed = _totp.parse_otpauth_uri(value)
+        except _totp.TotpError as e:
+            raise SecretsError(str(e)) from e
+        value, kind = parsed['secret'], KIND_TOTP
+        extra = {'issuer': parsed['issuer'], 'account': parsed['account'],
+                 'digits': parsed['digits'], 'period': parsed['period'],
+                 'algorithm': parsed['algorithm']}
+    elif kind == KIND_TOTP:
+        # A bare base32 seed — validate now rather than at first login attempt,
+        # when a bad seed looks like "the site rejected our code".
+        try:
+            value = _totp.normalize_secret(value)
+        except _totp.TotpError as e:
+            raise SecretsError(str(e)) from e
+
+    if kind not in (KIND_PASSWORD, KIND_TOTP):
+        raise SecretsError(f"unknown secret kind '{kind}'")
 
     with _lock:
         store = _load_store()
@@ -452,13 +498,22 @@ def set_secret(name: str,
             'updated_at': now_iso(),
             'last_used_at': existing.get('last_used_at'),
             'use_count': int(existing.get('use_count', 0) or 0),
+            'kind': kind,
         })
+        # Carry forward TOTP params on a metadata-only edit that re-seals the
+        # same seed, so re-saving a SHA256/8-digit entry doesn't silently reset
+        # it to the defaults and start producing wrong codes.
+        for key in ('issuer', 'account', 'digits', 'period', 'algorithm'):
+            if key in extra:
+                rec[key] = extra[key]
+            elif key in existing:
+                rec[key] = existing[key]
         store['secrets'][name] = rec
         store['key_backend'] = key_backend()
         _save_store(store)
 
     _audit('set', name=name, scope=scope, allow_unattended=bool(allow_unattended),
-           replaced=bool(existing))
+           kind=kind, replaced=bool(existing))
     return _public(name, rec)
 
 
@@ -523,12 +578,54 @@ def get_secret_value(name: str,
     return value
 
 
+def generate_totp_code(name: str,
+                       *,
+                       consumer: str,
+                       project_id: str | None = None,
+                       unattended: bool = False) -> tuple[str, int]:
+    """A live one-time code for a TOTP secret, plus its seconds of validity.
+
+    The seed itself is decrypted, used, and dropped — it is deliberately NOT
+    registered for output redaction, because the seed must never be dispensed
+    anywhere that could echo it. The *code* is not registered either: it is
+    public-by-design for 30 seconds and scrubbing 6 digits out of agent output
+    would mangle unrelated numbers.
+    """
+    with _lock:
+        store = _load_store()
+        rec = store['secrets'].get(name)
+        if rec is not None and rec.get('kind') != KIND_TOTP:
+            raise SecretsError(
+                f"'{name}' is not a TOTP secret — use {{{{secret:{name}}}}}")
+
+    seed = get_secret_value(name, consumer=consumer, project_id=project_id,
+                            unattended=unattended)
+    # get_secret_value registers everything it hands out; a TOTP seed must not
+    # stay in the redaction table, since it is never expected in output and
+    # keeping it there is a needless copy of the crown jewels.
+    _forget_dispensed(seed)
+
+    period = int((rec or {}).get('period', 30) or 30)
+    try:
+        code = _totp.generate(seed,
+                              digits=int((rec or {}).get('digits', 6) or 6),
+                              period=period,
+                              algorithm=(rec or {}).get('algorithm', 'SHA1'))
+    except _totp.TotpError as e:
+        raise SecretsError(str(e)) from e
+    return code, _totp.seconds_remaining(period)
+
+
 def referenced_names(text: str) -> list[str]:
-    """Secret names a piece of text refers to, in first-appearance order."""
+    """Secret names a piece of text refers to, in first-appearance order.
+
+    Covers both `{{secret:…}}` and `{{totp:…}}`.
+    """
     seen: list[str] = []
-    for m in _PLACEHOLDER_RE.finditer(text or ''):
-        if m.group(1) not in seen:
-            seen.append(m.group(1))
+    for pattern in (_PLACEHOLDER_RE, _TOTP_PLACEHOLDER_RE):
+        for m in pattern.finditer(text or ''):
+            if m.group(1) not in seen:
+                seen.append(m.group(1))
     return seen
 
 
@@ -537,7 +634,7 @@ def resolve_placeholders(text: str,
                          consumer: str,
                          project_id: str | None = None,
                          unattended: bool = False) -> tuple[str, list[str]]:
-    """Substitute every ``{{secret:name}}`` in ``text``.
+    """Substitute every ``{{secret:name}}`` and ``{{totp:name}}`` in ``text``.
 
     Returns ``(resolved_text, names_used)``. Raises on the first unknown or
     denied name rather than leaving a live placeholder in a command line —
@@ -547,9 +644,17 @@ def resolve_placeholders(text: str,
     names = referenced_names(text)
     if not names:
         return text, []
+    # Each name is resolved exactly once per call, so repeating a placeholder
+    # doesn't inflate its use count — and, for TOTP, so every occurrence in one
+    # command carries the SAME code even if the 30s window turns over mid-parse.
     values = {n: get_secret_value(n, consumer=consumer, project_id=project_id,
-                                  unattended=unattended) for n in names}
+                                  unattended=unattended)
+              for n in set(_PLACEHOLDER_RE.findall(text))}
+    codes = {n: generate_totp_code(n, consumer=consumer, project_id=project_id,
+                                   unattended=unattended)[0]
+             for n in set(_TOTP_PLACEHOLDER_RE.findall(text))}
     out = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], text)
+    out = _TOTP_PLACEHOLDER_RE.sub(lambda m: codes[m.group(1)], out)
     return out, names
 
 

@@ -6,6 +6,57 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-01] — 2FA codes, and the vault UI
+
+Two follow-ups that turned the vault from a library into something usable.
+
+**The panel (sidebar → Secrets).** Shipping API-only left the actual question
+unanswered: how does a password get *in*? Typing it in the composer puts it in
+the transcript; having the agent curl it in puts it in a tool call. Both are the
+exact thing the vault exists to prevent, so the form — browser → server, agent
+never in the path — is the missing half, not polish. It never displays a value,
+not even a last-4 (a partial reveal is still a reveal), and editing metadata
+leaves the value sealed. "Copy ref" copies `{{secret:name}}`, which *is* safe to
+paste into chat.
+
+**TOTP (`mc/totp.py`).** Real logins need a second factor. There is no "sync
+with Google Authenticator" API and none is needed — Authenticator is a client
+for an open standard (RFC 6238), not a service. Clayrune holds the same seed and
+derives the same code offline. Correctness is pinned to the RFC's reference
+vectors, which is what "agrees with the phone" actually means.
+
+Three intake paths, all through the one Value field: an `otpauth://` setup link,
+a bare base32 seed, or `otpauth-migration://` — Google Authenticator's own
+*Transfer accounts → Export* payload, which imports every account at once
+(decoded by a ~40-line protobuf reader rather than a new dependency).
+
+- `{{totp:name}}` yields a code; `{{secret:name}}` on the same entry yields the
+  seed. Separate keywords on purpose — each would fail confusingly in the
+  other's place.
+- `--totp VAR=name` injects a code, waiting for the next window if fewer than 5
+  seconds remain, so it can't expire mid-form.
+- The verify route returns *whether* a code matched, never a code. Otherwise it
+  would be the plaintext hole the design refuses.
+- HOTP is deliberately unsupported — dispensing counter-based codes without
+  tracking the counter desynchronises the account.
+- Seeds are accepted grouped/lowercase/padded, as sites actually print them.
+
+**The tradeoff is documented, not hidden:** storing the seed beside the password
+collapses two factors into one. That is inherent to unattended 2FA, but TOTP
+entries are a distinct kind, badged in the UI, and can be marked attended-only.
+For a bank or registrar the right answer is still to let the agent ask.
+
+**Two real bugs caught while wiring:** `PATCH` defaulted `kind`, silently
+downgrading a TOTP entry to a password on a description edit — breakage that
+would only surface as a failed login much later. And `seconds_remaining`
+truncated sub-second remainders to `0`, reporting a live code as expired.
+
+Also registered the new module in `tools/smoke/boot-smoke.mjs`; the harness
+aborts any module not listed there, so without that the panel would have gone
+unexercised while the suite still reported green.
+
+Detail: `docs/SECRETS.md`. 41 further tests (82 total across the vault).
+
 ## [2026-08-01] — Secrets vault: agents can log in without seeing the password
 
 Clayrune had no credential store. The only pattern was plaintext on disk —

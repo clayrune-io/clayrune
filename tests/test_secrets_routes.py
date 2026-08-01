@@ -116,6 +116,76 @@ def test_check_reports_resolvability_without_decrypting(client):
     assert client.get('/api/secrets').get_json()['secrets'][0]['use_count'] == 0
 
 
+def test_authenticator_import_previews_without_storing_or_leaking_seeds(client):
+    from tests.test_totp import _make_migration_uri
+    uri = _make_migration_uri([(b'12345678901234567890', 'ron', 'GitHub', 2)])
+    r = client.post('/api/secrets/import-authenticator', json={'uri': uri})
+    body = r.get_data(as_text=True)
+    assert r.status_code == 200
+    data = r.get_json()
+    assert data['count'] == 1
+    assert data['accounts'][0]['issuer'] == 'GitHub'
+    # The preview must not carry seeds, and must not have stored anything yet.
+    assert 'secret' not in data['accounts'][0]
+    assert 'GEZDGNBVGY' not in body     # base32 of "12345678901234567890"
+    assert client.get('/api/secrets').get_json()['secrets'] == []
+
+
+def test_authenticator_import_commits_selected_accounts(client):
+    from tests.test_totp import _make_migration_uri
+    uri = _make_migration_uri([
+        (b'12345678901234567890', 'ron', 'GitHub', 2),
+        (b'09876543210987654321', 'ron', 'Reddit', 2),
+    ])
+    r = client.post('/api/secrets/import-authenticator', json={
+        'uri': uri, 'commit': True,
+        'names': {'github.ron.totp': 'gh.totp', 'reddit.ron.totp': ''},
+    })
+    data = r.get_json()
+    assert data['imported'] == ['gh.totp']       # the blank name means "skip"
+    assert data['skipped'] == ['reddit.ron.totp']
+    stored = client.get('/api/secrets').get_json()['secrets']
+    assert [s['name'] for s in stored] == ['gh.totp']
+    assert stored[0]['kind'] == 'totp'
+    assert stored[0]['placeholder'] == '{{totp:gh.totp}}'
+
+
+def test_authenticator_import_rejects_a_plain_otpauth_uri(client):
+    r = client.post('/api/secrets/import-authenticator',
+                    json={'uri': 'otpauth://totp/x?secret=JBSWY3DPEHPK3PXP'})
+    assert r.status_code == 400
+
+
+def test_totp_probe_confirms_without_revealing_the_code(client):
+    from mc import totp
+    seed = 'JBSWY3DPEHPK3PXP'
+    client.post('/api/secrets', json={'name': 'gh.totp', 'value': seed,
+                                      'kind': 'totp'})
+    good = totp.generate(seed)
+    r = client.post('/api/secrets/totp/gh.totp', json={'code': good})
+    data = r.get_json()
+    assert data['match'] is True
+    # The response must never contain a usable code — only the verdict.
+    assert good not in r.get_data(as_text=True)
+
+    bad = client.post('/api/secrets/totp/gh.totp', json={'code': '000000'})
+    assert bad.get_json()['match'] is False
+
+
+def test_patching_metadata_does_not_downgrade_a_totp_secret(client):
+    client.post('/api/secrets', json={'name': 'gh.totp', 'kind': 'totp',
+                                      'value': 'JBSWY3DPEHPK3PXP'})
+    client.patch('/api/secrets/gh.totp', json={'description': 'renamed'})
+    stored = client.get('/api/secrets').get_json()['secrets'][0]
+    assert stored['kind'] == 'totp'
+    assert stored['placeholder'] == '{{totp:gh.totp}}'
+
+
+def test_totp_probe_on_unknown_secret_is_404(client):
+    r = client.post('/api/secrets/totp/nope.totp', json={'code': '123456'})
+    assert r.status_code == 404
+
+
 def test_check_flags_out_of_scope_and_unattended(client):
     _create(client, scope='alpha', allow_unattended=False)
     out = client.post('/api/secrets/check',
