@@ -6,6 +6,63 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-01] — Secrets vault: agents can log in without seeing the password
+
+Clayrune had no credential store. The only pattern was plaintext on disk —
+`~/.clayrune/night-mail.json` holds a Gmail app password in the clear, and
+`data/provider_env.json` holds API keys — which meant any agent action needing
+a real login either couldn't be automated or had the credential typed into a
+command line, where it lands in the transcript forever.
+
+`mc/secrets_store.py` is an encrypted vault. The agent writes the *name* of a
+credential; the *server* resolves it at the moment of use.
+
+**Design decisions, and why each is the way it is:**
+
+- **Nothing is stored inside the repo — by construction, not by gitignore.**
+  Store, master key, and audit log all live under `~/.clayrune/`. This project
+  has already been bitten once by "gitignored but bundled anyway":
+  `build-macos.spec` packaged `data/SHARED_RULES.md` *because it was still on
+  disk* after being untracked (CLAUDE.md, 2026-07-12). A file that never exists
+  under the checkout cannot be swept in by a future `git add -f`, build spec, or
+  installer glob. Defensive `.gitignore` patterns are there anyway, to catch a
+  hand-placed copy.
+- **AES-256-GCM with the secret's name as AAD**, so a ciphertext cannot be moved
+  between entries and silently hand back the wrong credential. Master key in the
+  OS keyring (Credential Manager / Keychain / SecretService), degrading to a
+  0600 key file only when no backend is usable — and saying so, via
+  `key_at_rest_warning`.
+- **No HTTP route returns a plaintext value.** Values leave the process only
+  into a child process's environment or a resolved command, never back into a
+  browser tab. That deletes the whole "vault page was left open / screenshotted
+  / proxied" class. Pinned by `test_no_route_returns_the_plaintext`.
+- **Only dispensed values are redacted.** `redact()` scans for values this
+  process has actually handed out — cheap, bounded, and it means a secret that
+  was never used can't be fingerprinted through the redactor.
+- **A missing secret aborts before exec.** `tools/with-secret.py` exits 2 rather
+  than starting the child, so an unresolved `{{secret:...}}` never becomes an
+  anonymous login attempt or a literal password sent somewhere.
+- **Agents may use a credential; only a human may create one.** There is no
+  agent-facing write path — the same authority-guard principle the learning
+  system uses: machinery must never expand the agent's own capability set.
+
+**Policy per secret:** `scope` (global or one project) and `allow_unattended`
+(steward/scheduled cycles refused when false). Per Ron's decision the default is
+that agents *may* use secrets unattended; the per-task gate lives in the agent
+rules, and these flags are the backstop.
+
+**Honest limit, documented rather than papered over:** this is not a sandbox. An
+agent with a shell can read whatever the server can. What the vault buys is that
+credentials stay out of the durable, exfiltrating surfaces — transcripts,
+MEMORY.md, distilled artifacts, logs, the repo — and that every access is
+audited.
+
+Full detail: `docs/SECRETS.md`. 41 new tests; suite green.
+
+**Follow-ups:** UI panel for the vault; migrating `night-mail.json` and
+`provider_env.json` into it (both already gitignored, so hardening rather than
+exposure).
+
 ## [2026-08-01] — `/` autocomplete in the composers, from the installed CLI
 
 Typing `/` at the start of a composer now opens a picker of the Claude CLI's

@@ -270,6 +270,18 @@ data/skills/builtin/engulfing-diagnostic/
 static/downloads/*
 !static/downloads/.gitkeep
 
+# ── Secrets vault — defence in depth ───────────────────────────────────────
+# The vault deliberately stores NOTHING inside the repo: ciphertext, master
+# key, and audit log all live under ~/.clayrune/ (mc/secrets_store.py). These
+# patterns exist only to catch a hand-placed copy, a debug dump, or a future
+# refactor that moves the store — a credential must never become committable,
+# encrypted or not. Ron, 2026-08-01.
+secrets.json
+secrets.key
+secrets_audit.jsonl
+data/secrets*
+*.secrets.json
+
 # Designated scratch dir — throwaway repro/debug/exploration artifacts. Agents:
 # put scratch HERE so it never reaches a commit candidate. Local-only.
 /_scratch/*

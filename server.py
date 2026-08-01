@@ -1411,6 +1411,15 @@ _bp_mcp.wire(load_project_fn=_bp_projects.load_project,
              mcp_server_catalog_fn=_bp_agent._mcp_server_catalog)
 app.register_blueprint(_bp_mcp.bp)
 
+# ── Secrets vault (mc/secrets_store.py) ──
+# Encrypted credential storage so agents can drive real logins / postings
+# without a password ever entering a transcript. No wire() — the store owns its
+# own paths under ~/.clayrune/ (deliberately outside the repo) and takes no
+# server-family deps. Note there is no plaintext-returning route by design.
+from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
+
+app.register_blueprint(_bp_secrets.bp)
+
 # ── Global config + folder-browse + domain settings endpoints (10 routes:
 # /api/config GET+PUT, /api/browse/folders + create_folder, the 4
 # /api/settings/domains, and below the project-order tombstone

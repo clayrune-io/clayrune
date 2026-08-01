@@ -96,6 +96,38 @@ The three that actually bit us (all fixed 2026-07-12, commit `3a1fd04`):
 Legitimately public and intentionally kept: the `LICENSE` copyright line, and
 the Play Store `PRIVACY_POLICY.md` / `LISTING_COPY.md` contact address.
 
+## BINDING — credentials go in the vault, never in a command line (2026-08-01)
+
+`mc/secrets_store.py` is the secrets vault. Full detail: `docs/SECRETS.md`.
+
+**If a task needs a password, token, or API key, reference it by name and let
+the server resolve it.** Never type a credential into a command, a config file
+under the repo, or a message — anything you type lands in the transcript, and
+from there in `MEMORY.md` and possibly a distilled artifact, permanently.
+
+```bash
+python tools/with-secret.py --env GH_TOKEN=github.token -- gh api ...
+```
+
+Placeholders (`{{secret:name}}`) resolve server-side; `tools/with-secret.py`
+injects into the child's environment and scrubs dispensed values back out of
+its output.
+
+Three rules that hold this together — **don't weaken them without a review:**
+
+1. **Nothing under the repo ever holds a secret.** Store, master key, and audit
+   log live in `~/.clayrune/`. Gitignoring is not sufficient on its own — see
+   the `SHARED_RULES.md`-in-`build-macos.spec` case above.
+2. **No route returns a plaintext value.** The management API is metadata-only.
+   If you add an endpoint, keep it that way.
+3. **Agents use credentials; only humans create them.** There is no agent-facing
+   write path, for the same reason the learning system has an authority guard:
+   machinery must never expand the agent's own capability set.
+
+Per-secret `scope` (global / one project) and `allow_unattended` (blocks steward
+and scheduled cycles) are the policy backstop. By Ron's decision agents may use
+secrets unattended by default; the per-task gate lives in the agent rules.
+
 ## macOS code-signing & notarization (added 2026-06-04)
 
 The Mac `.app` is now **signed (Developer ID) + notarized + stapled** so fresh
