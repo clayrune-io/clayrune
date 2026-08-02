@@ -440,7 +440,18 @@ async function _bpPollStatus() {
     for (const s of sessions) {
       if (!_bpKnownSids.has(s.session_id) && s.session_id !== _bpSession) {
         const where = (s.url && s.url !== 'about:blank') ? s.url : 'a new browser';
-        if (typeof showToast === 'function') showToast(`\u{1F310} A browser session opened (${where}) — click Browser to view`);
+        // The toast IS the way in. Telling the user to "click Browser" only
+        // works on desktop — mobile (≤960px) hides .btn-popout entirely, so
+        // that instruction pointed at a button that isn't on screen.
+        const sid = s.session_id;
+        if (typeof showActionToast === 'function') {
+          showActionToast(
+            `\u{1F310} A browser session opened<br><span style="opacity:.7;font-size:11px;word-break:break-all">${_bpEsc(where)}</span>`,
+            [{ label: 'View', primary: true, onclick: () => openBrowserPane(null, pid, sid) }],
+            { autoDismissMs: 12000 });
+        } else if (typeof showToast === 'function') {
+          showToast(`\u{1F310} A browser session opened (${where})`);
+        }
       }
     }
   }
