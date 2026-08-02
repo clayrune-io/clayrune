@@ -228,9 +228,29 @@ the user's own subscription. Neither pays for inference. Same trick.
 Their free app exists to sell Managed Agents to enterprises. Ours currently
 sells nothing — which is a strategic gap, not a virtue.
 
-**OPEN QUESTION for Ron (unanswered as of 2026-08-02): what does Clayrune's
-free tier feed?** Until that has an answer, "we're free too" is a feature
-statement, not a business one. Options that fit an MIT self-hosted base —
-hosted convenience tier (see the `clayrune_cloud` project), paid remote-access
-zero-config, team/multi-seat, or nothing-at-all-by-choice — but the decision is
-his, not the agent's.
+**ANSWERED by Ron, 2026-08-02 — the free tier feeds adoption, deliberately.**
+"My goal is just to get the tool out there and create the ecosystem for it. I
+want engagement and real users. Everything else comes in second place. Don't
+need any income cycle right now. Later I will think of how to monetize it."
+
+This is consistent with the standing launch decision (hook = agent-persistence,
+not a paywall; remote access free via the seam). It is a choice, not a gap.
+
+**What that changes about reading this document:**
+
+- **Omnara's free tier is not a revenue threat, it is an attention threat.**
+  We are not defending a price; we are competing for the same users' mindshare.
+  Every "we can't win on price" note above is therefore moot — re-read those
+  rows as *reach* comparisons, not pricing ones.
+- **Deprioritise the convenience-paywall work** (the `clayrune_cloud` tier,
+  zero-config paid remote). It is not the current bottleneck and does not serve
+  the stated goal.
+- **The bottleneck is install friction and distribution**, which matches the
+  campaign tracker's own finding that the constraint moved from attention to
+  the install cliff. Against Omnara specifically, the friction gap is stark:
+  they ship signed native installers for macOS and Windows plus App Store /
+  Play Store apps. Anything that lowers our first-run cost is worth more right
+  now than any feature on the comparison table.
+- **The two live channels stay as identified** — GitHub stars, and getting the
+  tool into one large X account's hands. Both are adoption channels, so they
+  fit the goal exactly.
