@@ -31,8 +31,10 @@ More injection shapes for tools that don't read env vars:
 
     --stdin gh.token        pipe one secret to the child's stdin
                             (e.g. `gh auth login --with-token`)
-    --arg   '{{secret:x}}'  any argument containing a {{secret:name}}
-                            placeholder is resolved in place
+    {{secret:x}} in an arg  any argument of the command after `--` that
+                            contains a {{secret:name}}, {{totp:name}} or
+                            {{user:name}} placeholder is resolved in place
+                            (no flag needed)
 
 Child output is scrubbed of any dispensed value before it is echoed, so a
 chatty tool that prints its own password can't leak it into the transcript.
