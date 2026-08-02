@@ -128,6 +128,10 @@ def _load_config():
         'scribe_reconcile_cap': 5,     # max reconciled sessions/project/boot
         'scribe_checkpoint_enabled': False,  # SPEC §3.A.MID Step 6 — default OFF
         'scribe_checkpoint_kb': 0,     # mid-session cadence (KB new transcript); 0=disabled
+        # Ask the session-end scribe for the CAUSE, not just the event, and append
+        # it as `_why:_ <note>`. Terminal entries only, omitted when the session
+        # had no real diagnosis. docs/RESEARCH_HYPERAGENTS.md.
+        'scribe_why_enabled': True,
 
         # Offline question channel (mc/question_channel.py). When an agent asks a
         # question and NOBODY is watching the session (a schedule, a steward cycle,

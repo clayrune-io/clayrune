@@ -749,6 +749,11 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     scribed, _why = _scribe_extract(p, session)
     _scribe_stat(project_id, 'scribe_extracted' if scribed
                  else f'scribe_fell_back:{_why}')
+    # Track how often a session actually yields a causal note. If this sits at
+    # ~0% the prompt isn't landing; at ~100% the model is inventing them.
+    if scribed:
+        _scribe_stat(project_id, 'scribe_why_present' if _SCRIBE_WHY_MARKER
+                     in scribed else 'scribe_why_absent')
     fb = (summary_fallback or '')[:300].replace('\n', ' ').strip()
     brief = (scribed or fb
              or f"ended with status={status}, no captured output"
@@ -982,6 +987,41 @@ _SCRIBE_REDUCE_PROMPT = (
     "for a project memory log: what was done, decided/learned, and any gotcha. "
     "Output ONLY that line."
 )
+
+
+# ── The "why" leg (Hyperagents, 2026-08-02) ─────────────────────────────────
+# The scribe records WHAT happened; this asks for the CAUSE as well. Meta's
+# Hyperagents paper (arXiv 2603.19461) found self-improving agents converge on
+# storing "causal diagnoses and forward-looking plans" rather than raw events —
+# that is the memory type that compounds across sessions. See
+# docs/RESEARCH_HYPERAGENTS.md.
+#
+# Deliberately scoped to the TERMINAL entry only. A checkpoint is a mid-session
+# running summary that later gets superseded; a causal diagnosis is a
+# retrospective. Keeping it off the checkpoint path also leaves that path (and
+# _SCRIBE_CHECKPOINT_REDUCE, which merges free text) byte-identical.
+_SCRIBE_WHY_SUFFIX = (
+    "\n\nTHEN output a line containing only --- and THEN one final line: the "
+    "WHY. Name the CAUSE behind this session's main problem or surprise and "
+    "what it implies next time (max 160 chars, no newlines). This is a causal "
+    "diagnosis, not a recap: \"X broke because Y, so check Y first\" beats "
+    "\"fixed X\". Prefer a cause that would generalise to a future session. "
+    "If the session was routine and produced no real diagnosis, write NONE — "
+    "most sessions have no why, and an invented one is worse than none."
+)
+
+
+_SCRIBE_WHY_MARKER = '_why:_'
+
+
+_SCRIBE_WHY_CAP = 160
+
+
+# Below this a "why" is a stub ('n/a', 'none.', 'unclear') rather than a note.
+_SCRIBE_WHY_MIN = 12
+
+
+_SCRIBE_WHY_NULLS = ('none', 'n/a', 'na', 'nothing', 'unclear', 'unknown')
 
 
 _SCRIBE_CHECKPOINT_REDUCE = (
@@ -1236,17 +1276,51 @@ def _scribe_extract(project, session):
         except Exception:
             return None, 'parse_empty'
         model = state.CONFIG.get('scribe_model', '') or 'haiku'
-        return _scribe_summarize_text(transcript, model)
+        # want_why: terminal entries only — see _SCRIBE_WHY_SUFFIX.
+        return _scribe_summarize_text(transcript, model, want_why=True)
     finally:
         with _scribe_lock:
             _scribing_projects.discard(pid)
 
 
-def _scribe_summarize_text(text, model):
+def _scribe_split_why(raw):
+    """Split a two-part scribe reply into (what, why).
+
+    The parts are separated by a line of only dashes. `why` comes back '' when
+    the separator is absent (model ignored the suffix), when the model said
+    NONE (the expected case — most sessions have no diagnosis), or when what
+    came back is too short to be a real note. Pure function, never raises.
+    """
+    lines = (raw or '').splitlines()
+    cut = -1
+    for i, ln in enumerate(lines):
+        s = ln.strip()
+        if len(s) >= 3 and set(s) == {'-'}:
+            cut = i
+            break
+    if cut < 0:
+        return (raw or '').strip(), ''
+    what = '\n'.join(lines[:cut]).strip()
+    why = ' '.join(ln.strip() for ln in lines[cut + 1:]).strip()
+    # Strip a leading "WHY:" label if the model echoed one.
+    if why.lower().startswith('why:'):
+        why = why[4:].strip()
+    if why.rstrip('.').strip().lower() in _SCRIBE_WHY_NULLS:
+        why = ''
+    if len(why) < _SCRIBE_WHY_MIN:
+        why = ''
+    return what, why[:_SCRIBE_WHY_CAP]
+
+
+def _scribe_summarize_text(text, model, want_why=False):
     """Core: rendered-transcript text → (one_line_summary, 'extracted') or
     (None, reason). Thin-transcript guard + single/map-reduce + refusal guard.
     No I/O, no locks — shared by _scribe_extract (whole transcript, completion
     path) and the Step-6 checkpoint worker (delta). Never raises.
+
+    want_why=True additionally asks for a causal diagnosis and, when the model
+    supplies one, appends it to the returned line as `_why:_ <note>`. Default
+    False keeps the checkpoint path's output byte-identical.
     """
     _stripped = (text or '').strip()
     _has_activity = any(
@@ -1256,9 +1330,13 @@ def _scribe_summarize_text(text, model):
         # No tool/think activity and only a trivial blip (aborted/no-op).
         # Caller falls back rather than persist a hallucinated reply.
         return None, 'parse_empty'
+    want_why = bool(want_why) and state.CONFIG.get('scribe_why_enabled', True)
     try:
         if len(_stripped) <= _SCRIBE_SINGLE_LIMIT:
-            out = _scribe_call(model, _SCRIBE_PROMPT, _stripped)
+            out = _scribe_call(
+                model,
+                _SCRIBE_PROMPT + (_SCRIBE_WHY_SUFFIX if want_why else ''),
+                _stripped)
         else:
             chunks, cur, n = [], [], 0
             for ln in _stripped.split('\n'):
@@ -1281,7 +1359,8 @@ def _scribe_summarize_text(text, model):
                      f"(model={model})")
                 return None, 'model_error'
             out = _scribe_call(
-                model, _SCRIBE_REDUCE_PROMPT,
+                model,
+                _SCRIBE_REDUCE_PROMPT + (_SCRIBE_WHY_SUFFIX if want_why else ''),
                 '\n'.join(f"- {p}" for p in partials if p))
     except subprocess.TimeoutExpired as e:
         _log(f"[scribe] model_error: timeout (model={model}, "
@@ -1291,6 +1370,11 @@ def _scribe_summarize_text(text, model):
         _log(f"[scribe] model_error: call failed (model={model}, "
              f"{len(_stripped)}c in): {e}")
         return None, 'model_error'
+    # Split BEFORE flattening newlines — the two parts are separated by a
+    # dashes-only LINE, so collapsing newlines first would destroy it.
+    why = ''
+    if want_why:
+        out, why = _scribe_split_why(out or '')
     out = (out or '').strip().replace('\n', ' ').strip()
     if not out:
         _log(f"[scribe] model_error: empty reply (model={model}, "
@@ -1299,7 +1383,11 @@ def _scribe_summarize_text(text, model):
     if any(mk in out.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
         _log(f"[scribe] model_refused (model={model}): {out[:120]}")
         return None, 'model_refused'
-    return out[:300], 'extracted'
+    out = out[:300]
+    # A refused/hallucinated body must not smuggle a why through with it.
+    if why:
+        out = f"{out} {_SCRIBE_WHY_MARKER} {why}"
+    return out, 'extracted'
 
 
 def _condense_integrity_check(mem_path, pre_mem, pre_wm, rc):

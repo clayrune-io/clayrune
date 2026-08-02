@@ -191,3 +191,95 @@ def test_gc_stale_watermarks_noop_when_all_live(tmp_data_dir):
     finally:
         m.agent_sessions.clear()
     assert mp.read_text(encoding="utf-8") == before
+
+
+# ── Scribe "why" leg (causal diagnosis alongside the event) ──────────────────
+# docs/RESEARCH_HYPERAGENTS.md — the scribe records WHAT; this records the CAUSE.
+
+def test_scribe_split_why_parses_two_parts(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    what, why = m._scribe_split_why(
+        "Fixed the mobile toast.\n---\nThe toast named a button the <=960px "
+        "breakpoint hides; check breakpoint parity before trusting UI copy.")
+    assert what == "Fixed the mobile toast."
+    assert why.startswith("The toast named a button")
+
+
+def test_scribe_split_why_absent_separator_is_all_what(tmp_data_dir):
+    """A model that ignores the suffix must degrade to the old behaviour."""
+    m = _mem(tmp_data_dir)
+    what, why = m._scribe_split_why("Just did a thing, no separator here.")
+    assert what == "Just did a thing, no separator here."
+    assert why == ""
+
+
+def test_scribe_split_why_none_and_stubs_are_dropped(tmp_data_dir):
+    """Most sessions have no diagnosis — NONE and stubs must not be stored."""
+    m = _mem(tmp_data_dir)
+    for tail in ("NONE", "none.", "N/A", "unclear", "why: NONE", "short"):
+        what, why = m._scribe_split_why(f"Routine work.\n---\n{tail}")
+        assert what == "Routine work."
+        assert why == "", tail
+
+
+def test_scribe_split_why_strips_label_and_caps(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    _what, why = m._scribe_split_why("Did it.\n---\nWHY: " + ("x" * 400))
+    assert not why.lower().startswith("why:")
+    assert len(why) == m._SCRIBE_WHY_CAP
+
+
+def test_scribe_summarize_appends_why_marker(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(
+        m, "_scribe_call",
+        lambda model, instr, body: "Did the thing.\n---\nBroke because Z was stale.")
+    out, reason = m._scribe_summarize_text("ACTION x\nRESULT: y", "haiku",
+                                           want_why=True)
+    assert reason == "extracted"
+    assert m._SCRIBE_WHY_MARKER in out
+    assert out.startswith("Did the thing.")
+    assert "Broke because Z was stale." in out
+
+
+def test_scribe_summarize_default_has_no_why(tmp_data_dir, monkeypatch):
+    """Checkpoint path (want_why=False) stays byte-identical to before."""
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(m, "_scribe_call",
+                        lambda model, instr, body: "Did the thing.")
+    out, reason = m._scribe_summarize_text("ACTION x\nRESULT: y", "haiku")
+    assert reason == "extracted"
+    assert m._SCRIBE_WHY_MARKER not in out
+    assert out == "Did the thing."
+
+
+def test_scribe_why_suffix_only_sent_when_wanted(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    seen = []
+    monkeypatch.setattr(m, "_scribe_call",
+                        lambda model, instr, body: seen.append(instr) or "ok line")
+    m._scribe_summarize_text("ACTION x", "haiku", want_why=False)
+    m._scribe_summarize_text("ACTION x", "haiku", want_why=True)
+    assert m._SCRIBE_WHY_SUFFIX not in seen[0]
+    assert m._SCRIBE_WHY_SUFFIX in seen[1]
+
+
+def test_scribe_why_respects_kill_switch(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setitem(m.state.CONFIG, "scribe_why_enabled", False)
+    monkeypatch.setattr(
+        m, "_scribe_call",
+        lambda model, instr, body: "Did the thing.\n---\nA cause worth noting.")
+    out, _ = m._scribe_summarize_text("ACTION x", "haiku", want_why=True)
+    assert m._SCRIBE_WHY_MARKER not in out
+
+
+def test_scribe_refusal_still_wins_over_why(tmp_data_dir, monkeypatch):
+    """A refused body must not smuggle a why into memory alongside it."""
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(
+        m, "_scribe_call",
+        lambda model, instr, body: "I don't see a transcript.\n---\nCause: nope.")
+    out, reason = m._scribe_summarize_text("ACTION x", "haiku", want_why=True)
+    assert reason == "model_refused"
+    assert out is None

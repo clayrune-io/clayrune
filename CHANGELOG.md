@@ -6,6 +6,55 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-02] — the scribe records the why, not only the what
+
+Session memory captured events and nothing else: *"fixed the mobile toast,
+committed 92464ab"*. A later session reading that learns the fact and not the
+lesson — the cause has to be rediscovered from scratch every time.
+
+Meta's Hyperagents paper (arXiv `2603.19461`, March 2026) is the prompt for
+this. Left to self-improve across four unrelated domains, their agents kept
+independently inventing the same memory shape: not raw scores but **"causal
+diagnoses and forward-looking plans"** — an entry reasoning *why* a generation
+regressed and what to do about it. That is the memory type that compounds.
+Teardown and the rest of the reading: `docs/RESEARCH_HYPERAGENTS.md`.
+
+So the session-end scribe now asks for a second part, appended to the entry as
+`_why:_ <note>`:
+
+```
+- [2026-08-02] **mobile toast** — Fixed mobile browser toast + with-secret
+  encoding bug; committed 92464ab. _why:_ The toast told mobile to click a
+  button the ≤960px breakpoint hides — check breakpoint parity before
+  trusting UI copy.
+```
+
+Four things keep it from becoming noise or a liability:
+
+- **Most sessions get no why, by instruction.** The prompt says routine work
+  has none and an invented one is worse than none; `NONE`, stubs, and anything
+  under 12 chars are dropped in `_scribe_split_why`. `scribe_why_present` /
+  `scribe_why_absent` counters exist so the rate is observable — ~0% means the
+  prompt isn't landing, ~100% means the model is confabulating.
+- **Terminal entries only.** A checkpoint is a mid-session running summary that
+  gets superseded; a diagnosis is a retrospective. `want_why` defaults to
+  `False`, so the Step-6 checkpoint path is byte-identical to before.
+- **No new writer.** It rides the existing scribe call (no extra model call, no
+  extra cost) and the existing `_commit_managed_entry`, preserving the
+  lock+atomic+shared-archive discipline. Entries stay single `- [` lines, so
+  `_mem_split` / trim / condense need no change.
+- **Refusal still wins.** A body that trips the refusal guard returns `None`
+  and cannot smuggle a why into memory alongside it. Capped at 160 chars to
+  respect the ~24KB index byte cap.
+
+Kill switch: `scribe_why_enabled: false`. 9 tests in
+`tests/test_memory_module.py`.
+
+**Not** taken from the same paper: metacognitive self-modification — the agent
+editing its own improvement mechanism — which is exactly what
+`_authority_violation()` forbids, and for a reason this repo already lived
+through.
+
 ## [2026-08-02] — browser profiles that stay signed in
 
 Every browser-pane launch got a throwaway Chromium profile, deleted on teardown.

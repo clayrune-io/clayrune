@@ -84,7 +84,7 @@ half of eligible sessions and withhold it from the other half, then compare a
 proxy — turns to completion, retry/error count, user corrections, abandonment.
 Coarse is fine. Anything beats zero.
 
-### 2. Store causal hypotheses, not just events — HIGH, cheap
+### 2. Store causal hypotheses, not just events — ✅ SHIPPED 2026-08-02
 
 Their agents evolved memory holding **"causal diagnoses and forward-looking
 plans"**, not raw scores — e.g. an entry reasoning that *"Gen65 over-corrected"*
@@ -95,6 +95,14 @@ Scribe records *what happened*. It never records *why I think it went wrong and
 what I'd try next*. Adding one hypothesis line per session to the managed region
 is small, safe, fits the existing format — and it is the memory type that
 compounds.
+
+**Shipped.** The session-end scribe now returns two parts and the entry carries
+`_why:_ <note>`. Terminal entries only (checkpoints stay byte-identical), no
+extra model call, dropped when the model says NONE — which is the expected case,
+since routine sessions have no diagnosis. Kill switch `scribe_why_enabled`;
+`scribe_why_present` / `scribe_why_absent` counters make the rate observable.
+`mc/memory.py` (`_scribe_split_why`, `_SCRIBE_WHY_SUFFIX`), CHANGELOG
+`[2026-08-02]`.
 
 ### 3. Keep an archive and branch from it — MEDIUM
 
@@ -141,7 +149,7 @@ authority boundary stays hand-written code owned by a human.
 
 ## Suggested order if we act on this
 
-1. **Hypothesis line in Scribe** (idea 2) — small, safe, immediately useful.
+1. ~~**Hypothesis line in Scribe** (idea 2)~~ — ✅ done 2026-08-02.
 2. **Outcome proxy + read-floor A/B** (idea 1) — the real unlock; turns
    `loop_health()` from plumbing telemetry into a fitness signal.
 3. **Stepping-stone archive** (idea 3) — only worth it once 1 and 2 exist,
