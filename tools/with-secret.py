@@ -148,6 +148,11 @@ def main(argv: list[str] | None = None) -> int:
             input=(stdin_value.encode() if stdin_value is not None else None))
         return proc.returncode
 
+    # We decode the child as utf-8, so tell it to encode as utf-8. Without
+    # this a Python child writing to a pipe on Windows picks cp1252, we decode
+    # its bytes as utf-8, and anything non-ASCII arrives as U+FFFD mojibake.
+    env.setdefault('PYTHONIOENCODING', 'utf-8')
+
     proc = subprocess.Popen(
         cmd, env=env,
         stdin=subprocess.PIPE if stdin_value is not None else None,
@@ -160,6 +165,16 @@ def main(argv: list[str] | None = None) -> int:
             proc.stdin.close()
         except OSError:
             pass
+
+    # The child is decoded utf-8/errors='replace', so its output can contain
+    # U+FFFD (and any non-ASCII it legitimately printed). On Windows our own
+    # stdout is cp1252 by default and raises UnicodeEncodeError on those —
+    # which killed the passthrough mid-stream and threw away the child's exit
+    # code. Never let re-encoding the child's output be the thing that fails.
+    try:
+        sys.stdout.reconfigure(errors='replace')  # type: ignore[union-attr]
+    except Exception:
+        pass
 
     # Line-buffered passthrough so output still arrives progressively; each
     # line is scrubbed of any value the vault has dispensed this process.
