@@ -205,3 +205,32 @@ there is no economic disadvantage here. But it also means **we cannot win on
 price**, because the floor is zero for both of us. The fight is on capability,
 and the convenience-paywall idea needs re-examining against a competitor whose
 equivalent is free and cross-platform.
+
+### "So their free tier is the same as ours, just marketed differently"
+
+Half true, and the half that isn't matters.
+
+**Same:** the unit economics. Both run the agent on the user's machine against
+the user's own subscription. Neither pays for inference. Same trick.
+
+**Not the same, two ways:**
+
+1. **Their free tier is not the whole product.** Cloud Sandboxing — close the
+   laptop, work keeps going — is metered separately and is the capability
+   users actually ask for. That is a real gap, not marketing wrap, and it sits
+   exactly where their compute bill begins.
+2. **"Free" denotes different things.** Theirs is a free *client* to a hosted
+   service: they hold the account, the relay, and the option to charge later.
+   Ours is **MIT source on the user's own machine**. Clayrune can be forked;
+   Omnara's relay cannot.
+
+**The framing that survives scrutiny:** they built a funnel, we built a tool.
+Their free app exists to sell Managed Agents to enterprises. Ours currently
+sells nothing — which is a strategic gap, not a virtue.
+
+**OPEN QUESTION for Ron (unanswered as of 2026-08-02): what does Clayrune's
+free tier feed?** Until that has an answer, "we're free too" is a feature
+statement, not a business one. Options that fit an MIT self-hosted base —
+hosted convenience tier (see the `clayrune_cloud` project), paid remote-access
+zero-config, team/multi-seat, or nothing-at-all-by-choice — but the decision is
+his, not the agent's.
