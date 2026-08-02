@@ -137,3 +137,71 @@ gravity is the **repo**; ours is the **project and the agent working on it**.
    "run for minutes, hours, or days and resume exactly where they left off" is
    the closest anyone has come to our persistence story — but aimed at
    infrastructure teams, not at a solo developer's projects.
+
+---
+
+## Managed Agents, in detail (scraped 2026-08-02)
+
+Not a bigger version of the coding app — a **different product for a different
+buyer**. Closest analogy: Heroku or Temporal, for agents, with a compliance
+story bolted on.
+
+**Define → Deploy → Supervise.** One `agent.yaml` holds instruction, model,
+`machine_sources`, and per-tool policy. Deploy from console, API, or "to Slack
+in one dialog". Supervise by streaming the run timeline, approving actions and
+steering mid-run.
+
+- **Durable execution** — every turn, tool call and approval is persisted
+  state, not process memory. Their own diagram advertises `worker lost ·
+  SIGKILL` → `new worker · state restored` → `turn.completed`.
+- **Flexible machines** — their managed VM pool (agents create/destroy on
+  demand), or your own boxes via a single **outbound** daemon, so no inbound
+  ports. Same control plane either way.
+- **Policy engine** — `always_allow` / `always_ask` / `always_deny`, and they
+  make a point of it being "enforced by the platform, not the prompt". Ask
+  policies route to a Slack approval card ("Allowed by @maya").
+- **Governance** — orgs/projects/RBAC, envelope-encrypted secrets
+  (AES-256-GCM) scoped by org/project/user, append-only audit history enforced
+  at the database.
+- **Any model** — OpenAI, Anthropic, Gemini, Grok, DeepSeek, Qwen, Kimi,
+  OpenRouter, self-hosted.
+- **Use cases pitched** — coding, support, ops/incident, and Slack team
+  assistants.
+- **Enterprise** — VPC/on-prem container images, SSO (OIDC incl. Entra ID),
+  audit stream into Sentinel/SIEM, a Postgres you own, custom branding,
+  founder channel with same-business-day resolution.
+
+**Pricing:** Free = a basic VM + $10 model credits + unlimited BYO machines +
+BYO keys, no card. Then **$10 per machine per month**. Model credits at
+provider list rates, explicitly **no per-token markup**. Control plane is open
+source — self-host free. Enterprise is "let's talk".
+
+## Why they can afford to give the coding app away
+
+It is not charity and it is not VC-subsidised inference. The free product has
+**near-zero marginal cost**:
+
+1. **The inference isn't theirs.** Claude Code / Codex run on *your* machine
+   against *your* Anthropic or OpenAI subscription. Every expensive token is
+   billed to the user by someone else.
+2. **All they actually operate is a relay** — a WebSocket passing
+   text-sized messages between your daemon and your phone. Cheap per user, and
+   it scales with *messages*, not with compute.
+3. **The one part that costs them real money is metered.** Cloud Sandboxing —
+   the "close your laptop and it keeps running" feature — runs on their VMs and
+   has its own separate billing section in settings. Free stops exactly where
+   their compute bill starts.
+4. Voice (STT/TTS) is the only unmetered real cost, and it's small next to
+   inference.
+
+So the free tier is a **distribution play funded by someone else's compute**:
+20k builders on a free client buys brand, and the money comes from Managed
+Agents sold to teams and enterprises. Docker Desktop → Docker Hub, ngrok free →
+ngrok enterprise. They gave up ~$20/mo/user revenue to buy the land grab.
+
+**Implication for Clayrune:** we have the *same* cost structure — self-hosted,
+BYO key, compute on the user's machine. So we can be free indefinitely too;
+there is no economic disadvantage here. But it also means **we cannot win on
+price**, because the floor is zero for both of us. The fight is on capability,
+and the convenience-paywall idea needs re-examining against a competitor whose
+equivalent is free and cross-platform.
