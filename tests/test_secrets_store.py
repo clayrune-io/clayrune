@@ -164,6 +164,45 @@ def test_text_without_placeholders_is_untouched(vault):
     assert out == 'nothing here' and used == []
 
 
+def test_resolve_user_placeholder(vault):
+    vault.set_secret('reddit.password', 'p4ssw0rd-long', username='u/ron')
+    out, used = vault.resolve_placeholders(
+        '{{user:reddit.password}}:{{secret:reddit.password}}', consumer='test')
+    assert out == 'u/ron:p4ssw0rd-long'
+    assert used == ['reddit.password']
+
+
+def test_username_is_metadata_not_ciphertext(vault):
+    """It rides in the listing on purpose — it's what tells two accounts on the
+    same site apart. The value still must not."""
+    vault.set_secret('site.password', 'p4ssw0rd-long', username='ron@example.com')
+    entry = vault.list_secrets()[0]
+    assert entry['username'] == 'ron@example.com'
+    assert 'p4ssw0rd-long' not in json.dumps(entry)
+
+
+def test_user_placeholder_without_a_username_raises(vault):
+    """Better a refused command than a login attempt with an empty user field."""
+    vault.set_secret('site.password', 'p4ssw0rd-long')
+    with pytest.raises(vault.SecretsError):
+        vault.resolve_placeholders('{{user:site.password}}', consumer='t')
+
+
+def test_username_respects_project_scope(vault):
+    vault.set_secret('scoped.password', 'p4ssw0rd-long', username='ron',
+                     scope='proj-a')
+    assert vault.get_username('scoped.password', project_id='proj-a') == 'ron'
+    with pytest.raises(vault.SecretDenied):
+        vault.get_username('scoped.password', project_id='proj-b')
+
+
+def test_username_survives_a_metadata_only_reseal(vault):
+    vault.set_secret('site.password', 'p4ssw0rd-long', username='ron')
+    again = vault.set_secret('site.password', 'p4ssw0rd-long', username='ron',
+                             description='edited')
+    assert again['username'] == 'ron'
+
+
 def test_env_for(vault):
     vault.set_secret('gh.token', 'ghp-token-value')
     env = vault.env_for([('GH_TOKEN', 'gh.token')], consumer='t')

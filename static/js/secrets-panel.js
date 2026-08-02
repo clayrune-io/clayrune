@@ -140,6 +140,7 @@ async function refreshSecretsList() {
         <div style="flex:1;min-width:0">
           <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
             <code style="font-size:13px;color:var(--text);font-family:var(--mono)">${esc(s.name)}</code>
+            ${s.username ? `<span style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${esc(s.username)}</span>` : ''}
             ${scopeBadge}${totpBadge}${attended}
           </div>
           ${s.description ? `<div style="font-size:11px;color:var(--text-faint);margin-top:3px">${esc(s.description)}</div>` : ''}
@@ -279,7 +280,23 @@ async function openSecretEditor(name) {
 
       <div>
         <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
-          2. Value ${isNew ? '' : '<span style="opacity:.7">— leave blank to keep the current one</span>'}
+          2. Username <span style="opacity:.7">— optional</span>
+        </label>
+        <input type="text" id="sec-user" value="${esc((existing && existing.username) || '')}"
+          placeholder="ron@example.com" autocomplete="off" spellcheck="false"
+          style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);
+                 font-family:var(--mono)">
+        <div style="font-size:10px;color:var(--text-faint);margin-top:3px">
+          The other half of a login. Referenced as <code>{{user:${esc(name || 'name')}}}</code>,
+          and shown in the list so two accounts on the same site stay apart.
+          Not encrypted — it is an identifier, not a credential.
+        </div>
+      </div>
+
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
+          3. Value ${isNew ? '' : '<span style="opacity:.7">— leave blank to keep the current one</span>'}
         </label>
         <div style="display:flex;gap:6px">
           <input type="password" id="sec-value" autocomplete="off" spellcheck="false"
@@ -309,7 +326,7 @@ async function openSecretEditor(name) {
       </div>
 
       <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">3. What it's for</label>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">4. What it's for</label>
         <input type="text" id="sec-desc" value="${esc((existing && existing.description) || '')}"
           placeholder="Reddit account used for launch posts" autocomplete="off"
           style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);
@@ -317,7 +334,7 @@ async function openSecretEditor(name) {
       </div>
 
       <div>
-        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">4. Who can use it</label>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">5. Who can use it</label>
         <div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
           <label style="display:flex;align-items:center;gap:6px;font-size:12px;cursor:pointer">
             <input type="radio" name="sec-scope" value="global" ${scopeIsProject ? '' : 'checked'}
@@ -339,7 +356,7 @@ async function openSecretEditor(name) {
         <label style="display:flex;align-items:flex-start;gap:8px;font-size:12px;cursor:pointer">
           <input type="checkbox" id="sec-unattended" ${allowUnattended ? 'checked' : ''} style="margin-top:2px">
           <span>
-            5. Usable by unattended runs
+            6. Usable by unattended runs
             <div style="font-size:10px;color:var(--text-faint);margin-top:2px">
               Uncheck for anything you don't want the steward or a scheduled job
               touching while you're away.
@@ -403,6 +420,7 @@ async function saveSecret(modalId, isNew) {
 
   const body = {
     name,
+    username: (document.getElementById('sec-user')?.value || '').trim(),
     description: document.getElementById('sec-desc')?.value || '',
     scope,
     allow_unattended: !!document.getElementById('sec-unattended')?.checked,

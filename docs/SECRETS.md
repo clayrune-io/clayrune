@@ -60,16 +60,36 @@ child process's environment:
 
 ```bash
 python tools/with-secret.py \
-    --env REDDIT_USER=reddit.user \
-    --env REDDIT_PASS=reddit.password \
+    --user REDDIT_USER=reddit.password \
+    --env  REDDIT_PASS=reddit.password \
     --project mission_control \
     -- python tools/post_reddit.py --subreddit selfhosted
 ```
+
+### The username lives on the same entry
+
+A login has two halves, so one entry carries both: the encrypted value plus an
+optional **username**, referenced as `{{user:name}}`. Keeping them together is
+the point — two entries (`site.user` + `site.password`) can drift apart, and
+nothing would notice until a login failed.
+
+The username is stored as **metadata, not ciphertext**, and is returned by
+`GET /api/secrets` and shown in the list. That is deliberate: it is an
+identifier the site itself displays back to you, and it is what tells two
+accounts on the same site apart. (Precedent: a TOTP entry's `account` is
+already returned in the clear.) Scope is still enforced on `{{user:…}}`;
+`allow_unattended` is not, because the password half of the same login carries
+that gate — an unattended run that learns the username still cannot log in.
+
+`POST /api/secrets/check` reports `no_username` when text references
+`{{user:x}}` on an entry that has none, so a dry run catches it before the
+command runs.
 
 Other injection shapes for tools that don't read env vars:
 
 | Flag | Effect |
 |---|---|
+| `--user VAR=name` | inject the username stored with a secret |
 | `--stdin gh.token` | pipe one secret to the child's stdin (`gh auth login --with-token`) |
 | any arg containing `{{secret:x}}` | resolved in place before exec |
 | `--unattended` | steward/scheduled cycle — enforces the attended-only flag |

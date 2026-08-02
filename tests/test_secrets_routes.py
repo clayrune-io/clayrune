@@ -59,6 +59,26 @@ def test_no_route_returns_the_plaintext(client):
     assert SECRET not in patched.get_data(as_text=True)
 
 
+def test_username_round_trips_and_survives_an_unrelated_patch(client):
+    _create(client, username='u/ron')
+    client.patch('/api/secrets/reddit.password', json={'description': 'renamed'})
+    entry = client.get('/api/secrets').get_json()['secrets'][0]
+    assert entry['username'] == 'u/ron'
+
+
+def test_check_flags_a_user_reference_with_no_username(client):
+    """`{{secret:x}}` resolving is not proof `{{user:x}}` will — the dry run has
+    to separate them or the failure lands mid-login."""
+    _create(client)
+    r = client.post('/api/secrets/check',
+                    json={'text': '{{user:reddit.password}}'}).get_json()
+    assert r['resolvable'] is False
+    assert r['referenced'][0]['reason'] == 'no_username'
+    ok = client.post('/api/secrets/check',
+                     json={'text': '{{secret:reddit.password}}'}).get_json()
+    assert ok['resolvable'] is True
+
+
 def test_create_rejects_missing_value(client):
     r = client.post('/api/secrets', json={'name': 'a.b'})
     assert r.status_code == 400

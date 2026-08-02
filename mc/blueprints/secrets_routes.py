@@ -69,6 +69,7 @@ def api_secrets_set():
         rec = vault.set_secret(
             name,
             value,
+            username=data.get('username') or '',
             description=data.get('description') or '',
             hint=data.get('hint') or '',
             scope=(data.get('scope') or 'global').strip() or 'global',
@@ -100,6 +101,7 @@ def api_secrets_patch(name: str):
         rec = vault.set_secret(
             name,
             value,
+            username=data.get('username', current.get('username', '')),
             description=data.get('description', current['description']),
             hint=data.get('hint', current['hint']),
             scope=data.get('scope', current['scope']),
@@ -226,6 +228,7 @@ def api_secrets_check():
     project_id = data.get('project_id') or None
     unattended = bool(data.get('unattended', False))
     names = vault.referenced_names(text)
+    wants_user = set(vault.referenced_usernames(text))
     known = {s['name']: s for s in vault.list_secrets()}
     report = []
     for n in names:
@@ -236,6 +239,8 @@ def api_secrets_check():
             report.append({'name': n, 'ok': False, 'reason': 'out_of_scope'})
         elif unattended and not s['allow_unattended']:
             report.append({'name': n, 'ok': False, 'reason': 'unattended_blocked'})
+        elif n in wants_user and not s.get('username'):
+            report.append({'name': n, 'ok': False, 'reason': 'no_username'})
         else:
             report.append({'name': n, 'ok': True})
     return jsonify({'referenced': report,

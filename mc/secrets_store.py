@@ -135,6 +135,15 @@ _PLACEHOLDER_RE = re.compile(r'\{\{\s*secret:\s*([a-z0-9][a-z0-9._-]{0,63})\s*\}
 # get an error, not a silently useless value.
 _TOTP_PLACEHOLDER_RE = re.compile(r'\{\{\s*totp:\s*([a-z0-9][a-z0-9._-]{0,63})\s*\}\}')
 
+# `{{user:name}}` yields the username stored alongside the password. A login
+# needs both halves, and splitting them across two entries makes the pairing
+# implicit — nothing stops `site.user` and `site.password` drifting apart. The
+# username is metadata, not ciphertext: it is an identifier the site shows back
+# to you, it is what makes two entries distinguishable in the list, and treating
+# it as a secret would mean no route could display it. Same call as TOTP's
+# `account`, which is already returned in the clear.
+_USER_PLACEHOLDER_RE = re.compile(r'\{\{\s*user:\s*([a-z0-9][a-z0-9._-]{0,63})\s*\}\}')
+
 KIND_PASSWORD = 'password'
 KIND_TOTP = 'totp'
 
@@ -396,6 +405,7 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
     preview — a partial reveal is still a reveal."""
     return {
         'name': name,
+        'username': rec.get('username', ''),
         'description': rec.get('description', ''),
         'hint': rec.get('hint', ''),
         'scope': rec.get('scope', 'global'),
@@ -438,6 +448,7 @@ def key_backend() -> str:
 def set_secret(name: str,
                value: str,
                *,
+               username: str = '',
                description: str = '',
                hint: str = '',
                scope: str = 'global',
@@ -490,6 +501,7 @@ def set_secret(name: str,
                 pass
         rec = _seal(name, value)
         rec.update({
+            'username': str(username or ''),
             'description': str(description or ''),
             'hint': str(hint or ''),
             'scope': str(scope or 'global'),
@@ -616,16 +628,58 @@ def generate_totp_code(name: str,
     return code, _totp.seconds_remaining(period)
 
 
+def get_username(name: str, *, project_id: str | None = None) -> str:
+    """The username stored with ``name``.
+
+    Not audited and not registered for redaction: it is metadata (see
+    ``_USER_PLACEHOLDER_RE``), and scrubbing a username out of agent output
+    would mangle ordinary text. Scope is still enforced, so a project-scoped
+    login is not enumerable from elsewhere. ``allow_unattended`` deliberately is
+    not — the password half of the same login carries that gate, so an
+    unattended run that gets the username still cannot log in.
+    """
+    with _lock:
+        store = _load_store()
+        rec = store['secrets'].get(name)
+    if rec is None:
+        raise SecretNotFound(f"no secret named '{name}'")
+    scope = rec.get('scope', 'global')
+    if scope != 'global' and scope != project_id:
+        raise SecretDenied(
+            f"secret '{name}' is scoped to project '{scope}' and is not "
+            f"available to '{project_id}'")
+    username = str(rec.get('username', '') or '')
+    if not username:
+        raise SecretsError(
+            f"secret '{name}' has no username stored — add one in the Secrets "
+            f"panel, or drop the {{{{user:{name}}}}} reference")
+    return username
+
+
 def referenced_names(text: str) -> list[str]:
     """Secret names a piece of text refers to, in first-appearance order.
 
-    Covers both `{{secret:…}}` and `{{totp:…}}`.
+    Covers `{{secret:…}}`, `{{totp:…}}` and `{{user:…}}`.
     """
     seen: list[str] = []
-    for pattern in (_PLACEHOLDER_RE, _TOTP_PLACEHOLDER_RE):
+    for pattern in (_PLACEHOLDER_RE, _TOTP_PLACEHOLDER_RE, _USER_PLACEHOLDER_RE):
         for m in pattern.finditer(text or ''):
             if m.group(1) not in seen:
                 seen.append(m.group(1))
+    return seen
+
+
+def referenced_usernames(text: str) -> list[str]:
+    """Names referenced specifically as ``{{user:…}}``.
+
+    Separate from :func:`referenced_names` so a dry-run can tell "this secret
+    exists" from "this secret exists *and* has a username" — the two fail in
+    different places and only one of them is fixable in the Secrets panel.
+    """
+    seen: list[str] = []
+    for m in _USER_PLACEHOLDER_RE.finditer(text or ''):
+        if m.group(1) not in seen:
+            seen.append(m.group(1))
     return seen
 
 
@@ -634,7 +688,8 @@ def resolve_placeholders(text: str,
                          consumer: str,
                          project_id: str | None = None,
                          unattended: bool = False) -> tuple[str, list[str]]:
-    """Substitute every ``{{secret:name}}`` and ``{{totp:name}}`` in ``text``.
+    """Substitute every ``{{secret:name}}``, ``{{totp:name}}`` and
+    ``{{user:name}}`` in ``text``.
 
     Returns ``(resolved_text, names_used)``. Raises on the first unknown or
     denied name rather than leaving a live placeholder in a command line —
@@ -653,8 +708,11 @@ def resolve_placeholders(text: str,
     codes = {n: generate_totp_code(n, consumer=consumer, project_id=project_id,
                                    unattended=unattended)[0]
              for n in set(_TOTP_PLACEHOLDER_RE.findall(text))}
+    users = {n: get_username(n, project_id=project_id)
+             for n in set(_USER_PLACEHOLDER_RE.findall(text))}
     out = _PLACEHOLDER_RE.sub(lambda m: values[m.group(1)], text)
     out = _TOTP_PLACEHOLDER_RE.sub(lambda m: codes[m.group(1)], out)
+    out = _USER_PLACEHOLDER_RE.sub(lambda m: users[m.group(1)], out)
     return out, names
 
 

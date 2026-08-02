@@ -6,6 +6,37 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-01b] — the other half of a login: usernames
+
+The vault stored a password and no username, which is only half a login. The
+obvious workaround — two entries, `site.user` and `site.password` — makes the
+pairing implicit: nothing holds them together, and drift only surfaces as a
+failed login.
+
+So a secret now carries an optional **username** alongside its sealed value,
+referenced as `{{user:name}}` (`--user VAR=name` in `tools/with-secret.py`).
+
+It is stored as **metadata, not ciphertext**, and it *is* returned by
+`GET /api/secrets` and shown in the list. Deliberate: a username is an
+identifier the site displays back to you, and it is what tells two accounts on
+the same site apart in the panel — encrypting it would mean no route could ever
+show it. Precedent already existed: a TOTP entry's `account` is returned in the
+clear for the same reason. The rule that holds is unchanged — **no route returns
+a plaintext value.**
+
+- Scope *is* enforced on `{{user:…}}`; `allow_unattended` is not, because the
+  password half of the same login carries that gate. An unattended run that
+  learns a username still cannot log in.
+- `{{user:x}}` on an entry with no username raises rather than resolving to an
+  empty string — an anonymous login attempt is worse than a refused command.
+- `POST /api/secrets/check` reports `no_username` separately from `not_found`:
+  `{{secret:x}}` resolving is not proof `{{user:x}}` will, and conflating them
+  moves the failure to mid-login.
+- Usernames are not registered for output redaction — scrubbing one out of agent
+  output would mangle ordinary text.
+
+Detail: `docs/SECRETS.md`. 7 further tests (89 total across the vault).
+
 ## [2026-08-01] — 2FA codes, and the vault UI
 
 Two follow-ups that turned the vault from a library into something usable.

@@ -5,10 +5,15 @@ This is the agent-facing half of the secrets vault (``mc/secrets_store.py``).
 An agent writes the *name* of a credential, never the credential:
 
     python tools/with-secret.py \
-        --env REDDIT_USER=reddit.user \
-        --env REDDIT_PASS=reddit.password \
+        --user REDDIT_USER=reddit.password \
+        --env  REDDIT_PASS=reddit.password \
         --project mission_control \
         -- python tools/post_reddit.py --subreddit selfhosted
+
+A login is one entry, not two: `--env` injects its password, `--user` injects
+the username stored beside it (`{{secret:name}}` / `{{user:name}}` as
+placeholders). The username is metadata rather than ciphertext — it is what
+tells two accounts on the same site apart in the vault list.
 
 The values land in the child process's environment. They are never printed,
 never echoed into the command line the agent typed, and so never reach the
@@ -77,6 +82,9 @@ def main(argv: list[str] | None = None) -> int:
                     metavar='VAR=secret.name',
                     help='inject a freshly generated 2FA code as an environment '
                          'variable (repeatable)')
+    ap.add_argument('--user', action='append', type=_pair, default=[],
+                    metavar='VAR=secret.name',
+                    help="inject the username stored with a secret (repeatable)")
     ap.add_argument('--stdin', metavar='secret.name',
                     help="pipe a secret to the child's stdin")
     ap.add_argument('--project', default=None,
@@ -104,6 +112,8 @@ def main(argv: list[str] | None = None) -> int:
         env = dict(os.environ)
         env.update(vault.env_for(args.env, consumer='with-secret',
                                  project_id=project, unattended=unattended))
+        for var, sec in args.user:
+            env[var] = vault.get_username(sec, project_id=project)
         for var, sec in args.totp:
             code, remaining = vault.generate_totp_code(
                 sec, consumer='with-secret', project_id=project,
