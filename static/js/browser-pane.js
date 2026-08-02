@@ -44,7 +44,11 @@ function _bpCoords(img, e) {
 //              instead of spawning a new one. This is how an agent surfaces a
 //              server-side session into the user's UI — see the
 //              `[browser-attach:<sid>]` marker in resume-preview.js.
-async function openBrowserPane(url, projectId, sessionId) {
+// profile    — OPTIONAL. Name of a persistent, signed-in Chromium profile
+//              (`~/.clayrune/browser_profiles_named/<name>`). Omit for the
+//              throwaway default; pass one for a site you keep logging into.
+//              Naming a profile that is already open adopts that session.
+async function openBrowserPane(url, projectId, sessionId, profile) {
   // Detach the current VIEW without stopping its backend session — opening or
   // switching must not kill a session another agent (or you) may still want.
   // Only the × button / per-session stop actually ends a session.
@@ -67,7 +71,8 @@ async function openBrowserPane(url, projectId, sessionId) {
     try {
       const res = await fetch((window.API_BASE || '') + '/api/browser/launch', {
         method: 'POST', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ project_id: pid, url: url || 'about:blank' }),
+        body: JSON.stringify({ project_id: pid, url: url || 'about:blank',
+                               profile: profile || undefined }),
       });
       data = await res.json();
       if (!res.ok) throw new Error(data.error || 'launch failed');
@@ -386,20 +391,62 @@ function _bpToggleSessionMenu(win, pid) {
   }, 0);
 }
 
+async function _bpFetchProfiles() {
+  try {
+    const r = await fetch((window.API_BASE || '') + '/api/browser/profiles');
+    return (await r.json()).profiles || [];
+  } catch (e) { return []; }
+}
+
+// Forget a saved profile — this is the sign-out, so it asks.
+async function forgetBrowserProfile(name, menu, pid) {
+  if (!confirm(`Forget "${name}"?\n\nThis deletes its cookies — anything signed in there is signed out.`)) return;
+  try {
+    const r = await fetch((window.API_BASE || '') + '/api/browser/profiles/' +
+      encodeURIComponent(name), { method: 'DELETE' });
+    const d = await r.json();
+    if (!r.ok) throw new Error(d.error || r.statusText);
+  } catch (e) { alert('Could not forget it: ' + e.message); }
+  if (menu && menu.isConnected) _bpRenderSessionMenu(menu, pid);
+}
+
 async function _bpRenderSessionMenu(menu, pid) {
-  const sessions = await _bpFetchSessions(pid);
+  const [sessions, profiles] = await Promise.all([
+    _bpFetchSessions(pid), _bpFetchProfiles(),
+  ]);
   if (!menu.isConnected) return;
   const rows = sessions.map(s => {
     const active = s.session_id === _bpSession;
     const label = (s.url && s.url !== 'about:blank') ? s.url : 'about:blank';
+    // The profile badge is what tells a signed-in tab from a throwaway one —
+    // without it two rows on the same site look identical.
+    const badge = s.profile ? `<span title="Signed-in profile: ${_bpEsc(s.profile)}"
+      style="font-size:10px;padding:0 5px;border:1px solid #4a4a4a;border-radius:99px;color:#9ecb9e;flex:0 0 auto">${_bpEsc(s.profile)}</span>` : '';
     return `<div data-sid="${_bpEsc(s.session_id)}" style="display:flex;align-items:center;gap:6px;padding:6px;border-radius:6px;cursor:pointer;${active ? 'background:#2f3a2f' : ''}">
       <span style="width:8px;height:8px;border-radius:50%;background:${active ? '#4caf50' : '#666'};flex:0 0 auto"></span>
       <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${_bpEsc(label)}">${_bpEsc(label)}</span>
+      ${badge}
       <span data-stop="${_bpEsc(s.session_id)}" title="Stop this session" style="color:#e57373;cursor:pointer;padding:0 4px;flex:0 0 auto">&#10005;</span>
     </div>`;
   }).join('') || '<div style="padding:8px;color:#999">No running sessions</div>';
-  menu.innerHTML = rows +
-    `<div data-newbp="1" style="margin-top:4px;padding:6px;border-top:1px solid #3a3a3a;color:#8ab4f8;cursor:pointer">&#43; New browser</div>`;
+
+  // Only profiles that are NOT already open — an open one is in the list above,
+  // and "Open" on it would just re-adopt the same session.
+  const idle = profiles.filter(p => !p.in_use_by);
+  const saved = idle.length ? `
+    <div style="margin-top:4px;padding:6px 6px 2px;border-top:1px solid #3a3a3a;color:#999;font-size:10px">
+      SAVED LOGINS — these keep their cookies
+    </div>` + idle.map(p => `
+    <div data-prof="${_bpEsc(p.name)}" style="display:flex;align-items:center;gap:6px;padding:6px;border-radius:6px;cursor:pointer">
+      <span style="width:8px;height:8px;border-radius:50%;background:#8ab4f8;flex:0 0 auto"></span>
+      <span style="flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${_bpEsc(p.name)}</span>
+      <span style="color:#777;font-size:10px;flex:0 0 auto">${_bpEsc(p.size_mb)} MB</span>
+      <span data-forget="${_bpEsc(p.name)}" title="Forget it — signs this profile out" style="color:#e57373;cursor:pointer;padding:0 4px;flex:0 0 auto">&#10005;</span>
+    </div>`).join('') : '';
+
+  menu.innerHTML = rows + saved +
+    `<div data-newbp="1" style="margin-top:4px;padding:6px;border-top:1px solid #3a3a3a;color:#8ab4f8;cursor:pointer">&#43; New browser</div>
+     <div data-newprof="1" style="padding:6px;color:#8ab4f8;cursor:pointer">&#43; New signed-in browser&hellip;</div>`;
   menu.querySelectorAll('[data-sid]').forEach(row => {
     row.addEventListener('click', (e) => {
       if (e.target.closest('[data-stop]')) return;
@@ -413,8 +460,28 @@ async function _bpRenderSessionMenu(menu, pid) {
       _bpRenderSessionMenu(menu, pid);
     });
   });
+  menu.querySelectorAll('[data-prof]').forEach(row => {
+    row.addEventListener('click', (e) => {
+      if (e.target.closest('[data-forget]')) return;
+      menu.remove();
+      openBrowserPane('about:blank', pid, null, row.dataset.prof);
+    });
+  });
+  menu.querySelectorAll('[data-forget]').forEach(x => {
+    x.addEventListener('click', (e) => {
+      e.stopPropagation();
+      forgetBrowserProfile(x.dataset.forget, menu, pid);
+    });
+  });
   const nb = menu.querySelector('[data-newbp]');
   if (nb) nb.addEventListener('click', () => { menu.remove(); openBrowserPane('about:blank', pid); });
+  const np = menu.querySelector('[data-newprof]');
+  if (np) np.addEventListener('click', () => {
+    const name = (prompt('Name this profile — logins in it are remembered under this name.\n\nLowercase letters, digits, . - _ (e.g. reddit)') || '').trim().toLowerCase();
+    if (!name) return;
+    menu.remove();
+    openBrowserPane('about:blank', pid, null, name);
+  });
 }
 
 // Poll so agent-launched sessions are discoverable even when the pane is shut:

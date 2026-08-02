@@ -6,6 +6,42 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-02] — browser profiles that stay signed in
+
+Every browser-pane launch got a throwaway Chromium profile, deleted on teardown.
+Correct for one-off browsing, and the whole cost of the feature for anything
+else: an agent posting to the same social account every week faced a fresh
+login — plus 2FA, plus whatever anti-bot challenge a "new device" triggers — on
+every single run.
+
+A launch may now name a profile (`{"profile": "reddit"}`), which persists at
+`~/.clayrune/browser_profiles_named/<name>` and keeps its cookies. Unnamed
+launches are unchanged, so ephemeral stays the default and persistence is
+something you ask for by name.
+
+Two properties keep it safe:
+
+- **The named root is a sibling of the throwaway root, not a subdirectory.**
+  `sweep_orphan_profiles()` deletes everything under the throwaway root that no
+  live session owns, so a saved login nested inside it would be swept the moment
+  its session ended. A filter would hold until someone edited the filter; a
+  separate directory cannot be reached by that walk at all. Pinned by test.
+- **One Chromium per profile dir.** Naming an already-open profile returns the
+  running session (`reused: true`) instead of launching a second browser onto
+  the same dir, which would corrupt it.
+
+Closing the pane no longer signs you out; `DELETE /api/browser/profiles/<name>`
+does, and it refuses (409) while the profile is open rather than deleting the
+directory out from under a live browser. `GET /api/browser/profiles` lists names
+and sizes — never a cookie jar, same rule the vault holds for values.
+
+Verified end-to-end against a real Chromium and a local probe site: first visit
+sent no cookie, teardown, relaunch of the same profile sent `mc_probe=signed-in`.
+
+The honest caveat, in the module docstring: Chromium encrypts its cookie DB
+under the OS keychain, but on a headless Linux box with no keyring it falls back
+to a hardcoded key — the same shape as the vault's file-key-backend warning.
+
 ## [2026-08-01b] — the other half of a login: usernames
 
 The vault stored a password and no username, which is only half a login. The

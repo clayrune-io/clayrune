@@ -21,13 +21,44 @@ one-line install hint instead of failing the app.
 
 Security: same posture as /api/terminal/* — protected by the app-wide
 local_auth_gate before_request (loopback + CF-tunnel exempt, LAN needs the
-passcode). Chromium runs headless with a per-session throwaway user-data-dir.
+passcode). Chromium runs headless with a per-session throwaway user-data-dir,
+unless a launch names a **profile** (see below).
+
+## Profiles — ephemeral by default, persistent by name
+
+A throwaway profile means every visit starts logged out. For one-off browsing
+that is the right default; for an agent that posts to the same social account
+every week it is the whole cost of the feature — a fresh login (and a 2FA
+prompt, and an anti-bot challenge) on every single run.
+
+So a launch may name a profile: `{"profile": "reddit"}` reuses
+`~/.clayrune/browser_profiles_named/reddit`, which survives teardown and keeps
+its cookies. Unnamed launches behave exactly as before.
+
+Two properties hold this together:
+
+- **The named root is a SIBLING of the throwaway root, not a subdirectory.**
+  `sweep_orphan_profiles()` deletes everything under the throwaway root that no
+  live session owns — a saved login nested inside it would be swept the moment
+  its session ended. A filter would work until someone edited the filter; a
+  separate directory cannot be reached by that walk at all.
+- **One Chromium per profile dir.** Two processes sharing a user-data-dir
+  corrupt it, so naming a profile that is already open returns the running
+  session instead of launching a second browser.
+
+A persistent profile holds live session cookies: it is a credential, and
+deleting it is the sign-out. Chromium encrypts the cookie DB under the OS
+keychain (DPAPI / Keychain / SecretService); on a headless Linux box with no
+keyring it falls back to a hardcoded key, so there the file is effectively
+plaintext to anything running as this user — the same honest caveat the secrets
+vault makes about its file key backend.
 """
 
 import glob
 import json
 import os
 import queue
+import re
 import shutil
 import socket
 import subprocess
@@ -64,7 +95,51 @@ def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo
 
 
 def _profiles_root():
+    """Throwaway per-session profiles. Everything here is deletable."""
     return os.path.join(os.path.expanduser('~'), '.clayrune', 'browser_profiles')
+
+
+def _named_profiles_root():
+    """Saved, signed-in profiles. A SIBLING of the throwaway root by design —
+    see the module docstring: the orphan sweep walks the throwaway root, and
+    nothing that walk can reach may hold a login."""
+    return os.path.join(os.path.expanduser('~'), '.clayrune',
+                        'browser_profiles_named')
+
+
+# Same shape as a secret name (mc/secrets_store.py): lowercase, dot-namespaced.
+# Rejects separators and `..`, so a profile name can never escape its root.
+_PROFILE_NAME_RE = re.compile(r'^[a-z0-9][a-z0-9._-]{0,63}$')
+
+
+def _profile_dir(name):
+    """Absolute path for a named profile, or None if the name is unusable."""
+    name = (name or '').strip().lower()
+    if not _PROFILE_NAME_RE.match(name) or '..' in name:
+        return None
+    return os.path.join(_named_profiles_root(), name)
+
+
+def _session_using_profile(name):
+    """A live session already holding this profile, if any. Launching a second
+    Chromium on one user-data-dir corrupts the profile, so this is a guard, not
+    an optimisation."""
+    with browser_lock:
+        for s in browser_sessions.values():
+            if s.get('profile') == name and s.get('status') == 'running':
+                return s
+    return None
+
+
+def _dir_size(path):
+    total = 0
+    for dirpath, _dirs, files in os.walk(path):
+        for f in files:
+            try:
+                total += os.path.getsize(os.path.join(dirpath, f))
+            except OSError:
+                pass
+    return total
 
 
 def sweep_orphan_profiles():
@@ -92,12 +167,7 @@ def sweep_orphan_profiles():
         if path in live or not os.path.isdir(path):
             continue
         try:
-            for dirpath, _dirs, files in os.walk(path):
-                for f in files:
-                    try:
-                        freed += os.path.getsize(os.path.join(dirpath, f))
-                    except OSError:
-                        pass
+            freed += _dir_size(path)
             shutil.rmtree(path, ignore_errors=True)
             removed += 1
         except Exception as e:
@@ -311,12 +381,31 @@ def _run_cdp(session):
             pass
 
 
-def _launch_browser(project_id, url):
+def _launch_browser(project_id, url, profile=None):
+    """Start a headless Chromium and its CDP reader.
+
+    ``profile`` names a persistent user-data-dir that survives teardown; None
+    (the default) gets a throwaway one. Returns ``(session, err)``; the session
+    carries ``reused=True`` when an existing one already held that profile.
+    """
     chromium = _find_chromium()
     if not chromium:
         return None, 'Chromium not found (install: pip install playwright && playwright install chromium)'
     if not _import_ws():
         return None, 'websocket-client not installed (pip install websocket-client)'
+    if profile is not None:
+        profile = (profile or '').strip().lower()
+        udd = _profile_dir(profile)
+        if not udd:
+            return None, (f"invalid profile name '{profile}' — use lowercase "
+                          f"letters, digits, '.', '-', '_' (e.g. reddit)")
+        # One Chromium per profile dir: a second process on the same dir
+        # corrupts it, and the caller almost certainly wants the tab that is
+        # already signed in anyway.
+        live = _session_using_profile(profile)
+        if live:
+            live['reused'] = True
+            return live, None
     global _swept_orphans
     if not _swept_orphans:
         # Lazy, once per process, and only when the pane is actually used —
@@ -325,7 +414,8 @@ def _launch_browser(project_id, url):
         sweep_orphan_profiles()
     sid = uuid.uuid4().hex[:12]
     port = _free_port()
-    udd = os.path.join(_profiles_root(), sid)
+    if profile is None:
+        udd = os.path.join(_profiles_root(), sid)
     os.makedirs(udd, exist_ok=True)
     args = [
         chromium, '--headless=new', f'--remote-debugging-port={port}',
@@ -347,6 +437,8 @@ def _launch_browser(project_id, url):
         # Remembered so teardown can delete this throwaway profile. Without it
         # the dirs accumulated forever (56 dirs / 922 MB observed 2026-07-31).
         'user_data_dir': udd,
+        # A named profile is kept; teardown deletes only throwaway dirs.
+        'profile': profile,
     }
     with browser_lock:
         browser_sessions[sid] = session
@@ -384,6 +476,12 @@ def _kill_browser_session(session):
     # Drop the throwaway Chromium profile. Must happen AFTER the process is
     # dead, or Chromium rewrites the dir as we delete it (and Windows holds
     # locks on the open files).
+    #
+    # A NAMED profile is the point of the feature — deleting it here would
+    # sign the user out on every close, which is the behaviour this replaced.
+    # It is removed only by DELETE /api/browser/profiles/<name>.
+    if session.get('profile'):
+        return
     udd = session.get('user_data_dir')
     if udd:
         try:
@@ -399,11 +497,22 @@ def browser_launch():
     url = (data.get('url') or 'about:blank').strip()
     if url and not url.startswith(('http://', 'https://', 'about:')):
         url = 'https://' + url
-    session, err = _launch_browser(project_id, url)
-    if err:
-        return jsonify({'error': err}), 501
+    profile = data.get('profile')
+    session, err = _launch_browser(project_id, url, profile=profile or None)
+    if err or session is None:
+        err = err or 'browser failed to start'
+        # A bad profile name is the caller's mistake, not a missing dependency —
+        # 501 would send them installing Chromium over a typo.
+        return jsonify({'error': err}), (400 if 'profile name' in err else 501)
+    reused = bool(session.pop('reused', False))
+    if reused and url and url != 'about:blank' and session.get('url') != url:
+        # Adopting a signed-in session should still honour where the caller
+        # asked to go, or `profile` would silently ignore the URL.
+        session['url'] = url
+        session['cmd_queue'].put(('Page.navigate', {'url': url}))
     return jsonify({'session_id': session['session_id'], 'url': session['url'],
-                    'view': {'w': VIEW_W, 'h': VIEW_H}}), 201
+                    'profile': session.get('profile'), 'reused': reused,
+                    'view': {'w': VIEW_W, 'h': VIEW_H}}), (200 if reused else 201)
 
 
 @bp.route('/api/browser/stream')
@@ -550,5 +659,51 @@ def browser_status(project_id):
     for sid, s in list(browser_sessions.items()):
         if s.get('project_id') == project_id:
             out.append({'session_id': sid, 'url': s.get('url'),
-                        'status': s.get('status'), 'started_at': s.get('started_at')})
+                        'status': s.get('status'), 'profile': s.get('profile'),
+                        'started_at': s.get('started_at')})
     return jsonify({'sessions': out})
+
+
+@bp.route('/api/browser/profiles')
+def browser_profiles():
+    """Saved signed-in profiles. Names and sizes only — a cookie jar is never
+    served over HTTP, same rule the secrets vault holds for values."""
+    root = _named_profiles_root()
+    out = []
+    if os.path.isdir(root):
+        for name in sorted(os.listdir(root)):
+            path = os.path.join(root, name)
+            if not os.path.isdir(path):
+                continue
+            live = _session_using_profile(name)
+            try:
+                last_used = datetime.fromtimestamp(
+                    os.path.getmtime(path), timezone.utc).isoformat()
+            except OSError:
+                last_used = None
+            out.append({'name': name, 'size_mb': round(_dir_size(path) / 1048576, 1),
+                        'last_used': last_used,
+                        'in_use_by': live.get('session_id') if live else None})
+    return jsonify({'profiles': out})
+
+
+@bp.route('/api/browser/profiles/<name>', methods=['DELETE'])
+def browser_profile_delete(name):
+    """Forget a saved profile — this is the sign-out."""
+    path = _profile_dir(name)
+    if not path:
+        return jsonify({'error': f"invalid profile name '{name}'"}), 400
+    if not os.path.isdir(path):
+        return jsonify({'error': f"no saved profile '{name}'"}), 404
+    live = _session_using_profile((name or '').strip().lower())
+    if live:
+        # Deleting the dir under a running Chromium leaves a half-lived browser
+        # writing into nothing; make the caller close it deliberately.
+        return jsonify({'error': f"profile '{name}' is open in session "
+                                 f"{live.get('session_id')} — close it first",
+                        'session_id': live.get('session_id')}), 409
+    freed = _dir_size(path)
+    shutil.rmtree(path, ignore_errors=True)
+    print(f"[browser] forgot profile '{name}' "
+          f"({freed // (1024 * 1024)} MB, signed out)", flush=True)
+    return jsonify({'ok': True, 'forgotten': name})

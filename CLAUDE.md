@@ -142,6 +142,35 @@ Per-secret `scope` (global / one project) and `allow_unattended` (blocks steward
 and scheduled cycles) are the policy backstop. By Ron's decision agents may use
 secrets unattended by default; the per-task gate lives in the agent rules.
 
+## Browser pane — name a profile when you log in (2026-08-02)
+
+`POST /api/browser/launch` gets a **throwaway** Chromium profile by default:
+every launch starts logged out. That is right for one-off browsing and wrong for
+any site you sign into — a weekly steward run would face a fresh login, a 2FA
+prompt, and an anti-bot challenge every single time.
+
+**If the task involves signing in, pass a profile name:**
+
+```bash
+curl -s -X POST localhost:5199/api/browser/launch -H 'Content-Type: application/json' \
+  -d '{"project_id":"mission_control","url":"https://reddit.com","profile":"reddit"}'
+```
+
+The profile lives at `~/.clayrune/browser_profiles_named/<name>` and keeps its
+cookies across sessions and restarts, so the *next* run is already signed in —
+log in once (credentials from the vault, `{{user:}}` + `{{secret:}}`) and reuse
+the profile after that. `GET /api/browser/profiles` lists what already exists;
+**check it before logging in** — the account may already be signed in.
+
+- Naming a profile that is already open **adopts that session** (`reused: true`)
+  rather than starting a second browser. Two Chromiums on one profile dir
+  corrupt it.
+- Closing the pane no longer signs you out. Only
+  `DELETE /api/browser/profiles/<name>` does — that is the sign-out, so treat it
+  as destructive and ask first.
+- A saved profile is a live credential (session cookies). Don't create one for a
+  site the task didn't ask you to log into.
+
 ## macOS code-signing & notarization (added 2026-06-04)
 
 The Mac `.app` is now **signed (Developer ID) + notarized + stapled** so fresh
