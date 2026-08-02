@@ -113,6 +113,20 @@ Placeholders (`{{secret:name}}`) resolve server-side; `tools/with-secret.py`
 injects into the child's environment and scrubs dispensed values back out of
 its output.
 
+**A login is one entry, not two.** The username lives on the same secret as the
+password — `{{user:name}}` / `--user VAR=name` for the username,
+`{{secret:name}}` / `--env VAR=name` for the password, `{{totp:name}}` /
+`--totp VAR=name` for a 2FA code. `curl -s localhost:5199/api/secrets` lists
+what exists (metadata only — names, usernames, scope; never a value):
+
+```bash
+python tools/with-secret.py --user U=reddit --env P=reddit -- python post.py
+```
+
+If `{{user:name}}` errors with "no username stored", the entry is half-filled —
+say so and ask for it. Do **not** substitute a guessed username: an anonymous
+or wrong login attempt is worse than a refused command.
+
 Three rules that hold this together — **don't weaken them without a review:**
 
 1. **Nothing under the repo ever holds a secret.** Store, master key, and audit

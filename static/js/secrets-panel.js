@@ -462,6 +462,16 @@ async function saveSecret(modalId, isNew) {
         });
     const data = await res.json();
     if (!res.ok) throw new Error(data.error || res.statusText);
+    // A server older than the username field accepts the POST and drops it —
+    // Flask ignores unknown JSON keys, so the save "succeeds" and the credential
+    // is stored half-complete. Only the echoed record can tell us, and silence
+    // here is what sent an agent looking for a username that was never written.
+    if (body.username && !data.username) {
+      if (valueEl) valueEl.value = '';
+      refreshSecretsList();   // the rest of the entry did save
+      return fail('Saved, but this server build does not store usernames yet — '
+                  + 'restart Clayrune, then re-enter the username.');
+    }
     // Drop the plaintext from the DOM the moment it is no longer needed.
     if (valueEl) valueEl.value = '';
     closeModalById(modalId);
