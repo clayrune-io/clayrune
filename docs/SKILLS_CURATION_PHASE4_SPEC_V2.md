@@ -488,7 +488,7 @@ recurrence rule** (§5.3 — D2 closure):
   is emitted iff:
   - `exact_count >= distiller_min_recurrence` (default 3), OR
   - `coarse_count >= distiller_min_recurrence + 1` (default 4)
-  
+
   AND no existing skill name match AND not in suppression list (keyed
   on `(fingerprint, kind)` per §4.7 — D6 closure) AND not in
   per-(project, fingerprint, day) dedupe window AND no outbox marker
