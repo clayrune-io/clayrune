@@ -504,25 +504,59 @@ async function _bpPollStatus() {
   }
   const cur = new Set(sessions.map(s => s.session_id));
   if (_bpKnownSids !== null) {
-    for (const s of sessions) {
-      if (!_bpKnownSids.has(s.session_id) && s.session_id !== _bpSession) {
-        const where = (s.url && s.url !== 'about:blank') ? s.url : 'a new browser';
-        // The toast IS the way in. Telling the user to "click Browser" only
-        // works on desktop — mobile (≤960px) hides .btn-popout entirely, so
-        // that instruction pointed at a button that isn't on screen.
-        const sid = s.session_id;
-        if (typeof showActionToast === 'function') {
-          showActionToast(
-            `\u{1F310} A browser session opened<br><span style="opacity:.7;font-size:11px;word-break:break-all">${_bpEsc(where)}</span>`,
-            [{ label: 'View', primary: true, onclick: () => openBrowserPane(null, pid, sid) }],
-            { autoDismissMs: 12000 });
-        } else if (typeof showToast === 'function') {
-          showToast(`\u{1F310} A browser session opened (${where})`);
-        }
-      }
-    }
+    const fresh = sessions.filter(s => !_bpKnownSids.has(s.session_id) && s.session_id !== _bpSession);
+    if (fresh.length) _bpNotifyNewSessions(fresh, pid);
   }
   _bpKnownSids = cur;
+}
+
+// An agent opens browsers in bursts (a login flow, then a submit flow), and one
+// toast per session buried a phone screen under six of them. They coalesce into
+// a single keyed toast that counts up instead.
+let _bpPending = [];       // sessions announced but not yet viewed/dismissed
+let _bpPendingPid = null;
+
+function _bpShortUrl(u, max = 72) {
+  const s = String(u || '');
+  return s.length > max ? s.slice(0, max - 1) + '…' : s;
+}
+
+function _bpNotifyNewSessions(fresh, pid) {
+  // The toast IS the way in. Telling the user to "click Browser" only works on
+  // desktop — mobile (≤960px) hides .btn-popout entirely.
+  const container = document.getElementById('toast-container');
+  const showing = container && Array.from(container.children).some(
+    c => c.dataset.toastKey === 'bp-new-session' && !c.classList.contains('toast-out'));
+  // Once the previous toast is gone (viewed, swiped, or timed out) the count
+  // starts over — otherwise a later single session would announce itself as #7.
+  if (!showing || _bpPendingPid !== pid) { _bpPending = []; _bpPendingPid = pid; }
+
+  for (const s of fresh) {
+    if (_bpPending.some(p => p.sid === s.session_id)) continue;
+    _bpPending.push({
+      sid: s.session_id,
+      url: (s.url && s.url !== 'about:blank') ? s.url : 'a new browser',
+    });
+  }
+  const n = _bpPending.length;
+  if (!n) return;
+  const newest = _bpPending[n - 1];
+
+  if (typeof showActionToast !== 'function') {
+    if (typeof showToast === 'function') {
+      showToast(`\u{1F310} ${n} browser session${n > 1 ? 's' : ''} opened`);
+    }
+    return;
+  }
+  const head = n === 1 ? 'A browser session opened' : `${n} browser sessions opened`;
+  const sub = n === 1 ? newest.url : `Newest: ${newest.url}`;
+  showActionToast(
+    `\u{1F310} ${head}<br><span style="opacity:.7;font-size:11px;word-break:break-all">${_bpEsc(_bpShortUrl(sub))}</span>`,
+    [{
+      label: n === 1 ? 'View' : 'View newest', primary: true,
+      onclick: () => { _bpPending = []; openBrowserPane(null, pid, newest.sid); },
+    }],
+    { key: 'bp-new-session', autoDismissMs: 12000 });
 }
 function _bpStartPoll() {
   if (_bpPollTimer) return;

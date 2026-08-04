@@ -6,6 +6,31 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-04] — toasts coalesce, and you can swipe them away
+
+Six agent-opened browser sessions produced six separate toasts, each a
+full-width card on a phone. Stacked, they covered the entire screen with no
+gesture to clear them: `#toast-container` had **no mobile rules at all**, so a
+360px desktop card ran nearly edge to edge, and nothing capped the stack.
+
+Three changes, all in the toast layer:
+
+- **Keyed coalescing.** `showActionToast(msg, actions, {key})` now *replaces*
+  the live toast carrying the same key instead of appending a second one. The
+  browser-session poller (`_bpNotifyNewSessions`) uses one key and counts up —
+  "6 browser sessions opened / Newest: …", with **View newest** opening the
+  most recent. The count resets once that toast is gone, so a later single
+  session doesn't announce itself as #7.
+- **Swipe to dismiss, either direction.** Any toast follows the finger past
+  70px and leaves. Vertical intent is handed back to the page (`touch-action:
+  pan-y`), so scrolling still works, and a tap still hits the buttons.
+- **Stack cap + mobile styles.** At most 3 toasts are on screen, oldest
+  evicted first; ≤960px gets a full-bleed, compact card with a taller tap
+  target on the action buttons.
+
+Verified in headless Chromium at 390×844: 6 keyed toasts → 1, flood of 8 → 3,
+swipe left and right each dismiss, vertical drag does not, buttons still fire.
+
 ## [2026-08-02] — the scribe records the why, not only the what
 
 Session memory captured events and nothing else: *"fixed the mobile toast,

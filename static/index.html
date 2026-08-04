@@ -2024,13 +2024,71 @@ document.getElementById('modal-layer').addEventListener('mousedown', (e) => {
 
 // ── GitHub sync actions ──────────────────────────────────────────────────────
 
+// A stack of toasts with no way out buries a phone screen — on mobile the
+// container is the full width and there is no hover-to-linger. So: every
+// toast is swipeable away (left OR right), and the stack is capped.
+const TOAST_MAX_VISIBLE = 3;
+
+function _toastLive(container) {
+  return Array.from(container.children).filter(c => !c.classList.contains('toast-out'));
+}
+
+// Oldest-first eviction, so the newest alert is always the one on screen.
+function _toastTrim(container) {
+  const live = _toastLive(container);
+  for (let i = 0; i < live.length - TOAST_MAX_VISIBLE; i++) live[i].remove();
+}
+
+function _toastSwipeable(el) {
+  let x0 = 0, y0 = 0, dx = 0, active = false, decided = false;
+  el.addEventListener('pointerdown', (e) => {
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    x0 = e.clientX; y0 = e.clientY; dx = 0; active = true; decided = false;
+  });
+  el.addEventListener('pointermove', (e) => {
+    if (!active) return;
+    const mx = e.clientX - x0, my = e.clientY - y0;
+    if (!decided) {
+      if (Math.abs(mx) < 8 && Math.abs(my) < 8) return;
+      // Vertical intent belongs to the page, not to us — abandon the swipe.
+      if (Math.abs(my) >= Math.abs(mx)) { active = false; return; }
+      decided = true;
+      el.style.transition = 'none';
+      el.style.animation = 'none';   // don't fight the entry animation
+      try { el.setPointerCapture(e.pointerId); } catch (_) {}
+    }
+    dx = mx;
+    el.style.transform = `translateX(${dx}px)`;
+    el.style.opacity = String(Math.max(0, 1 - Math.abs(dx) / 220));
+  });
+  const end = () => {
+    if (!active) return;
+    active = false;
+    if (!decided) return;
+    el.style.transition = 'transform .18s ease-out, opacity .18s ease-out';
+    if (Math.abs(dx) > 70) {
+      el.classList.add('toast-out');   // also excludes it from the live count
+      el.style.transform = `translateX(${dx > 0 ? 600 : -600}px)`;
+      el.style.opacity = '0';
+      setTimeout(() => el.remove(), 200);
+    } else {
+      el.style.transform = ''; el.style.opacity = '';
+    }
+    decided = false;
+  };
+  el.addEventListener('pointerup', end);
+  el.addEventListener('pointercancel', end);
+}
+
 function showToast(message, durationMs = 5000) {
   const container = document.getElementById('toast-container');
   if (!container) return;
   const el = document.createElement('div');
   el.className = 'toast';
   el.innerHTML = `<span class="toast-icon">i</span><span class="toast-msg">${esc(message)}</span>`;
+  _toastSwipeable(el);
   container.appendChild(el);
+  _toastTrim(container);
   setTimeout(() => {
     el.classList.add('toast-out');
     el.addEventListener('animationend', () => el.remove());
@@ -2043,11 +2101,17 @@ function showToast(message, durationMs = 5000) {
 //
 // actions: [{label: '...', primary: true|false, onclick: fn}]
 // dismissOnAction: if true (default), clicking any action closes the toast.
+// key: repeat events of the same kind REPLACE their earlier toast in place
+//      instead of stacking a new one (see the browser-session poller).
 function showActionToast(message, actions, opts = {}) {
   const container = document.getElementById('toast-container');
   if (!container) return null;
+  const prev = opts.key
+    ? _toastLive(container).find(c => c.dataset.toastKey === opts.key) || null
+    : null;
   const el = document.createElement('div');
   el.className = 'toast toast-action';
+  if (opts.key) el.dataset.toastKey = opts.key;
   const msg = document.createElement('div');
   msg.className = 'toast-msg';
   msg.innerHTML = message; // intentional: callers control the markup
@@ -2070,9 +2134,17 @@ function showActionToast(message, actions, opts = {}) {
   });
   el.appendChild(msg);
   el.appendChild(row);
-  container.appendChild(el);
+  _toastSwipeable(el);
+  if (prev) {
+    if (prev._dismissTimer) clearTimeout(prev._dismissTimer);
+    el.style.animation = 'none';   // replacing in place shouldn't re-animate
+    prev.replaceWith(el);
+  } else {
+    container.appendChild(el);
+  }
+  _toastTrim(container);
   if (opts.autoDismissMs) {
-    setTimeout(close, opts.autoDismissMs);
+    el._dismissTimer = setTimeout(close, opts.autoDismissMs);
   }
   return el;
 }
