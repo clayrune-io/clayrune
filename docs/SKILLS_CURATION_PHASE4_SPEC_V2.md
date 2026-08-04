@@ -29,7 +29,7 @@ spec does not override them.
 > per-project default" framing. After v1.1's four-seat committee
 > returned RATIFY-WITH-CONDITIONS (no blockers, 14 must-fix-in-design),
 > Ron locked an operational definition of "learning"
-> (`memory/decision_learning_definition.md`, 2026-05-27) that is
+> (`<project memory dir>/decision_learning_definition.md`, 2026-05-27) that is
 > structurally broader. v1.1's surface no longer matches the target.
 > The mechanism plumbing v1.1 specified is still right; the scope,
 > structure, and artifact-type layer needs a redesign. v2 is that
@@ -1342,7 +1342,7 @@ Cond 2's conflated-experiment concern.
 **SETTLED: closed-vocabulary Stage 1 + near-miss telemetry as
 belt-and-suspenders.** Rationale in §5. Embeddings (Step 7) remain
 on the back burner per
-`memory/decision_step7_semantic_search_deferral.md`. Closed
+`<project memory dir>/decision_step7_semantic_search_deferral.md`. Closed
 vocabulary is deterministic, testable, immediately implementable,
 and addresses Seat 1 v1.1 Cond 1's structural failure directly. The
 near-miss telemetry catches drift if the vocabulary needs revision.

@@ -437,7 +437,7 @@ To keep the first PR reviewable:
 This sequencing means:
 - PR 1: pure refactor — no behavior change for any user.
 - PR 2: refactor housekeeping call sites.
-- PR 3: first real multi-provider provider lands, behind a flag.
+- PR 3: first real non-Claude provider lands, behind a flag.
 
 ---
 
