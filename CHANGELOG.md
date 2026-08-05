@@ -6,6 +6,64 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-05b] — the session log was crowding out the memory it was meant to keep
+
+A steward cycle filed a backlog note (`dae8d6e7`) saying the memory index is
+structurally doomed: `MEMORY.md` is 23.5 KB against a ~24 KB harness read cap,
+16.2 KB of that is the curated region that machinery is not allowed to touch,
+and everything below the cut vanishes from agent context with no error. All
+true, and verified — `_INDEX_BYTE_FLOOR` is 23 KB, so eviction is already
+running on every write. The note proposed a two-level index. That redesign is
+still the right end state, but reviewing the actual file first turned up
+something cheaper and more urgent: **the managed half wasn't full of history.
+It was full of the same session, sixteen times.**
+
+Every one of the 16 managed entries was a same-day steward `_(live)_`
+checkpoint — 6.2 KB of a 6.9 KB region. Two independent causes:
+
+- **Titles were the raw prompt.** The entry title is `task[:80]`, and a
+  harness-generated steward task starts with 85 characters of boilerplate
+  (`[Steward cycle] You are the autonomous STEWARD of this project — run ONE
+  cycle n`). Sixteen entries, sixteen identical titles, 1.4 KB describing
+  nothing. `_entry_label()` now collapses a *leading* known harness marker to
+  its short form; a task that merely mentions steward cycles keeps its own
+  title verbatim.
+- **Checkpointing appended where it meant to replace.** Step-6 folds each
+  transcript delta into a *cumulative* `running_summary`, so every `_(live)_`
+  entry is a strict superset of the one before it — but each was written as a
+  new line. One long session emitted N entries carrying one session's worth of
+  information. `_commit_managed_entry(supersede_sid=…)` now drops that
+  session's previous entry in the same atomic write, found via a
+  `last_entry_hash` stashed on its watermark record. The
+  self-contained-breadcrumb property that made appending look correct is kept:
+  the newest entry is always complete on its own, so a hard kill still leaves a
+  valid one behind. The terminal completion entry supersedes the last live
+  checkpoint too, instead of sitting next to it repeating it.
+
+A third guard covers the general case: `_collapse_duplicate_entries` keeps the
+newest three entries per `(date, label)` group *before* the byte floor runs.
+The floor evicts strictly oldest-first, which is blind to repetition — that's
+how a burst of same-day cycles was pushing real multi-day history into the
+archive. Surplus duplicates are demoted to the archive verbatim, not deleted;
+superseded checkpoints are the one exception, since the surviving entry already
+contains their text and archiving them would just re-add the bloat elsewhere.
+Legacy boilerplate titles fold into the same group as the new short labels, so
+the existing pile-up collapses on the next write rather than needing a
+migration.
+
+Net effect on this repo: ~5 KB of the managed region returns to being usable,
+and it stops refilling. The curated-region problem the note identified is
+untouched by this — that still needs the two-level index, and the standing gate
+(`decision_step7_semantic_search_deferral`: build search-precision telemetry
+before leaning harder on retrieval) still applies. One correction to the note's
+second proposal, recorded on the backlog item: evicting by access count is not
+independent of its own stated label risk, it compounds it — a badly-labelled
+note never gets opened, so the counter reads it as cold and evicts it. Log
+access statistics for observability; don't wire them to eviction until
+discovery is known-good.
+
+14 new tests in `tests/test_memory_entry_dedup.py`; suite green at 1199.
+
 ## [2026-08-05] — the browser pane keeps your logins, and takes a paste
 
 Two unrelated-looking complaints about the browser pane, both real, both with

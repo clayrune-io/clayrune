@@ -618,6 +618,78 @@ _INDEX_BYTE_FLOOR = _INDEX_BYTE_CAP - 1024
 # alone exceeds the harness cap and machinery cannot shrink it.
 _curated_cap_warned: set = set()
 
+# Harness-generated tasks carry a long boilerplate prompt as their "task", and
+# the entry title is just `task[:80]`. A steward cycle's title is therefore ~85
+# bytes of pure prompt with zero information about what the cycle DID. This
+# repo's own index had 16 of them (1.4KB of identical titles) by 2026-08-05.
+# Pinned to steward.fence.STEWARD_MARKER by test (same discipline as
+# distiller.STEWARD_TASK_MARKER) — mc.memory must not import a sibling package.
+_STEWARD_TASK_MARKER = '[Steward cycle]'
+_STEWARD_LABEL = 'Steward cycle'
+
+# How many managed entries to keep per (date, label) group. The mechanical
+# floor evicts strictly oldest-first, which is blind to repetition: on
+# 2026-08-05 all 16 managed entries in this repo were same-day steward cycles
+# (6.2KB of a 6.9KB region, heavily overlapping), so the floor was evicting
+# real multi-day history to make room for redundant same-day noise. Collapsing
+# a group first preserves entry DIVERSITY under the same byte budget. Surplus
+# goes to the permanent archive verbatim — nothing is deleted, only demoted.
+_MANAGED_DUP_KEEP = 3
+
+_ENTRY_HEAD_PAT = r'^- \[([^\]]+)\]\s+\*\*(.*?)\*\*'
+
+
+def _entry_label(task):
+    """Compact title for a managed entry. Known harness prompts collapse to
+    their marker; every other task keeps its text verbatim (capped at 80)."""
+    t = (task or '').strip()
+    if _STEWARD_TASK_MARKER in t[:60]:
+        return _STEWARD_LABEL
+    return t[:80]
+
+
+def _entry_group_key(line):
+    """(date, normalized-label) for a '- [' entry line, or None if unparseable.
+
+    Normalization is for GROUPING ONLY — the line itself is never rewritten, so
+    the byte-preservation guarantee on existing entries holds. It folds legacy
+    boilerplate titles onto the compact label so pre-fix and post-fix steward
+    entries collapse into one group instead of two."""
+    import re  # module has no top-level `re` import (see _re_auth pattern)
+    m = re.match(_ENTRY_HEAD_PAT, line or '')
+    if not m:
+        return None
+    date, label = m.group(1), m.group(2).strip()
+    if _STEWARD_TASK_MARKER in label[:60]:
+        label = _STEWARD_LABEL
+    return (date, label)
+
+
+def _collapse_duplicate_entries(mem_entries, keep=None):
+    """Keep at most `keep` entries per (date, label) group, newest wins.
+
+    Returns (kept_entries, overflow) with kept_entries in their original
+    chronological order and overflow (the demoted surplus, also in original
+    order) destined for the archive. Entries that don't parse are never
+    grouped and never dropped — unparseable input must not lose history."""
+    keep = _MANAGED_DUP_KEEP if keep is None else keep
+    if keep < 1:
+        return list(mem_entries), []
+    seen = {}
+    for idx, line in enumerate(mem_entries):
+        key = _entry_group_key(line)
+        if key is not None:
+            seen.setdefault(key, []).append(idx)
+    drop = set()
+    for idxs in seen.values():
+        if len(idxs) > keep:
+            drop.update(idxs[:-keep])  # oldest of the group → archive
+    if not drop:
+        return list(mem_entries), []
+    kept = [ln for i, ln in enumerate(mem_entries) if i not in drop]
+    overflow = [ln for i, ln in enumerate(mem_entries) if i in drop]
+    return kept, overflow
+
 
 def _over_floor(text, hard_floor):
     """Mechanical-floor predicate: over the LINE hard floor OR the BYTE
@@ -643,13 +715,15 @@ def _append_to_archive(project, lines):
     _atomic_write_text(ap, prev + '\n' + '\n'.join(lines) + '\n')
 
 
-def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None):
+def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
+                          supersede_sid=None):
     """Leaf-locked atomic MEMORY.md commit — the write path shared by the
     completion scribe, the Step-6 checkpoint worker, and teardown (the
     structured Leg C `_condense_apply` is a co-equal writer under the SAME
     leaf lock + atomic primitive; both route archive overflow through
     `_append_to_archive`). In a single
     per-project mem-write-locked, atomic (temp+replace) operation:
+      • optionally drop `supersede_sid`'s previous entry (see below),
       • optionally append `mem_entry` ('- [' line) to the managed region,
       • optionally `_wm_upsert`/`_wm_remove` this session's watermark marker,
       • run the lossless line-keyed floor (relocates only '- [' entries;
@@ -658,6 +732,19 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None)
     No scribe call and no condense dispatch inside the lock (the slow/process
     parts stay out). Returns whether condense should fire; caller dispatches it
     OUTSIDE the lock. Never raises. SPEC §3.A.MID committee blocker #3.
+
+    `supersede_sid` fixes the checkpoint pile-up. Step-6 checkpointing folds
+    each transcript delta into a CUMULATIVE `running_summary`, so every
+    `_(live)_` entry it writes is a strict superset of the one before — yet
+    each was appended as a new line. A single long session therefore emitted N
+    entries carrying one session's worth of information (16 of them, 6.2KB,
+    filled this repo's whole managed region on 2026-08-05). Passing the session
+    id drops that session's PREVIOUS entry in the same atomic write, identified
+    by the `last_entry_hash` stashed on its watermark record. The
+    self-contained-breadcrumb property of SPEC §3.A.MID is preserved: the
+    newest entry is always complete on its own, and a hard kill leaves it in
+    place. Superseded entries are dropped, not archived — the surviving entry
+    already contains their content.
     """
     project_id = p.get('id', '')
     mem_path = _get_memory_path(p)
@@ -668,13 +755,41 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None)
                     if mem_path.exists() else '')
         # Leg 0: idempotent, additive migration; curated region untouched.
         curated, mem_entries, wm_markers = _mem_split_full(_mem_migrate(existing))
+        if supersede_sid is not None:
+            prev_hash = (_wm_find(wm_markers, supersede_sid)
+                         or {}).get('last_entry_hash', '')
+            if prev_hash:
+                before = len(mem_entries)
+                mem_entries = [ln for ln in mem_entries
+                               if _sha8(ln) != prev_hash]
+                if len(mem_entries) != before:
+                    _scribe_stat(project_id, 'entry_superseded')
+        if wm_upsert is not None:
+            wm_upsert = dict(wm_upsert)
+            if mem_entry:
+                wm_upsert['last_entry_hash'] = _sha8(mem_entry)
+            else:
+                # No new entry this round (thin/refused delta still advances
+                # the offset) — carry the pointer forward, or the next real
+                # checkpoint loses track of what it supersedes.
+                carry = (_wm_find(wm_markers, wm_upsert.get('session_id'))
+                         or {}).get('last_entry_hash', '')
+                if carry:
+                    wm_upsert['last_entry_hash'] = carry
         if mem_entry:
             mem_entries.append(mem_entry)
         if wm_remove_sid is not None:
             wm_markers = _wm_remove(wm_markers, wm_remove_sid)
         if wm_upsert is not None:
             wm_markers = _wm_upsert(wm_markers, wm_upsert)
-        overflow = []
+        # Collapse repetition BEFORE the oldest-first floor, so a burst of
+        # same-day same-label cycles can't evict unrelated history that the
+        # index still needs (see _MANAGED_DUP_KEEP).
+        mem_entries, overflow = _collapse_duplicate_entries(mem_entries)
+        if overflow:
+            _log(f"[mem-dedup] {project_id}: demoted {len(overflow)} duplicate "
+                 f"managed entr{'y' if len(overflow) == 1 else 'ies'} to archive "
+                 f"(keeping {_MANAGED_DUP_KEEP} per date+label)")
         while mem_entries and _over_floor(
                 _mem_compose(curated, mem_entries, wm_markers), hard_floor):
             overflow.append(mem_entries.pop(0))  # oldest → archive
@@ -759,12 +874,15 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
              or f"ended with status={status}, no captured output"
              ).replace('\n', ' ').strip()
     tag = '' if status == 'completed' else f' _({status})_'
-    mem_entry = f"- [{ts_date}] **{task[:80]}**{tag} — {brief}"
+    mem_entry = f"- [{ts_date}] **{_entry_label(task)}**{tag} — {brief}"
     # Terminal write also removes this session's live wm marker (clean
     # teardown — SPEC §3.A.MID Fix-B coordination), in the same atomic write.
+    # The terminal entry is authoritative for this session, so it also
+    # supersedes the last `_(live)_` checkpoint entry rather than sitting
+    # next to it saying the same thing.
+    _sid = session.get('session_id') or session.get('id')
     do_condense = _commit_managed_entry(
-        p, mem_entry=mem_entry,
-        wm_remove_sid=session.get('session_id') or session.get('id'))
+        p, mem_entry=mem_entry, wm_remove_sid=_sid, supersede_sid=_sid)
     if do_condense:
         _dispatch_condense(p)
     # Phase 4 Distiller — daemon-thread dispatch parallel to Scribe (v2.1 §4.8).
@@ -953,8 +1071,9 @@ def _checkpoint_worker(snap):
             merged = dsum
         merged = merged[:300]
         rec['running_summary'] = merged
-        entry = f"- [{now_iso()[:10]}] **{task[:80]}** _(live)_ — {merged}"
-        if _commit_managed_entry(p, mem_entry=entry, wm_upsert=rec):
+        entry = f"- [{now_iso()[:10]}] **{_entry_label(task)}** _(live)_ — {merged}"
+        if _commit_managed_entry(p, mem_entry=entry, wm_upsert=rec,
+                                 supersede_sid=sid):
             _dispatch_condense(p)
         _scribe_stat(pid, 'checkpoint_extracted')
     except Exception:
