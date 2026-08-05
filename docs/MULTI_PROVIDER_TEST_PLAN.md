@@ -1,7 +1,7 @@
 # Multi-Provider Agent Runtime — Test Plan
 
-**Branch:** `feat/multi-provider-agents`  
-**Date:** 2026-05-21  
+**Branch:** `feat/multi-provider-agents`
+**Date:** 2026-05-21
 **Purpose:** Decide merge vs. iterate for the multi-provider AgentRuntime prototype.
 
 ---

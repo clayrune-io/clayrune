@@ -1552,7 +1552,7 @@ warrant a fresh four-seat pass.
 
 ## 13. Build sequence reminder
 
-Per `memory/decision_learning_definition.md` "Build order locked
+Per `<project memory dir>/decision_learning_definition.md` "Build order locked
 (2026-05-27)":
 
 1. **Fix condense first.** 58 timeouts + 48 errors per 2026-05-23

@@ -10,7 +10,7 @@ post-committee-review 2026-05-27, revised 2026-05-29). The locked
 learning definition this implements: ``learning is when the agent's
 effective behavior changes over time, driven by experience, without
 the human having to type the change``
-(``memory/decision_learning_definition.md``).
+(``<project memory dir>/decision_learning_definition.md``).
 
 Best-effort posture (parent design + §2 principle 2): Distiller
 failure NEVER breaks Scribe, MEMORY.md write, completion logging, or

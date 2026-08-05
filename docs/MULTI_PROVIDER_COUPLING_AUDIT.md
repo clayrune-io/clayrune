@@ -1,8 +1,8 @@
 # Multi-Provider Coupling Audit
 
-**Workstream:** Coupling Auditor  
-**Date:** 2026-05-21  
-**Scope:** Complete inventory of every place MC depends on claude-code specifically  
+**Workstream:** Coupling Auditor
+**Date:** 2026-05-21
+**Scope:** Complete inventory of every place MC depends on claude-code specifically
 **Method:** Full codebase walk of `server.py` (12,648 lines), `mcp.py`, `skills.py`, `mcp_installer.py`
 
 ---

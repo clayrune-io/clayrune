@@ -1,8 +1,8 @@
 # Multi-Provider Rollout Guide
 
-**Branch:** `feat/multi-provider-agents`  
-**Date:** 2026-05-21  
-**Workstream:** ws_rollout  
+**Branch:** `feat/multi-provider-agents`
+**Date:** 2026-05-21
+**Workstream:** ws_rollout
 **Companion docs:**
 - `docs/MULTI_PROVIDER_DESIGN.md` — full architecture
 - `docs/MULTI_PROVIDER_PARITY_MATRIX.md` — per-feature × per-provider capability table
@@ -27,7 +27,7 @@ A project with no `provider` field set — every project created before this bra
 
 **What does NOT change for claude users:**
 - All CLI flags, session lifecycle, Scribe, Condense, Hivemind, MCP, Skills, Plan-mode — unchanged
-- `claude_session_id`, `agent_log` structure, transcript scanning — unchanged  
+- `claude_session_id`, `agent_log` structure, transcript scanning — unchanged
 - Auth flow (`/api/claude/auth-*`, Settings sign-in button) — unchanged
 
 ---
@@ -52,7 +52,7 @@ npm install -g @anthropic-ai/claude-code
 npm install -g @google/gemini-cli
 ```
 
-**Auth — option A (recommended for unattended use):**  
+**Auth — option A (recommended for unattended use):**
 Set `GEMINI_API_KEY` in your environment before launching Clayrune:
 
 ```bash

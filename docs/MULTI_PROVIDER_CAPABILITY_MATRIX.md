@@ -4,7 +4,7 @@
 > nine integration questions that Mission Control needs to drive a CLI agent via
 > subprocess + stdin/stdout JSON (the same shape as today's `claude` integration).
 >
-> **Research date:** 2026-05-21  
+> **Research date:** 2026-05-21
 > **Coverage:** 6 viable candidates + 2 ruled out
 
 ---
@@ -26,7 +26,7 @@
 
 ## 1. Gemini CLI
 
-**Source:** https://github.com/google-gemini/gemini-cli  
+**Source:** https://github.com/google-gemini/gemini-cli
 **Latest stable:** v0.32.1 (March 2026), powered by Gemini 3
 
 ### (a) stdin/stdout Protocol Shape
@@ -105,7 +105,7 @@ CLI exits with error in non-interactive mode if no suitable env var is found.
 
 ## 2. Codex CLI (OpenAI)
 
-**Source:** https://github.com/openai/codex  
+**Source:** https://github.com/openai/codex
 **Language:** Rust (native binary; fast startup)
 
 ### (a) stdin/stdout Protocol Shape
@@ -191,7 +191,7 @@ Requirements: ChatGPT Plus/Pro/Team/Edu/Enterprise subscription **or** OpenAI AP
 
 ## 3. Aider
 
-**Source:** https://github.com/Aider-AI/aider  
+**Source:** https://github.com/Aider-AI/aider
 **Language:** Python
 
 ### (a) stdin/stdout Protocol Shape
@@ -276,7 +276,7 @@ Also supports `.env` file with `AIDER_OPENAI_API_KEY` / `AIDER_ANTHROPIC_API_KEY
 
 ## 4. OpenCode
 
-**Source:** https://github.com/anomalyco/opencode (moved from sst/opencode)  
+**Source:** https://github.com/anomalyco/opencode (moved from sst/opencode)
 **Stack:** TypeScript + Go, runs on Bun; 153k+ GitHub stars
 
 ### (a) stdin/stdout Protocol Shape
@@ -368,7 +368,7 @@ For server/headless mode: `OPENCODE_SERVER_PASSWORD` env var sets HTTP API auth.
 
 ## 5. Goose (Block / AAIF)
 
-**Source:** https://github.com/aaif-goose/goose (transferred from block/goose to AAIF)  
+**Source:** https://github.com/aaif-goose/goose (transferred from block/goose to AAIF)
 **Language:** Rust
 
 ### (a) stdin/stdout Protocol Shape
@@ -445,7 +445,7 @@ Also supports `goose configure` interactive flow. OAuth for headless use: `--hea
 
 ## 6. Kiro CLI (AWS / kirodotdev)
 
-**Source:** https://github.com/kirodotdev/Kiro  
+**Source:** https://github.com/kirodotdev/Kiro
 **Note:** AWS-developed; IDE + CLI product
 
 ### (a) stdin/stdout Protocol Shape
@@ -526,15 +526,15 @@ curl -fsSL https://cli.kiro.dev/install | bash
 
 ### Amazon Q Developer CLI
 
-**MCP:** Yes (local + remote).  
-**JSON output:** No — `q chat` outputs plain text/Markdown. Feature request open (issue #2713).  
-**Headless auth:** Blocked — requires interactive browser authentication (issue #3343). Cannot be used in server/headless context.  
+**MCP:** Yes (local + remote).
+**JSON output:** No — `q chat` outputs plain text/Markdown. Feature request open (issue #2713).
+**Headless auth:** Blocked — requires interactive browser authentication (issue #3343). Cannot be used in server/headless context.
 **Verdict:** Not viable for MC today. Revisit if issues #2713 + #3343 ship.
 
 ### GitHub Copilot CLI
 
-**Scope:** Primarily an IDE extension (`gh copilot suggest` / `gh copilot explain`).  
-**Protocol:** No headless/programmatic mode suitable for MC integration.  
+**Scope:** Primarily an IDE extension (`gh copilot suggest` / `gh copilot explain`).
+**Protocol:** No headless/programmatic mode suitable for MC integration.
 **Verdict:** Not an agent CLI in the MC sense; ruled out.
 
 ---
