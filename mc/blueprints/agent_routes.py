@@ -1784,7 +1784,7 @@ def _build_agent_context(project, incognito=False, task='', character_body=''):
     if task:
         try:
             hits = _memory_search(project, task,
-                                  int(state.CONFIG.get('read_floor_topk', 3) or 3))
+                                  int(state.CONFIG.get('read_floor_topk', 6) or 6))
         except Exception:
             hits = []
         if hits:

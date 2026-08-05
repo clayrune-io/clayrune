@@ -6,6 +6,82 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-05d] — closing out the memory subsystem: two false alarms and one real blocker
+
+A sweep to repair everything known broken in memory/indexing/search. Two of the
+things I had reported as broken turned out not to be, and finding that out
+produced the one fix that mattered most.
+
+**"Condense is broken — 22% success rate" was wrong.** `scribe-stats` counters
+are lifetime totals with no recency signal, so `condense_rejected:model_error`
+96 + `model_timeout` 58 against 46 successes reads as a subsystem in freefall.
+It isn't: 91+58 of those failures predate the 2026-07 switch to the haiku
+default (the code comment recording that switch cites the exact figures), so the
+post-fix record is ~41 successes to 5 errors. A direct `_condense_plan` call
+against the real 16.5KB MEMORY.md returned `ok` in 58s. Condense is healthy.
+
+**"The diagnostic logs aren't captured" was also wrong.** `[scribe]` (51 lines)
+and `[distiller]` (718) reach the log fine. Zero `[condense]` lines means zero
+condense *failures* in that window — the success path logs nothing.
+
+Both misreadings came from the same missing thing, so that's what got fixed:
+**failure-class counters now self-date.** `_scribe_stat` stamps
+`counters_last[key]`, exactly as `distiller._increment_counter` already did —
+its docstring describes this precise trap ("is this still bleeding, or is it a
+six-week-old backlog?"). The scribe half never got it. The same change makes the
+read-modify-write locked and atomic; it was a plain `write_text` that could lose
+a concurrent bump or leave a torn file, and a torn file 500s `/scribe-stats`.
+
+**`read_floor_topk` 3 → 6.** Now that BM25 makes the ranking trustworthy, more
+slots are worth buying: replaying 142 real tasks, topk=3 reaches 40/75 topic
+files and topk=6 reaches 59/75. The dark set more than halves for ~300 extra
+tokens per prompt against a ~6k-token index. The knee is at 5–6; beyond 8 it
+flattens.
+
+**The BM25 "regression" wasn't one.** `remote_access_device_naming.md` ranks #1
+by a wide margin when actually queried — it simply never came up in the 142-task
+sample. Sample coverage, not a ranking defect.
+
+### The real finding: the two-level index would delete knowledge, not page it
+
+The proposed redesign replaces ~69 front-page pointers with ~12 category
+headings, each backed by a manifest opened on demand. That assumes every
+front-page line has a leaf to page into. Measured, **39% do not**:
+
+| curated region (16.7KB, 113 lines) | bytes | lines |
+|---|---|---|
+| pointer lines **with** a `.md` link | 9,927 | 58 |
+| pointer lines with **no** link | **5,928** | **37** |
+| headings + prose | 790 | 9 |
+
+Those 37 are the knowledge — `wake_lock.py line 142 release_now() never
+atexit-registered…`, `IPv6 localhost resolution stalls ~200ms… fix: dual-stack
+socket`. Nothing sits behind them. Collapsing them under a heading doesn't page
+them out, it deletes them. That is the silent forgetting the steward's own note
+feared, arriving from a direction nobody named: not bad labels, but entries with
+no leaf.
+
+Same root, second-order: `_memory_search` excludes the curated region by
+construction ("the agent already auto-loads it"), so those 5.9KB are not in the
+BM25 corpus and not in the archive. That exclusion is correct *today* and
+becomes wrong the moment anything is paged off the front page — a hard
+dependency of the redesign, not a detail.
+
+**So the prerequisite is promoting those 37 lines into real topic files**, which
+makes them searchable, archivable and pageable. Left undone deliberately: it's
+37 naming judgment calls on a file loaded into every prompt, and it deserves its
+own pass rather than riding along with an infra change. Full sequencing in
+`~/.claude/plans/memory-index-two-level-blocker.md`.
+
+Worth stating plainly: with BM25 + topk=6 the read floor reaches 59/75 files
+unaided, and the front page's navigation function is measurably barely used
+(agents open a topic file in 6% of sessions, search in 3%). Its remaining value
+is the hook text itself — the exact thing a category collapse destroys. "Leave
+the index alone, it's a legitimate 6k-token spend" is now a serious candidate
+answer.
+
+7 tests in `tests/test_scribe_stat_recency.py`; suite green at 1217.
+
 ## [2026-08-05c] — the memory corpus wasn't cold, it was unreachable
 
 Chasing the memory-index size problem (`[2026-08-05b]`) to its root. Ron

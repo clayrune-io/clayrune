@@ -481,8 +481,10 @@ never reads coordination state.** This is deliberate and load-bearing:
 - Writing ephemeral operational chatter ("ws_x is editing foo.py") into the
   curated memory index is exactly the "learned-behavior drift in MEMORY.md's
   curated section" the Skills-Curation design rules **out of scope**. It would
-  bloat the ~24 KB byte-capped index (see the index-byte-cap discovery) with
-  facts that are stale within hours.
+  bloat the index — which is auto-loaded into every prompt against a chosen
+  ~24 KB token budget (`index_byte_budget`; see the index-byte-cap discovery,
+  and note it is a budget we set, not a harness cap) — with facts that are
+  stale within hours.
 - **Enforcement is structural, already in place:** coordination state lives under
   `data/coordination/<pid>/`, **outside `DATA_DIR`** (`data/projects/`). Scribe,
   `load_projects()`, and the Distiller only ever touch `DATA_DIR` +

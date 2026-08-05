@@ -178,7 +178,12 @@ def _load_config():
         'distiller_preference_min_recurrence': 1,
         'distiller_cross_project_walk_debounce_session_count': 5,
         'distiller_cross_project_walk_debounce_seconds': 600,
-        'read_floor_topk': 3,          # SPEC §3 Leg B deterministic read floor
+        # SPEC §3 Leg B deterministic read floor. Raised 3 -> 6 on 2026-08-05
+        # once BM25 made the ranking trustworthy: replaying 142 real tasks,
+        # topk=3 reaches 40/75 topic files and topk=6 reaches 59/75 — the dark
+        # set more than halves for ~300 extra tokens/prompt, against a ~6k-token
+        # auto-loaded index. Measured by tools/memory-eval/scorer_ab.py.
+        'read_floor_topk': 6,
         # Exploration read-floor — surfaces the Distiller's captured
         # EXPLORATION.md proposals back into a new session's context (the
         # learning-loop closer). Ships default-ON; flip enabled=false to

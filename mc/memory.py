@@ -1336,19 +1336,64 @@ _SCRIBE_REFUSAL_MARKERS = (
 )
 
 
+# Counter classes that get a `counters_last[key]` recency stamp.
+_STAT_DATED = ('error', 'skip', 'refuse', 'fell_back', 'timeout', 'reject')
+
+_scribe_stat_locks: dict = {}
+_scribe_stat_locks_guard = threading.Lock()
+
+
+def _get_scribe_stat_lock(project_id):
+    with _scribe_stat_locks_guard:
+        lk = _scribe_stat_locks.get(project_id)
+        if lk is None:
+            lk = _scribe_stat_locks[project_id] = threading.Lock()
+        return lk
+
+
 def _scribe_stat(project_id, key, n=1):
     """Add n to a scribe-outcome counter (SPEC §8 telemetry). Best-effort;
-    n<=0 is a no-op (no file touch)."""
+    n<=0 is a no-op (no file touch).
+
+    Failure-class counters ALSO stamp `counters_last[key]` with the bump time.
+    Lifetime totals alone cannot answer "is this still bleeding, or is it an
+    old backlog?" — on 2026-08-05 this exact ambiguity caused a live
+    misdiagnosis: `condense_rejected:model_error` 96 + `model_timeout` 58
+    against 46 successes reads as a 22% success rate and a broken subsystem,
+    when in fact 91+58 of those failures predate the 2026-07 switch to the
+    haiku default and the post-fix record is 41 successes to 5 errors. A
+    direct live `_condense_plan` call returned 'ok'. `distiller._increment_
+    counter` already carried this stamp for the same reason; the scribe half
+    never got it. Cheap insurance against re-litigating a fixed bug.
+
+    Read-modify-write is now locked + atomic. The previous plain `write_text`
+    could lose a concurrent bump or leave a truncated file — and a corrupt
+    stats file 500s the /scribe-stats route.
+    """
     if n <= 0:
         return
     try:
         fp = DATA_DIR / f'{project_id}_scribe_stats.json'
-        stats = {}
-        if fp.exists():
-            stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
-        stats[key] = int(stats.get(key, 0)) + n
-        stats['_updated'] = now_iso()
-        fp.write_text(json.dumps(stats, indent=2), encoding='utf-8')
+        with _get_scribe_stat_lock(project_id):
+            stats = {}
+            if fp.exists():
+                try:
+                    stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
+                except Exception:
+                    stats = {}          # corrupt file: restart, don't die
+            if not isinstance(stats, dict):
+                stats = {}
+            stats[key] = int(stats.get(key, 0) or 0) + n
+            low = key.lower()
+            if any(m in low for m in _STAT_DATED):
+                last = stats.get('counters_last')
+                if not isinstance(last, dict):
+                    last = {}
+                last[key] = now_iso()
+                stats['counters_last'] = last
+            stats['_updated'] = now_iso()
+            _atomic_write_text(fp, json.dumps(stats, indent=2,
+                                              ensure_ascii=False))
     except Exception:
         pass
 
