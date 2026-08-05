@@ -272,7 +272,7 @@ def test_structured_trigger_skips_when_no_managed_entries(tmp_data_dir):
 
 
 def test_structured_trigger_fires_on_byte_pressure(tmp_data_dir):
-    """The harness read cap is ~24KB of BYTES; the line budget alone can't
+    """The index budget is BYTES (a chosen ~24KB/prompt spend); lines alone can't
     see a 30KB file with long lines. Byte pressure + demotable entries must
     fire the trigger even under the line budget."""
     s = _server(tmp_data_dir)

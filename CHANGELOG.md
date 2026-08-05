@@ -6,6 +6,204 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-05d] — closing out the memory subsystem: two false alarms and one real blocker
+
+A sweep to repair everything known broken in memory/indexing/search. Two of the
+things I had reported as broken turned out not to be, and finding that out
+produced the one fix that mattered most.
+
+**"Condense is broken — 22% success rate" was wrong.** `scribe-stats` counters
+are lifetime totals with no recency signal, so `condense_rejected:model_error`
+96 + `model_timeout` 58 against 46 successes reads as a subsystem in freefall.
+It isn't: 91+58 of those failures predate the 2026-07 switch to the haiku
+default (the code comment recording that switch cites the exact figures), so the
+post-fix record is ~41 successes to 5 errors. A direct `_condense_plan` call
+against the real 16.5KB MEMORY.md returned `ok` in 58s. Condense is healthy.
+
+**"The diagnostic logs aren't captured" was also wrong.** `[scribe]` (51 lines)
+and `[distiller]` (718) reach the log fine. Zero `[condense]` lines means zero
+condense *failures* in that window — the success path logs nothing.
+
+Both misreadings came from the same missing thing, so that's what got fixed:
+**failure-class counters now self-date.** `_scribe_stat` stamps
+`counters_last[key]`, exactly as `distiller._increment_counter` already did —
+its docstring describes this precise trap ("is this still bleeding, or is it a
+six-week-old backlog?"). The scribe half never got it. The same change makes the
+read-modify-write locked and atomic; it was a plain `write_text` that could lose
+a concurrent bump or leave a torn file, and a torn file 500s `/scribe-stats`.
+
+**`read_floor_topk` 3 → 6.** Now that BM25 makes the ranking trustworthy, more
+slots are worth buying: replaying 142 real tasks, topk=3 reaches 40/75 topic
+files and topk=6 reaches 59/75. The dark set more than halves for ~300 extra
+tokens per prompt against a ~6k-token index. The knee is at 5–6; beyond 8 it
+flattens.
+
+**The BM25 "regression" wasn't one.** `remote_access_device_naming.md` ranks #1
+by a wide margin when actually queried — it simply never came up in the 142-task
+sample. Sample coverage, not a ranking defect.
+
+### A third false alarm, caught by re-validating: the index is not load-bearing
+
+An earlier draft of this entry claimed the two-level index redesign was blocked
+because 37 of the 95 front-page pointer lines (5.9KB) carry no `.md` link, so
+collapsing them under a category heading would *delete* knowledge rather than
+page it out. **That was wrong**, and it is recorded here because it was nearly
+shipped as a design constraint.
+
+The link count itself held up on re-check (37 lines genuinely have no markdown
+link and no `[[wikilink]]` either). What didn't hold up was the inference. Two
+successive tests were needed to see it:
+
+- Comparing each line's vocabulary against whole topic files said "all 37 are
+  covered" — worthless, because common words dominate the overlap.
+- Restricting to *distinctive* tokens (document frequency ≤ 3) and matching
+  against the **actual retrieval units** — archive lines are indexed
+  individually, not as one 734KB document — gave the real answer: **33 of 37
+  are recoverable from a single retrievable unit**, nearly all of them
+  `MEMORY_ARCHIVE.md` entries.
+
+Reading the matched entries settles it. The index line `IPv6 localhost
+resolution stalls ~200ms… fix: dual-stack socket (AF_INET6+IPV6_V6ONLY=0)`
+matches an archive entry that records the same fix *in more detail*, and the
+same holds for the `wake_lock.py` and `cmd.exe 8191-char` lines. The curated
+index is a hand-written summary layer over facts the archive already holds —
+not a sole copy. Only 4 lines fall below the recovery threshold, which is a
+small tractable set, not a blocker.
+
+So the redesign is **not** blocked on promoting those lines, and the earlier
+"prerequisite" is withdrawn. What remains true: `_memory_search` excludes the
+curated region by construction, which is correct while the whole index is
+auto-loaded and would need revisiting if anything is ever paged out.
+
+With BM25 + topk=6 the read floor reaches 59/75 files unaided, and the front
+page's navigation function is measurably barely used (agents open a topic file
+in 6% of sessions, search in 3%). Whether 16.5KB of pointers still earns its
+place every prompt is a live cost question — but it is only a cost question.
+
+Cross-corpus check that should have happened before shipping BM25 and now has:
+on the DayTrading (58 notes) and clayrune-website (20 notes) corpora, the
+largest file wins top-1 on 0/12 and 1/12 queries respectively — no length
+dominance, so the ranker isn't overfit to this repo's corpus.
+
+7 tests in `tests/test_scribe_stat_recency.py`; suite green at 1217.
+
+## [2026-08-05c] — the memory corpus wasn't cold, it was unreachable
+
+Chasing the memory-index size problem (`[2026-08-05b]`) to its root. Ron
+corrected the premise first: the ~24KB limit was never a harness cap, it's a
+token budget we chose — so nothing was ever being silently lost, and trimming
+harder was never the answer. That reframed the question from "how do we shrink
+the index" to "why does the index have to carry 69 pointers at all", and the
+answer turned out to be measurable from data already on disk.
+
+`_memory_search` is a pure deterministic ranked search, so the read floor can be
+replayed exactly against the first user message of every past session. Over 142
+real dispatched tasks from 209 transcripts:
+
+| scorer | topic files reachable | dark | top-3 units' share of slots |
+|---|---|---|---|
+| old (raw term frequency) | 17 / 75 | 58 | 93% |
+| BM25 | 40 / 75 | 35 | 53% |
+
+**55 of 75 notes never entered a top-3 for any task we have ever run.** The
+three files winning almost every query were, exactly, the three *largest* topic
+files (11.5–19.4KB against a 3.2KB median). The scorer was
+`sum(text.count(term))` with no document-length normalization, so a long file
+wins on ordinary words alone. Length was beating relevance, and the corpus only
+looked cold.
+
+That also settles a live design question: the proposal to evict notes by access
+count would have read those 55 files as dead and deleted them, when what it was
+measuring was a length bias in the ranker.
+
+`_memory_search` is now BM25 (IDF + saturation + length normalization), with one
+adaptation. Textbook BM25 assumes a homogeneous corpus; ours mixes whole topic
+files with ~30× more numerous one-line archive entries, so a single global
+`avgdl` would be set by the short lines and score every topic file as
+pathologically long — the mirror image of the bug. Length is normalized **per
+unit class**, IDF stays global. A topic file's own name is indexed into its
+token stream (boosted ×3), which is what lets a note match on its title alone —
+a post-hoc filename bonus can't, because a document with no body hit is never
+scored at all. The tokenizer splits on underscores so `memory_system` is
+reachable from "memory system".
+
+Two measurement traps, both paid for and written down in
+`tools/memory-eval/README.md` so nobody re-derives them: the injected read-floor
+block is **not** in transcripts (it arrives via `--append-system-prompt-file`),
+so grepping for it scores only the current session echoing itself back; and
+taking every session's first user message verbatim includes openers like `ok`,
+which produced a confident, wrong "29% of tasks surface nothing" — the real
+zero-result rate is 0% for both scorers.
+
+The probes ship as `tools/memory-eval/`. They are the search-precision telemetry
+the standing gate asked for, with no new subsystem: rerun `scorer_ab.py` after
+any retrieval change and it reports reachability before/after.
+
+Still open, and still the real problem: the curated region is 69 flat pointers
+resident every prompt, O(topics). But the growth was downstream of this — the
+front page has been doing retrieval's job by hand because retrieval didn't work.
+Fix the ranker first, then re-measure, then size the index.
+
+11 tests in `tests/test_memory_search_bm25.py`; suite green at 1210.
+
+## [2026-08-05b] — the session log was crowding out the memory it was meant to keep
+
+A steward cycle filed a backlog note (`dae8d6e7`) saying the memory index is
+structurally doomed: `MEMORY.md` is 23.5 KB against a ~24 KB harness read cap,
+16.2 KB of that is the curated region that machinery is not allowed to touch,
+and everything below the cut vanishes from agent context with no error. All
+true, and verified — `_INDEX_BYTE_FLOOR` is 23 KB, so eviction is already
+running on every write. The note proposed a two-level index. That redesign is
+still the right end state, but reviewing the actual file first turned up
+something cheaper and more urgent: **the managed half wasn't full of history.
+It was full of the same session, sixteen times.**
+
+Every one of the 16 managed entries was a same-day steward `_(live)_`
+checkpoint — 6.2 KB of a 6.9 KB region. Two independent causes:
+
+- **Titles were the raw prompt.** The entry title is `task[:80]`, and a
+  harness-generated steward task starts with 85 characters of boilerplate
+  (`[Steward cycle] You are the autonomous STEWARD of this project — run ONE
+  cycle n`). Sixteen entries, sixteen identical titles, 1.4 KB describing
+  nothing. `_entry_label()` now collapses a *leading* known harness marker to
+  its short form; a task that merely mentions steward cycles keeps its own
+  title verbatim.
+- **Checkpointing appended where it meant to replace.** Step-6 folds each
+  transcript delta into a *cumulative* `running_summary`, so every `_(live)_`
+  entry is a strict superset of the one before it — but each was written as a
+  new line. One long session emitted N entries carrying one session's worth of
+  information. `_commit_managed_entry(supersede_sid=…)` now drops that
+  session's previous entry in the same atomic write, found via a
+  `last_entry_hash` stashed on its watermark record. The
+  self-contained-breadcrumb property that made appending look correct is kept:
+  the newest entry is always complete on its own, so a hard kill still leaves a
+  valid one behind. The terminal completion entry supersedes the last live
+  checkpoint too, instead of sitting next to it repeating it.
+
+A third guard covers the general case: `_collapse_duplicate_entries` keeps the
+newest three entries per `(date, label)` group *before* the byte floor runs.
+The floor evicts strictly oldest-first, which is blind to repetition — that's
+how a burst of same-day cycles was pushing real multi-day history into the
+archive. Surplus duplicates are demoted to the archive verbatim, not deleted;
+superseded checkpoints are the one exception, since the surviving entry already
+contains their text and archiving them would just re-add the bloat elsewhere.
+Legacy boilerplate titles fold into the same group as the new short labels, so
+the existing pile-up collapses on the next write rather than needing a
+migration.
+
+Net effect on this repo: ~5 KB of the managed region returns to being usable,
+and it stops refilling. The curated-region problem the note identified is
+untouched by this — that still needs the two-level index, and the standing gate
+(`decision_step7_semantic_search_deferral`: build search-precision telemetry
+before leaning harder on retrieval) still applies. One correction to the note's
+second proposal, recorded on the backlog item: evicting by access count is not
+independent of its own stated label risk, it compounds it — a badly-labelled
+note never gets opened, so the counter reads it as cold and evicts it. Log
+access statistics for observability; don't wire them to eviction until
+discovery is known-good.
+
+14 new tests in `tests/test_memory_entry_dedup.py`; suite green at 1199.
+
 ## [2026-08-05] — the browser pane keeps your logins, and takes a paste
 
 Two unrelated-looking complaints about the browser pane, both real, both with

@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 import json
 import os
 import subprocess
+import math as _math
 import threading
 import time as _time
 import uuid
@@ -428,17 +429,132 @@ def _wm_remove(wm_markers, session_id):
             if (_wm_parse(ln) or {}).get('session_id') != sid]
 
 
+# BM25 parameters (standard defaults; k1 saturates term frequency, b controls
+# how hard document length is normalized).
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+
+# How many times a topic file's own name is indexed into its token stream —
+# a cheap field boost, since the filename is the note's title (see _mem_corpus).
+_TITLE_BOOST = 3
+
+# Parsed corpus cache: mem_dir -> (signature, units). The signature is every
+# *.md file's (name, mtime_ns, size), so any write invalidates it. Without this
+# the read floor re-tokenizes ~1.7MB on every single dispatch.
+_memsearch_cache: dict = {}
+_memsearch_cache_lock = threading.Lock()
+
+
+def _mem_tokens(text):
+    """Tokenizer shared by queries and documents — MUST be the same for both.
+
+    Splits on non-alphanumerics INCLUDING underscore, so `memory_system` yields
+    `memory`+`system` and `mc/memory.py` yields `mc`+`memory`+`py`. That matters
+    here: this corpus is mostly snake_case identifiers and file paths, and a
+    query of "memory system" has to reach a note whose text says
+    `project_memory_system_redesign`.
+    """
+    import re  # module has no top-level `re` import (see _re_auth pattern)
+    return [t for t in re.findall(r'[a-z0-9]+', (text or '').lower())
+            if len(t) >= 3]
+
+
+def _mem_corpus(mem_dir, mem_name, arch_name):
+    """Parse + tokenize the memory corpus into scoring units (cached).
+
+    Unit classes, which the scorer keeps separate (see _memory_search):
+      'topic'   — a whole topic .md file
+      'archive' — one '- [' line of MEMORY_ARCHIVE.md
+      'managed' — one managed entry of MEMORY.md
+    """
+    try:
+        sig = tuple(sorted(
+            (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+            for f in mem_dir.glob('*.md')))
+    except OSError:
+        return []
+    key = str(mem_dir)
+    with _memsearch_cache_lock:
+        hit = _memsearch_cache.get(key)
+        if hit and hit[0] == sig:
+            return hit[1]
+    units = []
+    for f in sorted(mem_dir.glob('*.md')):
+        try:
+            txt = f.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        if f.name == mem_name:
+            for e in _mem_split(txt)[1]:
+                units.append((f'{f.name}#managed', e, 'managed'))
+        elif f.name == arch_name:
+            for ln in txt.splitlines():
+                if ln.strip().startswith('- ['):
+                    units.append((f.name, ln.strip(), 'archive'))
+        else:
+            units.append((f.name, txt, 'topic'))
+    out = []
+    for label, text, cls in units:
+        toks = _mem_tokens(text)
+        if not toks:
+            continue
+        if cls == 'topic':
+            # A topic file's NAME is its title — `decision_step7_semantic_
+            # search_deferral.md` says more than most of its body — so index it
+            # as part of the document, boosted. Doing it here rather than as a
+            # score bonus is what lets a note match on its title ALONE; a bonus
+            # applied after the match test can't, because a document with no
+            # body hit never gets scored at all.
+            #
+            # Deliberately NOT done for 'archive'/'managed' units: their label
+            # is the container's filename, not a title, so folding it in would
+            # make every one of the ~2k archive lines match the query "memory".
+            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _TITLE_BOOST
+        tf = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        out.append({'file': label, 'text': text, 'tf': tf,
+                    'len': len(toks), 'cls': cls})
+    with _memsearch_cache_lock:
+        _memsearch_cache[key] = (sig, out)
+    return out
+
+
 def _memory_search(project, query, topk=3):
-    """Ranked-grep over the project's memory corpus (SPEC §3 Leg B).
+    """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
     the MANAGED region of MEMORY.md. The curated MEMORY.md index is excluded
     by construction — the agent already auto-loads it. Deterministic, no
     model. Returns [{file, score, snippet}] sorted by score desc.
+
+    WHY BM25 (2026-08-05). The previous scorer was raw term frequency over the
+    whole file — `sum(text.count(t))` — with no document-length normalization.
+    A long file simply contains more instances of ordinary words than a short
+    one, so length beat relevance. Measured by replaying this function over the
+    first user message of 206 real past sessions: **55 of 75 topic files never
+    entered a top-3 for ANY task**, 29% of tasks surfaced nothing at all, and
+    3 files took 403 of ~430 slots — which were, exactly, the 3 largest topic
+    files (11.5–19.4KB against a 3.2KB median). The corpus wasn't cold; it was
+    unreachable. Length normalization is the specific thing that fixes it, and
+    IDF + saturation come with it: this corpus is dominated by exact tokens
+    (function names, file paths, SHAs) where rare-term weighting is what
+    separates a real hit from an incidental mention.
+
+    ONE ADAPTATION. Textbook BM25 assumes a homogeneous corpus, and ours is
+    not: whole topic files (KB) sit alongside single archive lines (~0.4KB),
+    and the archive lines outnumber the topic files ~30:1. A single global
+    `avgdl` would therefore be set by archive lines and would score every topic
+    file as pathologically long, trading the old bias for its mirror image. So
+    **length is normalized per unit class** — a topic file competes on length
+    against other topic files — while IDF stays global, since term rarity is a
+    property of the whole corpus. `_mem_class_avgdl` is separated out so this
+    stays testable.
+
+    A topic file's NAME is indexed as part of its text (see `_mem_corpus`),
+    which is what lets a note match on its title alone.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
-    terms = [t for t in re.findall(r'[a-z0-9_]+', (query or '').lower())
-             if len(t) >= 3]
+    terms = _mem_tokens(query)
     if not terms:
         return []
     try:
@@ -448,37 +564,60 @@ def _memory_search(project, query, topk=3):
         return []
     if not mem_dir.is_dir():
         return []
-    mem_name = mem_path.name
-    arch_name = _get_archive_path(project).name
-    units = []  # (label, text)
-    for f in sorted(mem_dir.glob('*.md')):
-        try:
-            txt = f.read_text(encoding='utf-8', errors='replace')
-        except Exception:
-            continue
-        if f.name == mem_name:
-            for e in _mem_split(txt)[1]:           # managed entries only
-                units.append((f'{f.name}#managed', e))
-        elif f.name == arch_name:
-            for ln in txt.splitlines():
-                if ln.strip().startswith('- ['):
-                    units.append((f.name, ln.strip()))
-        else:
-            units.append((f.name, txt))            # topic file (whole)
+    units = _mem_corpus(mem_dir, mem_path.name, _get_archive_path(project).name)
+    if not units:
+        return []
+
+    n_docs = len(units)
+    avgdl = _mem_class_avgdl(units)
+    # Global IDF, in the always-positive form (the classic
+    # ln((N-n+0.5)/(n+0.5)) goes negative for terms in >half the corpus, which
+    # would let a common term subtract from an otherwise good match).
+    seen = set(terms)
+    df = dict.fromkeys(seen, 0)
+    for u in units:
+        tfu = u['tf']
+        for t in seen:
+            if t in tfu:
+                df[t] += 1
+    idf = {t: _math.log(1.0 + (n_docs - df[t] + 0.5) / (df[t] + 0.5))
+           for t in seen}
+
     scored = []
-    for label, text in units:
-        low = text.lower()
-        score = sum(low.count(t) for t in terms)
-        if score <= 0:
+    for u in units:
+        tfu = u['tf']
+        dl = u['len']
+        norm = avgdl.get(u['cls']) or dl or 1.0
+        denom_len = _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (dl / norm))
+        score = 0.0
+        matched = 0
+        for t in terms:
+            f = tfu.get(t, 0)
+            if not f:
+                continue
+            matched += 1
+            score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
+        if not matched:
             continue
-        if any(t in label.lower() for t in terms):
-            score += 2                              # filename relevance bonus
+        text = u['text']
+        low = text.lower()
         pos = min((low.find(t) for t in terms if t in low), default=0)
         start = max(0, pos - 120)
-        snip = text[start:start + 400].replace('\n', ' ').strip()
-        scored.append({'file': label, 'score': score, 'snippet': snip})
-    scored.sort(key=lambda r: r['score'], reverse=True)
+        snip = text[max(0, start):start + 400].replace('\n', ' ').strip()
+        scored.append({'file': u['file'], 'score': round(score, 4),
+                       'snippet': snip})
+    scored.sort(key=lambda r: (-r['score'], r['file']))
     return scored[:max(1, topk)]
+
+
+def _mem_class_avgdl(units):
+    """Mean document length per unit class (see _memory_search's adaptation)."""
+    tot, cnt = {}, {}
+    for u in units:
+        c = u['cls']
+        tot[c] = tot.get(c, 0) + u['len']
+        cnt[c] = cnt.get(c, 0) + 1
+    return {c: (tot[c] / cnt[c]) if cnt[c] else 1.0 for c in tot}
 
 
 def _condense_combined_bytes(project):
@@ -556,10 +695,10 @@ def _should_condense(project, include_claude_md=False):
         n_lines = len(text.splitlines())
         over_lines = n_lines > int(
             state.CONFIG.get('index_line_budget', 160) or 160)
-        # The harness read cap is BYTES (~24KB), not lines: a file can pass
-        # the line budget and still truncate. Byte pressure is an equally
-        # valid trigger (2026-07-15 revisit).
-        over_bytes = len(text.encode('utf-8')) > _INDEX_BYTE_CAP
+        # The index budget is BYTES, not lines: a file can pass the line
+        # budget and still cost more per prompt than we agreed to spend.
+        # Byte pressure is an equally valid trigger (2026-07-15 revisit).
+        over_bytes = len(text.encode('utf-8')) > _index_byte_cap()
         if not (over_lines or over_bytes):
             return False
         # Structured condense only ever acts on managed entries — with zero
@@ -577,11 +716,12 @@ def _should_condense(project, include_claude_md=False):
             if over_bytes and project.get('id', '') not in _curated_cap_warned:
                 _curated_cap_warned.add(project.get('id', ''))
                 _log(f"[condense] {project.get('id', '')}: MEMORY.md is "
-                     f"{len(text.encode('utf-8')) // 1024}KB (> ~24KB harness "
-                     f"read cap) with NO managed entries to demote — the "
-                     f"agent's auto-loaded index is being silently truncated. "
-                     f"Curated region needs human curation (overflow to "
-                     f"MEMORY_ARCHIVE.md); structured condense cannot act.")
+                     f"{len(text.encode('utf-8')) // 1024}KB, over the "
+                     f"{_index_byte_cap() // 1024}KB index budget, with NO "
+                     f"managed entries to demote — every prompt of every "
+                     f"session pays for it. Curated region needs human "
+                     f"curation (overflow to MEMORY_ARCHIVE.md); structured "
+                     f"condense cannot act.")
             return False
         return True
     mem_path = _get_memory_path(project)
@@ -606,17 +746,111 @@ def _should_condense(project, include_claude_md=False):
 
 _MEM_ARCHIVE_HEADER = '## Archived Session Log'
 
-# The Claude Code harness stops reading the auto-loaded MEMORY.md past
-# ~24KB — everything below the cut silently vanishes from agent context
-# (this repo's own index was bitten twice: watermark leak 2026-07-11,
-# curated bloat 2026-07-15). Line budgets alone can't guard this: the cap
-# is bytes. Floor eviction aims 1KB under the cap for headroom.
-_INDEX_BYTE_CAP = 24 * 1024
-_INDEX_BYTE_FLOOR = _INDEX_BYTE_CAP - 1024
+# A CHOSEN BUDGET, NOT A HARD LIMIT (corrected 2026-08-05 by Ron, who set the
+# number). Earlier comments here and in CLAUDE.md called ~24KB a "harness read
+# cap" past which content "silently vanishes from agent context" — that is
+# wrong, and the distinction changes what the failure looks like. MEMORY.md is
+# read natively by the Claude CLI; nothing truncates it. 24KB is simply what we
+# decided the auto-loaded index is worth spending on EVERY prompt of EVERY
+# session (~6k tokens). Going over costs tokens and dilutes context; it does not
+# lose data. The two incidents this file remembers (watermark leak 2026-07-11,
+# curated bloat 2026-07-15) were real, but the mechanism was OUR OWN floor
+# eviction pushing entries to the archive — front-page visibility lost, not
+# content destroyed.
+#
+# So: treat overruns as a cost problem to be designed away (an index whose
+# resident size is O(1) in project age), not as a cliff to be defended by
+# trimming harder. Line budgets can't see this one because it is bytes.
+# Floor eviction aims 1KB under the budget for headroom.
+_INDEX_BYTE_CAP_DEFAULT = 24 * 1024
+
+
+def _index_byte_cap():
+    try:
+        v = int(state.CONFIG.get('index_byte_budget', 0) or 0)
+    except Exception:
+        v = 0
+    return v if v > 0 else _INDEX_BYTE_CAP_DEFAULT
+
+
+def _index_byte_floor():
+    return max(1024, _index_byte_cap() - 1024)
 
 # Projects already warned (once per server run) that their curated region
 # alone exceeds the harness cap and machinery cannot shrink it.
 _curated_cap_warned: set = set()
+
+# Harness-generated tasks carry a long boilerplate prompt as their "task", and
+# the entry title is just `task[:80]`. A steward cycle's title is therefore ~85
+# bytes of pure prompt with zero information about what the cycle DID. This
+# repo's own index had 16 of them (1.4KB of identical titles) by 2026-08-05.
+# Pinned to steward.fence.STEWARD_MARKER by test (same discipline as
+# distiller.STEWARD_TASK_MARKER) — mc.memory must not import a sibling package.
+_STEWARD_TASK_MARKER = '[Steward cycle]'
+_STEWARD_LABEL = 'Steward cycle'
+
+# How many managed entries to keep per (date, label) group. The mechanical
+# floor evicts strictly oldest-first, which is blind to repetition: on
+# 2026-08-05 all 16 managed entries in this repo were same-day steward cycles
+# (6.2KB of a 6.9KB region, heavily overlapping), so the floor was evicting
+# real multi-day history to make room for redundant same-day noise. Collapsing
+# a group first preserves entry DIVERSITY under the same byte budget. Surplus
+# goes to the permanent archive verbatim — nothing is deleted, only demoted.
+_MANAGED_DUP_KEEP = 3
+
+_ENTRY_HEAD_PAT = r'^- \[([^\]]+)\]\s+\*\*(.*?)\*\*'
+
+
+def _entry_label(task):
+    """Compact title for a managed entry. Known harness prompts collapse to
+    their marker; every other task keeps its text verbatim (capped at 80)."""
+    t = (task or '').strip()
+    if _STEWARD_TASK_MARKER in t[:60]:
+        return _STEWARD_LABEL
+    return t[:80]
+
+
+def _entry_group_key(line):
+    """(date, normalized-label) for a '- [' entry line, or None if unparseable.
+
+    Normalization is for GROUPING ONLY — the line itself is never rewritten, so
+    the byte-preservation guarantee on existing entries holds. It folds legacy
+    boilerplate titles onto the compact label so pre-fix and post-fix steward
+    entries collapse into one group instead of two."""
+    import re  # module has no top-level `re` import (see _re_auth pattern)
+    m = re.match(_ENTRY_HEAD_PAT, line or '')
+    if not m:
+        return None
+    date, label = m.group(1), m.group(2).strip()
+    if _STEWARD_TASK_MARKER in label[:60]:
+        label = _STEWARD_LABEL
+    return (date, label)
+
+
+def _collapse_duplicate_entries(mem_entries, keep=None):
+    """Keep at most `keep` entries per (date, label) group, newest wins.
+
+    Returns (kept_entries, overflow) with kept_entries in their original
+    chronological order and overflow (the demoted surplus, also in original
+    order) destined for the archive. Entries that don't parse are never
+    grouped and never dropped — unparseable input must not lose history."""
+    keep = _MANAGED_DUP_KEEP if keep is None else keep
+    if keep < 1:
+        return list(mem_entries), []
+    seen = {}
+    for idx, line in enumerate(mem_entries):
+        key = _entry_group_key(line)
+        if key is not None:
+            seen.setdefault(key, []).append(idx)
+    drop = set()
+    for idxs in seen.values():
+        if len(idxs) > keep:
+            drop.update(idxs[:-keep])  # oldest of the group → archive
+    if not drop:
+        return list(mem_entries), []
+    kept = [ln for i, ln in enumerate(mem_entries) if i not in drop]
+    overflow = [ln for i, ln in enumerate(mem_entries) if i in drop]
+    return kept, overflow
 
 
 def _over_floor(text, hard_floor):
@@ -624,7 +858,7 @@ def _over_floor(text, hard_floor):
     floor. Both floors evict managed entries only (oldest first, verbatim
     to archive) — the curated region is never touched by machinery."""
     return (len(text.splitlines()) > hard_floor
-            or len(text.encode('utf-8')) > _INDEX_BYTE_FLOOR)
+            or len(text.encode('utf-8')) > _index_byte_floor())
 
 
 def _append_to_archive(project, lines):
@@ -643,13 +877,15 @@ def _append_to_archive(project, lines):
     _atomic_write_text(ap, prev + '\n' + '\n'.join(lines) + '\n')
 
 
-def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None):
+def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
+                          supersede_sid=None):
     """Leaf-locked atomic MEMORY.md commit — the write path shared by the
     completion scribe, the Step-6 checkpoint worker, and teardown (the
     structured Leg C `_condense_apply` is a co-equal writer under the SAME
     leaf lock + atomic primitive; both route archive overflow through
     `_append_to_archive`). In a single
     per-project mem-write-locked, atomic (temp+replace) operation:
+      • optionally drop `supersede_sid`'s previous entry (see below),
       • optionally append `mem_entry` ('- [' line) to the managed region,
       • optionally `_wm_upsert`/`_wm_remove` this session's watermark marker,
       • run the lossless line-keyed floor (relocates only '- [' entries;
@@ -658,6 +894,19 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None)
     No scribe call and no condense dispatch inside the lock (the slow/process
     parts stay out). Returns whether condense should fire; caller dispatches it
     OUTSIDE the lock. Never raises. SPEC §3.A.MID committee blocker #3.
+
+    `supersede_sid` fixes the checkpoint pile-up. Step-6 checkpointing folds
+    each transcript delta into a CUMULATIVE `running_summary`, so every
+    `_(live)_` entry it writes is a strict superset of the one before — yet
+    each was appended as a new line. A single long session therefore emitted N
+    entries carrying one session's worth of information (16 of them, 6.2KB,
+    filled this repo's whole managed region on 2026-08-05). Passing the session
+    id drops that session's PREVIOUS entry in the same atomic write, identified
+    by the `last_entry_hash` stashed on its watermark record. The
+    self-contained-breadcrumb property of SPEC §3.A.MID is preserved: the
+    newest entry is always complete on its own, and a hard kill leaves it in
+    place. Superseded entries are dropped, not archived — the surviving entry
+    already contains their content.
     """
     project_id = p.get('id', '')
     mem_path = _get_memory_path(p)
@@ -668,13 +917,41 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None)
                     if mem_path.exists() else '')
         # Leg 0: idempotent, additive migration; curated region untouched.
         curated, mem_entries, wm_markers = _mem_split_full(_mem_migrate(existing))
+        if supersede_sid is not None:
+            prev_hash = (_wm_find(wm_markers, supersede_sid)
+                         or {}).get('last_entry_hash', '')
+            if prev_hash:
+                before = len(mem_entries)
+                mem_entries = [ln for ln in mem_entries
+                               if _sha8(ln) != prev_hash]
+                if len(mem_entries) != before:
+                    _scribe_stat(project_id, 'entry_superseded')
+        if wm_upsert is not None:
+            wm_upsert = dict(wm_upsert)
+            if mem_entry:
+                wm_upsert['last_entry_hash'] = _sha8(mem_entry)
+            else:
+                # No new entry this round (thin/refused delta still advances
+                # the offset) — carry the pointer forward, or the next real
+                # checkpoint loses track of what it supersedes.
+                carry = (_wm_find(wm_markers, wm_upsert.get('session_id'))
+                         or {}).get('last_entry_hash', '')
+                if carry:
+                    wm_upsert['last_entry_hash'] = carry
         if mem_entry:
             mem_entries.append(mem_entry)
         if wm_remove_sid is not None:
             wm_markers = _wm_remove(wm_markers, wm_remove_sid)
         if wm_upsert is not None:
             wm_markers = _wm_upsert(wm_markers, wm_upsert)
-        overflow = []
+        # Collapse repetition BEFORE the oldest-first floor, so a burst of
+        # same-day same-label cycles can't evict unrelated history that the
+        # index still needs (see _MANAGED_DUP_KEEP).
+        mem_entries, overflow = _collapse_duplicate_entries(mem_entries)
+        if overflow:
+            _log(f"[mem-dedup] {project_id}: demoted {len(overflow)} duplicate "
+                 f"managed entr{'y' if len(overflow) == 1 else 'ies'} to archive "
+                 f"(keeping {_MANAGED_DUP_KEEP} per date+label)")
         while mem_entries and _over_floor(
                 _mem_compose(curated, mem_entries, wm_markers), hard_floor):
             overflow.append(mem_entries.pop(0))  # oldest → archive
@@ -691,8 +968,8 @@ def _gc_stale_watermarks(projects):
     (or a startup reconcile that baseline-stamps history without scribing it)
     leaves the marker behind forever, so they accumulate across restarts: 67 of
     them (37.8KB) had piled up in this repo's own MEMORY.md by 2026-07-11 and
-    pushed the curated index past the harness's read cap — everything below the
-    cut was silently dropped from the agent's context.
+    pushed the curated index past the byte budget, so the floor evicted real
+    entries to the archive to pay for markers carrying no information.
 
     LIVE markers are load-bearing (Step-6 checkpointing reads `byte_offset` to
     render only the transcript delta), so a session still in `agent_sessions` is
@@ -759,12 +1036,15 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
              or f"ended with status={status}, no captured output"
              ).replace('\n', ' ').strip()
     tag = '' if status == 'completed' else f' _({status})_'
-    mem_entry = f"- [{ts_date}] **{task[:80]}**{tag} — {brief}"
+    mem_entry = f"- [{ts_date}] **{_entry_label(task)}**{tag} — {brief}"
     # Terminal write also removes this session's live wm marker (clean
     # teardown — SPEC §3.A.MID Fix-B coordination), in the same atomic write.
+    # The terminal entry is authoritative for this session, so it also
+    # supersedes the last `_(live)_` checkpoint entry rather than sitting
+    # next to it saying the same thing.
+    _sid = session.get('session_id') or session.get('id')
     do_condense = _commit_managed_entry(
-        p, mem_entry=mem_entry,
-        wm_remove_sid=session.get('session_id') or session.get('id'))
+        p, mem_entry=mem_entry, wm_remove_sid=_sid, supersede_sid=_sid)
     if do_condense:
         _dispatch_condense(p)
     # Phase 4 Distiller — daemon-thread dispatch parallel to Scribe (v2.1 §4.8).
@@ -953,8 +1233,9 @@ def _checkpoint_worker(snap):
             merged = dsum
         merged = merged[:300]
         rec['running_summary'] = merged
-        entry = f"- [{now_iso()[:10]}] **{task[:80]}** _(live)_ — {merged}"
-        if _commit_managed_entry(p, mem_entry=entry, wm_upsert=rec):
+        entry = f"- [{now_iso()[:10]}] **{_entry_label(task)}** _(live)_ — {merged}"
+        if _commit_managed_entry(p, mem_entry=entry, wm_upsert=rec,
+                                 supersede_sid=sid):
             _dispatch_condense(p)
         _scribe_stat(pid, 'checkpoint_extracted')
     except Exception:
@@ -1055,19 +1336,64 @@ _SCRIBE_REFUSAL_MARKERS = (
 )
 
 
+# Counter classes that get a `counters_last[key]` recency stamp.
+_STAT_DATED = ('error', 'skip', 'refuse', 'fell_back', 'timeout', 'reject')
+
+_scribe_stat_locks: dict = {}
+_scribe_stat_locks_guard = threading.Lock()
+
+
+def _get_scribe_stat_lock(project_id):
+    with _scribe_stat_locks_guard:
+        lk = _scribe_stat_locks.get(project_id)
+        if lk is None:
+            lk = _scribe_stat_locks[project_id] = threading.Lock()
+        return lk
+
+
 def _scribe_stat(project_id, key, n=1):
     """Add n to a scribe-outcome counter (SPEC §8 telemetry). Best-effort;
-    n<=0 is a no-op (no file touch)."""
+    n<=0 is a no-op (no file touch).
+
+    Failure-class counters ALSO stamp `counters_last[key]` with the bump time.
+    Lifetime totals alone cannot answer "is this still bleeding, or is it an
+    old backlog?" — on 2026-08-05 this exact ambiguity caused a live
+    misdiagnosis: `condense_rejected:model_error` 96 + `model_timeout` 58
+    against 46 successes reads as a 22% success rate and a broken subsystem,
+    when in fact 91+58 of those failures predate the 2026-07 switch to the
+    haiku default and the post-fix record is 41 successes to 5 errors. A
+    direct live `_condense_plan` call returned 'ok'. `distiller._increment_
+    counter` already carried this stamp for the same reason; the scribe half
+    never got it. Cheap insurance against re-litigating a fixed bug.
+
+    Read-modify-write is now locked + atomic. The previous plain `write_text`
+    could lose a concurrent bump or leave a truncated file — and a corrupt
+    stats file 500s the /scribe-stats route.
+    """
     if n <= 0:
         return
     try:
         fp = DATA_DIR / f'{project_id}_scribe_stats.json'
-        stats = {}
-        if fp.exists():
-            stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
-        stats[key] = int(stats.get(key, 0)) + n
-        stats['_updated'] = now_iso()
-        fp.write_text(json.dumps(stats, indent=2), encoding='utf-8')
+        with _get_scribe_stat_lock(project_id):
+            stats = {}
+            if fp.exists():
+                try:
+                    stats = json.loads(fp.read_text(encoding='utf-8') or '{}')
+                except Exception:
+                    stats = {}          # corrupt file: restart, don't die
+            if not isinstance(stats, dict):
+                stats = {}
+            stats[key] = int(stats.get(key, 0) or 0) + n
+            low = key.lower()
+            if any(m in low for m in _STAT_DATED):
+                last = stats.get('counters_last')
+                if not isinstance(last, dict):
+                    last = {}
+                last[key] = now_iso()
+                stats['counters_last'] = last
+            stats['_updated'] = now_iso()
+            _atomic_write_text(fp, json.dumps(stats, indent=2,
+                                              ensure_ascii=False))
     except Exception:
         pass
 

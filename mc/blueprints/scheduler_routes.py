@@ -358,7 +358,7 @@ def _steward_cycle_task(project_id):
         try:
             hits = _mem._memory_search(
                 p, objective,
-                int(state.CONFIG.get('read_floor_topk', 3) or 3))
+                int(state.CONFIG.get('read_floor_topk', 6) or 6))
             if hits:
                 blocks.append(
                     "--- RELEVANT MEMORY (auto-surfaced for your charter; use "

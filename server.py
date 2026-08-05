@@ -122,6 +122,10 @@ def _load_config():
         'condense_mode': 'agent',
         'index_line_budget': 160,      # SPEC §3 Leg C model-tier target (lines)
         'index_line_hard_floor': 185,  # SPEC §3 Leg C mechanical floor (lines)
+        # What we're willing to spend on the auto-loaded MEMORY.md every single
+        # prompt of every session. ~6k tokens at the default. A CHOSEN BUDGET,
+        # not a hard limit — see mc/memory.py's _INDEX_BYTE_CAP note.
+        'index_byte_budget': 24 * 1024,
         'scribe_enabled': True,        # SPEC §3 Leg A session-end scribe
         'scribe_model': '',            # '' -> 'haiku'
         'scribe_reconcile_enabled': True,  # Fix B startup reconciliation
@@ -174,7 +178,12 @@ def _load_config():
         'distiller_preference_min_recurrence': 1,
         'distiller_cross_project_walk_debounce_session_count': 5,
         'distiller_cross_project_walk_debounce_seconds': 600,
-        'read_floor_topk': 3,          # SPEC §3 Leg B deterministic read floor
+        # SPEC §3 Leg B deterministic read floor. Raised 3 -> 6 on 2026-08-05
+        # once BM25 made the ranking trustworthy: replaying 142 real tasks,
+        # topk=3 reaches 40/75 topic files and topk=6 reaches 59/75 — the dark
+        # set more than halves for ~300 extra tokens/prompt, against a ~6k-token
+        # auto-loaded index. Measured by tools/memory-eval/scorer_ab.py.
+        'read_floor_topk': 6,
         # Exploration read-floor — surfaces the Distiller's captured
         # EXPLORATION.md proposals back into a new session's context (the
         # learning-loop closer). Ships default-ON; flip enabled=false to
