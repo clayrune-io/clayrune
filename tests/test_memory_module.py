@@ -143,7 +143,7 @@ def test_commit_managed_entry_wm_remove_on_teardown(tmp_data_dir):
 
 # ── _gc_stale_watermarks: the leak _wm_remove can't reach ────────────────────
 # Hard MC kills skip teardown, so those markers stay forever and the index grows
-# past the harness read cap (67 of them / 37.8KB by 2026-07-11). The sweep drops
+# past the index byte budget (67 of them / 37.8KB by 2026-07-11). The sweep drops
 # markers for dead sessions ONLY — a live session's marker is load-bearing.
 
 def _seed_wm(sid, summary="x"):

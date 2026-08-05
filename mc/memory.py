@@ -556,10 +556,10 @@ def _should_condense(project, include_claude_md=False):
         n_lines = len(text.splitlines())
         over_lines = n_lines > int(
             state.CONFIG.get('index_line_budget', 160) or 160)
-        # The harness read cap is BYTES (~24KB), not lines: a file can pass
-        # the line budget and still truncate. Byte pressure is an equally
-        # valid trigger (2026-07-15 revisit).
-        over_bytes = len(text.encode('utf-8')) > _INDEX_BYTE_CAP
+        # The index budget is BYTES, not lines: a file can pass the line
+        # budget and still cost more per prompt than we agreed to spend.
+        # Byte pressure is an equally valid trigger (2026-07-15 revisit).
+        over_bytes = len(text.encode('utf-8')) > _index_byte_cap()
         if not (over_lines or over_bytes):
             return False
         # Structured condense only ever acts on managed entries — with zero
@@ -577,11 +577,12 @@ def _should_condense(project, include_claude_md=False):
             if over_bytes and project.get('id', '') not in _curated_cap_warned:
                 _curated_cap_warned.add(project.get('id', ''))
                 _log(f"[condense] {project.get('id', '')}: MEMORY.md is "
-                     f"{len(text.encode('utf-8')) // 1024}KB (> ~24KB harness "
-                     f"read cap) with NO managed entries to demote — the "
-                     f"agent's auto-loaded index is being silently truncated. "
-                     f"Curated region needs human curation (overflow to "
-                     f"MEMORY_ARCHIVE.md); structured condense cannot act.")
+                     f"{len(text.encode('utf-8')) // 1024}KB, over the "
+                     f"{_index_byte_cap() // 1024}KB index budget, with NO "
+                     f"managed entries to demote — every prompt of every "
+                     f"session pays for it. Curated region needs human "
+                     f"curation (overflow to MEMORY_ARCHIVE.md); structured "
+                     f"condense cannot act.")
             return False
         return True
     mem_path = _get_memory_path(project)
@@ -606,13 +607,35 @@ def _should_condense(project, include_claude_md=False):
 
 _MEM_ARCHIVE_HEADER = '## Archived Session Log'
 
-# The Claude Code harness stops reading the auto-loaded MEMORY.md past
-# ~24KB — everything below the cut silently vanishes from agent context
-# (this repo's own index was bitten twice: watermark leak 2026-07-11,
-# curated bloat 2026-07-15). Line budgets alone can't guard this: the cap
-# is bytes. Floor eviction aims 1KB under the cap for headroom.
-_INDEX_BYTE_CAP = 24 * 1024
-_INDEX_BYTE_FLOOR = _INDEX_BYTE_CAP - 1024
+# A CHOSEN BUDGET, NOT A HARD LIMIT (corrected 2026-08-05 by Ron, who set the
+# number). Earlier comments here and in CLAUDE.md called ~24KB a "harness read
+# cap" past which content "silently vanishes from agent context" — that is
+# wrong, and the distinction changes what the failure looks like. MEMORY.md is
+# read natively by the Claude CLI; nothing truncates it. 24KB is simply what we
+# decided the auto-loaded index is worth spending on EVERY prompt of EVERY
+# session (~6k tokens). Going over costs tokens and dilutes context; it does not
+# lose data. The two incidents this file remembers (watermark leak 2026-07-11,
+# curated bloat 2026-07-15) were real, but the mechanism was OUR OWN floor
+# eviction pushing entries to the archive — front-page visibility lost, not
+# content destroyed.
+#
+# So: treat overruns as a cost problem to be designed away (an index whose
+# resident size is O(1) in project age), not as a cliff to be defended by
+# trimming harder. Line budgets can't see this one because it is bytes.
+# Floor eviction aims 1KB under the budget for headroom.
+_INDEX_BYTE_CAP_DEFAULT = 24 * 1024
+
+
+def _index_byte_cap():
+    try:
+        v = int(state.CONFIG.get('index_byte_budget', 0) or 0)
+    except Exception:
+        v = 0
+    return v if v > 0 else _INDEX_BYTE_CAP_DEFAULT
+
+
+def _index_byte_floor():
+    return max(1024, _index_byte_cap() - 1024)
 
 # Projects already warned (once per server run) that their curated region
 # alone exceeds the harness cap and machinery cannot shrink it.
@@ -696,7 +719,7 @@ def _over_floor(text, hard_floor):
     floor. Both floors evict managed entries only (oldest first, verbatim
     to archive) — the curated region is never touched by machinery."""
     return (len(text.splitlines()) > hard_floor
-            or len(text.encode('utf-8')) > _INDEX_BYTE_FLOOR)
+            or len(text.encode('utf-8')) > _index_byte_floor())
 
 
 def _append_to_archive(project, lines):
@@ -806,8 +829,8 @@ def _gc_stale_watermarks(projects):
     (or a startup reconcile that baseline-stamps history without scribing it)
     leaves the marker behind forever, so they accumulate across restarts: 67 of
     them (37.8KB) had piled up in this repo's own MEMORY.md by 2026-07-11 and
-    pushed the curated index past the harness's read cap — everything below the
-    cut was silently dropped from the agent's context.
+    pushed the curated index past the byte budget, so the floor evicted real
+    entries to the archive to pay for markers carrying no information.
 
     LIVE markers are load-bearing (Step-6 checkpointing reads `byte_offset` to
     render only the transcript delta), so a session still in `agent_sessions` is

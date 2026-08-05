@@ -122,6 +122,10 @@ def _load_config():
         'condense_mode': 'agent',
         'index_line_budget': 160,      # SPEC §3 Leg C model-tier target (lines)
         'index_line_hard_floor': 185,  # SPEC §3 Leg C mechanical floor (lines)
+        # What we're willing to spend on the auto-loaded MEMORY.md every single
+        # prompt of every session. ~6k tokens at the default. A CHOSEN BUDGET,
+        # not a hard limit — see mc/memory.py's _INDEX_BYTE_CAP note.
+        'index_byte_budget': 24 * 1024,
         'scribe_enabled': True,        # SPEC §3 Leg A session-end scribe
         'scribe_model': '',            # '' -> 'haiku'
         'scribe_reconcile_enabled': True,  # Fix B startup reconciliation

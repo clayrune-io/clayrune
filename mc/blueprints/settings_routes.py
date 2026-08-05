@@ -104,7 +104,7 @@ _CONFIG_EDITABLE_KEYS = {
     'agent_permission_mode', 'agent_channels', 'agent_remote_control',
     'use_streaming_agent', 'condense_enabled', 'condense_threshold_kb',
     'condense_model', 'condense_mode', 'index_line_budget',
-    'index_line_hard_floor',
+    'index_line_hard_floor', 'index_byte_budget',
     'scribe_enabled', 'scribe_model', 'scribe_reconcile_enabled',
     'scribe_reconcile_cap', 'scribe_checkpoint_enabled',
     'scribe_checkpoint_kb', 'scribe_why_enabled', 'read_floor_topk',
