@@ -35,7 +35,16 @@ So a launch may name a profile: `{"profile": "reddit"}` reuses
 `~/.clayrune/browser_profiles_named/reddit`, which survives teardown and keeps
 its cookies. Unnamed launches behave exactly as before.
 
-Two properties hold this together:
+Set `browser_default_profile` in config.json to make UNNAMED launches use a
+named profile too, so the plain 🌐 Browser button keeps logins instead of
+starting logged out every time. `{"ephemeral": true}` opts one launch out.
+
+Three properties hold this together:
+
+- **The profile is flushed by closing Chromium, not by killing it.** A hard
+  kill loses every cookie the browser has not yet written — see
+  `_graceful_close`, which is the difference between a saved login and an empty
+  directory that merely looks like one.
 
 - **The named root is a SIBLING of the throwaway root, not a subdirectory.**
   `sweep_orphan_profiles()` deletes everything under the throwaway root that no
@@ -70,6 +79,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
+from mc import state
 from mc.state import browser_sessions, browser_lock
 
 bp = Blueprint('browser_routes', __name__)
@@ -84,6 +94,15 @@ _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
 # One-shot guard: the orphan-profile sweep runs on first real browser launch.
 _swept_orphans: bool = False
+# Second guard: the sweep decides what is an orphan by diffing the throwaway
+# profile root against the IN-MEMORY browser_sessions of THIS process. Any other
+# process that imports this module (a test, a debug script, a second MC) has an
+# empty registry, so every live session's dir looks orphaned and gets deleted
+# out from under a running Chromium. The lazy-from-_launch_browser placement
+# narrowed that window but did not close it — driving _launch_browser from a
+# verification script stripped a live session's profile on 2026-08-05. server.py
+# sets this True at startup; nothing else may.
+SWEEP_ENABLED: bool = False
 
 
 def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo):
@@ -156,6 +175,10 @@ def sweep_orphan_profiles():
     ever runs in a process that is genuinely using the browser pane. Live
     sessions' dirs are skipped regardless.
     """
+    if not SWEEP_ENABLED:
+        # Not the server process → our browser_sessions view is not the truth
+        # about what is live, so we cannot tell an orphan from a running pane.
+        return
     root = _profiles_root()
     if not os.path.isdir(root):
         return
@@ -381,13 +404,25 @@ def _run_cdp(session):
             pass
 
 
-def _launch_browser(project_id, url, profile=None):
+def _default_profile():
+    """Config-set profile used when a launch names none. Empty (the shipped
+    default) keeps the original throwaway behaviour."""
+    return (state.CONFIG.get('browser_default_profile') or '').strip().lower() or None
+
+
+def _launch_browser(project_id, url, profile=None, ephemeral=False):
     """Start a headless Chromium and its CDP reader.
 
     ``profile`` names a persistent user-data-dir that survives teardown; None
-    (the default) gets a throwaway one. Returns ``(session, err)``; the session
-    carries ``reused=True`` when an existing one already held that profile.
+    (the default) gets a throwaway one — unless ``browser_default_profile`` is
+    configured, which makes unnamed launches persistent so the 🌐 Browser button
+    stops signing the user out of everything on every click. ``ephemeral=True``
+    opts a single launch back out of that default. Returns ``(session, err)``;
+    the session carries ``reused=True`` when an existing one already held that
+    profile.
     """
+    if profile is None and not ephemeral:
+        profile = _default_profile()
     chromium = _find_chromium()
     if not chromium:
         return None, 'Chromium not found (install: pip install playwright && playwright install chromium)'
@@ -456,14 +491,85 @@ def _launch_browser(project_id, url, profile=None):
     return session, None
 
 
+def _browser_ws_url(port, timeout=2):
+    """The BROWSER-level CDP endpoint (not a page target) — the one that accepts
+    Browser.close."""
+    import urllib.request
+    try:
+        v = json.load(urllib.request.urlopen(
+            f'http://127.0.0.1:{port}/json/version', timeout=timeout))
+        return v.get('webSocketDebuggerUrl')
+    except Exception:
+        return None
+
+
+def _graceful_close(session, timeout=10):
+    """Ask Chromium to shut itself down so it FLUSHES the profile to disk.
+
+    proc.kill() is TerminateProcess/SIGKILL. Chromium holds cookies and
+    localStorage in memory and writes them on clean shutdown (or on a lazy
+    ~30s timer), so hard-killing right after a login silently discarded that
+    login. The saved-profile feature therefore *looked* like it worked — the
+    directory persisted, and `/api/browser/profiles` happily listed it — while
+    keeping none of the credential it exists to keep.
+
+    Measured on this box 2026-08-05, same profile dir, same launch args:
+
+      kill immediately  -> cookie LOST,     localStorage LOST
+      kill after 45s    -> cookie survived, localStorage survived  (lazy flush)
+      Browser.close     -> both survived, process exits in ~0.1s
+
+    The middle row is why this read as flaky rather than broken: leave a pane
+    open a while and the login sticks; close it right after signing in — the
+    normal thing to do — and it is gone.
+
+    Returns True if the process exited on its own (no hard kill needed).
+    """
+    websocket = _import_ws()
+    proc = session.get('proc')
+    if websocket is None or proc is None:
+        return False
+    url = _browser_ws_url(session.get('port'))
+    if not url:
+        return False
+    try:
+        ws = websocket.create_connection(url, max_size=None, timeout=3)
+        try:
+            ws.send(json.dumps({'id': 1, 'method': 'Browser.close', 'params': {}}))
+        finally:
+            try:
+                ws.close()
+            except Exception:
+                pass
+    except Exception as e:
+        print(f'[browser] graceful close failed for '
+              f'{session.get("session_id")}: {e}', flush=True)
+        return False
+    try:
+        proc.wait(timeout=timeout)
+        return True
+    except Exception:
+        print(f'[browser] Chromium did not exit within {timeout}s after '
+              f'Browser.close; falling back to kill', flush=True)
+        return False
+
+
 def _kill_browser_session(session):
     session['status'] = 'stopped'
     proc = session.get('proc')
+    # A named profile IS the saved login, so it must reach disk before the
+    # process dies — ask Chromium to close itself and only fall back to the
+    # hard kill. Throwaway profiles are deleted below, so there is nothing to
+    # preserve and no reason to spend time waiting on them.
+    closed = False
+    if proc and session.get('profile'):
+        closed = _graceful_close(session)
     if proc:
-        try:
-            proc.kill()
-        except Exception:
-            pass
+        if not closed:
+            try:
+                proc.kill()
+            except Exception:
+                pass
         if _unregister_process:
             try:
                 _unregister_process(proc.pid)
@@ -498,7 +604,8 @@ def browser_launch():
     if url and not url.startswith(('http://', 'https://', 'about:')):
         url = 'https://' + url
     profile = data.get('profile')
-    session, err = _launch_browser(project_id, url, profile=profile or None)
+    session, err = _launch_browser(project_id, url, profile=profile or None,
+                                   ephemeral=bool(data.get('ephemeral')))
     if err or session is None:
         err = err or 'browser failed to start'
         # A bad profile name is the caller's mistake, not a missing dependency —

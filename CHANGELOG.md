@@ -6,6 +6,58 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-05] — the browser pane keeps your logins, and takes a paste
+
+Two unrelated-looking complaints about the browser pane, both real, both with
+one-line causes.
+
+**Saved profiles never actually saved anything.** A named profile was supposed
+to be the thing you log into once — and the directory did survive teardown, and
+`/api/browser/profiles` listed it with a plausible size, so it looked like it
+worked. But `_kill_browser_session` ended Chromium with `proc.kill()`, and
+Chromium keeps cookies and localStorage in memory, writing them on clean
+shutdown or on a lazy ~30s timer. Killing it right after a login threw that
+login away. Measured on the dev box, same profile dir, same launch args:
+
+| teardown | cookie | localStorage |
+|---|---|---|
+| `proc.kill()` immediately | lost | lost |
+| `proc.kill()` after 45s | survived | survived |
+| `Browser.close` | survived | survived |
+
+The middle row is why this read as flaky rather than broken: leave a pane open a
+while and the login sticks; close it right after signing in — the normal thing
+to do — and it's gone. Teardown now sends `Browser.close` for named profiles
+and only hard-kills as a fallback (the process exits in ~0.1s, so nothing got
+slower). Throwaway profiles are still killed outright — their dir is deleted
+moments later, so there is nothing to flush.
+
+**Ctrl+V did nothing.** The pane called `preventDefault()` on the Ctrl+V
+keydown and then read the clipboard via `navigator.clipboard.readText()`. But
+cancelling that keydown also cancels the native `paste` event — the only
+clipboard path that needs no permission, works over plain http on the LAN, and
+exists in every browser. So the pane suppressed the reliable path in order to
+use the fragile one, and pasting failed with "Paste blocked …" wherever
+`readText()` was unavailable or previously denied. The `paste` event is now the
+primary path, `readText()` is the 200ms fallback, and a 📋 toolbar button covers
+touch (which has no Ctrl+V at all) by pasting into a prompt box.
+
+Also in this change:
+
+- **`browser_default_profile`** (config, default `''` = unchanged behaviour).
+  Set it to a name and unnamed launches — including the 🌐 Browser button —
+  reuse one persistent signed-in profile instead of starting logged out every
+  time. `POST /api/browser/launch {"ephemeral": true}` opts a single launch out.
+- **`sweep_orphan_profiles()` is now server-process-only**
+  (`browser_routes.SWEEP_ENABLED`). It decides what is an orphan by diffing the
+  throwaway root against this process's `browser_sessions`, and only the server
+  has the real registry — so importing the module in a script and launching a
+  browser deleted live panes' profile dirs out from under them. That happened
+  while diagnosing this very bug.
+- **`tools/smoke/browser-paste.mjs`** — loads the real module, fires a genuine
+  Ctrl+V, asserts the text arrives exactly once. Confirmed failing on the old
+  code before the fix. Wired into `npm test`.
+
 ## [2026-08-04] — toasts coalesce, and you can swipe them away
 
 Six agent-opened browser sessions produced six separate toasts, each a

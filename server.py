@@ -244,6 +244,12 @@ def _load_config():
         # predates this key (defaults merge under saved values); set it false in
         # config.json to opt out.
         'sticky_agent_settings': True,
+        # Browser pane: profile used when a launch names none. '' (the default)
+        # keeps the original behaviour — every unnamed launch gets a throwaway
+        # profile and therefore starts logged out. Set a name (e.g. 'main') to
+        # make the 🌐 Browser button reuse one persistent, signed-in profile.
+        # Per-launch opt-out: POST /api/browser/launch {"ephemeral": true}.
+        'browser_default_profile': '',
     }
     if CONFIG_PATH.exists():
         try:
@@ -2095,6 +2101,10 @@ _bp_browser.wire(
     startupinfo=_STARTUPINFO,
 )
 app.register_blueprint(_bp_browser.bp)
+# Only the server process may sweep orphaned Chromium profile dirs: it is the
+# only one whose browser_sessions actually says what is live. Deliberately NOT
+# inside wire() — test harnesses call that too. See browser_routes.SWEEP_ENABLED.
+_bp_browser.SWEEP_ENABLED = True
 _kill_browser_session = _bp_browser._kill_browser_session
 
 # ── AgentRuntime hook registration ──────────────────────────────────────────

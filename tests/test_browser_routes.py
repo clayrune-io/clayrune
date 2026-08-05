@@ -6,6 +6,7 @@ import os
 
 import pytest
 
+from mc import state
 from mc.blueprints import browser_routes as br
 from mc.state import browser_sessions
 
@@ -56,6 +57,9 @@ def profiles(tmp_path, monkeypatch):
     named.mkdir()
     monkeypatch.setattr(br, '_profiles_root', lambda: str(eph))
     monkeypatch.setattr(br, '_named_profiles_root', lambda: str(named))
+    # The sweep is server-process-only (see SWEEP_ENABLED); these tests are
+    # exercising it deliberately, against redirected roots under tmp_path.
+    monkeypatch.setattr(br, 'SWEEP_ENABLED', True)
     browser_sessions.clear()
     yield eph, named
     browser_sessions.clear()
@@ -131,3 +135,100 @@ def test_invalid_profile_is_rejected_before_anything_launches(profiles, monkeypa
     monkeypatch.setattr(br, '_import_ws', lambda: object())
     session, err = br._launch_browser('proj', 'x', profile='../escape')
     assert session is None and 'profile name' in err
+
+
+# ── Flushing the profile on teardown ─────────────────────────────────────────
+# proc.kill() is TerminateProcess: Chromium writes cookies/localStorage on clean
+# shutdown, so hard-killing a signed-in profile threw the login away while the
+# directory survived to look healthy.
+
+class _FakeProc:
+    def __init__(self, exits=True):
+        self.pid, self._exits, self.killed, self.waited = 4242, exits, False, False
+
+    def kill(self):
+        self.killed = True
+
+    def wait(self, timeout=None):
+        self.waited = True
+        if not self._exits:
+            raise RuntimeError('still running')
+        return 0
+
+
+def test_named_profile_is_closed_gracefully_not_killed(profiles, monkeypatch):
+    saved = profiles[1] / 'reddit'
+    saved.mkdir()
+    calls = []
+    monkeypatch.setattr(br, '_graceful_close', lambda s, **k: calls.append(s) or True)
+    proc = _FakeProc()
+    br._kill_browser_session({'user_data_dir': str(saved), 'profile': 'reddit',
+                              'proc': proc, 'port': 1})
+    assert len(calls) == 1, 'a saved login must be flushed before the process dies'
+    assert not proc.killed, 'hard kill would discard the cookies Chromium still holds'
+
+
+def test_a_hung_chromium_still_gets_killed(profiles, monkeypatch):
+    """Graceful close is an attempt, not a promise — never leak the process."""
+    saved = profiles[1] / 'reddit'
+    saved.mkdir()
+    monkeypatch.setattr(br, '_graceful_close', lambda s, **k: False)
+    proc = _FakeProc()
+    br._kill_browser_session({'user_data_dir': str(saved), 'profile': 'reddit',
+                              'proc': proc, 'port': 1})
+    assert proc.killed
+
+
+def test_throwaway_profiles_are_not_waited_on(profiles, monkeypatch):
+    """Its dir is deleted seconds later, so there is nothing to flush and no
+    reason to spend the shutdown budget closing it politely."""
+    throwaway = profiles[0] / 'abc123'
+    throwaway.mkdir()
+    monkeypatch.setattr(br, '_graceful_close',
+                        lambda s, **k: pytest.fail('should not flush a throwaway'))
+    proc = _FakeProc()
+    br._kill_browser_session({'user_data_dir': str(throwaway), 'profile': None,
+                              'proc': proc, 'port': 1})
+    assert proc.killed and not throwaway.exists()
+
+
+# ── The sweep may only run in the server process ─────────────────────────────
+
+def test_sweep_is_a_noop_outside_the_server_process(profiles, monkeypatch):
+    """It calls anything in the throwaway root that browser_sessions doesn't
+    know about an orphan — but only the server's registry knows what is live.
+    Any other importer (a test, a debug script, a second MC) would delete a
+    running pane's profile out from under it, which is exactly what happened
+    on 2026-08-05."""
+    eph = profiles[0]
+    (eph / 'live-session').mkdir()
+    monkeypatch.setattr(br, 'SWEEP_ENABLED', False)
+    br.sweep_orphan_profiles()
+    assert (eph / 'live-session').exists()
+
+
+# ── Default profile (config) ─────────────────────────────────────────────────
+
+def test_unnamed_launch_uses_the_configured_default(profiles, monkeypatch):
+    monkeypatch.setitem(state.CONFIG, 'browser_default_profile', 'main')
+    monkeypatch.setattr(br, '_find_chromium', lambda: 'C:/fake/chrome.exe')
+    monkeypatch.setattr(br, '_import_ws', lambda: object())
+    live = {'session_id': 'sid-1', 'profile': 'main', 'status': 'running'}
+    browser_sessions['sid-1'] = live
+    session, err = br._launch_browser('proj', 'https://example.com')
+    assert err is None and session is live, 'unnamed launch should resolve to "main"'
+
+
+def test_ephemeral_opts_out_of_the_configured_default(profiles, monkeypatch):
+    monkeypatch.setitem(state.CONFIG, 'browser_default_profile', 'main')
+    monkeypatch.setattr(br, '_find_chromium', lambda: None)   # stop before spawn
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'profile': 'main',
+                                 'status': 'running'}
+    session, err = br._launch_browser('proj', 'x', ephemeral=True)
+    # Reached the spawn gate instead of adopting the live "main" session.
+    assert session is None and 'Chromium not found' in err
+
+
+def test_no_default_configured_keeps_the_throwaway_behaviour(profiles, monkeypatch):
+    monkeypatch.setitem(state.CONFIG, 'browser_default_profile', '')
+    assert br._default_profile() is None

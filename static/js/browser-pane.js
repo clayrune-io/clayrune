@@ -14,6 +14,22 @@ let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
 // shared _bpPressed flag and reports the release at a detached-rect corner, so
 // clicks land in the corner instead of where the user clicked (feels dead).
 let _bpUpHandler = null;
+// Set when a Ctrl/Cmd+V is let through to the browser, cleared by the `paste`
+// event it should produce. Still set after the grace period => no paste event
+// arrived, so fall back to the clipboard API. See the keydown handler.
+let _bpPasteAt = 0;
+
+// Clipboard-API paste. This is the FALLBACK, not the primary path: readText()
+// needs a secure context (so it is undefined over plain-http on the LAN), needs
+// the clipboard-read permission (permanently dead once "Block" is clicked), and
+// does not exist for web content in Firefox at all. Returns true if it pasted.
+async function _bpPasteViaApi() {
+  try {
+    const t = navigator.clipboard && await navigator.clipboard.readText();
+    if (t) { _bpSend({ type: 'text', text: t }); return true; }
+  } catch (err) {}
+  return false;
+}
 
 const _bpKeyCodes = {
   Enter: 13, Backspace: 8, Tab: 9, Escape: 27, Delete: 46,
@@ -102,6 +118,7 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
       <button data-bp="back"   title="Back"    style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8592;</button>
       <button data-bp="fwd"    title="Forward" style="background:none;border:none;color:#ddd;font-size:16px;cursor:pointer;padding:2px 6px">&#8594;</button>
       <button data-bp="reload" title="Reload"  style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px">&#8635;</button>
+      <button data-bp="paste"  title="Paste clipboard into the page" style="background:none;border:none;color:#ddd;font-size:13px;cursor:pointer;padding:2px 6px">&#128203;</button>
       <button data-bp="sessions" title="Browser sessions" style="background:none;border:none;color:#ddd;font-size:15px;cursor:pointer;padding:2px 6px;position:relative">&#9776;<span data-bp="sesscount" style="position:absolute;top:-3px;right:-3px;background:#4caf50;color:#000;font-size:9px;font-weight:700;border-radius:8px;padding:0 4px;line-height:14px;display:none"></span></button>
       <input data-bp="url" type="text" spellcheck="false" value="${(url||'').replace(/"/g,'&quot;')}"
         placeholder="Enter URL and press Enter"
@@ -151,6 +168,15 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
   $('back').onclick = () => _bpSend({ type: 'back' });
   $('fwd').onclick = () => _bpSend({ type: 'forward' });
   $('reload').onclick = () => _bpSend({ type: 'reload' });
+  // Touch has no Ctrl+V, so the keyboard path can't be the only way in. The
+  // prompt box is itself a native paste target, which is what makes this work
+  // on a phone (long-press → Paste) and wherever readText() is unavailable.
+  $('paste').onclick = async () => {
+    img.focus();
+    if (await _bpPasteViaApi()) return;
+    const t = prompt('Paste here and press OK — this types it into the page:');
+    if (t) _bpSend({ type: 'text', text: t });
+  };
   $('sessions').onclick = (e) => { e.stopPropagation(); _bpToggleSessionMenu(win, pid); };
   urlInput.addEventListener('keydown', e => {
     if (e.key === 'Enter') { _bpSend({ type: 'navigate', url: urlInput.value.trim() }); img.focus(); }
@@ -216,14 +242,21 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     const k = (e.key || '').toLowerCase();
     // ── clipboard bridge (host clipboard <-> the page in the pane) ──
     if (mod && k === 'v') {                       // paste: host clipboard → page
-      e.preventDefault();
-      try {
-        const t = await navigator.clipboard.readText();
-        if (t) _bpSend({ type: 'text', text: t });
-      } catch (err) {
+      // Deliberately NO preventDefault here. Cancelling the Ctrl+V keydown also
+      // cancels the native `paste` event — which was the whole bug: the pane
+      // suppressed the one clipboard path that always works and then relied on
+      // clipboard.readText(), which needs a secure context AND a permission the
+      // user may have blocked. Measured in Chromium: with preventDefault only
+      // the keydown fires; without it, a `paste` event follows carrying the
+      // text. The listener below consumes it and clears _bpPasteAt.
+      _bpPasteAt = Date.now();
+      setTimeout(async () => {
+        if (!_bpPasteAt) return;                  // the paste event handled it
+        _bpPasteAt = 0;
+        if (await _bpPasteViaApi()) return;
         if (typeof showToast === 'function')
-          showToast('Paste blocked — allow clipboard access for this site, then retry');
-      }
+          showToast('Paste blocked by the browser — use the 📋 button in the pane toolbar');
+      }, 200);
       return;
     }
     if (mod && (k === 'c' || k === 'x')) {          // copy / cut: page selection → host
@@ -248,6 +281,17 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     if (e.key.length === 1) _bpSend({ type: 'text', text: e.key });
     else if (_bpKeyCodes[e.key] != null)
       _bpSend({ type: 'key', key: e.key, code: e.code, keyCode: _bpKeyCodes[e.key] });
+  });
+
+  // The primary paste path. Fires on the focused <img> (verified in Chromium)
+  // and carries the text directly, so it needs no clipboard permission, works
+  // over plain http on the LAN, and works where readText() does not exist.
+  img.addEventListener('paste', e => {
+    e.preventDefault();
+    _bpPasteAt = 0;                   // handled — cancel the keydown fallback
+    const cd = e.clipboardData || window.clipboardData;
+    const t = cd ? cd.getData('text/plain') : '';
+    if (t) _bpSend({ type: 'text', text: t });
   });
 
   // ── touch: drag-to-scroll, tap-to-click (mouse events don't map on phones) ──

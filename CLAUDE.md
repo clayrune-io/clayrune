@@ -162,12 +162,31 @@ log in once (credentials from the vault, `{{user:}}` + `{{secret:}}`) and reuse
 the profile after that. `GET /api/browser/profiles` lists what already exists;
 **check it before logging in** — the account may already be signed in.
 
+Set **`browser_default_profile`** in `config.json` (e.g. `"main"`) to make
+*unnamed* launches persistent too, so the plain 🌐 Browser button stops starting
+logged out. `{"ephemeral": true}` opts a single launch back out.
+
 - Naming a profile that is already open **adopts that session** (`reused: true`)
   rather than starting a second browser. Two Chromiums on one profile dir
   corrupt it.
 - Closing the pane no longer signs you out. Only
   `DELETE /api/browser/profiles/<name>` does — that is the sign-out, so treat it
   as destructive and ask first.
+- **A profile is saved by CLOSING Chromium, never by killing it** (fixed
+  2026-08-05). Chromium holds cookies and localStorage in memory and writes them
+  on clean shutdown or a lazy ~30s timer, so the old `proc.kill()` teardown
+  discarded whatever the profile had just learned. Measured: kill immediately →
+  login lost; kill after 45s → login kept; `Browser.close` → always kept, exits
+  in ~0.1s. That middle row is why it read as flaky rather than broken. Teardown
+  now closes named profiles gracefully and only hard-kills as a fallback — if
+  you add another teardown path, it must do the same or it silently signs the
+  user out.
+- **`sweep_orphan_profiles()` may only run in the server process**
+  (`browser_routes.SWEEP_ENABLED`, set in `server.py`). It calls any dir in the
+  throwaway root that `browser_sessions` doesn't know about an orphan, and only
+  the server's registry knows what is live — so importing this module in a test
+  or debug script and launching a browser used to delete running panes' profiles
+  out from under them.
 - A saved profile is a live credential (session cookies). Don't create one for a
   site the task didn't ask you to log into.
 
