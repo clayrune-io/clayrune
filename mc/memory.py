@@ -28,6 +28,7 @@ from typing import Any, Callable, Optional
 import json
 import os
 import subprocess
+import math as _math
 import threading
 import time as _time
 import uuid
@@ -428,17 +429,132 @@ def _wm_remove(wm_markers, session_id):
             if (_wm_parse(ln) or {}).get('session_id') != sid]
 
 
+# BM25 parameters (standard defaults; k1 saturates term frequency, b controls
+# how hard document length is normalized).
+_BM25_K1 = 1.2
+_BM25_B = 0.75
+
+# How many times a topic file's own name is indexed into its token stream —
+# a cheap field boost, since the filename is the note's title (see _mem_corpus).
+_TITLE_BOOST = 3
+
+# Parsed corpus cache: mem_dir -> (signature, units). The signature is every
+# *.md file's (name, mtime_ns, size), so any write invalidates it. Without this
+# the read floor re-tokenizes ~1.7MB on every single dispatch.
+_memsearch_cache: dict = {}
+_memsearch_cache_lock = threading.Lock()
+
+
+def _mem_tokens(text):
+    """Tokenizer shared by queries and documents — MUST be the same for both.
+
+    Splits on non-alphanumerics INCLUDING underscore, so `memory_system` yields
+    `memory`+`system` and `mc/memory.py` yields `mc`+`memory`+`py`. That matters
+    here: this corpus is mostly snake_case identifiers and file paths, and a
+    query of "memory system" has to reach a note whose text says
+    `project_memory_system_redesign`.
+    """
+    import re  # module has no top-level `re` import (see _re_auth pattern)
+    return [t for t in re.findall(r'[a-z0-9]+', (text or '').lower())
+            if len(t) >= 3]
+
+
+def _mem_corpus(mem_dir, mem_name, arch_name):
+    """Parse + tokenize the memory corpus into scoring units (cached).
+
+    Unit classes, which the scorer keeps separate (see _memory_search):
+      'topic'   — a whole topic .md file
+      'archive' — one '- [' line of MEMORY_ARCHIVE.md
+      'managed' — one managed entry of MEMORY.md
+    """
+    try:
+        sig = tuple(sorted(
+            (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+            for f in mem_dir.glob('*.md')))
+    except OSError:
+        return []
+    key = str(mem_dir)
+    with _memsearch_cache_lock:
+        hit = _memsearch_cache.get(key)
+        if hit and hit[0] == sig:
+            return hit[1]
+    units = []
+    for f in sorted(mem_dir.glob('*.md')):
+        try:
+            txt = f.read_text(encoding='utf-8', errors='replace')
+        except Exception:
+            continue
+        if f.name == mem_name:
+            for e in _mem_split(txt)[1]:
+                units.append((f'{f.name}#managed', e, 'managed'))
+        elif f.name == arch_name:
+            for ln in txt.splitlines():
+                if ln.strip().startswith('- ['):
+                    units.append((f.name, ln.strip(), 'archive'))
+        else:
+            units.append((f.name, txt, 'topic'))
+    out = []
+    for label, text, cls in units:
+        toks = _mem_tokens(text)
+        if not toks:
+            continue
+        if cls == 'topic':
+            # A topic file's NAME is its title — `decision_step7_semantic_
+            # search_deferral.md` says more than most of its body — so index it
+            # as part of the document, boosted. Doing it here rather than as a
+            # score bonus is what lets a note match on its title ALONE; a bonus
+            # applied after the match test can't, because a document with no
+            # body hit never gets scored at all.
+            #
+            # Deliberately NOT done for 'archive'/'managed' units: their label
+            # is the container's filename, not a title, so folding it in would
+            # make every one of the ~2k archive lines match the query "memory".
+            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _TITLE_BOOST
+        tf = {}
+        for t in toks:
+            tf[t] = tf.get(t, 0) + 1
+        out.append({'file': label, 'text': text, 'tf': tf,
+                    'len': len(toks), 'cls': cls})
+    with _memsearch_cache_lock:
+        _memsearch_cache[key] = (sig, out)
+    return out
+
+
 def _memory_search(project, query, topk=3):
-    """Ranked-grep over the project's memory corpus (SPEC §3 Leg B).
+    """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
     the MANAGED region of MEMORY.md. The curated MEMORY.md index is excluded
     by construction — the agent already auto-loads it. Deterministic, no
     model. Returns [{file, score, snippet}] sorted by score desc.
+
+    WHY BM25 (2026-08-05). The previous scorer was raw term frequency over the
+    whole file — `sum(text.count(t))` — with no document-length normalization.
+    A long file simply contains more instances of ordinary words than a short
+    one, so length beat relevance. Measured by replaying this function over the
+    first user message of 206 real past sessions: **55 of 75 topic files never
+    entered a top-3 for ANY task**, 29% of tasks surfaced nothing at all, and
+    3 files took 403 of ~430 slots — which were, exactly, the 3 largest topic
+    files (11.5–19.4KB against a 3.2KB median). The corpus wasn't cold; it was
+    unreachable. Length normalization is the specific thing that fixes it, and
+    IDF + saturation come with it: this corpus is dominated by exact tokens
+    (function names, file paths, SHAs) where rare-term weighting is what
+    separates a real hit from an incidental mention.
+
+    ONE ADAPTATION. Textbook BM25 assumes a homogeneous corpus, and ours is
+    not: whole topic files (KB) sit alongside single archive lines (~0.4KB),
+    and the archive lines outnumber the topic files ~30:1. A single global
+    `avgdl` would therefore be set by archive lines and would score every topic
+    file as pathologically long, trading the old bias for its mirror image. So
+    **length is normalized per unit class** — a topic file competes on length
+    against other topic files — while IDF stays global, since term rarity is a
+    property of the whole corpus. `_mem_class_avgdl` is separated out so this
+    stays testable.
+
+    A topic file's NAME is indexed as part of its text (see `_mem_corpus`),
+    which is what lets a note match on its title alone.
     """
-    import re  # module has no top-level `re` import (see _re_auth pattern)
-    terms = [t for t in re.findall(r'[a-z0-9_]+', (query or '').lower())
-             if len(t) >= 3]
+    terms = _mem_tokens(query)
     if not terms:
         return []
     try:
@@ -448,37 +564,60 @@ def _memory_search(project, query, topk=3):
         return []
     if not mem_dir.is_dir():
         return []
-    mem_name = mem_path.name
-    arch_name = _get_archive_path(project).name
-    units = []  # (label, text)
-    for f in sorted(mem_dir.glob('*.md')):
-        try:
-            txt = f.read_text(encoding='utf-8', errors='replace')
-        except Exception:
-            continue
-        if f.name == mem_name:
-            for e in _mem_split(txt)[1]:           # managed entries only
-                units.append((f'{f.name}#managed', e))
-        elif f.name == arch_name:
-            for ln in txt.splitlines():
-                if ln.strip().startswith('- ['):
-                    units.append((f.name, ln.strip()))
-        else:
-            units.append((f.name, txt))            # topic file (whole)
+    units = _mem_corpus(mem_dir, mem_path.name, _get_archive_path(project).name)
+    if not units:
+        return []
+
+    n_docs = len(units)
+    avgdl = _mem_class_avgdl(units)
+    # Global IDF, in the always-positive form (the classic
+    # ln((N-n+0.5)/(n+0.5)) goes negative for terms in >half the corpus, which
+    # would let a common term subtract from an otherwise good match).
+    seen = set(terms)
+    df = dict.fromkeys(seen, 0)
+    for u in units:
+        tfu = u['tf']
+        for t in seen:
+            if t in tfu:
+                df[t] += 1
+    idf = {t: _math.log(1.0 + (n_docs - df[t] + 0.5) / (df[t] + 0.5))
+           for t in seen}
+
     scored = []
-    for label, text in units:
-        low = text.lower()
-        score = sum(low.count(t) for t in terms)
-        if score <= 0:
+    for u in units:
+        tfu = u['tf']
+        dl = u['len']
+        norm = avgdl.get(u['cls']) or dl or 1.0
+        denom_len = _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (dl / norm))
+        score = 0.0
+        matched = 0
+        for t in terms:
+            f = tfu.get(t, 0)
+            if not f:
+                continue
+            matched += 1
+            score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
+        if not matched:
             continue
-        if any(t in label.lower() for t in terms):
-            score += 2                              # filename relevance bonus
+        text = u['text']
+        low = text.lower()
         pos = min((low.find(t) for t in terms if t in low), default=0)
         start = max(0, pos - 120)
-        snip = text[start:start + 400].replace('\n', ' ').strip()
-        scored.append({'file': label, 'score': score, 'snippet': snip})
-    scored.sort(key=lambda r: r['score'], reverse=True)
+        snip = text[max(0, start):start + 400].replace('\n', ' ').strip()
+        scored.append({'file': u['file'], 'score': round(score, 4),
+                       'snippet': snip})
+    scored.sort(key=lambda r: (-r['score'], r['file']))
     return scored[:max(1, topk)]
+
+
+def _mem_class_avgdl(units):
+    """Mean document length per unit class (see _memory_search's adaptation)."""
+    tot, cnt = {}, {}
+    for u in units:
+        c = u['cls']
+        tot[c] = tot.get(c, 0) + u['len']
+        cnt[c] = cnt.get(c, 0) + 1
+    return {c: (tot[c] / cnt[c]) if cnt[c] else 1.0 for c in tot}
 
 
 def _condense_combined_bytes(project):

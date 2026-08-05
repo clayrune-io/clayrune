@@ -6,6 +6,65 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-05c] — the memory corpus wasn't cold, it was unreachable
+
+Chasing the memory-index size problem (`[2026-08-05b]`) to its root. Ron
+corrected the premise first: the ~24KB limit was never a harness cap, it's a
+token budget we chose — so nothing was ever being silently lost, and trimming
+harder was never the answer. That reframed the question from "how do we shrink
+the index" to "why does the index have to carry 69 pointers at all", and the
+answer turned out to be measurable from data already on disk.
+
+`_memory_search` is a pure deterministic ranked search, so the read floor can be
+replayed exactly against the first user message of every past session. Over 142
+real dispatched tasks from 209 transcripts:
+
+| scorer | topic files reachable | dark | top-3 units' share of slots |
+|---|---|---|---|
+| old (raw term frequency) | 17 / 75 | 58 | 93% |
+| BM25 | 40 / 75 | 35 | 53% |
+
+**55 of 75 notes never entered a top-3 for any task we have ever run.** The
+three files winning almost every query were, exactly, the three *largest* topic
+files (11.5–19.4KB against a 3.2KB median). The scorer was
+`sum(text.count(term))` with no document-length normalization, so a long file
+wins on ordinary words alone. Length was beating relevance, and the corpus only
+looked cold.
+
+That also settles a live design question: the proposal to evict notes by access
+count would have read those 55 files as dead and deleted them, when what it was
+measuring was a length bias in the ranker.
+
+`_memory_search` is now BM25 (IDF + saturation + length normalization), with one
+adaptation. Textbook BM25 assumes a homogeneous corpus; ours mixes whole topic
+files with ~30× more numerous one-line archive entries, so a single global
+`avgdl` would be set by the short lines and score every topic file as
+pathologically long — the mirror image of the bug. Length is normalized **per
+unit class**, IDF stays global. A topic file's own name is indexed into its
+token stream (boosted ×3), which is what lets a note match on its title alone —
+a post-hoc filename bonus can't, because a document with no body hit is never
+scored at all. The tokenizer splits on underscores so `memory_system` is
+reachable from "memory system".
+
+Two measurement traps, both paid for and written down in
+`tools/memory-eval/README.md` so nobody re-derives them: the injected read-floor
+block is **not** in transcripts (it arrives via `--append-system-prompt-file`),
+so grepping for it scores only the current session echoing itself back; and
+taking every session's first user message verbatim includes openers like `ok`,
+which produced a confident, wrong "29% of tasks surface nothing" — the real
+zero-result rate is 0% for both scorers.
+
+The probes ship as `tools/memory-eval/`. They are the search-precision telemetry
+the standing gate asked for, with no new subsystem: rerun `scorer_ab.py` after
+any retrieval change and it reports reachability before/after.
+
+Still open, and still the real problem: the curated region is 69 flat pointers
+resident every prompt, O(topics). But the growth was downstream of this — the
+front page has been doing retrieval's job by hand because retrieval didn't work.
+Fix the ranker first, then re-measure, then size the index.
+
+11 tests in `tests/test_memory_search_bm25.py`; suite green at 1210.
+
 ## [2026-08-05b] — the session log was crowding out the memory it was meant to keep
 
 A steward cycle filed a backlog note (`dae8d6e7`) saying the memory index is
