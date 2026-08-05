@@ -42,43 +42,48 @@ flattens.
 by a wide margin when actually queried — it simply never came up in the 142-task
 sample. Sample coverage, not a ranking defect.
 
-### The real finding: the two-level index would delete knowledge, not page it
+### A third false alarm, caught by re-validating: the index is not load-bearing
 
-The proposed redesign replaces ~69 front-page pointers with ~12 category
-headings, each backed by a manifest opened on demand. That assumes every
-front-page line has a leaf to page into. Measured, **39% do not**:
+An earlier draft of this entry claimed the two-level index redesign was blocked
+because 37 of the 95 front-page pointer lines (5.9KB) carry no `.md` link, so
+collapsing them under a category heading would *delete* knowledge rather than
+page it out. **That was wrong**, and it is recorded here because it was nearly
+shipped as a design constraint.
 
-| curated region (16.7KB, 113 lines) | bytes | lines |
-|---|---|---|
-| pointer lines **with** a `.md` link | 9,927 | 58 |
-| pointer lines with **no** link | **5,928** | **37** |
-| headings + prose | 790 | 9 |
+The link count itself held up on re-check (37 lines genuinely have no markdown
+link and no `[[wikilink]]` either). What didn't hold up was the inference. Two
+successive tests were needed to see it:
 
-Those 37 are the knowledge — `wake_lock.py line 142 release_now() never
-atexit-registered…`, `IPv6 localhost resolution stalls ~200ms… fix: dual-stack
-socket`. Nothing sits behind them. Collapsing them under a heading doesn't page
-them out, it deletes them. That is the silent forgetting the steward's own note
-feared, arriving from a direction nobody named: not bad labels, but entries with
-no leaf.
+- Comparing each line's vocabulary against whole topic files said "all 37 are
+  covered" — worthless, because common words dominate the overlap.
+- Restricting to *distinctive* tokens (document frequency ≤ 3) and matching
+  against the **actual retrieval units** — archive lines are indexed
+  individually, not as one 734KB document — gave the real answer: **33 of 37
+  are recoverable from a single retrievable unit**, nearly all of them
+  `MEMORY_ARCHIVE.md` entries.
 
-Same root, second-order: `_memory_search` excludes the curated region by
-construction ("the agent already auto-loads it"), so those 5.9KB are not in the
-BM25 corpus and not in the archive. That exclusion is correct *today* and
-becomes wrong the moment anything is paged off the front page — a hard
-dependency of the redesign, not a detail.
+Reading the matched entries settles it. The index line `IPv6 localhost
+resolution stalls ~200ms… fix: dual-stack socket (AF_INET6+IPV6_V6ONLY=0)`
+matches an archive entry that records the same fix *in more detail*, and the
+same holds for the `wake_lock.py` and `cmd.exe 8191-char` lines. The curated
+index is a hand-written summary layer over facts the archive already holds —
+not a sole copy. Only 4 lines fall below the recovery threshold, which is a
+small tractable set, not a blocker.
 
-**So the prerequisite is promoting those 37 lines into real topic files**, which
-makes them searchable, archivable and pageable. Left undone deliberately: it's
-37 naming judgment calls on a file loaded into every prompt, and it deserves its
-own pass rather than riding along with an infra change. Full sequencing in
-`~/.claude/plans/memory-index-two-level-blocker.md`.
+So the redesign is **not** blocked on promoting those lines, and the earlier
+"prerequisite" is withdrawn. What remains true: `_memory_search` excludes the
+curated region by construction, which is correct while the whole index is
+auto-loaded and would need revisiting if anything is ever paged out.
 
-Worth stating plainly: with BM25 + topk=6 the read floor reaches 59/75 files
-unaided, and the front page's navigation function is measurably barely used
-(agents open a topic file in 6% of sessions, search in 3%). Its remaining value
-is the hook text itself — the exact thing a category collapse destroys. "Leave
-the index alone, it's a legitimate 6k-token spend" is now a serious candidate
-answer.
+With BM25 + topk=6 the read floor reaches 59/75 files unaided, and the front
+page's navigation function is measurably barely used (agents open a topic file
+in 6% of sessions, search in 3%). Whether 16.5KB of pointers still earns its
+place every prompt is a live cost question — but it is only a cost question.
+
+Cross-corpus check that should have happened before shipping BM25 and now has:
+on the DayTrading (58 notes) and clayrune-website (20 notes) corpora, the
+largest file wins top-1 on 0/12 and 1/12 queries respectively — no length
+dominance, so the ranker isn't overfit to this repo's corpus.
 
 7 tests in `tests/test_scribe_stat_recency.py`; suite green at 1217.
 
