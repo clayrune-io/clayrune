@@ -6,6 +6,50 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06] — agents didn't know the browser pane existed
+
+The browser pane has shipped for months, and no agent has ever been told about
+it. It appears nowhere in `_clayrune_universal_capabilities()` and nowhere in
+the injected `CLAYRUNE_API.md`. So the entire capability was invisible from
+inside a session: asked to visit a page, an agent reached for the only browser
+it knew about — `start` / `open` / `xdg-open` / `webbrowser.open` — which opens
+a window on the host machine that the user may not be sitting at and that the
+agent can neither see nor drive. Ron had to name the pane by hand every time.
+
+Fixed by documenting it in the two places every agent reads:
+
+- **`_clayrune_universal_capabilities()`** — one `Browser:` entry covering when
+  to use the pane over the host browser, the two chat markers
+  (`[browser:<url>]` to show a page, `[browser-attach:<sid>]` to surface a
+  session the agent launched), the `input` / `selection` / `status` / `stop`
+  endpoints, and named profiles for anything you sign into. Being the universal
+  block, it reaches hivemind workers too, not just project agents.
+- **`data/agent_reference/CLAYRUNE_API.md`** — a `## Browser pane` section
+  alongside Terminal pop-out. The reference is curated, not generated
+  (`tools/regen-api-reference.py` reports drift, it doesn't overwrite), so the
+  section had to be written; the browser routes had simply never been added.
+
+Both state the limit as plainly as the capability: the pane is a viewing and
+interaction surface, **not a scraper** — there is no read-whole-page endpoint,
+only the current selection, so reading content for the agent's own reasoning
+stays with WebFetch/WebSearch. Without that line the next failure mode is an
+agent trying to scrape through a screencast.
+
+Takes effect for new sessions. The `CLAYRUNE_API.md` half is read from disk per
+session (live now); the `agent_routes.py` half needs a server restart.
+
+**And the API reference was never shipping at all.** `data/agent_reference/` was
+gitignored on the stated belief that `tools/regen-api-reference.py` rebuilds it.
+It doesn't — that tool only *reports drift*; the doc is hand-curated and nothing
+on disk regenerates it. Nor did `build-macos.spec` bundle it. So the entire
+reference existed on exactly one machine, and every other install — git-cloned
+or frozen `.app` — ran with `_clayrune_api_reference()` returning `''`, i.e. no
+API block in any agent's system prompt, silently. Same shape as the
+`origin/master`-138-commits-behind case: nothing warns you, it just works here.
+Now tracked in git and added to the macOS spec's `datas`. It contains no
+operator-specific content (checked before un-ignoring — that's the rule that
+made it suspect in the first place).
+
 ## [2026-08-05d] — closing out the memory subsystem: two false alarms and one real blocker
 
 A sweep to repair everything known broken in memory/indexing/search. Two of the

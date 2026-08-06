@@ -1544,6 +1544,45 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
         "artifact the user should open — NOT for images (use a bare image path) "
         "or diagrams (use a ```mermaid block).",
 
+        # Browser pane — agents kept shelling out to the HOST browser
+        # (`start`/`open`/`webbrowser.open`), which opens a window on a machine
+        # the user may not be sitting at and that the agent cannot see or
+        # drive. The pane is the Clayrune-native answer and was simply absent
+        # from every system prompt until 2026-08-06.
+        f"Browser: Clayrune has a BUILT-IN browser pane — a real Chromium "
+        f"rendered live INSIDE the user's dashboard (and over the tunnel, on "
+        f"their phone), which you can drive over HTTP. Whenever a task means "
+        f"opening a web page — showing the user a site, filling a form, "
+        f"working inside a web app, anything needing a real logged-in session "
+        f"— use THIS. Do NOT shell out to `start` / `open` / `xdg-open` / "
+        f"`webbrowser.open` / a local Playwright window: that opens a window "
+        f"on the host only, the user may not be at that screen, and you can "
+        f"neither see nor control it.\n"
+        f"  • Just show the user a page: put `[browser:https://example.com]` "
+        f"on its OWN LINE in your reply — Clayrune opens the pane there.\n"
+        f"  • Drive it yourself: POST http://localhost:{port}/api/browser/launch "
+        f"with {{\"project_id\":\"<pid>\",\"url\":\"https://…\"}} → returns "
+        f"{{\"session_id\":…}}. Then emit `[browser-attach:<session_id>]` on its "
+        f"own line so the user sees what you're doing. Steer it with POST "
+        f"/api/browser/input {{\"session_id\":…,\"type\":\"navigate|mouse|wheel|"
+        f"text|key|back|forward|reload\", …}}. POST /api/browser/selection "
+        f"returns the page's selected text; GET /api/project/<pid>/browser/"
+        f"status lists live sessions; POST /api/browser/stop ends one.\n"
+        f"  • Sites you sign into: pass a profile name "
+        f"(`\"profile\":\"reddit\"`) — a persistent Chromium profile that keeps "
+        f"cookies across sessions and restarts, so the next run is already "
+        f"logged in. UNNAMED launches are throwaway and start logged out every "
+        f"time. Check GET /api/browser/profiles FIRST — the account may already "
+        f"be signed in, and naming a profile that's already open adopts that "
+        f"session instead of starting a second Chromium. DELETE "
+        f"/api/browser/profiles/<name> IS the sign-out — destructive, ask "
+        f"first.\n"
+        f"  • It is a viewing/interaction surface, not a scraper: there is no "
+        f"read-whole-page endpoint (only the current selection). To read page "
+        f"content for your own reasoning, use WebFetch/WebSearch. Use the pane "
+        f"when a human needs to SEE it, when you must be logged in, or when the "
+        f"page needs real interaction.",
+
         # Two schedulers exist — pick the right one for the job.
         f"Scheduler — TWO options, pick by lifespan:\n"
         f"  • Clayrune LOCAL scheduler — for LONG-TERM, REPEATABLE jobs scoped "

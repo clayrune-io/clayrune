@@ -39,6 +39,11 @@ datas = [
     # (the FAB + the agent avatar) in the frozen app.
     ('assets', 'assets'),
     ('installer/clayrune.png', 'installer'),
+    # Injected into every agent's system prompt by _clayrune_api_reference().
+    # Unlike SHARED_RULES.md below this is NOT user data — it's the curated,
+    # operator-neutral Clayrune API doc. Leave it out and the frozen app's
+    # agents curl-probe endpoints every session.
+    ('data/agent_reference', 'data/agent_reference'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim

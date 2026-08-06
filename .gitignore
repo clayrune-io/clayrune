@@ -219,11 +219,16 @@ docs/_committee/HOSTED_CLOUD_*
 
 # ── Multi-provider runtime — local/runtime artifacts ───────────────────────
 # provider_env.json holds per-provider API keys / env-var overrides — secrets,
-# never commit. The rest are runtime-generated: the API reference is rebuilt by
-# tools/regen-api-reference.py, the MCP caches are materialized at boot, and
-# _jscheck_tmp.js is a scratch copy of index.html's JS used for syntax checks.
+# never commit. The rest are runtime-generated: the MCP caches are materialized
+# at boot, and _jscheck_tmp.js is a scratch copy of index.html's JS used for
+# syntax checks.
+#
+# data/agent_reference/ was ignored here on the belief that
+# tools/regen-api-reference.py rebuilds it. It does NOT — that tool only reports
+# drift; the doc is hand-curated and nothing on disk regenerates it. So the rule
+# meant only the builder's machine had an API reference and every other install
+# injected an empty one. Tracked since 2026-08-06; it contains no operator data.
 data/provider_env.json
-data/agent_reference/
 data/mcp/
 data/mc_builtin_mcps_global.json
 data/projects/_mc_open_backlog.txt
