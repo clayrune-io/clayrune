@@ -55,6 +55,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import threading
 import time as _time
 import uuid
@@ -1224,6 +1225,25 @@ def agent_provider_login_launch(name):
     return jsonify({'ok': True})
 
 
+def _auth_probe_cwd() -> str:
+    """A scratch directory for `claude -p ok` to run in, so its transcript is
+    written somewhere that is not a project. Created on demand; falls back to
+    the temp dir, and finally to None (inherit) if even that fails — a probe
+    that can't run is worse than one that leaves a stray file."""
+    try:
+        # DATA_DIR is data/projects — deliberately go to its PARENT. Anything
+        # dropped inside DATA_DIR is treated as a project record by
+        # load_projects() (the DATA_DIR-pollution rule in CLAUDE.md).
+        d = Path(DATA_DIR).parent / '_auth_probe'
+        d.mkdir(parents=True, exist_ok=True)
+        return str(d)
+    except Exception:
+        try:
+            return tempfile.gettempdir()
+        except Exception:
+            return None  # type: ignore[return-value]
+
+
 def _run_claude_auth_probe() -> dict:
     """Run `claude -p ok` to actively probe auth and update _claude_auth_state.
 
@@ -1232,9 +1252,26 @@ def _run_claude_auth_probe() -> dict:
     """
     try:
         cmd = [_resolve_claude(), '-p', 'ok', '--max-turns', '1']
+        # RUN IT SOMEWHERE THAT ISN'T A PROJECT.
+        #
+        # The CLI writes a full transcript for every invocation into
+        # ~/.claude/projects/<encoded CWD>/. With no cwd= this inherited the
+        # SERVER's cwd — the Clayrune checkout, which is itself an MC project —
+        # so every auth probe deposited a real .jsonl there. /conversations
+        # reads transcripts directly, so each one surfaced in that project's
+        # chat rail as a conversation labelled "ok" (turn 1: "ok", turn 2:
+        # "I'm here — what would you like to work on?"), and the startup
+        # backfill then synthesized an `interrupted` agent-log row for it.
+        # Six had accumulated in one day. That is what "my conversation split
+        # into several conversations" looked like from the outside.
+        #
+        # Auth state is global (~/.claude), so the probe has no reason to run in
+        # a project directory at all. Point it at a dedicated throwaway dir and
+        # its transcripts land under an encoded path that is nobody's project.
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=20,
+            cwd=_auth_probe_cwd(),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
         combined = (result.stdout or '') + (result.stderr or '')
@@ -6247,6 +6284,26 @@ def search_global():
     return jsonify({'query': q, 'count': len(out), 'results': out[:limit]})
 
 
+def _is_auth_probe_transcript(c: dict) -> bool:
+    """True for a transcript that is an `claude -p ok --max-turns 1` auth probe.
+
+    Until 2026-08-06 the probe ran with no `cwd=`, so it inherited the server's
+    working directory — the Clayrune checkout, which is itself a project — and
+    left a real transcript in that project's chat history every time it fired.
+    `_auth_probe_cwd()` stops new ones; this hides the ones already on disk
+    (and any left by an older build, on every install).
+
+    Deliberately narrow: exactly one user turn whose entire text is "ok". A
+    genuine one-word "ok" chat is still shown if MC dispatched it — the caller
+    keeps any transcript with a live session or an agent-log row, so this can
+    only ever drop a transcript MC has no record of asking for.
+    """
+    if (c.get('turns') or 0) > 1:
+        return False
+    return (str(c.get('first_user') or '').strip().lower() == 'ok'
+            and str(c.get('last_user') or '').strip().lower() in ('ok', ''))
+
+
 @bp.route('/api/project/<project_id>/conversations')
 def get_project_conversations(project_id):
     """Return recent Claude Code conversations for a project, read from .jsonl transcripts.
@@ -6286,6 +6343,15 @@ def get_project_conversations(project_id):
         csid = e.get('claude_session_id', '')
         if csid and csid not in log_by_csid:
             log_by_csid[csid] = e
+
+    # Drop auth-probe leftovers — but only ones MC has no record of asking for
+    # (no live session, and no agent-log row that wasn't itself synthesized by
+    # the transcript backfill). A real chat MC dispatched always has one of
+    # those, so this can never hide the user's own conversation.
+    convos = [c for c in convos
+              if not (_is_auth_probe_transcript(c)
+                      and c['session_id'] not in live_by_csid
+                      and (log_by_csid.get(c['session_id']) or {}).get('synthesized', True))]
 
     from datetime import datetime, timezone
     out = []

@@ -6,6 +6,47 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06d] — the auth probe was manufacturing conversations
+
+Ron: "the single conversation thread I just had with you to repair the loading
+time got split into a few separate conversations, and the continuation is now
+under the Steward chat." Two unrelated bugs produced that one symptom, and the
+transcripts on disk showed the thread was never actually split.
+
+**1. `claude -p ok` was writing into a project's chat history.**
+`_run_claude_auth_probe()` shells out to `claude -p ok --max-turns 1` — and the
+CLI writes a full transcript for *every* invocation into
+`~/.claude/projects/<encoded CWD>/`. The probe passed no `cwd=`, so it inherited
+the **server's** working directory: the Clayrune checkout, which is itself an MC
+project. Every probe therefore deposited a real `.jsonl` in that project's
+transcript dir. `/conversations` reads transcripts directly, so each one
+surfaced in the chat rail as its own conversation (turn 1 `ok`, turn 2 "I'm here
+— what would you like to work on?"), and the startup backfill synthesized an
+`interrupted` agent-log row for it. **Six accumulated in one day**, interleaved
+with the real chat by timestamp.
+
+Fixed by running the probe in a scratch dir (`data/_auth_probe`, outside
+`DATA_DIR` per the pollution rule) so its transcripts land under a path that is
+nobody's project. Leftovers already on disk — here and on every install — are
+hidden from the conversation list, but **only when MC has no record of
+dispatching them**: no live session, and no agent-log row that wasn't itself
+synthesized by the backfill. A real one-word "ok" chat that MC ran still shows.
+
+**2. A manual message silently continued the steward's session.**
+`getDefaultResumeId()` returned the newest agent-log row, whatever it was. A
+steward cycle finished at 12:54 and left `f9774c2a` on top — so the next thing
+typed in that project resumed *it*, and the loading-time investigation was
+appended to the steward's transcript. The list labels a conversation by its
+FIRST user message, so the whole thread then displayed under `[Steward cycle]`.
+Nothing was lost; it was filed under the machine's name.
+
+Scheduled / steward / night-review sessions are the machine's threads and are no
+longer auto-continued — they stay one explicit click away. `synthesized` rows
+are skipped too: defaulting into a transcript MC never dispatched resumes a
+session with no shared context, which (before fix 1) included every auth probe.
+With no attended history at all, a new message now starts fresh rather than
+joining a machine thread.
+
 ## [2026-08-06c] — Tier 2: the 220 ms endpoint, and two items declined on evidence
 
 Follow-on to Tier 1. Three items shipped, two declined with the measurement that

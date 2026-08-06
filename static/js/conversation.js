@@ -2522,17 +2522,37 @@ function newAgentTab(projectId) {
   if (window.innerWidth > 960) setTimeout(() => document.getElementById(`agent-task-${projectId}`)?.focus(), 50);
 }
 
+// Which chat does a new message continue by default?
+//
+// This used to be "the newest agent-log row, whatever it was" — which meant an
+// UNATTENDED run silently captured the user's next message. A steward cycle
+// finished at 12:54; the next thing typed in that project resumed it, so hours
+// of hand-driven work were appended to the steward's transcript and the whole
+// thread then displayed under its `[Steward cycle]` label (the list labels a
+// conversation by its FIRST user message). Scheduled, steward and night-review
+// sessions are the machine's threads: continue them only by explicit choice.
+//
+// Also skips `synthesized` rows — those are backfilled from a transcript MC
+// never dispatched (including, before the cwd fix, every `claude -p ok` auth
+// probe), so defaulting into one resumes a session with no shared context.
+const _UNATTENDED_TRIGGERS = new Set(['schedule', 'steward', 'night-review']);
+
 function getDefaultResumeId(projectId) {
   const entries = (agentLogCache[projectId] || []).filter(e => !e.hivemind_ws_id);
   const runningSessions = getProjectSessions(projectId);
   const runningResumeIds = new Set(
     runningSessions.filter(h => h.resumedFrom).map(h => h.resumedFrom)
   );
+  const eligible = e => e.claude_session_id
+    && !runningResumeIds.has(e.claude_session_id)
+    && !e.synthesized
+    && !_UNATTENDED_TRIGGERS.has(e.trigger_type);
   for (const e of entries) {
-    if (e.claude_session_id && !runningResumeIds.has(e.claude_session_id)) {
-      return e.claude_session_id;
-    }
+    if (eligible(e)) return e.claude_session_id;
   }
+  // Nothing attended to fall back to (a project whose only history is
+  // scheduled runs). Start fresh rather than silently joining a machine
+  // thread — the user can still pick one from the list.
   return null;
 }
 
