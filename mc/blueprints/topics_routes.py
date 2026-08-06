@@ -18,6 +18,7 @@ prior cache + an error field, and NEVER breaks the app.
 import json
 import re
 import threading
+import time as _time
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
@@ -35,6 +36,13 @@ _DATA_DIR: Any = None
 _MODEL = 'haiku'
 
 _lock = threading.Lock()
+
+
+def _log(msg):
+    """Module-local logger. Auto-refresh runs on a daemon thread with no request
+    context, so a silent failure there would be invisible — this is the only way
+    its skips and errors reach the log."""
+    print(msg, flush=True)
 
 
 def wire(*, scribe_call_fn, load_project_fn, recent_transcripts_fn,
@@ -238,6 +246,115 @@ def _staleness(project_id, cache):
         return False, '', n_now
     except Exception:
         return False, '', cache.get('chat_count')
+
+
+# ── Auto-refresh: follow the chats, not a clock ──────────────────────────────
+#
+# The digest had exactly one writer — a button. So it aged silently: this
+# install's was nine days and 177 chats out of date while the UI called it
+# fresh. A nightly job would fix the staleness and still be wrong: it refreshes
+# when nothing has happened, and doesn't when a busy afternoon has.
+#
+# The trigger is SESSION END, alongside Scribe / Distiller / Beacon in
+# `_write_session_memory`. That is the moment a chat actually changed, it is
+# already the established place for expensive best-effort per-project work, and
+# it costs nothing on an idle project. The coordination loop was the other
+# candidate and is the wrong one: it only acts on projects with >=2 live agents,
+# so a single-agent project would never refresh.
+#
+# Every gate below exists to keep this from becoming a Haiku call per turn.
+_last_auto_refresh: dict = {}      # pid -> monotonic ts of last auto refresh
+_auto_lock = threading.Lock()
+
+
+def _cfg(key, default):
+    try:
+        from mc import state as _state
+        return _state.CONFIG.get(key, default)
+    except Exception:
+        return default
+
+
+def _publish_refresh_event(project_id, n_topics):
+    """Announce on the coordination event log + SSE, so a refreshed digest
+    reaches the same stream as every other cross-agent signal instead of being
+    a silent file write. Best-effort by construction: coordination may be
+    disabled or unwired, and that must not matter here."""
+    try:
+        from mc.blueprints import coordination_routes as _coord
+        ev = {'kind': 'TOPICS_REFRESHED', 'project_id': project_id,
+              'topics': n_topics,
+              'ts': datetime.now(timezone.utc).isoformat(),
+              'source': 'auto:session_end'}
+        _coord._append_event(project_id, ev)
+        _coord._push_sse(project_id, ev)
+    except Exception as e:
+        _log(f"[topics] event publish skipped: {e}")
+
+
+def _maybe_refresh(project_id):
+    """Re-synthesize the digest iff it is genuinely out of date. Never raises."""
+    try:
+        if not _cfg('topics_auto_refresh_enabled', True):
+            return
+        cache = _load_json(_topics_path(project_id), None)
+        # No digest = the user has never opened Topics for this project. Do NOT
+        # build one unbidden: that would be a model call per project on the
+        # first session after an update, for a surface they may never use. The
+        # "Build it" button is the opt-in; auto-refresh only maintains.
+        if not cache:
+            return
+        stale, reason, _ = _staleness(project_id, cache)
+        if not stale:
+            return
+        # Debounce per project. A burst of short sessions is one refresh, not
+        # five. Mirrors the Distiller's cross-project walk debounce.
+        interval = float(_cfg('topics_refresh_min_interval_seconds', 900))
+        now = _time.monotonic()
+        with _auto_lock:
+            last = _last_auto_refresh.get(project_id, 0.0)
+            if last and (now - last) < interval:
+                return
+            _last_auto_refresh[project_id] = now
+        # _lock is the same mutex the manual refresh route takes, so a click
+        # and a session end can't synthesize over each other.
+        with _lock:
+            sigs = _gather_signals(project_id)
+            if not sigs:
+                return
+            topics = _synthesize(sigs)
+            _atomic_write(_topics_path(project_id), {
+                'topics': topics, 'chat_count': len(sigs),
+                'generated_at': datetime.now(timezone.utc).isoformat()})
+        _log(f"[topics] auto-refreshed {project_id}: {len(topics)} topics "
+             f"from {len(sigs)} chats ({reason})")
+        _publish_refresh_event(project_id, len(topics))
+    except Exception as e:
+        # Same posture as Scribe/Distiller/Beacon: a failed digest must never
+        # affect the session that triggered it.
+        _log(f"[topics] auto-refresh failed for {project_id}: {e}")
+
+
+def maybe_refresh_async(project_id):
+    """Fire-and-forget entry point for the session-end hook.
+
+    The worker is wrapped rather than passed directly: `_maybe_refresh` guards
+    its own body, but anything raised outside that guard would surface as an
+    unhandled exception on a daemon thread — noise in the log at best, and on
+    some runtimes a warning that looks like a real fault in the completion
+    path. Nothing from a digest refresh should ever be visible there.
+    """
+    def _run():
+        try:
+            _maybe_refresh(project_id)
+        except Exception as e:
+            _log(f"[topics] auto-refresh worker crashed for {project_id}: {e}")
+
+    try:
+        threading.Thread(target=_run, daemon=True,
+                         name=f'topics-{project_id}').start()
+    except Exception as e:
+        _log(f"[topics] auto-refresh dispatch failed for {project_id}: {e}")
 
 
 @bp.route('/api/project/<project_id>/topics', methods=['GET'])

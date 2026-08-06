@@ -74,12 +74,15 @@ _resolve_claude: Callable[[], str] = None  # type: ignore[assignment]
 _register_process: Callable[..., Any] = None  # type: ignore[assignment]
 _read_agent_stream: Callable[..., Any] = None  # type: ignore[assignment]
 _hide_windows_delayed: Callable[[int], Any] = None  # type: ignore[assignment]
+# Session-end topics-digest refresh. Wired by server.py (never imported here —
+# mc.memory must not import a blueprint). None = feature absent, hook no-ops.
+_topics_refresh_hook: Callable[[str], Any] = None  # type: ignore[assignment]
 
 
 def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
          popen_flags, startupinfo, load_project_fn, get_manager_fn,
          resolve_claude_fn, register_process_fn, read_agent_stream_fn,
-         hide_windows_delayed_fn):
+         hide_windows_delayed_fn, topics_refresh_hook=None):
     """Late-bind path/config roots + dispatch-family deps. Called once by
     server.py BEFORE the blueprint wire() stanzas that pass memory.* values
     (agent_routes' write_session_memory_fn/scribe_call_fn/dispatch_condense_fn
@@ -88,7 +91,7 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     global DATA_DIR, MEMORY_DIR, CLAUDE_HOME, _SESSION_SIZE_LIMIT
     global _POPEN_FLAGS, _STARTUPINFO
     global load_project, get_manager, _resolve_claude, _register_process
-    global _read_agent_stream, _hide_windows_delayed
+    global _read_agent_stream, _hide_windows_delayed, _topics_refresh_hook
     DATA_DIR = data_dir
     MEMORY_DIR = memory_dir
     CLAUDE_HOME = claude_home
@@ -101,6 +104,9 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     _register_process = register_process_fn
     _read_agent_stream = read_agent_stream_fn
     _hide_windows_delayed = hide_windows_delayed_fn
+    # Optional: session-end topics-digest refresh. Wired rather than imported so
+    # mc.memory keeps its no-blueprint-imports invariant. None = no-op.
+    _topics_refresh_hook = topics_refresh_hook
 
 
 def _encode_project_path(project_path):
@@ -1092,6 +1098,28 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     except Exception as _beacon_err:
         _log(f"[beacon] dispatch EXCEPTION project_id={project_id}: "
              f"{type(_beacon_err).__name__}: {_beacon_err!r}")
+    # Topics digest — same shape and same reasoning as Beacon above: an
+    # expensive per-project artifact regenerated when a chat actually changed,
+    # threaded + best-effort, never blocking Scribe / MEMORY.md / completion.
+    #
+    # This is the digest's ONLY automatic writer. Before it, the sole writer was
+    # a button, so the digest aged silently — nine days and 177 chats out of
+    # date on this install while the UI reported it fresh. Session end is the
+    # right trigger because it IS the event ("a chat changed"); a nightly job
+    # would refresh when nothing happened and not when a busy afternoon did.
+    # The hook self-gates on staleness, a per-project debounce, and the
+    # existence of a digest at all, so an idle project costs nothing.
+    #
+    # Called through a WIRED hook, not an import: mc.memory must never import a
+    # blueprint (import-cycle invariant, enforced by
+    # tests/test_memory_module.py::test_import_smoke). Beacon can `from
+    # beacon.hooks import ...` only because beacon is a top-level package.
+    try:
+        if _topics_refresh_hook is not None:
+            _topics_refresh_hook(project_id)
+    except Exception as _topics_err:
+        _log(f"[topics] dispatch EXCEPTION project_id={project_id}: "
+             f"{type(_topics_err).__name__}: {_topics_err!r}")
     return True
 
 

@@ -556,6 +556,11 @@ memory.wire(
     register_process_fn=_bp_agent._register_process,
     read_agent_stream_fn=_bp_agent._read_agent_stream,
     hide_windows_delayed_fn=_bp_agent._hide_windows_delayed,
+    # Session-end topics-digest refresh. A lambda, not a direct reference:
+    # topics_routes is imported ~800 lines below this call, and resolving the
+    # module lazily keeps this independent of that ordering. mc.memory cannot
+    # import the blueprint itself (no-blueprint-imports invariant).
+    topics_refresh_hook=lambda pid: _bp_topics.maybe_refresh_async(pid),
 )
 # Inbound shims — startup backfills / runtime hooks / the blueprint wire() sites
 # below and the tests read these off server.<name>; all call through to the

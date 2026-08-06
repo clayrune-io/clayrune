@@ -6,6 +6,44 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06f] — the topics digest now follows the chats
+
+The digest had exactly one writer: a button. So it aged silently — nine days and
+177 chats out of date on this install while the UI called it fresh. It now also
+refreshes on **session end**, alongside Scribe / Distiller / Beacon in
+`_write_session_memory`.
+
+**Session end, not a nightly job.** A clock refreshes when nothing has happened
+and fails to when a busy afternoon has; session end *is* the event the digest
+cares about ("a chat changed"), and it costs nothing on an idle project.
+
+**Not the coordination loop, either** — worth recording, since that was the
+other candidate. It only acts on projects with >= 2 live agents, so a
+single-agent project would never refresh. What the coordination layer does get
+is the *result*: a completed refresh publishes a `TOPICS_REFRESHED` event to the
+per-project event log and SSE stream, so it lands in the same channel as every
+other cross-agent signal instead of being a silent file write.
+
+Four gates, because the thing being gated is a model call:
+
+- kill switch (`topics_auto_refresh_enabled`, default on)
+- **only if a digest already exists** — no cache means the user has never opened
+  Topics for that project, and building one unbidden would be a model call per
+  project on the first session after an update, for a surface they may never use
+- only if genuinely stale (the real `_staleness`, not a timestamp guess)
+- per-project debounce (`topics_refresh_min_interval_seconds`, default 900) so a
+  burst of short sessions is one refresh, not five
+
+**Wired, not imported.** `mc.memory` must never import a blueprint — an
+invariant `tests/test_memory_module.py::test_import_smoke` enforces, and which
+caught the first version of this. Beacon can `from beacon.hooks import ...` only
+because beacon is a top-level package. The hook is passed through
+`memory.wire(topics_refresh_hook=...)` instead; `None` = no-op.
+
+Same never-load-bearing posture as its neighbours, and the worker is wrapped so
+nothing can surface as an unhandled exception on a daemon thread next to a
+completion it had nothing to do with.
+
 ## [2026-08-06e] — Tier 3 step 1: the rail can show topics instead of chats
 
 A `Chats | Topics` toggle at the top of the conversation rail. Same rail, same
