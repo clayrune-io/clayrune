@@ -32,6 +32,18 @@ hidden from the conversation list, but **only when MC has no record of
 dispatching them**: no live session, and no agent-log row that wasn't itself
 synthesized by the backfill. A real one-word "ok" chat that MC ran still shows.
 
+**Follow-up (same day):** redirecting the probe fixed the pollution but moved
+the accumulation — a probe fires on page boot, so the scratch dir grows by
+~6 x 48 KB a day on an active install. It is now capped at the 3 newest.
+
+That prune shipped broken first and the test exists because of it: MC's
+`_encode_project_path` keeps underscores (`..._claude-...-data-_auth_probe`)
+while the CLI writes the dashed variant (`...--claude-...-data--auth-probe`),
+so the first version pruned a directory that does not exist and reported
+success. Only counting files in the real directory before and after caught it.
+Use `_encoded_dir_candidates` — the same helper `list_sessions` uses — for any
+code that has to find a transcript directory.
+
 **2. A manual message silently continued the steward's session.**
 `getDefaultResumeId()` returned the newest agent-log row, whatever it was. A
 steward cycle finished at 12:54 and left `f9774c2a` on top — so the next thing

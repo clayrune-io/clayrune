@@ -95,6 +95,63 @@ def test_probe_shaped_chat_is_kept_when_mc_dispatched_it():
     assert _keep(_t('ok', sid='mine'), {'mine': {'status': 'running'}}, {})
 
 
+# ── pruning the probe's own scratch dir ──────────────────────────────────────
+
+def test_prune_uses_every_encoded_variant(tmp_path, monkeypatch):
+    """Prune must look in ALL of `_encoded_dir_candidates`, not just the
+    primary encoding.
+
+    This failed silently once: MC's `_encode_project_path` keeps underscores
+    (`..._claude-mission-control-data-_auth_probe`) while the CLI writes the
+    dashed variant (`...--claude-...-data--auth-probe`). The first version
+    pruned a directory that does not exist and reported success — caught only
+    by counting files in the real dir before and after.
+    """
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path / 'data' / 'projects')
+    probe_cwd = Path(ar._auth_probe_cwd())
+
+    fake_home = tmp_path / 'home'
+    monkeypatch.setattr(ar.Path, 'home', staticmethod(lambda: fake_home))
+
+    rt = ar._agent_runtime.get_runtime('claude')
+    variants = rt._encoded_dir_candidates(str(probe_cwd.resolve()))
+    assert len(variants) > 1, 'fixture assumes more than one encoding variant'
+
+    # Write transcripts ONLY into the non-primary variant — the CLI's choice.
+    d = fake_home / '.claude' / 'projects' / variants[-1]
+    d.mkdir(parents=True)
+    import time as _t
+    for i in range(6):
+        f = d / f'probe-{i}.jsonl'
+        f.write_text('{}', encoding='utf-8')
+        _t.sleep(0.01)  # distinct mtimes so "newest" is well defined
+
+    ar._prune_auth_probe_transcripts(keep=3)
+    left = sorted(p.name for p in d.glob('*.jsonl'))
+    assert len(left) == 3, f'expected 3 kept, got {left}'
+    assert left == ['probe-3.jsonl', 'probe-4.jsonl', 'probe-5.jsonl']  # newest
+
+
+def test_prune_is_a_noop_below_the_cap(tmp_path, monkeypatch):
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path / 'data' / 'projects')
+    fake_home = tmp_path / 'home'
+    monkeypatch.setattr(ar.Path, 'home', staticmethod(lambda: fake_home))
+    rt = ar._agent_runtime.get_runtime('claude')
+    d = (fake_home / '.claude' / 'projects'
+         / rt._encoded_dir_candidates(str(Path(ar._auth_probe_cwd()).resolve()))[-1])
+    d.mkdir(parents=True)
+    (d / 'only.jsonl').write_text('{}', encoding='utf-8')
+    ar._prune_auth_probe_transcripts(keep=3)
+    assert [p.name for p in d.glob('*.jsonl')] == ['only.jsonl']
+
+
+def test_prune_never_raises(monkeypatch):
+    """Tidying up must not be able to fail an auth check."""
+    monkeypatch.setattr(ar, '_auth_probe_cwd',
+                        lambda: (_ for _ in ()).throw(OSError('nope')))
+    ar._prune_auth_probe_transcripts()  # must not raise
+
+
 def test_backfilled_row_does_not_rescue_a_probe():
     """The backfill synthesizes a row for EVERY unknown transcript, probes
     included — so a synthesized row is not evidence MC asked for the session."""

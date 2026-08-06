@@ -1236,12 +1236,54 @@ def _auth_probe_cwd() -> str:
         # load_projects() (the DATA_DIR-pollution rule in CLAUDE.md).
         d = Path(DATA_DIR).parent / '_auth_probe'
         d.mkdir(parents=True, exist_ok=True)
-        return str(d)
+        # Absolute: the CLI derives its transcript directory name from the CWD,
+        # so a relative path here would encode differently depending on where
+        # the server was started and the prune could never find it again.
+        return str(d.resolve())
     except Exception:
         try:
             return tempfile.gettempdir()
         except Exception:
             return None  # type: ignore[return-value]
+
+
+def _prune_auth_probe_transcripts(keep: int = 3) -> None:
+    """Keep the probe's own transcript dir from growing without bound.
+
+    Redirecting the probe out of the project (above) fixed the pollution but
+    moved the accumulation: a probe fires on page boot, so this is roughly
+    6 x ~48 KB a day on an actively-used install — ~100 MB a year of files
+    whose entire content is "ok" / "I'm here". They are MC's own throwaway
+    output in a directory MC created, never user data, so pruning them is
+    cache eviction rather than deletion of anything anyone wrote.
+
+    Best-effort and never raises: failing to tidy up must not fail an auth
+    check.
+    """
+    try:
+        rt = _agent_runtime.get_runtime('claude')
+        # Must be _encoded_dir_candidates, NOT _encode_project_path: MC's
+        # primary encoding keeps underscores (`..._claude-mission-control...`)
+        # while the CLI writes the dashed variant (`...--claude-...--auth-probe`).
+        # The single-encoding version of this pruned a directory that does not
+        # exist and reported success — verified against the real dir before and
+        # after. `_encoded_dir_candidates` is the same helper list_sessions uses
+        # for exactly this reason.
+        root = Path.home() / '.claude' / 'projects'
+        cwd = str(Path(_auth_probe_cwd()).resolve())
+        for encoded in (rt._encoded_dir_candidates(cwd) or []):  # type: ignore[attr-defined]
+            d = root / encoded
+            if not d.is_dir():
+                continue
+            files = sorted(d.glob('*.jsonl'),
+                           key=lambda f: f.stat().st_mtime, reverse=True)
+            for f in files[keep:]:
+                try:
+                    f.unlink()
+                except OSError:
+                    pass
+    except Exception as e:
+        _log(f"[auth-probe] transcript prune failed: {e}")
 
 
 def _run_claude_auth_probe() -> dict:
@@ -1304,6 +1346,9 @@ def _run_claude_auth_probe() -> dict:
     except Exception:
         with _claude_auth_lock:
             _claude_auth_state['last_probe_at'] = _time.time()
+    # Runs on every path, including the failure ones — a CLI that errored may
+    # still have written its transcript before dying.
+    _prune_auth_probe_transcripts()
     with _claude_auth_lock:
         return dict(_claude_auth_state)
 
