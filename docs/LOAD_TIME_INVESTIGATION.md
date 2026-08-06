@@ -394,6 +394,23 @@ Everything else on that list moved into Tier 2 below.
 Three of the five landed. The other two are **declined on evidence, not
 deferred vaguely** — the reasoning is here so nobody re-opens them blind.
 
+### Re-measured after restart
+
+| measure | before | after |
+|---|---|---|
+| `list_sessions(limit=20)` on mission_control | 258.5 ms | **2.4 ms** (identical output) |
+| `/conversations?limit=20` endpoint | 220 ms | **29 ms** |
+| **warm reload** — wire bytes | 2,286 KB | **172 KB** |
+| **warm reload** — `/static/` from disk cache | 0 of 43 | **43 of 43, 0 bytes** |
+| **warm reload** — time to first tile | — | **92 ms** |
+| cold boot — wire bytes | 6,900 KB | 2,286 KB |
+
+The reload row is the one `immutable` existed to move, and it is measured with
+CDP (`encodedDataLength` + `fromDiskCache`) — **not** `page.on('response')` plus
+`res.body()`, which returns a body for cache hits too and therefore cannot tell
+a transfer from a cache hit at all. An earlier attempt at this table using the
+naive method produced a number that meant nothing; if you re-measure, use CDP.
+
 ### Shipped
 
 **8. `list_sessions()` is cached per (path, mtime, size).** This was the real

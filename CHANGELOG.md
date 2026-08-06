@@ -11,6 +11,16 @@
 Follow-on to Tier 1. Three items shipped, two declined with the measurement that
 decided them, and one earlier finding corrected.
 
+Verified live after restart:
+
+| | before | after |
+|---|---|---|
+| `list_sessions(limit=20)` | 258.5 ms | **2.4 ms** (identical output) |
+| `/conversations?limit=20` | 220 ms | **29 ms** |
+| warm reload, wire bytes | 2,286 KB | **172 KB** |
+| warm reload, `/static/` cached | 0 of 43 | **43 of 43, 0 bytes** |
+| warm reload, first tile | — | **92 ms** |
+
 **`list_sessions()` is now cached per (path, mtime, size).** The investigation
 under-sold this one: `/conversations?limit=20` measured **220 ms** — the slowest
 endpoint in the app, paid on every project-modal open — because it re-opened the
