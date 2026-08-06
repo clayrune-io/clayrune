@@ -1,5 +1,30 @@
 // ── Tile HTML (compact grid card) ───────────────────────────────────────────
 
+// /api/projects no longer ships the `backlog` array — only a summary of it
+// (`backlog_open_count` / `backlog_done_count` / `backlog_next_text`). It was
+// 91% of that payload and the list surfaces read three scalars out of it.
+//
+// The full items still arrive per project, lazily: a project modal fetches them
+// on open (modal-manager.js) and the cross-project view on open
+// (cross-backlog.js), both marking the project `_backlogFull`. So prefer the
+// live array whenever it is loaded — it is fresher than the last list poll and
+// reflects in-place edits immediately — and fall back to the summary otherwise.
+function backlogSummary(p) {
+  if (p && p._backlogFull && Array.isArray(p.backlog)) {
+    const open = p.backlog.filter(i => i.status === 'open');
+    return {
+      open: open.length,
+      done: p.backlog.filter(i => i.status === 'done').length,
+      nextText: (open[0] && open[0].text) || '',
+    };
+  }
+  return {
+    open: (p && p.backlog_open_count) || 0,
+    done: (p && p.backlog_done_count) || 0,
+    nextText: (p && p.backlog_next_text) || '',
+  };
+}
+
 function computeLiveStatus(projectId) {
   let currentTask = 'Idle', currentTaskClass = 'idle';
   let nextAction = '\u2014', nextActionClass = '';
@@ -121,9 +146,9 @@ function computeLiveStatus(projectId) {
   // Backlog fallback
   if (!nextActionClass) {
     const p = allProjects.find(x => x.id === projectId);
-    const open = ((p && p.backlog) || []).filter(i => i.status === 'open');
-    if (open.length) {
-      const text = open[0].text || '';
+    const bl = backlogSummary(p);
+    if (bl.open) {
+      const text = bl.nextText || '';
       nextAction = text.length > 55 ? text.slice(0, 52) + '...' : text;
       nextActionClass = 'next-text';
     }
@@ -263,10 +288,9 @@ function tileHTML(p, slotIndex) {
   const sc = `status-${p.status||'unknown'}`;
   const fs = friendlyStatus(p);
   const domCfg = getDomainConfig(p.domain||'general');
-  const backlog = p.backlog || [];
-  const openItems = backlog.filter(i => i.status === 'open');
-  const backlogBadge = openItems.length
-    ? `<span class="backlog-badge">${openItems.length} open</span>` : '';
+  const bl = backlogSummary(p);
+  const backlogBadge = bl.open
+    ? `<span class="backlog-badge">${bl.open} open</span>` : '';
   // No separate "AGENT RUNNING" badge: the single status pill below is the
   // sole, authoritative indicator of the agent's immediate state (user
   // directive — two contradicting badges is exactly the bug being fixed).
@@ -315,12 +339,18 @@ function modalContentHTML(p) {
   // only cost vertical space. The tile / mobile row / list row still use
   // friendlyStatus(p) — this is a modal-only removal.
   const showDone = showDoneMap[p.id] || false;
-  const backlog = p.backlog || [];
+  // Items render only once the modal's own /backlog fetch has landed — the list
+  // payload carries counts, not bodies. `bl` is the count source either way, so
+  // the badges are correct during the brief pre-hydration window instead of
+  // flashing "0 open" and then filling in.
+  const backlogLoaded = !!(p._backlogFull && Array.isArray(p.backlog));
+  const backlog = backlogLoaded ? p.backlog : [];
   const openItems = backlog.filter(i => i.status === 'open');
   const doneItems = backlog.filter(i => i.status === 'done');
+  const bl = backlogSummary(p);
 
-  const backlogBadge = openItems.length
-    ? `<span class="backlog-badge">${openItems.length} open</span>` : '';
+  const backlogBadge = bl.open
+    ? `<span class="backlog-badge">${bl.open} open</span>` : '';
 
   const modalLive = computeLiveStatus(p.id);
   const currentTaskHTML = p.blocked
@@ -336,7 +366,22 @@ function modalContentHTML(p) {
   // ⋮ menu "Advanced" group open-state (persisted, like the sidebar's Advanced).
   const _advOpen = (() => { try { return localStorage.getItem('mc_modal_menu_advanced_open') === '1'; } catch (_) { return false; } })();
 
-  const logHTML = (p.activity_log||[]).slice(0,20).map(e => `
+  // ── Inactive tabs are not built ──────────────────────────────────────────
+  // Measured on mission_control (2026-08-06): the modal was 8,270 elements, of
+  // which 6,001 were the Agent Log tab and 630 the Backlog tab — ~84% behind a
+  // tab nobody was looking at. refreshModalById() rebuilds ALL of it via
+  // innerHTML on every SSE turn event and every poll tick (41–46 ms of blocked
+  // main thread, repeatedly). Every tab switch already re-renders the modal
+  // (switchModalTab → refreshModal), so building only the visible panel costs
+  // nothing and is invisible to the user.
+  //
+  // The `agent` panel is the exception: it is built unconditionally because it
+  // owns the LIVE streaming output nodes that refreshModalById works hard to
+  // carry across the innerHTML wipe. Dropping it while the user reads another
+  // tab would throw away in-flight stream state.
+  const tabOn = t => activeTab === t;
+
+  const logHTML = !tabOn('activity') ? '' : (p.activity_log||[]).slice(0,20).map(e => `
     <div class="log-entry">
       <span class="log-ts">${esc(e.ts_relative||e.ts||'')}</span>
       <span class="log-msg">${esc(e.msg||'')}</span>
@@ -349,7 +394,8 @@ function modalContentHTML(p) {
     if ((it.source || '').startsWith('agent:')) return 1;
     return 2;
   };
-  const visibleItems = [...openItems, ...(showDone ? doneItems : [])].slice().sort((a,b) => rank(a) - rank(b));
+  const visibleItems = !tabOn('backlog') ? []
+    : [...openItems, ...(showDone ? doneItems : [])].slice().sort((a,b) => rank(a) - rank(b));
   const backlogItemsHTML = visibleItems.map(item => {
     const isAgent = (item.source || '').startsWith('agent:');
     const isInProgress = item.agent_status === 'in_progress';
@@ -421,7 +467,11 @@ function modalContentHTML(p) {
           <button onclick="submitNote('${esc(p.id)}','${esc(item.id)}')">Add</button>
         </div>
       </div>
-    </div>`}).join('');
+    </div>`}).join('') || (backlogLoaded ? '' :
+      // Pre-hydration: an empty list here would read as "no backlog" on a
+      // project that has one. Only say that when the fetch has actually landed.
+      `<div class="backlog-loading" style="padding:18px 12px;text-align:center;`
+      + `color:var(--text-faint);font-size:12px">Loading backlog…</div>`);
 
   const undoBtn = undoStack.length && undoStack[undoStack.length-1].projectId === p.id
     ? `<button class="btn-undo" onclick="performUndo(event)" title="Undo ${undoStack[undoStack.length-1].label}">↩ Undo</button>`
@@ -460,7 +510,7 @@ function modalContentHTML(p) {
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-agent"/></svg></span> Agent
             </button>
             <button class="modal-menu-item${activeTab==='backlog'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','backlog')">
-              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backlog"/></svg></span> Backlog${openItems.length ? `<span class="tab-badge" style="margin-left:auto">${openItems.length}</span>` : ''}
+              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backlog"/></svg></span> Backlog${bl.open ? `<span class="tab-badge" style="margin-left:auto">${bl.open}</span>` : ''}
             </button>
             <button class="modal-menu-item${activeTab==='agent-log'?' active':''}" data-tab-name="agent-log" onclick="_mcMenuSwitchTab('${esc(p.id)}','agent-log')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-log"/></svg></span> Agent Log
@@ -665,7 +715,7 @@ function modalContentHTML(p) {
     </div>
     <div class="modal-tab-bar">
       <div class="modal-tab ${activeTab==='agent'?'active':''}" onclick="switchModalTab('${esc(p.id)}','agent')">Agent</div>
-      <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${esc(p.id)}','backlog')">Backlog${openItems.length ? `<span class="tab-badge">${openItems.length}</span>` : ''}</div>
+      <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${esc(p.id)}','backlog')">Backlog${bl.open ? `<span class="tab-badge">${bl.open}</span>` : ''}</div>
       <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
       <div class="modal-tab ${activeTab==='plans'?'active':''}" onclick="switchModalTab('${esc(p.id)}','plans')">Plans</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
@@ -680,6 +730,7 @@ function modalContentHTML(p) {
     <div class="modal-scroll-body${activeTab==='agent'?' agent-active':''}">
       <button type="button" class="modal-back-to-chat" onclick="switchModalTab('${esc(p.id)}','agent')" title="Back to the conversation">&#8592; Back to conversation</button>
       <div class="modal-tab-content ${activeTab==='backlog'?'active':''}" data-tab="backlog">
+        ${!tabOn('backlog') ? '' : `
         <div class="card-section">
           <div class="section-title">
             <span>Backlog ${backlogBadge}</span>
@@ -705,32 +756,35 @@ function modalContentHTML(p) {
               <button class="btn-add" onclick="addBacklogItem('${esc(p.id)}')">+ Add</button>
             </div>
           </div>
-        </div>
+        </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='agent'?'active':''}" data-tab="agent">
         ${agentPanelHTML(p)}
       </div>
       <div class="modal-tab-content ${activeTab==='agent-log'?'active':''}" data-tab="agent-log">
-        ${agentLogPanelHTML(p)}
+        ${!tabOn('agent-log') ? '' : agentLogPanelHTML(p)}
       </div>
       <div class="modal-tab-content ${activeTab==='plans'?'active':''}" data-tab="plans">
+        ${!tabOn('plans') ? '' : `
         <div class="card-section">
           <div class="section-title">Plans</div>
           <div id="plans-toolbar-${esc(p.id)}" style="display:none"></div>
           <div id="plans-list-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
-        </div>
+        </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='activity'?'active':''}" data-tab="activity">
+        ${!tabOn('activity') ? '' : `
         <div class="card-section">
           <div class="section-title">Activity Log</div>
           <div class="log-entries">${logHTML || '<div style="color:var(--text-faint);font-style:italic">No activity yet</div>'}</div>
-        </div>
+        </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='workflows'?'active':''}" data-tab="workflows">
+        ${!tabOn('workflows') ? '' : `
         <div class="card-section">
           <div class="section-title">Workflows</div>
           <div id="workflows-body-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
-        </div>
+        </div>`}
       </div>
     </div>`;
 }
@@ -782,6 +836,7 @@ function listRowHTML(p) {
 
 
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
+window.backlogSummary = backlogSummary;
 window.computeLiveStatus = computeLiveStatus;
 window.friendlyStatus = friendlyStatus;
 window.friendlySummary = friendlySummary;

@@ -256,9 +256,27 @@ async function _mobilePairRevokeToken(tokenId, label) {
   }
 }
 
-function _mobilePairRenderQRInto(elId, uri) {
+// qrcodejs was a render-blocking <script> in the document head for a panel
+// almost nobody opens. Load it on first QR render instead.
+let _qrPromise = null;
+function ensureQRCode() {
+  if (typeof QRCode !== 'undefined') return Promise.resolve();
+  if (_qrPromise) return _qrPromise;
+  _qrPromise = new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = 'https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js';
+    s.onload = resolve;
+    s.onerror = () => reject(new Error('qrcodejs failed to load'));
+    document.head.appendChild(s);
+  }).catch(e => { _qrPromise = null; console.warn('[Clayrune]', e); });
+  return _qrPromise;
+}
+
+async function _mobilePairRenderQRInto(elId, uri) {
   const el = document.getElementById(elId);
   if (!el || !uri) return;
+  el.innerHTML = '<div style="font-size:11px;color:#666">Rendering QR…</div>';
+  await ensureQRCode();
   el.innerHTML = '';
   if (typeof QRCode === 'undefined') {
     el.innerHTML = '<div style="font-size:11px;color:#666">QR library not loaded</div>';
@@ -362,9 +380,11 @@ function _mobilePairCopyUri() {
   );
 }
 
-function _mobilePairRenderQR(uri) {
+async function _mobilePairRenderQR(uri) {
   const el = document.getElementById('mobile-pair-qr');
   if (!el || !uri) return;
+  el.innerHTML = '<div style="font-size:11px;color:#666">Rendering QR…</div>';
+  await ensureQRCode();
   el.innerHTML = '';
   if (typeof QRCode === 'undefined') {
     el.innerHTML = '<div style="font-size:11px;color:#666">QR library not loaded</div>';

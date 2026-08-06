@@ -1,6 +1,39 @@
 // ── Cross-project Backlog View ──────────────────────────────────────────────
 let _allBacklogFilter = { status: 'open', search: '', priority: 'all' };
 
+// /api/projects ships backlog COUNTS, not items (it was 91% of that payload).
+// This view is the one surface that needs every project's items at once, so it
+// fetches them itself when opened — the cost lands on the click that needs it
+// instead of on every boot and every 30 s poll for everyone.
+//
+// Marks each project `_backlogFull` so the shared list-refresh preserver
+// (_preserveOpenBacklogs) keeps the items across a poll, exactly as it does for
+// a project modal. Sequential-with-concurrency-cap rather than a 20-way fan-out:
+// this is a background hydrate, not a race.
+let _allBacklogHydrating = false;
+async function _hydrateAllBacklogs() {
+  if (_allBacklogHydrating) return;
+  _allBacklogHydrating = true;
+  try {
+    const need = allProjects.filter(p => !p._backlogFull &&
+                                         (p.backlog_total_count || 0) > 0);
+    for (let i = 0; i < need.length; i += 4) {
+      await Promise.all(need.slice(i, i + 4).map(async p => {
+        try {
+          const res = await fetch(API_BASE +
+            `/api/project/${encodeURIComponent(p.id)}/backlog`);
+          if (!res.ok) return;
+          p.backlog = await res.json();
+          p._backlogFull = true;
+        } catch (e) {}
+      }));
+      if (openModals.has('__all_backlog')) renderAllBacklog();  // progressive fill
+    }
+  } finally {
+    _allBacklogHydrating = false;
+  }
+}
+
 async function openAllBacklog() {
   const modalId = '__all_backlog';
   if (openModals.has(modalId)) {
@@ -8,6 +41,7 @@ async function openAllBacklog() {
     if (entry.minimized) restoreModal(modalId);
     focusModal(modalId);
     renderAllBacklog();
+    _hydrateAllBacklogs();
     return;
   }
 
@@ -57,6 +91,7 @@ async function openAllBacklog() {
   focusModal(modalId);
 
   renderAllBacklog();
+  _hydrateAllBacklogs();
 }
 
 function renderAllBacklog() {
@@ -88,7 +123,11 @@ function renderAllBacklog() {
   });
   if (countEl) countEl.textContent = `${rows.length} item${rows.length===1?'':'s'}`;
   if (!rows.length) {
-    container.innerHTML = '<div style="padding:40px 12px;text-align:center;color:var(--text-faint);font-size:12px">No matching backlog items.</div>';
+    // Distinguish "still fetching" from "genuinely nothing" — items arrive per
+    // project after this view opens (see _hydrateAllBacklogs).
+    const msg = _allBacklogHydrating ? 'Loading backlog items…'
+                                     : 'No matching backlog items.';
+    container.innerHTML = `<div style="padding:40px 12px;text-align:center;color:var(--text-faint);font-size:12px">${msg}</div>`;
     return;
   }
   container.innerHTML = rows.map(({ p, item }) => {
@@ -121,16 +160,21 @@ function renderAllBacklog() {
 
 function _jumpToBacklogItem(projectId, itemId) {
   openProjectModal(projectId);
-  setTimeout(() => {
+  // A modal opens on the `agent` tab, and inactive tabs are no longer built —
+  // so without this switch the item simply wouldn't be in the DOM to jump to.
+  if (typeof switchModalTab === 'function') switchModalTab(projectId, 'backlog');
+  // Two attempts: the modal's own backlog fetch may land after the first tick.
+  const tryJump = () => {
     const el = document.querySelector(`[data-modal-id="${projectId}"] .backlog-item[data-item-id="${itemId}"]`);
-    if (el) {
-      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-      el.style.transition = 'background 0.4s';
-      const orig = el.style.background;
-      el.style.background = 'var(--accent-dim)';
-      setTimeout(() => { el.style.background = orig; }, 900);
-    }
-  }, 150);
+    if (!el) return false;
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    el.style.transition = 'background 0.4s';
+    const orig = el.style.background;
+    el.style.background = 'var(--accent-dim)';
+    setTimeout(() => { el.style.background = orig; }, 900);
+    return true;
+  };
+  setTimeout(() => { if (!tryJump()) setTimeout(tryJump, 500); }, 150);
 }
 
 

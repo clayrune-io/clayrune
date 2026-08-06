@@ -66,15 +66,44 @@ function openTerminalPopout(projectId, sessionId, command) {
   focusModal(modalId);
 
   // Initialize xterm.js after DOM is ready
-  setTimeout(() => {
+  setTimeout(async () => {
+    await ensureXterm();
     initTerminalXterm(sessionId);
     connectTerminalStream(projectId, sessionId);
   }, 50);
 }
 
+// xterm's JS + CSS + fit addon used to be render-blocking <script>/<link> tags
+// in the document head — ~1 MB from jsdelivr on every boot for a pop-out most
+// sessions never open. Loaded here instead, once, on the first terminal.
+let _xtermPromise = null;
+function ensureXterm() {
+  if (window.Terminal && window.FitAddon) return Promise.resolve();
+  if (_xtermPromise) return _xtermPromise;
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = 'https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css';
+  document.head.appendChild(css);
+  const load = src => new Promise((resolve, reject) => {
+    const s = document.createElement('script');
+    s.src = src; s.onload = resolve; s.onerror = () => reject(new Error('failed to load ' + src));
+    document.head.appendChild(s);
+  });
+  // Sequential: the fit addon registers against the Terminal global.
+  _xtermPromise = load('https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js')
+    .then(() => load('https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js'))
+    .catch(e => { _xtermPromise = null; console.warn('[Clayrune] xterm failed to load:', e); });
+  return _xtermPromise;
+}
+
 function initTerminalXterm(sessionId) {
   const container = document.getElementById(`terminal-container-${sessionId}`);
   if (!container || terminalInstances[sessionId]) return;
+  if (!window.Terminal || !window.FitAddon) {
+    container.innerHTML = '<div style="padding:16px;color:#f87171;font-size:12px">'
+      + 'Terminal renderer unavailable — xterm.js could not be loaded (offline?).</div>';
+    return;
+  }
 
   const term = new Terminal({
     theme: {

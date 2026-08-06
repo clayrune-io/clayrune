@@ -6,6 +6,65 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06b] — load time: 420 requests → 73, modal DOM 8,270 → 1,613
+
+Tier 1 of `docs/LOAD_TIME_INVESTIGATION.md`, all six items. The investigation's
+headline held up: the server was never slow (boot 0.24–2.62 s, every endpoint
+<100 ms) — the client was, and its cost scaled with accumulated history.
+
+| | before | after |
+|---|---|---|
+| cold-boot requests | 420 | **73** |
+| cold-boot bytes | 6,900 KB | **3,137 KB** |
+| requests to the public internet | 353 | **5** (fonts) |
+| modal DOM (mission_control) | 8,270 elements | **1,613** |
+| one modal re-render | 41.1 ms | **13.5 ms** |
+| `backlog` in `/api/projects` | 687 KB | **6.4 KB** |
+
+- **`/api/projects` ships a backlog summary, not the backlog.** It was 91% of
+  that 789 KB response, re-sent on boot and every 30 s, per open tab, to render
+  three scalars. Now `backlog_open_count` / `backlog_done_count` /
+  `backlog_total_count` / `backlog_next_text`. Everything that renders item
+  bodies already lazy-loaded them per project; the cross-project view now does
+  the same on open. Two tests guard it — putting the array back would silently
+  re-inflate every boot.
+- **Diagram / terminal / QR libraries load on first use**, not in `<head>`.
+  Excalidraw alone was 327 of the 353 external requests (esm.sh serves every
+  transitive dependency as its own module). Since the bridge is no longer warm
+  when the first diagram lands, the renderer waits for it with an 8 s bound, and
+  a new `excalidraw-failed` event ends that wait immediately on an offline
+  network rather than stalling before the Mermaid fallback.
+- **In-flight guards on `loadConversations` / `loadAgentLog`.** Their guard was
+  `if (!cache[id])` and the cache is written *after* the fetch resolves, so
+  every render in the request window fired another — and each completion called
+  `refreshModal()`, which re-rendered, which re-entered the guard. Measured 7×
+  on `/conversations` and 2× on `/agent/log` (1,631 KB each). Now 1 and 1.
+- **`_resyncOpenModalsFromServer` no longer fires at boot.** It was bound to
+  `pageshow`, which fires on every load, not just a bfcache restore; it now
+  checks `event.persisted`. It also early-returns when nothing is open and
+  nothing is streaming — the grid refresh on resume is kept, the heartbeat probe
+  and SSE sweep for zero sockets are not.
+- **Inactive tabs are not built.** 6,001 of the modal's 8,270 elements were the
+  Agent Log tab and 630 the Backlog tab — ~84% behind a tab nobody was looking
+  at, rebuilt via `innerHTML` on every SSE turn event and poll tick. Every tab
+  switch already re-renders, so gating is invisible. The `agent` panel is
+  deliberately exempt: it owns the live streaming nodes that `refreshModalById`
+  works to carry across the wipe.
+- **Agent Log pages at 25 rows**, and a row's continue-composer is built when
+  opened rather than pre-rendered hidden — it was 500 live `<textarea>` + send
+  buttons in a closed panel.
+
+**One claim in the investigation is now settled, in the good direction.** It
+could not determine whether a real browser warm-caches the 353 esm.sh modules
+and refused to assume; Ron read the Network panel and the rows show
+`(disk cache)` at 0 KB. So that was a first-visit / post-update / offline tax
+plus ~350 main-thread cache lookups per boot — not the per-reload byte tax it
+looked like. Worth removing, correctly re-ranked.
+
+Not fixed, and named rather than buried: the conversation rail is still 1,147 of
+the remaining 1,613 modal elements — 126 rows derived from the 500-row agent-log
+merge. That is Tier 3 (promote Topics) and needs the product decision.
+
 ## [2026-08-06] — agents didn't know the browser pane existed
 
 The browser pane has shipped for months, and no agent has ever been told about

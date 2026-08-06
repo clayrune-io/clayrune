@@ -102,19 +102,43 @@
 </script>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&family=Nunito:wght@600;700;800&family=Fraunces:opsz,wght@9..144,400;9..144,500;9..144,700&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/css/xterm.min.css">
-<script src="https://cdn.jsdelivr.net/npm/@xterm/xterm@5.5.0/lib/xterm.min.js"></script>
-<script src="https://cdn.jsdelivr.net/npm/@xterm/addon-fit@0.10.0/lib/addon-fit.min.js"></script>
-<!-- QRCode.js (davidshimjs, MIT, ~25KB) — used by the Settings "Pair Mobile App"
-     section to render the clayrune://pair URI as a scannable QR for the
-     Android shell's SetupActivity. Pure JS, no dependencies. -->
-<script src="https://cdn.jsdelivr.net/npm/qrcodejs@1.0.0/qrcode.min.js"></script>
+<!-- xterm.js (terminal pop-out) and qrcodejs (Settings → Pair Mobile App) used to
+     be render-blocking tags here. Both serve one optional surface each, and
+     together with the diagram libs below they made a cold boot fetch ~3 MB from
+     three CDNs before the dashboard could paint — on a machine whose own server
+     answers every request in under 100 ms. They now load on first use:
+     ensureXterm() in static/js/terminal.js, ensureQRCode() in
+     static/js/mobile-pairing.js. -->
 <script type="module">
-  // Mermaid for agent-generated diagrams. v11 because v10's flowchart layout
-  // (dagre) produces tangled lines for non-trivial graphs; v11 ships with the
-  // ELK layout engine pre-registered, which is dramatically cleaner. Loaded
-  // as ESM so we can pin a version without relying on a global.
-  import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+  // Diagram libraries — LOADED ON DEMAND, not at boot.
+  //
+  // These used to be top-level imports in this <head>. Measured 2026-08-06, a
+  // cold boot issued 420 requests / 6.9 MB, of which 353 requests / 3.2 MB were
+  // this CDN block — 327 of them from esm.sh alone, because it serves every
+  // transitive dependency of @excalidraw as its own module file. None of it is
+  // needed unless an agent actually emits a ```mermaid block, which most
+  // sessions never do. It also made a local-first dashboard unable to draw
+  // itself promptly on a filtered or offline network.
+  //
+  // `window.ensureDiagramLibs()` returns a promise for mermaid and kicks off
+  // the (optional) Excalidraw upgrade. mermaid.js calls it the first time a
+  // placeholder needs rendering; the `mermaid-ready` / `excalidraw-ready`
+  // events still fire, so every existing consumer is unchanged.
+  let _diagramLibsPromise = null;
+  window.ensureDiagramLibs = function () {
+    if (_diagramLibsPromise) return _diagramLibsPromise;
+    _diagramLibsPromise = (async () => {
+      // Mermaid v11: v10's flowchart layout (dagre) produces tangled lines for
+      // non-trivial graphs; v11 ships ELK pre-registered, which is far cleaner.
+      const mermaid = (await import('https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs')).default;
+      _initMermaid(mermaid);
+      _loadExcalidrawBridge();   // background upgrade; mermaid alone is enough
+      return mermaid;
+    })();
+    return _diagramLibsPromise;
+  };
+
+  function _initMermaid(mermaid) {
   mermaid.initialize({
     startOnLoad: false,
     // 'classic' is the clean, straight-line look. We previously used
@@ -184,7 +208,9 @@
   // Render any pre-existing placeholders (e.g. modal rebuild that ran before
   // mermaid finished loading) once the lib is ready.
   window.dispatchEvent(new Event('mermaid-ready'));
+  }
 
+  function _loadExcalidrawBridge() {
   // ── Excalidraw bridge ────────────────────────────────────────────────
   // Parses Mermaid source -> Excalidraw scene -> SVG. We use Excalidraw's
   // layout + typography (clean Cascadia/Virgil-ish look) but flatten the
@@ -206,7 +232,11 @@
     console.log('[Clayrune] Excalidraw bridge ready — diagrams will render with polished (non-sketchy) Excalidraw look.');
   }).catch(e => {
     console.warn('[Clayrune] Excalidraw bridge failed to load — diagrams will fall back to plain Mermaid:', e);
+    // Tell the renderer to stop waiting: on an offline/filtered network this is
+    // the difference between an immediate Mermaid fallback and a dead pause.
+    window.dispatchEvent(new Event('excalidraw-failed'));
   });
+  }
 </script>
 <link rel="stylesheet" href="/static/css/app.css">
 <link rel="stylesheet" href="/static/css/beacon.css">
@@ -1054,17 +1084,23 @@ function fetchFailFast(url, opts = {}, timeoutMs = 8000) {
 }
 window.fetchFailFast = fetchFailFast;   // shared by the polling modules (system-status, schedule-banner, provider-auth, conversation, resume-preview)
 
-// /api/projects trims backlog note/attachment BODIES to counts (keeps the list
-// payload small). A project modal lazy-loads the FULL backlog on open. Preserve
-// that loaded full backlog across a list re-fetch so the 30s poll / silent
-// refresh doesn't collapse an open modal's note/attachment panels back to empty.
+// /api/projects ships backlog COUNTS, never the items (they were 91% of that
+// payload). Two surfaces lazy-load the real items and mark the project
+// `_backlogFull`: a project modal on open, and the cross-project backlog view
+// on open. Preserve those loaded arrays across a list re-fetch so the 30s poll
+// / silent refresh doesn't collapse a visible backlog back to empty.
+//
+// Scoped to what is actually on screen — a project whose modal has since closed
+// drops its items on the next poll rather than pinning every backlog in memory
+// for the life of the tab.
 // Mutates `fresh` in place; returns it.
 function _preserveOpenBacklogs(fresh) {
   const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
-  if (!openIds.size) return fresh;
+  const allBacklogOpen = openModals.has('__all_backlog');
+  if (!openIds.size && !allBacklogOpen) return fresh;
   const prevFull = {};
   for (const p of allProjects) {
-    if (openIds.has(p.id) && p._backlogFull) prevFull[p.id] = p.backlog;
+    if (p._backlogFull && (allBacklogOpen || openIds.has(p.id))) prevFull[p.id] = p.backlog;
   }
   for (const p of fresh) {
     if (prevFull[p.id]) { p.backlog = prevFull[p.id]; p._backlogFull = true; }
@@ -3257,11 +3293,23 @@ document.getElementById('modal-layer').addEventListener('input', e => {
 // and re-renders. No status gate: the server decides the truth.
 let _lastResyncAt = 0;
 let _resumeBlankoutSince = 0;
-async function _resyncOpenModalsFromServer() {
+async function _resyncOpenModalsFromServer(ev) {
   if (document.visibilityState !== 'visible') return;
+  // `pageshow` fires on EVERY load, not only a bfcache restore, so this handler
+  // ran at boot and duplicated the grid fetch the boot path had just issued.
+  // Only the restore case (`persisted`) is a resurface worth healing.
+  if (ev && ev.type === 'pageshow' && !ev.persisted) return;
   const now = Date.now();
   if (now - _lastResyncAt < 1200) return;  // debounce focus+visibility double-fire
   _lastResyncAt = now;
+
+  // Nothing open and nothing streaming: the socket-liveness probe and the SSE
+  // reaping below have no subject — every alt-tab back to the window was paying
+  // for a heartbeat + a status sweep to reap zero sockets. The grid still
+  // refreshes; that part is a genuine resume heal.
+  const anyStreams = Object.keys(agentEventSources).length > 0;
+  const anyOpen = [...openModals.values()].some(e => e && !e.minimized && e.projectId);
+  if (!anyStreams && !anyOpen) { fetchProjects(); return; }
 
   // Android Doze / App Standby (especially Samsung One UI) can park the
   // WebView's entire network stack while backgrounded. When the app comes

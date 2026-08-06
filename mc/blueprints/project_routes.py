@@ -294,18 +294,31 @@ def api_projects():
         p['live_agent'] = _project_live_agent(p.get('id'))
         for entry in p.get('activity_log', []):
             entry['ts_relative'] = time_ago(entry.get('ts'))
-        # Backlog note/attachment BODIES dominate this payload (notes alone were
-        # ~1.4 MB on a single heavy project) yet the dashboard list needs only
-        # their COUNTS — bodies render solely in an open project modal, which
-        # lazy-loads the full backlog via /api/project/<id>/backlog on open.
-        # Trim bodies to counts so this regularly-polled list stays small.
-        # (load_projects() returns fresh per-request dicts, so mutating is safe.
-        # The old per-item ts_relative was also dead compute — nothing rendered it.)
-        for item in p.get('backlog', []):
-            item['notes_count'] = len(item.get('notes') or [])
-            item['attachments_count'] = len(item.get('attachments') or [])
-            item.pop('notes', None)
-            item.pop('attachments', None)
+        # The backlog is not in this payload at all — only a summary of it.
+        #
+        # An earlier pass trimmed note/attachment BODIES to counts, which helped
+        # but left the item bodies themselves: measured 2026-08-06, `backlog`
+        # was 748.7 KB of a 789 KB response (91.3%), 438 KB of it from
+        # mission_control's 892 items (856 already `done`). The dashboard list
+        # reads exactly three things out of all that — the open count, the done
+        # count, and the first open item's text. ~60 bytes of information, on
+        # boot and again every 30 s, per open tab, forever.
+        #
+        # Everything that renders item BODIES already lazy-loads them per
+        # project from /api/project/<id>/backlog: the project modal on open
+        # (modal-manager.js), and the cross-project view on open
+        # (cross-backlog.js). So the full array has no reader here.
+        # (load_projects() returns fresh per-request dicts, so mutating is safe.)
+        backlog = p.get('backlog') or []
+        open_items = [i for i in backlog if i.get('status') == 'open']
+        p['backlog_open_count'] = len(open_items)
+        p['backlog_done_count'] = sum(1 for i in backlog if i.get('status') == 'done')
+        p['backlog_total_count'] = len(backlog)
+        # Same source the tile's next-action line used: the FIRST open item, in
+        # stored order. Sliced generously — the client truncates for display.
+        p['backlog_next_text'] = ((open_items[0].get('text') or '')[:200]
+                                  if open_items else '')
+        p.pop('backlog', None)
     return jsonify(projects)
 
 

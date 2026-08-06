@@ -2,10 +2,23 @@
 
 let continueInputOpen = {};  // entryId → true (tracks which continue input is expanded)
 
+// The log is capped at 500 entries server-side and used to render all of them:
+// measured 6,001 elements on mission_control, ~12 per row, every row carrying
+// its own <textarea> + send button — 500 live text inputs in one panel. Page it
+// instead, and build a row's composer only when that row's composer is open.
+const AGENT_LOG_PAGE = 25;
+const agentLogShown = {};   // projectId → rows currently rendered
+function showMoreAgentLog(projectId) {
+  agentLogShown[projectId] = (agentLogShown[projectId] || AGENT_LOG_PAGE) + AGENT_LOG_PAGE;
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else refreshModal();
+}
+
 function agentLogPanelHTML(p) {
   if (!p.project_path) return '';
-  const isOpen = agentLogOpen[p.id] || false;
-  const entries = (agentLogCache[p.id] || []).filter(e => !e.hivemind_ws_id);
+  const all = (agentLogCache[p.id] || []).filter(e => !e.hivemind_ws_id);
+  const shown = agentLogShown[p.id] || AGENT_LOG_PAGE;
+  const entries = all.slice(0, shown);
 
   const entriesHTML = entries.length === 0
     ? '<div class="agent-log-empty">No completed sessions yet</div>'
@@ -43,16 +56,24 @@ function agentLogPanelHTML(p) {
         <div class="agent-log-summary">${esc(e.summary || '')}</div>
         <div class="agent-log-ts">${esc(e.ts_relative || e.ts || '')} &middot; started ${esc(e.started_relative || e.started_at || '')}${usageStr}${costStr}</div>
         ${csid ? `<div class="agent-log-session-id">${sessionLabel} <code title="Click to copy">${esc(csid)}</code><span class="copy-sid" onclick="navigator.clipboard.writeText('${esc(csid)}');this.textContent='copied!';setTimeout(()=>this.textContent='copy',1200)" title="Copy session ID">copy</span></div>` : ''}
-        ${(csid && ecaps.supports_session_resume) ? `<div class="agent-log-continue-input${continueInputOpen[eid] ? ' open' : ''}" id="continue-input-${esc(eid)}">
+        ${(csid && ecaps.supports_session_resume && continueInputOpen[eid]) ? `<div class="agent-log-continue-input open" id="continue-input-${esc(eid)}">
           <textarea id="continue-msg-${esc(eid)}" rows="2" placeholder="What should the agent continue with?" onkeydown="handleInputEnter(event,()=>dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(csid)}'),'${esc(p.id)}')"></textarea>
           <button class="btn-send" onclick="dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(csid)}')">Send</button>
         </div>` : ''}
       </div>`;
     }).join('');
 
+  const remaining = all.length - entries.length;
+  const moreBtn = remaining > 0
+    ? `<button class="agent-log-more" onclick="showMoreAgentLog('${esc(p.id)}')"
+         style="width:100%;margin-top:10px;padding:8px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;color:var(--text-faint);font-size:12px;cursor:pointer">
+         Show ${Math.min(remaining, AGENT_LOG_PAGE)} more &middot; ${remaining} older</button>`
+    : '';
+
   return `<div class="card-section">
     <div class="section-title">Completed Sessions</div>
     ${entriesHTML}
+    ${moreBtn}
   </div>`;
 }
 
@@ -71,7 +92,25 @@ async function toggleAgentLog(projectId) {
   }
 }
 
+// In-flight guards. Both loaders are called from render paths whose guard is
+// `if (!cache[p.id])` — and the cache is only written AFTER the fetch resolves,
+// so every render inside the request window fired another identical request.
+// Each completion then calls refreshModal(), which re-renders, which re-enters
+// the guard: a render→fetch→render→fetch cascade. Measured on one boot + one
+// modal open: /conversations fetched 7x (22.5 KB each) and /agent/log 2x
+// (1,631 KB each). Coalescing on the promise makes concurrent callers share one
+// request and still await the real result.
+const _agentLogInFlight = {};
+const _conversationsInFlight = {};
+
 async function loadAgentLog(projectId) {
+  if (_agentLogInFlight[projectId]) return _agentLogInFlight[projectId];
+  const run = _loadAgentLogInner(projectId);
+  _agentLogInFlight[projectId] = run;
+  try { return await run; } finally { delete _agentLogInFlight[projectId]; }
+}
+
+async function _loadAgentLogInner(projectId) {
   try {
     const res = await fetch(API_BASE + `/api/project/${projectId}/agent/log`);
     agentLogCache[projectId] = await res.json();
@@ -96,6 +135,13 @@ async function loadAgentLog(projectId) {
 }
 
 async function loadConversations(projectId) {
+  if (_conversationsInFlight[projectId]) return _conversationsInFlight[projectId];
+  const run = _loadConversationsInner(projectId);
+  _conversationsInFlight[projectId] = run;
+  try { return await run; } finally { delete _conversationsInFlight[projectId]; }
+}
+
+async function _loadConversationsInner(projectId) {
   try {
     const res = await fetch(API_BASE + `/api/project/${projectId}/conversations?limit=20`);
     conversationsCache[projectId] = await res.json();
@@ -349,16 +395,17 @@ async function openPlanFromHistory(planPath, title) {
 
 // ── Agent Log continue ───────────────────────────────────────────────────────
 
+// A row's composer is now BUILT on open rather than pre-rendered hidden for
+// every row, so this toggles state and re-renders instead of flipping a class
+// on an element that may not exist yet. Still one open composer at a time.
 function toggleContinueInput(projectId, entryId, claudeSessionId) {
-  const el = document.getElementById(`continue-input-${entryId}`);
-  if (!el) return;
-  const isOpen = el.classList.contains('open');
-  document.querySelectorAll('.agent-log-continue-input.open').forEach(x => x.classList.remove('open'));
+  const wasOpen = !!continueInputOpen[entryId];
   continueInputOpen = {};
-  if (!isOpen) {
-    el.classList.add('open');
-    continueInputOpen[entryId] = true;
-    setTimeout(() => document.getElementById(`continue-msg-${entryId}`)?.focus(), 50);
+  if (!wasOpen) continueInputOpen[entryId] = true;
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else refreshModal();
+  if (!wasOpen) {
+    setTimeout(() => document.getElementById(`continue-msg-${entryId}`)?.focus(), 60);
   }
 }
 
@@ -492,6 +539,7 @@ window.triggerAgentAttach = triggerAgentAttach;
 window.deleteSelectedPlans = deleteSelectedPlans;
 window.deleteSinglePlan = deleteSinglePlan;
 window.dispatchContinue = dispatchContinue;
+window.showMoreAgentLog = showMoreAgentLog;
 window.exportSelectedPlans = exportSelectedPlans;
 window.openPlanFromHistory = openPlanFromHistory;
 window.toggleAllPlans = toggleAllPlans;

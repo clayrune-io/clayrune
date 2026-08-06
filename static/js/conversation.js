@@ -518,17 +518,23 @@ function fillStarterChip(projectId, text) {
 // pane widths). Preview cards for the project's content tabs; clicking opens the
 // full tab in the center area (switchModalTab). Lightweight previews for now.
 function _agentSurfacesHTML(p) {
-  const backlog = p.backlog || [];
-  const open = backlog.filter(i => i.status === 'open');
+  // Items are lazy-loaded with the modal (see backlogSummary in render-core);
+  // until they land, show the one line the list payload does carry rather than
+  // claiming "No open items" about a project that has plenty.
+  const bl = window.backlogSummary ? window.backlogSummary(p) : { open: 0, nextText: '' };
+  const loaded = !!(p._backlogFull && Array.isArray(p.backlog));
+  const open = loaded ? p.backlog.filter(i => i.status === 'open') : [];
   const topItems = open.slice(0, 3)
     .map(i => `<div class="surface-line">&#8226; ${esc((i.text || '').slice(0, 52))}</div>`).join('')
-    || '<div class="surface-line surface-empty">No open items</div>';
+    || (bl.open
+        ? `<div class="surface-line">&#8226; ${esc((bl.nextText || '').slice(0, 52))}</div>`
+        : '<div class="surface-line surface-empty">No open items</div>');
   // `tab` cards swap a pane INSIDE the modal; `action` cards open their own
   // surface window. Media is the latter: the gallery is already a full surface
   // (filters, project switcher, viewers), and re-hosting it as a modal tab would
   // mean a second copy of it to keep in sync.
   const cards = [
-    { tab: 'backlog',   ic: '&#9776;',   name: 'Backlog',   sub: open.length ? `${open.length} open` : 'empty', body: topItems },
+    { tab: 'backlog',   ic: '&#9776;',   name: 'Backlog',   sub: bl.open ? `${bl.open} open` : 'empty', body: topItems },
     { tab: 'plans',     ic: '&#128203;', name: 'Plans',     sub: 'plan viewer', body: '<div class="surface-line surface-empty">Open to view plans</div>' },
     { tab: 'workflows', ic: '&#9939;',   name: 'Workflows', sub: 'runs',        body: '<div class="surface-line surface-empty">Open to view workflows</div>' },
     { tab: 'activity',  ic: '&#9201;',   name: 'Activity',  sub: 'timeline',    body: '<div class="surface-line surface-empty">Open to view activity</div>' },

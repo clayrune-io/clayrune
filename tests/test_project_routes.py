@@ -213,6 +213,39 @@ def test_projects_list_happy(client):
     assert 'last_updated_relative' in p
 
 
+def test_projects_list_ships_backlog_summary_not_items(client):
+    """The list payload carries backlog COUNTS, never the items.
+
+    Measured 2026-08-06, `backlog` was 91% of a 789 KB /api/projects response
+    and the dashboard read three scalars out of it. Everything that renders
+    item bodies lazy-loads them per project. This test is the guard: putting
+    the array back silently re-inflates every boot and every 30 s poll.
+    """
+    _seed(client, backlog=[
+        {'id': 'a', 'text': 'first open item', 'status': 'open',
+         'notes': [{'text': 'x' * 500}]},
+        {'id': 'b', 'text': 'second open item', 'status': 'open'},
+        {'id': 'c', 'text': 'finished', 'status': 'done'},
+    ])
+    p = client.get('/api/projects').get_json()[0]
+    assert 'backlog' not in p
+    assert p['backlog_open_count'] == 2
+    assert p['backlog_done_count'] == 1
+    assert p['backlog_total_count'] == 3
+    # The next-action line: FIRST open item, in stored order.
+    assert p['backlog_next_text'] == 'first open item'
+    # No item body — notes included — survives anywhere in the payload.
+    assert 'x' * 500 not in json.dumps(p)
+    assert 'second open item' not in json.dumps(p)
+
+
+def test_projects_list_backlog_summary_empty_project(client):
+    _seed(client)          # seeds backlog: []
+    p = client.get('/api/projects').get_json()[0]
+    assert (p['backlog_open_count'], p['backlog_done_count'],
+            p['backlog_total_count'], p['backlog_next_text']) == (0, 0, 0, '')
+
+
 def test_projects_list_excludes_sidecars(client):
     _seed(client)
     for sfx in client.pr.EXCLUDED_SIDECAR_SUFFIXES:

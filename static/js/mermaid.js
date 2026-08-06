@@ -94,6 +94,25 @@ async function _renderViaExcalidraw(source) {
   return svgEl.outerHTML;
 }
 
+// Excalidraw is the preferred renderer, but it now loads on demand alongside
+// mermaid instead of during boot — so the FIRST diagram of a session can arrive
+// before the bridge does. Give it a bounded wait rather than silently
+// downgrading that one diagram to plain Mermaid; the placeholder already reads
+// "Building diagram…". Resolves immediately if the bridge is up, or if it has
+// already failed (offline / filtered network).
+let _excalidrawFailed = false;
+window.addEventListener('excalidraw-failed', () => { _excalidrawFailed = true; }, { once: true });
+function _waitForExcalidraw(ms = 8000) {
+  if (window._excalidrawAPI) return Promise.resolve(true);
+  if (_excalidrawFailed) return Promise.resolve(false);
+  return new Promise(resolve => {
+    const done = ok => { clearTimeout(t); resolve(ok); };
+    const t = setTimeout(() => resolve(false), ms);
+    window.addEventListener('excalidraw-ready', () => done(true), { once: true });
+    window.addEventListener('excalidraw-failed', () => done(false), { once: true });
+  });
+}
+
 async function _renderViaMermaid(source) {
   const id = 'mermaid-' + Math.random().toString(36).slice(2, 9);
   _sweepOrphanMermaidNodes();
@@ -114,8 +133,12 @@ function _renderAllMermaidPlaceholders(rootEl) {
   //   4. If both fail: show the error + raw source so the user/agent can
   //      diagnose.
   if (!window.mermaid) {
+    // Diagram libs are no longer in the boot path (they were 353 of a cold
+    // boot's 420 requests). First placeholder that needs one pulls them in;
+    // `mermaid-ready` then re-enters here exactly as it always did.
     window.addEventListener('mermaid-ready',
       () => _renderAllMermaidPlaceholders(rootEl), { once: true });
+    if (typeof window.ensureDiagramLibs === 'function') window.ensureDiagramLibs();
     return;
   }
   const root = rootEl || document;
@@ -126,6 +149,7 @@ function _renderAllMermaidPlaceholders(rootEl) {
     let svg = '';
     let renderer = 'mermaid';
     try {
+      await _waitForExcalidraw();
       svg = await _renderViaExcalidraw(source);
       renderer = 'excalidraw';
     } catch (e) {
