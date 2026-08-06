@@ -6,6 +6,37 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06e] — Tier 3 step 1: the rail can show topics instead of chats
+
+A `Chats | Topics` toggle at the top of the conversation rail. Same rail, same
+click targets; only the unit changes. Measured on mission_control: **121 chat
+rows becomes 12 topic rows**, and the modal drops from 1,613 elements to 524.
+
+Offered as a toggle rather than a replacement, deliberately. The digest is
+Haiku-synthesized and best-effort, so the chat list has to stay one click away —
+and the two are worth comparing side by side before either becomes the default.
+The preference is global rather than per project: it is a way of working, not a
+property of a project. Clicking a topic opens the newest chat in it, falling
+back to the first listed when none are in the loaded conversation cache.
+
+A topic row shows its gist, which is what makes the digest navigable without
+opening anything, and the row carries the chat count. Search filters topics by
+title and gist in this mode (the transcript-content search behind the chat list
+does not apply to a 13-row digest). The full topic board is still reachable from
+the toggle.
+
+**Fixes a regression the staleness work introduced.** `_loadTopics` did
+`topics: d.stale ? null : d.topics` — survivable only while `stale` meant "no
+cache at all". Once staleness became honest, that expression would have blanked
+the board almost permanently and hidden a digest that is still the best map
+available. It now keeps the topics and shows an "Out of date / Refresh" bar
+instead — the UI half of the backend fix, and the thing that makes the digest
+trustworthy: it admits when it isn't current.
+
+Still the open Tier 3 question: nothing refreshes the digest automatically.
+`POST /topics/refresh` remains the only writer. The banner makes that visible
+rather than fixing it.
+
 ## [2026-08-06d] — the auth probe was manufacturing conversations
 
 Ron: "the single conversation thread I just had with you to repair the loading

@@ -1152,10 +1152,15 @@ function agentPanelHTML(p) {
     // as the mobile Layer-2 list, not just the open tabs.
     if (!conversationsCache[p.id]) loadConversations(p.id);
     if (!agentLogCache[p.id]) loadAgentLog(p.id);
-    const _railConvos = (typeof _userInitiatedConvos === 'function') ? _userInitiatedConvos(p.id) : [];
-    const railRows = _railConvos.length
-      ? mobileUserConversationsHTML(p, _railConvos)
-      : '<div class="agent-rail-empty">No conversations yet.</div>';
+    const _mode = (typeof railMode === 'function') ? railMode(p.id) : 'chats';
+    if (_mode === 'topics' && !_topicsData[p.id]) _loadTopics(p.id);
+    const _railConvos = (_mode === 'chats' && typeof _userInitiatedConvos === 'function')
+      ? _userInitiatedConvos(p.id) : [];
+    const railRows = _mode === 'topics'
+      ? _railTopicsHTML(p)
+      : (_railConvos.length
+          ? mobileUserConversationsHTML(p, _railConvos)
+          : '<div class="agent-rail-empty">No conversations yet.</div>');
     const _railW = parseInt(localStorage.getItem('mc_rail_w') || '', 10);
     const _railStyle = (_railW >= 200 && _railW <= 560) ? ` style="width:${_railW}px"` : '';
     // Split-view: two conversation panes side by side. Active only when a 2nd
@@ -1171,10 +1176,18 @@ function agentPanelHTML(p) {
     return `<div class="agent-panel agent-3pane">
       <div class="agent-rail"${_railStyle}>
         <button class="conv-newbtn agent-rail-new" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
-        <button class="conv-newbtn agent-rail-new agent-rail-threads" onclick="openThreadsBoard('${esc(p.id)}')" title="Topic digest — deduplicated subjects across this project's chats">&#9638;&nbsp; Topics</button>
+        <div class="rail-mode" role="tablist">
+          <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
+          <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','topics')"
+            title="Subjects across this project's chats, deduplicated">Topics</button>
+          ${_mode === 'topics' ? `<button class="rail-mode-board" title="Open the full topic board"
+            onclick="openThreadsBoard('${esc(p.id)}')">&#9638;</button>` : ''}
+        </div>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="Search conversations&hellip;"
+          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
         <div class="agent-rail-list">${railRows}</div>
@@ -1240,6 +1253,13 @@ const _railSearchSeq = {};
 
 function railSearch(projectId, q) {
   _railQuery[projectId] = q;
+  // Topics mode filters a list the renderer builds, not DOM rows the rail
+  // filter walks — so it needs a re-render, and none of the transcript-content
+  // machinery below applies to a 13-row digest.
+  if (typeof railMode === 'function' && railMode(projectId) === 'topics') {
+    if (typeof refreshModalById === 'function') refreshModalById(projectId);
+    return;
+  }
   _applyRailFilter(projectId);        // instant label filter — no round-trip
   // ALSO search transcript content, debounced. The label is a 90-char title;
   // "mockup.html" (and most things people search for) live in the MESSAGES, so
@@ -1748,6 +1768,93 @@ let _topicsData = {};        // pid -> {topics|null, generated_at, error, loadin
 let _topicsExpanded = {};    // "pid/topicId" -> bool (chat list open)
 let _topicsShowArchived = {};
 
+// ── Rail mode: chats vs topics ───────────────────────────────────────────────
+// The rail lists one row per CHAT, which is the wrong unit once a project has
+// history — the same subject spans many chats, and a thread that got split
+// across two transcripts reads as two unrelated entries. The topic digest is
+// the same navigation in ~13 rows instead of 128.
+//
+// Offered as a TOGGLE rather than a replacement: the digest is Haiku-
+// synthesized and best-effort, so the chat list has to stay one click away.
+// The preference is global (not per project) — it's a way of working, not a
+// property of a project.
+function railMode(pid) {
+  if (_railModeOverride[pid]) return _railModeOverride[pid];
+  try { return localStorage.getItem('mc_rail_mode') === 'topics' ? 'topics' : 'chats'; }
+  catch (e) { return 'chats'; }
+}
+const _railModeOverride = {};
+
+function setRailMode(pid, mode) {
+  _railModeOverride[pid] = (mode === 'topics') ? 'topics' : 'chats';
+  try { localStorage.setItem('mc_rail_mode', _railModeOverride[pid]); } catch (e) {}
+  // Pull the cached digest on first switch — cheap (a JSON read), and without
+  // it the rail would show "no digest" for a project that has one.
+  if (_railModeOverride[pid] === 'topics' && !_topicsData[pid]) _loadTopics(pid);
+  if (typeof refreshModalById === 'function') refreshModalById(pid);
+  else refreshModal();
+}
+
+function _refreshRailIfTopics(pid) {
+  if (railMode(pid) !== 'topics') return;
+  if (typeof refreshModalById === 'function') refreshModalById(pid);
+}
+
+function openTopicNewest(pid, topicId) {
+  const d = _topicsData[pid] || {};
+  const t = (d.topics || []).find(x => x.id === topicId);
+  if (!t) return;
+  const byCsid = {};
+  (conversationsCache[pid] || []).forEach(c => {
+    if (c.claude_session_id) byCsid[c.claude_session_id] = c;
+  });
+  const cands = (t.chats && t.chats.length)
+    ? t.chats.map(c => c.csid).filter(Boolean)
+    : (t.chat_csids || []);
+  // Newest chat in the topic is the one worth continuing. Fall back to the
+  // first listed when none of them are in the loaded conversation cache (an
+  // old topic whose chats have aged out) — still resumable by csid.
+  let best = null, bestTs = -1;
+  for (const cs of cands) {
+    const ts = (byCsid[cs] || {}).mtime || 0;
+    if (ts >= bestTs) { bestTs = ts; best = cs; }
+  }
+  best = best || cands[0];
+  if (!best) return;
+  const c = byCsid[best] || {};
+  openConversation(pid, best, c.mc_session_id || '', !!c.live);
+}
+
+function _railTopicsHTML(p) {
+  const pid = p.id;
+  const d = _topicsData[pid] || {};
+  if (d.loading) return '<div class="agent-rail-empty">Reviewing chats&hellip;</div>';
+  if (!d.topics) {
+    return `<div class="agent-rail-empty">No topic digest yet.
+      <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Build it</button></div>`;
+  }
+  const q = (_railQuery[pid] || '').trim().toLowerCase();
+  const list = (d.topics || [])
+    .filter(t => (t.user_state || 'open') !== 'archived')
+    .filter(t => !q || `${t.title} ${t.gist || ''}`.toLowerCase().includes(q));
+  // Say it plainly when the map is out of date rather than quietly serving a
+  // stale one — the whole reason the backend now computes real staleness.
+  const staleBar = d.stale
+    ? `<div class="rail-topic-stale" title="${esc(d.stale_reason || '')}">Out of date
+         <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Refresh</button></div>`
+    : '';
+  const rows = list.map(t => `
+    <div class="rail-topic" onclick="openTopicNewest('${esc(pid)}','${esc(t.id)}')"
+         title="${esc(t.gist || '')}">
+      <div class="rail-topic-title">${esc(t.title)}</div>
+      <div class="rail-topic-gist">${esc((t.gist || '').slice(0, 110))}</div>
+      <div class="rail-topic-meta">${t.chat_count} chat${t.chat_count !== 1 ? 's' : ''}${
+        (t.user_state || 'open') === 'done' ? ' &middot; done' : ''}</div>
+    </div>`).join('');
+  return staleBar + (rows
+    || `<div class="agent-rail-empty">${q ? 'No matching topics.' : 'No topics yet.'}</div>`);
+}
+
 function _agoShort(iso) {
   try {
     const s = (Date.now() - new Date(iso).getTime()) / 1000;
@@ -1907,9 +2014,21 @@ async function _loadTopics(pid) {
   try {
     const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics`);
     const d = await r.json();
-    _topicsData[pid] = { topics: d.stale ? null : (d.topics || []), generated_at: d.generated_at, error: d.error || null, loading: false };
+    // Keep the topics even when the digest is stale, and carry the flag.
+    //
+    // This used to be `d.stale ? null : d.topics` — which was survivable only
+    // because `stale` meant "no cache exists at all". Now that staleness is
+    // honest (any new chat since the digest was built), that expression would
+    // blank the board almost permanently and hide a digest that is still the
+    // best map available. Show it, and say it's out of date.
+    _topicsData[pid] = {
+      topics: d.topics || [], generated_at: d.generated_at,
+      stale: !!d.stale, stale_reason: d.stale_reason || '',
+      error: d.error || null, loading: false,
+    };
   } catch (e) { _topicsData[pid] = { topics: null, loading: false, error: String(e) }; }
   refreshThreadsBoard(pid);
+  _refreshRailIfTopics(pid);
 }
 async function reviewTopics(pid) {
   _topicsData[pid] = Object.assign({ topics: null }, _topicsData[pid], { loading: true });
@@ -1917,11 +2036,14 @@ async function reviewTopics(pid) {
   try {
     const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/refresh`, { method: 'POST' });
     const d = await r.json();
-    _topicsData[pid] = { topics: d.topics || [], generated_at: d.generated_at, error: d.error || null, loading: false };
+    _topicsData[pid] = { topics: d.topics || [], generated_at: d.generated_at,
+                         stale: false, stale_reason: '',
+                         error: d.error || null, loading: false };
   } catch (e) {
     _topicsData[pid] = Object.assign({}, _topicsData[pid], { loading: false, error: String(e) });
   }
   refreshThreadsBoard(pid);
+  _refreshRailIfTopics(pid);
 }
 async function setTopicState(pid, topicId, state) {
   const d = _topicsData[pid];
@@ -2112,6 +2234,12 @@ function _ensureThreadsCss() {
 }
 
 window.openThreadsBoard = openThreadsBoard;
+// Rail mode toggle — inline onclick handlers, so these MUST be bridged
+// (ES-module top-level bindings are not global). Guarded by
+// tools/smoke/inline-handler-scope-check.mjs.
+window.railMode = railMode;
+window.setRailMode = setRailMode;
+window.openTopicNewest = openTopicNewest;
 window.closeThreadsBoard = closeThreadsBoard;
 window.archiveThread = archiveThread;
 
