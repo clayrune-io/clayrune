@@ -6,6 +6,51 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06c] — Tier 2: the 220 ms endpoint, and two items declined on evidence
+
+Follow-on to Tier 1. Three items shipped, two declined with the measurement that
+decided them, and one earlier finding corrected.
+
+**`list_sessions()` is now cached per (path, mtime, size).** The investigation
+under-sold this one: `/conversations?limit=20` measured **220 ms** — the slowest
+endpoint in the app, paid on every project-modal open — because it re-opened the
+newest 20 of 207 transcripts and JSON-parsed every line of each, every call.
+Transcripts are append-only, so `(mtime, size)` pins content exactly; a hit is
+correct, not merely likely. Bounded at 512 rows, handed out as copies so a
+caller can't poison the cache. Test covers both halves: a hit must not re-open
+the file, an append must not return a stale row.
+
+**Versioned static assets are `immutable`.** `/` already injects
+`?v=<asset_version>` (newest static mtime, so any change moves every URL) into
+every `/static/*.js|css` reference — exactly the precondition for
+`max-age=31536000, immutable`. All 41 JS + 2 CSS files previously carried
+`no-cache` and cost a revalidation round trip per load. **The gate matters more
+than the header**: `immutable` is granted only when `?v=` is present, so a bare
+URL can never pin a client to an asset no deploy can reach. `/assets/*` (no
+`?v=`) gets a bounded `max-age=3600` instead, which stops `claydo-idle.webp`
+being fetched twice per boot.
+
+**Declined, with numbers:**
+
+- *Caching `load_projects()`*: read+parse is 24.4 ms of a ~28 ms endpoint, but
+  it is a 30-second poll — ~0.08% of a core. Meanwhile every caller gets a
+  mutable dict and several mutate in place, so a correct cache needs deep
+  copies, and deep-copying 5 MB of nested dicts in Python costs more than
+  `json.loads` does in C. Removed the dead first sort while in there.
+- *Swapping Werkzeug for waitress*: the item most likely to help the phone
+  (`Connection: close` means a fresh connection per request, and the tunnel is
+  where that hurts) — but waitress buffers responses by default and this app is
+  built on SSE. Measure a real phone over the tunnel first; don't risk the core
+  feature for an unmeasured cost.
+
+**Correction to the investigation's Root cause 6.** The duplicate `Date` header
+is not an app bug and my first fix for it was a no-op. Flask emits exactly one
+(`send_file` sets it); the second comes from the WSGI server *below* the WSGI
+layer, unreachable from `after_request`. The working fix is for the app to
+contribute none on static paths. It is cosmetic either way — these responses now
+carry explicit `Cache-Control`, which overrides the heuristic caching the
+malformed header set was suspected of blocking.
+
 ## [2026-08-06b] — load time: 420 requests → 73, modal DOM 8,270 → 1,613
 
 Tier 1 of `docs/LOAD_TIME_INVESTIGATION.md`, all six items. The investigation's

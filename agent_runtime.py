@@ -639,6 +639,13 @@ def register_claude_hooks(*,
 # Claude Code's native transcript store lives here.
 _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 
+# Read-through cache for ClaudeRuntime.list_sessions() rows, keyed by transcript
+# path → (mtime, size, row). Transcripts are append-only, so (mtime, size) pins
+# the content: a hit is exact, not heuristic. Derived data only — losing it
+# costs a re-parse, never correctness. See list_sessions() for the measurement.
+_SESSION_ROW_CACHE: Dict[str, Any] = {}
+_SESSION_ROW_CACHE_MAX = 512
+
 # Auth error sentinels emitted by claude CLI stderr.
 # Mirrors _AUTH_ERROR_PATTERNS in server.py — keep in sync.
 _CLAUDE_AUTH_PATTERNS: List[tuple] = [
@@ -1077,6 +1084,22 @@ class ClaudeRuntime(AgentRuntime):
 
         results: List[Dict[str, Any]] = []
         for f, mtime in files:
+            # Transcripts are append-only, so (mtime, size) identifies a file's
+            # content exactly — a hit here is safe, not merely probable.
+            # Without this, every /conversations call re-opened the newest N
+            # files and JSON-parsed every line of each: measured 220 ms on
+            # mission_control (207 transcripts, 325 MB), the slowest endpoint in
+            # the app, paid on every project-modal open.
+            try:
+                fsize = f.stat().st_size
+            except OSError:
+                fsize = 0
+            ckey = str(f)
+            cached = _SESSION_ROW_CACHE.get(ckey)
+            if cached and cached[0] == mtime and cached[1] == fsize:
+                results.append(dict(cached[2]))
+                continue
+
             first_user = ''
             last_user = ''
             turns = 0
@@ -1115,18 +1138,23 @@ class ClaudeRuntime(AgentRuntime):
                         last_user = clean
             except Exception:
                 pass
-            try:
-                size = f.stat().st_size
-            except OSError:
-                size = 0
-            results.append({
+            row = {
                 'session_id': f.stem,
                 'mtime': mtime,
                 'first_user': first_user[:300],
                 'last_user': last_user[:300],
                 'turns': turns,
-                'size': size,
-            })
+                'size': fsize,
+            }
+            if len(_SESSION_ROW_CACHE) >= _SESSION_ROW_CACHE_MAX:
+                # Crude but adequate: this is a read-through cache of derived
+                # data, so dropping the oldest insertions costs a re-parse, not
+                # correctness. Bounded so a long-lived server with thousands of
+                # transcripts can't grow it without limit.
+                for k in list(_SESSION_ROW_CACHE)[:_SESSION_ROW_CACHE_MAX // 4]:
+                    _SESSION_ROW_CACHE.pop(k, None)
+            _SESSION_ROW_CACHE[ckey] = (mtime, fsize, row)
+            results.append(dict(row))
         return results
 
     def parse_transcript_file(self, path: Path,

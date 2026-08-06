@@ -392,6 +392,43 @@ def add_cors_headers(response):
         response.status_code = 204
     return response
 
+
+# Static assets are already content-addressed by the `?v=<asset_version>` that
+# `/` injects into every /static/*.js|css reference at serve time — a single
+# global token derived from the newest static mtime, so ANY static change moves
+# EVERY url. That is exactly the precondition for `immutable`, and without it
+# Flask's default `no-cache` forced a revalidation round trip for 41 JS files +
+# 2 CSS on every single load (measured 2026-08-06: /static/js was the largest
+# remaining group of a boot at 1,289 KB over 41 requests). On localhost that is
+# ~1.7 ms each; over the Cloudflare tunnel, with `Connection: close`, it is the
+# dominant cost of a page load.
+#
+# Gated on the `?v=` being PRESENT. A bare /static/... url (hand-typed, or from
+# an HTML copy old enough to predate the injection) keeps `no-cache`, so there
+# is no way to pin a client to a stale asset it can never re-fetch — the failure
+# mode that makes long max-age dangerous.
+_IMMUTABLE_EXCLUDE = {'/static/sw.js', '/static/manifest.json', '/static/index.html'}
+
+
+@app.after_request
+def add_static_cache_headers(response):
+    if (request.path.startswith('/static/')
+            and request.path not in _IMMUTABLE_EXCLUDE
+            and request.args.get('v')
+            and response.status_code in (200, 206, 304)):
+        response.headers['Cache-Control'] = 'public, max-age=31536000, immutable'
+        response.headers.pop('Pragma', None)
+    # Static-file responses go out with TWO Date headers. Only one of them is
+    # ours: `send_file` sets a Date on the Response, and the WSGI server adds
+    # its own below the WSGI layer, where no after_request hook can reach. So
+    # de-duplicating here does nothing — the fix is to not contribute the app's
+    # copy at all and let the server's stand alone. (API responses never had the
+    # problem: Flask sets no Date on them, so the server's is the only one.)
+    if (request.path.startswith(('/static/', '/assets/'))
+            and response.headers.get('Date')):
+        del response.headers['Date']
+    return response
+
 DATA_DIR = _DATA_ROOT / 'data' / 'projects'
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -615,7 +652,15 @@ def serve_asset(filename):
     build spec's datas. Path(__file__).parent would point into the PYZ
     archive in the frozen app and 404 → broken images in the UI."""
     assets_dir = _APP_DIR / 'assets'
-    return send_from_directory(str(assets_dir), filename)
+    resp = send_from_directory(str(assets_dir), filename)
+    # Brand assets carry no `?v=` cache-bust, so they can't be `immutable` the
+    # way /static/ is — a changed mascot would be unreachable forever. An hour
+    # is the compromise: it stops the same image being re-fetched within and
+    # across page loads (claydo-idle.webp is referenced from three places and
+    # was measured being pulled twice per boot, 126 KB of pure duplicate), while
+    # any asset change still propagates on its own within the hour.
+    resp.headers['Cache-Control'] = 'public, max-age=3600'
+    return resp
 
 
 # ── Marketing-site preview (dev convenience) ─────────────────────────────────

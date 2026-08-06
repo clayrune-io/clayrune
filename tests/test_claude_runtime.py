@@ -9,6 +9,7 @@ These tests are standalone — no server.py import, no Flask, no live binary req
 
 from __future__ import annotations
 
+import builtins
 import json
 import sys
 from pathlib import Path
@@ -1330,6 +1331,59 @@ def test_list_sessions_extracts_user_text(tmp_path, monkeypatch):
     assert r['first_user'] == 'First question'
     assert r['last_user'] == 'Second question'
     assert r['turns'] == 2
+
+
+def test_list_sessions_caches_rows_and_invalidates_on_append(tmp_path, monkeypatch):
+    """Rows are cached per (path, mtime, size) and re-derived when the file grows.
+
+    /conversations re-parsed every line of the newest N transcripts on every
+    call — 220 ms on a real project (207 files, 325 MB), the app's slowest
+    endpoint, paid on every modal open. Transcripts are append-only, so
+    (mtime, size) pins content exactly; this test is the guard on both halves:
+    a hit must avoid the re-parse, and an append must NOT return a stale row.
+    """
+    from agent_runtime import ClaudeRuntime
+    import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+    monkeypatch.setattr(agent_runtime, '_SESSION_ROW_CACHE', {})
+
+    project_path = str(tmp_path / 'cache-project')
+    tdir = fake_home / rt._encode_project_path(project_path)
+    tdir.mkdir(parents=True)
+    f = tdir / 'sess-cache-1.jsonl'
+    f.write_text(json.dumps(
+        {'type': 'user', 'message': {'role': 'user', 'content': 'One'}}) + '\n',
+        encoding='utf-8')
+
+    first = rt.list_sessions(project_path, limit=10)
+    assert first[0]['last_user'] == 'One' and first[0]['turns'] == 1
+    assert len(agent_runtime._SESSION_ROW_CACHE) == 1
+
+    # Cache hit: make a re-parse impossible and confirm the row still comes back.
+    real_open = builtins.open
+
+    def _boom(*a, **kw):
+        if str(a[0]).endswith('.jsonl'):
+            raise AssertionError('re-parsed a transcript that had not changed')
+        return real_open(*a, **kw)
+
+    monkeypatch.setattr(builtins, 'open', _boom)
+    cached = rt.list_sessions(project_path, limit=10)
+    monkeypatch.setattr(builtins, 'open', real_open)
+    assert cached[0]['last_user'] == 'One'
+    # A copy, not the cached object — callers must not be able to poison it.
+    cached[0]['last_user'] = 'MUTATED'
+    assert rt.list_sessions(project_path, limit=10)[0]['last_user'] == 'One'
+
+    # Append → size changes → row is re-derived.
+    with real_open(f, 'a', encoding='utf-8') as fh:
+        fh.write(json.dumps(
+            {'type': 'user', 'message': {'role': 'user', 'content': 'Two'}}) + '\n')
+    after = rt.list_sessions(project_path, limit=10)
+    assert after[0]['last_user'] == 'Two' and after[0]['turns'] == 2
 
 
 def test_list_sessions_deduplicates_across_variants(tmp_path, monkeypatch):

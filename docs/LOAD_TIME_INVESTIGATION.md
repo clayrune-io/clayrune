@@ -384,9 +384,86 @@ reload cost it looked like.
   the remaining 1,613 elements, 126 rows derived from the 500-row agent-log
   merge (Root cause 5). That is Tier 3's territory (promote Topics), and it
   needs the product decision, not just a patch.
-- `/static/js` is now the largest single group at 1,289 KB over 41 files,
-  because `Cache-Control: no-cache` forces revalidation despite the `?v=<mtime>`
-  buster (Tier 2, item 10).
-- `claydo-idle.webp` is still fetched twice (126 KB of pure duplicate).
-- `load_projects()` still re-parses every project JSON per request (Tier 2,
-  item 7) — it just has far less to serialize now.
+
+Everything else on that list moved into Tier 2 below.
+
+---
+
+## Tier 2 — partly shipped, two items declined with a measurement
+
+Three of the five landed. The other two are **declined on evidence, not
+deferred vaguely** — the reasoning is here so nobody re-opens them blind.
+
+### Shipped
+
+**8. `list_sessions()` is cached per (path, mtime, size).** This was the real
+prize and the doc under-sold it: `/api/project/<id>/conversations?limit=20`
+measured **220 ms**, the slowest endpoint in the app, paid on every project-modal
+open — it re-opened the newest 20 of 207 transcripts and JSON-parsed every line
+of each, every time. Transcripts are append-only, so `(mtime, size)` pins a
+file's content *exactly*; a cache hit is correct, not merely likely. Read-through
+dict in `agent_runtime.py`, bounded at 512 entries, rows handed out as copies so
+a caller can't poison it. Two-sided regression test: a hit must not re-open the
+file, and an append must not return a stale row.
+
+**10a. Versioned static assets are `immutable`.** `/` already injects
+`?v=<asset_version>` into every `/static/*.js|css` reference, and that token is
+the newest mtime across all static dirs — so any static change moves every URL.
+That is precisely the precondition for `public, max-age=31536000, immutable`.
+Previously all 41 JS + 2 CSS files carried `no-cache` and cost a revalidation
+round trip on every load.
+
+**The gate matters more than the header.** `immutable` is granted only when
+`?v=` is actually present; a bare `/static/...` URL still gets `no-cache`. Drop
+that condition and a client could be pinned for a year to an asset no deploy can
+reach — the failure mode that makes long max-age dangerous in the first place.
+`sw.js`, `manifest.json` and `index.html` are excluded outright.
+
+**10b. `/assets/*` gets `max-age=3600`.** Brand assets have no `?v=`, so they
+can't be immutable — an hour stops `claydo-idle.webp` (referenced from three
+places, measured fetched twice per boot, 126 KB of pure duplicate) being
+re-pulled, while any change still self-heals.
+
+### Declined, with the number that decided it
+
+**7. Caching `load_projects()` — declined.** Read+parse of all 53 project files
+is **24.4 ms of the endpoint's ~28 ms**, so the ceiling looks attractive until
+you notice `/api/projects` is a *30-second poll*: the saving is ~0.08% of a
+core. Against that, every caller receives a **mutable** dict and several mutate
+it in place (`api_projects` alone writes `live_agent`, the relative timestamps,
+and pops `backlog`). A correct cache would have to hand out deep copies, and
+deep-copying 5 MB of nested dicts in Python costs *more* than `json.loads` does
+in C. The dead first sort (three sorts, first one overwritten) was removed while
+in there. If this ever does become hot, the fix is to stop re-reading the 2.2 MB
+`mission_control.json` — 892 backlog items, 856 of them `done` — not to cache
+around it.
+
+**11. Swapping Werkzeug for waitress — declined for now, and it is the one to
+revisit.** This is the item most likely to matter for the phone, because
+`Connection: close` means every request pays a fresh connection and the tunnel
+is where that hurts. But waitress **buffers responses by default**, and this app
+is built on SSE — agent output, terminal streams, browser-pane frames, hivemind
+buses. Swapping the server without a streaming test plan risks the core feature
+to fix a cost nobody has measured on the real device yet. **Order of operations:
+measure a real phone over the tunnel first, then swap if the connection cost is
+what shows up.**
+
+### Corrected while implementing
+
+**The duplicate `Date` header is not an app bug.** Root cause 6 flagged it and I
+first "fixed" it in an `after_request` de-dup — which was a no-op. Flask emits
+exactly one Date (`send_file` sets it); the second is added by the **WSGI server
+below the WSGI layer**, where no hook can reach. API responses never had two
+because Flask sets no Date on them. The working fix is for the app to contribute
+*none* on static paths and let the server's stand alone, which is what shipped.
+Worth knowing: it is cosmetic either way — the concern was heuristic caches
+refusing a malformed header set, and these responses now carry explicit
+`Cache-Control`, which overrides heuristics entirely.
+
+### Still open
+
+- **9. Targeted modal updates instead of a full `innerHTML` rebuild.** Real, but
+  the payoff shrank: Tier 1's tab-gating already took a re-render from 41.1 ms to
+  13.5 ms, so this now buys single-digit milliseconds in exchange for unpicking
+  the scroll/caret/focus/stream-node save-restore machinery. Low priority.
+- **Tier 3** — unchanged, and still the biggest remaining item in the modal.

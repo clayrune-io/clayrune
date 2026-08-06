@@ -210,11 +210,25 @@ def load_projects():
             projects.append(p)
         except Exception as e:
             _log(f"Error loading {f}: {e}")
-    projects.sort(key=lambda p: (p.get('display_order', 9999), p.get('last_updated', '1970-01-01T00:00:00Z')))
-    # Secondary sort: within same display_order, most recently updated first
+    # Two stable sorts, applied least-significant first: most-recently-updated
+    # within a display_order group, then display_order. (There used to be a
+    # third sort ahead of these on the composite key — dead work, since both
+    # sorts below overwrite its ordering entirely.)
     projects.sort(key=lambda p: p.get('last_updated', '1970-01-01T00:00:00Z'), reverse=True)
     projects.sort(key=lambda p: p.get('display_order', 9999))
     return projects
+
+
+# NOT CACHED, deliberately. An mtime-keyed cache was measured and declined:
+# read+parse of all 53 project files is 24.4 ms of the endpoint's ~28 ms, but
+# /api/projects is a 30-second poll, so the saving is ~0.08% of a core — while
+# every caller here receives a MUTABLE dict and several mutate it in place
+# (api_projects alone writes live_agent, the relative timestamps, and pops
+# `backlog`). A cache would have to hand out deep copies to stay correct, and
+# deep-copying 5 MB of nested dicts in Python costs more than json.loads does in
+# C. If this ever becomes hot, the fix is to stop re-reading the 2.2 MB
+# mission_control.json — 892 backlog items, 856 of them `done` — not to cache
+# around it.
 
 
 def _project_live_agent(project_id):
