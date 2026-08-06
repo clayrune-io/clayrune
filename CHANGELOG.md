@@ -6,6 +6,32 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06h] — topic rail: recency order + "you are here"
+
+Two changes to the Topics rail, both about orientation.
+
+**Sorted by last touched.** The rail kept the digest's own order, which is
+whatever the synthesizer emitted — so the topic you were working in five
+minutes ago could sit below one last touched in March. Each topic now resolves
+its chats to the newest timestamp among them, preferring the live conversation
+row's mtime and falling back to the timestamp the digest cached for that chat,
+so a topic whose chats have aged out of `/conversations` still sorts sensibly
+instead of sinking. Ties keep digest order, so the list doesn't reshuffle
+between renders.
+
+**The topic containing the open conversation is highlighted**, with the same
+treatment a row gets on hover plus an accent edge (so it stays readable when
+the pointer is elsewhere) and a small "you are here" marker. Matched on the
+claude session id — the identity that survives the mc-session churn a resume
+causes — which is the same basis the chat rail uses to pick its active row.
+Switching Chats to Topics now shows you where you are instead of making you
+hunt for it.
+
+Verified by driving the real UI, including the check that matters: the
+highlight *follows* the conversation. Opening a chat from a different topic
+moves it, rather than sticking to the first row — which is what a naive
+implementation and a passing eyeball test would both look like.
+
 ## [2026-08-06g] — the digest was clustering by opening prompt, not by subject
 
 Ron asked a question that turned out to be a bug report: "where will this

@@ -1840,24 +1840,67 @@ function _railTopicsHTML(p) {
     return `<div class="agent-rail-empty">No topic digest yet.
       <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Build it</button></div>`;
   }
+  // Resolve each topic's chats against the loaded conversation list once —
+  // needed for both the ordering and the active highlight below.
+  const byCsid = {};
+  (conversationsCache[pid] || []).forEach(c => {
+    if (c.claude_session_id) byCsid[c.claude_session_id] = c;
+  });
+  const csidsOf = t => (t.chats && t.chats.length)
+    ? t.chats.map(c => c.csid).filter(Boolean)
+    : (t.chat_csids || []);
+  // Last time anything in this topic was touched. Prefer the live conversation
+  // row's mtime; fall back to the timestamp the digest cached for that chat, so
+  // a topic whose chats have aged out of /conversations still sorts sensibly
+  // instead of sinking to the bottom.
+  const touchedAt = t => {
+    let best = 0;
+    const cached = {};
+    (t.chats || []).forEach(c => { if (c.csid && c.ts) cached[c.csid] = c.ts; });
+    for (const cs of csidsOf(t)) {
+      const live = (byCsid[cs] || {}).mtime;
+      if (live) { best = Math.max(best, live * 1000); continue; }
+      const ts = Date.parse(cached[cs] || '');
+      if (!isNaN(ts)) best = Math.max(best, ts);
+    }
+    return best;
+  };
+  // The conversation the user is actually in — matched on the claude session id
+  // (stable across the mc-session churn a resume causes), same basis the chat
+  // rail uses to pick its active row.
+  const activeSid = activeAgentTab[pid] || null;
+  const activeCsid = (activeSid && agentStatusCache[activeSid]
+                      && agentStatusCache[activeSid].claudeSessionId) || null;
+
   const q = (_railQuery[pid] || '').trim().toLowerCase();
   const list = (d.topics || [])
     .filter(t => (t.user_state || 'open') !== 'archived')
-    .filter(t => !q || `${t.title} ${t.gist || ''}`.toLowerCase().includes(q));
+    .filter(t => !q || `${t.title} ${t.gist || ''}`.toLowerCase().includes(q))
+    // Most recently touched first. Stable for ties (topics with no resolvable
+    // timestamp keep their digest order rather than shuffling per render).
+    .map((t, i) => [t, i])
+    .sort((a, b) => (touchedAt(b[0]) - touchedAt(a[0])) || (a[1] - b[1]))
+    .map(x => x[0]);
   // Say it plainly when the map is out of date rather than quietly serving a
   // stale one — the whole reason the backend now computes real staleness.
   const staleBar = d.stale
     ? `<div class="rail-topic-stale" title="${esc(d.stale_reason || '')}">Out of date
          <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Refresh</button></div>`
     : '';
-  const rows = list.map(t => `
-    <div class="rail-topic" onclick="openTopicNewest('${esc(pid)}','${esc(t.id)}')"
+  const rows = list.map(t => {
+    // Switching from Chats to Topics should show you where you are, not make
+    // you hunt for it: the topic containing the open conversation carries the
+    // same treatment a row gets on hover.
+    const here = !!(activeCsid && csidsOf(t).includes(activeCsid));
+    return `
+    <div class="rail-topic${here ? ' active' : ''}" onclick="openTopicNewest('${esc(pid)}','${esc(t.id)}')"
          title="${esc(t.gist || '')}">
       <div class="rail-topic-title">${esc(t.title)}</div>
       <div class="rail-topic-gist">${esc((t.gist || '').slice(0, 110))}</div>
-      <div class="rail-topic-meta">${t.chat_count} chat${t.chat_count !== 1 ? 's' : ''}${
+      <div class="rail-topic-meta">${here ? '<span class="rail-topic-here">you are here</span> &middot; ' : ''}${t.chat_count} chat${t.chat_count !== 1 ? 's' : ''}${
         (t.user_state || 'open') === 'done' ? ' &middot; done' : ''}</div>
-    </div>`).join('');
+    </div>`;
+  }).join('');
   return staleBar + (rows
     || `<div class="agent-rail-empty">${q ? 'No matching topics.' : 'No topics yet.'}</div>`);
 }

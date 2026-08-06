@@ -2741,6 +2741,16 @@
     transition: background .12s, box-shadow .12s;
   }
   .agent-3pane .rail-topic:hover { background: var(--bg); box-shadow: inset 0 0 0 1px var(--border2); }
+  /* The topic holding the open conversation. Same treatment as hover (Ron's
+     ask) with an accent edge so it stays distinguishable from whatever the
+     pointer happens to be over. */
+  .agent-3pane .rail-topic.active {
+    background: var(--bg); box-shadow: inset 0 0 0 1px var(--accent);
+  }
+  .agent-3pane .rail-topic-here {
+    color: var(--accent); font-weight: 700; text-transform: uppercase;
+    letter-spacing: .3px; font-size: 9.5px;
+  }
   .agent-3pane .rail-topic-title {
     font-size: 12.5px; font-weight: 600; color: var(--text);
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
