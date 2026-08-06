@@ -188,12 +188,15 @@ def test_real_staleness_path_end_to_end(monkeypatch):
     """Not stubbing _staleness: prove the gate works against the real
     implementation, so a change to either side can't silently decouple them."""
     calls = []
-    _write_cache('p', generated_at=NOW.isoformat(), chat_count=1)
+    _write_cache('p', generated_at=(NOW - timedelta(minutes=30)).isoformat(),
+                 chat_count=1)
     monkeypatch.setattr(tr, '_load_project', lambda pid: {'project_path': '/p'})
-    # One long chat, modified AFTER the digest was generated.
+    # One long chat, modified AFTER the digest was generated and since SETTLED
+    # (outside topics_settle_seconds — an in-progress chat deliberately does
+    # not count, or the banner would be on for the whole conversation).
     monkeypatch.setattr(tr, '_recent_transcripts', lambda pp, limit=50: [
         {'session_id': 'c1', 'turns': 5, 'first_user': 'a long opening message',
-         'mtime': (NOW + timedelta(minutes=5)).timestamp()}])
+         'mtime': (NOW - timedelta(minutes=10)).timestamp()}])
     _stub_synthesis(monkeypatch, calls)
     tr._maybe_refresh('p')
     assert calls, 'real staleness check should have reported stale'

@@ -38,6 +38,17 @@ _MODEL = 'haiku'
 _lock = threading.Lock()
 
 
+# Turn-1 texts that are an operating prompt rather than a subject. Anchored to
+# the canonical marker where one exists (`steward/fence.py: STEWARD_MARKER`);
+# the rest are the recurring scheduled-run openers on this deployment. Matching
+# is deliberately narrow — a false positive costs a chat its best seed.
+_AUTOMATION_PROMPT_RE = re.compile(
+    r'^\s*(\[steward cycle\]'
+    r'|you are the clayrune night-shift'
+    r'|campaign tracker\b'
+    r'|\[scheduled\b)', re.I)
+
+
 def _log(msg):
     """Module-local logger. Auto-refresh runs on a daemon thread with no request
     context, so a silent failure there would be invisible — this is the only way
@@ -110,6 +121,17 @@ def _gather_signals(project_id, limit=50):
         if turns < 2 and len(ask) < 12:        # trivial "ok" / stray fragments
             continue
         summary = (log_by_csid.get(csid, {}) or {}).get('summary', '') or ''
+        # A scheduled/steward run's turn-1 text is a boilerplate operating
+        # prompt — near-identical across every such session. As a clustering
+        # seed it is actively harmful: it collapses unrelated work into one
+        # "Autonomous agents" bucket purely because the sessions START the same
+        # way. Observed 2026-08-06: an entire load-time investigation was filed
+        # there, because that work was appended to a transcript whose first
+        # message was `[Steward cycle] …` (the same first-message-wins problem
+        # that mislabelled the conversation list). The chat's real subject is in
+        # the completion summary and in what the user actually typed.
+        if _AUTOMATION_PROMPT_RE.match(ask):
+            ask = summary or last or ask[:120]
         ts = ''
         try:
             if c.get('mtime'):
@@ -232,7 +254,16 @@ def _staleness(project_id, cache):
                 or len(' '.join((c.get('first_user') or '').split())) >= 12]
         n_now = len(live)
         n_then = cache.get('chat_count')
-        newest = max((c.get('mtime', 0) or 0) for c in live) if live else 0
+        # Only SETTLED chats count as change. A conversation you are currently
+        # in has its transcript touched on every turn, so without this the
+        # digest reports "out of date" for the entire duration of any active
+        # chat — a banner that is always on is a banner you stop reading. The
+        # in-progress chat is re-clustered when it ends, which is precisely
+        # when auto-refresh fires.
+        settle = float(_cfg('topics_settle_seconds', 180))
+        cutoff = _time.time() - settle
+        settled = [c for c in live if (c.get('mtime', 0) or 0) <= cutoff]
+        newest = max((c.get('mtime', 0) or 0) for c in settled) if settled else 0
         gen_ts = 0.0
         if gen:
             try:

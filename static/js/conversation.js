@@ -1828,7 +1828,14 @@ function openTopicNewest(pid, topicId) {
 function _railTopicsHTML(p) {
   const pid = p.id;
   const d = _topicsData[pid] || {};
-  if (d.loading) return '<div class="agent-rail-empty">Reviewing chats&hellip;</div>';
+  // Name the duration. The synthesis is one cheap-model pass over up to 50
+  // chats and measured ~2.5 minutes on this project; a bare spinner at that
+  // length reads as a hang, which is exactly how the Refresh button was first
+  // reported ("does not seem to respond").
+  if (d.loading) {
+    return `<div class="agent-rail-empty">Reviewing chats&hellip;<br>
+      <span style="opacity:.7">this takes a minute or two</span></div>`;
+  }
   if (!d.topics) {
     return `<div class="agent-rail-empty">No topic digest yet.
       <button class="rail-topic-refresh" onclick="reviewTopics('${esc(pid)}')">Build it</button></div>`;
@@ -2033,6 +2040,11 @@ async function _loadTopics(pid) {
 async function reviewTopics(pid) {
   _topicsData[pid] = Object.assign({ topics: null }, _topicsData[pid], { loading: true });
   refreshThreadsBoard(pid);
+  // Paint the loading state in the RAIL too, not just the board. Without this
+  // the rail's Refresh button looked dead: the synthesis is a synchronous
+  // request that takes ~2.5 minutes on a project with 50 chats, and nothing on
+  // screen changed for the whole of it.
+  _refreshRailIfTopics(pid);
   try {
     const r = await fetch((window.API_BASE || '') + `/api/project/${encodeURIComponent(pid)}/topics/refresh`, { method: 'POST' });
     const d = await r.json();

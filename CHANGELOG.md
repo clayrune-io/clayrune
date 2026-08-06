@@ -6,6 +6,41 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06g] — the digest was clustering by opening prompt, not by subject
+
+Ron asked a question that turned out to be a bug report: "where will this
+conversation fit in the topic bar?" It fitted badly.
+
+**Automation prompts were seeding the clusters.** `_gather_signals` used each
+chat's first user message as its topic seed. For a scheduled or steward run that
+is a boilerplate operating prompt, near-identical across every such session — so
+the clusterer grouped unrelated work by how the sessions START. Measured: an
+entire load-time investigation was filed under "Autonomous agents", because that
+work had been appended to a transcript opening with `[Steward cycle] …` — the
+same first-message-wins defect that mislabelled the conversation list, surfacing
+in a second place. Such a chat now seeds from its completion summary, falling
+back to what the user actually typed. The pattern is pinned to
+`steward/fence.py: STEWARD_MARKER` by test, matching the discipline in
+`test_distiller_safety.py`.
+
+Effect on the real digest: **5 topics became 12**, "Autonomous agents" shrank
+from 20 chats to 15, and the two halves of one split thread finally clustered
+together instead of landing in unrelated buckets. Synthesis also got faster
+(157 s to 59 s) — the seeds are shorter.
+
+**The Refresh button was not broken, it was silent.** The synthesis is a
+synchronous request measured at 157 s on this project; `reviewTopics` painted
+its loading state onto the topic *board* but not the rail, so the rail's button
+did nothing visible for two and a half minutes. It now paints the rail too, and
+says how long it takes rather than showing a bare spinner.
+
+**An in-progress chat no longer marks the digest stale.** A conversation you are
+currently in has its transcript touched every turn, so staleness counted it and
+the "Out of date" banner would have been on for the entire duration of any
+active chat — a banner that is always on is one you stop reading. Only settled
+chats count (`topics_settle_seconds`, default 180); the live one is re-clustered
+when it ends, which is exactly when auto-refresh fires.
+
 ## [2026-08-06f] — the topics digest now follows the chats
 
 The digest had exactly one writer: a button. So it aged silently — nine days and
