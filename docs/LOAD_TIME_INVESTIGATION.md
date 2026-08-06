@@ -306,6 +306,30 @@ Three things to decide before doing it, none blocking:
   navigation aid; it should degrade to the chat list rather than trap you if a
   synthesis fails.
 
+**Re-checked 2026-08-06, and one of the three above was wrong.**
+
+- **"`sessions: 0` per topic, so that link needs checking" — incorrect.** The
+  fields are `chat_count` and `chat_csids`, and both are populated (3 chats on
+  the first topic). Grouping already works, and it groups *across transcripts* —
+  which is exactly the property that makes a thread spanning two session files
+  read as one thing.
+- **The real blocker is freshness, and it was invisible.** `stale` was computed
+  as "does a cache exist", so any cache reported itself fresh. mission_control's
+  digest was generated **2026-07-28** — nine days old, 30 chats of 207 — and
+  answered `stale: false`. Tolerable for a side panel; disqualifying for a
+  primary navigation surface. Fixed: staleness now compares the newest chat
+  mtime and the chat count against the digest, and the response carries
+  `stale_reason` + `chat_count_now`. It is cheap because the transcript scan
+  behind it is the Tier-2 cached path.
+- **Nothing refreshes it.** `POST /topics/refresh` is the only writer and it is
+  manual + synchronous. Promoting Topics to the default surface needs a refresh
+  trigger (on staleness, on modal open, or scheduled) — otherwise the default
+  view silently rots. This is now the first thing to build for Tier 3, ahead of
+  any UI work.
+- **Auth-probe leftovers never become topics** — `_gather_signals` already drops
+  `turns < 2 and len(ask) < 12`, and the staleness counter applies the same bar
+  so the ghosts can't make a digest look stale either.
+
 ### What is NOT the problem
 
 Server startup (0.24–2.62 s), API response times (all <100 ms), the dashboard's

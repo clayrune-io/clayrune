@@ -198,14 +198,60 @@ def _overlay_state(project_id, topics):
     return topics
 
 
+def _staleness(project_id, cache):
+    """Has anything been said since this digest was built?
+
+    `stale` used to mean only "no cache exists", so ANY cache reported itself
+    fresh — a digest generated 2026-07-28 was still answering `stale: false` on
+    2026-08-06 with 177 chats it had never seen. That is fine for a side panel
+    and disqualifying for a primary navigation surface: the user would be
+    steering by an out-of-date map with nothing saying so.
+
+    Cheap by construction — the transcript scan behind `_recent_transcripts` is
+    cached per (path, mtime, size), so this is a stat sweep, not a re-parse.
+    Best-effort: any failure reports not-stale rather than breaking the panel.
+    Returns (stale, reason, chat_count_now).
+    """
+    gen = cache.get('generated_at') or ''
+    try:
+        p = _load_project(project_id) or {}
+        convos = _recent_transcripts(p.get('project_path', ''), limit=50) or []
+        # Same trivial-noise bar the synthesizer applies, so the counts compare
+        # like with like (this is also what keeps auth-probe "ok" fragments from
+        # ever registering as a change).
+        live = [c for c in convos
+                if (c.get('turns', 0) or 0) >= 2
+                or len(' '.join((c.get('first_user') or '').split())) >= 12]
+        n_now = len(live)
+        n_then = cache.get('chat_count')
+        newest = max((c.get('mtime', 0) or 0) for c in live) if live else 0
+        gen_ts = 0.0
+        if gen:
+            try:
+                gen_ts = datetime.fromisoformat(gen).timestamp()
+            except Exception:
+                gen_ts = 0.0
+        if gen_ts and newest > gen_ts:
+            return True, 'chats have changed since this digest was built', n_now
+        if isinstance(n_then, int) and n_now != n_then:
+            return True, f'{n_now} chats now, {n_then} when built', n_now
+        return False, '', n_now
+    except Exception:
+        return False, '', cache.get('chat_count')
+
+
 @bp.route('/api/project/<project_id>/topics', methods=['GET'])
 def get_topics(project_id):
     cache = _load_json(_topics_path(project_id), None)
     if not cache:
-        return jsonify({'topics': [], 'generated_at': None, 'stale': True})
+        return jsonify({'topics': [], 'generated_at': None, 'stale': True,
+                        'stale_reason': 'no digest built yet'})
     topics = _overlay_state(project_id, cache.get('topics', []))
+    stale, reason, n_now = _staleness(project_id, cache)
     return jsonify({'topics': topics, 'generated_at': cache.get('generated_at'),
-                    'chat_count': cache.get('chat_count'), 'stale': False})
+                    'chat_count': cache.get('chat_count'),
+                    'chat_count_now': n_now,
+                    'stale': stale, 'stale_reason': reason})
 
 
 @bp.route('/api/project/<project_id>/topics/refresh', methods=['POST'])
