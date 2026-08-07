@@ -2896,7 +2896,27 @@ def _session_usage_payload(session: dict) -> dict:
         out['num_turns'] = session.get('num_turns', 0)
     return out
 
-def _revive_history_lines(project_path, claude_sid, user_label, max_messages=40):
+def _transcript_buffer_default() -> int:
+    """How many transcript messages a restored chat buffer carries.
+
+    ONE number, because four call sites disagreeing is what caused the bug:
+    dispatch-preload, /reconstruct and the preview endpoint all passed 300,
+    while the revival path silently took the old default of 40. A revived
+    conversation therefore opened 85% truncated — measured on a live 269-message
+    chat, the visible history began mid-thread and the user could not scroll
+    back to their own opening question.
+
+    Only the VISIBLE buffer is affected either way: the model keeps full context
+    through `claude -r <csid>`, which is why this reads as a UI bug rather than
+    amnesia.
+    """
+    try:
+        return max(1, int(state.CONFIG.get('transcript_buffer_max_messages', 300)))
+    except Exception:
+        return 300
+
+
+def _revive_history_lines(project_path, claude_sid, user_label, max_messages=None):
     """Reconstruct prior-conversation log_lines from the on-disk Claude transcript.
 
     On server restart a session is revived with `-r <claude_sid>` so the model
@@ -2912,11 +2932,35 @@ def _revive_history_lines(project_path, claude_sid, user_label, max_messages=40)
     lines = _transcript_buffer_lines(project_path, claude_sid, user_label,
                                      max_messages=max_messages)
     if lines:
+        # Say so at the TOP when there is more above. Scrolling up and simply
+        # running out of conversation is indistinguishable from having lost it.
+        notice = _buffer_truncation_notice(
+            project_path, claude_sid,
+            max_messages if max_messages is not None else _transcript_buffer_default())
+        if notice:
+            lines.insert(0, notice)
         lines.append('[— restored from transcript; conversation continues below —]')
     return lines
 
 
-def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=40):
+def _buffer_truncation_notice(project_path, claude_sid, shown):
+    """A line saying history was cut, when it was — silence here is what made
+    the truncation read as lost data rather than a display limit."""
+    try:
+        f = _find_transcript_file(project_path, claude_sid)
+        if not f:
+            return None
+        total = len(_parse_transcript_messages(f, max_messages=100000))
+        if total > shown:
+            return (f'[— earlier history not shown: {total - shown} of {total} '
+                    f'messages above this point. The agent still has the full '
+                    f'conversation. —]')
+    except Exception:
+        pass
+    return None
+
+
+def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=None):
     """Render a Claude .jsonl transcript into chat-buffer lines (user+assistant).
 
     Same line format the live stream/log_lines uses: '> Label: ...' for user
@@ -2925,6 +2969,8 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
     renders user/assistant bubbles and tool noise isn't wanted here. Returns
     [] on any failure so callers can degrade gracefully.
     """
+    if max_messages is None:
+        max_messages = _transcript_buffer_default()
     try:
         f = _find_transcript_file(project_path, claude_sid)
         if not f:

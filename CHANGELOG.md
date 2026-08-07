@@ -6,6 +6,34 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-07b] — a revived chat opened 85% truncated
+
+Ron, on the scanner conversation he had just recovered: "cut half way through
+its history, I can only scroll so much up and not seeing the actual beginning."
+
+Four call sites build the restored chat buffer and they disagreed about how much
+to keep. Dispatch-preload, `/reconstruct` and the preview endpoint all passed
+`max_messages=300`; the **revival** path silently took the function default of
+**40**. Measured on the live chat: 269 messages, 40 restored — **85% of the
+conversation missing**, the visible history starting mid-thread on "Minute OHLC
+per contract…" instead of his actual opening question.
+
+One number now, not four: `_transcript_buffer_default()` reads
+`transcript_buffer_max_messages` (default 300) and every path shares it. The
+same chat now opens on "I think the daily tracker email has an in built flaw…" —
+the real beginning.
+
+**And when history genuinely is cut, the buffer now says so.** Scrolling up and
+simply running out of conversation is indistinguishable from having lost it,
+which is why this was reported as data loss rather than a display limit. The
+notice names the count and states that the agent still has the full
+conversation — because it does: `claude -r <csid>` restores complete context to
+the model regardless of what the buffer shows. That gap between what the agent
+knows and what the user can see is the whole bug.
+
+Not related to yesterday's steward split, though the symptom rhymed: that was a
+resume-target choosing the wrong session, this is a display cap.
+
 ## [2026-08-07] — "I keep losing chats": they were there, labelled by the wrong end
 
 Ron could not find a conversation with the Day Trading Scanner about the daily
