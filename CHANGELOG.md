@@ -6,6 +6,44 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-07] — "I keep losing chats": they were there, labelled by the wrong end
+
+Ron could not find a conversation with the Day Trading Scanner about the daily
+email and P&L, in either the chat list or Topics. Nothing was lost: the chat was
+sitting at **row 5** of the rail the whole time.
+
+**The row title was the LAST user message.** That chat opens with "wait... the
+daily email should also do the same" and had since wandered onto institutional
+accumulation — so its card read "I agree, the intention is to measure over
+time". A chat is remembered by what you *opened* it with, not by whatever was
+said most recently, and a long conversation drifts away from its own label.
+
+**And the rail's instant filter tested only that same title**, so typing
+"daily email" matched nothing while the chat was on screen. That is what turned
+a labelling problem into a "the chat is gone" problem.
+
+Three changes, all display-side:
+
+- Row title (and thread title) now use the conversation's **opening** message,
+  preamble-stripped, falling back to the old label when there is no usable one.
+- The sub-line carries the **latest** turn, so the row still answers "where did
+  this get to?" alongside "what is this about?".
+- The filter matches **both ends** of the conversation plus the recent line.
+
+`_bestConvLabel` deliberately keeps its last-message behaviour: the `_keep()`
+noise filters (trivial-ack, resume-nudge, agent-label) are tuned against it, and
+re-pointing those at the opening message would change which conversations are
+hidden — a far riskier edit than a title.
+
+Verified against the real project: the chat now displays as "wait... the daily
+email should also do the same", and the filter returns it (3 rows, was 0).
+
+**Worth noting what this was NOT.** The first suspicion was my own auth-probe
+filter hiding real chats, or the 20-item `/conversations` window dropping them.
+Neither: 46 real user chats exist in that project, only 5 fall inside the
+window, and the agent-log merge was correctly surfacing all 65 rows. The data
+layer was doing its job; only the label was wrong.
+
 ## [2026-08-06i] — the Topics toggle reaches mobile
 
 Shipped on desktop only, which left phones on the 128-row chat list the digest

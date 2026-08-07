@@ -1564,12 +1564,42 @@ function _convLiveState(live, c) {
 // is stamped onto the row as data-search (what _applyRailFilter matches) AND
 // used to count hidden matches for the toggle — so the count can never promise
 // rows the filter would then hide.
+// What a human recognises a chat BY is what they OPENED it with — "the one
+// where I asked about the daily email" — not whatever was said most recently.
+//
+// The row title used the LAST message, so a long chat that wandered became
+// unfindable. Measured on day_trading_engulfing_scanner: the chat that opens
+// "wait... the daily email should also do the same" displayed as "I agree, the
+// intention is to measure over time", and typing "daily email" into the rail
+// filter matched nothing — while the chat sat at row 5 the whole time.
+//
+// Display only. `_bestConvLabel` keeps its last-message behaviour because the
+// _keep() noise filters (trivial-ack, resume-nudge, agent-label) are tuned
+// against it, and re-pointing those at the opening message would change which
+// conversations are hidden — a much riskier edit than a title.
+function _convTitle(c) {
+  const first = stripSysPreamble((c && c.first_user) || '').trim();
+  if (first && !_AGENT_LABEL_RE.test(first)) return first;
+  return _bestConvLabel(c);
+}
+
+// The most recent thing said, for the sub-line — so the row still answers
+// "where did this get to?" now that the title answers "what is it about?".
+function _convRecent(c) {
+  const last = stripSysPreamble((c && (c.last_user || c.label)) || '').trim();
+  const first = stripSysPreamble((c && c.first_user) || '').trim();
+  return (last && last !== first && !_AGENT_LABEL_RE.test(last)) ? last : '';
+}
+
 function _convSearchText(c) {
   const label = _isStewardConvo(c)
     ? '🧭 Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 60) : '')
-    : (_bestConvLabel(c) || '(empty conversation)').substring(0, 90);
+    : (_convTitle(c) || '(empty conversation)').substring(0, 90);
   const meta = [c.ts_relative || '', c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
-  return `${label} ${meta}`.toLowerCase();
+  // Match on BOTH ends of the conversation. Filtering only the visible title
+  // is why "daily email" returned nothing for a chat that opens with exactly
+  // that phrase — the row was being tested against its last message alone.
+  return `${label} ${_bestConvLabel(c)} ${_convRecent(c)} ${meta}`.toLowerCase();
 }
 
 // Resolve whether a conversation row is an incognito session. Incognito
@@ -1617,7 +1647,7 @@ function mobileUserConversationsHTML(p, convos) {
     // and unrecognisable. Render a clean, identifiable name instead.
     const label = _isStewardConvo(c)
       ? esc('🧭 Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 60) : ''))
-      : esc((_bestConvLabel(c) || '(empty conversation)').substring(0, 90));
+      : esc((_convTitle(c) || '(empty conversation)').substring(0, 90));
     const liveSt = _convLiveState(live, c);
     let dot, badge = '';
     if (liveSt === 'waiting') {
@@ -1630,7 +1660,11 @@ function mobileUserConversationsHTML(p, convos) {
       const stt = c.live ? (c.status || 'running') : (c.status || 'completed');
       dot = `<span class="agent-status-dot ${esc(stt)}" title="${esc(stt)}"></span>`;
     }
-    const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : ''].filter(Boolean).join(' · ');
+    // Title now carries the subject, so the sub-line carries the latest turn —
+    // the row answers both "what is this about?" and "where did it get to?".
+    const _recent = _convRecent(c);
+    const meta = [esc(c.ts_relative || ''), c.turns ? `${c.turns} turn${c.turns !== 1 ? 's' : ''}` : '',
+                  _recent ? esc(_recent.slice(0, 70)) : ''].filter(Boolean).join(' · ');
     const incIcon = _convIsIncognito(c)
       ? '<span class="conv-inc-icon" title="Incognito — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>'
       : '';
@@ -1719,7 +1753,7 @@ function _openThreadsBadge(projectId) {
 
 function _threadTitle(c) {
   if (_isStewardConvo(c)) return '\u{1F9ED} Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 50) : '');
-  return (_bestConvLabel(c) || '(empty conversation)').slice(0, 90);
+  return (_convTitle(c) || '(empty conversation)').slice(0, 90);
 }
 
 function _threadCardHTML(pid, c, kind) {
