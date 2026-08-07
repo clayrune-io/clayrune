@@ -1059,6 +1059,23 @@ class ClaudeRuntime(AgentRuntime):
         candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
         if not candidates:
             return []
+        # ALSO the per-agent worktrees. An isolated agent runs with its cwd set
+        # to <project>/.clayrune/agents/<session_id>, and the CLI derives its
+        # transcript directory from the CWD — so those chats land in
+        # `<encoded>--clayrune-agents-<sid>`, not the project's own dir, and a
+        # scan of the project encodings alone cannot see them.
+        #
+        # Measured 2026-08-07: 33 transcripts across 3 projects were invisible
+        # this way. They reached the chat rail only through the agent-log merge
+        # (which is why one could be opened but belonged to no topic), and never
+        # reached the Topics digest at all, since `_gather_signals` reads this
+        # function. The worktree dirs are prefixed with the project's own
+        # encoding, so this cannot pull in another project's chats.
+        for e in list(self._encoded_dir_candidates(project_path)):
+            try:
+                candidates.extend(sorted(_CLAUDE_HOME.glob(f'{e}--clayrune-agents-*')))
+            except OSError:
+                continue
 
         seen: set = set()
         files: List = []

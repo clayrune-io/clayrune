@@ -1513,3 +1513,63 @@ def test_claude_runtime_has_new_transcript_methods():
         assert callable(getattr(rt, method, None)), (
             f"ClaudeRuntime missing callable: {method!r}"
         )
+
+
+def test_list_sessions_includes_agent_worktree_transcripts(tmp_path, monkeypatch):
+    """Chats that ran in a per-agent worktree must be listed for the project.
+
+    An isolated agent runs with cwd = <project>/.clayrune/agents/<sid>, and the
+    CLI derives its transcript directory from the CWD — so the chat lands in
+    `<encoded>--clayrune-agents-<sid>`, not the project's own dir. Scanning only
+    the project encodings hid 33 transcripts across 3 projects (2026-08-07):
+    they surfaced in the chat rail solely via the agent-log merge, so one could
+    be opened yet belong to no topic, and they never reached the Topics digest
+    at all because `_gather_signals` reads this function.
+    """
+    from agent_runtime import ClaudeRuntime
+    import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+
+    project_path = str(tmp_path / 'proj')
+    enc = rt._encode_project_path(project_path)
+
+    (fake_home / enc).mkdir(parents=True)
+    (fake_home / enc / 'main-chat.jsonl').write_text(json.dumps(
+        {'type': 'user', 'message': {'role': 'user', 'content': 'in the project dir'}}),
+        encoding='utf-8')
+
+    wt = fake_home / f'{enc}--clayrune-agents-abc123'
+    wt.mkdir(parents=True)
+    (wt / 'worktree-chat.jsonl').write_text(json.dumps(
+        {'type': 'user', 'message': {'role': 'user', 'content': 'ran in a worktree'}}),
+        encoding='utf-8')
+
+    got = {r['session_id']: r for r in rt.list_sessions(project_path, limit=10)}
+    assert 'worktree-chat' in got, 'worktree transcript missing from the listing'
+    assert 'main-chat' in got, 'project-dir transcript must still be listed'
+    assert got['worktree-chat']['first_user'] == 'ran in a worktree'
+
+
+def test_list_sessions_worktree_scan_stays_within_the_project(tmp_path, monkeypatch):
+    """The worktree glob is prefixed with this project's own encoding, so a
+    sibling project's agent worktrees must never be pulled in."""
+    from agent_runtime import ClaudeRuntime
+    import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+
+    mine = str(tmp_path / 'proj')
+    other = str(tmp_path / 'other')
+    enc_other = rt._encode_project_path(other)
+    wt = fake_home / f'{enc_other}--clayrune-agents-zzz'
+    wt.mkdir(parents=True)
+    (wt / 'not-mine.jsonl').write_text(json.dumps(
+        {'type': 'user', 'message': {'role': 'user', 'content': 'other project'}}),
+        encoding='utf-8')
+
+    assert rt.list_sessions(mine, limit=10) == []
