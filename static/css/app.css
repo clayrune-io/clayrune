@@ -3321,6 +3321,54 @@
   .mconv-search::placeholder { color: var(--text-faint); }
   .conv-list-scroll { flex: 1; min-height: 0; overflow-y: auto; }
   .mobile-conv-list-view .conv-list { background: var(--surface); }
+  /* ── Chats | Topics on mobile ──────────────────────────────────────────
+     The desktop rules are scoped to .agent-3pane, which does not exist in the
+     phone layout, so the toggle and the topic rows need their own copy here.
+     Bigger touch targets than desktop; same visual language. */
+  .mconv-mode {
+    display: flex; gap: 2px; flex-shrink: 0; margin: 0 0 10px;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 3px;
+  }
+  .mconv-mode .rail-mode-btn {
+    flex: 1; padding: 9px 8px; border: none; border-radius: 8px; cursor: pointer;
+    background: transparent; color: var(--text-faint);
+    font-size: 13px; font-weight: 600; font-family: inherit; line-height: 1.2;
+  }
+  .mconv-mode .rail-mode-btn.on {
+    background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  .conv-list-scroll.mconv-topics .rail-topic {
+    padding: 12px 13px; margin: 0 0 6px; border-radius: 10px; cursor: pointer;
+    background: var(--surface); border: 1px solid var(--border);
+  }
+  .conv-list-scroll.mconv-topics .rail-topic.active { border-color: var(--accent); }
+  .conv-list-scroll.mconv-topics .rail-topic-title {
+    font-size: 14px; font-weight: 600; color: var(--text);
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .conv-list-scroll.mconv-topics .rail-topic-gist {
+    font-size: 12px; color: var(--text-faint); margin-top: 3px; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .conv-list-scroll.mconv-topics .rail-topic-meta { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+  .conv-list-scroll.mconv-topics .rail-topic-here {
+    color: var(--accent); font-weight: 700; text-transform: uppercase;
+    letter-spacing: .3px; font-size: 10px;
+  }
+  .conv-list-scroll.mconv-topics .rail-topic-stale {
+    display: flex; align-items: center; justify-content: space-between; gap: 8px;
+    margin: 0 0 8px; padding: 8px 11px; border-radius: 9px;
+    background: var(--accent-dim); color: var(--text); font-size: 12px; font-weight: 600;
+  }
+  .conv-list-scroll.mconv-topics .rail-topic-refresh {
+    border: 1px solid var(--border); border-radius: 7px; cursor: pointer;
+    background: var(--surface); color: var(--text);
+    padding: 5px 11px; font-size: 12px; font-weight: 600; font-family: inherit;
+  }
+  .conv-list-scroll.mconv-topics .agent-rail-empty {
+    padding: 26px 16px; color: var(--text-faint); font-size: 13px; text-align: center;
+  }
   .conv-newbtn-bar { flex-shrink: 0; background: var(--bg); padding: 8px 0 4px; }
   .conv-newbtn {
     width: 100%; background: var(--accent); color: #fff; border: none;

@@ -6,6 +6,32 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-06i] — the Topics toggle reaches mobile
+
+Shipped on desktop only, which left phones on the 128-row chat list the digest
+exists to replace — the surface where the saving matters most. Mobile's Layer-2
+list is the same surface in a different shape, not a different feature.
+
+`_mode` is now computed once at the top of `agentPanelHTML` and used by both
+paths, rather than declared inside the desktop branch where mobile could not see
+it (and where a second declaration would have drifted). The desktop rules are
+scoped to `.agent-3pane`, which does not exist in the phone layout, so the
+toggle and topic rows carry their own mobile CSS with bigger touch targets.
+
+One guard worth naming: `_mobileListMode` required a non-empty conversation
+list. In topics mode the list stands on the digest instead, so that condition
+would have dropped you into the composer with no way back to the list on a
+project with no user chats.
+
+Verified at 390x844: toggle renders, tapping Topics swaps 5 conversation rows
+for 14 topic rows, no horizontal overflow, no JS errors, "+ New conversation"
+still pinned to the bottom edge.
+
+**And the session-end auto-refresh is confirmed live.** It was the one piece
+that could not be tested on demand — it only fires when a chat ends. The digest
+now reads `generated_at 2026-08-07T13:04:54Z` with 14 topics, replacing the
+12-topic one written by hand the day before. Nobody pressed Refresh.
+
 ## [2026-08-06h] — topic rail: recency order + "you are here"
 
 Two changes to the Topics rail, both about orientation.

@@ -610,8 +610,18 @@ function agentPanelHTML(p) {
   // Layer 2 lists ALL the USER's conversations (durable, transcript-derived —
   // past + present), filtered to user-initiated. Agent/scheduled runs live in
   // the ⋮ → Agent Log side flow, not here. Tapping a row opens it in the thread.
+  // Rail mode (chats | topics) is a property of the whole panel, not just the
+  // desktop rail — mobile's Layer-2 list is the same surface in a different
+  // shape, and shipping the toggle on desktop only left phones stuck on the
+  // 128-row chat list the digest exists to replace.
+  const _mode = (typeof railMode === 'function') ? railMode(p.id) : 'chats';
+  if (_mode === 'topics' && !_topicsData[p.id]) _loadTopics(p.id);
   const _mobileUserConvos = mobileMode ? _userInitiatedConvos(p.id) : [];
-  const _mobileListMode = mobileMode && !activeSession && !wantNew && !_resumeArmed && _mobileUserConvos.length > 0;
+  // In topics mode the list stands on the digest, so an empty conversation list
+  // must not collapse the view — otherwise switching to Topics on a project
+  // with no user chats drops you into the composer with no way back to the list.
+  const _mobileListMode = mobileMode && !activeSession && !wantNew && !_resumeArmed
+    && (_mobileUserConvos.length > 0 || _mode === 'topics');
 
   // View chrome: mobile = drill-down list + back bar; desktop = tab strip.
   let convListHTML = '', convBackBar = '', tabBar = '';
@@ -621,12 +631,20 @@ function agentPanelHTML(p) {
       // bottom edge. Resume is reachable by tapping a conversation row (it opens
       // in the thread, ready to continue), so the button is New-only.
       convListHTML = `<div class="mobile-conv-list-view">
+        <div class="rail-mode mconv-mode" role="tablist">
+          <button class="rail-mode-btn${_mode === 'chats' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
+          <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','topics')">Topics</button>
+        </div>
         <div class="mconv-search-wrap">
           <svg class="mconv-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="Search conversations&hellip;"
+          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
-        <div class="conv-list-scroll">${mobileUserConversationsHTML(p, _mobileUserConvos)}</div>
+        <div class="conv-list-scroll${_mode === 'topics' ? ' mconv-topics' : ''}">${
+          _mode === 'topics' ? _railTopicsHTML(p)
+                             : mobileUserConversationsHTML(p, _mobileUserConvos)}</div>
         <div class="conv-newbtn-bar">
           <button class="conv-newbtn" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
         </div>
@@ -1152,8 +1170,8 @@ function agentPanelHTML(p) {
     // as the mobile Layer-2 list, not just the open tabs.
     if (!conversationsCache[p.id]) loadConversations(p.id);
     if (!agentLogCache[p.id]) loadAgentLog(p.id);
-    const _mode = (typeof railMode === 'function') ? railMode(p.id) : 'chats';
-    if (_mode === 'topics' && !_topicsData[p.id]) _loadTopics(p.id);
+    // _mode is computed once at the top of this function — the mobile Layer-2
+    // list needs it too, and two declarations would drift.
     const _railConvos = (_mode === 'chats' && typeof _userInitiatedConvos === 'function')
       ? _userInitiatedConvos(p.id) : [];
     const railRows = _mode === 'topics'
