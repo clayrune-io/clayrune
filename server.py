@@ -1628,8 +1628,9 @@ def index():
     # which pins the whole SPA to a stale ?v= (a deploy never reaches the app —
     # a force-stop kills the process but not the disk cache). no-store forbids
     # caching index.html at all, so every load fetches fresh HTML → fresh ?v= →
-    # fresh JS/CSS. The JS/CSS themselves stay no-cache (ETag-revalidated, 304
-    # when unchanged) so only the tiny HTML pays the always-fetch cost.
+    # fresh JS/CSS. The JS/CSS themselves are served `immutable` for a year once
+    # they carry that ?v= (see add_static_cache_headers), so only the tiny HTML
+    # pays the always-fetch cost and a changed ?v= is what re-fetches them.
     resp.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
     resp.headers['Pragma'] = 'no-cache'
     resp.headers['ETag'] = etag
