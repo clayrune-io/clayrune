@@ -34,17 +34,24 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:
-      - name: Run install.sh from clayrune.io (auth-gated parts will exit 1)
+      - name: Run install.sh from clayrune.io (auth-gated parts will exit 3)
         env:
           CLAYRUNE_NO_CONFIRM: '1'
         run: |
           set +e
           curl -sSL https://clayrune.io/install.sh | sh
           ec=$?
-          # install.sh exits 1 at the auth check (we can't OAuth in CI).
-          # That's expected and acceptable — anything before that point
-          # must have succeeded.
-          if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
+          # install.sh stops at the auth check (we can't OAuth in CI). That's
+          # expected and acceptable — anything before that point must have
+          # succeeded.
+          #
+          # 3 is the CURRENT contract: install.sh:363 exits 3 for "installed
+          # but not authenticated", deliberately matching install.ps1. It used
+          # to exit 1, and this gate was never updated when the code changed —
+          # see the note in the `macos` job below for why that went unnoticed
+          # for two weeks. 1 stays accepted so an older deployed install.sh
+          # doesn't fail the run.
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ] && [ "$ec" -ne 3 ]; then
             echo "install.sh exited $ec — unexpected"
             exit "$ec"
           fi
@@ -76,7 +83,18 @@ jobs:
           set +e
           curl -sSL https://clayrune.io/install.sh | sh
           ec=$?
-          if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ]; then
+          # See the ubuntu job: 3 = "installed but not authenticated".
+          #
+          # THIS JOB TESTS THE DEPLOYED SITE, NOT THE CHECKOUT — it curls
+          # install.sh from clayrune.io. So it goes red when the LIVE script
+          # and this contract disagree, which can happen with no commit to
+          # install.sh at all: the exit-1 -> exit-3 change landed in ee9c152
+          # (2026-07-24), reached clayrune.io on a later site deploy, and only
+          # surfaced on 2026-08-07 when an unrelated `installer/_headers`
+          # commit next tripped this workflow's path filter. Don't read a
+          # failure here as "the last commit broke the installer" — check the
+          # deployed script's exit code first.
+          if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ] && [ "$ec" -ne 3 ]; then
             echo "install.sh exited $ec — unexpected"
             exit "$ec"
           fi
