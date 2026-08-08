@@ -87,38 +87,50 @@
   Cache-Control: public, max-age=600, s-maxage=86400, stale-while-revalidate=604800
 
 # ── Marketing pages ──────────────────────────────────────────────────────────
-# Short browser TTL so an edit is picked up quickly, long edge TTL +
-# stale-while-revalidate so a cold Pages origin can never turn into a 504 for
-# a real visitor. Both the extensionless and .html forms are listed because
-# Pages serves both and 504s were logged against each.
+# Short browser TTL so an edit is picked up quickly, and a SHORT edge TTL with a
+# long stale-while-revalidate. SWR is what keeps a cold Pages origin from ever
+# turning into a 504 for a real visitor: once s-maxage lapses the edge still
+# answers instantly from its stale copy and revalidates in the BACKGROUND, so
+# nobody ever waits on the origin. The freshness window therefore costs us
+# nothing and s-maxage does not need to be long.
+#
+# It was s-maxage=3600 until 2026-08-08 and that hour was a real problem: a
+# Pages deploy does NOT purge this cache key, so every ship left visitors on the
+# previous HTML for up to an hour. Measured twice — 44 minutes once, and Age
+# 1077/3600 with the old page still being served while the fix sat at the
+# origin. Versioned assets (?v=) self-heal because the URL changes; the HTML
+# entry point cannot, so it must expire quickly instead.
+#
+# Both the extensionless and .html forms are listed because Pages serves both
+# and 504s were logged against each.
 /
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /index.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /demo
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /demo.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /download
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /download.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /docs
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /docs.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /blog
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /blog.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /blog-managing-agents.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /blog-what-is-clayrune.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /blog-why-a-mobile-app.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 /privacy.html
-  Cache-Control: public, max-age=60, s-maxage=3600, stale-while-revalidate=604800
+  Cache-Control: public, max-age=60, s-maxage=60, stale-while-revalidate=604800
 
 # ── Site static assets ───────────────────────────────────────────────────────
 /styles.css
