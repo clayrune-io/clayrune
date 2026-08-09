@@ -184,6 +184,13 @@ def _load_config():
         # set more than halves for ~300 extra tokens/prompt, against a ~6k-token
         # auto-loaded index. Measured by tools/memory-eval/scorer_ab.py.
         'read_floor_topk': 6,
+        # Link expansion: after BM25 picks its topk, follow one `[[wikilink]]`
+        # hop out of each hit and APPEND up to N extra notes (out-links first,
+        # then back-links). The links are hand-authored "read this too" edges a
+        # past session left behind; until 2026-08-09 nothing parsed them, so
+        # they were decoration. Appended, never substituted — this cannot push a
+        # lexical match out of the floor. 0 disables.
+        'read_floor_link_expand': 2,
         # Exploration read-floor — surfaces the Distiller's captured
         # EXPLORATION.md proposals back into a new session's context (the
         # learning-loop closer). Ships default-ON; flip enabled=false to

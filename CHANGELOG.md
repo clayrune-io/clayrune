@@ -6,6 +6,50 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-09] — the vault's `[[wikilinks]]` were decoration; now they retrieve
+
+Ron asked whether Obsidian's second-brain model could accommodate what Clayrune
+already does. Auditing the actual state rather than the concepts: the memory dir
+**is** an Obsidian-shaped vault (73 atomic notes with YAML frontmatter, a MOC-style
+`MEMORY.md` index, wikilinks, full-text search) with two advantages Obsidian has
+no answer to — capture is automatic (the Scribe, not a human who must remember to
+write), and there is a *push* path (the read floor injects into every dispatch,
+where Obsidian only ever pulls). One thing was genuinely worse, and it was a live
+defect, not a philosophical gap.
+
+**The links were never parsed.** 97 `[[wikilinks]]` across 46 notes, and no code
+path in `mc/` or `server.py` matched `[[`. Two consequences:
+
+- A past session's explicit "the companion note is over there" — the highest-value
+  relevance signal in the vault, hand-authored — reached retrieval as nothing.
+- **6 links had rotted to non-existent targets and nothing went red.** Another 5
+  only *looked* broken: slug drift between kebab links and snake_case filenames.
+
+Both halves fixed:
+
+- **Tolerant resolution** (`_mem_link_key`) ignores every non-alphanumeric
+  character, so `[[arch-mobile-ui]]` / `[[arch_mobile_ui]]` / `[[Arch Mobile UI]]`
+  all reach `arch_mobile_ui.md`. Aliases and anchors are stripped.
+- **One-hop expansion** (`_mem_link_graph` + `_mem_expand_links`, new
+  `read_floor_link_expand`, default 2): after BM25 picks its topk the read floor
+  follows links out of each hit — out-links first, then back-links — and appends
+  those notes tagged `(linked from X)`. This reaches notes that share *no*
+  vocabulary with the task, which is precisely what BM25 structurally cannot do.
+  **Additive by design:** neighbours are appended, never substituted, so turning
+  it up cannot push a lexical match out of the floor.
+- **`tools/memory-link-check.py`** — the missing red. Reports dangling links, slug
+  collisions, `name:`-vs-filename drift and orphan notes; `--strict` exits 1.
+- Vault sweep on this install: 6 dangling links repaired (1 retargeted to the note
+  that actually covers it, 5 de-linked to plain text — they referenced engram
+  observations, not vault notes) and 19 `name:` fields canonicalized to the
+  filename stem, prose names preserved as a new `title:` field. **0 dangling,
+  92 resolved.**
+- Settings → Memory → Retrieval now surfaces `read_floor_topk` (which had never
+  been exposed, despite a session summary once telling Ron it was) alongside the
+  new link-expansion dial.
+
+10 new tests (`tests/test_memory_link_graph.py`); suite 1295 green.
+
 ## [2026-08-08b] — 24 cloudflared connectors on one tunnel
 
 Ron, from Task Manager: "any idea why there are so many cloudflare tunnels

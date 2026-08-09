@@ -108,6 +108,7 @@ _CONFIG_EDITABLE_KEYS = {
     'scribe_enabled', 'scribe_model', 'scribe_reconcile_enabled',
     'scribe_reconcile_cap', 'scribe_checkpoint_enabled',
     'scribe_checkpoint_kb', 'scribe_why_enabled', 'read_floor_topk',
+    'read_floor_link_expand',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle

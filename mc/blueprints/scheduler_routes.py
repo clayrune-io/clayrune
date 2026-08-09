@@ -358,13 +358,17 @@ def _steward_cycle_task(project_id):
         try:
             hits = _mem._memory_search(
                 p, objective,
-                int(state.CONFIG.get('read_floor_topk', 6) or 6))
+                int(state.CONFIG.get('read_floor_topk', 6) or 6),
+                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0))
             if hits:
                 blocks.append(
                     "--- RELEVANT MEMORY (auto-surfaced for your charter; use "
                     "the mc-memory-search skill to dig deeper) ---\n"
-                    + "\n".join(f"  • [{h['file']}] {h['snippet']}"
-                                for h in hits))
+                    + "\n".join(
+                        f"  • [{h['file']}] {h['snippet']}" if not h.get('via')
+                        else (f"  • [{h['file']}] (linked from {h['via']}) "
+                              f"{h['snippet']}")
+                        for h in hits))
         except Exception as e:
             _log(f"[steward] memory read-floor failed for {project_id}: {e}")
         # Honour the readback kill switch here too — a switch that the agent

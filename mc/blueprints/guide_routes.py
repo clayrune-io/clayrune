@@ -571,7 +571,14 @@ def memory_search(project_id):
         k = int(request.args.get('k', 3))
     except (TypeError, ValueError):
         k = 3
-    return jsonify(_memory_search(p, q, k))
+    # `expand` = extra notes reached by one [[wikilink]] hop off the hits; each
+    # carries `via`. Defaults to 0 here (explicit search stays purely lexical);
+    # the dispatch read floor opts in via read_floor_link_expand.
+    try:
+        expand = int(request.args.get('expand', 0))
+    except (TypeError, ValueError):
+        expand = 0
+    return jsonify(_memory_search(p, q, k, expand=expand))
 
 
 # ── Walkthrough onboarding project ────────────────────────────────────────────

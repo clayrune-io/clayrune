@@ -126,7 +126,7 @@ def client(tmp_path, monkeypatch):
                         lambda pid: proj if pid == 'tguide' else None)
     mem_calls = []
 
-    def _memory_search(p, q, k):
+    def _memory_search(p, q, k, expand=0):
         mem_calls.append((p, q, k))
         return [{'file': 'topic.md', 'score': 3, 'snippet': 'hit for ' + q}]
 

@@ -498,6 +498,18 @@ async function _renderSettings() {
     </div>
 
     <div class="settings-section">
+      <div class="settings-section-title">Retrieval</div>
+      <div class="settings-row">
+        <div><div class="settings-label">Memory snippets per task</div><div class="settings-hint">How many notes the read floor surfaces into a new session (default 6).</div></div>
+        ${numInput('read_floor_topk', cfg.read_floor_topk)}
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Follow linked notes</div><div class="settings-hint">Also surface notes reached by one [[wikilink]] hop from a match — the companion note a past session pointed at. Added on top of the count above; 0 turns it off.</div></div>
+        ${numInput('read_floor_link_expand', cfg.read_floor_link_expand)}
+      </div>
+    </div>
+
+    <div class="settings-section">
       <div class="settings-section-title">Learning</div>
       <div class="settings-row">
         <div>

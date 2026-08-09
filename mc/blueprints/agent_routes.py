@@ -1904,12 +1904,19 @@ def _build_agent_context(project, incognito=False, task='', character_body=''):
     # solely on the probabilistic search skill. SPEC §3 Leg B.
     if task:
         try:
-            hits = _memory_search(project, task,
-                                  int(state.CONFIG.get('read_floor_topk', 6) or 6))
+            hits = _memory_search(
+                project, task,
+                int(state.CONFIG.get('read_floor_topk', 6) or 6),
+                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0))
         except Exception:
             hits = []
         if hits:
-            rl = "\n".join(f"  • [{h['file']}] {h['snippet']}" for h in hits)
+            # `via` marks a note reached by a [[wikilink]] hop rather than a
+            # lexical match — say so, so the agent can weigh it accordingly.
+            rl = "\n".join(
+                f"  • [{h['file']}] {h['snippet']}" if not h.get('via')
+                else f"  • [{h['file']}] (linked from {h['via']}) {h['snippet']}"
+                for h in hits)
             parts.append(
                 "--- RELEVANT MEMORY (auto-surfaced for this task; "
                 "use the mc-memory-search skill to dig deeper) ---\n" + rl)

@@ -444,6 +444,14 @@ _BM25_B = 0.75
 # a cheap field boost, since the filename is the note's title (see _mem_corpus).
 _TITLE_BOOST = 3
 
+# Link-expansion decay: a neighbour reached by traversing one `[[wikilink]]` hop
+# from a BM25 hit inherits a fraction of that hit's score. Out-links (the note
+# itself points there — an authored "read this too") rank above back-links (some
+# other note points here), which is the same asymmetry Obsidian's UI implies by
+# putting outgoing links in the body and backlinks in a side panel.
+_LINK_DECAY_OUT = 0.5
+_LINK_DECAY_IN = 0.35
+
 # Parsed corpus cache: mem_dir -> (signature, units). The signature is every
 # *.md file's (name, mtime_ns, size), so any write invalidates it. Without this
 # the read floor re-tokenizes ~1.7MB on every single dispatch.
@@ -463,6 +471,70 @@ def _mem_tokens(text):
     import re  # module has no top-level `re` import (see _re_auth pattern)
     return [t for t in re.findall(r'[a-z0-9]+', (text or '').lower())
             if len(t) >= 3]
+
+
+def _mem_link_key(s):
+    """Canonical key for matching a `[[wikilink]]` target to a topic filename.
+
+    The vault's slugs drifted: filenames are snake_case (`arch_mobile_ui.md`),
+    links were written kebab (`[[arch-mobile-ui]]`), and some frontmatter
+    `name:` fields are free prose. Rather than demand one true spelling from
+    every future note, matching ignores every non-alphanumeric character —
+    `arch-mobile-ui`, `arch_mobile_ui` and `Arch Mobile UI` all key the same.
+    """
+    import re  # module has no top-level `re` import (see _re_auth pattern)
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def _mem_link_targets(text):
+    """Extract `[[wikilink]]` targets from a note body (alias/anchor stripped).
+
+    Code spans and fenced blocks are stripped first: a note that DOCUMENTS the
+    link syntax (this system's own notes do) would otherwise register `[[…]]`
+    written inside backticks as a real edge, and then report itself dangling.
+    Same rule Obsidian applies.
+    """
+    import re
+    body = re.sub(r'```.*?```', ' ', text or '', flags=re.S)
+    body = re.sub(r'`[^`\n]*`', ' ', body)
+    out = []
+    for raw in re.findall(r'\[\[([^\[\]]+)\]\]', body):
+        tgt = raw.split('|', 1)[0].split('#', 1)[0].strip()
+        if tgt:
+            out.append(tgt)
+    return out
+
+
+def _mem_link_graph(units):
+    """Build the vault's link graph over topic units.
+
+    Returns {filename: {'out': [...], 'in': [...]}} where every entry is a
+    topic filename that actually exists. Unresolvable targets are dropped here
+    — `tools/memory-link-check.py` is what reports them, so a dangling link
+    costs retrieval nothing but is still visible to a human.
+
+    Only topic files participate: archive/managed units are lines out of a
+    container file, so a link found in one has no single owning note to hop
+    back to.
+    """
+    by_key = {}
+    for u in units:
+        if u.get('cls') == 'topic':
+            by_key.setdefault(_mem_link_key(u['file'].rsplit('.', 1)[0]), u['file'])
+    graph = {f: {'out': [], 'in': []} for f in by_key.values()}
+    for u in units:
+        if u.get('cls') != 'topic':
+            continue
+        src = u['file']
+        for tgt in u.get('links') or []:
+            dst = by_key.get(_mem_link_key(tgt))
+            if not dst or dst == src:
+                continue
+            if dst not in graph[src]['out']:
+                graph[src]['out'].append(dst)
+            if src not in graph[dst]['in']:
+                graph[dst]['in'].append(src)
+    return graph
 
 
 def _mem_corpus(mem_dir, mem_name, arch_name):
@@ -520,13 +592,14 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
         out.append({'file': label, 'text': text, 'tf': tf,
-                    'len': len(toks), 'cls': cls})
+                    'len': len(toks), 'cls': cls,
+                    'links': _mem_link_targets(text) if cls == 'topic' else []})
     with _memsearch_cache_lock:
         _memsearch_cache[key] = (sig, out)
     return out
 
 
-def _memory_search(project, query, topk=3):
+def _memory_search(project, query, topk=3, expand=None):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
@@ -559,6 +632,15 @@ def _memory_search(project, query, topk=3):
 
     A topic file's NAME is indexed as part of its text (see `_mem_corpus`),
     which is what lets a note match on its title alone.
+
+    LINK EXPANSION (`expand`, 2026-08-09). BM25 only ever finds notes that share
+    vocabulary with the task. The vault also carries ~97 hand-authored
+    `[[wikilinks]]` — a previous session's explicit "this is the companion
+    note" — which the ranker was blind to: nothing in the codebase parsed them,
+    so they were decoration. `expand` appends up to N EXTRA results reached by
+    traversing one hop from the BM25 hits (out-links first, then back-links),
+    each carrying `via` = the hit it was reached from. They are appended, never
+    substituted, so turning this on cannot displace a real lexical match.
     """
     terms = _mem_tokens(query)
     if not terms:
@@ -605,15 +687,59 @@ def _memory_search(project, query, topk=3):
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
-        text = u['text']
-        low = text.lower()
-        pos = min((low.find(t) for t in terms if t in low), default=0)
-        start = max(0, pos - 120)
-        snip = text[max(0, start):start + 400].replace('\n', ' ').strip()
         scored.append({'file': u['file'], 'score': round(score, 4),
-                       'snippet': snip})
+                       'snippet': _mem_snippet(u['text'], terms)})
     scored.sort(key=lambda r: (-r['score'], r['file']))
-    return scored[:max(1, topk)]
+    hits = scored[:max(1, topk)]
+
+    n_expand = max(0, int(expand or 0))
+    if not n_expand:
+        return hits
+    return hits + _mem_expand_links(units, hits, terms, n_expand)
+
+
+def _mem_snippet(text, terms):
+    """A ~400-char window around the first query term, else the note's head."""
+    low = (text or '').lower()
+    pos = min((low.find(t) for t in (terms or []) if t in low), default=0)
+    start = max(0, pos - 120)
+    return (text or '')[start:start + 400].replace('\n', ' ').strip()
+
+
+def _mem_expand_links(units, hits, terms, n_expand):
+    """One `[[wikilink]]` hop out from `hits` — see _memory_search's LINK EXPANSION.
+
+    Returns at most n_expand extra result dicts, each with `via` naming the hit
+    it was reached from. Notes already in `hits` are skipped, so expansion never
+    duplicates and never displaces a lexical match.
+    """
+    graph = _mem_link_graph(units)
+    if not graph:
+        return []
+    by_file = {u['file']: u for u in units if u.get('cls') == 'topic'}
+    have = {h['file'] for h in hits}
+    cand = {}
+    for h in hits:
+        node = graph.get(h['file'])
+        if not node:
+            continue
+        for direction, decay in (('out', _LINK_DECAY_OUT), ('in', _LINK_DECAY_IN)):
+            for nbr in node[direction]:
+                if nbr in have:
+                    continue
+                sc = round(h['score'] * decay, 4)
+                prev = cand.get(nbr)
+                # A note linked from two different hits keeps the strongest
+                # path, and out-beats-in is settled by the decay itself.
+                if prev is None or sc > prev['score']:
+                    cand[nbr] = {'file': nbr, 'score': sc, 'via': h['file'],
+                                 'link': direction}
+    out = []
+    for c in sorted(cand.values(), key=lambda r: (-r['score'], r['file']))[:n_expand]:
+        u = by_file.get(c['file'])
+        c['snippet'] = _mem_snippet(u['text'] if u else '', terms)
+        out.append(c)
+    return out
 
 
 def _mem_class_avgdl(units):
