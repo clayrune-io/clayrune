@@ -6,6 +6,45 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-08b] — 24 cloudflared connectors on one tunnel
+
+Ron, from Task Manager: "any idea why there are so many cloudflare tunnels
+opened?"
+
+**24 `cloudflared.exe`, all running the SAME tunnel token, 23 of them orphans
+of dead MC servers.** Measured before cleanup: **910 MB** resident, **3,698
+CPU-seconds**, and **96 live QUIC sessions** to Cloudflare's edge (each
+connector opens 4). Every one was still a *registered connector* on
+`ronl.clayrune.io`, so CF was load-balancing real traffic across 23 dead
+servers' leftovers — which also means tunnel and zone analytics have been
+reading as noise for days. They also accounted for 24 of the 54 `conhost.exe`
+entries (one console host each), the second half of the same question.
+
+**Root cause: teardown existed on exactly one exit path.** The 2026-06-03 leak
+fix hooked `_graceful_stop_all()`, which only runs on `/api/system/restart`.
+cloudflared is spawned detached (`CREATE_NO_WINDOW`), so **any** other exit —
+crash, Task-Manager kill, closing the console, a power cut — orphans it, and
+nothing on the next start ever looked for leftovers. There was no `atexit`
+hook, no signal handler, and no reaper. One orphan per unclean exit, forever.
+
+Two layers now:
+
+- **PID ledger + `reap_orphans()`** (`~/.clayrune/cloudflared_pids.json`,
+  atomic write). Every spawn records its PID; `start()` reaps the ledger
+  *before* spawning. Survives any exit, including SIGKILL, because it doesn't
+  depend on our teardown running at all.
+- **`atexit` teardown** for the ordinary-exit case.
+
+We only ever kill PIDs **we recorded**, and only after `_is_cloudflared_pid()`
+confirms the PID is still a cloudflared image — a recycled PID must never be
+killed, and `test_reap_never_kills_a_recycled_pid` asserts exactly that.
+A kill that fails stays in the ledger so the next start retries rather than
+leaking it permanently.
+
+Cleaned up live: **24 → 1** connector (the live server's own), conhost 54 → 33,
+875 MB returned. Tunnel stayed up throughout — `/api/remote/status` reports
+`online: true`. Tests: `tests/test_cloudflared_reaper.py` (8).
+
 ## [2026-08-08] — a worktree chat that outlived its worktree wouldn't open
 
 The "generate the Claydo figure image" chat sat in the rail with its 2 turns and

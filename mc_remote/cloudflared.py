@@ -33,6 +33,7 @@ Binary discovery (REAL mode):
 """
 from __future__ import annotations
 
+import atexit
 import logging
 import os
 import platform
@@ -230,6 +231,117 @@ def find_binary() -> Optional[str]:
     return None
 
 
+# ─── Orphan reaping ─────────────────────────────────────────────────────────
+# Every spawned connector's PID is written to a ledger so a LATER server start
+# can kill it. The explicit teardown in system_routes._graceful_stop_all() only
+# covers /api/system/restart; ANY other exit — crash, Task-Manager kill, closing
+# the console, a machine reboot — leaves cloudflared running, because it is
+# spawned detached and nothing else reaps it.
+#
+# Measured 2026-08-08: 24 connectors, all on the SAME tunnel, accumulated over
+# ~40h across restarts — 910 MB resident, 3,698 CPU-seconds, and 96 live QUIC
+# sessions to Cloudflare's edge (4 per connector). Every one was still a
+# registered connector, so CF was load-balancing real traffic across 23 dead
+# servers' leftovers. That is also why tunnel/zone analytics read as noise.
+#
+# We only ever kill PIDs WE recorded, and only after confirming the PID is
+# still a cloudflared image — a recycled PID must never be killed.
+
+_PID_LEDGER = Path.home() / ".clayrune" / "cloudflared_pids.json"
+
+
+def _ledger_read() -> list:
+    try:
+        import json
+        with open(_PID_LEDGER, "r", encoding="utf-8") as fh:
+            data = json.load(fh)
+        return [int(x) for x in data] if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def _ledger_write(pids: list) -> None:
+    try:
+        import json
+        _PID_LEDGER.parent.mkdir(parents=True, exist_ok=True)
+        tmp = _PID_LEDGER.with_suffix(".tmp")
+        with open(tmp, "w", encoding="utf-8") as fh:
+            json.dump(sorted(set(int(p) for p in pids)), fh)
+        os.replace(tmp, _PID_LEDGER)
+    except Exception as e:
+        log.warning("cloudflared pid ledger write failed: %s", e)
+
+
+def _is_cloudflared_pid(pid: int) -> bool:
+    """True only if `pid` is live AND its image really is cloudflared.
+
+    Guards against PID reuse: the ledger can name a PID the OS has since
+    handed to something else, and killing that would be a serious bug.
+    """
+    if pid <= 0:
+        return False
+    try:
+        if sys.platform == "win32":
+            out = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"],
+                capture_output=True, text=True, timeout=10,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            ).stdout
+            return "cloudflared" in out.lower()
+        out = subprocess.run(
+            ["ps", "-p", str(pid), "-o", "comm="],
+            capture_output=True, text=True, timeout=10,
+        ).stdout
+        return "cloudflared" in out.lower()
+    except Exception:
+        return False
+
+
+def _kill_pid(pid: int) -> bool:
+    try:
+        if sys.platform == "win32":
+            subprocess.run(["taskkill", "/PID", str(pid), "/T", "/F"],
+                           capture_output=True, timeout=10,
+                           creationflags=subprocess.CREATE_NO_WINDOW)
+        else:
+            os.kill(pid, 15)
+            time.sleep(0.5)
+            if _is_cloudflared_pid(pid):
+                os.kill(pid, 9)
+        return not _is_cloudflared_pid(pid)
+    except Exception as e:
+        log.warning("cloudflared orphan kill failed for pid %s: %s", pid, e)
+        return False
+
+
+def reap_orphans(*, keep_pid: Optional[int] = None) -> int:
+    """Kill every previously-recorded connector except `keep_pid`. Returns the
+    count killed. Best-effort: a failure here must never block a tunnel start."""
+    killed = 0
+    survivors = []
+    for pid in _ledger_read():
+        if keep_pid is not None and pid == keep_pid:
+            survivors.append(pid)
+            continue
+        if not _is_cloudflared_pid(pid):
+            continue  # already gone, or the PID was recycled — drop it
+        log.info("reaping orphaned cloudflared connector pid=%s", pid)
+        if _kill_pid(pid):
+            killed += 1
+        else:
+            survivors.append(pid)
+    _ledger_write(survivors)
+    return killed
+
+
+def _ledger_add(pid: int) -> None:
+    _ledger_write(_ledger_read() + [pid])
+
+
+def _ledger_drop(pid: int) -> None:
+    _ledger_write([p for p in _ledger_read() if p != pid])
+
+
 # ─── Real cloudflared subprocess ─────────────────────────────────────────────
 
 
@@ -266,6 +378,16 @@ class CloudflaredProcess:
                     "cloudflared binary not found. Set MC_CLOUDFLARED_PATH or install cloudflared."
                 )
 
+            # Kill leftovers from a previous server that didn't exit cleanly,
+            # BEFORE spawning ours — otherwise they stay registered on the same
+            # tunnel and CF keeps load-balancing onto dead servers' connectors.
+            try:
+                n = reap_orphans()
+                if n:
+                    log.warning("reaped %d orphaned cloudflared connector(s)", n)
+            except Exception as e:
+                log.warning("cloudflared orphan reap skipped: %s", e)
+
             log.info("starting cloudflared (%s)", self._binary)
             try:
                 self._proc = subprocess.Popen(
@@ -280,6 +402,7 @@ class CloudflaredProcess:
                 self._last_error = f"cloudflared launch failed: {e}"
                 raise CloudflaredError(str(e)) from e
 
+            _ledger_add(self._proc.pid)
             self._token = token
             self._started_at = time.time()
             self._last_error = None
@@ -330,6 +453,10 @@ class CloudflaredProcess:
         except Exception as e:
             log.warning("cloudflared stop raised: %s", e)
         finally:
+            try:
+                _ledger_drop(proc.pid)
+            except Exception:
+                pass
             self._proc = None
             self._token = None
             self._started_at = None
@@ -435,6 +562,22 @@ class MockCloudflaredProcess:
 
 _instance: Optional[object] = None
 _instance_lock = threading.Lock()
+
+
+def _atexit_stop() -> None:
+    """Second line of defence: stop the connector on ANY normal interpreter
+    exit, not just /api/system/restart. Doesn't cover SIGKILL / Task-Manager
+    kill / a power cut — the PID ledger + reap_orphans() cover those."""
+    inst = _instance
+    if inst is None:
+        return
+    try:
+        inst.stop(timeout=2.0)  # type: ignore[attr-defined]
+    except Exception:
+        pass
+
+
+atexit.register(_atexit_stop)
 
 
 def get():
