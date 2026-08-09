@@ -441,6 +441,49 @@ def test_transcript_path_checks_dot_dash_variant(tmp_path, monkeypatch):
     assert result == jsonl_file
 
 
+def test_transcript_path_finds_worktree_chat_after_worktree_is_gone(tmp_path, monkeypatch):
+    """A worktree-isolated chat opens even once its worktree has been cleaned up.
+
+    Regression for the "chat is listed but clicking it does nothing" bug
+    (2026-08-08, csid 2033f331…): list_sessions() globs
+    `<encoded>--clayrune-agents-*` under ~/.claude/projects, so the chat SHOWS
+    in the rail — but the open path resolved worktrees by scanning the LOCAL
+    `<project>/.clayrune/agents/*` dirs, which are deleted when the worktree is
+    reaped. The transcript outlives the worktree, so the two halves disagreed
+    and both /transcript/<csid> and /session/<id>/reconstruct 404'd.
+
+    The project dir itself is never created here: the ONLY thing on disk is the
+    transcript under the CLI's worktree-encoded dir.
+    """
+    from agent_runtime import ClaudeRuntime
+    import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+
+    project = str(tmp_path / 'proj')
+    session_id = '2033f331-a034-4efe-a95c-d1fd89fabf0a'
+
+    enc = rt._encode_project_path(project)
+    wt_dir = fake_home / f'{enc}--clayrune-agents-ea7620565ce1'
+    wt_dir.mkdir(parents=True)
+    jsonl_file = wt_dir / f'{session_id}.jsonl'
+    jsonl_file.write_text('{"type":"user"}')
+
+    # No project-encoded dir, and no local worktree — the old fallback's only
+    # two inputs are both absent.
+    assert not (fake_home / enc).exists()
+    assert not (tmp_path / 'proj' / '.clayrune').exists()
+
+    assert rt.transcript_path(project, session_id) == jsonl_file
+    # Must not reach into another project's worktree dirs.
+    other = fake_home / 'C--somewhere-else--clayrune-agents-deadbeef'
+    other.mkdir(parents=True)
+    (other / 'ffffffff-0000-0000-0000-000000000000.jsonl').write_text('{}')
+    assert rt.transcript_path(project, 'ffffffff-0000-0000-0000-000000000000') is None
+
+
 def test_encoded_dir_candidates_covers_both_substitutions(tmp_path):
     """Candidate list covers _→-, .→-, and both together, deduped and ordered."""
     from agent_runtime import ClaudeRuntime

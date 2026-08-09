@@ -1011,7 +1011,7 @@ class ClaudeRuntime(AgentRuntime):
 
         Mirrors _find_transcript_file() in server.py exactly.
         Checks every encoded-directory variant the CLI is known to produce —
-        see _encoded_dir_candidates().
+        see _encoded_dir_candidates() — and then the per-agent worktree dirs.
 
         Returns the Path if the file exists, None otherwise. Callers that need
         to build the path without existence-checking should use
@@ -1019,14 +1019,36 @@ class ClaudeRuntime(AgentRuntime):
         """
         if not session_id:
             return None
-        candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
-        if not candidates:
+        encodings = self._encoded_dir_candidates(project_path)
+        if not encodings:
             return None
-        for d in candidates:
-            f = d / f'{session_id}.jsonl'
+        for e in encodings:
+            f = _CLAUDE_HOME / e / f'{session_id}.jsonl'
             try:
                 if f.exists():
                     return f
+            except OSError:
+                continue
+        # Worktree-isolated agents (b264200a) run with cwd
+        # `<project>/.clayrune/agents/<sid>`, and the CLI keys its transcript
+        # directory on the CWD — so those chats live in
+        # `<encoded>--clayrune-agents-<sid>`, not the project's own dir.
+        # list_sessions() already globs those, which is why such a chat is
+        # LISTED; without the same glob here it could not be OPENED (both
+        # /transcript/<csid> and /session/<id>/reconstruct 404, and the FE
+        # click silently does nothing).
+        #
+        # The older fallback in `mc.memory._find_transcript_file` scanned the
+        # LOCAL `<project>/.clayrune/agents/*` dirs instead, so it went blind
+        # the moment a worktree was cleaned up — the transcript on disk
+        # OUTLIVES the worktree that produced it. Globbing ~/.claude/projects
+        # has no such dependency. Only runs after the primary lookup misses.
+        for e in encodings:
+            try:
+                for d in _CLAUDE_HOME.glob(f'{e}--clayrune-agents-*'):
+                    f = d / f'{session_id}.jsonl'
+                    if f.exists():
+                        return f
             except OSError:
                 continue
         return None

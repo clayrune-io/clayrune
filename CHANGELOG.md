@@ -6,6 +6,31 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-08] — a worktree chat that outlived its worktree wouldn't open
+
+The "generate the Claydo figure image" chat sat in the rail with its 2 turns and
+its timestamp, and clicking it did nothing.
+
+**Root cause: the list and the open path resolved worktree transcripts by
+different means, and only one of them survives cleanup.** An agent isolated into
+`<project>/.clayrune/agents/<sid>` makes the CLI write its transcript to
+`~/.claude/projects/<encoded>--clayrune-agents-<sid>`. `list_sessions()` finds
+those by **globbing `~/.claude/projects`** — filesystem-independent, so the chat
+is listed. The open path (`ClaudeRuntime.transcript_path` → the fallback in
+`mc.memory._find_transcript_file`) instead **enumerated the local
+`<project>/.clayrune/agents/*` dirs** and re-encoded each one. That worktree is
+reaped when the session ends; the transcript is not. Once the directory was
+gone there was no candidate to re-encode, so `/transcript/<csid>` and
+`/session/<id>/reconstruct` both 404'd and `openConversation()` has no error
+path — hence the silent click.
+
+`transcript_path()` now runs the same `<encoded>--clayrune-agents-*` glob as
+`list_sessions()`, after the primary lookup misses. Being the single chokepoint,
+this also un-blinds resume and Scribe for any already-cleaned worktree session.
+Regression test asserts the transcript resolves with **neither** the local
+worktree nor the project-encoded dir present, and that the glob can't reach
+another project's worktree chats.
+
 ## [2026-08-07b] — a revived chat opened 85% truncated
 
 Ron, on the scanner conversation he had just recovered: "cut half way through
