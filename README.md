@@ -37,6 +37,25 @@ agent, or work you'd rather not sit and watch.
 | Session ends, context dies | Cross-session memory |
 | Desk-bound | Full control from your phone |
 
+### "What happens when two agents touch the same repo?"
+
+Mostly they don't. Parallelism here is across projects: each project's agent gets
+its own working directory and its own session, so there is no shared context to
+corrupt and no shared checkout to fight over.
+
+For the case where two agents genuinely have to work the same repo, turn on
+**Worktree isolation** in Settings (off by default). The second and any later
+concurrent agent on that project is then dropped into its own git worktree on its
+own branch, so it never writes to your checkout. Committed work is merged back
+when the session ends; if the merge does not apply cleanly, Clayrune keeps the
+branch, does not auto-resolve, and tells you it needs a hand. A companion
+**coordination** setting lets concurrent agents see what the others are doing
+instead of finding out in a conflict.
+
+What none of that solves is two agents reasoning about the same file at the same
+time. Worktrees stop them clobbering the bytes. They do not stop the second agent
+building on an assumption the first one just invalidated. That part is unsolved.
+
 ## Everything It Does
 
 - **Manage multiple projects** with status tracking, descriptions, and domains
