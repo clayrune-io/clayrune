@@ -3115,6 +3115,15 @@
     cursor: pointer; outline: none; transition: border-color 0.15s;
   }
   .composer-provider-select:hover { border-color: var(--text-dim); }
+  /* Free-text model id, shown only when the Model picker is set to Custom… —
+     the provider catalogs are a snapshot and these CLIs ship new ids often. */
+  .composer-model-custom {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: 'Inter', sans-serif; font-size: 11px;
+    font-weight: 500; padding: 3px 8px; border-radius: 999px;
+    outline: none; width: 150px; transition: border-color 0.15s;
+  }
+  .composer-model-custom:focus { border-color: var(--text-dim); }
 
   .agent-input-row { display: flex; gap: 8px; margin-bottom: 10px; }
   /* ── Slash-command autocomplete (static/js/slash-autocomplete.js) ──────────

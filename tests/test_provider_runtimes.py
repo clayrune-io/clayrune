@@ -755,3 +755,77 @@ def test_gemini_auth_state_not_logged_in(monkeypatch, tmp_path):
     assert status == 'not_logged_in'
     assert method is None
     assert err and 'GEMINI_API_KEY' in err
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Per-provider model catalogs (composer "Model" picker)
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_every_runtime_exposes_a_model_catalog():
+    """model_choices() is what the composer's Model picker renders. Shape must
+    hold for every runtime — a bad entry would break the picker for all."""
+    for rt in agent_runtime.available_runtimes():
+        for entry in rt.model_choices():
+            assert isinstance(entry, tuple) and len(entry) == 2, (rt.name, entry)
+            mid, label = entry
+            assert mid and label, (rt.name, entry)
+
+
+def test_kiro_catalog_empty_because_it_has_no_model_flag():
+    """kiro-cli's build_command ignores `model`, so offering a picker would be
+    a dead control. Empty catalog is what hides it."""
+    rt = KiroRuntime()
+    assert rt.model_choices() == []
+    assert '--model' not in rt.build_command(model='gpt-5')
+
+
+def test_model_catalogs_do_not_cross_providers():
+    """The bug this guards: a project's `agent_model` is always a claude id, and
+    it used to be forwarded verbatim to every runtime — `codex -m claude-opus-5`
+    fails at the CLI. model_supported() is the gate that stops the inherit."""
+    codex = agent_runtime.get_runtime('codex')
+    assert not codex.model_supported('claude-opus-5')
+    assert codex.model_supported('gpt-5')
+
+    claude = agent_runtime.get_runtime('claude')
+    assert claude.model_supported('claude-opus-5')
+    assert not claude.model_supported('gpt-5')
+
+    # OpenCode addresses models as provider/model — a bare id is not one of ours.
+    oc = agent_runtime.get_runtime('opencode')
+    assert oc.model_supported('anthropic/claude-sonnet-5')
+    assert not oc.model_supported('claude-sonnet-5')
+
+
+def test_model_supported_rejects_empty():
+    assert not agent_runtime.get_runtime('codex').model_supported('')
+
+
+@pytest.mark.parametrize('provider,flag', [
+    ('gemini', '--model'), ('codex', '-m'), ('opencode', '--model'),
+    ('goose', '--model'), ('aider', '--model'),
+])
+def test_catalog_ids_reach_the_cli_flag(provider, flag):
+    """Every catalogued id must actually survive into the spawn command."""
+    rt = agent_runtime.get_runtime(provider)
+    mid = rt.model_choices()[0][0]
+    cmd = rt.build_command(model=mid)
+    assert flag in cmd and cmd[cmd.index(flag) + 1] == mid
+
+
+def test_session_model_survives_a_respawn():
+    """Mode A respawns the CLI per turn and --model is not sticky, so
+    write_followup re-reads the model off the session dict. Without this a chat
+    started on a chosen model silently reverted to the CLI default at turn 2."""
+    handle = agent_runtime.SessionHandle(
+        mc_session_id='abc', provider='codex', mode='A',
+        project_path='.', project_id='p',
+        session_dict={'agent_model': 'gpt-5-codex'},
+    )
+    assert agent_runtime.AgentRuntime.session_model(handle) == 'gpt-5-codex'
+    # Absent/garbage session dicts must degrade to "provider default", not raise.
+    empty = agent_runtime.SessionHandle(
+        mc_session_id='abc', provider='codex', mode='A',
+        project_path='.', project_id='p', session_dict={})
+    assert agent_runtime.AgentRuntime.session_model(empty) == ''

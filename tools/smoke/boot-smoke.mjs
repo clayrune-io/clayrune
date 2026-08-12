@@ -343,6 +343,136 @@ async function runDispatchGuard(browser) {
   return ok;
 }
 
+// ── Per-provider Model picker guard ──────────────────────────────────────────
+// The composer's Model picker is PER PROVIDER: model ids don't cross runtimes
+// (`codex -m claude-opus-5` is a hard CLI error), so switching the Agent select
+// must rebuild the options AND must not leave the previous provider's model
+// armed. Both halves are invisible in the DOM diff of a normal boot, and the
+// pending-model map is module-scoped to conversation.js — exactly the shape of
+// bug the dispatch guard above exists for.
+async function runModelPickerGuard(browser) {
+  const PID = 'smoke_alpha';
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 800 } });
+  const page = await ctx.newPage();
+  let dispatchBody = null;
+  // Two installed providers so the Agent picker renders at all (it hides when
+  // only claude is available), each with the catalog the real endpoint serves.
+  const PROVIDERS = { providers: [
+    { name: 'claude', display_name: 'Claude Code', installed: true, capabilities: {},
+      models: [{ id: 'claude-sonnet-5', label: 'Sonnet 5' }, { id: 'claude-opus-5', label: 'Opus 5' }] },
+    { name: 'codex', display_name: 'Codex CLI', installed: true, capabilities: {},
+      models: [{ id: 'gpt-5-codex', label: 'GPT-5 Codex' }, { id: 'gpt-5', label: 'GPT-5' }] },
+  ], default: 'claude' };
+  await page.route('**/*', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/agent/providers')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS) });
+    if (path === '/api/characters')
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (/\/agent\/dispatch$/.test(path)) {
+      try { dispatchBody = JSON.parse(route.request().postData() || '{}'); } catch { dispatchBody = {}; }
+      return route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: true, session_id: 'smoke_sess_model' }) });
+    }
+    if (path === '/api/projects') {
+      const patched = JSON.parse(PROJECTS_JSON);
+      if (patched[0]) patched[0].project_path = '/smoke/alpha';
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(patched) });
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ model picker: grid never rendered (boot failed before the guard could run).');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async ({ pid }) => {
+    const r = { err: null };
+    const modelOpts = () => {
+      const row = document.querySelector('#agent-panel-' + pid + ' .composer-model-row')
+        || document.querySelector('.composer-model-row');
+      if (!row) return null;
+      return Array.from(row.querySelectorAll('option')).map((o) => o.value);
+    };
+    const settle = () => new Promise((res) => setTimeout(res, 350));
+    try {
+      openProjectModal(pid);
+      window.agentConvNew = window.agentConvNew || {};
+      agentConvNew[pid] = true;
+      if (typeof refreshModal === 'function') refreshModal();
+      await settle();
+      r.claudeOpts = modelOpts();
+
+      setComposerProvider(pid, 'codex');
+      await settle();
+      r.codexOpts = modelOpts();
+
+      setComposerModel(pid, 'gpt-5-codex');
+      await settle();
+      r.armedOnCodex = window.getPendingDispatchModel(pid);
+
+      // The leak check: flip back to claude — codex's pick must NOT follow.
+      setComposerProvider(pid, 'claude');
+      await settle();
+      r.armedOnClaude = window.getPendingDispatchModel(pid);
+
+      // ...and flipping back to codex remembers it (sticky per provider).
+      setComposerProvider(pid, 'codex');
+      await settle();
+      r.rearmedOnCodex = window.getPendingDispatchModel(pid);
+
+      const ta = document.getElementById('agent-task-' + pid);
+      if (!ta) throw new Error('composer textarea not rendered');
+      ta.value = 'smoke model ping';
+      await dispatchAgent(pid);
+      await new Promise((res) => setTimeout(res, 300));
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  }, { pid: PID });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push(`threw — ${out.err}`);
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  uncaught.forEach((e) => fails.push(`uncaught: ${e}`));
+  if (!out.claudeOpts) fails.push('no Model row rendered for claude');
+  else if (!out.claudeOpts.includes('claude-opus-5'))
+    fails.push(`claude options missing its own models: ${JSON.stringify(out.claudeOpts)}`);
+  if (!out.codexOpts) fails.push('no Model row rendered for codex (the picker Ron saw missing)');
+  else {
+    if (!out.codexOpts.includes('gpt-5-codex'))
+      fails.push(`codex options missing gpt-5-codex: ${JSON.stringify(out.codexOpts)}`);
+    if (out.codexOpts.some((v) => v.startsWith('claude-')))
+      fails.push(`claude model ids leaked into the codex picker: ${JSON.stringify(out.codexOpts)}`);
+  }
+  if (out.armedOnCodex !== 'gpt-5-codex') fails.push(`pick not armed for codex (got ${JSON.stringify(out.armedOnCodex)})`);
+  if (out.armedOnClaude) fails.push(`codex's model leaked onto claude: ${JSON.stringify(out.armedOnClaude)}`);
+  if (out.rearmedOnCodex !== 'gpt-5-codex') fails.push(`per-provider pick not sticky (got ${JSON.stringify(out.rearmedOnCodex)})`);
+  if (!dispatchBody) fails.push('dispatch never reached the server');
+  else {
+    if (dispatchBody.model !== 'gpt-5-codex') fails.push(`dispatch sent model=${JSON.stringify(dispatchBody.model)}`);
+    if (dispatchBody.provider !== 'codex') fails.push(`dispatch sent provider=${JSON.stringify(dispatchBody.provider)}`);
+  }
+
+  if (fails.length) {
+    console.error('❌ model picker guard:');
+    fails.forEach((f) => console.error(`       • ${f}`));
+    return false;
+  }
+  console.log('✅ model picker: per-provider options render, no cross-provider leak, chosen model reaches dispatch.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -351,9 +481,10 @@ try {
   // Cross-module dispatch guard — runs after the boot scenarios so a boot
   // regression is reported on its own first.
   results.push(await runDispatchGuard(browser));
+  results.push(await runModelPickerGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch guard all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch & model-picker guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

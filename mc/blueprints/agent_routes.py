@@ -1085,9 +1085,19 @@ def agent_providers():
             }
         except Exception:
             caps_dict = {}
+        # Model ids this runtime accepts. Provider-specific by nature (codex
+        # takes gpt-*, opencode takes provider/model) — the composer's Model
+        # picker rebuilds itself from this whenever the Agent picker changes.
+        # Empty list = this CLI has no model flag → no picker.
+        try:
+            models = [{'id': mid, 'label': label}
+                      for mid, label in rt.model_choices()]
+        except Exception:
+            models = []
         out.append({
             'name': rt.name,
             'display_name': rt.display_name,
+            'models': models,
             'installed': h.installed,
             'binary_path': str(h.binary_path) if h.binary_path else None,
             'version': h.version,
@@ -3755,11 +3765,34 @@ def _apply_mobile_brief(message: str, request_data: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
+def _resolve_runtime_model(runtime, p, model_override=''):
+    """Pick the model id to hand a non-claude runtime.
+
+    An explicit per-chat pick (composer Model picker) wins and is passed
+    through verbatim — the user may name a model newer than our catalog.
+
+    Otherwise we may only inherit the project/global `agent_model` if THIS
+    runtime actually accepts it. That guard is the point: `agent_model` is
+    always a claude id (the Agent-settings picker offers nothing else), and
+    the old code forwarded it unconditionally — so a project pinned to Opus
+    spawned `codex -m claude-opus-5`, which the CLI rejects outright.
+    """
+    if model_override:
+        return model_override
+    inherited = p.get('agent_model', '') or state.CONFIG.get('agent_model', '')
+    try:
+        if inherited and runtime.model_supported(inherited):
+            return inherited
+    except Exception as e:
+        _log(f"[runtime-dispatch] model_supported({inherited!r}) failed: {e}")
+    return ''
+
+
 def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
-                          character_body=''):
+                          character_body='', model_override=''):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     The runtime owns: binary resolution, subprocess.Popen, reader thread,
@@ -3775,6 +3808,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
 
     pp = p.get('project_path', '')
     project_id = p.get('id', '')
+    model = _resolve_runtime_model(runtime, p, model_override)
 
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
@@ -3812,7 +3846,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'trigger_type': trigger_type,
             'trigger_id': trigger_id,
             'provider': provider_name,
-            'agent_model': p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+            'agent_model': model,
+            'pinned_model': model_override or '',
             'character': character_meta,
         }
         agent_sessions[session_id] = session
@@ -3834,7 +3869,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             system_prompt=system_prompt,
             resume_id='',
             mode='A',
-            model=p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+            model=model,
             incognito=incognito,
             mc_session_id=session_id,
             session_dict=session,
@@ -3951,7 +3986,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          reuse_session_id=reuse_session_id,
                                          display_task=display_task,
                                          character_meta=character_meta,
-                                         character_body=character_body)
+                                         character_body=character_body,
+                                         model_override=model_override)
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
@@ -5683,6 +5719,22 @@ def delete_plans():
     return jsonify({'ok': True, 'deleted': deleted})
 
 
+def _session_model_field(s, proj_default_model):
+    """Model string to report for a session, with the project default applied
+    only where it is actually meaningful.
+
+    A project's `agent_model` is always a claude id — the Agent-settings picker
+    offers nothing else — so it must not be used as the fallback for a session
+    running on another runtime. Doing so made a codex session's header pill read
+    "codex · claude-opus-5" for a spawn that got no --model at all. For those,
+    an empty string is the truth: the provider's own default applies.
+    """
+    own = s.get('agent_model') or ''
+    if own:
+        return own
+    return proj_default_model if (s.get('provider') or 'claude') == 'claude' else ''
+
+
 @bp.route('/api/project/<project_id>/agent/status')
 def agent_status(project_id):
     sessions = []
@@ -5735,13 +5787,18 @@ def agent_status(project_id):
                 # Per-session snapshot, with project-level fallback so older
                 # sessions (dispatched before the field was captured) still
                 # surface a usable model string. Empty = provider default.
-                'agent_model': s.get('agent_model') or _proj_default_model,
+                #
+                # The fallback is claude-ONLY: `agent_model` on a project is
+                # always a claude id, so applying it to a codex/gemini session
+                # made the header pill claim "codex · claude-opus-5" for a run
+                # that never received a --model at all.
+                'agent_model': _session_model_field(s, _proj_default_model),
                 # Auto-router attribution. `model` is what actually got
                 # passed via --model (may differ from agent_model when the
                 # router picked something else). `model_source` is one of
                 # 'manual' / 'auto' / 'fallback'. Frontend pill reads
                 # both to decide whether to render an auto-router badge.
-                'model': s.get('model') or s.get('agent_model') or _proj_default_model,
+                'model': s.get('model') or _session_model_field(s, _proj_default_model),
                 'model_source': s.get('model_source', 'manual'),
                 # Per-chat model pin (empty = follow default/auto). Drives the
                 # header pill's "pinned" state + the in-chat model switcher.

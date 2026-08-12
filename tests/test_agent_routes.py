@@ -355,3 +355,51 @@ def test_auth_probe_unknown_nonzero_fails_closed(client, monkeypatch):
     state = _run_probe_with(monkeypatch, returncode=1, stderr='segfault')
     assert state['ok'] is False
     assert state['reason'] == 'unknown'
+
+
+# ── per-provider model selection (composer "Model" picker) ────────────────────
+
+def test_providers_endpoint_carries_per_provider_model_catalog(client):
+    """The composer's Model picker rebuilds its options from this payload when
+    the Agent picker changes — so every provider record must carry `models`."""
+    body = client.get('/api/agent/providers').get_json()
+    provs = body['providers'] if isinstance(body, dict) else body
+    by_name = {p['name']: p for p in provs}
+    assert 'models' in by_name['claude']
+    assert any(m['id'] == 'claude-opus-5' for m in by_name['claude']['models'])
+    assert any(m['id'] == 'gpt-5-codex' for m in by_name['codex']['models'])
+    # No claude id may appear in a non-claude catalog — that cross-contamination
+    # is exactly what produced `codex -m claude-opus-5`.
+    for name in ('codex', 'gemini'):
+        assert not [m for m in by_name[name]['models']
+                    if m['id'].startswith('claude-')], name
+    # kiro-cli takes no model flag → empty catalog → picker hidden.
+    assert by_name['kiro']['models'] == []
+
+
+def test_resolve_runtime_model_blocks_the_claude_id_leak():
+    """A project pinned to Opus must not push that id into a codex spawn; an
+    explicit per-chat pick must pass through untouched."""
+    from mc.blueprints import agent_routes as ar
+    import agent_runtime
+
+    codex = agent_runtime.get_runtime('codex')
+    proj = {'agent_model': 'claude-opus-5'}
+    assert ar._resolve_runtime_model(codex, proj) == ''
+    assert ar._resolve_runtime_model(codex, proj, 'gpt-5-codex') == 'gpt-5-codex'
+    # A custom id we've never catalogued is still the user's explicit intent.
+    assert ar._resolve_runtime_model(codex, proj, 'gpt-6-future') == 'gpt-6-future'
+    # A project default the runtime DOES accept is still inherited.
+    assert ar._resolve_runtime_model(codex, {'agent_model': 'gpt-5'}) == 'gpt-5'
+
+
+def test_status_model_field_does_not_borrow_the_claude_default():
+    """Header-pill truthfulness: a codex session that got no --model must report
+    an empty model, not the project's claude default."""
+    from mc.blueprints import agent_routes as ar
+    assert ar._session_model_field({'provider': 'codex'}, 'claude-opus-5') == ''
+    assert ar._session_model_field({'provider': 'claude'}, 'claude-opus-5') == 'claude-opus-5'
+    assert ar._session_model_field({'provider': 'codex', 'agent_model': 'gpt-5'},
+                                   'claude-opus-5') == 'gpt-5'
+    # No provider recorded (legacy session) = claude, so the fallback applies.
+    assert ar._session_model_field({}, 'claude-opus-5') == 'claude-opus-5'

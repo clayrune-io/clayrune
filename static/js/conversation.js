@@ -183,34 +183,86 @@ function setComposerProvider(projectId, provider) {
 }
 
 // Per-chat model for the +New composer (was buried in ⋮ → Agent Settings).
-// Sticky per project for the session, like the provider picker. '' = default:
-// the project/global model, or the auto-router when it's enabled. An explicit
-// pick bypasses the router server-side. Fresh chats only (resume keeps the
-// conversation's model) and claude-only — other runtimes ignore --model ids.
+// Sticky per project+provider for the session, like the provider picker.
+// '' = default: the project/global model, or the auto-router when it's enabled.
+// An explicit pick bypasses the router server-side. Fresh chats only (resume
+// keeps the conversation's model).
+//
+// The option list is PER PROVIDER — model ids don't cross runtimes (`codex -m
+// claude-opus-5` is a hard error), so it comes from the provider record served
+// by /api/agent/providers (`models: [{id,label}]`), not one global list.
+// Keyed "<project>::<provider>" so switching Agent can't leave a foreign model
+// id armed. A provider with no catalog (kiro — no model flag) gets no picker.
 let pendingDispatchModel = {};
+// Declared here (not beside setComposerModel below) so it can never be read
+// before its `let` initialises — the TDZ boot-throw class this file has hit.
+let pendingModelCustom = {};
+function _modelKey(projectId, provider) { return projectId + '::' + provider; }
+
+// Catalog for a provider. claude falls back to MC_MODEL_CHOICES so the picker
+// still works against an older server that doesn't send `models` yet.
+function _providerModelChoices(provider) {
+  const rec = (_agentProviders || []).find(x => x.name === provider);
+  if (rec && Array.isArray(rec.models) && rec.models.length) {
+    return rec.models.map(m => [m.id, m.label || m.id]);
+  }
+  if (provider === 'claude') {
+    return (window.MC_MODEL_CHOICES || []).filter(([v]) => v !== '');
+  }
+  return [];
+}
+
 function _composerModelPicker(p, resumeId) {
   if (!p || resumeId) return '';
-  if (_composerProvider(p) !== 'claude') return '';
-  const choices = window.MC_MODEL_CHOICES || [];
+  const prov = _composerProvider(p);
+  const choices = _providerModelChoices(prov);
   if (!choices.length) return '';
-  const cur = pendingDispatchModel[p.id] || '';
+  const cur = pendingDispatchModel[_modelKey(p.id, prov)] || '';
+  // What "Default" resolves to. The project's agent_model only seeds claude —
+  // for any other runtime it's a claude id the CLI would reject, so the server
+  // drops it and the provider's own default applies (mirror that here).
   const defLabel = (() => {
+    if (prov !== 'claude') return 'Default';
     if (_globalConfig && _globalConfig.auto_model_enabled && !p.agent_model) return 'Auto';
     const m = choices.find(c => c[0] === (p.agent_model || ''));
     return (p.agent_model && m) ? `Default (${m[1]})` : 'Default';
   })();
+  // Custom = the box is armed, or the armed id isn't in the catalog (the user
+  // typed it). Keep it selected rather than silently reverting to Default.
+  const isCustom = !!pendingModelCustom[_modelKey(p.id, prov)]
+                   || (!!cur && !choices.some(([v]) => v === cur));
   const opts = choices
-    .filter(([v]) => v !== '')
     .map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+  const customInput = isCustom
+    ? `<input class="composer-model-custom" type="text" value="${esc(cur)}"
+        placeholder="model id" title="Passed to ${esc(prov)} verbatim — for a model newer than this list"
+        onchange="setComposerModel('${esc(p.id)}',this.value)">`
+    : '';
   return `<div class="composer-provider-row composer-model-row">
     <span class="composer-provider-label">Model</span>
     <select class="composer-provider-select" onchange="setComposerModel('${esc(p.id)}',this.value)">
       <option value="">${esc(defLabel)}</option>${opts}
+      <option value="__custom__" ${isCustom ? 'selected' : ''}>Custom&hellip;</option>
     </select>
+    ${customInput}
   </div>`;
 }
+
+// `__custom__` arms an empty text box (its own map, so armed-but-empty is never
+// mistaken for a model id); the box's onchange lands back here with what the
+// user typed. Inline, so the row still reads like the other pickers.
 function setComposerModel(projectId, model) {
-  pendingDispatchModel[projectId] = model;
+  const p = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === projectId);
+  const key = _modelKey(projectId, _composerProvider(p));
+  if (model === '__custom__') {
+    pendingModelCustom[key] = true;
+    pendingDispatchModel[key] = '';
+  } else {
+    const v = (model || '').trim();
+    // Typing in the box keeps it open; picking a catalog entry closes it.
+    pendingModelCustom[key] = !!pendingModelCustom[key] && !!v;
+    pendingDispatchModel[key] = v;
+  }
   refreshModalById(projectId);
 }
 
@@ -378,7 +430,7 @@ function _composerPlusStatusLineHTML(p, resumeId) {
 function _composerSheetHTML(p, resumeId) {
   const open = !!composerSheetOpen[p.id];
   const prov = _composerProviderPicker(p);                 // '' when single provider
-  const model = _composerModelPicker(p, resumeId);         // '' on resume / non-claude
+  const model = _composerModelPicker(p, resumeId);         // '' on resume / provider has no model flag
   const persona = _composerCharacterPicker(p, resumeId);   // '' on resume / no characters
   const inc = _incognitoChipHTML(p);
   // Spec §8 (2026-07-06): the sheet holds per-message COMPOSE options only —
@@ -3898,7 +3950,13 @@ window.newAgentTab = newAgentTab;
 window.fillStarterChip = fillStarterChip;
 window.setComposerProvider = setComposerProvider;
 window.setComposerModel = setComposerModel;
-window.getPendingDispatchModel = (projectId) => pendingDispatchModel[projectId] || '';
+// Keyed by project+provider (see _modelKey) — a model armed for one runtime must
+// never ride along on a dispatch to another. Resolves against the provider the
+// composer is CURRENTLY showing, which is the one being dispatched.
+window.getPendingDispatchModel = (projectId) => {
+  const p = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === projectId);
+  return pendingDispatchModel[_modelKey(projectId, _composerProvider(p))] || '';
+};
 window.showHmWorkerPopover = showHmWorkerPopover;
 window.submitQuestionAnswer = submitQuestionAnswer;
 window.submitQuestionChip = submitQuestionChip;

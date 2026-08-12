@@ -31,7 +31,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional
+from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -361,6 +361,53 @@ class AgentRuntime(ABC):
     name: str = ''
     display_name: str = ''
 
+    # ── Model catalog (per provider) ─────────────────────────────────────────
+    # [(id, label), ...] offered by the new-chat composer's Model picker for
+    # THIS provider. Model ids are provider-specific — a claude id handed to
+    # codex is a hard spawn error — so the catalog lives with the runtime that
+    # knows the flag it feeds (`--model` / `-m`), not in one global list.
+    #
+    # The list is a convenience, NOT a whitelist: these CLIs ship new model ids
+    # faster than we can track them, so the picker also offers a free-text
+    # "Custom…" entry and `model_supported()` accepts anything non-empty. An
+    # empty catalog means "we don't know this provider's ids" → the picker
+    # falls back to Custom-only rather than guessing.
+    MODEL_CHOICES: List[Tuple[str, str]] = []
+
+    def model_choices(self) -> List[Tuple[str, str]]:
+        """Model ids/labels to offer for this provider. Override for a runtime
+        whose catalog is dynamic (read from config, probed from the CLI)."""
+        return list(self.MODEL_CHOICES)
+
+    def model_supported(self, model: str) -> bool:
+        """True when `model` is one this provider is known to accept.
+
+        Used to decide whether an *inherited* default (the project's
+        `agent_model`, which is always a claude id — the Agent-settings picker
+        only offers those) may be forwarded to this runtime. It may not: the
+        old code passed it verbatim, so choosing Codex on a project pinned to
+        Opus spawned `codex -m claude-opus-5` and failed at the CLI.
+
+        An *explicit* per-chat pick is NOT filtered through this — the user may
+        legitimately type a model id newer than our catalog.
+        """
+        return bool(model) and any(m == model for m, _ in self.model_choices())
+
+    @staticmethod
+    def session_model(handle: 'SessionHandle') -> str:
+        """The model this session was dispatched with.
+
+        Mode-A providers respawn the CLI on every turn, and each respawn has to
+        re-state `--model` — the flag doesn't persist. Without this, a chat
+        started on a chosen model silently reverted to the CLI's default from
+        turn 2 onward. `agent_model` is stamped into the session dict at
+        dispatch (`_dispatch_via_runtime`).
+        """
+        try:
+            return (handle.session_dict or {}).get('agent_model', '') or ''
+        except Exception:
+            return ''
+
     # ── Attachments (provider-agnostic) ───────────────────────────────────────
     # The frontend embeds attachment paths into the task/message text as
     # [Screenshot: <path>] / [Attachment: <path>] markers (buildTaskWithImages
@@ -672,6 +719,14 @@ class ClaudeRuntime(AgentRuntime):
 
     name = 'claude'
     display_name = 'Claude Code'
+    # Mirrors MC_MODEL_CHOICES in static/js/modal-manager.js (the Agent-settings
+    # + chat-pill picker). Keep the two in step when a model ships or retires.
+    MODEL_CHOICES = [
+        ('claude-fable-5', 'Fable 5'),
+        ('claude-sonnet-5', 'Sonnet 5'),
+        ('claude-opus-5', 'Opus 5'),
+        ('claude-haiku-4-5-20251001', 'Haiku 4.5'),
+    ]
 
     # Why the last oneshot() returned None (rc + stderr tail / timeout / spawn
     # failure). Callers raise/log it instead of an anonymous "call failed".
@@ -1585,6 +1640,11 @@ class GeminiRuntime(AgentRuntime):
 
     name = 'gemini'
     display_name = 'Gemini CLI'
+    MODEL_CHOICES = [
+        ('gemini-2.5-pro', 'Gemini 2.5 Pro'),
+        ('gemini-2.5-flash', 'Gemini 2.5 Flash'),
+        ('gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite'),
+    ]
 
     _bin_cache: Optional[str] = None
 
@@ -2287,15 +2347,18 @@ class GeminiRuntime(AgentRuntime):
         # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
         # loses the ability to ask questions deep into a conversation.
         gemini_sid = session.get('_gemini_session_id')
+        # Mode A respawns the CLI per turn, so --model has to be re-stated or
+        # the chat silently falls back to the CLI default from turn 2.
+        _model = self.session_model(handle)
         if gemini_sid:
-            cmd = self.build_command() + ['--resume', gemini_sid]
+            cmd = self.build_command(model=_model) + ['--resume', gemini_sid]
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
-            cmd = self.build_command()
+            cmd = self.build_command(model=_model)
             session['_system_prompt'] = self.with_mc_tool_protocol(
                 self._slim_system_prompt(session.get('_system_prompt') or ''))
             full_prompt = _compose_respawn_prompt(
@@ -2617,6 +2680,12 @@ class CodexRuntime(AgentRuntime):
 
     name = 'codex'
     display_name = 'Codex CLI'
+    MODEL_CHOICES = [
+        ('gpt-5-codex', 'GPT-5 Codex'),
+        ('gpt-5', 'GPT-5'),
+        ('gpt-5-mini', 'GPT-5 mini'),
+        ('o3', 'o3'),
+    ]
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
@@ -2940,7 +3009,8 @@ class CodexRuntime(AgentRuntime):
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
-        cmd = self.build_command()
+        # Re-state -m: this respawns codex, and the flag doesn't carry over.
+        cmd = self.build_command(model=self.session_model(handle))
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -3040,6 +3110,14 @@ class OpenCodeRuntime(AgentRuntime):
 
     name = 'opencode'
     display_name = 'OpenCode'
+    # OpenCode addresses models as `<provider>/<model>` — a bare model id is
+    # rejected, so every entry here carries its provider prefix.
+    MODEL_CHOICES = [
+        ('anthropic/claude-sonnet-5', 'Claude Sonnet 5'),
+        ('anthropic/claude-opus-5', 'Claude Opus 5'),
+        ('openai/gpt-5', 'GPT-5'),
+        ('google/gemini-2.5-pro', 'Gemini 2.5 Pro'),
+    ]
 
     _bin_cache: Optional[str] = None
 
@@ -3296,7 +3374,9 @@ class OpenCodeRuntime(AgentRuntime):
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        cmd = self.build_command() + [full_prompt]
+        # Mode A respawns the CLI per turn — --model must be re-stated
+        # or the chat reverts to the CLI default after turn 1.
+        cmd = self.build_command(model=self.session_model(handle)) + [full_prompt]
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3366,6 +3446,15 @@ class GooseRuntime(AgentRuntime):
 
     name = 'goose'
     display_name = 'Goose'
+    # Goose's --model names a model within whatever provider `goose configure`
+    # selected, so the useful ids depend on the operator's own setup. These are
+    # the common ones; anything else goes through the picker's Custom entry.
+    MODEL_CHOICES = [
+        ('claude-sonnet-5', 'Claude Sonnet 5'),
+        ('claude-opus-5', 'Claude Opus 5'),
+        ('gpt-5', 'GPT-5'),
+        ('gemini-2.5-pro', 'Gemini 2.5 Pro'),
+    ]
 
     _bin_cache: Optional[str] = None
 
@@ -3615,7 +3704,9 @@ class GooseRuntime(AgentRuntime):
             _kill_pid(old_proc.pid)
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
-        cmd = self.build_command() + [full_prompt]
+        # Mode A respawns the CLI per turn — --model must be re-stated
+        # or the chat reverts to the CLI default after turn 1.
+        cmd = self.build_command(model=self.session_model(handle)) + [full_prompt]
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -3699,6 +3790,14 @@ class AiderRuntime(AgentRuntime):
 
     name = 'aider'
     display_name = 'Aider'
+    # Aider accepts both its own short aliases and full LiteLLM model names.
+    MODEL_CHOICES = [
+        ('sonnet', 'Claude Sonnet (alias)'),
+        ('opus', 'Claude Opus (alias)'),
+        ('haiku', 'Claude Haiku (alias)'),
+        ('gpt-5', 'GPT-5'),
+        ('gemini/gemini-2.5-pro', 'Gemini 2.5 Pro'),
+    ]
 
     _bin_cache: Optional[str] = None
 
@@ -3874,7 +3973,9 @@ class AiderRuntime(AgentRuntime):
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
             _kill_pid(old_proc.pid)
-        cmd = self.build_command()
+        # Re-state --model: aider is respawned per turn and the flag is not
+        # sticky, so without this the chat drops to aider's default model.
+        cmd = self.build_command(model=self.session_model(handle))
         # Re-inject the dispatch-time system context via --read (aider keeps
         # --read files in context). The dispatch temp file isn't reused across
         # turns, so write a fresh one from the stashed _system_prompt.
@@ -3973,6 +4074,10 @@ class KiroRuntime(AgentRuntime):
 
     name = 'kiro'
     display_name = 'Kiro'
+    # Deliberately empty: kiro-cli headless takes no model flag (build_command
+    # below ignores `model`), so an empty catalog is what hides the composer's
+    # Model picker for this provider instead of offering a dead control.
+    MODEL_CHOICES: List[Tuple[str, str]] = []
 
     _bin_cache: Optional[str] = None
 
