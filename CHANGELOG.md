@@ -6,6 +6,49 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-12] — the Model picker was claude-only, and a claude model id was reaching every other CLI
+
+Ron opened the +New composer with **Codex CLI** selected and found no way to set
+the model for that one conversation — only the project default, which is sticky
+and easy to forget you changed. The picker existed; it just returned nothing for
+any provider that wasn't claude.
+
+Model ids do not cross runtimes, so the catalog now lives with the runtime that
+knows the flag it feeds: `AgentRuntime.MODEL_CHOICES`, served per provider on
+`/api/agent/providers` as `models: [{id,label}]`. The composer rebuilds its
+options whenever the Agent select changes, and keys its pending pick by
+**project+provider** so switching Agent cannot leave a foreign id armed.
+
+- **`kiro`'s catalog is deliberately empty.** `kiro-cli` headless takes no model
+  flag, so the picker stays hidden rather than offering a dead control.
+- **A `Custom…` entry accepts anything.** These CLIs ship new model ids faster
+  than we can track them; the catalog is a convenience, never a whitelist.
+
+**Three bugs shared one root cause.** A project's `agent_model` is *always* a
+claude id — the Agent-settings picker offers nothing else — and it was being
+forwarded to every runtime unconditionally:
+
+- Dispatch passed it verbatim, so a project pinned to Opus spawned
+  `codex -m claude-opus-5` and died at the CLI. `_resolve_runtime_model()` now
+  inherits a default only if the target runtime accepts it; an explicit per-chat
+  pick still passes through untouched (it may name a model newer than our list).
+- **Every non-claude followup dropped the model.** Mode A respawns the CLI per
+  turn and `--model` is not sticky, but each `write_followup` called
+  `build_command()` with no model — so a chat started on a chosen model silently
+  reverted to the CLI default from turn 2. The model is stamped on the session at
+  dispatch and re-stated on every respawn.
+- `/agent/status` applied the project default as a fallback for *any* session, so
+  a codex chat's header pill claimed `codex · claude-opus-5` for a run that got no
+  `--model` at all. Claude-only now; elsewhere empty is the truth.
+
+Guarded by unit tests (catalog shape, cross-provider rejection, ids reaching the
+CLI flag, model surviving a respawn) **and a live `boot-smoke.mjs` guard** that
+drives the real composer in Chromium: options rebuild per provider, no claude id
+leaks into codex's list, the pick is per-provider sticky, and the chosen model
+reaches the dispatch POST. The per-provider state is module-scoped to
+`conversation.js`, which is exactly the shape of the cross-module bug the
+neighbouring dispatch guard already exists for.
+
 ## [2026-08-09] — the vault's `[[wikilinks]]` were decoration; now they retrieve
 
 Ron asked whether Obsidian's second-brain model could accommodate what Clayrune
