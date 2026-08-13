@@ -320,6 +320,122 @@ def test_runs_bad_params_default(ctx):
     assert body['offset'] == 0  # negative → clamped
 
 
+# ── master kill-switch (`scheduler_paused`) ───────────────────────────────────
+#
+# One switch that stops EVERY scheduled dispatch — schedules and stewards, at
+# any hour — while leaving each row's own `enabled` flag alone, so unpausing
+# restores the prior state. These drive ONE iteration of the real
+# _scheduler_loop with the dispatch seam recorded, so a regression that
+# silently fires while paused fails here.
+
+class _OneShotStop:
+    """Stop-event stand-in: falsy on the first is_set(), truthy after — so the
+    loop body runs exactly once and returns instead of blocking 30s."""
+    def __init__(self):
+        self.checks = 0
+
+    def is_set(self):
+        self.checks += 1
+        return self.checks > 1
+
+    def wait(self, _timeout):
+        return True
+
+
+def _run_one_loop_iteration(ctx, monkeypatch, paused):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'scheduler_paused', paused)
+    monkeypatch.setattr(ctx.sr, '_scheduler_stop', _OneShotStop())
+    ctx.sr._scheduler_loop()
+    return json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+
+
+def _due_cron_row(**over):
+    row = {
+        'id': 's1', 'project_id': 'p1', 'task': 'do the thing',
+        'enabled': True, 'schedule_type': 'cron', 'cron_expr': '*/5 * * * *',
+        'next_run': '2020-01-01T00:00:00Z',   # long overdue
+    }
+    row.update(over)
+    return row
+
+
+def test_loop_dispatches_when_not_paused(ctx, monkeypatch):
+    """Control: the same overdue row DOES fire with the switch off."""
+    _seed_schedules(ctx, [_due_cron_row()])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert len(ctx.dispatch.calls) == 1
+    assert ctx.dispatch.calls[0]['project_id'] == 'p1'
+    assert rows[0]['next_run'] != '2020-01-01T00:00:00Z'
+
+
+def test_loop_does_not_dispatch_when_paused(ctx, monkeypatch):
+    _seed_schedules(ctx, [_due_cron_row()])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    assert ctx.dispatch.calls == []
+    # `enabled` is untouched — unpausing must restore exactly the prior state.
+    assert rows[0]['enabled'] is True
+    # ...and last_run is NOT stamped: it didn't run.
+    assert 'last_run' not in rows[0]
+
+
+def test_paused_rolls_next_run_forward_no_stampede(ctx, monkeypatch):
+    """The overdue slot is consumed while paused, so resuming doesn't fire
+    every missed slot at once."""
+    _seed_schedules(ctx, [_due_cron_row()])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    from datetime import datetime, timezone
+    nxt = datetime.fromisoformat(rows[0]['next_run'].replace('Z', '+00:00'))
+    assert nxt > datetime.now(timezone.utc)
+
+
+def test_paused_interval_row_rolls_by_its_own_interval(ctx, monkeypatch):
+    _seed_schedules(ctx, [_due_cron_row(schedule_type='interval',
+                                        interval_minutes=20, cron_expr='')])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    from datetime import datetime, timedelta, timezone
+    nxt = datetime.fromisoformat(rows[0]['next_run'].replace('Z', '+00:00'))
+    delta = nxt - datetime.now(timezone.utc)
+    assert timedelta(minutes=19) < delta <= timedelta(minutes=20)
+
+
+def test_paused_once_row_stays_pending(ctx, monkeypatch):
+    """A one-shot the user explicitly set is deferred, not silently dropped."""
+    _seed_schedules(ctx, [_due_cron_row(schedule_type='once',
+                                        run_at='2020-01-01T00:00:00Z',
+                                        cron_expr='')])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    assert ctx.dispatch.calls == []
+    assert rows[0]['next_run'] == '2020-01-01T00:00:00Z'
+    assert rows[0]['enabled'] is True
+
+
+def test_paused_blocks_stewards_too(ctx, monkeypatch):
+    """Stewards ride the same loop — the switch must cover them."""
+    monkeypatch.setattr(ctx.sr, '_steward_cycle_task',
+                        lambda pid: ('refreshed task', False))
+    _seed_schedules(ctx, [_due_cron_row(steward=True)])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    assert ctx.dispatch.calls == []
+
+
+def test_run_now_still_works_while_paused(ctx, monkeypatch):
+    """Explicit invocation is exactly what the switch is meant to preserve."""
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'scheduler_paused', True)
+    _seed_schedules(ctx, [_due_cron_row()])
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 200
+    assert len(ctx.dispatch.calls) == 1
+
+
+def test_scheduler_paused_is_config_editable(ctx):
+    """Without this key in _CONFIG_EDITABLE_KEYS the toggle renders and
+    silently fails to save (the keep_awake_enabled bug, 2026-07-16)."""
+    from mc.blueprints.settings_routes import _CONFIG_EDITABLE_KEYS
+    assert 'scheduler_paused' in _CONFIG_EDITABLE_KEYS
+
+
 # ── auth contract — app-wide gate still covers the moved routes ───────────────
 
 def test_moved_route_behind_lan_gate(ctx):

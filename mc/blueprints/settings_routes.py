@@ -132,6 +132,10 @@ _CONFIG_EDITABLE_KEYS = {
     # the next context build — no respawn needed (like read_floor_topk).
     'coordination_enabled', 'coordination_read_floor_topk',
     'coordination_interrupt_enabled',
+    # Scheduler master kill-switch. Read live by _scheduler_loop every 30s —
+    # no restart, no respawn, and per-schedule `enabled` flags stay untouched
+    # so unpausing restores exactly the prior state.
+    'scheduler_paused',
     # Per-agent worktree isolation (b264200a). Read at dispatch — takes effect
     # for the next agent started, no respawn or restart needed.
     'worktree_isolation_enabled',

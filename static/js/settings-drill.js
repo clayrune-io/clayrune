@@ -449,6 +449,13 @@ async function _renderSettings() {
         </div>
         ${toggle('keep_awake_enabled', cfg.keep_awake_enabled)}
       </div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Pause all scheduled runs</div>
+          <div class="settings-hint">Master switch: stops every scheduled task and every steward from dispatching, at any hour. Agents you start yourself — and "Run Now" — still work. Individual schedules keep their settings, so turning this back off resumes exactly what was running before.</div>
+        </div>
+        ${toggle('scheduler_paused', cfg.scheduler_paused)}
+      </div>
     </div>
 
     <div class="settings-section">

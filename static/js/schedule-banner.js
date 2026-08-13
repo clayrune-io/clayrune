@@ -15,6 +15,7 @@ const _sbState = {
   recent: [],
   recentLoading: false,
   recentLoaded: false,
+  paused: false,   // master kill-switch (config `scheduler_paused`)
 };
 
 
@@ -30,6 +31,14 @@ async function refreshScheduleBanner() {
   } catch(e) {
     _sbState.upcoming = [];
   }
+  // The master kill-switch makes every next_run above a time that will NOT
+  // fire, so the banner has to say so — otherwise it keeps counting down to
+  // runs that can't happen. Cheap read; the banner already polls at 60s.
+  try {
+    const cfg = await (await fetchFailFast(API_BASE + '/api/config')).json();
+    _sbState.paused = !!cfg.scheduler_paused;
+    try { _globalConfig.scheduler_paused = _sbState.paused; } catch(_) {}
+  } catch(e) { /* keep the last known value */ }
   _sbRender();
   // If the dropdown is open on the Recent tab, refresh that data too so
   // the polled 60s tick keeps recency labels fresh.
@@ -44,7 +53,7 @@ function _sbRender() {
   // Hide the banner only when there's nothing to show AND the user hasn't
   // explicitly opened it. Keeping it visible while open lets the user finish
   // browsing Recent runs even if no upcoming schedules exist.
-  if (!_sbState.upcoming.length && !_sbState.open) {
+  if (!_sbState.upcoming.length && !_sbState.open && !_sbState.paused) {
     banner.classList.add('hidden');
     return;
   }
@@ -52,18 +61,26 @@ function _sbRender() {
 
   const totalUpcoming = _sbState.upcoming.length;
   const next = _sbState.upcoming[0];
-  const triggerNext = next
-    ? `Next: <b>${esc(next.project_name || next.project_id)}</b> &middot; ${esc(formatScheduleTime(next.next_run))}`
-    : `<span style="color:var(--text-faint)">No upcoming</span>`;
+  const triggerNext = _sbState.paused
+    ? `<span style="color:var(--amber-text);font-weight:600">Schedules paused</span>`
+    : (next
+      ? `Next: <b>${esc(next.project_name || next.project_id)}</b> &middot; ${esc(formatScheduleTime(next.next_run))}`
+      : `<span style="color:var(--text-faint)">No upcoming</span>`);
 
-  const upcomingRows = totalUpcoming
+  const pausedNote = _sbState.paused
+    ? `<div class="sb-empty" style="color:var(--amber-text)">All scheduled runs are paused &mdash;
+         nothing below will fire. <span style="text-decoration:underline;cursor:pointer"
+         onclick="openScheduler()">Resume in Scheduled Tasks</span>.</div>`
+    : '';
+
+  const upcomingRows = pausedNote + (totalUpcoming
     ? _sbState.upcoming.map(s => `
         <div class="sb-row" onclick="openScheduler()" title="${esc(s.task)}">
           <span class="sb-project">${esc(s.project_name || s.project_id)}</span>
           <span class="sb-task">${esc(s.task)}</span>
-          <span class="sb-time">${esc(formatScheduleTime(s.next_run))}</span>
+          <span class="sb-time">${_sbState.paused ? 'paused' : esc(formatScheduleTime(s.next_run))}</span>
         </div>`).join('')
-    : `<div class="sb-empty">No upcoming runs scheduled.</div>`;
+    : `<div class="sb-empty">No upcoming runs scheduled.</div>`);
 
   let recentRows;
   if (_sbState.recentLoading && !_sbState.recentLoaded) {

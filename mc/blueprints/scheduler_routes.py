@@ -403,9 +403,22 @@ def _steward_cycle_task(project_id):
 
 def _scheduler_loop():
     """Background daemon: check schedules every 30s and dispatch due tasks."""
+    was_paused = None
     while not _scheduler_stop.is_set():
         obs.heartbeat('scheduler')
         try:
+            # ── Master kill-switch (`scheduler_paused`) ───────────────────
+            # When set, NOTHING scheduled dispatches — no schedule, no
+            # steward, at any hour. Only agents the user starts by hand (the
+            # dispatch route, "Run Now") still run. Per-schedule `enabled`
+            # flags are left untouched, so unpausing restores exactly the
+            # prior state without having to remember what was on.
+            paused = bool(state.CONFIG.get('scheduler_paused'))
+            if paused != was_paused:
+                _log("[scheduler] PAUSED — scheduled dispatch suspended "
+                     "(manual runs still work)" if paused else
+                     "[scheduler] resumed — schedules dispatch normally")
+                was_paused = paused
             schedules = _load_schedules()
             now = datetime.now(timezone.utc)
             changed = False
@@ -426,6 +439,23 @@ def _scheduler_loop():
                     if nr_dt.tzinfo is None:
                         nr_dt = nr_dt.replace(tzinfo=timezone.utc)
                 except Exception:
+                    continue
+                if now >= nr_dt and paused:
+                    # Due, but the master switch is off. Roll `next_run`
+                    # forward instead of leaving it in the past, so resuming
+                    # doesn't stampede every slot missed while paused. A
+                    # `once` row is left pending — it is a one-shot the user
+                    # asked for, and fires on resume rather than never.
+                    stype = sched.get('schedule_type', 'once')
+                    if stype == 'once':
+                        continue
+                    if stype == 'interval':
+                        mins = sched.get('interval_minutes', 60) or 60
+                        sched['next_run'] = (now + timedelta(minutes=mins)) \
+                            .isoformat().replace('+00:00', 'Z')
+                    else:
+                        sched['next_run'] = _compute_next_run(sched)
+                    changed = True
                     continue
                 if now >= nr_dt:
                     # Time to dispatch

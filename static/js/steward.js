@@ -26,6 +26,9 @@ async function renderStewards() {
       anything irreversible. Click “+ New Steward”.</div>`;
     return;
   }
+  // Master kill-switch: a steward can be "enabled" and still never fire.
+  // Say so on the card rather than advertising a cadence that isn't running.
+  const schedPaused = !!(window._globalConfig || {}).scheduler_paused;
   list.innerHTML = stewards.map(s => {
     const pid = esc(s.project_id);
     const pend = s.decisions_pending || 0;
@@ -45,8 +48,9 @@ async function renderStewards() {
         <div class="schedule-card-project">${esc(s.project)}</div>
         <div class="schedule-card-task" title="${esc(s.objective)}">${esc(s.objective || '(no objective)')}</div>
         <div class="schedule-card-meta">
-          <span>${cadence}</span>
+          <span>${schedPaused ? `<s>${cadence}</s>` : cadence}</span>
           <span>${last}</span>
+          ${schedPaused ? `<span class="steward-badge blocked" title="All scheduled runs are paused — this steward will not fire until you resume them">⏸ paused</span>` : ''}
           ${fenceBadge}${scopeBadge}${pendBadge}${blkBadge}
         </div>
       </div>

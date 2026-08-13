@@ -2,6 +2,11 @@
 
 let schedulerEditId = null; // null = adding new, string = editing existing
 
+// Master kill-switch mirror (config key `scheduler_paused`). Cached so the
+// card list can label rows "paused" instead of showing a next-run time that
+// will never fire. Re-read from /api/config whenever the modal opens.
+let _schedPaused = false;
+
 async function openScheduler() {
   const modalId = '__scheduler';
   if (openModals.has(modalId)) {
@@ -24,6 +29,9 @@ async function openScheduler() {
         <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
+    </div>
+    <div class="scheduler-section" style="padding-top:4px;padding-bottom:0">
+      <div id="scheduler-pause-bar"></div>
     </div>
     <div class="scheduler-section" style="padding-top:12px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
@@ -52,8 +60,69 @@ async function openScheduler() {
   centerModalElement(win);
   focusModal(modalId);
 
+  // Pause state first: both lists below label their rows from it.
+  await refreshSchedulerPause();
   if (window.renderStewards) window.renderStewards();
   await refreshScheduleList();
+}
+
+// ── Master kill-switch ─────────────────────────────────────────────────────
+// One switch that stops EVERY scheduled dispatch — schedules and stewards, at
+// any hour — without touching the per-schedule enable flags, so turning it
+// back on restores exactly what was running before. Manual dispatch and
+// "Run Now" are unaffected: explicitly-invoked agents always run.
+
+async function refreshSchedulerPause() {
+  try {
+    const cfg = await (await fetch(API_BASE + '/api/config')).json();
+    _schedPaused = !!cfg.scheduler_paused;
+    try { _globalConfig.scheduler_paused = _schedPaused; } catch(_) {}
+  } catch(e) { /* keep the last known value */ }
+  renderSchedulerPause();
+}
+
+function renderSchedulerPause() {
+  const el = document.getElementById('scheduler-pause-bar');
+  if (!el) return;
+  const border = _schedPaused ? 'var(--amber)' : 'var(--border)';
+  const bg = _schedPaused ? 'var(--amber-dim)' : 'transparent';
+  const title = _schedPaused ? 'All scheduled runs are PAUSED' : 'Scheduled runs are active';
+  const hint = _schedPaused
+    ? 'Nothing dispatches on a schedule — no tasks, no stewards, at any hour. Only agents you start yourself run. Individual schedules keep their settings and resume as they were.'
+    : 'Turn this on to stop every scheduled task and steward at once, without disabling them one by one.';
+  el.innerHTML = `<div style="display:flex;align-items:center;gap:14px;justify-content:space-between;
+        padding:10px 14px;border:1px solid ${border};background:${bg};border-radius:10px">
+      <span style="min-width:0">
+        <span style="font-size:13px;font-weight:700;color:${_schedPaused ? 'var(--amber-text)' : 'var(--text)'}">${esc(title)}</span>
+        <span class="memory-hint" style="margin:2px 0 0;font-weight:normal;display:block">${esc(hint)}</span>
+      </span>
+      <div class="schedule-toggle ${_schedPaused ? 'on' : ''}" style="flex-shrink:0"
+           onclick="toggleSchedulerPause()"
+           title="${_schedPaused ? 'Resume scheduled runs' : 'Pause all scheduled runs'}"></div>
+    </div>`;
+}
+
+async function toggleSchedulerPause() {
+  const next = !_schedPaused;
+  _schedPaused = next;             // optimistic: the toggle should feel instant
+  renderSchedulerPause();
+  try {
+    const res = await fetch(API_BASE + '/api/config', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scheduler_paused: next }),
+    });
+    if (!res.ok) throw new Error('save failed');
+    try { _globalConfig.scheduler_paused = next; } catch(_) {}
+    showToast(next ? 'All scheduled runs paused' : 'Scheduled runs resumed');
+  } catch(e) {
+    _schedPaused = !next;          // roll back — the server never took it
+    renderSchedulerPause();
+    showToast('Failed to change scheduler state', 4000);
+  }
+  refreshScheduleList();
+  if (window.renderStewards) window.renderStewards();
+  if (window.refreshScheduleBanner) window.refreshScheduleBanner();
 }
 
 async function refreshScheduleList() {
@@ -74,7 +143,9 @@ async function refreshScheduleList() {
       const cardClass = s.enabled ? '' : ' disabled';
       const desc = scheduleDescription(s);
       const lastRun = s.last_run ? timeAgoShort(s.last_run) : 'never';
-      const nextRun = s.next_run ? formatScheduleTime(s.next_run) : (s.enabled ? 'calculating...' : 'disabled');
+      const nextRun = _schedPaused && s.enabled
+        ? 'paused'   // the master switch is on — a next-run time would be a lie
+        : (s.next_run ? formatScheduleTime(s.next_run) : (s.enabled ? 'calculating...' : 'disabled'));
       const descLine = s.description
         ? `<div class="schedule-card-desc" title="${esc(s.description)}" style="font-size:11px;color:var(--text-muted);margin:2px 0 4px;font-style:italic;overflow:hidden;text-overflow:ellipsis;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical">${esc(s.description)}</div>`
         : '';
@@ -406,3 +477,5 @@ window.toggleScheduleRuns = toggleScheduleRuns;
 window.editSchedule = editSchedule;
 window.deleteSchedule = deleteSchedule;
 window.runScheduleNow = runScheduleNow;
+window.toggleSchedulerPause = toggleSchedulerPause; // pause-bar toggle (generated onclick)
+window.refreshSchedulerPause = refreshSchedulerPause; // settings-pane mirror re-reads it

@@ -112,6 +112,11 @@ def _load_config():
         'upload_quota_bytes': 0,
         'upload_max_file_bytes': 0,
         'log_level': 'info',  # P2-3: debug|info|warn|error gate for _log()
+        # Scheduler master kill-switch. True = no schedule and no steward
+        # dispatches, at any hour; only agents the user starts by hand run.
+        # Per-schedule `enabled` flags are untouched, so flipping this back
+        # restores the prior state exactly. Read live by _scheduler_loop.
+        'scheduler_paused': False,
         'condense_threshold_kb': 30,
         'condense_model': '',
         'condense_enabled': True,
