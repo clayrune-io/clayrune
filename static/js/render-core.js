@@ -737,7 +737,12 @@ function modalContentHTML(p) {
             ${p.github_sync_enabled && p.github_repo ? `<button class="gh-sync-badge" id="gh-badge-${esc(p.id)}" onclick="githubSyncNow('${esc(p.id)}')" title="Sync with GitHub">&#x21BB; ${esc(p.github_repo)}</button>` : ''}
             ${undoBtn}${doneToggle}
           </div>
-          <div class="backlog-list">${backlogItemsHTML}</div>
+          <!-- Compose sits ABOVE the list. At the bottom it was unreachable
+               without scrolling past every item, and that scroll pushed the
+               "Back to conversation" bar (rendered at the top of the scroll
+               body, desktop-only) out of view — leaving the sidebar Dashboard
+               button as the only visible exit, which means something else
+               entirely. Adding an item no longer costs a round trip. -->
           <div class="backlog-add">
             <textarea spellcheck="true" class="backlog-input" id="backlog-input-${esc(p.id)}" rows="2"
               placeholder="Add action item... (paste/drop images here)"
@@ -756,6 +761,7 @@ function modalContentHTML(p) {
               <button class="btn-add" onclick="addBacklogItem('${esc(p.id)}')">+ Add</button>
             </div>
           </div>
+          <div class="backlog-list">${backlogItemsHTML}</div>
         </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='agent'?'active':''}" data-tab="agent">

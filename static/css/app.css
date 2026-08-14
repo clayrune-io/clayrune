@@ -1115,16 +1115,29 @@
      content.innerHTML rebuild can't wipe them) and on the sized element for
      the stand-alone overlays. z-index 6/7 keeps them above the content body
      but BELOW .modal-window-controls (z-index 11), so the close/min/max
-     buttons stay clickable even where the NE corner overlaps them. */
+     buttons stay clickable even where the NE corner overlaps them.
+
+     The THREE RIGHT-HAND handles (e / ne / se) sit entirely OUTSIDE the frame.
+     Flush at `right: 0`, the 6px E strip lay directly over the scroll body's
+     scrollbar: the cursor flipped to ew-resize before you could reach the thumb,
+     so dragging the scrollbar resized the window instead of scrolling it. The
+     touch comment below already conceded exactly this failure ("would only steal
+     taps from scrollbars") and hides the handles on coarse pointers — the mouse
+     had the same collision and no such escape. Pushing them clear of the content
+     box is what frees the scrollbar; resizing from just outside the border is
+     what every OS window manager already does, so it costs nothing.
+
+     Only the right side moves: the other edges have no scrollbar under them, so
+     they keep straddling the border where the larger grab area is worth more. */
   .mc-resize-handle { position: absolute; z-index: 6; touch-action: none; }
-  .mc-resize-n  { top: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
-  .mc-resize-s  { bottom: 0; left: 0; right: 0; height: 6px; cursor: ns-resize; }
-  .mc-resize-e  { top: 0; bottom: 0; right: 0; width: 6px; cursor: ew-resize; }
-  .mc-resize-w  { top: 0; bottom: 0; left: 0; width: 6px; cursor: ew-resize; }
-  .mc-resize-ne { top: 0; right: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 7; }
-  .mc-resize-nw { top: 0; left: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 7; }
-  .mc-resize-se { bottom: 0; right: 0; width: 14px; height: 14px; cursor: nwse-resize; z-index: 7; }
-  .mc-resize-sw { bottom: 0; left: 0; width: 14px; height: 14px; cursor: nesw-resize; z-index: 7; }
+  .mc-resize-n  { top: -3px; left: 0; right: 0; height: 8px; cursor: ns-resize; }
+  .mc-resize-s  { bottom: -3px; left: 0; right: 0; height: 8px; cursor: ns-resize; }
+  .mc-resize-e  { top: 0; bottom: 0; right: -7px; width: 7px; cursor: ew-resize; }
+  .mc-resize-w  { top: 0; bottom: 0; left: -3px; width: 8px; cursor: ew-resize; }
+  .mc-resize-ne { top: -3px; right: -7px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 7; }
+  .mc-resize-nw { top: -3px; left: -3px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 7; }
+  .mc-resize-se { bottom: -3px; right: -7px; width: 14px; height: 14px; cursor: nwse-resize; z-index: 7; }
+  .mc-resize-sw { bottom: -3px; left: -3px; width: 14px; height: 14px; cursor: nesw-resize; z-index: 7; }
   /* Touch devices resize via the existing corner-drag / pinch handlers; the
      thin mouse handles would only steal taps from scrollbars and edge content. */
   @media (hover: none), (pointer: coarse) {
@@ -1737,7 +1750,9 @@
   .settings-hidden { display: none !important; }
 
   /* ADD FORM */
-  .backlog-add { display: flex; flex-direction: column; gap: 8px; }
+  /* Sits above .backlog-list now (see render-core.js) — needs its own bottom
+     gap where the list's margin-bottom used to separate them. */
+  .backlog-add { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
   .backlog-input {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px;

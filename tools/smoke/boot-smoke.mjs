@@ -473,6 +473,142 @@ async function runModelPickerGuard(browser) {
 }
 
 
+// ── Backlog live-refresh + tab-reset guard ───────────────────────────────────
+// Two defects that shared one symptom ("I have to close and reopen the project"):
+//
+//  1. /api/projects stopped shipping the `backlog` array (counts only), so
+//     _preserveOpenBacklogs() copies the PREVIOUS array back over the fresh
+//     record for any open modal. Every mutation then ended in refreshSilent(),
+//     which restored the pre-change list — adds, status toggles and deletes were
+//     all invisible until a reopen dropped _backlogFull and forced a refetch.
+//  2. closeModalById() never cleared modalActiveTab, so a project closed on the
+//     Backlog tab reopened straight back onto Backlog.
+//
+// Both are pure client state, so only a real browser catches them.
+async function runBacklogRefreshGuard(browser) {
+  const PID = 'smoke_alpha';
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  // Server-side truth for this project's backlog. Mutations edit THIS, and the
+  // modal is only correct if it re-reads it — mirroring the real endpoint split
+  // (list endpoint = counts, /backlog = the items).
+  let items = [{ id: 'itm_one', text: 'existing item', status: 'open', priority: 'normal',
+                 created_at: '2026-08-13T10:00:00Z', attachments: [], notes: [] }];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const url = new URL(req.url());
+    const path = url.pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (/\/backlog$/.test(path) && req.method() === 'GET') return json(items);
+    if (/\/backlog$/.test(path) && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      const item = { id: 'itm_new', text: body.text, status: 'open',
+                     priority: body.priority || 'normal',
+                     created_at: '2026-08-13T11:00:00Z', attachments: [], notes: [] };
+      items = [item, ...items];
+      return json({ ok: true, item });
+    }
+    if (/\/backlog\/[^/]+$/.test(path) && req.method() === 'DELETE') {
+      const id = path.split('/').pop();
+      items = items.filter((i) => i.id !== id);
+      return json({ ok: true });
+    }
+    if (path === '/api/projects') {
+      // Counts only — exactly like the real endpoint. If the modal renders items
+      // from this, the guard is testing the wrong thing.
+      const patched = JSON.parse(PROJECTS_JSON);
+      if (patched[0]) {
+        patched[0].project_path = '/smoke/alpha';
+        delete patched[0].backlog;
+        patched[0].backlog_open_count = items.filter((i) => i.status === 'open').length;
+        patched[0].backlog_total_count = items.length;
+      }
+      return json(patched);
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ backlog guard: grid never rendered (boot failed before the guard could run).');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async ({ pid }) => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 450));
+    const rowTexts = () => Array.from(document.querySelectorAll(
+      '.backlog-list .backlog-item'))
+      .map((e) => (e.innerText || '').trim());
+    try {
+      openProjectModal(pid);
+      await settle();
+      switchModalTab(pid, 'backlog');
+      await settle();
+      r.before = rowTexts();
+
+      const ta = document.getElementById('backlog-input-' + pid);
+      if (!ta) throw new Error('backlog composer not rendered');
+      // Compose must be ABOVE the list — otherwise adding means scrolling past
+      // every item, which is what buried the "Back to conversation" bar.
+      const listEl = document.querySelector('.backlog-list');
+      const addEl = document.querySelector('.backlog-add');
+      r.composeAboveList = !!(listEl && addEl) &&
+        !!(addEl.compareDocumentPosition(listEl) & Node.DOCUMENT_POSITION_FOLLOWING);
+
+      ta.value = 'freshly added item';
+      await addBacklogItem(pid);
+      await settle(700);
+      r.afterAdd = rowTexts();
+
+      // Tab must NOT survive a close/reopen cycle.
+      // `let modalActiveTab` (index.html top level) is a global lexical binding —
+      // reachable as a bare identifier, NOT a property of window.
+      const activeTab = () => (typeof modalActiveTab !== 'undefined' ? modalActiveTab : {})[pid];
+      r.tabBeforeClose = activeTab();
+      closeModalById(pid);   // openModals is keyed by the bare project id
+      await settle(200);
+      openProjectModal(pid);
+      await settle();
+      r.tabAfterReopen = activeTab() || 'agent';
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  }, { pid: PID });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push(`threw — ${out.err}`);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push(`uncaught: ${e}`));
+  if (!Array.isArray(out.before) || !out.before.length)
+    fails.push('backlog list never rendered its seeded item');
+  const added = (out.afterAdd || []).some((t) => t.includes('freshly added item'));
+  if (!added)
+    fails.push('added item did NOT appear without a reopen — the stale-cache bug is back ' +
+      `(rows: ${JSON.stringify(out.afterAdd)})`);
+  if (!out.composeAboveList) fails.push('the add-item composer is not above the list');
+  if (out.tabBeforeClose !== 'backlog') fails.push(`switchModalTab didn't stick (${out.tabBeforeClose})`);
+  if (out.tabAfterReopen !== 'agent')
+    fails.push(`reopening restored the '${out.tabAfterReopen}' tab instead of defaulting to agent`);
+
+  if (fails.length) {
+    console.error('❌ backlog guard:');
+    fails.forEach((f) => console.error(`       • ${f}`));
+    return false;
+  }
+  console.log('✅ backlog: new item renders without a reopen, compose sits above the list, tab resets on close.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -482,9 +618,10 @@ try {
   // regression is reported on its own first.
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
+  results.push(await runBacklogRefreshGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch & model-picker guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker & backlog guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

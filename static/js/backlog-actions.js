@@ -1,5 +1,23 @@
 // ── Backlog actions ─────────────────────────────────────────────────────────
 
+// Reload after a backlog mutation.
+//
+// `refreshSilent()` alone is NOT enough and reads like it should be. It re-fetches
+// /api/projects, which no longer ships the `backlog` array — only the counts
+// (`backlog_open_count` / `backlog_next_text`). To stop the poll wiping an open
+// modal's list, `_preserveOpenBacklogs()` copies the PREVIOUS array back over the
+// fresh record — so every mutation was immediately overwritten with the pre-change
+// list, and the change only appeared after a close/reopen dropped `_backlogFull`.
+// That hid adds (what Ron reported), and equally status toggles, priority cycles,
+// text edits and deletes.
+//
+// So: refetch this project's full backlog explicitly, THEN refreshSilent() for the
+// tile counts. Order matters — refreshSilent last would re-preserve the stale copy.
+async function _reloadBacklogAfterMutation(projectId) {
+  if (typeof refreshProjectBacklog === 'function') await refreshProjectBacklog(projectId);
+  await refreshSilent();
+}
+
 async function addBacklogItem(projectId) {
   const input = document.getElementById(`backlog-input-${projectId}`);
   const priSel = document.getElementById(`backlog-pri-${projectId}`);
@@ -25,7 +43,7 @@ async function addBacklogItem(projectId) {
     pendingFiles.delete(projectId);
     const previewEl = document.getElementById(`create-previews-${projectId}`);
     if (previewEl) previewEl.innerHTML = '';
-    await refreshSilent();
+    await _reloadBacklogAfterMutation(projectId);
   } finally { input.disabled = false; input.focus(); }
 }
 
@@ -62,7 +80,7 @@ async function deleteBacklogItem(e, projectId, itemId) {
     pushUndo({type: 'delete', projectId, itemId, data: {...item}, label: 'delete'});
   }
   await fetch(API_BASE + `/api/project/${projectId}/backlog/${itemId}`, {method: 'DELETE'});
-  await refreshSilent();
+  await _reloadBacklogAfterMutation(projectId);
 }
 
 async function dispatchBacklogItem(e, projectId, itemId) {
@@ -116,7 +134,7 @@ async function patchItem(projectId, itemId, data, skipUndo) {
     headers: {'Content-Type': 'application/json'},
     body: JSON.stringify(data)
   });
-  await refreshSilent();
+  await _reloadBacklogAfterMutation(projectId);
 }
 
 

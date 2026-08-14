@@ -346,6 +346,15 @@ function closeModalById(modalId) {
   if (entry.projectId && !modalId.startsWith('__')) {
     const p = allProjects.find(x => x.id === entry.projectId);
     if (p && p.backlog) p.backlog.forEach(item => { openAttPanels.delete(item.id); openNotesPanels.delete(item.id); });
+    // Closing a project forgets which tab it was on, so reopening the tile lands
+    // on the default (Agent) instead of dropping the user back into Backlog/Plans
+    // with no memory of how they got there. This is module-level state that used
+    // to outlive the window it belonged to.
+    //
+    // Clear on CLOSE only, never on open: deep-links (schedule-banner.js,
+    // openAgentSession) deliberately set modalActiveTab *before* calling
+    // openProjectModal, and clearing at open time would discard the target tab.
+    delete modalActiveTab[entry.projectId];
   }
 
   if (focusedModalId === modalId) {
