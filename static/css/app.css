@@ -5023,6 +5023,129 @@
   }
   .schedule-empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 24px; }
 
+  /* ── Scheduled-runs calendar (static/js/schedule-calendar.js) ─────────────
+     Week grid over the same /api/schedules payload the card list reads.
+     Per-project colour comes from --scal-hue, set inline from a hash of the
+     project id, so a project keeps its colour across weeks and reloads.
+
+     `.dead` = will not fire (disabled, or the master switch is on). It is
+     struck through AND desaturated on purpose: a calendar that renders an
+     unrunnable job the same as a runnable one is worse than no calendar. */
+  .scal-toolbar {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 12px; margin: 4px 0 10px;
+  }
+  .scal-range { font-size: 12px; font-weight: 700; color: var(--text); }
+  .scal-nav { display: flex; gap: 4px; flex-shrink: 0; }
+  .scal-nav .btn-header-action { padding: 3px 10px; font-size: 12px; }
+
+  .scal-paused-banner {
+    display: flex; align-items: center; gap: 10px; justify-content: space-between;
+    padding: 8px 12px; margin-bottom: 10px; border-radius: 8px;
+    border: 1px solid var(--amber); background: var(--amber-dim);
+    color: var(--amber-text); font-size: 12px; font-weight: 600;
+  }
+  .scal-resume {
+    flex-shrink: 0; padding: 3px 12px; font-size: 11px; font-weight: 700;
+    cursor: pointer; border-radius: 6px; font-family: inherit;
+    border: 1px solid var(--amber); background: transparent; color: var(--amber-text);
+  }
+  .scal-resume:hover { background: var(--amber); color: var(--bg); }
+
+  .scal-grid {
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px;
+  }
+  .scal-day {
+    display: flex; flex-direction: column; min-width: 0;
+    border: 1px solid var(--border); border-radius: 8px;
+    background: var(--surface); overflow: hidden;
+  }
+  .scal-day.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
+  .scal-day-head {
+    display: flex; align-items: baseline; gap: 5px; padding: 6px 8px;
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+  }
+  .scal-dow { font-size: 10px; font-weight: 700; letter-spacing: .05em;
+              text-transform: uppercase; color: var(--text-faint); }
+  .scal-dom { font-size: 12px; font-weight: 700; color: var(--text); }
+  .scal-day.today .scal-dow, .scal-day.today .scal-dom { color: var(--accent); }
+  .scal-day-body { display: flex; flex-direction: column; gap: 4px; padding: 5px; min-height: 60px; }
+  .scal-empty-day { flex: 1; }
+
+  .scal-chip {
+    display: flex; align-items: flex-start; gap: 5px; min-width: 0;
+    padding: 4px 5px; border-radius: 6px; cursor: default;
+    background: hsl(var(--scal-hue) 60% 50% / 0.13);
+    border-left: 3px solid hsl(var(--scal-hue) 60% 50%);
+  }
+  .scal-chip-body { min-width: 0; flex: 1; cursor: pointer; }
+  .scal-chip-title {
+    display: block; font-size: 11px; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .scal-chip-meta {
+    display: block; font-size: 10px; color: var(--text-faint);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .scal-chip.dead { background: var(--surface2); border-left-color: var(--text-faint); }
+  .scal-chip.dead .scal-chip-title { text-decoration: line-through; color: var(--text-faint); }
+
+  /* Same switch as the card list, shrunk to fit a chip — one visual language
+     for "this schedule is on", wherever you meet it. */
+  .scal-chip-toggle {
+    position: relative; flex-shrink: 0; margin-top: 2px;
+    width: 20px; height: 11px; border-radius: 6px; cursor: pointer;
+    background: var(--surface3); border: 1px solid var(--border); transition: all .2s;
+  }
+  .scal-chip-toggle::after {
+    content: ''; position: absolute; top: 1px; left: 1px;
+    width: 7px; height: 7px; border-radius: 50%;
+    background: var(--text-faint); transition: all .2s;
+  }
+  .scal-chip-toggle.on { background: var(--accent-dim); border-color: var(--accent); }
+  .scal-chip-toggle.on::after { left: 10px; background: var(--accent); }
+
+  .scal-strip { margin: 0 0 10px; }
+  .scal-strip.unparsed { margin: 10px 0 0; }
+  .scal-strip-head {
+    font-size: 11px; font-weight: 700; color: var(--text-dim);
+    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
+  }
+  .scal-strip-hint {
+    display: block; font-size: 10px; font-weight: 400; text-transform: none;
+    letter-spacing: 0; color: var(--text-faint);
+  }
+  .scal-strip-body { display: flex; flex-wrap: wrap; gap: 5px; }
+  .scal-pill {
+    display: inline-flex; align-items: center; gap: 6px;
+    padding: 4px 9px; border-radius: 999px; font-size: 11px; color: var(--text);
+    background: hsl(var(--scal-hue) 60% 50% / 0.13);
+    border: 1px solid hsl(var(--scal-hue) 60% 50% / 0.45); cursor: pointer;
+  }
+  .scal-pill.dead { background: var(--surface2); border-color: var(--border); color: var(--text-faint); text-decoration: line-through; }
+  .scal-pill-meta { margin-left: 5px; color: var(--text-faint); text-decoration: none; }
+
+  /* Chip → card handoff: brief highlight so the row you came from is findable. */
+  .scal-flash { animation: scalFlash 1.5s ease-out; }
+  @keyframes scalFlash {
+    0%, 30% { box-shadow: 0 0 0 2px var(--accent); }
+    100% { box-shadow: 0 0 0 2px transparent; }
+  }
+
+  /* Seven columns don't fit a phone. Stack into day rows and drop the empty
+     ones — a week of blank cards is pure scrolling. */
+  @media (max-width: 960px) {
+    .scal-grid { grid-template-columns: 1fr; gap: 5px; }
+    .scal-day { flex-direction: row; align-items: stretch; }
+    .scal-day-head {
+      flex-direction: column; align-items: center; justify-content: center;
+      gap: 0; min-width: 46px; border-bottom: none; border-right: 1px solid var(--border);
+    }
+    .scal-day-body { flex: 1; min-height: 34px; }
+    .scal-day:has(.scal-empty-day) { display: none; }
+  }
+
+
   /* ── STEWARD BADGES ─────────────────────────────────────────── */
   .steward-badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; border-radius: 10px;
     font-size: 10px; font-weight: 600; border: 1px solid var(--border); color: var(--text-muted); }

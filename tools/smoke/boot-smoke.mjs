@@ -74,6 +74,8 @@ const BACKLOG_ACTIONS_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'back
 const CROSS_BACKLOG_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'cross-backlog.js'), 'utf8');
 // Scheduler ES module (Phase 3 module 13) — same rule as claydo.js above.
 const SCHEDULER_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'scheduler.js'), 'utf8');
+// Scheduled-runs calendar ES module — same serve-or-it-boots-without-it rule.
+const SCHEDULE_CALENDAR_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'schedule-calendar.js'), 'utf8');
 // MCP servers ES module (Phase 3 module 14) — same rule as claydo.js above.
 const MCP_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mcp.js'), 'utf8');
 // Secrets vault ES module — same rule as claydo.js above.
@@ -153,6 +155,7 @@ const STATIC_MAP = {
   '/static/js/backlog-actions.js': ['text/javascript; charset=utf-8', BACKLOG_ACTIONS_JS],
   '/static/js/cross-backlog.js': ['text/javascript; charset=utf-8', CROSS_BACKLOG_JS],
   '/static/js/scheduler.js': ['text/javascript; charset=utf-8', SCHEDULER_JS],
+  '/static/js/schedule-calendar.js': ['text/javascript; charset=utf-8', SCHEDULE_CALENDAR_JS],
   '/static/js/mcp.js': ['text/javascript; charset=utf-8', MCP_JS],
   '/static/js/secrets-panel.js': ['text/javascript; charset=utf-8', SECRETS_PANEL_JS],
   '/static/js/system-status.js': ['text/javascript; charset=utf-8', SYSTEM_STATUS_JS],
@@ -609,6 +612,139 @@ async function runBacklogRefreshGuard(browser) {
 }
 
 
+// ── Scheduled-runs calendar guard ────────────────────────────────────────────
+// Two things here can be confidently wrong rather than obviously broken, which
+// is why they get asserted rather than eyeballed:
+//
+//   * recurrence expansion — a daily/cron schedule placed on the wrong weekday
+//     looks completely plausible. `days` is 1=Mon..7=Sun here while JS getDay()
+//     is 0=Sun..6=Sat, and cron with BOTH dom and dow restricted is a UNION,
+//     not an intersection.
+//   * the paused/disabled treatment — the whole point is that the grid must
+//     never imply a run that cannot happen.
+async function runScheduleCalendarGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const page = await ctx.newPage();
+  const SCHEDULES = [
+    { id: 'sch_daily', project_id: 'alpha', project_name: 'Alpha', enabled: true,
+      schedule_type: 'daily', time: '09:30', days: [1, 3, 5], task: 'Weekday standup' },
+    { id: 'sch_everyday', project_id: 'beta', project_name: 'Beta', enabled: true,
+      schedule_type: 'daily', time: '07:00', days: [], task: 'Every single day' },
+    { id: 'sch_off', project_id: 'beta', project_name: 'Beta', enabled: false,
+      schedule_type: 'daily', time: '23:00', days: [], task: 'Disabled nightly' },
+    { id: 'sch_interval', project_id: 'gamma', project_name: 'Gamma', enabled: true,
+      schedule_type: 'interval', interval_minutes: 5, task: 'Reaction poller' },
+    { id: 'sch_cron', project_id: 'delta', project_name: 'Delta', enabled: true,
+      schedule_type: 'cron', cron_expr: '0 6 * * 1', task: 'Monday cron' },
+    { id: 'sch_weird', project_id: 'delta', project_name: 'Delta', enabled: true,
+      schedule_type: 'cron', cron_expr: '@yearly', task: 'Unparseable cron',
+      next_run: '2027-01-01T00:00:00Z' },
+  ];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    if (path === '/api/schedules' && req.method() === 'GET') return json(SCHEDULES);
+    if (/^\/api\/schedules\/[^/]+$/.test(path) && req.method() === 'PUT') {
+      const id = path.split('/').pop();
+      const body = JSON.parse(req.postData() || '{}');
+      const rec = SCHEDULES.find((x) => x.id === id);
+      if (rec) rec.enabled = body.enabled;
+      return json({ ok: true });
+    }
+    if (path === '/api/config') return json({ scheduler_paused: false });
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('CALFAIL calendar guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async () => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    try {
+      const scheds = await (await fetch('/api/schedules')).json();
+      // A Sunday, so the week runs Sun 2026-08-16 .. Sat 2026-08-22.
+      const weekStart = new Date(2026, 7, 16, 0, 0, 0, 0);
+      const wk = scalBuildWeek(scheds, weekStart);
+      const dayOf = (i) => wk.days[i].items.map((it) => it.s.id);
+      r.sun = dayOf(0); r.mon = dayOf(1); r.tue = dayOf(2);
+      r.alwaysIds = wk.always.map((s) => s.id);
+      r.unparsedIds = wk.unparsed.map((s) => s.id);
+      const monTimes = wk.days[1].items.map((it) =>
+        String(it.when.getHours()).padStart(2, '0') + ':' + String(it.when.getMinutes()).padStart(2, '0'));
+      r.monTimes = monTimes;
+      r.monSorted = monTimes.slice().sort().join() === monTimes.join();
+
+      const c = _scalParseCron('0 6 1 * 5');
+      r.cronUnion = !!c && c.domRestricted && c.dowRestricted;
+      r.cronBad = _scalParseCron('@yearly');
+
+      openScheduler();
+      await settle(700);
+      toggleScheduleCalendar();
+      await settle(600);
+      r.chipCount = document.querySelectorAll('#schedule-calendar .scal-chip').length;
+      r.deadCount = document.querySelectorAll('#schedule-calendar .scal-chip.dead').length;
+      r.hasAlwaysStrip = !!document.querySelector('#schedule-calendar .scal-strip.always');
+      r.hasUnparsedStrip = !!document.querySelector('#schedule-calendar .scal-strip.unparsed');
+      r.bannerWhenLive = !!document.querySelector('#schedule-calendar .scal-paused-banner');
+
+      r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-chip:not(.dead)').length;
+      await scalToggle('sch_everyday', false);
+      await settle(600);
+      r.liveAfter = document.querySelectorAll('#schedule-calendar .scal-chip:not(.dead)').length;
+    } catch (e) {
+      r.err = e.message;
+    }
+    return r;
+  });
+
+  await ctx.close();
+
+  const fails = [];
+  const eq = (a, b) => JSON.stringify(a) === JSON.stringify(b);
+  if (out.err) fails.push('threw - ' + out.err);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  // Sunday: only the two every-day rows. days:[1,3,5] must NOT land here — that
+  // is the 1=Mon vs 0=Sun conversion.
+  if (!eq(out.sun, ['sch_everyday', 'sch_off']))
+    fails.push('Sunday wrong: ' + JSON.stringify(out.sun));
+  if (!eq(out.mon, ['sch_cron', 'sch_everyday', 'sch_daily', 'sch_off']))
+    fails.push('Monday wrong: ' + JSON.stringify(out.mon));
+  if (out.tue.includes('sch_daily'))
+    fails.push('Mon/Wed/Fri schedule leaked onto Tuesday');
+  if (!out.monSorted) fails.push('day not time-ordered: ' + JSON.stringify(out.monTimes));
+  if (!eq(out.alwaysIds, ['sch_interval'])) fails.push('always-strip wrong: ' + JSON.stringify(out.alwaysIds));
+  if (!eq(out.unparsedIds, ['sch_weird'])) fails.push('unparsed-strip wrong: ' + JSON.stringify(out.unparsedIds));
+  if (!out.cronUnion) fails.push('cron dom+dow union flags not set');
+  if (out.cronBad !== null) fails.push('unparseable cron was not rejected - it would be guessed at');
+  if (!out.chipCount) fails.push('calendar rendered no chips');
+  if (!out.deadCount) fails.push('the disabled schedule did not render as dead');
+  if (!out.hasAlwaysStrip) fails.push('always-running strip missing');
+  if (!out.hasUnparsedStrip) fails.push('unparsed strip missing (silently dropping schedules)');
+  if (out.bannerWhenLive) fails.push('paused banner shown while the scheduler is live');
+  if (!(out.liveAfter < out.liveBefore))
+    fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
+
+  if (fails.length) {
+    console.error('CALFAIL calendar guard:');
+    fails.forEach((f) => console.error('       - ' + f));
+    return false;
+  }
+  console.log('OKAY calendar: recurrences land on the right days, unrunnable rows render dead, toggle works from the grid.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -619,9 +755,10 @@ try {
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
+  results.push(await runScheduleCalendarGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker & backlog guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog & calendar guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

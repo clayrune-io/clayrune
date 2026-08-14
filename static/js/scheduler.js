@@ -46,10 +46,15 @@ async function openScheduler() {
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <span style="font-size:13px;font-weight:700;color:var(--text)">Scheduled Tasks
           <span class="memory-hint" style="margin:0;font-weight:normal;display:block">Dispatch an agent with a fixed prompt at set times.</span></span>
-        <button class="btn-add" style="padding:6px 14px;font-size:12px;flex-shrink:0" onclick="showScheduleForm()">+ Add Schedule</button>
+        <span style="display:flex;gap:6px;flex-shrink:0">
+          <button class="btn-header-action" id="scal-mode-btn" style="padding:6px 12px;font-size:12px"
+                  onclick="toggleScheduleCalendar()" title="Switch between the card list and a week calendar">Calendar</button>
+          <button class="btn-add" style="padding:6px 14px;font-size:12px" onclick="showScheduleForm()">+ Add Schedule</button>
+        </span>
       </div>
       <div id="schedule-form-area"></div>
       <div id="schedule-list"><div class="schedule-empty">Loading...</div></div>
+      <div id="schedule-calendar" style="display:none"></div>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
@@ -121,6 +126,9 @@ async function toggleSchedulerPause() {
     showToast('Failed to change scheduler state', 4000);
   }
   refreshScheduleList();
+  // The kill-switch decides whether ANY chip on the calendar can fire, so the
+  // grid has to repaint with it — a stale grid would contradict its own banner.
+  if (window.renderScheduleCalendar) window.renderScheduleCalendar();
   if (window.renderStewards) window.renderStewards();
   if (window.refreshScheduleBanner) window.refreshScheduleBanner();
 }
@@ -434,6 +442,7 @@ async function toggleScheduleEnabled(id, enabled) {
       body: JSON.stringify({ enabled })
     });
     await refreshScheduleList();
+    if (window.refreshScheduleCalendar) await window.refreshScheduleCalendar({ keepWeek: true });
     refreshScheduleBanner();
   } catch(e) {}
 }
@@ -479,3 +488,10 @@ window.deleteSchedule = deleteSchedule;
 window.runScheduleNow = runScheduleNow;
 window.toggleSchedulerPause = toggleSchedulerPause; // pause-bar toggle (generated onclick)
 window.refreshSchedulerPause = refreshSchedulerPause; // settings-pane mirror re-reads it
+// Cross-module reads for schedule-calendar.js. `_schedPaused` and
+// `scheduleDescription` are MODULE-scoped to this file: another ES module
+// cannot see them as bare identifiers (unlike a classic-script top-level
+// `let`, which lands in the shared global lexical scope). Bridge, or the
+// calendar throws ReferenceError the moment it renders.
+window.getSchedulerPaused = () => _schedPaused;
+window.scheduleDescription = scheduleDescription;
