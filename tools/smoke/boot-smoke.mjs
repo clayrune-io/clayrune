@@ -629,9 +629,10 @@ async function runScheduleCalendarGuard(browser) {
     { id: 'sch_daily', project_id: 'alpha', project_name: 'Alpha', enabled: true,
       schedule_type: 'daily', time: '09:30', days: [1, 3, 5], task: 'Weekday standup' },
     { id: 'sch_everyday', project_id: 'beta', project_name: 'Beta', enabled: true,
-      schedule_type: 'daily', time: '07:00', days: [], task: 'Every single day' },
+      schedule_type: 'daily', time: '07:00', days: [], description: 'Every single day',
+      task: 'LONG PROMPT BODY: ' + 'x'.repeat(400) },
     { id: 'sch_off', project_id: 'beta', project_name: 'Beta', enabled: false,
-      schedule_type: 'daily', time: '23:00', days: [], task: 'Disabled nightly' },
+      schedule_type: 'daily', time: '21:00', days: [], task: 'Disabled nightly' },
     { id: 'sch_interval', project_id: 'gamma', project_name: 'Gamma', enabled: true,
       schedule_type: 'interval', interval_minutes: 5, task: 'Reaction poller' },
     { id: 'sch_cron', project_id: 'delta', project_name: 'Delta', enabled: true,
@@ -687,26 +688,54 @@ async function runScheduleCalendarGuard(browser) {
       r.cronUnion = !!c && c.domRestricted && c.dowRestricted;
       r.cronBad = _scalParseCron('@yearly');
 
-      // The sidebar/drawer "Calendar" entry must land straight on the grid —
-      // the in-modal switch is below the pause banner and the whole Stewards
-      // section, which is the reason this entry exists at all.
+      // Calendar is its own modal reached from the nav — NOT a mode of the
+      // Scheduled Tasks modal, where it sat under that modal's own pause bar
+      // (two identical pause messages) and the whole Stewards section.
       await openSchedulerCalendar();
       await settle(900);
-      r.calVisibleFromNav = (() => {
-        const c = document.getElementById('schedule-calendar');
-        return !!(c && c.style.display !== 'none' && c.querySelector('.scal-grid'));
-      })();
       r.navEntries = Array.from(document.querySelectorAll('[data-nav="calendar"]')).length;
-      r.chipCount = document.querySelectorAll('#schedule-calendar .scal-chip').length;
-      r.deadCount = document.querySelectorAll('#schedule-calendar .scal-chip.dead').length;
+      r.ownModal = !!document.querySelector('[data-modal-id="__calendar"]');
+      r.hasTimeGrid = !!document.querySelector('#schedule-calendar .scal-time-cols');
+      r.hourLabels = Array.from(document.querySelectorAll('#schedule-calendar .scal-hour span'))
+        .map((e) => e.textContent.trim());
+      r.blockCount = document.querySelectorAll('#schedule-calendar .scal-block').length;
+      r.deadCount = document.querySelectorAll('#schedule-calendar .scal-block.dead').length;
       r.hasAlwaysStrip = !!document.querySelector('#schedule-calendar .scal-strip.always');
       r.hasUnparsedStrip = !!document.querySelector('#schedule-calendar .scal-strip.unparsed');
-      r.bannerWhenLive = !!document.querySelector('#schedule-calendar .scal-paused-banner');
+      // Exactly one pause notice on this surface, and no second banner.
+      r.pausePills = document.querySelectorAll('#schedule-calendar .scal-paused-pill').length;
 
-      r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-chip:not(.dead)').length;
+      // Blocks must be positioned by TIME, not stacked in a day bucket. The
+      // 07:00 run has to sit above the 21:00 one in the same column.
+      const posOf = (title) => {
+        const el = Array.from(document.querySelectorAll('#schedule-calendar .scal-block'))
+          .find((b) => (b.textContent || '').includes(title));
+        return el ? Math.round(parseFloat(el.style.top)) : null;
+      };
+      r.topEarly = posOf('Every single day');
+      r.topLate = posOf('Disabled nightly');
+
+      // The block label is a TITLE. The full agent prompt must NOT be on the grid.
+      const firstBlock = document.querySelector('#schedule-calendar .scal-block');
+      r.blockText = firstBlock ? firstBlock.textContent.trim() : '';
+      r.gridLeaksPrompt = /Generate 500 scenarios|LONG PROMPT BODY/.test(
+        document.getElementById('schedule-calendar').textContent);
+
+      // …and opening one reveals it.
+      r.detailBeforeOpen = document.querySelectorAll('.scal-detail').length;
+      scalOpenDetail('sch_everyday');
+      await settle(400);
+      const sheet = document.querySelector('.scal-detail');
+      r.detailOpened = !!sheet;
+      r.detailShowsPrompt = !!(sheet && sheet.textContent.includes('LONG PROMPT BODY'));
+      scalCloseDetail();
+      await settle(200);
+      r.detailClosed = document.querySelectorAll('.scal-detail').length === 0;
+
+      r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-block:not(.dead)').length;
       await scalToggle('sch_everyday', false);
       await settle(600);
-      r.liveAfter = document.querySelectorAll('#schedule-calendar .scal-chip:not(.dead)').length;
+      r.liveAfter = document.querySelectorAll('#schedule-calendar .scal-block:not(.dead)').length;
     } catch (e) {
       r.err = e.message;
     }
@@ -733,13 +762,27 @@ async function runScheduleCalendarGuard(browser) {
   if (!eq(out.unparsedIds, ['sch_weird'])) fails.push('unparsed-strip wrong: ' + JSON.stringify(out.unparsedIds));
   if (!out.cronUnion) fails.push('cron dom+dow union flags not set');
   if (out.cronBad !== null) fails.push('unparseable cron was not rejected - it would be guessed at');
-  if (!out.chipCount) fails.push('calendar rendered no chips');
+  if (!out.blockCount) fails.push('calendar rendered no blocks');
   if (!out.deadCount) fails.push('the disabled schedule did not render as dead');
   if (!out.hasAlwaysStrip) fails.push('always-running strip missing');
   if (!out.hasUnparsedStrip) fails.push('unparsed strip missing (silently dropping schedules)');
-  if (out.bannerWhenLive) fails.push('paused banner shown while the scheduler is live');
-  if (!out.calVisibleFromNav) fails.push('the Calendar nav entry did not open the grid');
   if (out.navEntries < 2) fails.push('Calendar missing from sidebar and/or mobile drawer (found ' + out.navEntries + ')');
+  if (!out.ownModal) fails.push('Calendar did not open as its own modal');
+  if (!out.hasTimeGrid) fails.push('no time grid rendered - it is a day-bucket list again');
+  if (!(out.hourLabels || []).length) fails.push('no hour gutter labels');
+  else if (!/^\d\d:00$/.test(out.hourLabels[0])) fails.push('hour labels malformed: ' + out.hourLabels[0]);
+  // Scheduler is live in this fixture, so there must be NO pause pill at all —
+  // and never more than one when paused (the duplicate-banner regression).
+  if (out.pausePills !== 0) fails.push('pause notice shown while the scheduler is live (' + out.pausePills + ')');
+  if (out.topEarly === null || out.topLate === null)
+    fails.push('could not locate the timed blocks to compare');
+  else if (!(out.topEarly < out.topLate))
+    fails.push('blocks are not positioned by time (07:00 at ' + out.topEarly + 'px, 21:00 at ' + out.topLate + 'px)');
+  if (out.gridLeaksPrompt) fails.push('the full agent prompt is rendered on the grid - labels must be titles');
+  if (out.detailBeforeOpen !== 0) fails.push('detail sheet was open before it was asked for');
+  if (!out.detailOpened) fails.push('clicking a block did not open the detail sheet');
+  if (!out.detailShowsPrompt) fails.push('the detail sheet does not show the full prompt');
+  if (!out.detailClosed) fails.push('the detail sheet did not close');
   if (!(out.liveAfter < out.liveBefore))
     fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
 
@@ -748,7 +791,7 @@ async function runScheduleCalendarGuard(browser) {
     fails.forEach((f) => console.error('       - ' + f));
     return false;
   }
-  console.log('OKAY calendar: recurrences land on the right days, unrunnable rows render dead, toggle works from the grid.');
+  console.log('OKAY calendar: time grid places runs by hour, titles on blocks + prompt in the sheet, one pause notice, toggle works.');
   return true;
 }
 

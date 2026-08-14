@@ -5023,128 +5023,173 @@
   }
   .schedule-empty { color: var(--text-faint); font-size: 13px; text-align: center; padding: 24px; }
 
-  /* ── Scheduled-runs calendar (static/js/schedule-calendar.js) ─────────────
-     Week grid over the same /api/schedules payload the card list reads.
-     Per-project colour comes from --scal-hue, set inline from a hash of the
-     project id, so a project keeps its colour across weeks and reloads.
+  /* --- Scheduled-runs calendar (static/js/schedule-calendar.js) ------------
+     A real time grid: hour gutter down the left, day columns across, each run
+     positioned at its own time. Per-project colour comes from --scal-hue, set
+     inline from a hash of the project id, so a project keeps its colour.
 
-     `.dead` = will not fire (disabled, or the master switch is on). It is
-     struck through AND desaturated on purpose: a calendar that renders an
-     unrunnable job the same as a runnable one is worse than no calendar. */
+     `.dead` = will not fire (disabled, or the master switch is on). Struck
+     through AND desaturated on purpose: rendering an unrunnable job like a
+     runnable one is worse than not drawing it. */
+  .scal-surface {
+    display: flex; flex-direction: column; min-height: 0;
+    height: calc(100% - 56px); padding: 14px 20px 16px;
+  }
   .scal-toolbar {
     display: flex; align-items: center; justify-content: space-between;
-    gap: 12px; margin: 4px 0 10px;
+    gap: 12px; margin-bottom: 10px; flex-shrink: 0;
   }
-  .scal-range { font-size: 12px; font-weight: 700; color: var(--text); }
-  .scal-nav { display: flex; gap: 4px; flex-shrink: 0; }
+  .scal-range { font-size: 13px; font-weight: 700; color: var(--text); min-width: 0;
+                overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .scal-nav { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
   .scal-nav .btn-header-action { padding: 3px 10px; font-size: 12px; }
 
-  .scal-paused-banner {
-    display: flex; align-items: center; gap: 10px; justify-content: space-between;
-    padding: 8px 12px; margin-bottom: 10px; border-radius: 8px;
-    border: 1px solid var(--amber); background: var(--amber-dim);
-    color: var(--amber-text); font-size: 12px; font-weight: 600;
+  /* One compact pause notice. The Scheduled Tasks modal has its own full-width
+     pause bar; when the calendar lived inside it the two stacked and said the
+     same thing twice on a phone screen. */
+  .scal-paused-pill {
+    padding: 3px 11px; margin-right: 4px; font-size: 11px; font-weight: 700;
+    font-family: inherit; cursor: pointer; border-radius: 999px;
+    border: 1px solid var(--amber); background: var(--amber-dim); color: var(--amber-text);
   }
-  .scal-resume {
-    flex-shrink: 0; padding: 3px 12px; font-size: 11px; font-weight: 700;
-    cursor: pointer; border-radius: 6px; font-family: inherit;
-    border: 1px solid var(--amber); background: transparent; color: var(--amber-text);
-  }
-  .scal-resume:hover { background: var(--amber); color: var(--bg); }
+  .scal-paused-pill:hover { background: var(--amber); color: var(--bg); }
 
-  .scal-grid {
-    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 6px;
+  .scal-strip {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 6px; flex-shrink: 0; font-size: 11px;
   }
-  .scal-day {
-    display: flex; flex-direction: column; min-width: 0;
-    border: 1px solid var(--border); border-radius: 8px;
-    background: var(--surface); overflow: hidden;
+  .scal-strip-head { font-weight: 700; color: var(--text-dim);
+                     text-transform: uppercase; letter-spacing: .04em; }
+  .scal-strip-hint { color: var(--text-faint); }
+  .scal-strip-body { display: flex; flex-wrap: wrap; gap: 4px; }
+  .scal-pill {
+    padding: 2px 9px; border-radius: 999px; cursor: pointer; color: var(--text);
+    background: hsl(var(--scal-hue) 60% 50% / 0.14);
+    border: 1px solid hsl(var(--scal-hue) 60% 50% / 0.45);
   }
-  .scal-day.today { border-color: var(--accent); box-shadow: 0 0 0 1px var(--accent) inset; }
-  .scal-day-head {
-    display: flex; align-items: baseline; gap: 5px; padding: 6px 8px;
+  .scal-pill.dead { background: var(--surface2); border-color: var(--border);
+                    color: var(--text-faint); text-decoration: line-through; }
+
+  .scal-time {
+    display: flex; flex-direction: column; min-height: 0; flex: 1;
+    border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    background: var(--surface);
+  }
+  .scal-time-head {
+    display: grid; flex-shrink: 0;
     border-bottom: 1px solid var(--border); background: var(--surface2);
   }
+  .scal-head-corner { border-right: 1px solid var(--border); }
+  .scal-head {
+    display: flex; align-items: baseline; justify-content: center; gap: 5px;
+    padding: 6px 4px; border-right: 1px solid var(--border); min-width: 0;
+  }
+  .scal-head:last-child { border-right: none; }
   .scal-dow { font-size: 10px; font-weight: 700; letter-spacing: .05em;
               text-transform: uppercase; color: var(--text-faint); }
-  .scal-dom { font-size: 12px; font-weight: 700; color: var(--text); }
-  .scal-day.today .scal-dow, .scal-day.today .scal-dom { color: var(--accent); }
-  .scal-day-body { display: flex; flex-direction: column; gap: 4px; padding: 5px; min-height: 60px; }
-  .scal-empty-day { flex: 1; }
+  .scal-dom { font-size: 13px; font-weight: 700; color: var(--text); }
+  .scal-head.today .scal-dow, .scal-head.today .scal-dom { color: var(--accent); }
+  .scal-head.today { background: var(--accent-dim); }
 
-  .scal-chip {
-    display: flex; align-items: flex-start; gap: 5px; min-width: 0;
-    padding: 4px 5px; border-radius: 6px; cursor: default;
-    background: hsl(var(--scal-hue) 60% 50% / 0.13);
+  .scal-time-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
+  .scal-time-cols { display: grid; position: relative; }
+  .scal-gutter { border-right: 1px solid var(--border); background: var(--surface2); }
+  .scal-hour {
+    position: relative; display: flex; justify-content: flex-end;
+    padding-right: 6px; box-sizing: border-box;
+  }
+  .scal-hour span {
+    font-size: 10px; color: var(--text-faint); transform: translateY(-6px);
+    font-variant-numeric: tabular-nums;
+  }
+  /* container-type so a block can ask how wide its DAY is — with 7 columns on
+     a laptop each is ~150px, and the time prefix was starving the title down to
+     a single letter ("09:00 S."). The title is the thing you read; the time is
+     already given by the row and the gutter. */
+  .scal-col { position: relative; border-right: 1px solid var(--border);
+              min-width: 0; container-type: inline-size; }
+  .scal-col:last-child { border-right: none; }
+  .scal-col.today { background: hsl(from var(--accent) h s l / 0.04); }
+  .scal-slot { border-bottom: 1px solid var(--border); box-sizing: border-box; }
+
+  .scal-now { position: absolute; left: 0; right: 0; height: 2px;
+              background: var(--red, #dc2626); z-index: 3; pointer-events: none; }
+  .scal-now::before {
+    content: ''; position: absolute; left: -3px; top: -3px;
+    width: 8px; height: 8px; border-radius: 50%; background: var(--red, #dc2626);
+  }
+
+  /* A dispatch has no duration, so the block is a fixed legible height rather
+     than a span. Overlapping runs split the column width (see _scalLayoutDay). */
+  .scal-block {
+    position: absolute; z-index: 2; box-sizing: border-box; overflow: hidden;
+    display: flex; align-items: center; gap: 5px; cursor: pointer;
+    margin-left: 2px; padding: 2px 5px; border-radius: 5px;
+    background: hsl(var(--scal-hue) 60% 50% / 0.18);
     border-left: 3px solid hsl(var(--scal-hue) 60% 50%);
   }
-  .scal-chip-body { min-width: 0; flex: 1; cursor: pointer; }
-  .scal-chip-title {
-    display: block; font-size: 11px; font-weight: 600; color: var(--text);
+  .scal-block:hover { background: hsl(var(--scal-hue) 60% 50% / 0.3); }
+  /* Sharing a column halves the width again — drop the time there regardless. */
+  .scal-block.multi .scal-block-time { display: none; }
+  @container (max-width: 200px) { .scal-block-time { display: none; } }
+  .scal-block-time { font-size: 10px; font-weight: 700; color: var(--text-dim);
+                     flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  .scal-block-title {
+    font-size: 11px; font-weight: 600; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .scal-chip-meta {
-    display: block; font-size: 10px; color: var(--text-faint);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-  }
-  .scal-chip.dead { background: var(--surface2); border-left-color: var(--text-faint); }
-  .scal-chip.dead .scal-chip-title { text-decoration: line-through; color: var(--text-faint); }
+  .scal-block.dead { background: var(--surface2); border-left-color: var(--text-faint); }
+  .scal-block.dead .scal-block-title { text-decoration: line-through; color: var(--text-faint); }
 
-  /* Same switch as the card list, shrunk to fit a chip — one visual language
-     for "this schedule is on", wherever you meet it. */
-  .scal-chip-toggle {
-    position: relative; flex-shrink: 0; margin-top: 2px;
-    width: 20px; height: 11px; border-radius: 6px; cursor: pointer;
-    background: var(--surface3); border: 1px solid var(--border); transition: all .2s;
+  /* Detail sheet — the only place the full agent prompt is shown. */
+  .scal-detail-back {
+    position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,0.35);
   }
-  .scal-chip-toggle::after {
-    content: ''; position: absolute; top: 1px; left: 1px;
-    width: 7px; height: 7px; border-radius: 50%;
-    background: var(--text-faint); transition: all .2s;
+  .scal-detail {
+    position: absolute; z-index: 21; left: 50%; top: 50%;
+    transform: translate(-50%, -50%);
+    width: min(520px, calc(100% - 32px)); max-height: calc(100% - 48px);
+    display: flex; flex-direction: column;
+    background: var(--surface); border: 1px solid var(--border);
+    border-left: 4px solid hsl(var(--scal-hue) 60% 50%);
+    border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
   }
-  .scal-chip-toggle.on { background: var(--accent-dim); border-color: var(--accent); }
-  .scal-chip-toggle.on::after { left: 10px; background: var(--accent); }
+  .scal-detail-head {
+    display: flex; align-items: flex-start; justify-content: space-between;
+    gap: 10px; padding: 14px 16px 10px; border-bottom: 1px solid var(--border);
+  }
+  .scal-detail-title { display: block; font-size: 14px; font-weight: 700; color: var(--text); }
+  .scal-detail-sub { display: block; margin-top: 2px; font-size: 11px; color: var(--text-faint); }
+  .scal-detail-meta {
+    display: flex; flex-wrap: wrap; gap: 12px; padding: 10px 16px;
+    font-size: 11px; color: var(--text-dim); border-bottom: 1px solid var(--border);
+  }
+  .scal-detail-label {
+    padding: 10px 16px 4px; font-size: 10px; font-weight: 700;
+    text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint);
+  }
+  .scal-detail-task {
+    flex: 1; min-height: 0; overflow-y: auto; margin: 0 16px 12px;
+    padding: 10px 12px; border-radius: 8px; background: var(--bg);
+    border: 1px solid var(--border); white-space: pre-wrap; word-break: break-word;
+    font-size: 12px; line-height: 1.5; color: var(--text);
+  }
+  .scal-detail-actions {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 0 16px 14px;
+  }
+  .scal-detail-toggle { display: flex; align-items: center; gap: 7px;
+                        font-size: 12px; color: var(--text-dim); margin-right: auto; }
 
-  .scal-strip { margin: 0 0 10px; }
-  .scal-strip.unparsed { margin: 10px 0 0; }
-  .scal-strip-head {
-    font-size: 11px; font-weight: 700; color: var(--text-dim);
-    text-transform: uppercase; letter-spacing: .04em; margin-bottom: 5px;
-  }
-  .scal-strip-hint {
-    display: block; font-size: 10px; font-weight: 400; text-transform: none;
-    letter-spacing: 0; color: var(--text-faint);
-  }
-  .scal-strip-body { display: flex; flex-wrap: wrap; gap: 5px; }
-  .scal-pill {
-    display: inline-flex; align-items: center; gap: 6px;
-    padding: 4px 9px; border-radius: 999px; font-size: 11px; color: var(--text);
-    background: hsl(var(--scal-hue) 60% 50% / 0.13);
-    border: 1px solid hsl(var(--scal-hue) 60% 50% / 0.45); cursor: pointer;
-  }
-  .scal-pill.dead { background: var(--surface2); border-color: var(--border); color: var(--text-faint); text-decoration: line-through; }
-  .scal-pill-meta { margin-left: 5px; color: var(--text-faint); text-decoration: none; }
-
-  /* Chip → card handoff: brief highlight so the row you came from is findable. */
-  .scal-flash { animation: scalFlash 1.5s ease-out; }
-  @keyframes scalFlash {
-    0%, 30% { box-shadow: 0 0 0 2px var(--accent); }
-    100% { box-shadow: 0 0 0 2px transparent; }
-  }
-
-  /* Seven columns don't fit a phone. Stack into day rows and drop the empty
-     ones — a week of blank cards is pure scrolling. */
+  /* Phones get ONE day column — seven would be ~45px each, illegible. The JS
+     swaps the header/nav to match (scalShiftDay). */
   @media (max-width: 960px) {
-    .scal-grid { grid-template-columns: 1fr; gap: 5px; }
-    .scal-day { flex-direction: row; align-items: stretch; }
-    .scal-day-head {
-      flex-direction: column; align-items: center; justify-content: center;
-      gap: 0; min-width: 46px; border-bottom: none; border-right: 1px solid var(--border);
-    }
-    .scal-day-body { flex: 1; min-height: 34px; }
-    .scal-day:has(.scal-empty-day) { display: none; }
+    .scal-surface { padding: 10px 12px 12px; }
+    .scal-range { font-size: 12px; }
+    .scal-nav .btn-header-action { padding: 4px 10px; }
+    .scal-block-title { font-size: 12px; }
+    .scal-detail { width: calc(100% - 20px); }
   }
-
 
   /* ── STEWARD BADGES ─────────────────────────────────────────── */
   .steward-badge { display: inline-flex; align-items: center; gap: 3px; padding: 1px 7px; border-radius: 10px;

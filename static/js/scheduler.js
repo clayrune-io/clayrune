@@ -47,14 +47,13 @@ async function openScheduler() {
         <span style="font-size:13px;font-weight:700;color:var(--text)">Scheduled Tasks
           <span class="memory-hint" style="margin:0;font-weight:normal;display:block">Dispatch an agent with a fixed prompt at set times.</span></span>
         <span style="display:flex;gap:6px;flex-shrink:0">
-          <button class="btn-header-action" id="scal-mode-btn" style="padding:6px 12px;font-size:12px"
-                  onclick="toggleScheduleCalendar()" title="Switch between the card list and a week calendar">Calendar</button>
+          <button class="btn-header-action" style="padding:6px 12px;font-size:12px"
+                  onclick="openSchedulerCalendar()" title="See these runs on a calendar">Calendar &#8599;</button>
           <button class="btn-add" style="padding:6px 14px;font-size:12px" onclick="showScheduleForm()">+ Add Schedule</button>
         </span>
       </div>
       <div id="schedule-form-area"></div>
       <div id="schedule-list"><div class="schedule-empty">Loading...</div></div>
-      <div id="schedule-calendar" style="display:none"></div>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
