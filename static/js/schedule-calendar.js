@@ -379,6 +379,22 @@ async function refreshScheduleCalendar(opts) {
   renderScheduleCalendar();
 }
 
+// Sidebar / drawer "Calendar" entry. Opens the same Automation modal but lands
+// directly on the grid: the List/Calendar switch sits under the pause banner AND
+// the whole Stewards section, so on a phone you have to know it is there and
+// scroll to it. openScheduler() is a no-op when the modal is already open (it
+// just focuses), so this also works as a "show me the calendar" from anywhere.
+async function openSchedulerCalendar() {
+  // openScheduler lives in scheduler.js module scope — reachable only through
+  // its window bridge, exactly like getSchedulerPaused above.
+  if (typeof window.openScheduler !== 'function') return;
+  await window.openScheduler();
+  schedCalMode = true;
+  _scalSyncPanes();
+  await refreshScheduleCalendar();
+}
+window.openSchedulerCalendar = openSchedulerCalendar;
+
 // Inline on*= handlers resolve against the global object at click time, and this
 // file is an ES module — every name referenced from generated HTML needs a
 // bridge or it fails silently (see tools/smoke/inline-handler-scope-check.mjs).

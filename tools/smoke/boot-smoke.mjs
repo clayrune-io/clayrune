@@ -687,10 +687,16 @@ async function runScheduleCalendarGuard(browser) {
       r.cronUnion = !!c && c.domRestricted && c.dowRestricted;
       r.cronBad = _scalParseCron('@yearly');
 
-      openScheduler();
-      await settle(700);
-      toggleScheduleCalendar();
-      await settle(600);
+      // The sidebar/drawer "Calendar" entry must land straight on the grid —
+      // the in-modal switch is below the pause banner and the whole Stewards
+      // section, which is the reason this entry exists at all.
+      await openSchedulerCalendar();
+      await settle(900);
+      r.calVisibleFromNav = (() => {
+        const c = document.getElementById('schedule-calendar');
+        return !!(c && c.style.display !== 'none' && c.querySelector('.scal-grid'));
+      })();
+      r.navEntries = Array.from(document.querySelectorAll('[data-nav="calendar"]')).length;
       r.chipCount = document.querySelectorAll('#schedule-calendar .scal-chip').length;
       r.deadCount = document.querySelectorAll('#schedule-calendar .scal-chip.dead').length;
       r.hasAlwaysStrip = !!document.querySelector('#schedule-calendar .scal-strip.always');
@@ -732,6 +738,8 @@ async function runScheduleCalendarGuard(browser) {
   if (!out.hasAlwaysStrip) fails.push('always-running strip missing');
   if (!out.hasUnparsedStrip) fails.push('unparsed strip missing (silently dropping schedules)');
   if (out.bannerWhenLive) fails.push('paused banner shown while the scheduler is live');
+  if (!out.calVisibleFromNav) fails.push('the Calendar nav entry did not open the grid');
+  if (out.navEntries < 2) fails.push('Calendar missing from sidebar and/or mobile drawer (found ' + out.navEntries + ')');
   if (!(out.liveAfter < out.liveBefore))
     fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
 
