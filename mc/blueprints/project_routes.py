@@ -643,6 +643,15 @@ def update_backlog_item(project_id, item_id):
             item['done_at'] = now_iso()
         elif data['status'] == 'open':
             item['done_at'] = None
+    # Wholesale notes replacement — the only way to REMOVE a note. Added 2026-08-15
+    # for the journal migration: unattended cycles had been using notes as their
+    # running log, so items carried 8x more log than task. There is deliberately no
+    # single-note DELETE: the caller must send the list it wants to keep, which
+    # makes an accidental clear a visible act rather than a stray id in a URL.
+    # Export first (tools/backlog-journal-export.py) — this drops the rest on the
+    # floor and the project file is untracked, so there is nothing to recover from.
+    if 'notes' in data and isinstance(data['notes'], list):
+        item['notes'] = data['notes'][-50:]
 
     p['last_updated'] = now_iso()
     save_project(project_id, p)
@@ -664,12 +673,26 @@ def _append_note_to_backlog_item(project_id, item_id, text, agent_code='user'):
         for it in p.get('backlog', []) or []:
             if it.get('id') == item_id:
                 notes = it.setdefault('notes', [])
+                # Both caps below DESTROY data and used to do it in total silence.
+                # That is how ~3 weeks of steward findings went missing before
+                # anyone noticed (2026-08-15 audit): the charter item sat at 50
+                # notes with 24 of them cut mid-sentence, and the agent's own
+                # workaround — splitting a long finding into "(cont.)" notes —
+                # spent extra slots out of the same 50 and sped the eviction up.
+                # Still capped (an unbounded list bloats every project read), but
+                # never again without saying so. Long-form logs belong in a
+                # journal file now, not here — see AGENT_RULES.md.
+                if len(text) > 2000:
+                    _log(f"[backlog] note on {project_id}/{item_id} truncated: "
+                         f"{len(text)} bytes -> 2000, {len(text) - 2000} lost", flush=True)
                 notes.append({
                     'ts': now_iso(),
                     'agent_code': (agent_code or 'user')[:32],
                     'text': text[:2000],
                 })
                 if len(notes) > 50:
+                    _log(f"[backlog] note cap on {project_id}/{item_id}: evicting "
+                         f"{len(notes) - 50} oldest note(s), unrecoverable", flush=True)
                     it['notes'] = notes[-50:]
                 it['updated_at'] = now_iso()
                 p['last_updated'] = now_iso()

@@ -172,6 +172,29 @@ happened on this machine, not a hypothetical.
 promotion is human-only, and the steward's PreToolUse fence blocks all writes
 under `.claude/`, so it cannot self-install a skill. Keep both properties.
 
+## BINDING — unattended agents never write backlog notes (added 2026-08-15)
+
+A backlog item holds the **ask** and its **current state**. It is a work list, and
+it stops being one the moment it fills with a log. Stewards, night-review, and any
+scheduled or autonomous cycle must write their running log to a **journal file** —
+`docs/_journal/<item-id>-<slug>.md`, gitignored, no cap — and never to
+`POST …/backlog/<id>/note`. Changing what the item *says* (`PATCH text`/`status`)
+is a state change, always allowed. An attended session may add a note, sparingly.
+
+**Why it's a rule, not a preference:** `_append_note_to_backlog_item` truncates at
+`text[:2000]` and keeps `notes[-50:]` — both of which *destroyed data in total
+silence*. Measured 2026-08-15: mission_control's 28 live items carried 16 KB of
+task text against 132 KB of notes; the steward charter sat at exactly 50 notes
+with 24 cut mid-sentence, its oldest survivor three weeks newer than the charter
+itself, and `data/projects/<id>.json` is untracked so those findings are gone.
+Dozens of *done* items had also silently hit the same 50-note ceiling. The steward
+had even noticed the truncation and started splitting findings into "(cont.)"
+notes — spending extra slots out of the same 50, accelerating its own data loss.
+
+Both caps now `_log` when they bite. `tools/backlog-journal-export.py` extracts
+notes to journals (re-runnable); `tools/backlog-journal-migrate.py` strips
+unattended notes off live items. `PATCH` accepts `notes` as the only removal path.
+
 ## Exception-swallowing policy (added 2026-06-09)
 
 When touching any function containing `except Exception: pass`, decide: if the

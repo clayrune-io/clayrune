@@ -321,6 +321,12 @@ docs/play-store/assets/thumbs/
 # doesn't untrack. Untracked for real 2026-07-28 via `git rm --cached`, ahead of
 # the Show HN launch, so the public repo tree carries no marketing playbooks.)
 docs/_campaign/
+# Per-backlog-item agent journals (tools/backlog-journal-export.py). This is where
+# unattended cycles keep their running log now that they may not write backlog
+# notes. Operator-specific by nature — the campaign entries alone carry this box's
+# public IP, Cloudflare zone ids and account state, which the "nothing
+# operator-specific in the repo" rule in CLAUDE.md forbids shipping.
+docs/_journal/
 docs/MARKETING_CAMPAIGN_PLAN.md
 docs/LAUNCH_PLAN.md
 docs/LAUNCH_COPY.md
