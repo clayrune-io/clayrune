@@ -136,10 +136,18 @@ class ClayruneProvider:
         tunnel_supervisor.get().stop()
 
     def resume(self) -> None:
-        """Restart the tunnel for an already-enrolled device. Idempotent."""
+        """Restart the tunnel for an already-enrolled device. Idempotent.
+
+        Uses ensure_connected(), NOT maybe_start(): the latter returns early
+        whenever the supervisor object is running, and the supervisor stays up
+        quite happily while cloudflared underneath it is dead. That made this —
+        the UI's "Reconnect" — a silent no-op for the one failure users actually
+        hit (observed live 2026-08-15).
+        """
         if not device_keys.is_enrolled():
             raise RuntimeError("Cannot resume: no enrolled device.")
-        tunnel_supervisor.maybe_start(cp_base_url=config.control_plane_base_url())
+        tunnel_supervisor.ensure_connected(
+            cp_base_url=config.control_plane_base_url())
 
     def disconnect_this_device(self) -> None:
         """Stop the tunnel, revoke on the platform, clear keystore.

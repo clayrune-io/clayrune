@@ -152,6 +152,15 @@ class TunnelSupervisor:
         with self._lock:
             return self._state.running
 
+    def kick(self) -> None:
+        """Force an out-of-band attestation on the next loop turn.
+
+        The attest loop re-issues the tunnel token and (re)starts cloudflared on
+        every successful attestation, so waking it is the repair primitive. Used
+        by ensure_connected() and by the watchdog.
+        """
+        self._wake_attest.set()
+
     # ─── Status ───────────────────────────────────────────────────────────
 
     def status(self) -> dict:
@@ -417,6 +426,10 @@ def maybe_start(*, cp_base_url: Optional[str] = None) -> bool:
     """Start the supervisor IF an identity is enrolled. Returns True if started.
 
     Safe to call repeatedly — idempotent.
+
+    NOTE: returns False when the supervisor is ALREADY running, which says
+    nothing about whether the tunnel actually works. Callers trying to *repair*
+    a broken tunnel want `ensure_connected()` instead — see the note there.
     """
     if device_keys.load_identity() is None:
         return False
@@ -424,4 +437,39 @@ def maybe_start(*, cp_base_url: Optional[str] = None) -> bool:
     if sup.is_running():
         return False
     sup.start(cp_base_url=cp_base_url)
+    return True
+
+
+def ensure_connected(*, cp_base_url: Optional[str] = None) -> bool:
+    """Make the tunnel work, whatever state it is in. Returns True if anything
+    was done.
+
+    `maybe_start()` alone is NOT a repair path: it returns early when the
+    supervisor object is running, and the supervisor keeps running perfectly
+    happily while cloudflared underneath it is dead. That is the exact state
+    observed on 2026-08-15 — supervisor alive, cloudflared gone, and the user's
+    "Reconnect" button doing nothing at all because it bottomed out in
+    maybe_start(). The recovery control has to check the thing that actually
+    carries traffic, not the thing that supervises it.
+
+    Three cases:
+      - not running          → start it
+      - running, tunnel up   → nothing to do
+      - running, tunnel down → force an out-of-band attestation, which re-issues
+                               the token and restarts cloudflared
+    """
+    if device_keys.load_identity() is None:
+        return False
+    sup = get()
+    if not sup.is_running():
+        sup.start(cp_base_url=cp_base_url)
+        return True
+    try:
+        alive = cloudflared.get().is_alive()
+    except Exception:
+        alive = False
+    if alive:
+        return False
+    log.warning("ensure_connected: supervisor up but cloudflared is dead — forcing re-issue")
+    sup.kick()
     return True

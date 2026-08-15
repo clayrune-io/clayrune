@@ -225,3 +225,86 @@ def test_alert_body_is_actionable_and_never_raises(sup):
         body = cmd[cmd.index("--body") + 1]
         assert "ronl.clayrune.io" in body
         assert "Reconnect" in body, "alert should say how to fix it"
+
+
+# ── Reconnect / resume must actually repair ──────────────────────────────────
+# Observed live 2026-08-15: cloudflared was dead, the supervisor was still
+# running, and POST /api/remote/resume returned {"ok": true} while doing
+# absolutely nothing — because it bottomed out in maybe_start(), which returns
+# early whenever the supervisor object exists. The user's only self-service
+# recovery control was a no-op for the one failure they actually hit.
+
+class _FakeSup:
+    def __init__(self, running: bool):
+        self._running = running
+        self.started = False
+        self.kicked = False
+
+    def is_running(self) -> bool:
+        return self._running
+
+    def start(self, **kw) -> None:
+        self.started = True
+        self._running = True
+
+    def kick(self) -> None:
+        self.kicked = True
+
+
+@pytest.fixture
+def enrolled(monkeypatch):
+    monkeypatch.setattr(ts.device_keys, "load_identity", lambda: object())
+
+
+def test_ensure_connected_repairs_a_dead_tunnel_under_a_live_supervisor(enrolled, monkeypatch):
+    """THE BUG: supervisor running, cloudflared dead. maybe_start() gives up
+    here; ensure_connected() must force a re-issue instead."""
+    fake = _FakeSup(running=True)
+    monkeypatch.setattr(ts, "get", lambda: fake)
+    monkeypatch.setattr(ts.cloudflared, "get", lambda: FakeCloudflared(alive=False))
+
+    assert ts.maybe_start() is False, "precondition: maybe_start does nothing here"
+    assert not fake.kicked
+
+    assert ts.ensure_connected() is True
+    assert fake.kicked, "Reconnect did not ask for a re-issue — it is still a no-op"
+
+
+def test_ensure_connected_starts_a_stopped_supervisor(enrolled, monkeypatch):
+    fake = _FakeSup(running=False)
+    monkeypatch.setattr(ts, "get", lambda: fake)
+    monkeypatch.setattr(ts.cloudflared, "get", lambda: FakeCloudflared(alive=False))
+    assert ts.ensure_connected() is True
+    assert fake.started and not fake.kicked
+
+
+def test_ensure_connected_leaves_a_healthy_tunnel_alone(enrolled, monkeypatch):
+    fake = _FakeSup(running=True)
+    monkeypatch.setattr(ts, "get", lambda: fake)
+    monkeypatch.setattr(ts.cloudflared, "get", lambda: FakeCloudflared(alive=True))
+    assert ts.ensure_connected() is False
+    assert not fake.started and not fake.kicked
+
+
+def test_ensure_connected_does_nothing_when_not_enrolled(monkeypatch):
+    monkeypatch.setattr(ts.device_keys, "load_identity", lambda: None)
+    fake = _FakeSup(running=False)
+    monkeypatch.setattr(ts, "get", lambda: fake)
+    assert ts.ensure_connected() is False
+    assert not fake.started
+
+
+def test_resume_uses_the_repair_path_not_maybe_start(monkeypatch):
+    """Pins the wiring: provider.resume() must call ensure_connected(). If a
+    refactor points it back at maybe_start(), Reconnect silently rots again."""
+    from mc_remote import provider_impl
+
+    calls = []
+    monkeypatch.setattr(provider_impl.device_keys, "is_enrolled", lambda: True)
+    monkeypatch.setattr(provider_impl.tunnel_supervisor, "ensure_connected",
+                        lambda **kw: calls.append("ensure") or True)
+    monkeypatch.setattr(provider_impl.tunnel_supervisor, "maybe_start",
+                        lambda **kw: calls.append("maybe_start") or False)
+
+    provider_impl.ClayruneProvider().resume()
+    assert calls == ["ensure"], f"resume took the wrong path: {calls}"
