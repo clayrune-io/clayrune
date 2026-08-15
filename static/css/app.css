@@ -5051,6 +5051,7 @@
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .scal-nav { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
   .scal-nav .btn-header-action { padding: 3px 10px; font-size: 12px; }
+  .scal-today { border-color: var(--accent); color: var(--accent); font-weight: 700; }
 
   /* Day / 3 Days / Week / Month — a segmented control, same set every phone
      calendar offers. Seven narrow columns on a phone is a legitimate CHOICE

@@ -376,12 +376,22 @@ function _scalToolbarHTML(days) {
   const views = SCAL_VIEWS.map(v =>
     `<button class="scal-view-btn${schedCalView === v.id ? ' on' : ''}"
        onclick="scalSetView('${v.id}')">${esc(v.label)}</button>`).join('');
+  // "Today" appears ONLY when today is off-screen. Permanently captioned it read
+  // as a label for the range you were looking at — so every day looked like
+  // today, even three weeks out. As a jump-home it still has to exist (getting
+  // back from six months away by tapping ‹ is not a plan), it just has no
+  // business sitting there when you are already on today.
+  const now = new Date();
+  const showToday = !days.some(d => _scalIsSameDay(d.date, now));
+  const todayBtn = showToday
+    ? `<button class="btn-header-action scal-today" onclick="scalShift(0)"
+         title="Jump back to today">Today</button>`
+    : '';
   return `<div class="scal-toolbar">
       <span class="scal-range">${esc(_scalRangeLabel(days))}</span>
       <span class="scal-nav">
-        ${pausedPill}
+        ${pausedPill}${todayBtn}
         <button class="btn-header-action" onclick="scalShift(-1)" title="Previous">&#8249;</button>
-        <button class="btn-header-action" onclick="scalShift(0)">Today</button>
         <button class="btn-header-action" onclick="scalShift(1)" title="Next">&#8250;</button>
       </span>
     </div>
@@ -703,6 +713,7 @@ async function openSchedulerCalendar() {
   }
   _scalLoadView();
   schedCalAnchor = _scalToday();
+  _scalBindSwipe(content.querySelector('.scal-surface'));
   await refreshScheduleCalendar();
 }
 
@@ -720,6 +731,42 @@ async function refreshScheduleCalendar(opts) {
     return;
   }
   renderScheduleCalendar();
+}
+
+// ── Swipe ───────────────────────────────────────────────────────────────────
+// Left/right drags move by one view's worth, the same as the ‹ › buttons. Bound
+// on the SURFACE (which survives re-renders) rather than the grid, whose
+// innerHTML is replaced on every navigation.
+//
+// The grid scrolls vertically, so a swipe must not steal a scroll: the gesture
+// only fires when the horizontal travel clearly dominates. Listeners are passive
+// — we never preventDefault, so vertical scrolling keeps its native feel.
+const SCAL_SWIPE_MIN = 55;      // px of horizontal travel before it counts
+const SCAL_SWIPE_RATIO = 1.6;   // ...and how far it must beat the vertical travel
+
+function _scalBindSwipe(surface) {
+  if (!surface || surface._scalSwipeBound) return;
+  surface._scalSwipeBound = true;
+  let x0 = 0, y0 = 0, tracking = false;
+  surface.addEventListener('touchstart', (e) => {
+    if (e.touches.length !== 1) { tracking = false; return; }
+    // A drag that starts on the detail sheet is scrolling the prompt, not paging.
+    if (e.target.closest && e.target.closest('.scal-detail')) { tracking = false; return; }
+    tracking = true;
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+  }, { passive: true });
+  surface.addEventListener('touchend', (e) => {
+    if (!tracking) return;
+    tracking = false;
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t) return;
+    const dx = t.clientX - x0;
+    const dy = t.clientY - y0;
+    if (Math.abs(dx) < SCAL_SWIPE_MIN) return;
+    if (Math.abs(dx) < Math.abs(dy) * SCAL_SWIPE_RATIO) return;
+    scalShift(dx < 0 ? 1 : -1);   // drag left = go forward, like every calendar
+  }, { passive: true });
 }
 
 // Inline on*= handlers resolve against the global object at click time, and this
@@ -740,3 +787,4 @@ window.scalBuildWeek = scalBuildWeek;          // exercised directly by the smok
 window.scalBuildRange = scalBuildRange;
 window._scalParseCron = _scalParseCron;
 window._scalTitle = _scalTitle;
+window._scalBindSwipe = _scalBindSwipe;   // exercised by the smoke guard

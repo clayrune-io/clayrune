@@ -778,6 +778,46 @@ async function runScheduleCalendarGuard(browser) {
       r.hours = Array.from(document.querySelectorAll('#schedule-calendar .scal-hour span'))
         .map((e) => e.textContent.trim());
       // …and it should still OPEN on the first run rather than at midnight.
+      // Navigation must actually move, and must SAY so — a permanently-captioned
+      // "Today" button read as a label for the range, so every day looked like
+      // today. It now appears only when today is off-screen.
+      scalSetView('day');
+      // Earlier steps drilled into a month cell, which moves the anchor — reset
+      // to today first or "on today" assertions are testing some other day.
+      scalShift(0);
+      await settle(350);
+      const label = () => document.querySelector('#schedule-calendar .scal-range').textContent.trim();
+      const todayBtn = () => document.querySelectorAll('#schedule-calendar .scal-today').length;
+      r.labelOnToday = label();
+      r.todayBtnOnToday = todayBtn();
+      scalShift(1); await settle(350);
+      r.labelNext = label();
+      r.todayBtnAway = todayBtn();
+      r.todayHighlightAway = document.querySelectorAll('#schedule-calendar .scal-head.today').length;
+
+      // Swipe left = forward, exactly like the > button.
+      const swipeSurface = document.querySelector('.scal-surface');
+      const touchAt = (x, y) => new Touch({ identifier: 1, target: swipeSurface, clientX: x, clientY: y });
+      const fire = (type, x, y) => swipeSurface.dispatchEvent(new TouchEvent(type, {
+        bubbles: true, cancelable: true,
+        touches: type === 'touchend' ? [] : [touchAt(x, y)],
+        changedTouches: [touchAt(x, y)],
+      }));
+      const swipe = (dx, dy) => { fire('touchstart', 200, 300); fire('touchend', 200 + dx, 300 + (dy || 0)); };
+
+      swipe(-150); await settle(350);
+      r.labelAfterSwipeFwd = label();
+      swipe(150); await settle(350);
+      r.labelAfterSwipeBack = label();
+
+      // A mostly-vertical drag is a scroll, not a page turn.
+      r.labelBeforeVertical = label();
+      swipe(20, 300); await settle(300);
+      r.labelAfterVertical = label();
+
+      scalShift(0); await settle(300);
+      r.labelAfterJumpHome = label();
+
       scalSetView('week');
       await settle(500);
       const b2 = document.querySelector('#schedule-calendar .scal-time-body');
@@ -828,6 +868,22 @@ async function runScheduleCalendarGuard(browser) {
     fails.push('day does not run 00:00-23:00 (' + out.hours[0] + ' .. ' + out.hours[23] + ')');
   if (!(out.openScrollTop > 0))
     fails.push('calendar opened at midnight instead of scrolling to the first run');
+  if (out.labelOnToday === out.labelNext)
+    fails.push('navigating a day did not change the range label (' + out.labelOnToday + ')');
+  if (out.todayBtnOnToday !== 0)
+    fails.push('the Today button is shown while already on today - it reads as a label');
+  if (out.todayBtnAway !== 1)
+    fails.push('no way back to today once navigated away');
+  if (out.todayHighlightAway !== 0)
+    fails.push('a non-today day is highlighted as today');
+  if (out.labelAfterSwipeFwd === out.labelNext)
+    fails.push('swiping left did not advance the calendar');
+  if (out.labelAfterSwipeBack !== out.labelNext)
+    fails.push('swiping right did not go back (' + out.labelAfterSwipeBack + ')');
+  if (out.labelAfterVertical !== out.labelBeforeVertical)
+    fails.push('a vertical drag paged the calendar - it should scroll instead');
+  if (out.labelAfterJumpHome !== out.labelOnToday)
+    fails.push('Today did not return to today');
   // Scheduler is live in this fixture, so there must be NO pause pill at all —
   // and never more than one when paused (the duplicate-banner regression).
   if (out.pausePills !== 0) fails.push('pause notice shown while the scheduler is live (' + out.pausePills + ')');
