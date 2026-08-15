@@ -700,7 +700,18 @@ async function runScheduleCalendarGuard(browser) {
         .map((e) => e.textContent.trim());
       r.blockCount = document.querySelectorAll('#schedule-calendar .scal-block').length;
       r.deadCount = document.querySelectorAll('#schedule-calendar .scal-block.dead').length;
+      // Always-running schedules belong in an all-day band INSIDE the frame
+      // (Outlook/Google style), one cell per day column — not a separate strip
+      // above the calendar framing them as an exception to the day.
       r.hasAlwaysStrip = !!document.querySelector('#schedule-calendar .scal-strip.always');
+      r.allDayBand = !!document.querySelector('#schedule-calendar .scal-allday');
+      r.allDayCells = document.querySelectorAll('#schedule-calendar .scal-allday-cell').length;
+      r.allDayChips = document.querySelectorAll('#schedule-calendar .scal-allday-chip').length;
+      // It must sit above the hour body, not float somewhere else.
+      const band = document.querySelector('#schedule-calendar .scal-allday');
+      const hourBody = document.querySelector('#schedule-calendar .scal-time-body');
+      r.allDayAboveHours = !!(band && hourBody &&
+        band.getBoundingClientRect().bottom <= hourBody.getBoundingClientRect().top + 2);
       r.hasUnparsedStrip = !!document.querySelector('#schedule-calendar .scal-strip.unparsed');
       // Exactly one pause notice on this surface, and no second banner.
       r.pausePills = document.querySelectorAll('#schedule-calendar .scal-paused-pill').length;
@@ -855,7 +866,14 @@ async function runScheduleCalendarGuard(browser) {
   if (out.cronBad !== null) fails.push('unparseable cron was not rejected - it would be guessed at');
   if (!out.blockCount) fails.push('calendar rendered no blocks');
   if (!out.deadCount) fails.push('the disabled schedule did not render as dead');
-  if (!out.hasAlwaysStrip) fails.push('always-running strip missing');
+  if (out.hasAlwaysStrip)
+    fails.push('always-running still rendered as a separate strip above the grid');
+  if (!out.allDayBand) fails.push('no all-day band — always-running schedules vanished');
+  if (out.allDayCells !== 7)
+    fails.push('all-day band has ' + out.allDayCells + ' cells, expected one per day column');
+  if (out.allDayChips !== 7)
+    fails.push('the always-running schedule is not on every day (' + out.allDayChips + ' chips)');
+  if (!out.allDayAboveHours) fails.push('the all-day band is not above the hour body');
   if (!out.hasUnparsedStrip) fails.push('unparsed strip missing (silently dropping schedules)');
   if (out.navEntries < 2) fails.push('Calendar missing from sidebar and/or mobile drawer (found ' + out.navEntries + ')');
   if (!out.ownModal) fails.push('Calendar did not open as its own modal');

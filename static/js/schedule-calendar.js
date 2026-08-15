@@ -332,6 +332,30 @@ function _scalBlockHTML(p, range) {
   </div>`;
 }
 
+// Always-running schedules (intervals, minute-level crons) belong in an all-day
+// band at the top of the day, exactly where Outlook and Google put all-day
+// events — they ARE part of the day's routine, and a separate section above the
+// grid framed them as an exception to it. Every day column gets the same chips
+// because that is what "every 30 minutes" means: it runs on all of them.
+function _scalAllDayChipHTML(s) {
+  const live = _scalWillRun(s);
+  const every = typeof scheduleDescription === 'function' ? scheduleDescription(s) : '';
+  return `<div class="scal-allday-chip${live ? '' : ' dead'}"
+      style="--scal-hue:${_scalProjectHue(s.project_id)}"
+      onclick="scalOpenDetail('${esc(s.id)}')"
+      title="${esc(_scalTitle(s))}${every ? ' — ' + esc(every) : ''}">${esc(_scalTitle(s))}</div>`;
+}
+
+function _scalAllDayHTML(days, always, cssCols) {
+  if (!always.length) return '';
+  const chips = always.map(_scalAllDayChipHTML).join('');
+  const cells = days.map(() => `<div class="scal-allday-cell">${chips}</div>`).join('');
+  return `<div class="scal-allday" style="grid-template-columns:${cssCols}">
+    <div class="scal-allday-gutter" title="Runs continuously — too often to place on a clock">all-day</div>
+    ${cells}
+  </div>`;
+}
+
 function _scalStripHTML(cls, title, hint, schedules) {
   if (!schedules.length) return '';
   const pills = schedules.map((s) => {
@@ -441,12 +465,12 @@ function _scalRenderTimeGrid(host, days, always, unparsed) {
   const cssCols = `${SCAL_GUTTER}px repeat(${days.length}, minmax(0, 1fr))`;
   host.innerHTML = `
     ${_scalToolbarHTML(days)}
-    ${_scalStripHTML('always', 'Always running', 'repeat too often to place on a clock', always)}
     ${_scalStripHTML('unparsed', 'Not placed', 'times could not be derived here — they still run', unparsed)}
     <div class="scal-time">
       <div class="scal-time-head" style="grid-template-columns:${cssCols}">
         <div class="scal-head-corner"></div>${heads}
       </div>
+      ${_scalAllDayHTML(days, always, cssCols)}
       <div class="scal-time-body" id="scal-scroll">
         <div class="scal-time-cols" style="grid-template-columns:${cssCols};height:${gridH}px">
           <div class="scal-gutter">${hourLabels.join('')}</div>
@@ -520,6 +544,26 @@ function _scalRenderMonth(host, days, always, unparsed) {
     <div id="scal-detail-host"></div>`;
 }
 
+// Direction of the pending navigation: +1 forward, -1 back, 0 = no movement
+// (a re-render after a toggle shouldn't slide). Consumed and cleared by the
+// render so it can never leak into an unrelated repaint.
+let _scalSlideDir = 0;
+
+function _scalPlaySlide(host) {
+  const dir = _scalSlideDir;
+  _scalSlideDir = 0;
+  if (!dir) return;
+  try {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  } catch (e) {}
+  const el = host.querySelector('.scal-time, .scal-month');
+  if (!el) return;
+  // Re-adding the class on an element that already has it does nothing, but the
+  // grid is rebuilt from innerHTML each navigation so this is always a fresh
+  // node. Cheap: one transform+opacity keyframe, no layout.
+  el.classList.add(dir > 0 ? 'scal-slide-next' : 'scal-slide-prev');
+}
+
 function renderScheduleCalendar() {
   const host = document.getElementById('schedule-calendar');
   if (!host) return;
@@ -527,6 +571,7 @@ function renderScheduleCalendar() {
   const { days, always, unparsed } = scalBuildRange(_schedCalCache, start, _scalRangeCount());
   if (schedCalView === 'month') _scalRenderMonth(host, days, always, unparsed);
   else _scalRenderTimeGrid(host, days, always, unparsed);
+  _scalPlaySlide(host);
 }
 
 // ── Detail sheet ────────────────────────────────────────────────────────────
@@ -608,11 +653,18 @@ function scalEdit(id) {
 // One step = one view's worth: a day, three days, a week, a month. delta 0 =
 // back to today, which is what every "Today" button means.
 function scalShift(delta) {
-  if (delta === 0) { schedCalAnchor = _scalToday(); renderScheduleCalendar(); return; }
+  if (delta === 0) {
+    // Jumping home can move either way — slide toward wherever today is.
+    _scalSlideDir = schedCalAnchor > _scalToday() ? -1 : (schedCalAnchor < _scalToday() ? 1 : 0);
+    schedCalAnchor = _scalToday();
+    renderScheduleCalendar();
+    return;
+  }
   const a = new Date(schedCalAnchor);
   if (schedCalView === 'month') a.setMonth(a.getMonth() + delta);
   else a.setDate(a.getDate() + delta * _scalViewDef().days);
   schedCalAnchor = a;
+  _scalSlideDir = delta > 0 ? 1 : -1;
   renderScheduleCalendar();
 }
 

@@ -5120,6 +5120,38 @@
   .scal-head.today .scal-dow, .scal-head.today .scal-dom { color: var(--accent); }
   .scal-head.today { background: var(--accent-dim); }
 
+  /* All-day band — pinned between the day headers and the scrolling hour body,
+     where Outlook and Google put all-day events. Always-running schedules are
+     part of the day's routine, not an exception listed above the calendar, so
+     they live inside the frame. Capped so a dozen pollers cannot eat the grid. */
+  .scal-allday {
+    display: grid; flex-shrink: 0; max-height: 84px; overflow-y: auto;
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+  }
+  .scal-allday-gutter {
+    display: flex; align-items: flex-start; justify-content: flex-end;
+    padding: 4px 6px 0 0; border-right: 1px solid var(--border);
+    font-size: 9px; font-weight: 700; letter-spacing: .04em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .scal-allday-cell {
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    padding: 3px 3px 4px; border-right: 1px solid var(--border);
+  }
+  .scal-allday-cell:last-child { border-right: none; }
+  .scal-allday-chip {
+    font-size: 10px; font-weight: 600; line-height: 1.4;
+    padding: 1px 5px; border-radius: 4px; cursor: pointer;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+    background: hsl(var(--scal-hue) 60% 50% / 0.18);
+    border-left: 3px solid hsl(var(--scal-hue) 60% 50%);
+  }
+  .scal-allday-chip:hover { background: hsl(var(--scal-hue) 60% 50% / 0.3); }
+  .scal-allday-chip.dead {
+    background: var(--surface3); border-left-color: var(--text-faint);
+    color: var(--text-faint); text-decoration: line-through;
+  }
+
   .scal-time-body { flex: 1; min-height: 0; overflow-y: auto; overflow-x: hidden; }
   .scal-time-cols { display: grid; position: relative; }
   .scal-gutter { border-right: 1px solid var(--border); background: var(--surface2); }
@@ -5171,6 +5203,23 @@
   .scal-block.dead .scal-block-title { text-decoration: line-through; color: var(--text-faint); }
 
   /* Detail sheet — the only place the full agent prompt is shown. */
+  /* Navigation slide. One transform+opacity keyframe on a node that was just
+     rebuilt from innerHTML, so there is nothing to reset and no layout cost.
+     Direction follows travel: forward enters from the right. */
+  @keyframes scalSlideNext {
+    from { transform: translateX(5%); opacity: 0; }
+    to   { transform: translateX(0);  opacity: 1; }
+  }
+  @keyframes scalSlidePrev {
+    from { transform: translateX(-5%); opacity: 0; }
+    to   { transform: translateX(0);   opacity: 1; }
+  }
+  .scal-slide-next { animation: scalSlideNext .18s ease-out; }
+  .scal-slide-prev { animation: scalSlidePrev .18s ease-out; }
+  @media (prefers-reduced-motion: reduce) {
+    .scal-slide-next, .scal-slide-prev { animation: none; }
+  }
+
   .scal-detail-back {
     position: absolute; inset: 0; z-index: 20; background: rgba(0,0,0,0.35);
   }
@@ -5267,6 +5316,9 @@
     .scal-detail { width: calc(100% - 20px); }
     .scal-mgrid { grid-auto-rows: minmax(62px, auto); }
     .scal-mchip { font-size: 9px; padding: 1px 3px; }
+    .scal-allday { max-height: 62px; }
+    .scal-allday-chip { font-size: 9px; padding: 1px 3px; }
+    .scal-allday-gutter { font-size: 8px; padding-right: 4px; }
     .scal-mdate { font-size: 10px; }
   }
 
