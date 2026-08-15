@@ -536,6 +536,22 @@ function _repaintAgentOutput(sessionId) {
   el.innerHTML = '';
   delete el.dataset.scrollInitialized;
   for (const line of buf) appendAgentLine(sessionId, line);
+  // An unanswered mc:question form is a DOM element, not a buffered log line, so
+  // the clear above destroys it and the append loop cannot bring it back — the
+  // agent then sits parked with no form on screen until some later event forces a
+  // rebuild. That is the "question card is missing after switching conversations"
+  // report: switchAgentTab renders the card from server truth and then repaints
+  // over it a moment later. Restored HERE rather than at the five call sites, so a
+  // sixth caller can't reintroduce it. Unlike the typing indicator — conditional on
+  // run state, so it stays with each caller — this is unconditional and self-
+  // gating: _rerenderPendingQuestions no-ops unless the session is actually waiting
+  // on a question, and renderAgentQuestion dedupes against the DOM and skips qids
+  // already answered this turn.
+  const qpid = (agentStatusCache[sessionId] || {}).projectId
+    || (agentHistory.find(h => h.sessionId === sessionId) || {}).projectId;
+  if (qpid && window._rerenderPendingQuestions) {
+    try { window._rerenderPendingQuestions(qpid, sessionId); } catch (_) {}
+  }
   return true;
 }
 

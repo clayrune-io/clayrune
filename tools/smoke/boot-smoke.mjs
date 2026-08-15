@@ -939,6 +939,99 @@ async function runScheduleCalendarGuard(browser) {
 }
 
 
+// ── mc:question survives a repaint guard ─────────────────────────────────────
+// _repaintAgentOutput is clear-and-rebuild: it wipes agent-output-<sid> and
+// re-appends from agentOutputBuffers. A question card is a DOM element, not a
+// buffered log line, so the rebuild could not bring it back — the agent sat
+// parked with no form on screen until some later event forced another render.
+// Ron hit it twice in one session by switching conversations, and the same five
+// call sites had ALL remembered to re-derive the typing indicator afterwards,
+// which is what makes this worth pinning: the omission is easy to repeat.
+//
+// Asserted at the seam rather than through a full tab-switch, because the seam
+// is the invariant — a repaint must never destroy an unanswered question. Any
+// caller, present or future, inherits it.
+async function runQuestionRepaintGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.route('**/*', (route) => fulfillStaticOrAbort(route));
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ question-repaint guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(() => {
+    const r = { err: null };
+    const SID = 'sess_q_guard', PID = 'smoke_alpha', QID = 'qid_guard_1';
+    try {
+      // A live panel for a session parked on a question. agentOutputBuffers /
+      // agentStatusCache / agentHistory are top-level `let`s in index.html —
+      // global lexical bindings, reachable bare but NOT as window properties.
+      const host = document.createElement('div');
+      host.id = `agent-output-${SID}`;
+      document.body.appendChild(host);
+      agentOutputBuffers[SID] = ['> do the thing', 'working...'];
+      agentStatusCache[SID] = {
+        status: 'running', task: 'do the thing', projectId: PID,
+        waitingForQuestion: true,
+        pendingQuestions: [{ question_id: QID, questions: [
+          { header: 'Topic', question: 'Which one?', multiSelect: false,
+            options: [{ label: 'A', description: 'first' }, { label: 'B', description: 'second' }] },
+        ] }],
+      };
+      agentHistory.unshift({ sessionId: SID, projectId: PID, projectName: 'Alpha',
+        task: 'do the thing', status: 'running' });
+
+      window.renderAgentQuestion(SID, PID, agentStatusCache[SID].pendingQuestions[0].questions, QID);
+      const sel = `.agent-question[data-qid="${QID}"]`;
+      r.cardBefore = !!host.querySelector(sel);
+
+      window._repaintAgentOutput(SID);
+      r.cardAfter = !!host.querySelector(sel);
+      r.cardCount = host.querySelectorAll(sel).length;   // exactly one — not stacked
+      r.linesAfter = host.innerText.includes('working...');
+
+      // A session NOT waiting on a question must not gain a phantom card.
+      agentStatusCache[SID].waitingForQuestion = false;
+      window._repaintAgentOutput(SID);
+      r.cardWhenNotWaiting = !!host.querySelector(sel);
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push(`threw — ${out.err}`);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push(`uncaught: ${e}`));
+  if (!out.cardBefore) fails.push('question card never rendered — guard tested nothing');
+  if (!out.cardAfter)
+    fails.push('the repaint DESTROYED the unanswered question card (the reported bug is back)');
+  if (out.cardAfter && out.cardCount !== 1)
+    fails.push(`repaint stacked ${out.cardCount} copies of the card instead of 1`);
+  if (!out.linesAfter) fails.push('repaint lost the buffered log lines');
+  if (out.cardWhenNotWaiting)
+    fails.push('repaint resurrected a question for a session no longer waiting on one');
+
+  if (fails.length) {
+    console.error('❌ question-repaint guard:');
+    fails.forEach((f) => console.error(`       • ${f}`));
+    return false;
+  }
+  console.log('✅ mc:question: an unanswered question card survives a repaint, exactly once.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -950,9 +1043,10 @@ try {
   results.push(await runModelPickerGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
   results.push(await runScheduleCalendarGuard(browser));
+  results.push(await runQuestionRepaintGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog & calendar guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, calendar & question-repaint guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);
