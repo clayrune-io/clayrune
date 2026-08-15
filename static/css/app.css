@@ -5044,6 +5044,24 @@
   .scal-nav { display: flex; gap: 4px; flex-shrink: 0; align-items: center; }
   .scal-nav .btn-header-action { padding: 3px 10px; font-size: 12px; }
 
+  /* Day / 3 Days / Week / Month — a segmented control, same set every phone
+     calendar offers. Seven narrow columns on a phone is a legitimate CHOICE
+     (it is what people already read in Google Calendar); this bar is what makes
+     it a choice rather than the only option. */
+  .scal-viewbar {
+    display: inline-flex; margin-bottom: 8px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 999px;
+    overflow: hidden; background: var(--surface2);
+  }
+  .scal-view-btn {
+    padding: 4px 14px; border: none; background: transparent; cursor: pointer;
+    font-family: inherit; font-size: 11px; font-weight: 600; color: var(--text-dim);
+    border-right: 1px solid var(--border); transition: background .15s, color .15s;
+  }
+  .scal-view-btn:last-child { border-right: none; }
+  .scal-view-btn:hover { color: var(--text); }
+  .scal-view-btn.on { background: var(--accent); color: #fff; }
+
   /* One compact pause notice. The Scheduled Tasks modal has its own full-width
      pause bar; when the calendar lived inside it the two stacked and said the
      same thing twice on a phone screen. */
@@ -5085,6 +5103,8 @@
     padding: 6px 4px; border-right: 1px solid var(--border); min-width: 0;
   }
   .scal-head:last-child { border-right: none; }
+  .scal-head { cursor: pointer; }
+  .scal-head:hover { background: var(--surface3); }
   .scal-dow { font-size: 10px; font-weight: 700; letter-spacing: .05em;
               text-transform: uppercase; color: var(--text-faint); }
   .scal-dom { font-size: 13px; font-weight: 700; color: var(--text); }
@@ -5181,14 +5201,64 @@
   .scal-detail-toggle { display: flex; align-items: center; gap: 7px;
                         font-size: 12px; color: var(--text-dim); margin-right: auto; }
 
+  /* ── Month view ───────────────────────────────────────────────────────────
+     Deliberately NOT the time grid at 1/30th scale. A month answers "which days
+     have anything, and roughly what" — so a day is a cell with up to three title
+     chips and a "+N more" that drills into that day. Repeats collapse to one
+     chip per schedule per cell, or a daily job would fill every square alone. */
+  .scal-month { display: flex; flex-direction: column; min-height: 0; flex: 1;
+                border: 1px solid var(--border); border-radius: 10px;
+                overflow: hidden; background: var(--surface); }
+  .scal-mhead-row {
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); flex-shrink: 0;
+    border-bottom: 1px solid var(--border); background: var(--surface2);
+  }
+  .scal-mhead {
+    padding: 5px 2px; text-align: center; font-size: 10px; font-weight: 700;
+    letter-spacing: .05em; text-transform: uppercase; color: var(--text-faint);
+  }
+  .scal-mgrid {
+    flex: 1; min-height: 0; overflow-y: auto;
+    display: grid; grid-template-columns: repeat(7, minmax(0, 1fr));
+    grid-auto-rows: minmax(84px, auto);
+  }
+  .scal-mcell {
+    display: flex; flex-direction: column; gap: 2px; min-width: 0;
+    padding: 3px 4px 5px; cursor: pointer;
+    border-right: 1px solid var(--border); border-bottom: 1px solid var(--border);
+  }
+  .scal-mcell:nth-child(7n) { border-right: none; }
+  .scal-mcell:hover { background: var(--surface2); }
+  .scal-mcell.outside { background: var(--bg); }
+  .scal-mcell.outside .scal-mdate { color: var(--text-faint); opacity: .6; }
+  .scal-mcell.today { background: var(--accent-dim); }
+  .scal-mdate { font-size: 11px; font-weight: 700; color: var(--text); margin-bottom: 1px; }
+  .scal-mcell.today .scal-mdate { color: var(--accent); }
+  .scal-mchip {
+    font-size: 10px; line-height: 1.35; padding: 1px 5px; border-radius: 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
+    background: hsl(var(--scal-hue) 60% 50% / 0.18);
+    border-left: 2px solid hsl(var(--scal-hue) 60% 50%);
+  }
+  .scal-mchip.dead { background: var(--surface2); border-left-color: var(--text-faint);
+                     color: var(--text-faint); text-decoration: line-through; }
+  .scal-mmore { font-size: 10px; color: var(--text-faint); padding-left: 4px; }
+
   /* Phones get ONE day column — seven would be ~45px each, illegible. The JS
      swaps the header/nav to match (scalShiftDay). */
+  /* Phones keep all four views — a squeezed 7-column week is what people
+     already read elsewhere, so it stays available rather than being forced to
+     one day. Only the chrome shrinks. */
   @media (max-width: 960px) {
-    .scal-surface { padding: 10px 12px 12px; }
+    .scal-surface { padding: 10px 10px 12px; }
     .scal-range { font-size: 12px; }
-    .scal-nav .btn-header-action { padding: 4px 10px; }
-    .scal-block-title { font-size: 12px; }
+    .scal-nav .btn-header-action { padding: 4px 9px; }
+    .scal-viewbar { width: 100%; }
+    .scal-view-btn { flex: 1; padding: 6px 4px; font-size: 11px; }
     .scal-detail { width: calc(100% - 20px); }
+    .scal-mgrid { grid-auto-rows: minmax(62px, auto); }
+    .scal-mchip { font-size: 9px; padding: 1px 3px; }
+    .scal-mdate { font-size: 10px; }
   }
 
   /* ── STEWARD BADGES ─────────────────────────────────────────── */

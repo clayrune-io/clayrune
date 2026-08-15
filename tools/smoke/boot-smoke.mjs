@@ -732,6 +732,34 @@ async function runScheduleCalendarGuard(browser) {
       await settle(200);
       r.detailClosed = document.querySelectorAll('.scal-detail').length === 0;
 
+      // Four ranges, like every phone calendar. Each must actually change the
+      // number of day columns / cells — a switcher that renders the same grid
+      // four times looks like it works.
+      r.views = {};
+      for (const v of ['day', '3day', 'week']) {
+        scalSetView(v);
+        await settle(300);
+        r.views[v] = document.querySelectorAll('#schedule-calendar .scal-col').length;
+      }
+      scalSetView('month');
+      await settle(400);
+      r.monthCells = document.querySelectorAll('#schedule-calendar .scal-mcell').length;
+      r.monthHasTimeGrid = !!document.querySelector('#schedule-calendar .scal-time-cols');
+      // A daily job must appear ONCE per month cell, not once per occurrence.
+      const firstCell = document.querySelector('#schedule-calendar .scal-mcell');
+      r.monthChipsInCell = firstCell ? firstCell.querySelectorAll('.scal-mchip').length : -1;
+      r.monthDupInCell = firstCell
+        ? (() => {
+            const t = Array.from(firstCell.querySelectorAll('.scal-mchip')).map(e => e.textContent);
+            return t.length !== new Set(t).size;
+          })() : false;
+      // Drilling into a day from the month grid.
+      document.querySelector('#schedule-calendar .scal-mcell').click();
+      await settle(400);
+      r.afterCellClick = document.querySelectorAll('#schedule-calendar .scal-col').length;
+
+      scalSetView('week');
+      await settle(400);
       r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-block:not(.dead)').length;
       await scalToggle('sch_everyday', false);
       await settle(600);
@@ -783,6 +811,15 @@ async function runScheduleCalendarGuard(browser) {
   if (!out.detailOpened) fails.push('clicking a block did not open the detail sheet');
   if (!out.detailShowsPrompt) fails.push('the detail sheet does not show the full prompt');
   if (!out.detailClosed) fails.push('the detail sheet did not close');
+  if (out.views.day !== 1) fails.push('Day view rendered ' + out.views.day + ' columns');
+  if (out.views['3day'] !== 3) fails.push('3-Day view rendered ' + out.views['3day'] + ' columns');
+  if (out.views.week !== 7) fails.push('Week view rendered ' + out.views.week + ' columns');
+  if (out.monthHasTimeGrid) fails.push('Month view drew the time grid instead of day cells');
+  // Whole weeks: a month always spans a multiple of 7 cells, 28..42.
+  if (!(out.monthCells >= 28 && out.monthCells <= 42 && out.monthCells % 7 === 0))
+    fails.push('Month grid is not whole weeks (' + out.monthCells + ' cells)');
+  if (out.monthDupInCell) fails.push('a schedule appears more than once in one month cell');
+  if (out.afterCellClick !== 1) fails.push('clicking a month cell did not drill into that day');
   if (!(out.liveAfter < out.liveBefore))
     fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
 

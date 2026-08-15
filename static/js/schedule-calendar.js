@@ -20,9 +20,33 @@
 //      that shows the server's own `next_run` instead. Being visibly incomplete
 //      beats being confidently wrong.
 
-let schedCalWeekOffset = 0;    // 0 = this week, -1 = last, +1 = next
+// View state is (anchor date, view) rather than a week offset plus a day index.
+// With four ranges to support — day / 3 days / week / month — two coupled
+// counters could not express "the 3 days starting Thursday" without special
+// cases at every week boundary. One anchor + a length handles all four.
+const SCAL_VIEWS = [
+  { id: 'day', label: 'Day', days: 1 },
+  { id: '3day', label: '3 Days', days: 3 },
+  { id: 'week', label: 'Week', days: 7 },
+  { id: 'month', label: 'Month', days: 0 },   // 0 = derived from the month
+];
+let schedCalView = 'week';
+let schedCalAnchor = _scalToday();
 let _schedCalCache = [];       // last /api/schedules payload (for toggles + re-render)
-let schedCalDayIndex = new Date().getDay();  // narrow screens show ONE day (0=Sun)
+
+function _scalToday() { const d = new Date(); d.setHours(0, 0, 0, 0); return d; }
+
+// The chosen view outlives the modal — reopening the Calendar should land where
+// you left it, the way every calendar app behaves.
+function _scalLoadView() {
+  try {
+    const v = localStorage.getItem('mc_cal_view');
+    if (v && SCAL_VIEWS.some(x => x.id === v)) schedCalView = v;
+  } catch (e) {}
+}
+function _scalSaveView() {
+  try { localStorage.setItem('mc_cal_view', schedCalView); } catch (e) {}
+}
 
 const _SCAL_DAY_NAMES = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 
@@ -117,15 +141,15 @@ function _scalCronHitsDay(c, day) {
 // `interval` schedules are NOT expanded into the grid: "every 5 minutes" is 288
 // chips a day and would bury everything else. They get an always-running strip,
 // same shape as the reference design.
-function scalBuildWeek(schedules, weekStart) {
+//
+// `count` days from `start` — 1, 3, 7 or a whole month's worth of weeks.
+function scalBuildRange(schedules, start, count) {
   const days = [];
-  for (let i = 0; i < 7; i++) {
-    const d = new Date(weekStart);
+  for (let i = 0; i < count; i++) {
+    const d = new Date(start);
     d.setDate(d.getDate() + i);
     days.push({ date: d, items: [] });
   }
-  const weekEnd = new Date(weekStart);
-  weekEnd.setDate(weekEnd.getDate() + 7);
   const always = [], unparsed = [];
 
   for (const s of schedules) {
@@ -181,18 +205,29 @@ function scalBuildWeek(schedules, weekStart) {
   return { days, always, unparsed };
 }
 
+// Kept as the 7-day case so existing callers (and the smoke guard) are unchanged.
+function scalBuildWeek(schedules, weekStart) {
+  return scalBuildRange(schedules, weekStart, 7);
+}
+
 // ── Render ──────────────────────────────────────────────────────────────────
 //
-// A real time grid: hours down the left, days across the top, each run placed at
-// its own time. The first cut stacked runs into day buckets, which answered
-// "what day" but not "when" — and "when" is the whole reason to draw a calendar
-// instead of reading the card list.
+// Four ranges, the same as every phone calendar: Day / 3 Days / Week / Month.
+// Day, 3-day and week share the time grid (hours down the left, each run placed
+// at its own time). Month is a different question — "which days have anything"
+// rather than "when exactly" — so it gets a day-cell grid instead of 720 rows of
+// mostly-empty clock.
+//
+// Seven columns on a phone are narrow, and that is fine: it is what Google
+// Calendar does and what people already read. The switcher exists so a squeezed
+// week is a choice rather than the only option.
 
 const SCAL_ROW_H = 46;        // px per hour
 const SCAL_EVENT_MIN_H = 26;  // a dispatch has no duration; this is a legible block
 const SCAL_GUTTER = 54;       // hour-label column
+const SCAL_MONTH_MAX = 3;     // chips per month cell before "+N more"
 
-// Stable per-project accent so a project keeps its colour across weeks.
+// Stable per-project accent so a project keeps its colour across views.
 function _scalProjectHue(projectId) {
   let h = 0;
   const str = String(projectId || '');
@@ -210,7 +245,7 @@ function _scalPaused() {
 function _scalWillRun(s) { return !!s.enabled && !_scalPaused(); }
 
 // The block label is a TITLE, not the prompt. `description` is the human name
-// when set; otherwise the task's first line, trimmed. The full prompt belongs in
+// when set; otherwise the task's first line, trimmed. The full prompt lives in
 // the detail sheet — a 90px block cannot hold a 400-word agent brief, and trying
 // made every block look identical.
 function _scalTitle(s) {
@@ -221,8 +256,36 @@ function _scalTitle(s) {
   return first.length > 60 ? first.slice(0, 57) + '…' : first;
 }
 
+function _scalViewDef() {
+  return SCAL_VIEWS.find(v => v.id === schedCalView) || SCAL_VIEWS[2];
+}
+
+// The days the current view covers. Week snaps to Sunday and month snaps to the
+// Sunday on/before the 1st through the Saturday on/after the last — so the month
+// grid is always whole weeks, like every calendar.
+function _scalRangeStart() {
+  const a = new Date(schedCalAnchor);
+  if (schedCalView === 'week') { a.setDate(a.getDate() - a.getDay()); return a; }
+  if (schedCalView === 'month') {
+    const first = new Date(a.getFullYear(), a.getMonth(), 1);
+    first.setDate(first.getDate() - first.getDay());
+    return first;
+  }
+  return a;
+}
+
+function _scalRangeCount() {
+  if (schedCalView !== 'month') return _scalViewDef().days;
+  const a = schedCalAnchor;
+  const first = new Date(a.getFullYear(), a.getMonth(), 1);
+  const last = new Date(a.getFullYear(), a.getMonth() + 1, 0);
+  const lead = first.getDay();
+  const trail = 6 - last.getDay();
+  return lead + last.getDate() + trail;
+}
+
 // Which hours to draw. Full 24h is mostly empty whitespace — clamp to the band
-// the week actually uses, padded an hour either side, with an 8h floor so a
+// the range actually uses, padded an hour either side, with an 8h floor so a
 // single 03:00 job doesn't produce a two-row grid.
 function _scalHourRange(days) {
   let lo = 24, hi = 0, seen = false;
@@ -245,7 +308,7 @@ function _scalHourRange(days) {
 // Greedy column packing so two runs at the same time sit side by side instead of
 // on top of each other. Nominal 30-minute footprint purely for the layout.
 function _scalLayoutDay(items) {
-  const cols = [];              // cols[i] = end-minute of the last event placed
+  const cols = [];
   const placed = items.map((it) => {
     const mins = it.when.getHours() * 60 + it.when.getMinutes();
     let c = cols.findIndex((endMin) => endMin <= mins);
@@ -290,36 +353,52 @@ function _scalStripHTML(cls, title, hint, schedules) {
   </div>`;
 }
 
-// Phones cannot show seven time columns legibly (≈45px each), so they get ONE
-// day with its own nav. Same grid, same blocks — a narrower window onto it.
-function _scalIsNarrow() { return window.innerWidth <= 960; }
+// ── Toolbar ─────────────────────────────────────────────────────────────────
 
-function renderScheduleCalendar() {
-  const host = document.getElementById('schedule-calendar');
-  if (!host) return;
-  const weekStart = _scalStartOfWeek(schedCalWeekOffset);
-  const { days, always, unparsed } = scalBuildWeek(_schedCalCache, weekStart);
-  const today = new Date();
-  const narrow = _scalIsNarrow();
-  const shown = narrow ? [days[Math.min(6, Math.max(0, schedCalDayIndex))]] : days;
-  const range = _scalHourRange(shown);
-  const gridH = (range.end - range.start) * SCAL_ROW_H;
+function _scalRangeLabel(days) {
+  const first = days[0].date, last = days[days.length - 1].date;
+  const optMD = { month: 'short', day: 'numeric' };
+  if (schedCalView === 'month') {
+    return schedCalAnchor.toLocaleDateString(undefined, { month: 'long', year: 'numeric' });
+  }
+  if (schedCalView === 'day') {
+    return first.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' });
+  }
+  const sameMonth = first.getMonth() === last.getMonth();
+  const a = first.toLocaleDateString(undefined, optMD);
+  const b = last.toLocaleDateString(undefined, sameMonth ? { day: 'numeric' } : optMD);
+  return `${a} – ${b}`;
+}
 
-  const fmt = (d) => d.toLocaleDateString(undefined, { month: 'short', day: 'numeric' });
-  const rangeLabel = narrow
-    ? shown[0].date.toLocaleDateString(undefined, { weekday: 'long', month: 'short', day: 'numeric' })
-    : (schedCalWeekOffset === 0
-        ? 'This week · ' + fmt(days[0].date) + ' – ' + fmt(days[6].date)
-        : fmt(days[0].date) + ' – ' + fmt(days[6].date));
-
+function _scalToolbarHTML(days) {
   // ONE pause notice, and only here. The Scheduled-Tasks modal has its own
   // full-size pause bar; when the calendar lived inside that modal the two
-  // stacked and said the same thing twice. This surface is standalone, so it
-  // carries a single compact pill in the toolbar instead of a second banner.
+  // stacked and said the same thing twice.
   const pausedPill = _scalPaused()
     ? `<button class="scal-paused-pill" onclick="toggleSchedulerPause()"
          title="Nothing below will fire. Click to resume scheduled runs.">Paused · Resume</button>`
     : '';
+  const views = SCAL_VIEWS.map(v =>
+    `<button class="scal-view-btn${schedCalView === v.id ? ' on' : ''}"
+       onclick="scalSetView('${v.id}')">${esc(v.label)}</button>`).join('');
+  return `<div class="scal-toolbar">
+      <span class="scal-range">${esc(_scalRangeLabel(days))}</span>
+      <span class="scal-nav">
+        ${pausedPill}
+        <button class="btn-header-action" onclick="scalShift(-1)" title="Previous">&#8249;</button>
+        <button class="btn-header-action" onclick="scalShift(0)">Today</button>
+        <button class="btn-header-action" onclick="scalShift(1)" title="Next">&#8250;</button>
+      </span>
+    </div>
+    <div class="scal-viewbar">${views}</div>`;
+}
+
+// ── Time grid (day / 3 days / week) ─────────────────────────────────────────
+
+function _scalRenderTimeGrid(host, days, always, unparsed) {
+  const today = new Date();
+  const range = _scalHourRange(days);
+  const gridH = (range.end - range.start) * SCAL_ROW_H;
 
   const hourLabels = [];
   for (let h = range.start; h < range.end; h++) {
@@ -327,14 +406,13 @@ function renderScheduleCalendar() {
       <span>${String(h).padStart(2, '0')}:00</span></div>`);
   }
 
-  const cols = shown.map((d) => {
+  const cols = days.map((d) => {
     const isToday = _scalIsSameDay(d.date, today);
     const blocks = _scalLayoutDay(d.items).map((p) => _scalBlockHTML(p, range)).join('');
     const lines = [];
     for (let h = range.start; h < range.end; h++) {
       lines.push(`<div class="scal-slot" style="height:${SCAL_ROW_H}px"></div>`);
     }
-    // "Now" marker, only on the real today and only inside the drawn band.
     let nowLine = '';
     if (isToday) {
       const nowMin = today.getHours() * 60 + today.getMinutes();
@@ -346,28 +424,18 @@ function renderScheduleCalendar() {
     return `<div class="scal-col${isToday ? ' today' : ''}">${lines.join('')}${nowLine}${blocks}</div>`;
   }).join('');
 
-  const heads = shown.map((d) => {
+  const heads = days.map((d) => {
     const isToday = _scalIsSameDay(d.date, today);
-    return `<div class="scal-head${isToday ? ' today' : ''}">
+    return `<div class="scal-head${isToday ? ' today' : ''}"
+        onclick="scalGotoDay('${d.date.toISOString()}')" title="Jump to this day">
       <span class="scal-dow">${_SCAL_DAY_NAMES[d.date.getDay()]}</span>
       <span class="scal-dom">${d.date.getDate()}</span>
     </div>`;
   }).join('');
 
-  const cssCols = `${SCAL_GUTTER}px repeat(${shown.length}, minmax(0, 1fr))`;
-  const navFns = narrow ? ['scalShiftDay(-1)', 'scalShiftDay(0)', 'scalShiftDay(1)']
-                        : ['scalShiftWeek(-1)', 'scalShiftWeek(0)', 'scalShiftWeek(1)'];
-
+  const cssCols = `${SCAL_GUTTER}px repeat(${days.length}, minmax(0, 1fr))`;
   host.innerHTML = `
-    <div class="scal-toolbar">
-      <span class="scal-range">${esc(rangeLabel)}</span>
-      <span class="scal-nav">
-        ${pausedPill}
-        <button class="btn-header-action" onclick="${navFns[0]}" title="Previous">&#8249;</button>
-        <button class="btn-header-action" onclick="${navFns[1]}">Today</button>
-        <button class="btn-header-action" onclick="${navFns[2]}" title="Next">&#8250;</button>
-      </span>
-    </div>
+    ${_scalToolbarHTML(days)}
     ${_scalStripHTML('always', 'Always running', 'repeat too often to place on a clock', always)}
     ${_scalStripHTML('unparsed', 'Not placed', 'times could not be derived here — they still run', unparsed)}
     <div class="scal-time">
@@ -383,11 +451,10 @@ function renderScheduleCalendar() {
     </div>
     <div id="scal-detail-host"></div>`;
 
-  // Open on the first run of the day rather than at the top of the band — the
-  // interesting rows are usually the early ones, but not always hour zero.
+  // Open on the first run rather than the top of the band.
   const scroller = document.getElementById('scal-scroll');
   if (scroller) {
-    const firstMin = shown.reduce((acc, d) => {
+    const firstMin = days.reduce((acc, d) => {
       const it = d.items[0];
       if (!it) return acc;
       const m = it.when.getHours() * 60 + it.when.getMinutes();
@@ -397,6 +464,64 @@ function renderScheduleCalendar() {
       scroller.scrollTop = Math.max(0, ((firstMin - range.start * 60) / 60) * SCAL_ROW_H - SCAL_ROW_H);
     }
   }
+}
+
+// ── Month grid ──────────────────────────────────────────────────────────────
+// Deliberately NOT the time grid at 1/30th scale. A month answers "which days
+// have anything and roughly what" — so each day is a cell with up to three
+// title chips and a "+N more" that drills into that day.
+
+function _scalRenderMonth(host, days, always, unparsed) {
+  const today = new Date();
+  const month = schedCalAnchor.getMonth();
+
+  const dowHeads = _SCAL_DAY_NAMES.map(n => `<div class="scal-mhead">${n}</div>`).join('');
+  const cells = days.map((d) => {
+    const isToday = _scalIsSameDay(d.date, today);
+    const outside = d.date.getMonth() !== month;
+    // Collapse repeats: a daily job appears once per cell, not once per run.
+    const seen = new Set();
+    const uniq = [];
+    for (const it of d.items) {
+      if (seen.has(it.s.id)) continue;
+      seen.add(it.s.id);
+      uniq.push(it);
+    }
+    const shown = uniq.slice(0, SCAL_MONTH_MAX);
+    const chips = shown.map((it) => {
+      const live = _scalWillRun(it.s);
+      return `<div class="scal-mchip${live ? '' : ' dead'}"
+          style="--scal-hue:${_scalProjectHue(it.s.project_id)}"
+          onclick="event.stopPropagation();scalOpenDetail('${esc(it.s.id)}')"
+          title="${esc(_scalHhmm(it.when))} · ${esc(_scalTitle(it.s))}">${esc(_scalTitle(it.s))}</div>`;
+    }).join('');
+    const more = uniq.length > shown.length
+      ? `<div class="scal-mmore">+${uniq.length - shown.length} more</div>` : '';
+    return `<div class="scal-mcell${isToday ? ' today' : ''}${outside ? ' outside' : ''}"
+        onclick="scalGotoDay('${d.date.toISOString()}')" title="Open this day">
+      <div class="scal-mdate">${d.date.getDate()}</div>
+      ${chips}${more}
+    </div>`;
+  }).join('');
+
+  host.innerHTML = `
+    ${_scalToolbarHTML(days)}
+    ${_scalStripHTML('always', 'Always running', 'repeat too often to place on a day', always)}
+    ${_scalStripHTML('unparsed', 'Not placed', 'times could not be derived here — they still run', unparsed)}
+    <div class="scal-month">
+      <div class="scal-mhead-row">${dowHeads}</div>
+      <div class="scal-mgrid">${cells}</div>
+    </div>
+    <div id="scal-detail-host"></div>`;
+}
+
+function renderScheduleCalendar() {
+  const host = document.getElementById('schedule-calendar');
+  if (!host) return;
+  const start = _scalRangeStart();
+  const { days, always, unparsed } = scalBuildRange(_schedCalCache, start, _scalRangeCount());
+  if (schedCalView === 'month') _scalRenderMonth(host, days, always, unparsed);
+  else _scalRenderTimeGrid(host, days, always, unparsed);
 }
 
 // ── Detail sheet ────────────────────────────────────────────────────────────
@@ -473,27 +598,42 @@ function scalEdit(id) {
   setTimeout(() => { if (typeof editSchedule === 'function') editSchedule(id); }, 250);
 }
 
+// ── Navigation ──────────────────────────────────────────────────────────────
+
+// One step = one view's worth: a day, three days, a week, a month. delta 0 =
+// back to today, which is what every "Today" button means.
+function scalShift(delta) {
+  if (delta === 0) { schedCalAnchor = _scalToday(); renderScheduleCalendar(); return; }
+  const a = new Date(schedCalAnchor);
+  if (schedCalView === 'month') a.setMonth(a.getMonth() + delta);
+  else a.setDate(a.getDate() + delta * _scalViewDef().days);
+  schedCalAnchor = a;
+  renderScheduleCalendar();
+}
+
+// Switching view keeps the anchor, so Week → Day lands on the day you were
+// looking at rather than snapping back to today.
+function scalSetView(view) {
+  if (!SCAL_VIEWS.some(v => v.id === view)) return;
+  schedCalView = view;
+  _scalSaveView();
+  scalCloseDetail();
+  renderScheduleCalendar();
+}
+
+// Tapping a day header (or a month cell) drills into that day — the standard
+// calendar gesture, and the only way "+N more" can mean anything.
+function scalGotoDay(iso) {
+  const d = new Date(iso);
+  if (isNaN(d)) return;
+  d.setHours(0, 0, 0, 0);
+  schedCalAnchor = d;
+  schedCalView = 'day';
+  _scalSaveView();
+  renderScheduleCalendar();
+}
+
 // ── Actions ─────────────────────────────────────────────────────────────────
-
-function scalShiftWeek(delta) {
-  schedCalWeekOffset = (delta === 0) ? 0 : schedCalWeekOffset + delta;
-  renderScheduleCalendar();
-}
-
-// Day nav on narrow screens rolls over into the neighbouring week rather than
-// stopping dead at Sunday/Saturday.
-function scalShiftDay(delta) {
-  if (delta === 0) {
-    schedCalWeekOffset = 0;
-    schedCalDayIndex = new Date().getDay();
-  } else {
-    let i = schedCalDayIndex + delta;
-    if (i < 0) { i = 6; schedCalWeekOffset -= 1; }
-    else if (i > 6) { i = 0; schedCalWeekOffset += 1; }
-    schedCalDayIndex = i;
-  }
-  renderScheduleCalendar();
-}
 
 // Toggling changes the SCHEDULE, not one occurrence — so every block for it must
 // restyle at once. Optimistic, then reconciled: a failed PUT rolls back rather
@@ -524,7 +664,7 @@ async function scalToggle(id, enabled) {
 // Its own modal, not a mode of the Scheduled Tasks modal. In there the grid sat
 // below a full-width pause bar AND the whole Autonomous Stewards section, so on
 // a phone the calendar got the last ~15% of the screen and the pause message
-// appeared twice. Standalone, the grid gets the window.
+// appeared twice.
 
 async function openSchedulerCalendar() {
   const modalId = '__calendar';
@@ -532,7 +672,7 @@ async function openSchedulerCalendar() {
     const entry = openModals.get(modalId);
     if (entry.minimized) restoreModal(modalId);
     focusModal(modalId);
-    await refreshScheduleCalendar({ keepWeek: true });
+    await refreshScheduleCalendar({ keepRange: true });
     return;
   }
   const win = document.createElement('div');
@@ -566,7 +706,8 @@ async function openSchedulerCalendar() {
   if (typeof window.refreshSchedulerPause === 'function') {
     try { await window.refreshSchedulerPause(); } catch (e) {}
   }
-  schedCalDayIndex = new Date().getDay();
+  _scalLoadView();
+  schedCalAnchor = _scalToday();
   await refreshScheduleCalendar();
 }
 
@@ -574,7 +715,7 @@ async function openSchedulerCalendar() {
 // run occupies the machine exactly like a schedule does, so hiding them would
 // make the week look emptier than it is.
 async function refreshScheduleCalendar(opts) {
-  if (!(opts && opts.keepWeek)) schedCalWeekOffset = 0;
+  if (!(opts && opts.keepRange)) schedCalAnchor = _scalToday();
   try {
     const res = await fetch(API_BASE + '/api/schedules');
     _schedCalCache = await res.json();
@@ -586,31 +727,21 @@ async function refreshScheduleCalendar(opts) {
   renderScheduleCalendar();
 }
 
-// Re-render on resize so crossing the 960px line swaps week-grid and day-view
-// instead of leaving seven unreadable columns on a rotated phone.
-if (typeof window !== 'undefined' && !window._scalResizeBound) {
-  window._scalResizeBound = true;
-  let t = null;
-  window.addEventListener('resize', () => {
-    if (!document.getElementById('schedule-calendar')) return;
-    clearTimeout(t);
-    t = setTimeout(renderScheduleCalendar, 180);
-  });
-}
-
 // Inline on*= handlers resolve against the global object at click time, and this
 // file is an ES module — every name referenced from generated HTML needs a
 // bridge or it fails silently (see tools/smoke/inline-handler-scope-check.mjs).
 window.openSchedulerCalendar = openSchedulerCalendar;
 window.refreshScheduleCalendar = refreshScheduleCalendar;
 window.renderScheduleCalendar = renderScheduleCalendar;
-window.scalShiftWeek = scalShiftWeek;
-window.scalShiftDay = scalShiftDay;
+window.scalShift = scalShift;
+window.scalSetView = scalSetView;
+window.scalGotoDay = scalGotoDay;
 window.scalToggle = scalToggle;
 window.scalOpenDetail = scalOpenDetail;
 window.scalCloseDetail = scalCloseDetail;
 window.scalRunNow = scalRunNow;
 window.scalEdit = scalEdit;
 window.scalBuildWeek = scalBuildWeek;          // exercised directly by the smoke test
+window.scalBuildRange = scalBuildRange;
 window._scalParseCron = _scalParseCron;
 window._scalTitle = _scalTitle;
