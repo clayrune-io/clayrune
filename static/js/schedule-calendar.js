@@ -284,25 +284,20 @@ function _scalRangeCount() {
   return lead + last.getDate() + trail;
 }
 
-// Which hours to draw. Full 24h is mostly empty whitespace — clamp to the band
-// the range actually uses, padded an hour either side, with an 8h floor so a
-// single 03:00 job doesn't produce a two-row grid.
-function _scalHourRange(days) {
-  let lo = 24, hi = 0, seen = false;
-  for (const d of days) for (const it of d.items) {
-    seen = true;
-    lo = Math.min(lo, it.when.getHours());
-    hi = Math.max(hi, it.when.getHours());
-  }
-  if (!seen) return { start: 6, end: 20 };
-  let start = Math.max(0, lo - 1);
-  let end = Math.min(24, hi + 2);
-  while (end - start < 8) {
-    if (end < 24) end++;
-    else if (start > 0) start--;
-    else break;
-  }
-  return { start, end };
+// The full day, always: 00:00 through 24:00.
+//
+// This used to clamp to the band the range actually used (first run − 1h to last
+// run + 2h). That kept the grid dense, but it also meant the calendar quietly
+// decided which hours existed — a week whose runs happen to sit between 03:00
+// and 12:00 rendered a calendar that simply had no evening, and no scrolling
+// could reveal one. A calendar is a picture of the whole day; the empty hours
+// are information too ("nothing runs after 14:00" is a thing worth seeing).
+//
+// Density is preserved instead by opening scrolled to the first run of the range
+// (see the scroll handling in _scalRenderTimeGrid), so you still land on the
+// busy part without losing the rest.
+function _scalHourRange() {
+  return { start: 0, end: 24 };
 }
 
 // Greedy column packing so two runs at the same time sit side by side instead of
@@ -397,7 +392,7 @@ function _scalToolbarHTML(days) {
 
 function _scalRenderTimeGrid(host, days, always, unparsed) {
   const today = new Date();
-  const range = _scalHourRange(days);
+  const range = _scalHourRange();
   const gridH = (range.end - range.start) * SCAL_ROW_H;
 
   const hourLabels = [];

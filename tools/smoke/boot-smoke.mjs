@@ -772,6 +772,16 @@ async function runScheduleCalendarGuard(browser) {
         Math.round(timeEl.getBoundingClientRect().bottom)
           <= Math.round(surface.getBoundingClientRect().bottom) + 2);
       if (body) { body.scrollTop = 99999; r.scrolledTo = body.scrollTop; }
+      // The grid must cover the WHOLE day. Clamping to the used band meant a
+      // week of morning jobs rendered a calendar with no evening at all, and no
+      // amount of scrolling could reveal one.
+      r.hours = Array.from(document.querySelectorAll('#schedule-calendar .scal-hour span'))
+        .map((e) => e.textContent.trim());
+      // …and it should still OPEN on the first run rather than at midnight.
+      scalSetView('week');
+      await settle(500);
+      const b2 = document.querySelector('#schedule-calendar .scal-time-body');
+      r.openScrollTop = b2 ? Math.round(b2.scrollTop) : -1;
 
       r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-block:not(.dead)').length;
       await scalToggle('sch_everyday', false);
@@ -812,6 +822,12 @@ async function runScheduleCalendarGuard(browser) {
   if (!out.hasTimeGrid) fails.push('no time grid rendered - it is a day-bucket list again');
   if (!(out.hourLabels || []).length) fails.push('no hour gutter labels');
   else if (!/^\d\d:00$/.test(out.hourLabels[0])) fails.push('hour labels malformed: ' + out.hourLabels[0]);
+  if ((out.hours || []).length !== 24)
+    fails.push('grid does not cover the full day (' + (out.hours || []).length + ' hour rows)');
+  else if (out.hours[0] !== '00:00' || out.hours[23] !== '23:00')
+    fails.push('day does not run 00:00-23:00 (' + out.hours[0] + ' .. ' + out.hours[23] + ')');
+  if (!(out.openScrollTop > 0))
+    fails.push('calendar opened at midnight instead of scrolling to the first run');
   // Scheduler is live in this fixture, so there must be NO pause pill at all —
   // and never more than one when paused (the duplicate-banner regression).
   if (out.pausePills !== 0) fails.push('pause notice shown while the scheduler is live (' + out.pausePills + ')');
