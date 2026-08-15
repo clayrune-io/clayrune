@@ -760,6 +760,19 @@ async function runScheduleCalendarGuard(browser) {
 
       scalSetView('week');
       await settle(400);
+      // The hour band must SCROLL, and must not spill past the modal. The render
+      // target sits between the flex container and the grid, so a missing flex
+      // rule on it silently turns the scroller into a full-height block: the day
+      // then just stops at whatever fit on screen with no way to reach the rest.
+      const body = document.querySelector('#schedule-calendar .scal-time-body');
+      const timeEl = document.querySelector('#schedule-calendar .scal-time');
+      const surface = document.querySelector('.scal-surface');
+      r.bodyScrolls = !!(body && body.scrollHeight > body.clientHeight);
+      r.gridWithinSurface = !!(timeEl && surface &&
+        Math.round(timeEl.getBoundingClientRect().bottom)
+          <= Math.round(surface.getBoundingClientRect().bottom) + 2);
+      if (body) { body.scrollTop = 99999; r.scrolledTo = body.scrollTop; }
+
       r.liveBefore = document.querySelectorAll('#schedule-calendar .scal-block:not(.dead)').length;
       await scalToggle('sch_everyday', false);
       await settle(600);
@@ -820,6 +833,9 @@ async function runScheduleCalendarGuard(browser) {
     fails.push('Month grid is not whole weeks (' + out.monthCells + ' cells)');
   if (out.monthDupInCell) fails.push('a schedule appears more than once in one month cell');
   if (out.afterCellClick !== 1) fails.push('clicking a month cell did not drill into that day');
+  if (!out.bodyScrolls) fails.push('the hour band does not scroll - later hours are unreachable');
+  if (!out.scrolledTo) fails.push('scrolling the hour band had no effect');
+  if (!out.gridWithinSurface) fails.push('the grid overflows its surface (bottom is clipped by the modal)');
   if (!(out.liveAfter < out.liveBefore))
     fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
 

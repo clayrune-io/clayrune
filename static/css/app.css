@@ -5035,6 +5035,14 @@
     display: flex; flex-direction: column; min-height: 0;
     height: calc(100% - 56px); padding: 14px 20px 16px;
   }
+  /* The render target sits BETWEEN the flex container and the grid, so it has
+     to be a flex column too — otherwise `flex: 1` on .scal-time / .scal-month is
+     resolved against a plain block, the grid grows to its full content height,
+     and .scal-time-body never becomes the scroller. Symptom: the day stopped at
+     whatever happened to fit (10:00 on a phone) with nothing scrollable. */
+  .scal-surface > #schedule-calendar {
+    display: flex; flex-direction: column; flex: 1; min-height: 0;
+  }
   .scal-toolbar {
     display: flex; align-items: center; justify-content: space-between;
     gap: 12px; margin-bottom: 10px; flex-shrink: 0;
