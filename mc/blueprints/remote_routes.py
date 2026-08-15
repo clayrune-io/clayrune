@@ -118,6 +118,10 @@ def _provider_status_dict(p):
         'last_seen': s.last_seen,
         'error_code': s.error_code,
         'error_message': s.error_message,
+        # Seconds of continuous downtime (None when up). See ProviderStatus —
+        # last_seen looks healthy while the tunnel is dead, so this is the field
+        # to alert on.
+        'down_seconds': getattr(s, 'down_seconds', None),
         'caps': None if caps is None else {
             'bandwidth_quota_period_bytes': caps.bandwidth_quota_period_bytes,
             'bandwidth_used_period_bytes': caps.bandwidth_used_period_bytes,

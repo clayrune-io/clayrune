@@ -59,6 +59,7 @@ class ClayruneProvider:
         # Merge in supervisor state (online, last attestation result)
         sup_status = tunnel_supervisor.get().status()
         online = bool(sup_status.get("online"))
+        down_seconds = sup_status.get("down_seconds")
         running = bool(sup_status.get("running"))
         error_code = sup_status.get("error_code")
         # "connecting" = supervisor is actively trying to come up (running)
@@ -74,6 +75,7 @@ class ClayruneProvider:
             error_code=error_code,
             error_message=sup_status.get("error_message"),
             connecting=connecting,
+            down_seconds=down_seconds,
         )
 
     def get_caps(self) -> Optional[ProviderCaps]:

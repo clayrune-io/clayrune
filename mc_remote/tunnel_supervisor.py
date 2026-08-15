@@ -27,9 +27,12 @@ from __future__ import annotations
 import datetime as _dt
 import logging
 import os as _os
+import subprocess
+import sys
 import threading
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 import requests
@@ -44,6 +47,17 @@ _WATCHDOG_INTERVAL_S = float(_os.environ.get("MC_REMOTE_WATCHDOG_S", "5"))
 _BACKOFF_MIN_S = 5.0
 _BACKOFF_MAX_S = 60.0
 
+# ── Down alert ───────────────────────────────────────────────────────────────
+# Remote access dying is invisible by design: the phone just stops working, and
+# whoever would notice is usually the person who is away. On 2026-08-14 it was
+# down for an hour and the only reason it got fixed was a second way in.
+#
+# So: after _DOWN_ALERT_AFTER_S of continuous downtime, send one mail. The
+# cooldown is deliberately long — an alert that arrives every ten minutes is one
+# the user learns to swipe away, which is the same failure as no alert at all.
+_DOWN_ALERT_AFTER_S = float(_os.environ.get("MC_REMOTE_DOWN_ALERT_S", "600"))
+_DOWN_ALERT_COOLDOWN_S = float(_os.environ.get("MC_REMOTE_ALERT_COOLDOWN_S", "21600"))
+
 
 @dataclass
 class SupervisorState:
@@ -51,6 +65,15 @@ class SupervisorState:
     last_attestation: Optional[attestation.AttestationResult] = None
     started_at: Optional[_dt.datetime] = None
     stopping: bool = False
+    # Wall-clock (time.time()) of the first watchdog poll that found cloudflared
+    # dead, cleared when it comes back. Drives both the honest `online` in
+    # status() and the "remote access has been down for N minutes" alert — the
+    # attestation timestamp cannot do that job, because a dead tunnel leaves the
+    # LAST GOOD attestation sitting there looking healthy.
+    cloudflared_down_since: Optional[float] = None
+    # Set when the down-alert fires, cleared when the tunnel returns — so one
+    # outage produces one mail no matter how long it lasts.
+    down_alert_sent_at: Optional[float] = None
 
 
 class TunnelSupervisor:
@@ -65,6 +88,9 @@ class TunnelSupervisor:
         self._watchdog_thread: Optional[threading.Thread] = None
         self._session: Optional[requests.Session] = None
         self._cp_base_url: Optional[str] = None
+        # Cooldown clock is per-supervisor, not per-outage: a tunnel flapping
+        # every 11 minutes must not mail on every cycle.
+        self._last_alert_wall: Optional[float] = None
 
     # ─── Lifecycle ────────────────────────────────────────────────────────
 
@@ -134,6 +160,7 @@ class TunnelSupervisor:
             s = self._state
             last = s.last_attestation
             running = s.running
+            down_since = s.cloudflared_down_since
 
         cf = cloudflared.get()
         cf_alive = False
@@ -147,10 +174,18 @@ class TunnelSupervisor:
         # Online iff last attestation OK AND cloudflared currently up
         online = bool(isinstance(last, attestation.AttestationOk) and cf_alive)
 
+        # How long the tunnel has been down, so callers don't have to infer it
+        # from `last_seen` — which is the last GOOD attestation and therefore
+        # keeps looking healthy for as long as the tunnel stays dead.
+        down_seconds = None
+        if not cf_alive and down_since is not None:
+            down_seconds = max(0, int(time.time() - down_since))
+
         out: dict = {
             "running": running,
             "online": online,
             "cloudflared_alive": cf_alive,
+            "down_seconds": down_seconds,
             "last_seen": None,
             "error_code": None,
             "error_message": None,
@@ -227,10 +262,24 @@ class TunnelSupervisor:
     def _watchdog_loop(self) -> None:
         """Poll cloudflared health between attestations.
 
-        If cloudflared crashes, wake the attestation thread for an
-        out-of-band retry (which will re-issue start() on the next OK).
+        Whenever cloudflared is NOT alive, wake the attestation thread for an
+        out-of-band retry (which re-issues start() on the next OK).
+
+        DOWN IS A STATE, NOT AN EDGE. This used to fire only on a True→False
+        transition, starting from `was_alive = None`. So a tunnel that was
+        already dead the first time the watchdog looked recorded "dead" and
+        never fired again — it polled a corpse every 5s, forever, while
+        `status()` reported the stale attestation and the user saw nothing.
+        That is exactly how remote access stayed down for an hour on
+        2026-08-14 with no recovery and no signal; a supervisor restart, or a
+        crash during a re-issue, is enough to land in it.
+
+        Re-arming on a level rather than an edge means the retry keeps being
+        requested until it works. `_wake_attest` only shortcuts a sleep, and
+        the attest loop has its own backoff, so a persistently-dead tunnel
+        costs one attestation per backoff interval, not one per poll.
         """
-        was_alive: Optional[bool] = None
+        down_since: Optional[float] = None
         while not self._cancel.is_set():
             self._cancel.wait(timeout=_WATCHDOG_INTERVAL_S)
             if self._cancel.is_set():
@@ -239,10 +288,88 @@ class TunnelSupervisor:
                 alive = cloudflared.get().is_alive()
             except Exception:
                 alive = False
-            if was_alive is True and alive is False:
-                log.warning("cloudflared crashed; waking attest loop for re-issue")
-                self._wake_attest.set()
-            was_alive = alive
+
+            if alive:
+                if down_since is not None:
+                    log.info("cloudflared is back after %.0fs down", time.time() - down_since)
+                down_since = None
+                with self._lock:
+                    self._state.cloudflared_down_since = None
+                    self._state.down_alert_sent_at = None
+                continue
+
+            now = time.time()
+            if down_since is None:
+                down_since = now
+                log.warning("cloudflared is not alive; asking attest loop to re-issue")
+                with self._lock:
+                    self._state.cloudflared_down_since = now
+            self._wake_attest.set()
+            self._maybe_alert_down(down_since)
+
+    # ─── Down alert ───────────────────────────────────────────────────────
+
+    def _send_down_alert(self, down_seconds: float, hostname: str = "") -> None:
+        """Mail the operator that remote access has been down for a while.
+
+        Shells out to the existing `tools/night-review/send_mail.py` rather
+        than adding a second SMTP path — one mailer, one place credentials are
+        read from (`~/.clayrune/night-mail.json`). Best-effort in every sense:
+        an install with no mail configured just logs and moves on, and the
+        subprocess is bounded so a hung SMTP can never wedge the watchdog.
+        """
+        mins = int(down_seconds // 60)
+        host = hostname or "this machine"
+        subject = f"[Clayrune] Remote access DOWN for {mins} min"
+        body = (
+            f"Clayrune's tunnel to {host} has been down for about {mins} minutes.\n"
+            f"Remote access (phone / browser away from home) is not working.\n\n"
+            f"Clayrune itself is still running and is retrying automatically every\n"
+            f"few seconds — most outages recover without you doing anything.\n\n"
+            f"If it is still down when you read this:\n"
+            f"  1. Open Clayrune on the machine itself.\n"
+            f"  2. Settings -> Remote Access, then Reconnect.\n"
+            f"  3. If that fails, restart Clayrune.\n\n"
+            f"You are getting this once; it will not repeat for "
+            f"{int(_DOWN_ALERT_COOLDOWN_S // 3600)}h even if the outage continues.\n"
+        )
+        try:
+            repo_root = Path(__file__).resolve().parent.parent
+            mailer = repo_root / "tools" / "night-review" / "send_mail.py"
+            if not mailer.exists():
+                log.warning("down alert: mailer not found at %s", mailer)
+                return
+            subprocess.run(
+                [sys.executable, str(mailer), "--subject", subject, "--body", body],
+                capture_output=True, timeout=60, check=False,
+            )
+            log.warning("remote access down %dm — alert sent", mins)
+        except Exception as e:
+            log.warning("down alert could not be sent: %s", e)
+
+    def _maybe_alert_down(self, down_since: float) -> None:
+        """Fire the alert once per outage, subject to the cooldown."""
+        down_for = time.time() - down_since
+        if down_for < _DOWN_ALERT_AFTER_S:
+            return
+        with self._lock:
+            if self._state.down_alert_sent_at is not None:
+                return                      # already alerted for THIS outage
+            last = self._last_alert_wall
+            if last is not None and (time.time() - last) < _DOWN_ALERT_COOLDOWN_S:
+                return                      # inside the quiet period
+            self._state.down_alert_sent_at = time.time()
+            self._last_alert_wall = time.time()
+        hostname = ""
+        try:
+            identity = device_keys.load_identity()
+            hostname = getattr(identity, "hostname", "") or ""
+        except Exception:
+            pass
+        # Off-thread so a slow SMTP never delays the recovery polling that is
+        # the whole point of this loop.
+        threading.Thread(target=self._send_down_alert, args=(down_for, hostname),
+                         daemon=True, name="mc-remote-down-alert").start()
 
     def _wait_for_next(self, seconds: float) -> None:
         """Cancel-aware sleep; also returns early if watchdog wakes us."""

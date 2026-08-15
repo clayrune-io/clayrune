@@ -30,6 +30,12 @@ class ProviderStatus:
                                     # to bring the tunnel up (e.g. after Resume)
                                     # but online is not yet True. Distinguishes
                                     # "intentionally paused" from "reconnecting".
+    down_seconds: Optional[int] = None
+    # How long the tunnel has been continuously down, or None when it is up.
+    # `last_seen` CANNOT answer this: it is the last *successful* attestation, so
+    # a dead tunnel leaves a healthy-looking timestamp frozen in place — which is
+    # exactly how a one-hour outage on 2026-08-14 read as "online" to anyone
+    # polling this. Anything monitoring remote access should watch this field.
 
 
 @dataclass(frozen=True)
