@@ -50,24 +50,44 @@ def load_suite():
             SUITE.read_text(encoding='utf-8').splitlines() if ln.strip()]
 
 
-def cited_notes(mem_dir, index_name):
-    """Every note referenced from the index or from another note.
+def _link_key(s):
+    """Canonical key for matching a link target to a filename.
+
+    MUST mirror `mc.memory._mem_link_key`, which strips every non-alphanumeric
+    so `arch-mobile-ui`, `arch_mobile_ui` and `Arch Mobile UI` all key the same.
+    The vault's slugs genuinely drifted — filenames are snake_case while most
+    wikilinks were written kebab — so a checker that compares raw strings
+    declares a note uncited while production resolves the edge perfectly well.
+    Caught 2026-08-16, before that false reading sent anyone editing notes to
+    fix a problem that did not exist.
+    """
+    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+
+
+def cited_notes(mem_dir, index_name, topics):
+    """Topic files referenced from the index or from another note.
 
     Counts BOTH markdown links `[x](file.md)` and `[[wikilinks]]` — the link
     layer made wikilinks real retrieval edges in 2026-08-09, so a wikilink is a
-    citation, not decoration.
+    citation, not decoration. Returns actual filenames, resolved the way
+    production resolves them.
     """
+    by_key = {_link_key(t.rsplit('.', 1)[0]): t.lower() for t in topics}
     cited = set()
     for f in sorted(mem_dir.glob('*.md')):
         try:
             txt = f.read_text(encoding='utf-8', errors='replace')
         except Exception:
             continue
-        for target in re.findall(r'\]\(([^)]+\.md)\)', txt):
-            cited.add(os.path.basename(target).lower())
-        for target in re.findall(r'\[\[([^\]]+)\]\]', txt):
-            name = target.strip().lower()
-            cited.add(name if name.endswith('.md') else name + '.md')
+        targets = [os.path.basename(t).rsplit('.', 1)[0]
+                   for t in re.findall(r'\]\(([^)]+\.md)\)', txt)]
+        targets += [t.strip().rsplit('.md', 1)[0]
+                    for t in re.findall(r'\[\[([^\]]+)\]\]', txt)]
+        for t in targets:
+            hit = by_key.get(_link_key(t))
+            # A note citing itself is not a channel to it.
+            if hit and hit != f.name.lower():
+                cited.add(hit)
     cited.discard(index_name.lower())
     return cited
 
@@ -141,7 +161,7 @@ def run(corpus_snapshot=None, canary=False):
     topics = set(_harness.topic_files(m, project))
     topics_lc = {t.lower() for t in topics}
 
-    cited = cited_notes(mem_dir, mem_path.name) & topics_lc
+    cited = cited_notes(mem_dir, mem_path.name, topics) & topics_lc
     reach = reachable_notes(m, project, tasks, topk, expand) & topics_lc
     violations = sorted(topics_lc - cited - reach)
 
