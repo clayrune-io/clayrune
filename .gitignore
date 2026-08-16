@@ -320,6 +320,13 @@ docs/play-store/assets/thumbs/
 # (docs/_campaign/ was ignored earlier but the files stayed TRACKED — gitignore
 # doesn't untrack. Untracked for real 2026-07-28 via `git rm --cached`, ahead of
 # the Show HN launch, so the public repo tree carries no marketing playbooks.)
+# Pinned memory-eval suite: VERBATIM operator task text extracted from transcripts
+# (tools/memory-eval/pin_suite.py). Never committed. This line must always land in
+# the same commit as the extractor and before any suite is written — gitignoring
+# after the fact was NOT sufficient for data/SHARED_RULES.md, which build-macos.spec
+# went on packaging into the shipped .app anyway. That spec bundles only
+# data/agent_reference, checked 2026-08-16, so this directory is not exposed there.
+data/memory-eval/
 docs/_campaign/
 # Per-backlog-item agent journals (tools/backlog-journal-export.py). This is where
 # unattended cycles keep their running log now that they may not write backlog

@@ -22,14 +22,13 @@ import os
 import sys
 import glob
 import json
+import argparse
 import collections
-import importlib
 
-sys.path.insert(0, os.path.dirname(os.path.dirname(
-    os.path.dirname(os.path.abspath(__file__)))))
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import _harness
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
-TOPK = 3
 MIN_TASK_CHARS = 25
 
 
@@ -127,11 +126,21 @@ def report(name, results, on_disk, n_tasks):
 
 
 def main():
-    importlib.import_module("server")
-    import mc.memory as m
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--corpus-snapshot", default=None,
+                    help="read a frozen corpus (tools/memory-snapshot.py) so both "
+                         "arms of a paired run see identical notes")
+    ap.add_argument("--topk", type=int, default=None,
+                    help="override the live read_floor_topk")
+    args = ap.parse_args()
 
-    project = {"id": "mission_control",
-               "project_path": r"C:\Users\levir\Documents\_claude\mission-control"}
+    # NEVER import `server` here. It autostarts the tunnel supervisor, whose
+    # orphan reaper kills the operator's cloudflared — verified end to end.
+    # See tools/memory-eval/_harness.py.
+    m, project = _harness.wire(corpus_snapshot=args.corpus_snapshot)
+    topk, expand = _harness.live_signature()
+    if args.topk is not None:
+        topk = args.topk
     mem_dir = m._get_memory_path(project).parent
     on_disk = {x.lower() for x in os.listdir(mem_dir) if x.endswith(".md")}
 
@@ -155,10 +164,15 @@ def main():
     print("sessions: %d | real dispatched tasks: %d | trivial follow-ups "
           "excluded: %d" % (len(files), len(tasks), trivial))
     print("topic files on disk: %d" % len(on_disk))
+    # Production passes BOTH of these per context build. Omitting `expand=` and
+    # hardcoding topk=3 is what made an earlier pass report 27-30 dark files
+    # against a live figure of 15 — it was measuring a system nobody runs.
+    print("signature: topk=%d expand=%d%s" % (
+        topk, expand, "  (frozen corpus)" if args.corpus_snapshot else ""))
     print()
 
-    old = [old_search(m, project, t, TOPK) for t in tasks]
-    new = [m._memory_search(project, t, TOPK) for t in tasks]
+    old = [old_search(m, project, t, topk) for t in tasks]
+    new = [m._memory_search(project, t, topk, expand=expand) for t in tasks]
 
     t_old, s_old = report("OLD (tf)", old, on_disk, len(tasks))
     t_new, s_new = report("NEW BM25", new, on_disk, len(tasks))
