@@ -1918,7 +1918,13 @@ def _build_agent_context(project, incognito=False, task='', character_body=''):
                 project, task,
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
                 expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0))
-        except Exception:
+        except Exception as e:
+            # Was a bare `pass`. The read floor is the ONLY retrieval channel that
+            # actually runs — agents open a memory file in 5% of sessions — so a
+            # silent failure here degrades every agent's context with no signal at
+            # all. The project's exception-swallowing policy says subsystem I/O
+            # failures get logged; this subsystem was violating it.
+            _log(f"[read-floor] {project.get('id')}: memory search failed: {e}")
             hits = []
         if hits:
             # `via` marks a note reached by a [[wikilink]] hop rather than a
@@ -2785,7 +2791,7 @@ def _auto_recover_failed_resume(session):
     _log(f"[dispatch] Resume {resume_id[:12]} failed for {project_id}, retrying fresh")
     _log_agent_activity(project_id, f"Resume failed, restarting fresh: {task[:80]}")
 
-    context = _build_agent_context(p)
+    context = _build_agent_context(p, task=task or '')
     fresh_task = (f"[Continuing from a previous conversation (session {resume_id}) that could not "
                   f"be resumed. Start fresh but continue the user's request below.]\n\n{task}")
 
@@ -3046,7 +3052,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     revival_msg = message
     if too_large:
         size_mb = size_bytes / (1024 * 1024)
-        context = _build_agent_context(p)
+        context = _build_agent_context(p, task=message or '')
         revival_msg = (f"[Resuming a previous conversation that grew too large to "
                        f"resume directly ({size_mb:.0f} MB). Start fresh but continue "
                        f"the user's request below.]\n\n{message}")
@@ -3058,7 +3064,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         # rules/read-floor/API reference (see _respawn_sysprompt_args). The
         # in-memory stash died with the old MC process, so rebuild fresh.
         try:
-            context = _build_agent_context(p)
+            context = _build_agent_context(p, task=message or '')
         except Exception as e:
             _log(f"[revive] {project_id}: context rebuild failed: {e}")
 
@@ -4850,13 +4856,13 @@ def agent_followup(project_id):
                 if not claude_sid and not was_resume:
                     # No session ID at all and wasn't a resume — can't continue
                     _log(f"[followup] {project_id}: no claude_session_id, starting fresh")
-                    context = _build_agent_context(p)
+                    context = _build_agent_context(p, task=message or '')
                     message = (f"[Previous conversation had no session ID to resume. "
                                f"Starting fresh.]\n\n{message}")
                 elif not claude_sid and was_resume:
                     # Was a resume but CLI never emitted a session_id — start fresh
                     _log(f"[followup] {project_id}: resume never emitted session_id, starting fresh")
-                    context = _build_agent_context(p)
+                    context = _build_agent_context(p, task=message or '')
                     message = (f"[Resumed session did not provide a continuable session ID. "
                                f"Starting fresh.]\n\n{message}")
                 elif _resume_is_fragile(was_resume, existing.get('_resume_confirmed')):
@@ -4866,7 +4872,7 @@ def agent_followup(project_id):
                     # through to the -r path below, so an AskUserQuestion kill /
                     # idle-eviction / later crash keeps the full transcript.)
                     _log(f"[followup] {project_id}: resume {claude_sid[:12]} died before any output, starting fresh")
-                    context = _build_agent_context(p)
+                    context = _build_agent_context(p, task=message or '')
                     existing['log_lines'].append(
                         '[Resume produced no output before exiting — restarting fresh]')
                     message = (f"[Continuing from a previous conversation (session {claude_sid}) whose "
@@ -4882,7 +4888,7 @@ def agent_followup(project_id):
                                             f"Auto-fresh: session too large ({size_mb:.0f} MB)")
                         existing['log_lines'].append(
                             f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
-                        context = _build_agent_context(p)
+                        context = _build_agent_context(p, task=message or '')
                         message = (f"[Continuing from a previous conversation that grew too large "
                                    f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
                     else:
@@ -4978,7 +4984,7 @@ def agent_followup(project_id):
                     # system-prompt (Tier-1b) settings now ride along too.
                     _sticky_sp = None
                     try:
-                        _sticky_ctx = _build_agent_context(p)
+                        _sticky_ctx = _build_agent_context(p, task=message or '')
                         existing['_system_prompt'] = _sticky_ctx
                         _sargs, _sticky_sp = _sysprompt_file_args(_sticky_ctx)
                         _sticky_cmd.extend(_sargs)
@@ -5106,7 +5112,7 @@ def agent_followup(project_id):
             if resume_flags:
                 _sp_args, _sp_path = _respawn_sysprompt_args(mrs['existing'], p, message)
             else:
-                _route_context = _build_agent_context(p)
+                _route_context = _build_agent_context(p, task=message or '')
                 _sp_args, _sp_path = _sysprompt_file_args(_route_context)
             cmd.extend(_sp_args)
             with get_manager(project_id).lock:
@@ -5233,7 +5239,7 @@ def agent_followup(project_id):
                     with get_manager(project_id).lock:
                         existing['log_lines'].append(
                             f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
-                    context = _build_agent_context(p)
+                    context = _build_agent_context(p, task=message or '')
                     followup_msg = (f"[Continuing from a previous conversation that grew too large "
                                     f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
                     resume_flags = []
@@ -5479,13 +5485,13 @@ def agent_interrupt(project_id):
                     size_mb = size_bytes / (1024 * 1024)
                     session['log_lines'].append(
                         f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
-                    context = _build_agent_context(p)
+                    context = _build_agent_context(p, task=message or '')
                     respawn_msg = (f"[Continuing from a previous conversation that grew too large "
                                    f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
-                context = _build_agent_context(p)
+                context = _build_agent_context(p, task=message or '')
 
             if is_mode_b:
                 cmd = [_resolve_claude(), *resume_flags,
@@ -5539,7 +5545,7 @@ def agent_interrupt(project_id):
                            *_build_claude_flags(p), *_sp_args]
                 else:
                     if not context:
-                        context = _build_agent_context(p)
+                        context = _build_agent_context(p, task=message or '')
                     session['_system_prompt'] = context
                     _sp_args, _sp_path = _sysprompt_file_args(context)
                     cmd = [_resolve_claude(), '-p', claude_respawn_msg, *_build_claude_flags(p),
