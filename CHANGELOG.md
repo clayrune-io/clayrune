@@ -6,6 +6,55 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-16] — the mobile keyboard closes and half the screen stays dead
+
+Ron: *"too many cases on mobile where the keyboard is closed but the screen does
+not extend back to full screen, leaving only half window."* This had been
+patched three times already, each against a different guess, and it kept coming
+back — because the thing that goes wrong is the **device's** viewport reporting,
+which reading our code cannot reveal.
+
+So it is simulated now. `tools/smoke/mobile-keyboard-viewport.mjs` replaces
+`window.visualViewport` with a fake it drives by hand and reproduces each
+real-world misbehaviour in headless Chromium. Against the previous code it fails
+two checks; both are the reported bug.
+
+**The stick.** `mcViewportHeightSync` sized the app *as* `visualViewport.height`
+whenever a text field had focus. A down-button keyboard dismiss leaves focus on
+the field, fires no `focusout`, and on some Android WebViews never updates
+`vv.height` or fires `resize`. The watchdog compared `vv.height` against what we
+had allocated — and they were now **equal**, because the stale reading was the
+thing we'd allocated from. Every signal agreed the keyboard was still up. The
+app stayed at half height indefinitely; nothing in the app could walk it back.
+
+**The fix — size from the layout viewport, minus a keyboard inset.** The layout
+viewport is the honest number: untouched by the keyboard in `resizes-visual`
+(Chrome/Safari default), genuinely resized in `resizes-content` (WebView
+adjustResize), never a stale leftover. The inset is only believed when a field
+has focus **and** it is ≥120px (a 56px delta is a collapsing URL bar, not a
+keyboard — the old code shrank for those too), and it is capped at 60% of the
+screen so a bad reading can never eat it.
+
+- **A tap breaks the deadlock.** When every keyboard-open signal is still true,
+  only the user can tell us otherwise: a tap on ordinary content blurs the
+  field, which fires `focusout` and settles back to full. Movement is measured
+  so a scroll isn't mistaken for a tap, and taps on controls are left alone so
+  pressing Send doesn't yank the keyboard away.
+- **A second watchdog on the layout viewport**, which cannot go stale, catches
+  any under-allocation while nothing is focused.
+- **`sizeAgentChat` is re-run on the way back up.** It latches explicit pixel
+  heights onto the tab content, panel, chat and output; the modal's
+  ResizeObserver gets there eventually, but a direct call refills the reclaimed
+  space in the same frame instead of leaving a dead band under the thread.
+- `contenteditable` now counts as a text field.
+
+**Surfaces that never got routed through the var.** Settings is full-bleed on
+touch and has a search field at the top, so it had the original bug untouched —
+it was still on a raw `100dvh`, which Android WebView doesn't reliably recompute
+after a dismiss. Same for the `(pointer: coarse)` `.modal-content` fallback
+(touch tablets above 960px) and the three-dot menu's `max-height`. All three now
+use `var(--mc-app-vh, 100dvh)`.
+
 ## [2026-08-12] — the Model picker was claude-only, and a claude model id was reaching every other CLI
 
 Ron opened the +New composer with **Codex CLI** selected and found no way to set

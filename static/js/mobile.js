@@ -9,20 +9,55 @@
 // ≤960px media query, and the var falls back to 100dvh until first set.
 (function mcViewportHeightSync() {
   const vv = window.visualViewport || null;
-  const _isField = t => t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT');
+  const _isField = t => !!t && (t.tagName === 'TEXTAREA' || t.tagName === 'INPUT' || t.isContentEditable);
+  // A real soft keyboard is a big bite out of the screen. Anything smaller is a
+  // collapsing URL bar, a rounding artefact, or a stale reading — and shrinking
+  // the app for those is half of why it ended up pinned short.
+  const MIN_KB = 120;
   let _raf = 0, _lastApplied = 0;
+  // Layout viewport — the honest number. In `resizes-visual` (Chrome/Safari
+  // default) the keyboard never touches it; in `resizes-content` (Android
+  // WebView adjustResize) the window genuinely resizes, so it shrinks and
+  // restores for real. Either way it is never a stale leftover, which
+  // visualViewport.height demonstrably can be.
+  function layoutH() {
+    return Math.max(window.innerHeight || 0, document.documentElement.clientHeight || 0);
+  }
+  function _renudgeOpenModals() {
+    try {
+      if (typeof openModals === 'undefined' || typeof sizeAgentChat !== 'function') return;
+      openModals.forEach((entry, id) => {
+        if (!entry || entry.minimized || !entry.element) return;
+        const sid = (typeof activeAgentTab !== 'undefined') ? activeAgentTab[entry.projectId || id] : null;
+        if (sid) sizeAgentChat(entry.element, sid);
+      });
+    } catch (e) { /* best-effort relayout — never block the height write */ }
+  }
   function apply() {
     _raf = 0;
-    const iv = window.innerHeight || 0;
-    const vh = (vv && vv.height) ? vv.height : iv;
-    // The soft keyboard can only occupy space while a text field is focused.
-    // When nothing is focused, use the FULL layout viewport — never a stale or
-    // shrunk visualViewport.height, which is what pinned the modal at keyboard
-    // height (the "split screen"). While a field is focused, follow the visual
-    // viewport so the composer stays above the keyboard.
-    const h = _isField(document.activeElement) ? (vh || iv) : Math.max(iv, vh);
-    _lastApplied = Math.round(h);
-    document.documentElement.style.setProperty('--mc-app-vh', _lastApplied + 'px');
+    const lh = layoutH();
+    const vh = (vv && vv.height) ? vv.height : lh;
+    // Size from the LAYOUT viewport minus a keyboard inset, rather than from
+    // visualViewport.height directly. The inset is only believed when a text
+    // field has focus (nothing else can raise a keyboard) AND it is large
+    // enough to be one, and it is capped so a bad reading can never eat the
+    // screen. Previously a stale short vv.height became the app height outright
+    // and nothing could walk it back — the reported half-window.
+    let inset = Math.max(0, lh - vh - (vv ? vv.offsetTop : 0));
+    if (inset < MIN_KB || !_isField(document.activeElement)) inset = 0;
+    inset = Math.min(inset, Math.round(lh * 0.6));
+    const h = Math.round(lh - inset);
+    if (h === _lastApplied) return;
+    const grew = h > _lastApplied;
+    _lastApplied = h;
+    document.documentElement.style.setProperty('--mc-app-vh', h + 'px');
+    // sizeAgentChat latches EXPLICIT pixel heights onto the tab content, agent
+    // panel, chat and output. The modal's own ResizeObserver re-runs it, but
+    // only once layout has settled — re-run it directly on the way back up so
+    // the thread refills the reclaimed space in the same frame instead of
+    // leaving a dead band under it. Deliberately narrower than a synthetic
+    // window 'resize', which would also force a full dashboard re-render.
+    if (grew) _renudgeOpenModals();
   }
   function schedule() { if (!_raf) _raf = requestAnimationFrame(apply); }
   // Re-apply across a settle window: some Android WebViews report a stale
@@ -50,9 +85,42 @@
   // keyboard is gone) → re-sync. It only ever expands, so it can't fight a
   // legitimately open keyboard.
   if (vv) setInterval(() => { if (vv.height - _lastApplied > 6) schedule(); }, 500);
+  // Second watchdog, on the layout viewport. The one above can't help when
+  // vv.height itself is the stale value (some Android WebViews stop updating it
+  // after a down-button dismiss) — then vv.height === _lastApplied forever and
+  // the app stays pinned short. The layout viewport doesn't go stale, so if we
+  // have allocated meaningfully less than it and no text field is focused,
+  // there is no keyboard and the missing space is ours to take back.
+  setInterval(() => {
+    if (_isField(document.activeElement)) return;
+    if (layoutH() - _lastApplied > 6) schedule();
+  }, 500);
   // A tap/scroll after dismissing the keyboard is another chance to re-read a
   // now-fresh viewport height.
   document.addEventListener('touchend', schedule, { passive: true });
+  // Down-button (or swipe) dismiss keeps focus ON the field, so every
+  // keyboard-open signal we have stays true and the app never re-expands. The
+  // user's next TAP on ordinary content is an unambiguous "done typing" — blur
+  // the field, which fires focusout and settles back to full height. Movement
+  // is measured so a scroll (which must not close a keyboard mid-read) is not
+  // mistaken for a tap, and taps on controls are left alone so pressing Send or
+  // moving the caret doesn't dismiss the keyboard out from under the user.
+  const _CONTROLS = 'input, textarea, select, button, a, label, [contenteditable=""], [contenteditable="true"], [role="button"], .agent-chat-separator';
+  let _tx = 0, _ty = 0;
+  document.addEventListener('touchstart', e => {
+    const t = e.touches && e.touches[0];
+    _tx = t ? t.clientX : 0; _ty = t ? t.clientY : 0;
+  }, { passive: true });
+  document.addEventListener('touchend', e => {
+    const a = document.activeElement;
+    if (!_isField(a)) return;
+    const t = e.changedTouches && e.changedTouches[0];
+    if (!t || Math.abs(t.clientX - _tx) > 10 || Math.abs(t.clientY - _ty) > 10) return;  // a scroll, not a tap
+    const el = e.target;
+    if (el === a || (el && el.closest && el.closest(_CONTROLS))) return;
+    try { a.blur(); } catch (err) {}
+    settle();
+  }, { passive: true });
 })();
 
 // ── Mobile UI: app bar greeting + filter pills (≤960px, warm tone) ──────────

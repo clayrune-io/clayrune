@@ -1102,8 +1102,11 @@
     .modal-content {
       resize: none;
       min-width: 0; min-height: 200px;
-      max-width: 100vw; max-height: calc(100dvh - 52px);
-      width: 100vw; height: calc(100dvh - 52px);
+      /* --mc-app-vh, not a raw 100dvh: Android WebView doesn't reliably
+         recompute dvh once the soft keyboard is dismissed, which left the sheet
+         pinned at keyboard height. See mcViewportHeightSync. */
+      max-width: 100vw; max-height: calc(var(--mc-app-vh, 100dvh) - 52px);
+      width: 100vw; height: calc(var(--mc-app-vh, 100dvh) - 52px);
       border-radius: 0;
     }
     .modal-content::after { display: none; } /* corner-grip useless without a mouse */
@@ -2050,19 +2053,22 @@
      floating short. Placed after the generic mobile .modal-content rules so it
      wins the cascade. #settings-body is flex:1 inside, so the list region fills. */
   .mc-settings-modal { height: auto; max-height: 80vh; }
+  /* Settings is full-bleed on touch and has a search field at the top, so it
+     hit the same stuck-at-keyboard-height bug the project sheet did — it just
+     never got routed through --mc-app-vh when that fix landed. */
   @media (hover: none), (pointer: coarse) {
-    .mc-settings-window { max-height: 100dvh; }
-    .mc-settings-modal { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+    .mc-settings-window { max-height: var(--mc-app-vh, 100dvh); }
+    .mc-settings-modal { width: 100vw; height: var(--mc-app-vh, 100dvh); max-height: var(--mc-app-vh, 100dvh); border-radius: 0; }
   }
   @media (max-width: 960px) {
-    .mc-settings-window { max-height: 100dvh; }
-    .mc-settings-modal { width: 100vw; height: 100dvh; max-height: 100dvh; border-radius: 0; }
+    .mc-settings-window { max-height: var(--mc-app-vh, 100dvh); }
+    .mc-settings-modal { width: 100vw; height: var(--mc-app-vh, 100dvh); max-height: var(--mc-app-vh, 100dvh); border-radius: 0; }
   }
   /* Larger, scrollable three-dot menu on mobile (tap targets + readability) */
   @media (max-width: 960px) {
     .modal-menu-dropdown {
       min-width: 240px !important;
-      max-height: calc(100dvh - 120px);
+      max-height: calc(var(--mc-app-vh, 100dvh) - 120px);
       overflow-y: auto; -webkit-overflow-scrolling: touch;
     }
     .modal-menu-dropdown::-webkit-scrollbar { width: 4px; }
