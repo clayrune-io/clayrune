@@ -444,6 +444,48 @@ _BM25_B = 0.75
 # a cheap field boost, since the filename is the note's title (see _mem_corpus).
 _TITLE_BOOST = 3
 
+
+# ── Tunable ranker constants (S4, 2026-08-16) ────────────────────────────────
+# Each reads config and DEFAULTS TO THE CONSTANT ABOVE, so landing this code is a
+# measurable no-op and each lever can be judged and landed on its own.
+#
+# TRAP, verified: `update_config` filters on `if k in _CONFIG_EDITABLE_KEYS`, so a
+# PUT of an unlisted key returns 200 with `updated: []` — it looks like it worked
+# and does nothing. Every key here MUST also be in server.py's defaults dict AND
+# in _CONFIG_EDITABLE_KEYS.
+#
+# These were measured on ONE project while config is global to all of them, so
+# treat an offline win here as a hypothesis about the other projects, not a fact
+# about them. tools/memory-eval/sweep_constants.py checks across projects.
+
+def _bm25_b():
+    """Length-normalisation strength. 1.0 normalises fully."""
+    try:
+        return float(state.CONFIG.get('bm25_b', _BM25_B))
+    except (TypeError, ValueError):
+        return _BM25_B
+
+
+def _title_boost():
+    """Filename repetitions folded into a topic file's token stream."""
+    try:
+        return max(0, int(state.CONFIG.get('bm25_title_boost', _TITLE_BOOST)))
+    except (TypeError, ValueError):
+        return _TITLE_BOOST
+
+
+def _archive_quota():
+    """Max top-k slots archive-class units may occupy. 0 = off (today).
+
+    The archive outnumbers topic files ~30:1, so it can crowd the slots that
+    would otherwise carry a whole note. A quota reserves room for topic files
+    without changing the ranking itself.
+    """
+    try:
+        return max(0, int(state.CONFIG.get('read_floor_archive_quota', 0) or 0))
+    except (TypeError, ValueError):
+        return 0
+
 # Link-expansion decay: a neighbour reached by traversing one `[[wikilink]]` hop
 # from a BM25 hit inherits a fraction of that hit's score. Out-links (the note
 # itself points there — an authored "read this too") rank above back-links (some
@@ -587,7 +629,7 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             # Deliberately NOT done for 'archive'/'managed' units: their label
             # is the container's filename, not a title, so folding it in would
             # make every one of the ~2k archive lines match the query "memory".
-            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _TITLE_BOOST
+            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
         tf = {}
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
@@ -676,7 +718,8 @@ def _memory_search(project, query, topk=3, expand=None):
         tfu = u['tf']
         dl = u['len']
         norm = avgdl.get(u['cls']) or dl or 1.0
-        denom_len = _BM25_K1 * (1.0 - _BM25_B + _BM25_B * (dl / norm))
+        _b = _bm25_b()
+        denom_len = _BM25_K1 * (1.0 - _b + _b * (dl / norm))
         score = 0.0
         matched = 0
         for t in terms:
@@ -690,6 +733,22 @@ def _memory_search(project, query, topk=3, expand=None):
         scored.append({'file': u['file'], 'score': round(score, 4),
                        'snippet': _mem_snippet(u['text'], terms)})
     scored.sort(key=lambda r: (-r['score'], r['file']))
+
+    # Archive quota (S4): the archive outnumbers topic files ~30:1, so archive
+    # lines can take slots a whole note would have filled. Cap them, keeping
+    # rank order within each class. 0 = off, which is today's behaviour.
+    _quota = _archive_quota()
+    if _quota:
+        kept, n_arch = [], 0
+        for r in scored:
+            if r['file'].endswith('MEMORY_ARCHIVE.md') or '#archive' in r['file']:
+                if n_arch >= _quota:
+                    continue
+                n_arch += 1
+            kept.append(r)
+            if len(kept) >= max(1, topk):
+                break
+        scored = kept
     hits = scored[:max(1, topk)]
 
     n_expand = max(0, int(expand or 0))

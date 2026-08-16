@@ -196,6 +196,20 @@ def _load_config():
         # they were decoration. Appended, never substituted — this cannot push a
         # lexical match out of the floor. 0 disables.
         'read_floor_link_expand': 2,
+        # ── Ranker constants (S4, 2026-08-16) ────────────────────────────────
+        # All three DEFAULT TO TODAY'S BEHAVIOUR, so shipping them changes
+        # nothing measurable; each is judged and flipped on its own evidence.
+        # They must also appear in _CONFIG_EDITABLE_KEYS or a PUT returns 200
+        # with `updated: []` — looks like it worked, does nothing.
+        # `b` controls how hard BM25 normalises for document length. 1.0
+        # normalises fully; 0.75 is the textbook default and what shipped.
+        'bm25_b': 0.75,
+        # How many times a topic file's own name is folded into its token
+        # stream — a cheap title-field boost. Higher favours title matches.
+        'bm25_title_boost': 3,
+        # Cap on how many read-floor slots archive lines may take. The archive
+        # outnumbers topic files ~30:1, so it can crowd out whole notes. 0 = off.
+        'read_floor_archive_quota': 0,
         # Exploration read-floor — surfaces the Distiller's captured
         # EXPLORATION.md proposals back into a new session's context (the
         # learning-loop closer). Ships default-ON; flip enabled=false to

@@ -109,6 +109,12 @@ _CONFIG_EDITABLE_KEYS = {
     'scribe_reconcile_cap', 'scribe_checkpoint_enabled',
     'scribe_checkpoint_kb', 'scribe_why_enabled', 'read_floor_topk',
     'read_floor_link_expand',
+    # Ranker constants (S4). Must stay in lockstep with server.py's defaults
+    # dict — a key present in one and not the other either has no default or
+    # silently ignores every PUT. tests/test_ranker_constants.py pins both.
+    'bm25_b',
+    'bm25_title_boost',
+    'read_floor_archive_quota',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle
