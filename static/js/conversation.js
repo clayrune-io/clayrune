@@ -1481,7 +1481,7 @@ window.promptDeleteConversation = promptDeleteConversation;
 // Legacy agent/system chats (dispatched before source tracking) that no filter
 // can catch by trigger/source — recognised by their task text. Applied ONLY to
 // source-less rows so it never hides a real UI conversation going forward.
-const _AGENT_LABEL_RE = /^\s*(\[scheduled run|\[task-notification|<task-notification|you are the |\[binding for this reply|base directory for this skill|weekly learning-loop|\[system)/i;
+const _AGENT_LABEL_RE = /^\s*(\[scheduled run|\[task-notification|<task-notification|you are (?:the |a hivemind worker)|\[binding for this reply|base directory for this skill|weekly learning-loop|\[system)/i;
 // Empty-task resume default (nobody typed a real message — the composer was
 // blank on Continue) and trivial one-turn acknowledgements ("ok", "yes", …).
 // These are transcript-only sessions with no substantive user content; they're
