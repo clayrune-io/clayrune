@@ -278,21 +278,37 @@ function formatScheduleTime(isoStr) {
     return `${pad(d.getMonth()+1)}/${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
   } catch(e) { return isoStr.slice(0, 16); }
 }
+// <input type="datetime-local"> speaks LOCAL wall time with no zone attached.
+// Slicing an ISO string handed it the UTC reading, so editing a one-shot showed
+// a time offset from the one it would actually run at — and saving that back
+// MOVED the run. Convert through the Date instead.
+function _schedLocalInputValue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+// `existing` is either a saved schedule (edit) or a DRAFT with no id — what the
+// calendar hands over when you long-press a slot, so the form opens already
+// pointed at that moment. Everything below therefore keys "am I editing?" off
+// the id, never off the object being present.
 function showScheduleForm(existing) {
-  schedulerEditId = existing ? existing.id : null;
+  schedulerEditId = (existing && existing.id) || null;
   const area = document.getElementById('schedule-form-area');
   if (!area) return;
   const projects = allProjects.filter(p => p.project_path);
-  const selPid = existing ? existing.project_id : (projects[0]?.id || '');
-  const selType = existing ? existing.schedule_type : 'daily';
-  const selTime = existing ? (existing.time || '09:00') : '09:00';
+  const selPid = (existing && existing.project_id) || projects[0]?.id || '';
+  const selType = (existing && existing.schedule_type) || 'daily';
+  const selTime = (existing && existing.time) || '09:00';
   const selDays = existing ? (existing.days || []) : [1,2,3,4,5];
-  const selInterval = existing ? (existing.interval_minutes || 60) : 60;
-  const selTask = existing ? existing.task : '';
-  const selDescription = existing ? (existing.description || '') : '';
+  const selInterval = (existing && existing.interval_minutes) || 60;
+  const selTask = (existing && existing.task) || '';
+  const selDescription = (existing && existing.description) || '';
   const selContinue = existing ? (existing.continue_session !== false) : true;
-  const selRunAt = existing ? (existing.run_at || '').slice(0, 16) : '';
-  const selCron = existing ? (existing.cron_expr || '') : '';
+  const selRunAt = _schedLocalInputValue(existing && existing.run_at);
+  const selCron = (existing && existing.cron_expr) || '';
   // once-only: new schedules default to fire-and-forget; pre-feature rows
   // (field absent) keep the old "stay disabled" behavior.
   const selDeleteAfter = existing ? !!existing.delete_after_run : true;
@@ -320,12 +336,18 @@ function showScheduleForm(existing) {
     </div>
     <div id="sched-type-fields"></div>
     <div class="sched-actions">
-      <button class="btn-sched-save" onclick="saveSchedule()">${existing ? 'Update' : 'Create'}</button>
-      ${existing ? `<button class="btn-sched-cancel" style="border-color:var(--accent);color:var(--accent)" onclick="runScheduleNow('${esc(existing.id)}')">&#x25B6; Run Now</button>` : ''}
+      <button class="btn-sched-save" onclick="saveSchedule()">${schedulerEditId ? 'Update' : 'Create'}</button>
+      ${schedulerEditId ? `<button class="btn-sched-cancel" style="border-color:var(--accent);color:var(--accent)" onclick="runScheduleNow('${esc(schedulerEditId)}')">&#x25B6; Run Now</button>` : ''}
       <button class="btn-sched-cancel" onclick="hideScheduleForm()">Cancel</button>
     </div>
   </div>`;
   renderSchedTypeFields(selType, { time: selTime, days: selDays, interval_minutes: selInterval, run_at: selRunAt, cron_expr: selCron, delete_after_run: selDeleteAfter });
+  // The form sits below the Stewards section and the whole schedule list, so on
+  // anything smaller than a desktop it opens off-screen and reads as "nothing
+  // happened" — true for Edit from the calendar too, not just the new
+  // long-press path.
+  try { area.scrollIntoView({ block: 'nearest', behavior: 'smooth' }); } catch (e) { area.scrollIntoView(); }
+  setTimeout(() => document.getElementById('sched-task')?.focus(), 260);
 }
 
 function hideScheduleForm() {

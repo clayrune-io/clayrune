@@ -6,6 +6,44 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-16] — long-press a calendar slot to schedule something there
+
+The calendar could only ever *show* you the week. Creating a run meant leaving
+it, finding the Scheduled Tasks modal, and typing back in the day and time you
+were already looking at.
+
+Now an empty hour cell offers to become one: **tap and hold** on touch, plain
+**click** with a mouse (the verb every calendar already uses). The scheduler
+opens with the form pointed at that moment.
+
+- **A past slot gets Daily, not Once.** A one-shot in a time that has already
+  gone by can never fire, so pressing Tuesday 09:00 after Tuesday 09:00 means
+  "this time of day" — the form opens recurring, on that weekday. Future slots
+  get a fire-and-forget Once at that exact date and time.
+- **A hold that travels is a scroll.** More than 10px of movement cancels it, so
+  dragging the grid never creates anything. The pressed cell tints while the
+  hold is counting down and the press lands with a haptic tick — without either,
+  a long-press has no feedback at all and reads as the page glitching.
+- On touch it is hold-only. A click follows every tap, and a stray tap on the
+  grid opening a form would be maddening.
+
+**`showScheduleForm` now takes a draft.** It used to treat "was I given an
+object?" as "am I editing?", so a prefilled *new* schedule came up labelled
+**Update**, offered **Run Now** for a row that didn't exist, and rendered
+`runScheduleNow(undefined)`. Editing keys off the id now, which is the only
+thing that actually distinguishes the two.
+
+**Fixed on the way past: editing a one-shot moved it.** `run_at` was fed to
+`<input type="datetime-local">` by slicing the ISO string — but that input
+speaks *local* wall time with no zone, so it showed the UTC reading, and saving
+that back rewrote the run to a different hour. The smoke guard caught it at a
+7-hour skew; it now converts through the Date.
+
+The form also scrolls into view when it opens. It sits below the Stewards
+section and the whole schedule list, so on anything narrower than a desktop it
+was opening off-screen — true for Edit-from-the-calendar too, which is why that
+path felt like it did nothing.
+
 ## [2026-08-16] — the mobile keyboard closes and half the screen stays dead
 
 Ron: *"too many cases on mobile where the keyboard is closed but the screen does

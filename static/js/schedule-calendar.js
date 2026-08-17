@@ -440,7 +440,11 @@ function _scalRenderTimeGrid(host, days, always, unparsed) {
     const blocks = _scalLayoutDay(d.items).map((p) => _scalBlockHTML(p, range)).join('');
     const lines = [];
     for (let h = range.start; h < range.end; h++) {
-      lines.push(`<div class="scal-slot" style="height:${SCAL_ROW_H}px"></div>`);
+      // data-at makes each cell an addressable point in time, which is what
+      // long-press / click-to-create reads (see _scalBindNewAt).
+      const at = new Date(d.date);
+      at.setHours(h, 0, 0, 0);
+      lines.push(`<div class="scal-slot" data-at="${at.toISOString()}" style="height:${SCAL_ROW_H}px"></div>`);
     }
     let nowLine = '';
     if (isToday) {
@@ -765,7 +769,9 @@ async function openSchedulerCalendar() {
   }
   _scalLoadView();
   schedCalAnchor = _scalToday();
-  _scalBindSwipe(content.querySelector('.scal-surface'));
+  const surface = content.querySelector('.scal-surface');
+  _scalBindSwipe(surface);
+  _scalBindNewAt(surface);
   await refreshScheduleCalendar();
 }
 
@@ -821,6 +827,92 @@ function _scalBindSwipe(surface) {
   }, { passive: true });
 }
 
+// ── Create at a time slot ───────────────────────────────────────────────────
+// Long-press an empty hour cell (tap-and-hold on touch, plain click with a
+// mouse — the way every calendar works) and the scheduler opens with the form
+// already pointed at that moment. Bound on the SURFACE, which survives the
+// innerHTML rebuild every navigation does, and delegated so it keeps working
+// across view switches.
+const SCAL_LONGPRESS_MS = 500;
+const SCAL_LONGPRESS_SLOP = 10;   // px of travel before it's a scroll, not a press
+
+function _scalBindNewAt(surface) {
+  if (!surface || surface._scalNewBound) return;
+  surface._scalNewBound = true;
+  let timer = null, pressed = null, fired = false, x0 = 0, y0 = 0;
+
+  const cancel = () => {
+    if (timer) clearTimeout(timer);
+    timer = null;
+    if (pressed) pressed.classList.remove('scal-slot-armed');
+    pressed = null;
+  };
+  // Blocks, the detail sheet and all-day chips all mean something else where
+  // they sit; only bare grid cells offer to create.
+  const slotFrom = (el) => {
+    if (!el || !el.closest) return null;
+    if (el.closest('.scal-block, .scal-detail, .scal-allday-chip')) return null;
+    return el.closest('.scal-slot');
+  };
+
+  surface.addEventListener('touchstart', (e) => {
+    cancel();
+    fired = false;
+    if (e.touches.length !== 1) return;
+    const slot = slotFrom(e.target);
+    if (!slot || !slot.dataset.at) return;
+    x0 = e.touches[0].clientX;
+    y0 = e.touches[0].clientY;
+    pressed = slot;
+    slot.classList.add('scal-slot-armed');
+    const at = slot.dataset.at;
+    timer = setTimeout(() => {
+      fired = true;                     // so the trailing click doesn't fire too
+      cancel();
+      // The press completes under the finger with no visible transition, so
+      // without a tick of haptic it reads as the page having glitched.
+      try { if (navigator.vibrate) navigator.vibrate(15); } catch (err) {}
+      scalNewAt(at);
+    }, SCAL_LONGPRESS_MS);
+  }, { passive: true });
+
+  surface.addEventListener('touchmove', (e) => {
+    if (!timer) return;
+    const t = e.touches[0];
+    if (!t || Math.abs(t.clientX - x0) > SCAL_LONGPRESS_SLOP
+           || Math.abs(t.clientY - y0) > SCAL_LONGPRESS_SLOP) cancel();
+  }, { passive: true });
+  surface.addEventListener('touchend', cancel, { passive: true });
+  surface.addEventListener('touchcancel', cancel, { passive: true });
+
+  surface.addEventListener('click', (e) => {
+    if (fired) { fired = false; return; }   // touch already handled this one
+    // Mouse only. On touch a click follows every tap, and a stray tap on the
+    // grid opening a form would be maddening — there, holding is the verb.
+    if (window.matchMedia && !window.matchMedia('(hover: hover) and (pointer: fine)').matches) return;
+    const slot = slotFrom(e.target);
+    if (slot && slot.dataset.at) scalNewAt(slot.dataset.at);
+  });
+}
+
+// Open the scheduler's create form aimed at `iso`.
+async function scalNewAt(iso) {
+  const at = new Date(iso);
+  if (!iso || isNaN(at.getTime())) return;
+  scalCloseDetail();
+  if (typeof window.openScheduler !== 'function') return;
+  await window.openScheduler();
+  if (typeof window.showScheduleForm !== 'function') return;
+  // A one-shot in the past can never fire. Pressing a slot that has already
+  // gone by means "this time of day", not "this instant" — so those get the
+  // recurring form on that weekday instead of a dead Once.
+  // days is 1=Mon..7=Sun; getDay() is 0=Sun..6=Sat.
+  const past = at.getTime() < Date.now();
+  window.showScheduleForm(past
+    ? { schedule_type: 'daily', time: _scalHhmm(at), days: [((at.getDay() + 6) % 7) + 1] }
+    : { schedule_type: 'once', run_at: at.toISOString(), delete_after_run: true });
+}
+
 // Inline on*= handlers resolve against the global object at click time, and this
 // file is an ES module — every name referenced from generated HTML needs a
 // bridge or it fails silently (see tools/smoke/inline-handler-scope-check.mjs).
@@ -840,3 +932,5 @@ window.scalBuildRange = scalBuildRange;
 window._scalParseCron = _scalParseCron;
 window._scalTitle = _scalTitle;
 window._scalBindSwipe = _scalBindSwipe;   // exercised by the smoke guard
+window._scalBindNewAt = _scalBindNewAt;   // exercised by the smoke guard
+window.scalNewAt = scalNewAt;

@@ -5178,6 +5178,14 @@
   .scal-col:last-child { border-right: none; }
   .scal-col.today { background: hsl(from var(--accent) h s l / 0.04); }
   .scal-slot { border-bottom: 1px solid var(--border); box-sizing: border-box; }
+  /* An empty cell offers to become a schedule: click with a mouse, tap-and-hold
+     on touch. The armed tint is the only feedback a long-press gets before it
+     completes, so without it the hold reads as nothing happening. */
+  @media (hover: hover) and (pointer: fine) {
+    .scal-slot { cursor: cell; }
+    .scal-slot:hover { background: hsl(from var(--accent) h s l / 0.10); }
+  }
+  .scal-slot.scal-slot-armed { background: hsl(from var(--accent) h s l / 0.18); }
 
   .scal-now { position: absolute; left: 0; right: 0; height: 2px;
               background: var(--red, #dc2626); z-index: 3; pointer-events: none; }

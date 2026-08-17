@@ -829,6 +829,48 @@ async function runScheduleCalendarGuard(browser) {
       scalShift(0); await settle(300);
       r.labelAfterJumpHome = label();
 
+      // ── Long-press an empty hour cell → create a schedule at that time ─────
+      // Tomorrow, so every cell is in the future and the Once branch is the one
+      // under test (a past slot deliberately offers Daily instead).
+      scalShift(1); await settle(400);
+      const slots = document.querySelectorAll('#schedule-calendar .scal-slot');
+      r.slotCount = slots.length;
+      r.slotsCarryTime = slots.length > 0 && Array.from(slots).every((s) => !!s.dataset.at);
+      const cell = slots[Math.min(9, slots.length - 1)];
+      const press = async (el, holdMs, dy) => {
+        const t = (y) => new Touch({ identifier: 2, target: el, clientX: 100, clientY: y });
+        el.dispatchEvent(new TouchEvent('touchstart', {
+          bubbles: true, touches: [t(200)], changedTouches: [t(200)] }));
+        if (dy) el.dispatchEvent(new TouchEvent('touchmove', {
+          bubbles: true, touches: [t(200 + dy)], changedTouches: [t(200 + dy)] }));
+        await settle(holdMs);
+        el.dispatchEvent(new TouchEvent('touchend', {
+          bubbles: true, touches: [], changedTouches: [t(200 + (dy || 0))] }));
+      };
+      // A hold that travels is someone scrolling the grid — it must not create.
+      await press(cell, 750, 120);
+      await settle(350);
+      r.formAfterDrag = !!document.querySelector('#schedule-form-area .schedule-form');
+
+      await press(cell, 750, 0);
+      await settle(800);
+      r.schedulerOpened = !!document.querySelector('[data-modal-id="__scheduler"]');
+      r.formOpened = !!document.querySelector('#schedule-form-area .schedule-form');
+      // A draft has no id, so this must still be a CREATE — an "Update" here
+      // would mean the draft was mistaken for an existing row and the save
+      // would PUT to /api/schedules/undefined.
+      r.formVerb = (document.querySelector('#schedule-form-area .btn-sched-save')?.textContent || '').trim();
+      r.formHasRunNow = !!document.querySelector('#schedule-form-area .btn-sched-cancel[onclick^="runScheduleNow"]');
+      // datetime-local carries LOCAL wall time; an ISO slice would put the UTC
+      // reading in the box and silently move the run on save.
+      const p2 = (n) => String(n).padStart(2, '0');
+      const want = new Date(cell.dataset.at);
+      r.wantRunAt = `${want.getFullYear()}-${p2(want.getMonth() + 1)}-${p2(want.getDate())}T${p2(want.getHours())}:${p2(want.getMinutes())}`;
+      r.gotRunAt = document.getElementById('sched-runat')?.value || '';
+      closeModalById('__scheduler');
+      await settle(250);
+      scalShift(0); await settle(300);
+
       scalSetView('week');
       await settle(500);
       const b2 = document.querySelector('#schedule-calendar .scal-time-body');
@@ -928,13 +970,26 @@ async function runScheduleCalendarGuard(browser) {
   if (!out.gridWithinSurface) fails.push('the grid overflows its surface (bottom is clipped by the modal)');
   if (!(out.liveAfter < out.liveBefore))
     fails.push('toggling off from the grid did not strike its chips (' + out.liveBefore + ' -> ' + out.liveAfter + ')');
+  // Long-press to create.
+  if (!out.slotsCarryTime)
+    fails.push('hour cells carry no data-at, so there is nothing to create AT (' + out.slotCount + ' cells)');
+  if (out.formAfterDrag)
+    fails.push('a hold that travelled opened the form - scrolling the grid must not create a schedule');
+  if (!out.schedulerOpened) fails.push('long-pressing an hour cell did not open the scheduler');
+  if (!out.formOpened) fails.push('long-pressing an hour cell did not open the schedule form');
+  if (out.formVerb !== 'Create')
+    fails.push('the prefilled form says "' + out.formVerb + '" - a draft has no id and must CREATE, not PUT');
+  if (out.formHasRunNow)
+    fails.push('the prefilled form offers Run Now for a schedule that does not exist yet');
+  if (out.gotRunAt !== out.wantRunAt)
+    fails.push('prefilled run-at is ' + out.gotRunAt + ', want local ' + out.wantRunAt);
 
   if (fails.length) {
     console.error('CALFAIL calendar guard:');
     fails.forEach((f) => console.error('       - ' + f));
     return false;
   }
-  console.log('OKAY calendar: time grid places runs by hour, titles on blocks + prompt in the sheet, one pause notice, toggle works.');
+  console.log('OKAY calendar: time grid places runs by hour, titles on blocks + prompt in the sheet, one pause notice, toggle works, long-press creates at that slot.');
   return true;
 }
 
