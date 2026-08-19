@@ -3003,8 +3003,18 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
         for m in msgs:
             role = m.get('role')
             if role == 'user':
-                txt = (m.get('text') or '').strip()
-                if txt:
+                # Harness-injected user turns are NOT something the user typed:
+                # a <task-notification> from a finished background agent, a
+                # <system-reminder>, the resume/brevity/phone preambles. Rendered
+                # verbatim they become "> Ron: <task-notification>..." bubbles, and
+                # since every revive re-renders the WHOLE transcript, each revive
+                # replays the entire backlog of subagent pings as fake user
+                # messages (observed: one task id shown 9x over 3 days).
+                # Same two helpers the conversation-label path already uses:
+                # strip closed blocks, then drop a turn that is nothing but an
+                # unclosed/truncated one.
+                txt = _agent_runtime.strip_injected_preamble(m.get('text') or '')
+                if txt and not _agent_runtime.is_nonuser_message(txt):
                     lines.append(f"\n> {user_label}: {txt}\n")
             elif role == 'assistant':
                 txt = (m.get('text') or '').strip()
