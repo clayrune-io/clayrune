@@ -203,6 +203,116 @@ function _handleMermaidLine(sessionId, text, el) {
   return false;
 }
 
+// ── Shared viewer gestures: wheel, pinch, drag-pan, double-tap ─────────────
+// Both viewers used to be zoomable ONLY from the toolbar: the wheel handler
+// required Ctrl/Cmd and there was no touch handling at all, so on a phone
+// pinching did nothing and on a desktop the wheel did nothing. This installs
+// pointer-anchored zoom on the canvas and hands the toolbar buttons and the
+// keyboard shortcuts the SAME anchored path, so every control agrees on what
+// "150%" means and on which pixel stays still while it happens.
+const _IV_MIN = 0.2, _IV_MAX = 5;
+function _ivGestures(scrollEl, wrap, zoomLabel) {
+  let scale = 1;
+  const paint = () => {
+    wrap.style.transform = `scale(${scale})`;
+    wrap.style.transformOrigin = 'top left';
+    if (zoomLabel) zoomLabel.textContent = Math.round(scale * 100) + '%';
+  };
+  // The 0.12s CSS transition is right for a button press and wrong for a
+  // continuous gesture — it lags a pinch by a frame and fights every wheel
+  // tick. Off for the duration of a gesture, back on after.
+  const live = on => { wrap.style.transition = on ? 'none' : ''; };
+  const center = () => {
+    const r = scrollEl.getBoundingClientRect();
+    return { x: r.left + r.width / 2, y: r.top + r.height / 2 };
+  };
+  // Zoom about a viewport point: the pixel under the cursor/fingers must not
+  // move. transform-origin is top-left, so the wrap's own screen position is
+  // unaffected by the scale change — only the scroll offset needs correcting.
+  const zoomTo = (next, cx, cy) => {
+    next = Math.max(_IV_MIN, Math.min(_IV_MAX, next));
+    if (Math.abs(next - scale) < 0.0005) return;
+    if (cx == null) { const c = center(); cx = c.x; cy = c.y; }
+    const r = wrap.getBoundingClientRect();
+    const ux = (cx - r.left) / scale, uy = (cy - r.top) / scale;
+    scale = next;
+    paint();
+    scrollEl.scrollLeft += (r.left + ux * scale) - cx;
+    scrollEl.scrollTop += (r.top + uy * scale) - cy;
+  };
+  const pannable = () =>
+    scrollEl.scrollWidth > scrollEl.clientWidth + 1 ||
+    scrollEl.scrollHeight > scrollEl.clientHeight + 1;
+  const setCursor = () => { scrollEl.style.cursor = pannable() ? 'grab' : ''; };
+
+  // Wheel = zoom, no modifier needed. Panning a zoomed-in picture is what the
+  // drag below is for; a wheel that scrolls a picture by a few pixels is the
+  // less useful of the two bindings.
+  scrollEl.addEventListener('wheel', e => {
+    e.preventDefault();
+    live(true);
+    const step = e.deltaMode === 1 ? 1.12 : 1.0022;   // line-mode vs pixel-mode
+    zoomTo(scale * Math.pow(step, -e.deltaY), e.clientX, e.clientY);
+    live(false);
+    setCursor();
+  }, { passive: false });
+
+  // ── Mouse drag-pan ──
+  let drag = null;
+  scrollEl.addEventListener('mousedown', e => {
+    if (e.button !== 0 || !pannable()) return;
+    drag = { x: e.clientX, y: e.clientY, l: scrollEl.scrollLeft, t: scrollEl.scrollTop };
+    scrollEl.style.cursor = 'grabbing';
+    e.preventDefault();          // also kills the browser's native image-drag
+  });
+  const onMove = e => {
+    if (!drag) return;
+    scrollEl.scrollLeft = drag.l - (e.clientX - drag.x);
+    scrollEl.scrollTop = drag.t - (e.clientY - drag.y);
+  };
+  const onUp = () => { if (drag) { drag = null; setCursor(); } };
+  document.addEventListener('mousemove', onMove);
+  document.addEventListener('mouseup', onUp);
+
+  // ── Touch: two-finger pinch, double-tap to toggle ──
+  // One finger is left to the browser's native scrolling (CSS touch-action
+  // keeps pan-x/pan-y and takes only pinch-zoom away from the page).
+  const dist = t => Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY);
+  const mid = t => ({ x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 });
+  let pinch = null, lastTap = 0;
+  scrollEl.addEventListener('touchstart', e => {
+    if (e.touches.length === 2) {
+      pinch = { d: dist(e.touches) || 1, s: scale };
+      live(true);
+      e.preventDefault();
+    }
+  }, { passive: false });
+  scrollEl.addEventListener('touchmove', e => {
+    if (e.touches.length !== 2 || !pinch) return;
+    e.preventDefault();
+    const c = mid(e.touches);
+    zoomTo(pinch.s * (dist(e.touches) / pinch.d), c.x, c.y);
+  }, { passive: false });
+  scrollEl.addEventListener('touchend', e => {
+    if (pinch && e.touches.length < 2) { pinch = null; live(false); setCursor(); return; }
+    if (e.touches.length || e.changedTouches.length !== 1) return;
+    const now = Date.now(), t = e.changedTouches[0];
+    if (now - lastTap < 300) {
+      lastTap = 0;
+      zoomTo(scale > 1.05 ? 1 : 2.5, t.clientX, t.clientY);
+      setCursor();
+    } else lastTap = now;
+  });
+
+  paint();
+  setTimeout(setCursor, 0);
+  return {
+    zoomBy: f => { zoomTo(scale * f); setCursor(); },
+    reset: () => { zoomTo(1); scrollEl.scrollTop = scrollEl.scrollLeft = 0; setCursor(); },
+    refit: setCursor,
+  };
+}
+
 function _openMermaidViewer(source, svg) {
   // Make the viewer SVG fill the modal — strip any inline width/height/style
   // and apply our own. Dimensions controlled via .mermaid-viewer-svg CSS.
@@ -232,12 +342,7 @@ function _openMermaidViewer(source, svg) {
   if (typeof makeResizable === 'function') makeResizable(overlay.querySelector('.mermaid-viewer-content'));
   const svgWrap = overlay.querySelector('.mermaid-viewer-svg');
   const zoomLabel = overlay.querySelector('.mermaid-viewer-zoom-label');
-  let scale = 1;
-  const applyScale = () => {
-    svgWrap.style.transform = `scale(${scale})`;
-    svgWrap.style.transformOrigin = 'top left';
-    zoomLabel.textContent = Math.round(scale * 100) + '%';
-  };
+  const gest = _ivGestures(overlay.querySelector('.mermaid-viewer-scroll'), svgWrap, zoomLabel);
   const closeIt = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
   // Close on backdrop click — but ONLY when the gesture also STARTED on the
   // backdrop. A `click` fires on the nearest common ancestor of mousedown and
@@ -260,27 +365,19 @@ function _openMermaidViewer(source, svg) {
     _downloadMermaid(overlay);
   });
   overlay.querySelector('.mermaid-viewer-zoom-in').addEventListener('click', e => {
-    e.stopPropagation(); scale = Math.min(scale * 1.25, 5); applyScale();
+    e.stopPropagation(); gest.zoomBy(1.25);
   });
   overlay.querySelector('.mermaid-viewer-zoom-out').addEventListener('click', e => {
-    e.stopPropagation(); scale = Math.max(scale / 1.25, 0.2); applyScale();
+    e.stopPropagation(); gest.zoomBy(1 / 1.25);
   });
   overlay.querySelector('.mermaid-viewer-zoom-reset').addEventListener('click', e => {
-    e.stopPropagation(); scale = 1; applyScale();
+    e.stopPropagation(); gest.reset();
   });
-  // Mouse-wheel zoom over the SVG
-  const scrollWrap = overlay.querySelector('.mermaid-viewer-scroll');
-  scrollWrap.addEventListener('wheel', e => {
-    if (!e.ctrlKey && !e.metaKey) return;  // only zoom on Ctrl/Cmd+wheel
-    e.preventDefault();
-    scale = Math.max(0.2, Math.min(5, scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-    applyScale();
-  }, { passive: false });
   const onKey = e => {
     if (e.key === 'Escape') closeIt();
-    else if (e.key === '+' || e.key === '=') { scale = Math.min(scale * 1.25, 5); applyScale(); }
-    else if (e.key === '-') { scale = Math.max(scale / 1.25, 0.2); applyScale(); }
-    else if (e.key === '0') { scale = 1; applyScale(); }
+    else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
+    else if (e.key === '-') gest.zoomBy(1 / 1.25);
+    else if (e.key === '0') gest.reset();
   };
   document.addEventListener('keydown', onKey);
 }
@@ -414,6 +511,8 @@ function _openImageViewer(src) {
   const scrollEl = overlay.querySelector('.mermaid-viewer-scroll');
   const imgEl = overlay.querySelector('.mermaid-viewer-svg img');
 
+  const gest = _ivGestures(scrollEl, wrap, zoomLabel);
+
   // ── Background mode (persisted) ──
   let bg = _ivBgGet();
   const applyBg = () => {
@@ -448,15 +547,10 @@ function _openImageViewer(src) {
     const h = Math.max(220, Math.min(nh + CHROME_H, maxH));
     content.style.width = w + 'px';
     content.style.height = h + 'px';
+    gest.refit();
   };
   if (imgEl.complete) sizeToImage();
   else imgEl.addEventListener('load', sizeToImage, { once: true });
-  let scale = 1;
-  const applyScale = () => {
-    wrap.style.transform = `scale(${scale})`;
-    wrap.style.transformOrigin = 'top left';
-    zoomLabel.textContent = Math.round(scale * 100) + '%';
-  };
   const closeIt = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
   // Close on backdrop click — but ONLY when the gesture also STARTED there. A
   // `click` fires on the nearest common ancestor of mousedown and mouseup, so
@@ -469,26 +563,19 @@ function _openImageViewer(src) {
   });
   overlay.querySelector('._iv-close').addEventListener('click', closeIt);
   overlay.querySelector('._iv-zi').addEventListener('click', e => {
-    e.stopPropagation(); scale = Math.min(scale * 1.25, 5); applyScale();
+    e.stopPropagation(); gest.zoomBy(1.25);
   });
   overlay.querySelector('._iv-zo').addEventListener('click', e => {
-    e.stopPropagation(); scale = Math.max(scale / 1.25, 0.2); applyScale();
+    e.stopPropagation(); gest.zoomBy(1 / 1.25);
   });
   overlay.querySelector('._iv-zr').addEventListener('click', e => {
-    e.stopPropagation(); scale = 1; applyScale();
+    e.stopPropagation(); gest.reset();
   });
-  const scrollWrap = overlay.querySelector('.mermaid-viewer-scroll');
-  scrollWrap.addEventListener('wheel', e => {
-    if (!e.ctrlKey && !e.metaKey) return;
-    e.preventDefault();
-    scale = Math.max(0.2, Math.min(5, scale * (e.deltaY < 0 ? 1.1 : 1 / 1.1)));
-    applyScale();
-  }, { passive: false });
   const onKey = e => {
     if (e.key === 'Escape') closeIt();
-    else if (e.key === '+' || e.key === '=') { scale = Math.min(scale * 1.25, 5); applyScale(); }
-    else if (e.key === '-') { scale = Math.max(scale / 1.25, 0.2); applyScale(); }
-    else if (e.key === '0') { scale = 1; applyScale(); }
+    else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
+    else if (e.key === '-') gest.zoomBy(1 / 1.25);
+    else if (e.key === '0') gest.reset();
   };
   document.addEventListener('keydown', onKey);
 }

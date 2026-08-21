@@ -4159,6 +4159,12 @@
   .mermaid-viewer-scroll {
     flex: 1; overflow: auto; padding: 24px;
     background: #fff;
+    /* pan-x/pan-y keeps NATIVE one-finger scrolling; leaving pinch-zoom out
+       is what lets the viewer's own two-finger handler fire instead of the
+       browser zooming the whole page. Contain stops a pan at the picture's
+       edge from scrolling the chat behind the overlay. */
+    touch-action: pan-x pan-y;
+    overscroll-behavior: contain;
   }
   .mermaid-viewer-scroll.vbg-checker {
     background-color: #fff;
@@ -4178,6 +4184,8 @@
     transition: transform 0.12s ease-out;
     transform-origin: top left;
   }
+  /* Native image-drag would hijack the drag-to-pan gesture. */
+  .mermaid-viewer-svg img { -webkit-user-drag: none; user-drag: none; }
   .mermaid-viewer-svg svg {
     display: block;
     width: 100% !important;
