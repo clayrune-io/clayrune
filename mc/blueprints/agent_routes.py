@@ -2440,7 +2440,12 @@ def _read_agent_stream(proc, session):
                                     if _is_plan_path(fp):
                                         session['plan_file'] = fp
                             elif tool_name == 'ExitPlanMode':
-                                if session.get('_last_md_file'):
+                                # Same containment rule as the Write/Edit path
+                                # above: a plan is a .md file under
+                                # ~/.claude/plans/. Without this check this
+                                # branch registered ANY .md the agent had
+                                # touched, and /agent/plan-file then served it.
+                                if _is_plan_path(session.get('_last_md_file', '')):
                                     session['plan_file'] = session['_last_md_file']
                                 session['waiting_for_plan_approval'] = True
                                 session['log_lines'].append('[Plan mode exit detected — waiting for user approval]')
@@ -2647,7 +2652,12 @@ def _read_agent_stream_b(proc, session):
                                     if _is_plan_path(fp):
                                         session['plan_file'] = fp
                             elif tool_name == 'ExitPlanMode':
-                                if session.get('_last_md_file'):
+                                # Same containment rule as the Write/Edit path
+                                # above: a plan is a .md file under
+                                # ~/.claude/plans/. Without this check this
+                                # branch registered ANY .md the agent had
+                                # touched, and /agent/plan-file then served it.
+                                if _is_plan_path(session.get('_last_md_file', '')):
                                     session['plan_file'] = session['_last_md_file']
                                 session['waiting_for_plan_approval'] = True
                                 session['log_lines'].append('[Plan mode exit detected — waiting for user approval]')
@@ -5662,6 +5672,12 @@ def agent_plan_file(project_id):
     if not plan_path:
         return jsonify({'error': 'no plan file'}), 404
     p = Path(plan_path)
+    # Same containment gate as /api/plan-file below. Belt and braces: the two
+    # writers of session['plan_file'] both check _is_plan_path now, but this
+    # endpoint hands file CONTENT to the browser, so it should not depend on
+    # every future writer remembering to.
+    if not _is_plan_path(plan_path):
+        return jsonify({'error': 'access denied'}), 403
     if not p.is_file():
         return jsonify({'error': 'file not found'}), 404
     try:
