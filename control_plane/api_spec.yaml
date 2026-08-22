@@ -24,6 +24,15 @@ servers:
   - url: https://api-staging.PLATFORM_DOMAIN/v1
     description: Staging
 
+# Default security posture: authenticated unless an operation explicitly opts
+# out with `security: []`. Declaring this at the top level means a NEW path
+# that forgets a `security:` block inherits auth rather than silently
+# defaulting to public — the failure mode that matters. The handful of
+# genuine opt-outs (/health, /connect, /signin/*, /webhooks/cloudflare) keep
+# their explicit empty arrays below and are listed there with a reason.
+security:
+  - FirebaseIdToken: []
+
 tags:
   - name: public
     description: Unauthenticated endpoints
@@ -127,7 +136,8 @@ components:
         time: { type: string, format: date-time }
         problems:
           type: array
-          items: { type: string }
+          maxItems: 64
+          items: { type: string, maxLength: 512 }
 
     #─── Enrollment ────────────────────────────────────────────────────────────
     EnrollRequest:
@@ -548,6 +558,8 @@ paths:
     get:
       tags: [public]
       summary: Liveness probe
+      # Public by design: load balancers and uptime checks call this with no
+      # credential. Returns status/build/time only — no tenant data.
       security: []
       responses:
         '200':
@@ -561,6 +573,8 @@ paths:
     get:
       tags: [public]
       summary: Enrollment landing page (HTML)
+      # Public by design: this is the page an un-enrolled device opens to
+      # START enrolling. Requiring auth here is circular.
       security: []
       parameters:
         - { name: device_pub, in: query, required: true, schema: { type: string } }
@@ -579,6 +593,8 @@ paths:
     post:
       tags: [public]
       summary: Begin signin (Google or email OTP)
+      # Public by design: pre-authentication by definition — this is where a
+      # credential is obtained. Rate-limited (429) instead.
       security: []
       parameters:
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -599,6 +615,8 @@ paths:
     post:
       tags: [public]
       summary: Finalize signin → ID token
+      # Public by design: pre-authentication by definition; the OTP/Google
+      # exchange IS the credential check. Rate-limited (429) instead.
       security: []
       requestBody:
         required: true
@@ -816,6 +834,10 @@ paths:
       description: |
         Updates `devices.online` heuristically. Webhook absence does not affect
         security; attestation is the authoritative signal.
+      # Public to bearer auth by design, NOT unauthenticated: Cloudflare signs
+      # each call and the handler verifies X-Cloudflare-Signature (HMAC).
+      # OpenAPI has no scheme for "HMAC over the raw body", hence the empty
+      # array. It is a spec-expressiveness gap, not a missing control.
       security: []
       parameters:
         - name: X-Cloudflare-Signature

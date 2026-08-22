@@ -894,6 +894,19 @@ def _mobile_pair_verify(tunnel_url: str, client_id: str,
     if not tunnel_url or not client_id or not client_secret:
         return False, 'missing fields'
     url = tunnel_url.rstrip('/') + '/'
+    # urllib also speaks file:// and ftp://. The caller normalises anything
+    # without an http(s) prefix by prepending https://, so a file:// URL
+    # already fails — but that is incidental, not a control. Assert it here,
+    # where the fetch happens, so a change to that normalisation cannot
+    # quietly turn this into a local-file read.
+    #
+    # Internal/private hosts stay reachable on purpose: this verifies the
+    # operator's OWN tunnel, which may legitimately be a LAN address. It is
+    # blind either way — no response body is ever returned to the caller,
+    # only a status code or a generic failure string.
+    from urllib.parse import urlparse as _urlparse
+    if _urlparse(url).scheme.lower() not in ('http', 'https'):
+        return False, 'tunnel_url must be http(s)'
     req = urllib.request.Request(url, method='GET')
     req.add_header('CF-Access-Client-Id', client_id)
     req.add_header('CF-Access-Client-Secret', client_secret)
