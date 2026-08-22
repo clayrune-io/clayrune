@@ -422,7 +422,8 @@ def _resolve_project_mcp_config(project):
              level='warn')
         return None
 
-def _build_claude_flags(project=None, streaming=False, model_override=None):
+def _build_claude_flags(project=None, streaming=False, model_override=None,
+                        effort_override=None):
     """Build common Claude CLI flags from config, with optional per-project overrides.
     Delegates to ClaudeRuntime.build_command()[1:] — single source of truth.
     Returns flags only (no binary prefix), matching the legacy contract.
@@ -430,11 +431,17 @@ def _build_claude_flags(project=None, streaming=False, model_override=None):
     `model_override` lets a caller force a specific model (e.g. picked by the
     auto-router via _resolve_dispatch_model). Pass-through when None — existing
     callers that don't know about routing keep their original behavior.
+
+    `effort_override` is the same idea for reasoning effort, used by an agent
+    type that pins one (docs/AGENT_TYPES_DESIGN.md §3). Kept a separate arg
+    rather than read off `project` because the character is not the project.
     """
     model = model_override or (
         (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
     )
-    effort = (project or {}).get('agent_effort', '') or state.CONFIG.get('agent_effort', '')
+    effort = (effort_override
+              or (project or {}).get('agent_effort', '')
+              or state.CONFIG.get('agent_effort', ''))
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=state.CONFIG.get('agent_max_turns', 0),
@@ -480,7 +487,7 @@ _classifier_pool = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-def _dispatch_with_routing(project, prompt, streaming=False):
+def _dispatch_with_routing(project, prompt, streaming=False, effort_override=None):
     """One-shot helper: resolve model + build flags.
 
     Returns (model, source, flags). Caller stamps session['model'] and
@@ -488,11 +495,13 @@ def _dispatch_with_routing(project, prompt, streaming=False):
     don't have a separate expensive context-build step to parallelize with.
     """
     model, source = _resolve_dispatch_model(project, prompt)
-    flags = _build_claude_flags(project, streaming=streaming, model_override=model)
+    flags = _build_claude_flags(project, streaming=streaming, model_override=model,
+                                effort_override=effort_override)
     return model, source, flags
 
 
-def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=False):
+def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=False,
+                                    effort_override=None):
     """Same as `_dispatch_with_routing` but runs `context_builder` in parallel
     with the classifier when the router is on.
 
@@ -507,7 +516,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
     """
     if not state.CONFIG.get('auto_model_enabled', False) or not prompt:
         context = context_builder() if context_builder else ''
-        model, source, flags = _dispatch_with_routing(project, prompt, streaming=streaming)
+        model, source, flags = _dispatch_with_routing(project, prompt, streaming=streaming,
+                                                      effort_override=effort_override)
         return model, source, flags, context, ''
 
     fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
@@ -523,7 +533,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
     except Exception as _exc:
         model, source = fallback, 'fallback'
         _fallback_reason = type(_exc).__name__
-    flags = _build_claude_flags(project, streaming=streaming, model_override=model)
+    flags = _build_claude_flags(project, streaming=streaming, model_override=model,
+                                effort_override=effort_override)
     return model, source, flags, context, _fallback_reason
 
 
@@ -3919,15 +3930,29 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     return session_id
 
 
-def _resolve_character(pp, character):
-    """Resolve a new-chat character selection to (meta, body).
+def _resolve_character(pp, character, project=None):
+    """Resolve a chat's character to (meta, body).
 
     `character` is a "scope:name" string from the new-chat picker
-    (e.g. "project:code-reviewer", "global:docs-writer"); empty/None = none.
-    Best-effort: an unknown/invalid value yields (None, '') so a stale pick
-    never blocks dispatch. meta = {'name','scope','display_name'} for the
-    session record + header pill.
+    (e.g. "project:code-reviewer", "global:docs-writer"). When it is empty the
+    project's `default_character` is used instead — the agent-types Phase 1
+    layer (docs/AGENT_TYPES_DESIGN.md §4), and the thing that stops a persona
+    being something the user has to remember to switch on every single time.
+
+    Best-effort throughout: an unknown or stale value yields (None, '') so a
+    deleted character never blocks dispatch. A stale PROJECT DEFAULT matters
+    more than a stale pick — nobody typed it, so nobody is watching for it to
+    break — hence the miss is logged rather than swallowed.
+
+    meta = {'name','scope','display_name','source','engine'} for the session
+    record and the header pill. `source` is 'picked' | 'project'; the pill has
+    to be able to say WHY this persona is running, or an inherited one looks
+    like the agent silently changed personality.
     """
+    source = 'picked'
+    if not character or not isinstance(character, str):
+        character = ((project or {}).get('default_character') or '')
+        source = 'project'
     if not character or not isinstance(character, str):
         return None, ''
     scope, _, name = character.partition(':')
@@ -3944,10 +3969,23 @@ def _resolve_character(pp, character):
         _log(f"[dispatch] character resolve failed for {character!r}: {e}")
         return None, ''
     if not rec:
+        if source == 'project':
+            _log(f"[dispatch] project default character {character!r} not found "
+                 f"— dispatching with no persona", level='warn')
         return None, ''
     meta = {'name': rec.get('name') or name, 'scope': scope,
-            'display_name': rec.get('display_name') or rec.get('name') or name}
+            'display_name': rec.get('display_name') or rec.get('name') or name,
+            'source': source}
+    engine = rec.get('engine') or {}
+    if engine:
+        meta['engine'] = engine
     return meta, (rec.get('body') or '')
+
+
+def _character_engine(character_meta, key):
+    """One engine key off a resolved character, or '' when unpinned."""
+    v = ((character_meta or {}).get('engine') or {}).get(key)
+    return v.strip() if isinstance(v, str) else ''
 
 
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
@@ -3993,7 +4031,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # Resolve the per-chat character (persona) now, at spawn — the only point
     # a system prompt can be set (claude -r restores the original). Immutable
     # for this chat's lifetime; switching personas = a new chat.
-    character_meta, character_body = _resolve_character(pp, character)
+    character_meta, character_body = _resolve_character(pp, character, project=p)
 
     # ── Multi-provider routing ──────────────────────────────────────────────
     # If the conversation selects a non-claude provider, dispatch through the
@@ -4001,7 +4039,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # bound per-conversation: `provider_override` (chosen in the new-chat
     # composer) wins, then the project's default seed, then the global default.
     # Default behavior (all unset OR claude) is unchanged.
-    provider_name = (provider_override or p.get('provider')
+    # Precedence: explicit per-chat pick > the character's own provider >
+    # project default > global. The character sits above the project because
+    # "Grok for coding" is a property of the TYPE, not of the repo it runs in.
+    provider_name = (provider_override
+                     or _character_engine(character_meta, 'provider')
+                     or p.get('provider')
                      or state.CONFIG.get('default_provider') or 'claude').lower()
     if provider_name != 'claude':
         try:
@@ -4079,20 +4122,33 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     _sp_args = []
     _sp_path = None
     _router_fallback_reason = ''
+    # A character's pinned model is an explicit choice by whoever authored the
+    # type ("Fable writes PRDs"), so it outranks the complexity classifier for
+    # the same reason the composer's Model picker does — but NOT the picker
+    # itself, which is the user speaking about this one turn.
+    _char_model = _character_engine(character_meta, 'model')
+    _char_effort = _character_engine(character_meta, 'effort') or None
+    if not model_override and _char_model:
+        model_override = _char_model
     if resume_id:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
             _dispatch_with_routing_parallel(
                 p, task,
                 context_builder=lambda: _build_agent_context(
-                    p, incognito=incognito, task=task),
-                streaming=use_streaming))
+                    p, incognito=incognito, task=task,
+                    character_body=character_body),
+                streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
-        # Composer "Model" picker: an explicit per-chat choice — user intent
-        # beats the classifier, so the auto-router is bypassed entirely.
-        routed_model, routed_source = model_override, 'manual'
+        # Composer "Model" picker, or the character's pinned model: an explicit
+        # choice either way, so the auto-router is bypassed entirely. The
+        # source is reported distinctly so the per-bubble pill can say whether
+        # the user or the agent type chose the engine.
+        routed_model = model_override
+        routed_source = 'character' if model_override == _char_model else 'manual'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
-                                         model_override=model_override)
+                                         model_override=model_override,
+                                         effort_override=_char_effort)
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body)
         _sp_args, _sp_path = _sysprompt_file_args(context)
@@ -4103,7 +4159,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
                     character_body=character_body),
-                streaming=use_streaming))
+                streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     # Per-dispatch telemetry — best-effort; never raises. requested = the
     # model the user configured; chosen = what actually went to --model

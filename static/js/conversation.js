@@ -32,6 +32,18 @@ function _ensureCharacters(projectId) {
     .catch(() => { characterCache[projectId] = []; characterCacheLoading[projectId] = false; });
 }
 
+// Short engine label for a character: the model if pinned, else the provider.
+// Full ids ("claude-haiku-4-5-20251001") make the picker unreadable, so reuse
+// the model-picker's friendly labels — single source of truth for the naming.
+function _engShortLabel(engine) {
+  if (!engine) return '';
+  if (engine.model) {
+    const c = (window.MC_MODEL_CHOICES || []).find(x => x[0] === engine.model);
+    return c ? c[1] : engine.model;
+  }
+  return engine.provider || '';
+}
+
 // Character/persona dropdown for the +New composer. Returns '' (no picker)
 // only on resume (persona is fixed at spawn). Always offered otherwise so the
 // "Create new persona…" entry is reachable even with no characters yet.
@@ -43,9 +55,20 @@ function _composerCharacterPicker(p, resumeId) {
   const cur = pendingDispatchCharacter[p.id] || '';
   const opts = list.map(c => {
     const val = esc((c.scope || 'global') + ':' + c.name);
-    const label = esc(c.display_name || c.name) + (c.scope === 'global' ? ' (global)' : '');
+    const eng = c.engine && (c.engine.model || c.engine.provider);
+    const label = esc(c.display_name || c.name)
+      + (c.scope === 'global' ? ' (global)' : '')
+      + (eng ? ' · ' + esc(_engShortLabel(c.engine)) : '');
     return `<option value="${val}" ${val === cur ? 'selected' : ''}>${label}</option>`;
   }).join('');
+  // With a project default set, an empty pick is NOT "no persona" — it inherits.
+  // Labelling it "None" would state the opposite of what dispatch will do.
+  const _defRec = p.default_character
+    ? list.find(c => ((c.scope || 'global') + ':' + c.name) === p.default_character)
+    : null;
+  const noneLabel = p.default_character
+    ? 'Project default' + (_defRec ? ' (' + esc(_defRec.display_name || _defRec.name) + ')' : '')
+    : 'None';
   // Pencil → edit the SELECTED persona (description / instructions / delete).
   // Only shown when one is selected: there's nothing to edit otherwise, and it
   // keeps the row quiet in the common "None" case.
@@ -56,7 +79,7 @@ function _composerCharacterPicker(p, resumeId) {
   return `<div class="composer-provider-row composer-character-row">
     <span class="composer-provider-label">Persona</span>
     <select class="composer-provider-select" onchange="setComposerCharacter('${esc(p.id)}',this.value)">
-      <option value="">None</option>${opts}
+      <option value="">${noneLabel}</option>${opts}
       <option value="__create__">&#43; Create new persona&hellip;</option>
     </select>
     ${editBtn}
@@ -140,7 +163,10 @@ function resolveCharacterMeta(projectId, character) {
   const scope = character.slice(0, i), name = character.slice(i + 1);
   const rec = (characterCache[projectId] || [])
     .find(c => c.name === name && (c.scope || 'global') === scope);
-  return { name, scope, display_name: (rec && (rec.display_name || rec.name)) || name };
+  const meta = { name, scope, source: 'picked',
+                 display_name: (rec && (rec.display_name || rec.name)) || name };
+  if (rec && rec.engine) meta.engine = rec.engine;
+  return meta;
 }
 window.setComposerCharacter = setComposerCharacter;
 window.editComposerCharacter = editComposerCharacter;
@@ -149,6 +175,16 @@ window.clearCharacterIfSelected = clearCharacterIfSelected;
 window.getPendingCharacter = getPendingCharacter;
 window.clearPendingCharacter = clearPendingCharacter;
 window.resolveCharacterMeta = resolveCharacterMeta;
+window._engShortLabel = _engShortLabel;
+// Bridged for the Project-profile dialog (modal-manager.js), which needs the
+// same character list. ES modules don't share top-level bindings, and the
+// cache is a live object — hand back a getter, not a snapshot, or the dialog
+// renders whatever was cached at module-eval time (i.e. nothing).
+window._ensureCharacters = _ensureCharacters;
+// The persona editor needs the provider list to build its Engine picker.
+// A getter, not a snapshot — the list is fetched lazily after module eval.
+window._agentProvidersList = () => _agentProviders || [];
+window.characterCacheFor = (pid) => characterCache[pid] || [];
 
 // Provider is bound per-conversation. The new-chat composer picks it; the
 // project's `provider` field (set via three-dot menu) is only the default seed.
@@ -1168,8 +1204,20 @@ function agentPanelHTML(p) {
     // when a character was chosen at spawn; immutable for this chat's life.
     const _char = activeSession && activeSession.character;
     const _charName = _char && (_char.display_name || _char.name);
+    // An INHERITED persona (the project default, agent types Phase 1) must not
+    // look identical to one the user picked — otherwise the agent appears to
+    // have silently changed personality. The pill carries the source.
+    const _charInherited = _char && _char.source === 'project';
+    const _charEng = (_char && _char.engine) || {};
+    const _charEngBits = ['provider', 'model', 'effort']
+      .filter(k => _charEng[k]).map(k => _charEng[k]);
     const _charBadge = _charName
-      ? `<span class="character-badge" title="Persona for this chat: ${esc(_charName)}${_char.scope === 'global' ? ' (global)' : ''} — fixed for the conversation; start a new chat to change it">&#x1F3AD; ${esc(_charName)}</span>`
+      ? `<span class="character-badge${_charInherited ? ' inherited' : ''}" title="${
+          _charInherited ? 'Project default persona' : 'Persona for this chat'}: ${esc(_charName)}${
+          _char.scope === 'global' ? ' (global)' : ''}${
+          _charEngBits.length ? ' — runs on ' + esc(_charEngBits.join(' · ')) : ''
+        } — fixed for the conversation; start a new chat to change it">&#x1F3AD; ${esc(_charName)}${
+          _charInherited ? '<span class="cb-src">default</span>' : ''}</span>`
       : '';
     // APK version pill — visible only inside the Capacitor APK (the native
     // injection sets window.__clayruneAPK). Lets the user confirm which

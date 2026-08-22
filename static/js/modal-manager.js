@@ -664,6 +664,28 @@ function closeProfileDialog() {
   _profileDialogProjectId = null;
 }
 
+// Options for the project-default persona picker. Reuses the composer's
+// character cache; kicking the lazy load here means opening this dialog on a
+// project whose chat tab was never visited still lists the personas.
+function _pfdCharacterOptions(p) {
+  if (typeof window._ensureCharacters === 'function') window._ensureCharacters(p.id);
+  const list = (window.characterCacheFor && window.characterCacheFor(p.id)) || [];
+  const cur = p.default_character || '';
+  const opts = list.map(c => {
+    const val = (c.scope || 'global') + ':' + c.name;
+    const eng = (typeof window._engShortLabel === 'function') ? window._engShortLabel(c.engine) : '';
+    return `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${
+      esc(c.display_name || c.name)}${c.scope === 'global' ? ' (global)' : ''}${
+      eng ? ' · ' + esc(eng) : ''}</option>`;
+  }).join('');
+  // A default that no longer resolves must stay visible and selected, or
+  // reopening the dialog would silently show "None" over a live stale value.
+  const known = list.some(c => ((c.scope || 'global') + ':' + c.name) === cur);
+  const missing = (cur && !known)
+    ? `<option value="${esc(cur)}" selected>${esc(cur)} (missing)</option>` : '';
+  return `<option value="" ${cur ? '' : 'selected'}>None</option>${missing}${opts}`;
+}
+
 function _renderProfileDialog() {
   const p = allProjects.find(x => x.id === _profileDialogProjectId);
   const box = document.getElementById('profile-dialog-box');
@@ -687,6 +709,12 @@ function _renderProfileDialog() {
           style="flex:1;box-sizing:border-box">
         <button class="btn-browse" onclick="openFolderPicker('${esc(p.id)}')" title="Browse for folder">Browse…</button>
       </div>
+    </div>
+    <div class="settings-row">
+      <div><div class="settings-label">Default agent type</div><div class="settings-hint">New chats start as this persona unless you pick another. Its pinned model/provider wins over the project's.</div></div>
+      <select id="pfd-character" style="max-width:220px;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px">
+        ${_pfdCharacterOptions(p)}
+      </select>
     </div>
     <div class="settings-row">
       <div><div class="settings-label">Backlog key</div><div class="settings-hint">Prefix for item handles &mdash; ${esc(p.backlog_key || 'MC')}-01, ${esc(p.backlog_key || 'MC')}-02. Must be unique across projects; blank re-derives it from the name.</div></div>
@@ -720,10 +748,14 @@ async function saveProfileDialog() {
   // future tightening, and an unchanged field shouldn't be a write at all.
   const key = keyEl ? keyEl.value.trim().toUpperCase() : null;
   const keyChanged = key !== null && key !== ((p && p.backlog_key) || '');
+  const charEl = document.getElementById('pfd-character');
+  const character = charEl ? charEl.value : null;
+  const charChanged = character !== null && character !== ((p && p.default_character) || '');
   closeProfileDialog();
   if (!projectId || description === null) return;
   const body = { description };
   if (keyChanged) body.backlog_key = key;
+  if (charChanged) body.default_character = character;
   try {
     const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
@@ -775,6 +807,9 @@ function _modelShortLabel(id) {
 // Cross-module: the composer's Model picker (conversation.js) reuses this list —
 // single source of truth for the model ids/labels.
 window.MC_MODEL_CHOICES = MC_MODEL_CHOICES;
+// Same reason: the persona editor (claydo.js) builds an effort picker and
+// cannot see a module-scoped const.
+window.MC_EFFORT_CHOICES = MC_EFFORT_CHOICES;
 
 let _agentSettingsProjectId = null;
 

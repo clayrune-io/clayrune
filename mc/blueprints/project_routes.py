@@ -421,6 +421,23 @@ def update_project(project_id):
         else:
             data['backlog_key'] = key
 
+    # ── The project's default agent type (docs/AGENT_TYPES_DESIGN.md §4).
+    # Shape-checked only: whether the character still EXISTS is deliberately
+    # not verified here. A character can be deleted long after this is set, so
+    # a check at write time would prove nothing at read time — dispatch resolves
+    # it best-effort and logs a miss instead. Blank clears it.
+    if 'default_character' in data:
+        dc = str(data.get('default_character') or '').strip()
+        if not dc:
+            data.pop('default_character', None)
+            existing.pop('default_character', None)
+        else:
+            scope, _, cname = dc.partition(':')
+            if scope.strip().lower() not in ('project', 'global') or not cname.strip():
+                return jsonify({'error': 'default_character must look like '
+                                         '"project:name" or "global:name"'}), 400
+            data['default_character'] = f'{scope.strip().lower()}:{cname.strip()}'
+
     for k, v in data.items():
         if k not in ('log_msg', 'backlog'):
             existing[k] = v

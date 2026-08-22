@@ -169,3 +169,83 @@ class TestListReadUpdateDelete:
             description='Use for documentation work.'))
         items = client.get('/api/characters?q=documentation').get_json()
         assert [c['name'] for c in items] == ['docs-writer']
+
+
+# ── Engine pins (agent types Phase 1, docs/AGENT_TYPES_DESIGN.md §3) ─────────
+#
+# A character may pin provider / model / effort so the TYPE carries its engine
+# ("Fable writes PRDs") instead of inheriting whatever the project is set to.
+# All three keys are optional and absent means "exactly as before", which is
+# what makes this a no-migration change for characters already on disk.
+
+def _mk(client, name='prd-writer', **engine):
+    body = {'name': name, 'scope': 'project', 'project_id': 'tchar',
+            'description': 'writes PRDs', 'body': 'You write PRDs.',
+            'overwrite': True, **engine}
+    return client.post('/api/characters', json=body)
+
+
+def _read(client, name='prd-writer'):
+    return client.get(f'/api/characters/project/{name}?project_id=tchar').get_json()
+
+
+def test_engine_pins_round_trip(client):
+    r = _mk(client, provider='claude', model='claude-fable-5', effort='high')
+    assert r.status_code == 201
+    assert _read(client)['engine'] == {'provider': 'claude',
+                                       'model': 'claude-fable-5',
+                                       'effort': 'high'}
+
+
+def test_no_engine_keys_means_no_engine(client):
+    assert _mk(client, name='plain').status_code == 201
+    assert 'engine' not in _read(client, 'plain')
+
+
+def test_unknown_provider_is_refused_not_silently_defaulted(client):
+    """A character pinned to a provider that isn't registered would spawn on
+    whatever the project default happens to be — running on the wrong engine
+    while claiming otherwise. Refuse the save instead."""
+    r = _mk(client, provider='grok')
+    assert r.status_code == 400
+    assert 'unknown provider' in r.get_json()['error']
+
+
+def test_invalid_effort_is_refused(client):
+    r = _mk(client, effort='ludicrous')
+    assert r.status_code == 400
+    assert 'effort must be one of' in r.get_json()['error']
+
+
+def test_put_omitting_engine_keys_leaves_them_alone(client):
+    """The editor sends all three every time, but other callers (and Claydo's
+    save path) don't — an omitted key must not silently clear a pin."""
+    _mk(client, model='claude-fable-5', effort='high')
+    r = client.put('/api/characters/project/prd-writer',
+                   json={'project_id': 'tchar', 'description': 'still writes PRDs'})
+    assert r.status_code == 200
+    assert _read(client)['engine'] == {'model': 'claude-fable-5', 'effort': 'high'}
+
+
+def test_put_with_an_empty_value_clears_that_pin(client):
+    """Absent and empty have to mean different things, or a pin set once could
+    never be removed from the editor."""
+    _mk(client, model='claude-fable-5', effort='high')
+    r = client.put('/api/characters/project/prd-writer',
+                   json={'project_id': 'tchar', 'model': ''})
+    assert r.status_code == 200
+    assert _read(client)['engine'] == {'effort': 'high'}
+
+
+def test_provider_is_normalised_to_lower_case(client):
+    assert _mk(client, provider='Claude').status_code == 201
+    assert _read(client)['engine']['provider'] == 'claude'
+
+
+def test_engine_survives_an_unrelated_body_edit(client):
+    _mk(client, model='claude-fable-5')
+    client.put('/api/characters/project/prd-writer',
+               json={'project_id': 'tchar', 'body': 'Rewritten instructions.'})
+    rec = _read(client)
+    assert rec['engine'] == {'model': 'claude-fable-5'}
+    assert 'Rewritten' in rec['body']

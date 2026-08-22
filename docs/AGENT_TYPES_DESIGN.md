@@ -1,6 +1,6 @@
 # Agent types — design doc (MC-895)
 
-Status: **design, not built.** 2026-08-22.
+Status: **Phase 1 SHIPPED** 2026-08-22 (CHANGELOG `[2026-08-22b]`); Phases 2-5 design-only.
 Backs `MC-895`; subsumes `MC-868`; unblocks `MC-871`.
 External prior art: OpenClaw multi-agent (§6b). Internal prior art:
 `docs/PROMPT_BUILDER_DESIGN.md` (characters, Phases 1–2 shipped),
@@ -290,7 +290,7 @@ prd-writer?" — where a wrong guess costs a click, not a turn.
 
 | Phase | Scope | Size |
 |---|---|---|
-| **1** | `default_character` on the project **+** `provider`/`model`/`effort` in character frontmatter **+** the precedence chain; header pill shows the type and where the engine came from | medium — merged, see below |
+| **1** ✅ | `default_character` on the project **+** `provider`/`model`/`effort` in character frontmatter **+** the precedence chain; header pill shows the type and where the engine came from | **SHIPPED** — `mc/characters.py` (`ENGINE_KEYS`), `_resolve_character(project=…)`, `_build_claude_flags(effort_override=…)`, persona-editor Engine row, Project-profile picker |
 | **2** | `bindings` — deterministic `{project, trigger} → character` | small once Phase 1 lands |
 | **3** | `handles:` + work-kind classifier as the last-resort inference step | medium |
 | **4** | `autonomy:` dial + non-escalating delegation + inherited unattended origin (§6a), with the Distiller refusal | small code, **needs a review** — it touches the authority bright line |
@@ -335,6 +335,9 @@ is the part that bites daily.
 **Still open:**
 
 4. **Non-Claude providers in a character.** Deferred by Ron ("Grok — later").
+   The *field* shipped in Phase 1 and validates against the live runtime
+   registry: an unregistered provider is a 400 at save time, per the
+   recommendation below. What stays deferred is wiring a Grok runtime at all.
    Seven are wired (Claude Code, Gemini, Codex, OpenCode, Goose, Aider, Kiro);
    Codex reports `auth: unknown` and four are not installed, so "Grok for
    coding" needs a provider that does not exist on this box. Standing

@@ -44,6 +44,64 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-22b] — a project can have a default agent, and an agent can have an engine
+
+Personas existed, and almost nobody used them. They were chosen per chat, they
+were opt-in, and the choice reset every time — so using one meant remembering
+to switch it on, every single conversation. The design doc that shipped them
+had named the missing layer itself and put it out of scope:
+
+> *"Optional later layer, NOT in scope: a project-level default character that
+> new chats inherit."*
+
+That layer is this release.
+
+**A project can name a default agent type.** Project profile → Default agent
+type. New chats start as that persona; picking one in the composer still wins,
+and picking "None" is still available. Where a persona came from is now visible
+in the header pill — an inherited one is dashed and labelled `default`, because
+a chat that silently adopts a personality nobody selected reads as the agent
+having changed on its own.
+
+**And an agent type can pin its own engine.** Three optional keys in the
+character's frontmatter:
+
+```yaml
+provider: claude
+model: claude-fable-5
+effort: high
+```
+
+Fable writes the PRDs, Opus does the market research — the engine belongs to
+the *type*, not to whatever project the type is running in. Set them in the
+persona editor's new Engine row; leave them on Default and nothing changes.
+
+- **Precedence, top down:** the composer's per-chat pick, then the character's
+  pin, then the project setting, then the complexity router, then the global
+  default. The character outranks the project because a type is meant to travel
+  between projects; it loses to an explicit pick because that is the user
+  speaking about this one turn.
+- **The model pill says `character`** when the type chose the engine, not
+  `manual` — otherwise the type's choice is indistinguishable from yours.
+- **An unknown provider is refused at save time**, not silently defaulted. A
+  character pinned to a provider that isn't registered would spawn on whatever
+  the project happens to use, while the pill claimed otherwise; that is worse
+  than a save that fails.
+- **Absent and empty are different.** An omitted key leaves a pin alone; an
+  empty one clears it. Without that split a pin could be set from the editor
+  and never removed.
+- Nothing migrates. Every key is optional, and every character already on disk
+  keeps behaving exactly as it did — the file also stays a valid Claude Code
+  subagent, so `@`-mention and auto-delegate are unaffected.
+
+**A stale default degrades quietly.** Nobody typed it, so nobody is watching
+for it to break: a deleted default resolves to no persona and logs, rather than
+failing the dispatch.
+
+Design and the reasoning behind the routing order: `docs/AGENT_TYPES_DESIGN.md`
+(MC-895). This is Phase 1 of five; deterministic `{project, trigger}` bindings
+and work-kind routing come next.
+
 ## [2026-08-22] — backlog items have keys (MC-01), and can point at each other
 
 An item's `id` is an eight-character uuid slice. It is stable, and it is

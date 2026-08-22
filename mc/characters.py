@@ -27,6 +27,38 @@ GLOBAL_AGENTS_DIR = _skills.GLOBAL_AGENTS_DIR
 # hard per-character cap well below it (design §8).
 MAX_BODY_BYTES = 6 * 1024
 
+# ── Engine keys (agent types, docs/AGENT_TYPES_DESIGN.md §3) ────────────────
+# A character may pin the engine it wants to run on: "Fable for a PRD, Opus for
+# market research". All three are OPTIONAL and an absent key means "behave
+# exactly as before" — which is the entire migration story for the characters
+# that already exist on disk.
+#
+# They live in the frontmatter rather than a Clayrune-side sidecar so the file
+# stays the single artifact: copy it to another machine and the type keeps its
+# engine. Claude Code ignores keys it does not know, so the file also stays a
+# valid subagent and @-mention / auto-delegate keep working.
+ENGINE_KEYS = ('provider', 'model', 'effort')
+
+# Mirrors MC_EFFORT_CHOICES in static/js/modal-manager.js. Validated here so a
+# typo is refused at save time — an effort string the CLI does not understand
+# is dropped silently downstream, which reads as "the dial does nothing".
+VALID_EFFORT = ('low', 'medium', 'high', 'xhigh', 'max')
+
+
+def _engine_from_meta(meta):
+    """Pull the engine keys out of parsed frontmatter, skipping blanks.
+
+    Absent and empty-string are deliberately the same thing: `model: ""` in a
+    hand-edited file must not pin the engine to nothing and shadow the project
+    default. Only a non-empty value counts as a pin.
+    """
+    out = {}
+    for k in ENGINE_KEYS:
+        v = meta.get(k)
+        if isinstance(v, str) and v.strip():
+            out[k] = v.strip()
+    return out
+
 
 def project_agents_dir(project_path: str | os.PathLike[str]) -> Path:
     return Path(project_path) / '.claude' / 'agents'
@@ -79,6 +111,9 @@ def _read_one(path: Path, scope: str, project_id: str | None,
         'file': path.name,
         'size': len(text.encode('utf-8')),
     }
+    engine = _engine_from_meta(meta)
+    if engine:
+        rec['engine'] = engine
     if project_id and scope == 'project':
         rec['project_id'] = project_id
     if include_body:
@@ -133,9 +168,16 @@ def read_character(scope: str, name: str, project_path: str | None = None,
 
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
-                    overwrite: bool = False) -> dict[str, Any]:
+                    overwrite: bool = False,
+                    engine: dict[str, Any] | None = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
-    bad input, FileExistsError on collision without overwrite."""
+    bad input, FileExistsError on collision without overwrite.
+
+    `engine` optionally pins provider / model / effort (ENGINE_KEYS). Keys with
+    an empty value are DROPPED rather than written blank, so clearing a field in
+    the editor removes the pin instead of persisting a falsy one that would
+    shadow the project default.
+    """
     err = _skills.validate_name(name)
     if err:
         raise ValueError(err)
@@ -154,12 +196,23 @@ def write_character(scope: str, name: str, description: str, body: str,
     if existing is not None and not overwrite:
         raise FileExistsError(f'character "{name}" already exists in {scope} scope')
 
+    front: dict[str, Any] = {'name': name, 'description': description}
+    for k in ENGINE_KEYS:
+        v = (engine or {}).get(k)
+        v = v.strip() if isinstance(v, str) else ''
+        if not v:
+            continue
+        if k == 'effort' and v not in VALID_EFFORT:
+            raise ValueError(
+                f'effort must be one of {", ".join(VALID_EFFORT)} (got {v!r})')
+        front[k] = v
+
     d = _scope_dir(scope, project_path)
     d.mkdir(parents=True, exist_ok=True)
     # Updates land on the file we found (which may be nested); creates go
     # top-level.
     path = existing if existing is not None else d / f'{name}.md'
-    text = _skills.dump_skill_md({'name': name, 'description': description},
+    text = _skills.dump_skill_md(front,
                                  body + ('\n' if not body.endswith('\n') else ''))
     path.write_text(text, encoding='utf-8')
     rec = _read_one(path, scope, None, include_body=False)

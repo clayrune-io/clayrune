@@ -883,6 +883,38 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
 // onDone (optional) fires after a successful save or delete, so whichever
 // surface opened the editor can refresh itself — the composer picker and the
 // Personas panel both need this and neither knows about the other.
+// Engine pickers for the persona editor (agent types, docs/AGENT_TYPES_DESIGN.md
+// §3). "Default" is the empty value everywhere and it means *unpinned* — the
+// project/global setting keeps deciding, exactly as before this existed.
+function _peOpts(pairs, cur) {
+  return pairs.map(([v, label]) =>
+    `<option value="${esc(v)}" ${v === (cur || '') ? 'selected' : ''}>${esc(label)}</option>`
+  ).join('');
+}
+
+function _peModelOptions(cur) {
+  // MC_MODEL_CHOICES already leads with ['', 'Default (global)'] and is the
+  // single source of truth for model ids/labels — don't restate them here.
+  const choices = (window.MC_MODEL_CHOICES || [['', 'Default']]).slice();
+  // A model pinned by hand that we no longer offer must still round-trip;
+  // dropping it from the list would silently clear the pin on the next save.
+  if (cur && !choices.some(c => c[0] === cur)) choices.push([cur, cur + ' (pinned)']);
+  return _peOpts(choices, cur);
+}
+
+function _peProviderOptions(cur) {
+  const provs = (window._agentProvidersList ? window._agentProvidersList() : [])
+    .filter(x => x.installed);
+  const choices = [['', 'Default provider']].concat(provs.map(x => [x.name, x.display_name]));
+  if (cur && !choices.some(c => c[0] === cur)) choices.push([cur, cur + ' (not installed)']);
+  return _peOpts(choices, cur);
+}
+
+function _peEffortOptions(cur) {
+  const choices = (window.MC_EFFORT_CHOICES || [['', 'Default']]).slice();
+  return _peOpts(choices, cur);
+}
+
 async function openPersonaEditor(projectId, scope, name, onDone) {
   document.querySelector('.persona-editor')?.remove();
 
@@ -909,6 +941,12 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
       <label>Instructions <span class="claydo-save-hint">(the persona's system prompt)</span></label>
       <textarea id="pe-body" spellcheck="true" rows="10">${esc(rec.body || '')}</textarea>
+      <label>Engine <span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
+      <div class="persona-engine-row">
+        <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
+        <select id="pe-model">${_peModelOptions((rec.engine || {}).model)}</select>
+        <select id="pe-effort">${_peEffortOptions((rec.engine || {}).effort)}</select>
+      </div>
       <div class="persona-editor-meta">
         <span>${scope === 'global' ? 'Global — all projects' : 'This project only'}</span>
         <span id="pe-size"></span>
@@ -959,7 +997,16 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}`, {
         method: 'PUT',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({description: desc, body, project_id: scope === 'project' ? projectId : null}),
+        // Always send all three keys, including empty ones: the API treats an
+        // ABSENT key as "leave it alone" and an EMPTY one as "clear the pin".
+        // Omitting them would make the pins unclearable from this editor.
+        body: JSON.stringify({
+          description: desc, body,
+          provider: panel.querySelector('#pe-provider').value,
+          model: panel.querySelector('#pe-model').value,
+          effort: panel.querySelector('#pe-effort').value,
+          project_id: scope === 'project' ? projectId : null,
+        }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }

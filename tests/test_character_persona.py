@@ -39,8 +39,10 @@ def env(tmp_path, monkeypatch):
 class TestResolveCharacter:
     def test_project_scope_resolves_meta_and_body(self, env):
         meta, body = env['ar']._resolve_character(env['proj_path'], 'project:code-reviewer')
+        # `source` tells the header pill WHY this persona is running — a picked
+        # one and an inherited one must not look identical (agent types §4).
         assert meta == {'name': 'code-reviewer', 'scope': 'project',
-                        'display_name': 'code-reviewer'}
+                        'display_name': 'code-reviewer', 'source': 'picked'}
         assert body.strip() == 'You are a terse reviewer.'
 
     def test_global_scope(self, env):
@@ -73,3 +75,151 @@ class TestContextInjection:
     def test_no_block_without_character(self, env):
         ctx = env['ar']._build_agent_context(self._project(env))
         assert 'CHARACTER (active persona' not in ctx
+
+
+# ── Agent types Phase 1 — project default + pinned engine ────────────────────
+#
+# The complaint this backs (MC-895): personas were per-chat and opt-in, so the
+# user had to remember to switch one on every single time. A project default
+# that new chats inherit was named and deferred by the Phase-2 prompt-builder
+# design; this is that layer.
+
+
+class TestProjectDefaultCharacter:
+    def _project(self, env, **extra):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude', **extra}
+
+    def test_project_default_applies_when_nothing_is_picked(self, env):
+        p = self._project(env, default_character='project:code-reviewer')
+        meta, body = env['ar']._resolve_character(env['proj_path'], '', project=p)
+        assert meta['name'] == 'code-reviewer'
+        assert meta['source'] == 'project'      # inherited, not picked
+        assert 'terse reviewer' in body
+
+    def test_an_explicit_pick_beats_the_project_default(self, env):
+        p = self._project(env, default_character='project:code-reviewer')
+        meta, _ = env['ar']._resolve_character(
+            env['proj_path'], 'global:docs-writer', project=p)
+        assert meta['name'] == 'docs-writer' and meta['source'] == 'picked'
+
+    def test_no_default_and_no_pick_is_todays_behaviour(self, env):
+        meta, body = env['ar']._resolve_character(
+            env['proj_path'], '', project=self._project(env))
+        assert meta is None and body == ''
+
+    def test_a_stale_project_default_never_blocks_dispatch(self, env):
+        """Nobody typed it, so nobody is watching for it to break — a deleted
+        default must degrade to no-persona, not to an exception."""
+        p = self._project(env, default_character='project:deleted-one')
+        meta, body = env['ar']._resolve_character(env['proj_path'], '', project=p)
+        assert meta is None and body == ''
+
+
+class TestCharacterEngine:
+    def _write(self, env, name, **engine):
+        from mc import characters as ch
+        ch.write_character('project', name, 'desc', 'body text',
+                           project_path=env['proj_path'], overwrite=True,
+                           engine=engine)
+
+    def test_engine_round_trips_through_the_file(self, env):
+        from mc import characters as ch
+        self._write(env, 'prd-writer', provider='claude',
+                    model='claude-fable-5', effort='high')
+        rec = ch.read_character('project', 'prd-writer',
+                                project_path=env['proj_path'])
+        assert rec['engine'] == {'provider': 'claude',
+                                 'model': 'claude-fable-5', 'effort': 'high'}
+
+    def test_engine_reaches_the_resolved_meta(self, env):
+        self._write(env, 'prd-writer', model='claude-fable-5')
+        meta, _ = env['ar']._resolve_character(env['proj_path'],
+                                               'project:prd-writer')
+        assert env['ar']._character_engine(meta, 'model') == 'claude-fable-5'
+        assert env['ar']._character_engine(meta, 'provider') == ''
+
+    def test_blank_values_are_not_written_as_pins(self, env):
+        """`model: ""` in a hand-edited file must not pin the engine to nothing
+        and shadow the project default — absent and empty mean the same."""
+        from mc import characters as ch
+        self._write(env, 'plain', provider='', model='', effort='')
+        rec = ch.read_character('project', 'plain',
+                                project_path=env['proj_path'])
+        assert 'engine' not in rec
+        meta, _ = env['ar']._resolve_character(env['proj_path'], 'project:plain')
+        assert env['ar']._character_engine(meta, 'model') == ''
+
+    def test_a_character_with_no_engine_is_unchanged(self, env):
+        meta, _ = env['ar']._resolve_character(env['proj_path'],
+                                               'project:code-reviewer')
+        assert 'engine' not in meta
+
+    def test_bad_effort_is_refused_at_save(self, env):
+        import pytest as _pytest
+        from mc import characters as ch
+        with _pytest.raises(ValueError, match='effort must be one of'):
+            ch.write_character('project', 'oops', 'desc', 'body',
+                               project_path=env['proj_path'], overwrite=True,
+                               engine={'effort': 'ludicrous'})
+
+
+class TestFlagEffortOverride:
+    def test_character_effort_beats_project_and_global(self, env):
+        ar = env['ar']
+        flags = ar._build_claude_flags({'id': 'tc', 'agent_effort': 'low'},
+                                       effort_override='max')
+        joined = ' '.join(flags)
+        assert 'max' in joined and 'low' not in joined
+
+    def test_no_override_keeps_the_project_effort(self, env):
+        ar = env['ar']
+        flags = ar._build_claude_flags({'id': 'tc', 'agent_effort': 'low'})
+        assert 'low' in ' '.join(flags)
+
+
+class TestProjectDefaultValidation:
+    """Shape only. Whether the character still exists is NOT checked at write
+    time — it can be deleted afterwards, so the check would prove nothing when
+    it matters. Dispatch resolves best-effort and logs the miss."""
+
+    @pytest.fixture()
+    def api(self, tmp_path, monkeypatch):
+        import server
+        from mc.blueprints import local_auth as la
+        from mc.blueprints import project_routes as pr
+        monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+        d = tmp_path / 'projects'
+        d.mkdir()
+        monkeypatch.setattr(pr, 'DATA_DIR', d)
+        monkeypatch.setattr(pr, '_DATA_ROOT', tmp_path)
+        monkeypatch.setattr(pr, 'PROJECTS_BASE', tmp_path)
+        import json as _json
+        (d / 'dc.json').write_text(_json.dumps(
+            {'id': 'dc', 'name': 'DC', 'backlog': [],
+             'project_path': str(tmp_path)}), encoding='utf-8')
+        server.app.config['TESTING'] = True
+        c = server.app.test_client()
+        c._dir = d
+        return c
+
+    def _rec(self, api):
+        import json as _json
+        return _json.loads((api._dir / 'dc.json').read_text(encoding='utf-8'))
+
+    def test_accepts_and_normalises(self, api):
+        r = api.post('/api/project/dc', json={'default_character': ' Project: Reviewer '})
+        assert r.status_code == 200
+        assert self._rec(api)['default_character'] == 'project:Reviewer'
+
+    def test_rejects_a_bad_shape(self, api):
+        r = api.post('/api/project/dc', json={'default_character': 'reviewer'})
+        assert r.status_code == 400
+        r = api.post('/api/project/dc', json={'default_character': 'archive:x'})
+        assert r.status_code == 400
+
+    def test_blank_clears_it(self, api):
+        api.post('/api/project/dc', json={'default_character': 'global:x'})
+        assert api.post('/api/project/dc',
+                        json={'default_character': ''}).status_code == 200
+        assert 'default_character' not in self._rec(api)
