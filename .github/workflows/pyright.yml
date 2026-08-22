@@ -7,6 +7,11 @@ name: Pyright
 # NON-BLOCKING for now (`|| true`): flip to blocking once the baseline is
 # clean. Same trigger scope as tests.yml: PRs + manual dispatch only.
 
+# Least privilege: these workflows only read the repo. Without an explicit
+# block they inherit the org/repo default, which can be write-all.
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [main, master]

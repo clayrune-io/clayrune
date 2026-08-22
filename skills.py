@@ -41,6 +41,30 @@ GLOBAL_SKILLS_DIR = _home() / '.claude' / 'skills'
 ARCHIVE_SKILLS_DIR = _home() / '.claude' / 'skills.archive'
 STAGING_SKILLS_DIR = _home() / '.claude' / 'skills.staging'  # transient — git imports wait here for picker selection
 
+# A staging id is minted below as `uuid.uuid4().hex[:12]`, so it is always bare
+# hex. Anything else came from a caller, not from us.
+_STAGING_ID_RE = re.compile(r'^[0-9a-f]{1,64}$')
+
+
+def staging_dir(staging_id: str) -> Path:
+    """Resolve a staging id to its directory, refusing anything that escapes.
+
+    `STAGING_SKILLS_DIR / staging_id` is a path join, so an id of `../../x`
+    silently walks out of the staging root. Two call sites then feed the
+    result to `shutil.rmtree`, which made arbitrary directory deletion
+    reachable by any authenticated client. Validate the id at the boundary
+    and re-check containment after resolution (symlinks).
+    """
+    sid = (staging_id or '').strip()
+    if not _STAGING_ID_RE.match(sid):
+        raise ValueError(f'invalid staging id: {staging_id!r}')
+    path = (STAGING_SKILLS_DIR / sid).resolve()
+    try:
+        path.relative_to(STAGING_SKILLS_DIR.resolve())
+    except ValueError:
+        raise ValueError(f'staging id escapes staging area: {staging_id!r}')
+    return path
+
 # Sibling CC component directories — used by full-plugin install to drop
 # plugin components alongside skills. We do NOT manage them in MC's UI; CC
 # reads them natively.
@@ -868,7 +892,7 @@ def install_from_staging(
     cleanup: bool = False,
 ) -> dict[str, Any]:
     """Install a specific skill from a previously-staged git clone."""
-    staging_path = STAGING_SKILLS_DIR / staging_id
+    staging_path = staging_dir(staging_id)
     if not staging_path.exists() or not staging_path.is_dir():
         raise FileNotFoundError(f'staging dir not found: {staging_id}')
     # Defensive path check — rel_dir must stay inside staging_path

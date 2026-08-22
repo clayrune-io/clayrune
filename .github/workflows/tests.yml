@@ -9,6 +9,11 @@ name: Tests
 # gates PRs (the github_sync P0 work + the server.py split land as PRs)
 # without changing the direct-to-master workflow.
 
+# Least privilege: these workflows only read the repo. Without an explicit
+# block they inherit the org/repo default, which can be write-all.
+permissions:
+  contents: read
+
 on:
   pull_request:
     branches: [main, master]

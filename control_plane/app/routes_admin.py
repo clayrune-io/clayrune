@@ -32,6 +32,7 @@ from fastapi import APIRouter, Header, HTTPException, Request
 from fastapi.responses import HTMLResponse
 
 from . import firestore as fs
+from .logsafe import scrub
 
 router = APIRouter()
 log = logging.getLogger(__name__)
@@ -122,7 +123,7 @@ async def suspend_user(
     revoked = sessions.revoke_all(user_id)
 
     log.warning("[admin] suspended user %s (reason=%s, edge_cutoff=%s, sessions_revoked=%d)",
-                user_id, reason, edge_cutoff, revoked)
+                scrub(user_id), scrub(reason), edge_cutoff, revoked)
     return {
         "ok": True,
         "user_id": user_id,
@@ -159,7 +160,7 @@ async def unsuspend_user(
         # Failing here leaves them blocked at the edge — the SAFE direction, but
         # the un-suspension silently won't take effect. Say so loudly.
         log.error("[admin] unsuspended %s in Firestore but FAILED to clear the KV "
-                  "denylist — they are still blocked at the edge. Retry.", user_id)
+                  "denylist — they are still blocked at the edge. Retry.", scrub(user_id))
     return {"ok": True, "user_id": user_id, "edge_denylist_cleared": removed}
 
 

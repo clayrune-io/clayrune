@@ -14,6 +14,11 @@ name: Install smoke test
 # Claude. We just verify install.sh gets THROUGH the install-and-PATH-fix
 # phase and that a fresh login shell can still find `claude`.
 
+# Least privilege: these workflows only read the repo. Without an explicit
+# block they inherit the org/repo default, which can be write-all.
+permissions:
+  contents: read
+
 on:
   push:
     paths:

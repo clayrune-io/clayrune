@@ -423,7 +423,10 @@ def import_full_plugin_route():
         return jsonify({'error': 'staging_id or path required'}), 400
 
     if staging_id:
-        plugin_root = _skills.STAGING_SKILLS_DIR / staging_id
+        try:
+            plugin_root = _skills.staging_dir(staging_id)
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
         if not plugin_root.exists():
             return jsonify({'error': 'staging dir not found'}), 404
     else:
@@ -436,12 +439,13 @@ def import_full_plugin_route():
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
-    # Clean up staging if we came from a git import
+    # Clean up staging if we came from a git import. plugin_root is the
+    # already-validated staging dir — do not re-derive it from staging_id.
     if staging_id:
         try:
-            shutil.rmtree(_skills.STAGING_SKILLS_DIR / staging_id, ignore_errors=True)
-        except Exception:
-            pass
+            shutil.rmtree(plugin_root, ignore_errors=True)
+        except Exception as e:
+            _log(f"[skills] staging cleanup failed for {staging_id}: {e}", flush=True)
 
     return jsonify(result), 201
 
@@ -497,13 +501,15 @@ def import_skill_git_cancel_route():
     staging_id = (data.get('staging_id') or '').strip()
     if not staging_id:
         return jsonify({'error': 'staging_id required'}), 400
-    target = _skills.STAGING_SKILLS_DIR / staging_id
+    try:
+        target = _skills.staging_dir(staging_id)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
     try:
         if target.exists():
-            import shutil as _sh
-            _sh.rmtree(target, ignore_errors=True)
-    except Exception:
-        pass
+            shutil.rmtree(target, ignore_errors=True)
+    except Exception as e:
+        _log(f"[skills] staging cancel failed for {staging_id}: {e}", flush=True)
     return jsonify({'ok': True})
 
 

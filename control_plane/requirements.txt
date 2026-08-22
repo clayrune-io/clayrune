@@ -4,6 +4,9 @@ pydantic==2.9.*
 google-cloud-firestore==2.19.*
 firebase-admin==6.5.*
 httpx==0.27.*
-cryptography==46.*
+# NOT pinned to a major line: `==46.*` could never reach the fix for
+# GHSA-537c-gmf6-5ccf (vulnerable OpenSSL in the wheels, affects <48.0.1),
+# so every image build shipped it. Keep this a floor, not a ceiling.
+cryptography>=50.0.0
 rfc8785==0.1.*
 python-multipart==0.0.*

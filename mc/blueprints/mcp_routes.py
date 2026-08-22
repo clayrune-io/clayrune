@@ -14,6 +14,7 @@ import threading
 import time as _time
 from pathlib import Path
 from typing import Any, Callable
+from urllib.parse import urlparse
 
 from flask import Blueprint, Response, jsonify, request
 
@@ -273,6 +274,10 @@ def set_project_mcp_enabled(project_id):
 # but lets the user see what's about to happen before committing. The install
 # stream is SSE so the UI can show live `npm install` output.
 
+# Ceiling for a fetched mcpServers JSON document. Real ones are a few KB.
+_MCP_JSON_MAX_BYTES = 5 * 1024 * 1024
+
+
 @bp.route('/api/mcp/url/preview', methods=['POST'])
 def mcp_url_preview():
     data = request.get_json() or {}
@@ -302,10 +307,26 @@ def mcp_url_preview():
 
     # Raw JSON URL → fetch, parse, return as if the user pasted it manually.
     if kind == 'json':
+        # `classify_url` only tags 'json' for an https?:// URL, but urllib also
+        # speaks file:// and ftp://, so a future loosening of that regex would
+        # silently turn this into an arbitrary-file read. Re-check the scheme
+        # here, where the fetch actually happens.
+        #
+        # Deliberately NOT filtering internal/private hosts: pointing this at a
+        # LAN or localhost MCP registry is a supported use, and the URL is typed
+        # by the operator, not supplied by a third party.
+        fetch_url = classified.get('url') or ''
+        if urlparse(fetch_url).scheme.lower() not in ('http', 'https'):
+            return jsonify({'error': 'only http(s) URLs can be fetched'}), 400
         try:
             import urllib.request as _ur
-            with _ur.urlopen(classified['url'], timeout=15) as resp:
-                blob = json.loads(resp.read().decode('utf-8'))
+            with _ur.urlopen(fetch_url, timeout=15) as resp:
+                # Bounded read — an unbounded resp.read() lets any URL the
+                # operator pastes decide this process's memory ceiling.
+                raw = resp.read(_MCP_JSON_MAX_BYTES + 1)
+            if len(raw) > _MCP_JSON_MAX_BYTES:
+                return jsonify({'error': 'JSON too large (limit 5 MB)'}), 400
+            blob = json.loads(raw.decode('utf-8'))
         except Exception as e:
             return jsonify({'error': f'fetch failed: {e}'}), 400
         servers = _mcpinst._find_mcp_servers_in_obj(blob)

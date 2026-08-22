@@ -5,6 +5,11 @@ name: Deploy control plane
 # service-account keys committed anywhere) — see SETUP_CHECKLIST.md §8 for
 # the one-time GCP setup.
 
+# Least-privilege default. The deploy job re-declares its own block
+# (contents: read + id-token: write for WIF) and overrides this.
+permissions:
+  contents: read
+
 on:
   push:
     branches: [main, master]

@@ -34,6 +34,7 @@ Binary discovery (REAL mode):
 from __future__ import annotations
 
 import atexit
+import hashlib
 import logging
 import os
 import platform
@@ -517,7 +518,11 @@ class MockCloudflaredProcess:
         with self._lock:
             if self._running and self._token == token:
                 return
-            log.info("[mock cloudflared] start with token %s...", token[:24])
+            # Fingerprint, never a prefix: 24 chars of a tunnel token is real
+            # key material sitting in a log file, and the mock exists to be run
+            # noisily during development (CWE-532).
+            log.info("[mock cloudflared] start with token sha256:%s (len=%d)",
+                     hashlib.sha256(token.encode('utf-8')).hexdigest()[:12], len(token))
             self._running = True
             self._token = token
             self._started_at = time.time()

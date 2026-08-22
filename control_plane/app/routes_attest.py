@@ -24,6 +24,7 @@ from typing import Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 
 from . import auth, entitlement, firestore as fs, verify
+from .logsafe import scrub
 from .schemas import AttestationRequest
 
 router = APIRouter()
@@ -218,7 +219,7 @@ async def attest(
     user_row = fs.user_get(result.device.get("user_id", "")) or {}
     if not entitlement.is_entitled(user_row):
         log.info("attest: refusing token for unentitled user %s (device %s)",
-                 result.device.get("user_id"), result.device.get("device_id"))
+                 scrub(result.device.get("user_id")), scrub(result.device.get("device_id")))
         raise HTTPException(status_code=403, detail=_err(
             "not_entitled",
             "This subscription is not active. Renew to restore remote access.",

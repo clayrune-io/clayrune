@@ -155,7 +155,10 @@ def _phase_enroll(*, username: str, email: str) -> dict:
     print(f"      device_id: {body['device_id']}")
     print(f"      username : {body['username']}")
     print(f"      hostname : {body['hostname']}")
-    print(f"      enrollment_token: {body['enrollment_token'][:24]}... (kept secret; only shown once)")
+    # No prefix preview here — the full token is printed once, deliberately,
+    # at the end of the run. Echoing 24 chars of it mid-script just puts key
+    # material into scrollback and CI logs for no added benefit.
+    print("      enrollment_token: (withheld; printed in full at the end)")
     return body
 
 

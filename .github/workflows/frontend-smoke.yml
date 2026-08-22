@@ -10,6 +10,11 @@ name: Frontend boot smoke test
 # != tab reload), so a fresh load was never exercised. This turns "fresh load"
 # into a CI gate on every change to the page.
 
+# Least privilege: these workflows only read the repo. Without an explicit
+# block they inherit the org/repo default, which can be write-all.
+permissions:
+  contents: read
+
 on:
   push:
     paths:

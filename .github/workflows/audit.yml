@@ -6,6 +6,11 @@ name: Dependency audit
 # touch a dependency manifest. Separate workflow so a red audit alerts without
 # blocking unrelated merges.
 
+# Least privilege: these workflows only read the repo. Without an explicit
+# block they inherit the org/repo default, which can be write-all.
+permissions:
+  contents: read
+
 on:
   schedule:
     - cron: '0 12 * * 1'   # weekly, Monday 12:00 UTC
