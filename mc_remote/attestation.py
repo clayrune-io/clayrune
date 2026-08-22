@@ -19,9 +19,11 @@ The dev client secret embedded here is a PLACEHOLDER for v1 development.
 When we ship the real Rust mc-tunnel, the actual CLIENT_SECRET_PRIV gets
 baked into that binary via build.rs (see `05-build-pipeline.md` §3.1) and
 this Python module either delegates to mc-tunnel via stdin/stdout or gets
-removed entirely. For local-mock dev iteration, a hard-coded keypair here
-is fine — the control plane validates against whatever pubkeys it has
-registered, including dev ones.
+removed entirely. For local-mock dev iteration the client keypair is
+generated on first use and cached under ~/.clayrune/ — the control plane
+validates against whatever pubkeys it has registered, including dev ones.
+(It used to be hard-coded here; a real Ed25519 private key committed to a
+public repo. Removed 2026-08-22 after a CodeAnt scan flagged it.)
 """
 from __future__ import annotations
 
@@ -49,18 +51,85 @@ log = logging.getLogger(__name__)
 # REPLACED by per-release embedded keys when the real Rust mc-tunnel ships.
 # Until then, this keypair is registered with the local mock control plane
 # at boot so attestations can be verified end-to-end without infra.
+#
+# The private key is NOT in this file. It was, until 2026-08-22 — a real
+# Ed25519 key sitting in a public repo. It granted nothing (only the local
+# mock trusts it), but committed key material is committed key material, and
+# the same constant would have been an easy thing to carry into the real
+# mc-tunnel by accident.
+#
+# It is generated on first use and cached at ~/.clayrune/dev_client_key.json.
+# It must persist rather than be ephemeral because there are TWO consumers in
+# DIFFERENT processes: the in-process mock CP (server.py) verifies signatures
+# with it, and control_plane/seed.py registers the public half into a real
+# control plane. An ephemeral key would leave seed.py advertising a pubkey the
+# client no longer holds.
+#
+# The value is arbitrary — nothing external is pinned to it — so no migration
+# is needed; a fresh key is simply generated on the next run.
 _DEV_CLIENT_SECRET_KEY_ID = "mc-tunnel-dev-2026"
-_DEV_CLIENT_SECRET_PRIV_B64 = "LZTfhO9q8AUAA4vYBg2kvnbKzbdCePfg6bDC3RTFvFA="
+_DEV_CLIENT_KEY_ENV = "CLAYRUNE_DEV_CLIENT_KEY_B64"
 
 _dev_client_priv: Optional[Ed25519PrivateKey] = None
+_dev_client_lock = threading.Lock()
+
+
+def _dev_key_path():
+    from pathlib import Path
+    import os
+    home = os.environ.get("USERPROFILE") or os.environ.get("HOME") or str(Path.home())
+    return Path(home) / ".clayrune" / "dev_client_key.json"
+
+
+def _load_or_create_dev_key() -> Ed25519PrivateKey:
+    """Env override, else the cached key, else generate and cache one."""
+    import json
+    import os
+    import stat
+
+    env_b64 = os.environ.get(_DEV_CLIENT_KEY_ENV, "").strip()
+    if env_b64:
+        return Ed25519PrivateKey.from_private_bytes(base64.b64decode(env_b64))
+
+    path = _dev_key_path()
+    try:
+        if path.is_file():
+            blob = json.loads(path.read_text(encoding="utf-8"))
+            return Ed25519PrivateKey.from_private_bytes(
+                base64.b64decode(blob["private_key_b64"])
+            )
+    except Exception as e:
+        log.warning("[attestation] dev key at %s unreadable (%s); regenerating", path, e)
+
+    key = Ed25519PrivateKey.generate()
+    from cryptography.hazmat.primitives.serialization import (
+        Encoding, NoEncryption, PrivateFormat,
+    )
+    raw = key.private_bytes(Encoding.Raw, PrivateFormat.Raw, NoEncryption())
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps({
+            "key_id": _DEV_CLIENT_SECRET_KEY_ID,
+            "private_key_b64": base64.b64encode(raw).decode("ascii"),
+            "note": "Local dev/mock client key. Not a production credential.",
+        }), encoding="utf-8")
+        try:
+            os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)  # 0600
+        except Exception as e:
+            log.debug("[attestation] could not chmod %s: %s", path, e)
+    except Exception as e:
+        # Non-fatal: an unwritable home just means a per-process key. The mock
+        # CP is in-process so it still verifies; only seed.py would disagree.
+        log.warning("[attestation] could not cache dev key at %s: %s", path, e)
+    return key
 
 
 def _client_priv() -> Ed25519PrivateKey:
     global _dev_client_priv
     if _dev_client_priv is None:
-        _dev_client_priv = Ed25519PrivateKey.from_private_bytes(
-            base64.b64decode(_DEV_CLIENT_SECRET_PRIV_B64)
-        )
+        with _dev_client_lock:
+            if _dev_client_priv is None:
+                _dev_client_priv = _load_or_create_dev_key()
     return _dev_client_priv
 
 

@@ -48,16 +48,21 @@ _STARTUPINFO: Any = None
 # derives from server.py's _APP_DIR, so it arrives via wire() (the 1.7
 # SESSION_LABELS_PATH wired-placeholder pattern).
 _TTY_SHIM_DIR: str = None  # type: ignore[assignment]
+# Remote-family (CF JWT machinery, lives in remote_routes). Injected by
+# server.py rather than imported, to avoid a blueprint-to-blueprint import —
+# same pattern local_auth.py uses.
+_is_cf_tunneled_request: "Callable[[], bool]" = None  # type: ignore[assignment]
 
 
 def wire(*, load_project_fn, get_manager_fn, register_process_fn,
-         unregister_process_fn, popen_flags, startupinfo, tty_shim_dir):
+         unregister_process_fn, popen_flags, startupinfo, tty_shim_dir,
+         is_cf_tunneled_request=None):
     """Late-bind cross-family deps: load_project (projects family, 1.11),
     get_manager + the process-ledger fns (dispatch family, 1.12), the Popen
     platform consts, and the _APP_DIR-derived TTY-shim dir. Called once from
     server.py at import, BEFORE app.register_blueprint(bp)."""
     global load_project, get_manager, _register_process, _unregister_process
-    global _POPEN_FLAGS, _STARTUPINFO, _TTY_SHIM_DIR
+    global _POPEN_FLAGS, _STARTUPINFO, _TTY_SHIM_DIR, _is_cf_tunneled_request
     load_project = load_project_fn
     get_manager = get_manager_fn
     _register_process = register_process_fn
@@ -65,6 +70,7 @@ def wire(*, load_project_fn, get_manager_fn, register_process_fn,
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
     _TTY_SHIM_DIR = tty_shim_dir
+    _is_cf_tunneled_request = is_cf_tunneled_request
 
 
 def _read_terminal_stream(proc, session):
@@ -126,10 +132,23 @@ def _kill_terminal_session(session):
 @bp.route('/api/terminal/launch', methods=['POST'])
 def terminal_launch():
     """Launch a command in a terminal session.  Called by agents via curl."""
-    # Host-only: agents curl this from localhost. LAN/tunnel sessions get the
-    # dashboard, never raw shell. (Inspection remediation 2026-06-09.)
+    # HOST-ONLY, and "host" excludes the tunnel.
+    #
+    # cloudflared runs on this machine and forwards to the origin over
+    # loopback, so a tunneled request presents remote_addr == 127.0.0.1 —
+    # tunnel requests are a strict SUBSET of loopback requests. A loopback
+    # check alone therefore admits anyone who cleared CF Access, turning
+    # dashboard access into arbitrary command execution. The original comment
+    # here claimed tunnel sessions "never get raw shell"; they did.
+    #
+    # The dashboard never calls this endpoint (it only uses stream/stdin/
+    # stop/delete) — only agents do, by curl from real localhost. So excluding
+    # the tunnel costs no UI behaviour: pop-outs still render and stay
+    # interactive on a phone.
     if not _is_loopback_request():
         return jsonify({'error': 'loopback_only'}), 403
+    if _is_cf_tunneled_request is not None and _is_cf_tunneled_request():
+        return jsonify({'error': 'host_only'}), 403
     data = request.get_json() or {}
     project_id = data.get('project_id', '').strip()
     command = data.get('command', '').strip()

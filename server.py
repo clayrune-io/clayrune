@@ -2166,6 +2166,7 @@ _bp_terminal.wire(
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
     tty_shim_dir=str(_APP_DIR / 'mc_tty_shim'),
+    is_cf_tunneled_request=_bp_remote._is_cf_tunneled_request,
 )
 app.register_blueprint(_bp_terminal.bp)
 # Inbound shim: the atexit _cleanup_terminals hook kills terminal sessions —
