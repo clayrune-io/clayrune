@@ -10,6 +10,6 @@
     "postinstall-note": "After npm install, run: npx playwright install chromium"
   },
   "dependencies": {
-    "playwright": "^1.49.0"
+    "playwright": "^1.55.1"
   }
 }
