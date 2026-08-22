@@ -49,8 +49,12 @@ async function addBacklogItem(projectId) {
 
 async function toggleDone(e, projectId, itemId, currentStatus) {
   e.stopPropagation();
-  pushUndo({type: 'status', projectId, itemId, data: {status: currentStatus}, label: currentStatus === 'done' ? 'mark open' : 'mark done'});
-  await patchItem(projectId, itemId, {status: currentStatus === 'done' ? 'open' : 'done'});
+  // Closed is 'done' OR 'wontdo'; ticking either reopens. Comparing to 'done'
+  // alone made the checkbox on an in_progress item mark it done (fine) but the
+  // one on a wontdo item mark it done AGAIN, with no way back to open.
+  const wasClosed = BACKLOG_CLOSED.includes(currentStatus);
+  pushUndo({type: 'status', projectId, itemId, data: {status: currentStatus}, label: wasClosed ? 'mark open' : 'mark done'});
+  await patchItem(projectId, itemId, {status: wasClosed ? 'open' : 'done'});
 }
 
 async function cyclePriority(e, projectId, itemId, current) {

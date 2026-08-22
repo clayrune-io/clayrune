@@ -612,6 +612,153 @@ async function runBacklogRefreshGuard(browser) {
 }
 
 
+// ── Backlog numbers + links guard ────────────────────
+// The `#num` badge and the link panel are pure render-path work spread across
+// three modules (render-core builds the HTML, project-actions supplies
+// linkRowHTML/inverseLinkRowHTML/BACKLOG_LINK_TYPES, index.html owns the
+// openLinkPanels set). A missing window bridge between any two of them fails
+// exactly the way the inline-handler class does: silently, at click time.
+//
+// It also pins the two invariants the feature rests on:
+//   * only ONE direction is stored; the inverse is DERIVED, so item B shows
+//     "Blocks #1" without anything ever having been written to B.
+//   * in_progress / blocked items RENDER. They used to match neither 'open'
+//     nor 'done', and so appeared in no list at all.
+async function runBacklogLinksGuard(browser) {
+  const PID = 'smoke_alpha';
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  let items = [
+    { id: 'itm_a', num: 1, text: 'the blocked one', status: 'open', priority: 'normal',
+      created_at: '2026-08-13T10:00:00Z', attachments: [], notes: [],
+      links: [{ type: 'blocked_by', target: 'itm_b', ts: '2026-08-22T10:00:00Z' }] },
+    { id: 'itm_b', num: 2, text: 'the blocker', status: 'in_progress', priority: 'high',
+      created_at: '2026-08-13T10:05:00Z', attachments: [], notes: [], links: [] },
+  ];
+  const linkPosts = [];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (/\/backlog$/.test(path) && req.method() === 'GET') return json(items);
+    if (/\/backlog\/[^/]+\/links$/.test(path) && req.method() === 'POST') {
+      const id = path.split('/').slice(-2)[0];
+      const body = JSON.parse(req.postData() || '{}');
+      linkPosts.push({ id, ...body });
+      const target = items.find((i) => String(i.num) === String(body.target).replace('#', ''));
+      const item = items.find((i) => i.id === id);
+      if (item && target) item.links = [...(item.links || []),
+        { type: body.type, target: target.id, ts: '2026-08-22T11:00:00Z' }];
+      return json({ ok: true, item });
+    }
+    if (path === '/api/projects') {
+      const patched = JSON.parse(PROJECTS_JSON);
+      if (patched[0]) {
+        patched[0].project_path = '/smoke/alpha';
+        delete patched[0].backlog;
+        patched[0].backlog_open_count = items.length;
+        patched[0].backlog_total_count = items.length;
+      }
+      return json(patched);
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ backlog-links guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async ({ pid }) => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 450));
+    const row = (id) => document.querySelector('.backlog-item[data-item-id="' + id + '"]');
+    try {
+      openProjectModal(pid);
+      await settle();
+      switchModalTab(pid, 'backlog');
+      await settle();
+
+      r.rowIds = Array.from(document.querySelectorAll('.backlog-list .backlog-item'))
+        .map((e) => e.getAttribute('data-item-id'));
+      r.nums = Array.from(document.querySelectorAll('.backlog-list .backlog-num'))
+        .map((e) => (e.textContent || '').trim());
+      r.statusBadges = Array.from(document.querySelectorAll('.backlog-list .status-badge'))
+        .map((e) => (e.textContent || '').trim());
+
+      // Open BOTH link panels: A stores the link, B must derive the inverse.
+      for (const id of ['itm_a', 'itm_b']) {
+        const btn = row(id) && row(id).querySelector('.links-btn');
+        if (!btn) throw new Error('links button missing on ' + id);
+        btn.click();
+        await settle(150);
+      }
+      const panelText = (id) => {
+        const el = document.getElementById('links-' + id);
+        return el ? (el.innerText || '').replace(/\s+/g, ' ').trim() : '';
+      };
+      r.panelA = panelText('itm_a');
+      r.panelB = panelText('itm_b');
+
+      // Add a link through the real UI path (select + input + button handler).
+      document.getElementById('linktype-itm_b').value = 'relates_to';
+      document.getElementById('linktarget-itm_b').value = '#1';
+      await submitBacklogLink(pid, 'itm_b');
+      await settle(700);
+      r.panelBAfter = panelText('itm_b');
+
+      // Clicking a link chip must actually move to the target.
+      const chip = document.querySelector('#links-itm_a .link-chip');
+      if (!chip) throw new Error('no link chip to click');
+      chip.click();
+      await settle(150);
+      r.flashed = !!(row('itm_b') && row('itm_b').classList.contains('link-flash'));
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  }, { pid: PID });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push('threw - ' + out.err);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  if (!(out.rowIds || []).includes('itm_b'))
+    fails.push('the in_progress item did NOT render - the open-vs-closed regression is back');
+  if (JSON.stringify(out.nums) !== JSON.stringify(['#1', '#2']))
+    fails.push('number badges wrong: ' + JSON.stringify(out.nums));
+  if (!(out.statusBadges || []).some((t) => /in.progress/i.test(t)))
+    fails.push('in_progress item rendered without a status badge');
+  if (!/Blocked by/i.test(out.panelA || '') || !/the blocker/i.test(out.panelA || ''))
+    fails.push('stored link not shown on the source item: ' + JSON.stringify(out.panelA));
+  if (!/Blocks/i.test(out.panelB || '') || !/the blocked one/i.test(out.panelB || ''))
+    fails.push('inverse link not DERIVED on the target item: ' + JSON.stringify(out.panelB));
+  if (!linkPosts.length)
+    fails.push('submitBacklogLink never reached the server');
+  else if (linkPosts[0].type !== 'relates_to' || linkPosts[0].target !== '#1')
+    fails.push('link POST body wrong: ' + JSON.stringify(linkPosts[0]));
+  if (!/Relates to/i.test(out.panelBAfter || ''))
+    fails.push('the new link did not appear without a reopen');
+  if (!out.flashed) fails.push('clicking a link chip did not flash the target row');
+
+  if (fails.length) {
+    console.error('❌ backlog-links guard:');
+    fails.forEach((f) => console.error('       * ' + f));
+    return false;
+  }
+  console.log('✅ backlog links: #numbers render, in_progress stays visible, the inverse is derived, chips jump.');
+  return true;
+}
+
+
 // ── Scheduled-runs calendar guard ────────────────────────────────────────────
 // Two things here can be confidently wrong rather than obviously broken, which
 // is why they get asserted rather than eyeballed:
@@ -1097,11 +1244,12 @@ try {
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
+  results.push(await runBacklogLinksGuard(browser));
   results.push(await runScheduleCalendarGuard(browser));
   results.push(await runQuestionRepaintGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, calendar & question-repaint guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, calendar & question-repaint guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

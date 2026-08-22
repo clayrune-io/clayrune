@@ -11,10 +11,10 @@
 // reflects in-place edits immediately — and fall back to the summary otherwise.
 function backlogSummary(p) {
   if (p && p._backlogFull && Array.isArray(p.backlog)) {
-    const open = p.backlog.filter(i => i.status === 'open');
+    const open = p.backlog.filter(i => !BACKLOG_CLOSED.includes(i.status));
     return {
       open: open.length,
-      done: p.backlog.filter(i => i.status === 'done').length,
+      done: p.backlog.filter(i => BACKLOG_CLOSED.includes(i.status)).length,
       nextText: (open[0] && open[0].text) || '',
     };
   }
@@ -345,8 +345,12 @@ function modalContentHTML(p) {
   // flashing "0 open" and then filling in.
   const backlogLoaded = !!(p._backlogFull && Array.isArray(p.backlog));
   const backlog = backlogLoaded ? p.backlog : [];
-  const openItems = backlog.filter(i => i.status === 'open');
-  const doneItems = backlog.filter(i => i.status === 'done');
+  // "Open" means NOT CLOSED. Filtering on status==='open' hid every item moved
+  // to in_progress or blocked — both documented, both settable via PATCH — so
+  // the work list dropped exactly the items being worked on, silently. Mirrors
+  // _BACKLOG_CLOSED in mc/blueprints/project_routes.py; keep the two in step.
+  const openItems = backlog.filter(i => !BACKLOG_CLOSED.includes(i.status));
+  const doneItems = backlog.filter(i => BACKLOG_CLOSED.includes(i.status));
   const bl = backlogSummary(p);
 
   const backlogBadge = bl.open
@@ -389,7 +393,7 @@ function modalContentHTML(p) {
 
   // Sort: in_progress agent items first, then other agent-open, then user-open, then done
   const rank = it => {
-    if (it.status === 'done') return 3;
+    if (BACKLOG_CLOSED.includes(it.status)) return 3;
     if (it.agent_status === 'in_progress') return 0;
     if ((it.source || '').startsWith('agent:')) return 1;
     return 2;
@@ -403,8 +407,20 @@ function modalContentHTML(p) {
     // fall back to array length once the full backlog is lazy-loaded on modal open.
     const notesN = item.notes_count ?? (item.notes || []).length;
     const attsN = item.attachments_count ?? (item.attachments || []).length;
+    // Links: outgoing are stored on this item; incoming are derived from every
+    // other item's `links`, never persisted, so the two directions cannot drift.
+    const outLinks = item.links || [];
+    const inLinks = backlog.reduce((acc, other) => {
+      if (other.id === item.id) return acc;
+      for (const l of (other.links || [])) {
+        if (l.target === item.id) acc.push({ type: l.type, from: other });
+      }
+      return acc;
+    }, []);
+    const linksN = outLinks.length + inLinks.length;
     const extraClasses = [
-      item.status==='done' ? 'done' : '',
+      BACKLOG_CLOSED.includes(item.status) ? 'done' : '',
+      item.status && item.status !== 'open' ? `status-${item.status}` : '',
       `priority-${item.priority||'normal'}`,
       isAgent ? 'agent-source' : '',
       isInProgress ? 'agent-in-progress' : '',
@@ -417,10 +433,12 @@ function modalContentHTML(p) {
       : '';
     return `
     <div class="backlog-item ${extraClasses}" data-item-id="${esc(item.id)}">
-      <button class="backlog-check" onclick="toggleDone(event,'${esc(p.id)}','${esc(item.id)}','${item.status}')" title="${item.status==='done'?'Reopen':'Mark done'}">
-        ${item.status==='done' ? '✓' : ''}
+      <button class="backlog-check" onclick="toggleDone(event,'${esc(p.id)}','${esc(item.id)}','${item.status}')" title="${BACKLOG_CLOSED.includes(item.status)?'Reopen':'Mark done'}">
+        ${BACKLOG_CLOSED.includes(item.status) ? '✓' : ''}
       </button>
       <div style="flex:1;min-width:0">
+        ${typeof item.num === 'number' ? `<span class="backlog-num" title="Click to copy #${item.num}"
+          onclick="copyBacklogNum(event,${item.num})">#${item.num}</span>` : ''}
         <span class="backlog-text" contenteditable="true" spellcheck="true"
           onblur="saveBacklogText(event,'${esc(p.id)}','${esc(item.id)}')"
           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
@@ -429,12 +447,17 @@ function modalContentHTML(p) {
       </div>
       <div class="backlog-meta">
         ${agentBadgeHTML}
+        ${item.status && item.status !== 'open' && item.status !== 'done'
+          ? `<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
         <span class="priority-badge priority-${item.priority||'normal'}"
           onclick="cyclePriority(event,'${esc(p.id)}','${esc(item.id)}','${item.priority||'normal'}')"
           title="Click to change priority">${item.priority||'normal'}</span>
         ${item.github_issue_number ? `<a class="gh-issue-link" href="https://github.com/${esc(p.github_repo||'')}/issues/${item.github_issue_number}" target="_blank" rel="noopener" title="View on GitHub">#${item.github_issue_number}</a>` : ''}
         ${item.source && item.source !== 'dashboard' && !isAgent ? `<span class="backlog-source">${esc(item.source)}</span>` : ''}
-        ${p.project_path && item.status !== 'done' ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
+        ${p.project_path && !BACKLOG_CLOSED.includes(item.status) ? `<button class="backlog-dispatch" onclick="dispatchBacklogItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send to agent">▶</button>` : ''}
+        <button class="links-btn ${linksN > 0 ? 'has-links' : ''}"
+          onclick="toggleLinksPanel(event,'${esc(p.id)}','${esc(item.id)}')"
+          title="Links to other items">🔗${linksN > 0 ? ' '+linksN : ''}</button>
         <button class="att-btn ${attsN > 0 ? 'has-atts' : ''}"
           onclick="toggleAttPanel(event,'${esc(p.id)}','${esc(item.id)}')"
           title="Attachments">📎${attsN > 0 ? ' '+attsN : ''}</button>
@@ -455,6 +478,21 @@ function modalContentHTML(p) {
         </div>
         <div class="att-list" id="attlist-${esc(item.id)}">
           ${(item.attachments||[]).map(a => attHTML(a, p.id, item.id)).join('')}
+        </div>
+      </div>
+      <div class="links-panel${openLinkPanels.has(item.id) ? ' open' : ''}" id="links-${esc(item.id)}">
+        <div class="links-list">
+          ${outLinks.map(l => linkRowHTML(l, item, backlog, p.id)).join('')}
+          ${inLinks.map(l => inverseLinkRowHTML(l)).join('')}
+          ${linksN === 0 ? '<div class="links-empty">No links yet.</div>' : ''}
+        </div>
+        <div class="link-input-row">
+          <select id="linktype-${esc(item.id)}">
+            ${BACKLOG_LINK_TYPES.map(t => `<option value="${t[0]}">${esc(t[1])}</option>`).join('')}
+          </select>
+          <input type="text" id="linktarget-${esc(item.id)}" placeholder="#12"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();submitBacklogLink('${esc(p.id)}','${esc(item.id)}')}">
+          <button onclick="submitBacklogLink('${esc(p.id)}','${esc(item.id)}')">Link</button>
         </div>
       </div>
       <div class="notes-panel${openNotesPanels.has(item.id) ? ' open' : ''}" id="notes-${esc(item.id)}">

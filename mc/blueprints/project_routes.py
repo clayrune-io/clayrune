@@ -160,6 +160,13 @@ EXCLUDED_SIDECAR_SUFFIXES = (
     # the exclusion test enforces every entry here is glob-matchable.
 )
 
+# Closed backlog statuses. Everything else — open, in_progress, blocked, and any
+# status a future version adds — counts as live work. Defined as the CLOSED set
+# rather than an open-set whitelist, so a status nobody thought about shows up
+# by default instead of disappearing — which is exactly how in_progress items
+# went missing from both the tile count and the backlog tab.
+_BACKLOG_CLOSED = ('done', 'wontdo')
+
 
 def load_projects():
     projects = []
@@ -324,9 +331,14 @@ def api_projects():
         # (cross-backlog.js). So the full array has no reader here.
         # (load_projects() returns fresh per-request dicts, so mutating is safe.)
         backlog = p.get('backlog') or []
-        open_items = [i for i in backlog if i.get('status') == 'open']
+        # "Open" means NOT CLOSED, not literally status=='open'. The PATCH route
+        # accepts in_progress and blocked (they're in the documented API), so an
+        # item moved to either used to vanish from the tile count AND from the
+        # backlog tab — the work list silently lost the items being worked on.
+        open_items = [i for i in backlog if i.get('status') not in _BACKLOG_CLOSED]
         p['backlog_open_count'] = len(open_items)
-        p['backlog_done_count'] = sum(1 for i in backlog if i.get('status') == 'done')
+        p['backlog_done_count'] = sum(1 for i in backlog
+                                      if i.get('status') in _BACKLOG_CLOSED)
         p['backlog_total_count'] = len(backlog)
         # Same source the tile's next-action line used: the FIRST open item, in
         # stored order. Sliced generously — the client truncates for display.
@@ -580,6 +592,69 @@ def delete_project(project_id):
     return jsonify({'ok': True})
 
 
+# ── Backlog item numbers + relations ─────────────────────────────────────────
+#
+# Items carry an 8-char uuid slice as `id` — stable, but unspeakable: nobody
+# says "see 4b7738a1" out loud, so there was no way for a human OR an agent to
+# point one item at another. `num` is the human handle (per-project, sequential,
+# oldest = #1) and `links` are the JIRA-style references built on top of it.
+#
+# Numbering is backfilled lazily rather than migrated: every project file is
+# untracked user data, so a migration script would have to be run per install
+# and would silently skip anyone who never ran it. `_ensure_backlog_numbers` is
+# idempotent and cheap, and runs on the two paths that can observe a missing
+# number (full GET, and add).
+
+# Stored direction -> (label on the source item, label on the target item).
+# Only ONE direction is ever persisted; the frontend renders the inverse from
+# the full list. A half-written pair is therefore not representable.
+BACKLOG_LINK_TYPES = {
+    'blocked_by':   ('Blocked by',    'Blocks'),
+    'duplicate_of': ('Duplicate of',  'Duplicated by'),
+    'continues':    ('Continues',     'Continued by'),
+    'relates_to':   ('Relates to',    'Relates to'),
+}
+
+
+def _ensure_backlog_numbers(p):
+    """Give every backlog item a stable per-project `num`. Returns True if the
+    project dict was modified (caller decides whether to save).
+
+    Numbers are handed out in `created_at` order so the oldest item is #1 and
+    the sequence reads chronologically, which is what a person expects from a
+    ticket number. `backlog_seq` is a high-water mark, never decremented — a
+    deleted item's number is retired, not recycled, or every existing link to
+    it would silently re-point at a different item.
+    """
+    backlog = p.get('backlog') or []
+    seq = int(p.get('backlog_seq') or 0)
+    missing = [it for it in backlog if not isinstance(it.get('num'), int)]
+    # Adopt any numbers already present (e.g. a project restored from backup)
+    # so we never re-issue one that is already in use.
+    for it in backlog:
+        if isinstance(it.get('num'), int):
+            seq = max(seq, it['num'])
+    if not missing and p.get('backlog_seq') == seq:
+        return False
+    for it in sorted(missing, key=lambda x: (x.get('created_at') or '', x.get('id') or '')):
+        seq += 1
+        it['num'] = seq
+    p['backlog_seq'] = seq
+    return bool(missing) or p.get('backlog_seq') != seq
+
+
+def _resolve_backlog_target(backlog, target):
+    """Resolve a user/agent-typed link target to an item. Accepts '#12', '12',
+    or the raw 8-char id, because all three are things someone will type."""
+    t = str(target or '').strip().lstrip('#')
+    if not t:
+        return None
+    if t.isdigit():
+        n = int(t)
+        return next((i for i in backlog if i.get('num') == n), None)
+    return next((i for i in backlog if i.get('id') == t), None)
+
+
 # ── Backlog endpoints ────────────────────────────────────────────────────────
 
 @bp.route('/api/project/<project_id>/backlog', methods=['GET'])
@@ -587,6 +662,13 @@ def get_backlog(project_id):
     p = load_project(project_id)
     if p is None:
         return jsonify({'error': 'not found'}), 404
+    # Lazy backfill — this is the full-list fetch the modal makes, so it is the
+    # one place guaranteed to run before a number can be displayed.
+    if _ensure_backlog_numbers(p):
+        try:
+            save_project(project_id, p)
+        except Exception as e:
+            _log(f"[backlog] number backfill save failed for {project_id}: {e}", flush=True)
     return jsonify(p.get('backlog', []))
 
 
@@ -600,8 +682,16 @@ def add_backlog_item(project_id):
     if p is None:
         return jsonify({'error': 'not found'}), 404
 
+    backlog = p.setdefault('backlog', [])
+    # Number the existing items first, so the new one takes the next free slot
+    # rather than colliding with a backfill that hasn't happened yet.
+    _ensure_backlog_numbers(p)
+    seq = int(p.get('backlog_seq') or 0) + 1
+    p['backlog_seq'] = seq
+
     item = {
         'id': str(uuid.uuid4())[:8],
+        'num': seq,
         'text': data['text'].strip(),
         'priority': data.get('priority', 'normal'),
         'status': 'open',
@@ -609,9 +699,9 @@ def add_backlog_item(project_id):
         'done_at': None,
         'source': data.get('source', 'dashboard'),
         'attachments': [],
+        'links': [],
     }
 
-    backlog = p.setdefault('backlog', [])
     backlog.insert(0, item)
     p['last_updated'] = now_iso()
     save_project(project_id, p)
@@ -639,9 +729,14 @@ def update_backlog_item(project_id, item_id):
         item['priority'] = data['priority']
     if 'status' in data:
         item['status'] = data['status']
-        if data['status'] == 'done' and not item.get('done_at'):
-            item['done_at'] = now_iso()
-        elif data['status'] == 'open':
+        # done_at tracks CLOSURE, not the literal 'done' string — a wontdo item
+        # is closed too, and left without a timestamp it sorted as if it were
+        # still fresh. Any non-closed status (open, in_progress, blocked) clears
+        # it: an item that came back to life has no closure date.
+        if data['status'] in _BACKLOG_CLOSED:
+            if not item.get('done_at'):
+                item['done_at'] = now_iso()
+        else:
             item['done_at'] = None
     # Wholesale notes replacement — the only way to REMOVE a note. Added 2026-08-15
     # for the journal migration: unattended cycles had been using notes as their
@@ -716,6 +811,79 @@ def add_backlog_note(project_id, item_id):
     return jsonify({'error': 'item not found'}), 404
 
 
+@bp.route('/api/project/<project_id>/backlog/<item_id>/links', methods=['POST'])
+def add_backlog_link(project_id, item_id):
+    """Link one backlog item to another: {"type": "blocked_by", "target": "#12"}.
+
+    Same-project only in v1 — the cross-project view lists many backlogs and
+    `#12` is ambiguous across them without a project key.
+    """
+    data = request.get_json() or {}
+    ltype = (data.get('type') or '').strip()
+    if ltype not in BACKLOG_LINK_TYPES:
+        return jsonify({'error': f'unknown link type: {ltype or "(none)"}'}), 400
+
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    backlog = p.get('backlog') or []
+    _ensure_backlog_numbers(p)
+
+    item = next((i for i in backlog if i.get('id') == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    target = _resolve_backlog_target(backlog, data.get('target'))
+    if target is None:
+        return jsonify({'error': f'no item matching {data.get("target")!r}'}), 404
+    if target.get('id') == item_id:
+        return jsonify({'error': 'an item cannot link to itself'}), 400
+
+    links = item.setdefault('links', [])
+    if any(l.get('type') == ltype and l.get('target') == target['id'] for l in links):
+        return jsonify({'ok': True, 'item': item, 'duplicate': True})
+    links.append({'type': ltype, 'target': target['id'], 'ts': now_iso()})
+    item['updated_at'] = now_iso()
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'item': item})
+
+
+@bp.route('/api/project/<project_id>/backlog/<item_id>/links', methods=['DELETE'])
+def delete_backlog_link(project_id, item_id):
+    """Remove one link. Type + target both required — an item can carry several
+    links to the same target, and dropping all of them on a type-only match
+    would be a surprise."""
+    ltype = (request.args.get('type') or '').strip()
+    target = (request.args.get('target') or '').strip()
+    if not ltype or not target:
+        return jsonify({'error': 'type and target required'}), 400
+
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    backlog = p.get('backlog') or []
+    item = next((i for i in backlog if i.get('id') == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    resolved = _resolve_backlog_target(backlog, target)
+    target_id = resolved['id'] if resolved else target.lstrip('#')
+
+    before = len(item.get('links') or [])
+    item['links'] = [l for l in (item.get('links') or [])
+                     if not (l.get('type') == ltype and l.get('target') == target_id)]
+    if len(item['links']) == before:
+        return jsonify({'error': 'link not found'}), 404
+
+    item['updated_at'] = now_iso()
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'item': item})
+
+
 @bp.route('/api/project/<project_id>/backlog/<item_id>', methods=['DELETE'])
 def delete_backlog_item(project_id, item_id):
     p = load_project(project_id)
@@ -734,6 +902,17 @@ def delete_backlog_item(project_id, item_id):
     p['backlog'] = [i for i in p.get('backlog', []) if i['id'] != item_id]
     if len(p['backlog']) == before:
         return jsonify({'error': 'item not found'}), 404
+
+    # Sweep inbound links to the item we just removed. The frontend already
+    # skips a target it can't resolve, but leaving the reference behind would
+    # let it silently re-attach if the number were ever recycled — which is
+    # exactly why `backlog_seq` is a high-water mark and never decremented.
+    for other in p['backlog']:
+        links = other.get('links')
+        if links:
+            kept = [l for l in links if l.get('target') != item_id]
+            if len(kept) != len(links):
+                other['links'] = kept
 
     p['last_updated'] = now_iso()
     save_project(project_id, p)

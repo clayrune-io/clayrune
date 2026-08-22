@@ -55,6 +55,23 @@ the filesystem.
 | DELETE | `/api/project/<project_id>/backlog/<item_id>` | Remove an item. |
 | POST | `/api/project/<project_id>/backlog/<item_id>/attachments` | Upload a file to an item (multipart). |
 | DELETE | `/api/project/<project_id>/backlog/<item_id>/attachments/<att_id>` | Remove an attachment. |
+| POST | `/api/project/<project_id>/backlog/<item_id>/links` | Link to another item: `{"type":"blocked_by","target":"#12"}`. |
+| DELETE | `/api/project/<project_id>/backlog/<item_id>/links?type=…&target=…` | Remove one link. |
+
+**Item numbers.** Every item carries a per-project `num`, shown in the UI as
+`#12`. Use it when you talk to the user about an item — the `id` is an 8-char
+uuid slice nobody can read back. Numbers are assigned oldest-first and are never
+recycled, so `#12` always means the same item.
+
+**Links** are JIRA-style relations. `type` is one of `blocked_by`,
+`duplicate_of`, `continues`, `relates_to`; `target` accepts `#12`, `12`, or a
+raw item id, and must be in the SAME project. Only the direction you post is
+stored — the inverse (`blocks`, `duplicated by`, `continued by`) is rendered on
+the other item automatically, so never post both halves.
+
+**Statuses:** `open`, `in_progress`, `blocked` are all LIVE; `done` and `wontdo`
+are closed. Anything not closed shows in the backlog tab and counts toward the
+tile's open count.
 
 ## Agent control (this project)
 

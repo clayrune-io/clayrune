@@ -1450,6 +1450,78 @@
     border: 1px solid var(--accent); border-radius: 3px; cursor: pointer;
   }
 
+  /* Statuses that used to render nowhere. in_progress reads as live work,
+     blocked as stalled; both keep the row visible, which is the whole point. */
+  .status-badge {
+    font-size: 9px; padding: 2px 7px; border-radius: 3px;
+    letter-spacing: 0.8px; text-transform: uppercase; font-weight: 600;
+    background: var(--surface3); color: var(--text-dim); white-space: nowrap;
+  }
+  .status-badge.status-in_progress { background: var(--green-dim); color: var(--green-text); }
+  .status-badge.status-blocked     { background: var(--red-dim);   color: var(--red-text); }
+  .backlog-item.status-in_progress { border-left-color: var(--green); }
+  .backlog-item.status-blocked     { border-left-color: var(--red); }
+  .backlog-item.status-wontdo .backlog-text { text-decoration: line-through; }
+
+  /* BACKLOG NUMBERS + LINKS */
+  .backlog-num {
+    display: inline-block; font-family: 'JetBrains Mono', var(--mono, monospace);
+    font-size: 11px; color: var(--text-faint); margin-right: 6px; cursor: pointer;
+    user-select: none; transition: color 0.15s;
+  }
+  .backlog-num:hover { color: var(--accent); }
+  .backlog-num.copied { color: var(--green-text); }
+  .backlog-num.copied::after { content: ' copied'; font-size: 9px; }
+  .links-btn {
+    font-size: 10px; padding: 1px 6px; border-radius: 3px; cursor: pointer;
+    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+  }
+  .links-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .links-btn.has-links { border-color: var(--accent); color: var(--accent); }
+  .links-panel { display: none; margin-top: 6px; padding: 6px 8px; background: var(--surface2); border-radius: 3px; }
+  .links-panel.open { display: block; }
+  .links-list { display: flex; flex-direction: column; gap: 3px; margin-bottom: 6px; }
+  .links-empty { font-size: 11px; color: var(--text-faint); font-style: italic; }
+  .link-row { display: flex; align-items: baseline; gap: 6px; font-size: 11px; }
+  /* Incoming links are derived, not stored — dimmed so it reads as "this is
+     what points AT me", and it carries no delete button on purpose. */
+  .link-row.inverse { opacity: 0.72; }
+  .link-type {
+    color: var(--text-faint); text-transform: uppercase; letter-spacing: 0.4px;
+    font-size: 9px; font-weight: 600; white-space: nowrap; flex-shrink: 0;
+  }
+  .link-chip {
+    color: var(--accent); cursor: pointer; text-decoration: none;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1; min-width: 0;
+  }
+  .link-chip:hover { text-decoration: underline; }
+  .link-chip.done { color: var(--text-faint); text-decoration: line-through; }
+  .link-missing { color: var(--text-faint); font-style: italic; flex: 1; }
+  .link-del {
+    background: none; border: none; color: var(--text-faint); cursor: pointer;
+    font-size: 11px; padding: 0 2px; line-height: 1; flex-shrink: 0;
+  }
+  .link-del:hover { color: var(--red-text); }
+  .link-input-row { display: flex; gap: 4px; }
+  .link-input-row select {
+    font-size: 11px; padding: 3px 4px; background: var(--bg);
+    border: 1px solid var(--border2); border-radius: 3px; color: var(--text);
+  }
+  .link-input-row input {
+    flex: 1; min-width: 0; font-size: 11px; padding: 3px 6px; background: var(--bg);
+    border: 1px solid var(--border2); border-radius: 3px; color: var(--text);
+  }
+  .link-input-row button {
+    font-size: 11px; padding: 3px 8px; background: var(--accent-dim); color: var(--accent);
+    border: 1px solid var(--accent); border-radius: 3px; cursor: pointer;
+  }
+  /* A jump that scrolls but doesn't say WHERE it landed reads as a no-op. */
+  .backlog-item.link-flash { animation: link-flash 1.6s ease-out; }
+  @keyframes link-flash {
+    0%, 40% { background: var(--accent-dim); border-left-color: var(--accent); }
+    100% { background: var(--bg); }
+  }
+
   .backlog-check {
     width: 16px; height: 16px; border: 1.5px solid var(--border2);
     border-radius: 3px; cursor: pointer; flex-shrink: 0; margin-top: 2px;
@@ -1479,6 +1551,7 @@
     .backlog-item { flex-wrap: wrap; }
     .backlog-meta,
     .backlog-item > .att-panel,
+    .backlog-item > .links-panel,
     .backlog-item > .notes-panel { flex-basis: 100%; }
     .backlog-meta { flex-wrap: wrap; margin-left: 30px; }
   }

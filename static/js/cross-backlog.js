@@ -104,8 +104,9 @@ function renderAllBacklog() {
   for (const p of allProjects) {
     const items = p.backlog || [];
     for (const item of items) {
-      if (f.status === 'open' && item.status === 'done') continue;
-      if (f.status === 'done' && item.status !== 'done') continue;
+      const closed = BACKLOG_CLOSED.includes(item.status);
+      if (f.status === 'open' && closed) continue;
+      if (f.status === 'done' && !closed) continue;
       if (f.priority !== 'all' && (item.priority || 'normal') !== f.priority) continue;
       if (q && !(item.text || '').toLowerCase().includes(q)) continue;
       rows.push({ p, item });
@@ -113,8 +114,8 @@ function renderAllBacklog() {
   }
   const prioRank = { high: 0, normal: 1, low: 2 };
   rows.sort((a, b) => {
-    const ad = a.item.status === 'done' ? 1 : 0;
-    const bd = b.item.status === 'done' ? 1 : 0;
+    const ad = BACKLOG_CLOSED.includes(a.item.status) ? 1 : 0;
+    const bd = BACKLOG_CLOSED.includes(b.item.status) ? 1 : 0;
     if (ad !== bd) return ad - bd;
     const ap = prioRank[a.item.priority || 'normal'] ?? 1;
     const bp = prioRank[b.item.priority || 'normal'] ?? 1;
@@ -134,7 +135,7 @@ function renderAllBacklog() {
     const isAgent = (item.source || '').startsWith('agent:');
     const isInProgress = isAgent && item.agent_status === 'in_progress';
     const cls = [
-      item.status === 'done' ? 'done' : '',
+      BACKLOG_CLOSED.includes(item.status) ? 'done' : '',
       `priority-${item.priority || 'normal'}`,
       isAgent ? 'agent-source' : '',
       isInProgress ? 'agent-in-progress' : '',
@@ -142,15 +143,18 @@ function renderAllBacklog() {
     const notesCount = item.notes_count ?? (item.notes || []).length;
     return `
       <div class="backlog-item ${cls}" style="cursor:pointer" onclick="_jumpToBacklogItem('${esc(p.id)}','${esc(item.id)}')">
-        <button class="backlog-check" onclick="event.stopPropagation();toggleDone(event,'${esc(p.id)}','${esc(item.id)}','${item.status}')" title="${item.status==='done'?'Reopen':'Mark done'}">
-          ${item.status==='done' ? '&#x2713;' : ''}
+        <button class="backlog-check" onclick="event.stopPropagation();toggleDone(event,'${esc(p.id)}','${esc(item.id)}','${item.status}')" title="${BACKLOG_CLOSED.includes(item.status)?'Reopen':'Mark done'}">
+          ${BACKLOG_CLOSED.includes(item.status) ? '&#x2713;' : ''}
         </button>
         <div style="flex:1;min-width:0">
-          <div class="backlog-text" style="pointer-events:none">${esc(item.text || '')}</div>
+          <div class="backlog-text" style="pointer-events:none">${typeof item.num === 'number'
+            ? `<span class="backlog-num">#${item.num}</span>` : ''}${esc(item.text || '')}</div>
           <div style="font-size:11px;color:var(--accent);font-weight:600;margin-top:3px;letter-spacing:0.2px">${esc(p.name || p.id)}</div>
         </div>
         <div class="backlog-meta">
           ${isAgent ? `<span class="agent-badge${isInProgress?' in-progress':''}">${isInProgress?'doing':'agent'}</span>` : ''}
+          ${item.status && item.status !== 'open' && item.status !== 'done'
+            ? `<span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>` : ''}
           <span class="priority-badge priority-${item.priority||'normal'}">${item.priority||'normal'}</span>
           ${notesCount ? `<span class="backlog-source" title="${notesCount} note${notesCount===1?'':'s'}">&#x1F4DD; ${notesCount}</span>` : ''}
         </div>

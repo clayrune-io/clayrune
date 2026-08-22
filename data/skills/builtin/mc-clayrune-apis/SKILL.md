@@ -29,9 +29,20 @@ PID must be an integer. Do not skip registration.
 When the user says "backlog", "backlog items", "the list" — they mean THIS, not files on disk.
 
 - Read: `GET /api/project/<pid>/backlog`
-- Update: `PATCH /api/project/<pid>/backlog/<item_id>` with `{"status":"done"}` — status values: `open`, `in_progress`, `blocked`, `done`
+- Update: `PATCH /api/project/<pid>/backlog/<item_id>` with `{"status":"done"}` — status values: `open`, `in_progress`, `blocked`, `done`, `wontdo`. The first three are LIVE (visible in the tab, counted on the tile); the last two are closed.
 - Add note: `POST /api/project/<pid>/backlog/<item_id>/note` with `{"text":"..."}`
-- Add item: `POST /api/project/<pid>/backlog` with `{"title":"...","priority":"high|medium|low","note":"..."}`
+- Add item: `POST /api/project/<pid>/backlog` with `{"text":"...","priority":"high|normal|low"}` — the field is `text`, not `title`, and a missing/blank one is a 400.
+
+**Refer to items by `#num`, not by id.** Each item carries a per-project `num`
+(shown as `#12`); the `id` is an 8-char uuid slice no human can read back.
+Numbers are never recycled, so `#12` always means the same item.
+
+**Relations** (JIRA-style): `POST /api/project/<pid>/backlog/<item_id>/links`
+with `{"type":"blocked_by","target":"#12"}`. Types: `blocked_by`,
+`duplicate_of`, `continues`, `relates_to`. `target` takes `#12`, `12`, or a raw
+id, same project only. Post ONE direction — the inverse (`blocks`,
+`duplicated by`, `continued by`) is shown on the other item automatically.
+Remove with `DELETE …/links?type=…&target=…`.
 
 ## Scheduler (Clayrune LOCAL — for jobs that outlive a session)
 

@@ -874,6 +874,13 @@ let showDoneMap = {};
 let modalSearchQuery = {};  // projectId → search filter string
 let openAttPanels = new Set();
 let openNotesPanels = new Set();
+let openLinkPanels = new Set();
+// Closed backlog statuses — mirrors _BACKLOG_CLOSED in project_routes.py.
+// A CLOSED-set (rather than an open-set whitelist) is the point: in_progress
+// and blocked are both documented, both settable via PATCH, and both used to
+// match neither 'open' nor 'done' — so those items rendered NOWHERE and were
+// counted nowhere. A new status now shows up by default instead of vanishing.
+const BACKLOG_CLOSED = ['done', 'wontdo'];
 let undoStack = [];  // [{type, projectId, itemId, data, label}]
 let modalActiveTab = {};  // projectId → 'backlog' | 'agent' | 'agent-log' | 'activity'
 let textareaHeights = {}; // textarea id → height string (persists user resize across refreshes)

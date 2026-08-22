@@ -6,6 +6,59 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-22] — backlog items have numbers, and can point at each other
+
+An item's `id` is an eight-character uuid slice. It is stable, and it is
+unspeakable: nobody says "see 4b7738a1" out loud. So there was no way for a
+person *or* an agent to say one item duplicates another, continues it, or is
+waiting on it — the relationship existed only in someone's head.
+
+**Every item now carries a `#number`**, per project, oldest first. It sits at
+the head of the row; click it to copy. Existing backlogs are numbered on first
+open — no migration to run, and nothing to run it on a machine that isn't this
+one.
+
+**And items can be linked.** The 🔗 button opens a panel: pick a relation, type
+a number, done.
+
+| you store        | reads on this item | reads on the other |
+|------------------|--------------------|--------------------|
+| `blocked_by`     | Blocked by #12     | Blocks #4          |
+| `duplicate_of`   | Duplicate of #12   | Duplicated by #4   |
+| `continues`      | Continues #12      | Continued by #4    |
+| `relates_to`     | Relates to #12     | Relates to #4      |
+
+- **Only one direction is ever written.** The inverse is derived from the list
+  at render time, so the two halves of a pair cannot drift out of agreement —
+  a half-written relationship isn't representable.
+- **A number is retired, never recycled.** `backlog_seq` is a high-water mark,
+  so deleting #12 does not hand #12 to the next item. If it did, every link
+  pointing at the old #12 would silently start meaning something else, and a
+  link that quietly lies is worse than one that's gone. Deleting an item also
+  sweeps the links that pointed at it.
+- Targets accept `#12`, `12`, or the raw id — all three are things someone
+  actually types. Same project only; `#12` is ambiguous across the
+  cross-project view without a project key.
+- Agents get the same handle: `POST …/backlog/<id>/links`, and the API
+  reference now tells them to refer to items by `#num` rather than by id.
+
+### Fixed: in_progress and blocked items rendered nowhere
+
+Found while wiring the above, and older than it. The backlog tab kept items
+matching `status === 'open'` and, behind the toggle, `'done'`. The PATCH route
+has always accepted `in_progress` and `blocked` — both are in the documented
+API — and `/api/projects` counted only `'open'` as well. So moving an item to
+either status removed it from the list, from the tile's open count, and from
+the cross-project view at once. The work list dropped exactly the items being
+worked on, and said nothing.
+
+The test is now inverted: `_BACKLOG_CLOSED` names the two closed states
+(`done`, `wontdo`) and everything else is live. A status nobody anticipated
+shows up by default instead of disappearing — which is the failure that hid
+these. Live-but-not-open items render with a status badge and a coloured rail.
+`done_at` follows suit and tracks closure rather than the literal string
+`'done'`, so a `wontdo` item is stamped and a reopened one is cleared.
+
 ## [2026-08-16] — long-press a calendar slot to schedule something there
 
 The calendar could only ever *show* you the week. Creating a run meant leaving

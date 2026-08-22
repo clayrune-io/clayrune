@@ -575,7 +575,7 @@ function _agentSurfacesHTML(p) {
   // claiming "No open items" about a project that has plenty.
   const bl = window.backlogSummary ? window.backlogSummary(p) : { open: 0, nextText: '' };
   const loaded = !!(p._backlogFull && Array.isArray(p.backlog));
-  const open = loaded ? p.backlog.filter(i => i.status === 'open') : [];
+  const open = loaded ? p.backlog.filter(i => !BACKLOG_CLOSED.includes(i.status)) : [];
   const topItems = open.slice(0, 3)
     .map(i => `<div class="surface-line">&#8226; ${esc((i.text || '').slice(0, 52))}</div>`).join('')
     || (bl.open

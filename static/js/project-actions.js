@@ -383,6 +383,137 @@ function noteHTML(n) {
   return `<div class="backlog-note"><span class="note-meta">${esc(ts)} · ${code} ·</span>${text}</div>`;
 }
 
+// ── Backlog links (JIRA-style item relations) ───────────────────────────────
+//
+// Only the OUTGOING direction is stored on an item. The inverse ("A blocks B"
+// for a stored "B blocked_by A") is derived at render time from the full list,
+// so a pair can never be half-written. `BACKLOG_LINK_TYPES` mirrors the server
+// whitelist in project_routes.py — keep the two in step; the server rejects
+// anything it doesn't recognise, so a drift shows up as a 400, not bad data.
+const BACKLOG_LINK_TYPES = [
+  ['blocked_by',   'Blocked by'],
+  ['duplicate_of', 'Duplicate of'],
+  ['continues',    'Continues'],
+  ['relates_to',   'Relates to'],
+];
+const BACKLOG_LINK_INVERSE = {
+  blocked_by:   'Blocks',
+  duplicate_of: 'Duplicated by',
+  continues:    'Continued by',
+  relates_to:   'Relates to',
+};
+
+function _linkLabel(type) {
+  const t = BACKLOG_LINK_TYPES.find(x => x[0] === type);
+  return t ? t[1] : type;
+}
+
+// A short preview of the linked item, so a row reads "Blocked by #12 Fix the
+// installer" rather than a bare number nobody can place.
+function _linkChip(target) {
+  if (!target) return '<span class="link-missing">(deleted)</span>';
+  const n = typeof target.num === 'number' ? '#' + target.num : '';
+  const txt = (target.text || '').slice(0, 60);
+  const done = target.status === 'done' ? ' done' : '';
+  return `<a class="link-chip${done}" onclick="jumpToBacklogItem('${esc(target.id)}')"
+    title="${esc(target.text || '')}">${esc(n)} ${esc(txt)}</a>`;
+}
+
+function linkRowHTML(l, item, backlog, projectId) {
+  const target = backlog.find(i => i.id === l.target);
+  return `<div class="link-row">
+    <span class="link-type">${esc(_linkLabel(l.type))}</span>
+    ${_linkChip(target)}
+    <button class="link-del" title="Remove link"
+      onclick="removeBacklogLink(event,'${esc(projectId)}','${esc(item.id)}','${esc(l.type)}','${esc(l.target)}')">✕</button>
+  </div>`;
+}
+
+// Incoming links are read-only here: they live on the OTHER item, and that is
+// where they get removed. Showing a delete button would either lie or silently
+// edit an item the user isn't looking at.
+function inverseLinkRowHTML(l) {
+  return `<div class="link-row inverse">
+    <span class="link-type">${esc(BACKLOG_LINK_INVERSE[l.type] || l.type)}</span>
+    ${_linkChip(l.from)}
+  </div>`;
+}
+
+function toggleLinksPanel(e, projectId, itemId) {
+  e.stopPropagation();
+  const panel = document.getElementById('links-' + itemId);
+  if (!panel) return;
+  panel.classList.toggle('open');
+  if (panel.classList.contains('open')) {
+    openLinkPanels.add(itemId);
+    const input = document.getElementById('linktarget-' + itemId);
+    if (input) setTimeout(() => input.focus(), 50);
+  } else {
+    openLinkPanels.delete(itemId);
+  }
+}
+
+async function submitBacklogLink(projectId, itemId) {
+  const typeSel = document.getElementById('linktype-' + itemId);
+  const input = document.getElementById('linktarget-' + itemId);
+  if (!typeSel || !input) return;
+  const target = input.value.trim();
+  if (!target) { input.focus(); return; }
+  input.disabled = true;
+  try {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/backlog/${itemId}/links`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ type: typeSel.value, target }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      // Surface the server's reason ("no item matching '#99'") rather than a
+      // silent no-op — a mistyped number is the common case here.
+      alert(data.error || 'Could not create the link.');
+      return;
+    }
+    input.value = '';
+    openLinkPanels.add(itemId);
+    await refreshProjectBacklog(projectId);
+  } finally {
+    input.disabled = false;
+    const refreshed = document.getElementById('linktarget-' + itemId);
+    if (refreshed) refreshed.focus();
+  }
+}
+
+async function removeBacklogLink(e, projectId, itemId, type, target) {
+  e.stopPropagation();
+  const q = `type=${encodeURIComponent(type)}&target=${encodeURIComponent(target)}`;
+  await fetch(API_BASE + `/api/project/${projectId}/backlog/${itemId}/links?${q}`, {method: 'DELETE'});
+  openLinkPanels.add(itemId);
+  await refreshProjectBacklog(projectId);
+}
+
+// Scroll the linked item into view and flash it. The row may be in a collapsed
+// "done" section or simply off-screen, so a link that silently does nothing is
+// the failure mode worth avoiding.
+function jumpToBacklogItem(itemId) {
+  const el = document.querySelector(`.backlog-item[data-item-id="${itemId}"]`);
+  if (!el) return;
+  el.scrollIntoView({behavior: 'smooth', block: 'center'});
+  el.classList.add('link-flash');
+  setTimeout(() => el.classList.remove('link-flash'), 1600);
+}
+
+function copyBacklogNum(e, num) {
+  e.stopPropagation();
+  const txt = '#' + num;
+  try { navigator.clipboard.writeText(txt); } catch (err) {}
+  const el = e.currentTarget;
+  if (el) {
+    el.classList.add('copied');
+    setTimeout(() => el.classList.remove('copied'), 900);
+  }
+}
+
+
 function toggleNotesPanel(e, projectId, itemId) {
   e.stopPropagation();
   const panel = document.getElementById('notes-'+itemId);
@@ -533,3 +664,11 @@ window.uploadFile = uploadFile;
 window.codeSyncDismiss = codeSyncDismiss;
 window.deleteAttachment = deleteAttachment;
 window.removeCreateFile = removeCreateFile;
+window.toggleLinksPanel = toggleLinksPanel;
+window.submitBacklogLink = submitBacklogLink;
+window.removeBacklogLink = removeBacklogLink;
+window.jumpToBacklogItem = jumpToBacklogItem;
+window.copyBacklogNum = copyBacklogNum;
+window.linkRowHTML = linkRowHTML;
+window.inverseLinkRowHTML = inverseLinkRowHTML;
+window.BACKLOG_LINK_TYPES = BACKLOG_LINK_TYPES;
