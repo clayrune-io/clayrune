@@ -46,7 +46,10 @@ const check = (name, ok, detail) => {
 };
 
 const browser = await chromium.launch();
-const ctx = await browser.newContext({ hasTouch: true, viewport: { width: 900, height: 700 } });
+// 1280 wide on purpose: the viewer keeps its full-screen modal treatment at or
+// below the app's 960px mobile breakpoint, so a narrower viewport would test
+// the mobile path while claiming to test the desktop window.
+const ctx = await browser.newContext({ hasTouch: true, viewport: { width: 1280, height: 900 } });
 const page = await ctx.newPage();
 page.on('pageerror', e => { check('no page error', false, e.message); });
 
@@ -56,6 +59,16 @@ await page.route('**/*', route => {
   if (p === '/static/css/app.css') return route.fulfill({ contentType: 'text/css', body: APP_CSS });
   if (p === '/static/js/mermaid.js') return route.fulfill({ contentType: 'text/javascript', body: MERMAID_JS });
   return route.abort();
+});
+await page.addInitScript(() => {
+  // Balance-sheet for document-level listeners: the viewers hang drag/pan
+  // handlers on `document` (a drag has to survive the cursor leaving the
+  // window), so closing one by removing its overlay does NOT unbind them.
+  window.__lsn = {};
+  const add = document.addEventListener.bind(document);
+  const rm = document.removeEventListener.bind(document);
+  document.addEventListener = (t, f, o) => { window.__lsn[t] = (window.__lsn[t] || 0) + 1; return add(t, f, o); };
+  document.removeEventListener = (t, f, o) => { window.__lsn[t] = (window.__lsn[t] || 0) - 1; return rm(t, f, o); };
 });
 await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
 await page.waitForFunction(() => typeof window._openImageViewer === 'function', null, { timeout: 10000 });
@@ -169,6 +182,91 @@ check('toolbar + zooms in', (await zoom()) === 125, (await zoom()) + '%');
 await page.keyboard.press('0');
 await page.waitForTimeout(200);
 check('key 0 resets', (await zoom()) === 100, (await zoom()) + '%');
+
+
+// ── 7. It is a WINDOW, not a screen-grabbing modal ──
+const winMode = await page.evaluate(() => {
+  const ov = document.querySelector('.mermaid-viewer-overlay');
+  const c = ov.querySelector('.mermaid-viewer-content');
+  const cs = getComputedStyle(ov);
+  return {
+    classed: ov.classList.contains('iv-windowed'),
+    bg: cs.backgroundColor,
+    pe: cs.pointerEvents,
+    contentPe: getComputedStyle(c).pointerEvents,
+    w: c.offsetWidth, h: c.offsetHeight,
+    vw: window.innerWidth, vh: window.innerHeight,
+  };
+});
+check('opens in window mode', winMode.classed, 'iv-windowed');
+check('no screen-covering backdrop', /rgba\(0, 0, 0, 0\)|transparent/.test(winMode.bg), winMode.bg);
+check('clicks pass through to the app behind', winMode.pe === 'none' && winMode.contentPe === 'auto',
+  `overlay ${winMode.pe} / content ${winMode.contentPe}`);
+check('window is fitted, not full-screen',
+  winMode.w < winMode.vw * 0.9 && winMode.h <= winMode.vh * 0.85,
+  `${winMode.w}x${winMode.h} in ${winMode.vw}x${winMode.vh}`);
+
+// The app behind really is reachable: a real click lands on the page, not the overlay.
+const behind = await page.evaluate(() => {
+  const ov = document.querySelector('.mermaid-viewer-overlay');
+  const r = ov.querySelector('.mermaid-viewer-content').getBoundingClientRect();
+  // A point inside the overlay's box but outside the window itself.
+  const el = document.elementFromPoint(Math.max(2, r.left / 2), 4);
+  return el ? el.tagName + '.' + (el.className || '') : 'null';
+});
+check('point beside the window is not the overlay', !behind.includes('mermaid-viewer'), behind);
+
+// ── 8. Drag by the toolbar moves it ──
+const moved = await page.evaluate(() => {
+  const c = document.querySelector('.mermaid-viewer-content');
+  const tb = c.querySelector('.mermaid-viewer-toolbar');
+  const r0 = c.getBoundingClientRect();
+  const x = r0.left + r0.width / 2, y = r0.top + 8;
+  tb.dispatchEvent(new MouseEvent('mousedown', { clientX: x, clientY: y, button: 0, bubbles: true, cancelable: true }));
+  document.dispatchEvent(new MouseEvent('mousemove', { clientX: x + 70, clientY: y + 50, bubbles: true }));
+  document.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }));
+  const r1 = c.getBoundingClientRect();
+  return { dx: Math.round(r1.left - r0.left), dy: Math.round(r1.top - r0.top), pos: c.style.position };
+});
+// +/-1px: pinning rounds the pre-drag left/top to whole pixels.
+check('toolbar drag moves the window',
+  Math.abs(moved.dx - 70) <= 2 && Math.abs(moved.dy - 50) <= 2 && moved.pos === 'fixed',
+  `moved ${moved.dx},${moved.dy} (${moved.pos})`);
+
+// Buttons inside the toolbar must still click, not start a drag.
+await page.click('._iv-zi');
+await page.waitForTimeout(200);
+check('toolbar buttons still work after windowing', (await zoom()) === 125, (await zoom()) + '%');
+
+// ── 9. A tiny picture opens tiny ──
+await page.click('._iv-close');
+await page.waitForTimeout(100);
+await page.evaluate(() => {
+  const c = document.createElement('canvas');
+  c.width = 120; c.height = 80;
+  const x = c.getContext('2d'); x.fillStyle = '#4a7'; x.fillRect(0, 0, 120, 80);
+  window._openImageViewer(c.toDataURL('image/png'));
+});
+await page.waitForSelector('.mermaid-viewer-overlay img');
+await page.waitForFunction(() => document.querySelector('.mermaid-viewer-overlay img').complete);
+await page.waitForTimeout(200);
+const small = await page.evaluate(() => {
+  const c = document.querySelector('.mermaid-viewer-content');
+  return { w: c.offsetWidth, h: c.offsetHeight };
+});
+check('a thumbnail opens at the CSS min size, not full-screen',
+  small.w <= 340 && small.h <= 240, `${small.w}x${small.h}`);
+
+// ── 10. Closing unbinds every document listener it added ──
+await page.click('._iv-close');
+await page.waitForTimeout(150);
+const leaked = await page.evaluate(() => {
+  const l = window.__lsn || {};
+  return ['mousemove', 'mouseup', 'touchmove', 'touchend', 'keydown']
+    .filter(t => (l[t] || 0) !== 0)
+    .map(t => `${t}:${l[t]}`);
+});
+check('closing leaks no document listeners', leaked.length === 0, leaked.join(', ') || 'balanced');
 
 await browser.close();
 if (fails.length) {

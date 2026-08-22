@@ -310,6 +310,124 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
     zoomBy: f => { zoomTo(scale * f); setCursor(); },
     reset: () => { zoomTo(1); scrollEl.scrollTop = scrollEl.scrollLeft = 0; setCursor(); },
     refit: setCursor,
+    // The pan listeners live on `document` so a drag survives the cursor
+    // leaving the canvas — which means closing the viewer by removing its
+    // overlay does NOT unbind them. Callers must call this from their close
+    // path or every picture opened leaks a pair.
+    destroy: () => {
+      document.removeEventListener('mousemove', onMove);
+      document.removeEventListener('mouseup', onUp);
+    },
+  };
+}
+
+// ── Viewer windows ───────────────────────────────────────────────────────
+// The viewers were modal dialogs: a full-screen dim backdrop that swallowed
+// every click, so opening a thumbnail took the whole dashboard hostage. They
+// are now ordinary floating windows — drag by the toolbar, resize from any
+// edge (makeResizable), click to raise, and the app behind stays live. The
+// backdrop and the modal sizing survive on mobile only, where a floating
+// window on a 400px screen would be worse than what it replaces.
+//
+// Stacking: each viewer has its OWN overlay, and an overlay's z-index makes it
+// a stacking context — so raising the *content* cannot lift one viewer above
+// another. The overlay is what has to move.
+let _IV_Z = 10000;
+const _IV_STACK = [];
+const _ivMobile = () => window.matchMedia('(max-width: 960px)').matches;
+
+function _ivWindowify(overlay, content, toolbar) {
+  _IV_STACK.push(overlay);
+  const raise = () => {
+    if (_IV_STACK[_IV_STACK.length - 1] !== overlay) {
+      const i = _IV_STACK.indexOf(overlay);
+      if (i >= 0) _IV_STACK.splice(i, 1);
+      _IV_STACK.push(overlay);
+    }
+    overlay.style.zIndex = ++_IV_Z;
+  };
+  const untrack = () => {
+    const i = _IV_STACK.indexOf(overlay);
+    if (i >= 0) _IV_STACK.splice(i, 1);
+  };
+  // Only the TOP window answers the keyboard. Two open pictures both reacting
+  // to `-` (and both closing on Esc) is the bug this prevents.
+  const isTop = () => _IV_STACK[_IV_STACK.length - 1] === overlay;
+  if (_ivMobile()) return { raise, untrack, isTop, destroy: untrack };
+
+  overlay.classList.add('iv-windowed');
+  content.addEventListener('mousedown', raise);
+  raise();
+
+  // Flex centering cannot be dragged, so the first grab converts the window to
+  // explicit fixed geometry. Deferred rather than done up front because
+  // sizeToImage resizes the box after the picture decodes, and staying centred
+  // until the user actually moves it is the nicer default.
+  const pin = () => {
+    if (content.style.position === 'fixed') return;
+    const r = content.getBoundingClientRect();
+    content.style.position = 'fixed';
+    content.style.margin = '0';
+    content.style.left = Math.round(r.left) + 'px';
+    content.style.top = Math.round(r.top) + 'px';
+  };
+  let drag = null;
+  const startDrag = (x, y, target) => {
+    if (target.closest && target.closest('button, a, input, select, textarea')) return false;
+    pin();
+    const r = content.getBoundingClientRect();
+    drag = { x, y, l: r.left, t: r.top };
+    toolbar.classList.add('dragging');
+    return true;
+  };
+  const moveDrag = (x, y) => {
+    if (!drag) return;
+    // Never let the window be dragged somewhere it can't be grabbed back from:
+    // keep 40px of it on screen horizontally and its toolbar always reachable.
+    const w = content.offsetWidth;
+    const l = Math.min(Math.max(drag.l + x - drag.x, 40 - w), window.innerWidth - 40);
+    const t = Math.min(Math.max(drag.t + y - drag.y, 0), window.innerHeight - 40);
+    content.style.left = Math.round(l) + 'px';
+    content.style.top = Math.round(t) + 'px';
+  };
+  const endDrag = () => { if (drag) { drag = null; toolbar.classList.remove('dragging'); } };
+  const onTbDown = e => { if (e.button === 0 && startDrag(e.clientX, e.clientY, e.target)) e.preventDefault(); };
+  const onTbTouch = e => {
+    if (e.touches.length === 1 && startDrag(e.touches[0].clientX, e.touches[0].clientY, e.target)) e.preventDefault();
+  };
+  const onMouseMove = e => moveDrag(e.clientX, e.clientY);
+  const onTouchMove = e => { if (drag && e.touches.length === 1) moveDrag(e.touches[0].clientX, e.touches[0].clientY); };
+  toolbar.addEventListener('mousedown', onTbDown);
+  toolbar.addEventListener('touchstart', onTbTouch, { passive: false });
+  document.addEventListener('mousemove', onMouseMove);
+  document.addEventListener('mouseup', endDrag);
+  document.addEventListener('touchmove', onTouchMove, { passive: false });
+  document.addEventListener('touchend', endDrag);
+  return {
+    raise, untrack, isTop,
+    destroy: () => {
+      untrack();
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', endDrag);
+      document.removeEventListener('touchmove', onTouchMove);
+      document.removeEventListener('touchend', endDrag);
+    },
+  };
+}
+
+// Fit a window to content of natural size nw x nh: shrink by aspect until the
+// WHOLE thing fits inside a fraction of the viewport, never enlarge past 1:1.
+// The old code clamped width and height independently at 95vw/92vh, which for
+// anything bigger than the screen — i.e. every screenshot — meant "maximised".
+function _ivFitBox(nw, nh) {
+  const CHROME_H = 45 + 48;                     // toolbar + 24px canvas padding x2
+  const CHROME_W = 48;
+  const f = _ivMobile() ? 0.95 : 0.8;
+  const k = Math.min(1, (window.innerWidth * f - CHROME_W) / nw,
+                        (window.innerHeight * f - CHROME_H) / nh);
+  return {
+    w: Math.max(320, Math.round(nw * k) + CHROME_W),
+    h: Math.max(220, Math.round(nh * k) + CHROME_H),
   };
 }
 
@@ -343,7 +461,25 @@ function _openMermaidViewer(source, svg) {
   const svgWrap = overlay.querySelector('.mermaid-viewer-svg');
   const zoomLabel = overlay.querySelector('.mermaid-viewer-zoom-label');
   const gest = _ivGestures(overlay.querySelector('.mermaid-viewer-scroll'), svgWrap, zoomLabel);
-  const closeIt = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const content = overlay.querySelector('.mermaid-viewer-content');
+  const win = _ivWindowify(overlay, content, overlay.querySelector('.mermaid-viewer-toolbar'));
+  // Size to the diagram the way the image viewer sizes to the picture. The
+  // rendered <svg> had its width/height stripped for the fill-the-box layout,
+  // so its intrinsic size comes from the viewBox; a missing or degenerate one
+  // just leaves the CSS default alone.
+  const vb = (svgWrap.querySelector('svg')?.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
+  if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
+    const box = _ivFitBox(vb[2], vb[3]);
+    content.style.width = box.w + 'px';
+    content.style.height = box.h + 'px';
+    gest.refit();
+  }
+  const closeIt = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+    gest.destroy();
+    win.destroy();
+  };
   // Close on backdrop click — but ONLY when the gesture also STARTED on the
   // backdrop. A `click` fires on the nearest common ancestor of mousedown and
   // mouseup, so dragging the resize corner (inside the content) and releasing
@@ -374,6 +510,7 @@ function _openMermaidViewer(source, svg) {
     e.stopPropagation(); gest.reset();
   });
   const onKey = e => {
+    if (!win.isTop()) return;                     // only the front window listens
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
@@ -512,6 +649,7 @@ function _openImageViewer(src) {
   const imgEl = overlay.querySelector('.mermaid-viewer-svg img');
 
   const gest = _ivGestures(scrollEl, wrap, zoomLabel);
+  const win = _ivWindowify(overlay, content, overlay.querySelector('.mermaid-viewer-toolbar'));
 
   // ── Background mode (persisted) ──
   let bg = _ivBgGet();
@@ -531,27 +669,27 @@ function _openImageViewer(src) {
     _downloadImage(src);
   });
 
-  // ── Open at the image's NATURAL size, not a hard-coded 95vw x 92vh ──
-  // The CSS default filled the screen for a thumbnail-sized picture. Size the
-  // window to the picture (plus the toolbar + canvas padding), clamped to the
-  // viewport and to the CSS min-size; the user can still drag-resize from the
-  // corner (`resize: both`).
+  // ── Open at the picture's size, not a hard-coded 95vw x 92vh ──
+  // The CSS default filled the screen for a thumbnail AND for a screenshot.
+  // _ivFitBox sizes the window to the whole picture, shrinking by aspect when
+  // it has to, so it opens showing everything and leaves the dashboard visible
+  // around it. Drag-resize from any edge still applies afterwards.
   const sizeToImage = () => {
     const nw = imgEl.naturalWidth, nh = imgEl.naturalHeight;
     if (!nw || !nh) return;                       // decode failed — keep CSS default
-    const CHROME_H = 45 + 48;                     // toolbar + 24px canvas padding x2
-    const CHROME_W = 48;
-    const maxW = Math.round(window.innerWidth * 0.95);
-    const maxH = Math.round(window.innerHeight * 0.92);
-    const w = Math.max(320, Math.min(nw + CHROME_W, maxW));
-    const h = Math.max(220, Math.min(nh + CHROME_H, maxH));
-    content.style.width = w + 'px';
-    content.style.height = h + 'px';
+    const box = _ivFitBox(nw, nh);
+    content.style.width = box.w + 'px';
+    content.style.height = box.h + 'px';
     gest.refit();
   };
   if (imgEl.complete) sizeToImage();
   else imgEl.addEventListener('load', sizeToImage, { once: true });
-  const closeIt = () => { overlay.remove(); document.removeEventListener('keydown', onKey); };
+  const closeIt = () => {
+    overlay.remove();
+    document.removeEventListener('keydown', onKey);
+    gest.destroy();
+    win.destroy();
+  };
   // Close on backdrop click — but ONLY when the gesture also STARTED there. A
   // `click` fires on the nearest common ancestor of mousedown and mouseup, so
   // dragging the resize corner (inside the content) and releasing over the
@@ -572,6 +710,7 @@ function _openImageViewer(src) {
     e.stopPropagation(); gest.reset();
   });
   const onKey = e => {
+    if (!win.isTop()) return;                     // only the front window listens
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);

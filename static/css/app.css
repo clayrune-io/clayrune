@@ -4194,6 +4194,24 @@
     display: flex; align-items: center; justify-content: center;
     z-index: 10000; padding: 24px;
   }
+  /* WINDOW mode (desktop, added by _ivWindowify). The viewers used to be modal
+     dialogs — a dim backdrop over the whole screen that swallowed every click,
+     so opening one thumbnail took the dashboard hostage. As a window there is
+     no backdrop and no pointer capture: drag it by the toolbar, resize it from
+     any edge, click the app behind it. Mobile keeps the modal treatment, where
+     a floating window on a 400px screen would be worse than what it replaces. */
+  .mermaid-viewer-overlay.iv-windowed {
+    background: none;
+    pointer-events: none;              /* the content re-enables it for itself */
+  }
+  .mermaid-viewer-overlay.iv-windowed .mermaid-viewer-content {
+    pointer-events: auto;
+    box-shadow: 0 12px 34px rgba(0, 0, 0, 0.3);
+    border: 1px solid var(--border, #e0d8cc);
+  }
+  .mermaid-viewer-overlay.iv-windowed .mermaid-viewer-toolbar { cursor: move; }
+  .mermaid-viewer-overlay.iv-windowed .mermaid-viewer-toolbar.dragging { cursor: grabbing; }
+  .mermaid-viewer-overlay.iv-windowed .mermaid-viewer-btn { cursor: pointer; }
   .mermaid-viewer-content {
     background: #fff; border-radius: 14px;
     width: 95vw; height: 92vh;

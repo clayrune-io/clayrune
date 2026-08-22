@@ -6,6 +6,44 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-22] — the image viewer is a window you can pinch, not a modal
+
+Opening a picture used to take the whole dashboard hostage: a full-screen dim
+backdrop that swallowed every click, and a window sized 95vw x 92vh whether the
+picture was a screenshot or a 120px thumbnail. Zoom worked from the toolbar and
+nowhere else — the wheel handler returned early unless Ctrl/Cmd was held, and
+there was no touch handling at all, so pinching on a phone did nothing.
+
+**It is now an ordinary window.** No backdrop, no pointer capture: drag it by
+the toolbar, resize it from any edge, click the app behind it, open two at once.
+Below the 960px mobile breakpoint it keeps the full-screen treatment, where a
+floating window would be worse than what it replaces.
+
+**It opens at the picture's size.** `_ivFitBox` shrinks by aspect until the
+whole image fits in 80% of the viewport, and never enlarges past 1:1 — so a
+thumbnail opens as a thumbnail and a 4K screenshot opens showing all of itself.
+The old code clamped width and height independently, which for anything larger
+than the screen meant "maximised".
+
+**And it answers the pointer.** One shared gesture layer (`_ivGestures`) drives
+both the image and the Mermaid viewer:
+
+- plain wheel zooms, no modifier, anchored at the cursor
+- two-finger pinch, anchored at the midpoint
+- double-tap toggles 100% ↔ 250% at the tap point
+- click-drag pans once the picture overflows its canvas
+- toolbar buttons and `+` / `-` / `0` route through the same anchored path, so
+  every control agrees on which pixel stays still
+- only the front window answers the keyboard, now that two can be open
+
+`touch-action: pan-x pan-y` on the canvas is what hands the pinch to us instead
+of to the browser's page zoom while keeping native one-finger scrolling.
+
+`tools/smoke/image-viewer-gestures.mjs` drives all of it in headless Chromium:
+each input path, cursor-anchoring to within 4px, the window geometry, and a
+listener balance-sheet that fails if closing a viewer leaks a `document`
+handler. Wired into `npm test` under `tools/smoke/`.
+
 ## [2026-08-22] — backlog items have keys (MC-01), and can point at each other
 
 An item's `id` is an eight-character uuid slice. It is stable, and it is
