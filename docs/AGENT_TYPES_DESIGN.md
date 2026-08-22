@@ -1,7 +1,8 @@
 # Agent types — design doc (MC-895)
 
 Status: **design, not built.** 2026-08-22.
-Backs `MC-895`; subsumes `MC-868`; unblocks `MC-871`. Prior art:
+Backs `MC-895`; subsumes `MC-868`; unblocks `MC-871`.
+External prior art: OpenClaw multi-agent (§6b). Internal prior art:
 `docs/PROMPT_BUILDER_DESIGN.md` (characters, Phases 1–2 shipped),
 `docs/DISPATCH_AND_ROUTING_ANALYSIS.md` (the auto-model router),
 `docs/COORDINATION_LAYER_DESIGN.md` (MC-887, Phases 0–1 shipped).
@@ -169,6 +170,50 @@ stop learned artifacts from expanding what an agent may do; a character
 frontmatter key that grants autonomy is exactly the artifact it refuses, and
 the Distiller must refuse it here too. Humans set autonomy. Learning never does.
 
+## 6b. Prior art — how OpenClaw actually does it (researched 2026-08-22)
+
+Ron asked us to check OpenClaw before deciding the routing question. The answer
+is unambiguous, and it moves our recommendation.
+
+**Agents are declarative config, one entry each.** `~/.openclaw/config.yaml`
+holds `agents.entries`, and every entry carries its own `agentId`, `workspace`
+(where its `SOUL.md` / `AGENTS.md` / `USER.md` live), `agentDir` (auth, model
+registry, session store), `model` (primary + fallback, e.g.
+`anthropic/claude-opus-4-6`), an optional `identity` persona, and optional
+per-agent `sandbox` / `tools` restrictions. Exactly one entry is
+`default: true` — the fallback that catches anything unmatched.
+
+**Routing is 100% deterministic. There is no classifier.** `bindings` map an
+`agentId` to a `match` block on structural facts — channel, accountId, peer
+kind/id, guild/team id — with AND across fields, specificity tiers, and
+first-in-config-order winning a tie. No model is ever asked "who should handle
+this?".
+
+Two things to take from that, and one not to:
+
+- **Take: the routing key is a structural fact, not an inferred intent.**
+  OpenClaw can be fully deterministic because its inputs arrive *from
+  somewhere* — a WhatsApp business account, a Slack channel — and "where it
+  came from" is a reliable proxy for "who should handle it". That beats a
+  classifier's guess, and it never misroutes twice for the same reason.
+- **Take: `default: true`.** Their fallback agent is precisely our proposed
+  project-default character, and they ship it as part of the same object as the
+  per-agent model — not as a later phase.
+- **Do NOT take: `agentDir` as per-agent memory.** OpenClaw isolates memory
+  *per agent* because its axis is account identity — the work WhatsApp and the
+  personal WhatsApp genuinely must not see each other's history. Clayrune's
+  axis is the **project**, and a type here is meant to be reusable across
+  projects. Per-character memory would build exactly the cross-project leak
+  channel §5 rules out. Same mechanism, opposite conclusion, because the
+  boundary being protected is a different one.
+
+**What this means for us.** Clayrune has no "channel" — every dispatch comes
+from a project modal. But it has structural facts of the same quality: the
+**project**, and the **trigger** (manual / scheduled / steward / hivemind /
+backlog-dispatch). Those should bind deterministically, OpenClaw-style. Only
+the genuinely-inferred part — *what kind of work is this prompt* — should reach
+a classifier, and only after the structural rules have had their say.
+
 ## 7. Routing — the fork worth deciding deliberately
 
 Three ways to choose the character for a dispatch. They differ in who is
@@ -187,24 +232,46 @@ Haiku is good at.
 **(c) Explicit only.** A picker at dispatch, no automation. Honest, and Ron's
 complaint is precisely that he has to remember to do this.
 
-**Recommendation: (b).** It is the only one where a wrong answer is diagnosable
-and fixable by the person who noticed it, and it degrades to (c) cleanly when
-no rule matches. (a) can be layered on later as a suggestion in the picker —
-"looks like a PRD, use prd-writer?" — where a wrong guess costs a click rather
-than a whole turn.
+**Decision (Ron, 2026-08-22, after the OpenClaw check): (b), but structural
+rules first.** The resolution order becomes:
+
+```
+1. explicit per-chat pick                 (the user said so)
+2. binding match { project, trigger }     deterministic, OpenClaw-style
+3. handles: + work-kind classifier        the only inferred step
+4. project default character              the `default: true` fallback
+5. no character                           exactly today's behaviour
+```
+
+Steps 1, 2, 4 and 5 involve no model at all. A misroute is therefore almost
+always traceable to a rule you can read, and when it *is* the classifier, step
+3 is the only place it can have happened. That is the property (a) can never
+have: with a free-choice classifier every wrong answer looks like every other
+one, and all of them look like the agent simply went weird.
+
+(a) survives later as a *suggestion* in the picker — "looks like a PRD, use
+prd-writer?" — where a wrong guess costs a click, not a turn.
 
 ## 8. Phasing — smallest useful thing first
 
 | Phase | Scope | Size |
 |---|---|---|
-| **1** | `default_character` on the project; new chats inherit; header pill shows the source | small — the deferred Phase-2 layer, no new concepts |
-| **2** | `provider` / `model` / `effort` in character frontmatter; precedence chain; pill shows the engine came from the character | medium — touches the dispatch family, so session-lifecycle rules apply |
-| **3** | `handles:` + work-kind classifier + routing to a character | medium |
+| **1** | `default_character` on the project **+** `provider`/`model`/`effort` in character frontmatter **+** the precedence chain; header pill shows the type and where the engine came from | medium — merged, see below |
+| **2** | `bindings` — deterministic `{project, trigger} → character` | small once Phase 1 lands |
+| **3** | `handles:` + work-kind classifier as the last-resort inference step | medium |
 | **4** | `autonomy:` dial, with the Distiller refusal | small code, **needs a review** — it touches the authority bright line |
-| **5** | `MC-868` per-turn hand-off between characters | large, and only sensible after 1–3 |
+| **5** | `MC-868` per-turn hand-off between characters | large, only sensible after 1–3 |
 
-Phase 1 alone answers "the user has to remember to bring it on", which is the
-half of MC-895 that bites daily.
+**The original Phases 1 and 2 are merged (Ron, 2026-08-22).** The OpenClaw
+check is the reason: their agent entry carries `identity` *and* `model` *and*
+`default: true` as one object, and that is right. A "type" whose engine still
+comes from a project-wide setting is only half a type, and Ron's own example
+("Fable for PRD, Opus for market research, Grok for coding") is entirely about
+the engine. Shipping identity without the model would answer the smaller half
+of MC-895 and leave out the half he actually described.
+
+Merged Phase 1 still answers "the user has to remember to bring it on", which
+is the part that bites daily.
 
 ## 9. What this does NOT cover
 
@@ -217,15 +284,27 @@ half of MC-895 that bites daily.
   character (`market-researcher`, Opus) and is a good first customer of Phase 2,
   but it is not blocked on any of this.
 
-## 10. Open questions for Ron
+## 10. Decisions, and what is still open
 
-1. **Routing strategy** — §7 (a), (b) or (c). Recommendation: (b).
-2. **Phase 1 scope** — is a project default enough, or does the *first* release
-   also need per-character model (Phase 2)? Recommendation: ship Phase 1 alone;
-   it is days, not weeks, and it is most of the pain.
-3. **Non-Claude providers in a character** — 7 providers are wired
-   (Claude Code, Gemini, Codex, OpenCode, Goose, Aider, Kiro). "Grok for
-   coding" needs a provider that isn't installed here. Do we design the field
-   now and light it up when a provider exists, or scope Phase 2 to Claude
-   models only? Recommendation: design the field now, validate against the
-   live provider list, fail loudly on an unknown one.
+**Decided 2026-08-22 (Ron, via the OpenClaw check):**
+
+1. **Routing** — deterministic bindings first, classifier last (§7). Structural
+   facts (`project`, `trigger`) bind the way OpenClaw matches channel/account;
+   only work-kind inference reaches a model.
+2. **First cut** — identity *and* engine together (§8, merged Phase 1).
+
+**Still open:**
+
+3. **Non-Claude providers in a character.** Seven are wired (Claude Code,
+   Gemini, Codex, OpenCode, Goose, Aider, Kiro); Codex reports
+   `auth: unknown` and four are not installed. "Grok for coding" needs a
+   provider that does not exist on this box. Recommendation: design the field
+   now, validate against the live provider list at save time, and fail loudly
+   on an unknown one rather than falling back to Claude — a character quietly
+   running on the wrong engine is worse than one that refuses to save.
+4. **What binds on `trigger`.** Whether a steward or scheduled cycle should get
+   a different character than a manual dispatch on the same project. It is the
+   obvious use of `trigger`, and it interacts with the unattended-loop rule in
+   the learning safety rails, so it wants deciding before Phase 2, not during.
+5. **Next item to design** — Ron: "not sure". MC-897 / MC-885 / MC-871 / MC-898
+   all sit behind this. MC-871 genuinely wants MC-895 first; the others do not.
