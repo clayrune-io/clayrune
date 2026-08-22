@@ -164,6 +164,40 @@ MC-885 is the behaviour itself, not where the knob lives. But it is the right
 place for the knob, and it means "a careful reviewer" and "a fire-and-forget
 migration agent" can coexist on one project.
 
+### 6a. Delegation — the steward runs the same flow (Ron, 2026-08-22)
+
+> *"steward should follow same flow, so that it can also trigger other agents
+> as per his authority."*
+
+So there is no steward special case in routing: an unattended cycle resolves a
+character through the same chain as a manual dispatch (§7), and it may dispatch
+*to* other characters. `autonomy` stops being a private property of one agent
+and becomes a **delegation budget**. Two invariants follow, and neither is
+optional.
+
+**1. Authority never escalates through a hand-off.** A delegated agent runs at
+`min(caller.autonomy, callee.autonomy)` on the `ask < bounded < steward` order.
+A `bounded` agent that dispatches a `steward`-level character gets a `bounded`
+run, not a promotion. Without this, `autonomy` is not a limit at all — it is a
+suggestion any agent can launder away by calling something with a bigger number,
+and the constitutional line in the learning rails ("machinery must never expand
+the agent's own capability set") would be one dispatch call wide.
+
+**2. Unattended origin is inherited, never reset.** A steward-triggered agent is
+itself unattended, and must be stamped `origin: unattended` even though it is a
+fresh session with no steward marker in its own task text. The read floor
+already withholds unattended-origin artifacts from unattended consumers
+(`exploration_read_floor(consumer_unattended=True)`) — the whole point being
+that a human sits on one side of every learning loop. A delegated agent that
+counted as "interactive" because nobody typed its prompt would close that loop
+silently, which is precisely the failure the rail exists to prevent.
+`distiller.STEWARD_TASK_MARKER` is currently how unattendedness is detected;
+delegation means detection can no longer rest on the task text alone — the
+spawning session's origin has to travel with the dispatch.
+
+Both are cheap to build and expensive to retrofit, so they belong in Phase 4
+with the `autonomy` dial itself, not after it.
+
 **Guard rail:** `autonomy` must NOT be settable by the learning system. The
 authority guard (`_authority_violation`, `distiller.py`) exists precisely to
 stop learned artifacts from expanding what an agent may do; a character
@@ -259,7 +293,7 @@ prd-writer?" — where a wrong guess costs a click, not a turn.
 | **1** | `default_character` on the project **+** `provider`/`model`/`effort` in character frontmatter **+** the precedence chain; header pill shows the type and where the engine came from | medium — merged, see below |
 | **2** | `bindings` — deterministic `{project, trigger} → character` | small once Phase 1 lands |
 | **3** | `handles:` + work-kind classifier as the last-resort inference step | medium |
-| **4** | `autonomy:` dial, with the Distiller refusal | small code, **needs a review** — it touches the authority bright line |
+| **4** | `autonomy:` dial + non-escalating delegation + inherited unattended origin (§6a), with the Distiller refusal | small code, **needs a review** — it touches the authority bright line |
 | **5** | `MC-868` per-turn hand-off between characters | large, only sensible after 1–3 |
 
 **The original Phases 1 and 2 are merged (Ron, 2026-08-22).** The OpenClaw
@@ -293,18 +327,20 @@ is the part that bites daily.
    only work-kind inference reaches a model.
 2. **First cut** — identity *and* engine together (§8, merged Phase 1).
 
+3. **Unattended cycles use the same flow.** No steward special case in routing,
+   and a steward may dispatch other characters within its own authority
+   (§6a). `trigger` stays a *binding key* — you can still bind a scheduled run
+   to a different character — but it is not an escape hatch out of the chain.
+
 **Still open:**
 
-3. **Non-Claude providers in a character.** Seven are wired (Claude Code,
-   Gemini, Codex, OpenCode, Goose, Aider, Kiro); Codex reports
-   `auth: unknown` and four are not installed. "Grok for coding" needs a
-   provider that does not exist on this box. Recommendation: design the field
-   now, validate against the live provider list at save time, and fail loudly
-   on an unknown one rather than falling back to Claude — a character quietly
-   running on the wrong engine is worse than one that refuses to save.
-4. **What binds on `trigger`.** Whether a steward or scheduled cycle should get
-   a different character than a manual dispatch on the same project. It is the
-   obvious use of `trigger`, and it interacts with the unattended-loop rule in
-   the learning safety rails, so it wants deciding before Phase 2, not during.
+4. **Non-Claude providers in a character.** Deferred by Ron ("Grok — later").
+   Seven are wired (Claude Code, Gemini, Codex, OpenCode, Goose, Aider, Kiro);
+   Codex reports `auth: unknown` and four are not installed, so "Grok for
+   coding" needs a provider that does not exist on this box. Standing
+   recommendation for when it comes back: design the field now, validate
+   against the live provider list at save time, and fail loudly on an unknown
+   one rather than falling back to Claude — a character quietly running on the
+   wrong engine is worse than one that refuses to save.
 5. **Next item to design** — Ron: "not sure". MC-897 / MC-885 / MC-871 / MC-898
    all sit behind this. MC-871 genuinely wants MC-895 first; the others do not.
