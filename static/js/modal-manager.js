@@ -688,6 +688,13 @@ function _renderProfileDialog() {
         <button class="btn-browse" onclick="openFolderPicker('${esc(p.id)}')" title="Browse for folder">Browse…</button>
       </div>
     </div>
+    <div class="settings-row">
+      <div><div class="settings-label">Backlog key</div><div class="settings-hint">Prefix for item handles &mdash; ${esc(p.backlog_key || 'MC')}-01, ${esc(p.backlog_key || 'MC')}-02. Must be unique across projects; blank re-derives it from the name.</div></div>
+      <input id="pfd-key" type="text" maxlength="8" value="${esc(p.backlog_key || '')}"
+        placeholder="auto" spellcheck="false"
+        oninput="this.value=this.value.replace(/[^A-Za-z0-9]/g,'').toUpperCase()"
+        style="width:88px;text-align:center;letter-spacing:1px;font-family:'JetBrains Mono',monospace;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:6px 8px;font-size:12px">
+    </div>
     <div class="settings-row" style="align-items:flex-start;flex-direction:column;gap:6px">
       <div><div class="settings-label">Description</div><div class="settings-hint">What this project is — agents see this as context</div></div>
       <textarea id="pfd-desc" rows="4" style="width:100%;box-sizing:border-box;background:var(--bg);border:1px solid var(--border);color:var(--text);border-radius:6px;padding:8px;font-size:12px;font-family:inherit;resize:vertical">${esc(p.description || '')}</textarea>
@@ -705,16 +712,35 @@ function _renderProfileDialog() {
 async function saveProfileDialog() {
   const projectId = _profileDialogProjectId;
   const ta = document.getElementById('pfd-desc');
+  const keyEl = document.getElementById('pfd-key');
   const description = ta ? ta.value : null;
+  const p = allProjects.find(x => x.id === projectId);
+  // Only send the key when it actually changed. Re-sending the current value
+  // would trip the uniqueness check against the project's own key on any
+  // future tightening, and an unchanged field shouldn't be a write at all.
+  const key = keyEl ? keyEl.value.trim().toUpperCase() : null;
+  const keyChanged = key !== null && key !== ((p && p.backlog_key) || '');
   closeProfileDialog();
   if (!projectId || description === null) return;
+  const body = { description };
+  if (keyChanged) body.backlog_key = key;
   try {
-    await fetch(API_BASE + `/api/project/${projectId}`, {
+    const r = await fetch(API_BASE + `/api/project/${projectId}`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({ description })
+      body: JSON.stringify(body)
     });
+    if (!r.ok) {
+      // A rejected key is the whole reason this can fail — say which, rather
+      // than closing the dialog on a silently unsaved change.
+      const d = await r.json().catch(() => ({}));
+      showToast(d.error || `Save failed (${r.status})`, 6000);
+    }
     await refreshSilent();
+    // Item keys are re-stamped by the backlog route, so pull the fresh list.
+    if (keyChanged && typeof refreshProjectBacklog === 'function') {
+      try { await refreshProjectBacklog(projectId); } catch (e) {}
+    }
   } catch(e) {}
 }
 

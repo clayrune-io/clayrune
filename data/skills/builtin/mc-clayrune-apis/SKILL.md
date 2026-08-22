@@ -33,16 +33,19 @@ When the user says "backlog", "backlog items", "the list" — they mean THIS, no
 - Add note: `POST /api/project/<pid>/backlog/<item_id>/note` with `{"text":"..."}`
 - Add item: `POST /api/project/<pid>/backlog` with `{"text":"...","priority":"high|normal|low"}` — the field is `text`, not `title`, and a missing/blank one is a 400.
 
-**Refer to items by `#num`, not by id.** Each item carries a per-project `num`
-(shown as `#12`); the `id` is an 8-char uuid slice no human can read back.
-Numbers are never recycled, so `#12` always means the same item.
+**Refer to items by their `key`, never by `id`.** Each item carries a
+JIRA-style key: the project prefix, a dash, a zero-padded number — `MC-01`,
+`MC-142`. The `id` is an 8-char uuid slice no human can read back, and a bare
+`#12` is ambiguous as soon as two projects are on screen. Keys are never
+recycled, so one always means the same item.
 
 **Relations** (JIRA-style): `POST /api/project/<pid>/backlog/<item_id>/links`
-with `{"type":"blocked_by","target":"#12"}`. Types: `blocked_by`,
-`duplicate_of`, `continues`, `relates_to`. `target` takes `#12`, `12`, or a raw
-id, same project only. Post ONE direction — the inverse (`blocks`,
-`duplicated by`, `continued by`) is shown on the other item automatically.
-Remove with `DELETE …/links?type=…&target=…`.
+with `{"type":"blocked_by","target":"MC-12"}`. Types: `blocked_by`,
+`duplicate_of`, `continues`, `relates_to`. `target` takes `MC-12` (any case or
+padding), `#12`, `12`, or a raw id — same project only; another project's
+prefix 404s rather than matching the number. Post ONE direction; the inverse
+(`blocks`, `duplicated by`, `continued by`) shows on the other item
+automatically. Remove with `DELETE …/links?type=…&target=…`.
 
 ## Scheduler (Clayrune LOCAL — for jobs that outlive a session)
 

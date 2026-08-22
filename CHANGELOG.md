@@ -6,41 +6,58 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
-## [2026-08-22] — backlog items have numbers, and can point at each other
+## [2026-08-22] — backlog items have keys (MC-01), and can point at each other
 
 An item's `id` is an eight-character uuid slice. It is stable, and it is
 unspeakable: nobody says "see 4b7738a1" out loud. So there was no way for a
 person *or* an agent to say one item duplicates another, continues it, or is
 waiting on it — the relationship existed only in someone's head.
 
-**Every item now carries a `#number`**, per project, oldest first. It sits at
-the head of the row; click it to copy. Existing backlogs are numbered on first
-open — no migration to run, and nothing to run it on a machine that isn't this
-one.
+**Every item now has a key**: the project's prefix, a dash, a number.
+`MC-01`, `MC-02`, `MC-142`. It sits at the head of the row; click to copy.
+Existing backlogs key themselves on first open — no migration to run, and
+nothing to run it on a machine that isn't this one.
+
+The prefix is the part that earns its keep. A bare `#12` is ambiguous the
+moment two projects are on screen together, which the cross-project backlog
+view does by default — `MC-12` names exactly one item on the machine, so it
+survives being pasted into a chat, an email, or another project's item.
+
+- **Derived from the name, then frozen.** "Mission Control" → `MC`,
+  "clayrune_website" → `CW`, "MarketReplay" → `MR` (camelCase humps count as
+  words). Prefixes are unique across projects; a collision widens the key
+  rather than being tolerated. Once derived it is *stored*, so renaming a
+  project doesn't silently re-key every item and invalidate every `MC-12`
+  anyone has written down.
+- **Editable**, in Project profile → Backlog key. Blank hands it back to the
+  deriver. Changing it re-stamps every item in that project.
+- Numbers are zero-padded to two so a young backlog reads `MC-01` and a column
+  of keys lines up; past 99 they widen to `MC-100` rather than truncating.
 
 **And items can be linked.** The 🔗 button opens a panel: pick a relation, type
-a number, done.
+a key.
 
 | you store        | reads on this item | reads on the other |
 |------------------|--------------------|--------------------|
-| `blocked_by`     | Blocked by #12     | Blocks #4          |
-| `duplicate_of`   | Duplicate of #12   | Duplicated by #4   |
-| `continues`      | Continues #12      | Continued by #4    |
-| `relates_to`     | Relates to #12     | Relates to #4      |
+| `blocked_by`     | Blocked by MC-12   | Blocks MC-04       |
+| `duplicate_of`   | Duplicate of MC-12 | Duplicated by MC-04|
+| `continues`      | Continues MC-12    | Continued by MC-04 |
+| `relates_to`     | Relates to MC-12   | Relates to MC-04   |
 
 - **Only one direction is ever written.** The inverse is derived from the list
   at render time, so the two halves of a pair cannot drift out of agreement —
   a half-written relationship isn't representable.
 - **A number is retired, never recycled.** `backlog_seq` is a high-water mark,
-  so deleting #12 does not hand #12 to the next item. If it did, every link
-  pointing at the old #12 would silently start meaning something else, and a
-  link that quietly lies is worse than one that's gone. Deleting an item also
+  so deleting `MC-12` does not hand `MC-12` to the next item. If it did, every
+  link pointing at the old one would silently start meaning something else, and
+  a link that quietly lies is worse than one that's gone. Deleting an item also
   sweeps the links that pointed at it.
-- Targets accept `#12`, `12`, or the raw id — all three are things someone
-  actually types. Same project only; `#12` is ambiguous across the
-  cross-project view without a project key.
-- Agents get the same handle: `POST …/backlog/<id>/links`, and the API
-  reference now tells them to refer to items by `#num` rather than by id.
+- Targets accept `MC-12`, `mc-12`, `MC-012`, `#12`, `12`, or the raw id — all
+  of them things someone actually types. **A key with another project's prefix
+  404s** instead of falling through to the number: resolving `CW-3` against
+  this backlog would link the wrong item and look like it worked.
+- Agents get the same handle, and the API reference now tells them to say
+  `MC-12` rather than `4b7738a1`.
 
 ### Fixed: in_progress and blocked items rendered nowhere
 

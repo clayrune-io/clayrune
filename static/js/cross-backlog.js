@@ -147,8 +147,7 @@ function renderAllBacklog() {
           ${BACKLOG_CLOSED.includes(item.status) ? '&#x2713;' : ''}
         </button>
         <div style="flex:1;min-width:0">
-          <div class="backlog-text" style="pointer-events:none">${typeof item.num === 'number'
-            ? `<span class="backlog-num">#${item.num}</span>` : ''}${esc(item.text || '')}</div>
+          <div class="backlog-text" style="pointer-events:none">${item.key ? `<span class="backlog-num">${esc(item.key)}</span>` : ''}${esc(item.text || '')}</div>
           <div style="font-size:11px;color:var(--accent);font-weight:600;margin-top:3px;letter-spacing:0.2px">${esc(p.name || p.id)}</div>
         </div>
         <div class="backlog-meta">

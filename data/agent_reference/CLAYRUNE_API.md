@@ -58,16 +58,21 @@ the filesystem.
 | POST | `/api/project/<project_id>/backlog/<item_id>/links` | Link to another item: `{"type":"blocked_by","target":"#12"}`. |
 | DELETE | `/api/project/<project_id>/backlog/<item_id>/links?type=…&target=…` | Remove one link. |
 
-**Item numbers.** Every item carries a per-project `num`, shown in the UI as
-`#12`. Use it when you talk to the user about an item — the `id` is an 8-char
-uuid slice nobody can read back. Numbers are assigned oldest-first and are never
-recycled, so `#12` always means the same item.
+**Item keys.** Every item carries a JIRA-style `key` — the project's prefix, a
+dash, and a zero-padded sequence number: `MC-01`, `MC-02`, `MC-142`. **Always
+refer to an item by its key**, never by `id` (an 8-char uuid slice no human can
+read back) and never by a bare `#12` (ambiguous the moment two projects are in
+play). The prefix lives on the project as `backlog_key`, the number as the
+item's `num`. Numbers are assigned oldest-first and never recycled, so a key
+always means the same item.
 
 **Links** are JIRA-style relations. `type` is one of `blocked_by`,
-`duplicate_of`, `continues`, `relates_to`; `target` accepts `#12`, `12`, or a
-raw item id, and must be in the SAME project. Only the direction you post is
-stored — the inverse (`blocks`, `duplicated by`, `continued by`) is rendered on
-the other item automatically, so never post both halves.
+`duplicate_of`, `continues`, `relates_to`; `target` accepts `MC-12` (any case,
+any padding), `#12`, `12`, or a raw item id, and must be in the SAME project —
+a key with another project's prefix is a 404, not a silent match on the number.
+Only the direction you post is stored; the inverse (`blocks`, `duplicated by`,
+`continued by`) is rendered on the other item automatically, so never post both
+halves.
 
 **Statuses:** `open`, `in_progress`, `blocked` are all LIVE; `done` and `wontdo`
 are closed. Anything not closed shows in the backlog tab and counts toward the

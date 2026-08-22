@@ -437,8 +437,8 @@ function modalContentHTML(p) {
         ${BACKLOG_CLOSED.includes(item.status) ? '✓' : ''}
       </button>
       <div style="flex:1;min-width:0">
-        ${typeof item.num === 'number' ? `<span class="backlog-num" title="Click to copy #${item.num}"
-          onclick="copyBacklogNum(event,${item.num})">#${item.num}</span>` : ''}
+        ${item.key ? `<span class="backlog-num" title="Click to copy ${esc(item.key)}"
+          onclick="copyBacklogKey(event,'${esc(item.key)}')">${esc(item.key)}</span>` : ''}
         <span class="backlog-text" contenteditable="true" spellcheck="true"
           onblur="saveBacklogText(event,'${esc(p.id)}','${esc(item.id)}')"
           onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}"
@@ -490,7 +490,7 @@ function modalContentHTML(p) {
           <select id="linktype-${esc(item.id)}">
             ${BACKLOG_LINK_TYPES.map(t => `<option value="${t[0]}">${esc(t[1])}</option>`).join('')}
           </select>
-          <input type="text" id="linktarget-${esc(item.id)}" placeholder="#12"
+          <input type="text" id="linktarget-${esc(item.id)}" placeholder="${esc(_linkPlaceholder(p, backlog))}"
             onkeydown="if(event.key==='Enter'){event.preventDefault();submitBacklogLink('${esc(p.id)}','${esc(item.id)}')}">
           <button onclick="submitBacklogLink('${esc(p.id)}','${esc(item.id)}')">Link</button>
         </div>

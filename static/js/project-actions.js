@@ -408,11 +408,24 @@ function _linkLabel(type) {
   return t ? t[1] : type;
 }
 
-// A short preview of the linked item, so a row reads "Blocked by #12 Fix the
-// installer" rather than a bare number nobody can place.
+// The placeholder has to show THIS project's prefix — "#12" taught the wrong
+// format, and a user who types it gets a working link only by accident.
+// backlog_key lands on the project record after the first backlog fetch; until
+// then, borrow the prefix off any item that already carries a key.
+function _linkPlaceholder(p, backlog) {
+  let key = p && p.backlog_key;
+  if (!key) {
+    const withKey = (backlog || []).find(i => i.key);
+    if (withKey) key = String(withKey.key).split('-')[0];
+  }
+  return key ? `${key}-12` : 'MC-12';
+}
+
+// A short preview of the linked item, so a row reads "Blocked by MC-12 Fix the
+// installer" rather than a bare key nobody can place.
 function _linkChip(target) {
   if (!target) return '<span class="link-missing">(deleted)</span>';
-  const n = typeof target.num === 'number' ? '#' + target.num : '';
+  const n = target.key || (typeof target.num === 'number' ? '#' + target.num : '');
   const txt = (target.text || '').slice(0, 60);
   const done = target.status === 'done' ? ' done' : '';
   return `<a class="link-chip${done}" onclick="jumpToBacklogItem('${esc(target.id)}')"
@@ -502,10 +515,9 @@ function jumpToBacklogItem(itemId) {
   setTimeout(() => el.classList.remove('link-flash'), 1600);
 }
 
-function copyBacklogNum(e, num) {
+function copyBacklogKey(e, key) {
   e.stopPropagation();
-  const txt = '#' + num;
-  try { navigator.clipboard.writeText(txt); } catch (err) {}
+  try { navigator.clipboard.writeText(key); } catch (err) {}
   const el = e.currentTarget;
   if (el) {
     el.classList.add('copied');
@@ -668,7 +680,8 @@ window.toggleLinksPanel = toggleLinksPanel;
 window.submitBacklogLink = submitBacklogLink;
 window.removeBacklogLink = removeBacklogLink;
 window.jumpToBacklogItem = jumpToBacklogItem;
-window.copyBacklogNum = copyBacklogNum;
+window.copyBacklogKey = copyBacklogKey;
+window._linkPlaceholder = _linkPlaceholder;
 window.linkRowHTML = linkRowHTML;
 window.inverseLinkRowHTML = inverseLinkRowHTML;
 window.BACKLOG_LINK_TYPES = BACKLOG_LINK_TYPES;

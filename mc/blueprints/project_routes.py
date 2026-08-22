@@ -33,6 +33,7 @@ both names through the server.py shims).
 
 import json
 import os
+import re
 import subprocess
 import threading
 import uuid
@@ -399,6 +400,27 @@ def update_project(project_id):
             except Exception:
                 continue
 
+    # ── A hand-set backlog key must stay unique and well-formed.
+    # It is the visible half of every item handle (MC-01), so a duplicate would
+    # make one key name two items in different projects — the single property
+    # the prefix exists to provide. Validated here rather than on the backlog
+    # routes because this is the only path that can set it by hand.
+    if 'backlog_key' in data:
+        key = re.sub(r'[^A-Za-z0-9]', '', str(data.get('backlog_key') or '')).upper()
+        if not key:
+            # Blank means "give it back to the deriver" — cheaper than a
+            # separate reset action, and _ensure_backlog_numbers re-stamps.
+            data.pop('backlog_key', None)
+            existing.pop('backlog_key', None)
+        elif not key[0].isalpha() or len(key) > 8:
+            return jsonify({'error': 'Backlog key must start with a letter and '
+                                     'be at most 8 letters/digits.'}), 400
+        elif key in _taken_backlog_keys(project_id):
+            return jsonify({'error': f'Backlog key "{key}" is already used by '
+                                     f'another project.'}), 409
+        else:
+            data['backlog_key'] = key
+
     for k, v in data.items():
         if k not in ('log_msg', 'backlog'):
             existing[k] = v
@@ -592,17 +614,22 @@ def delete_project(project_id):
     return jsonify({'ok': True})
 
 
-# ── Backlog item numbers + relations ─────────────────────────────────────────
+# ── Backlog item keys (MC-01) + relations ────────────────────────────────────
 #
 # Items carry an 8-char uuid slice as `id` — stable, but unspeakable: nobody
 # says "see 4b7738a1" out loud, so there was no way for a human OR an agent to
-# point one item at another. `num` is the human handle (per-project, sequential,
-# oldest = #1) and `links` are the JIRA-style references built on top of it.
+# point one item at another. The human handle is a JIRA-style key: a short
+# per-project prefix, a dash, and a sequential number — `MC-01`, `MC-02`.
+#
+# The prefix matters more than it looks. A bare `#12` is ambiguous the moment
+# two projects are on screen together, which the cross-project backlog view
+# does by default. `MC-12` names exactly one item on the whole machine, so it
+# survives being pasted into a chat, an email, or another project's item.
 #
 # Numbering is backfilled lazily rather than migrated: every project file is
 # untracked user data, so a migration script would have to be run per install
-# and would silently skip anyone who never ran it. `_ensure_backlog_numbers` is
-# idempotent and cheap, and runs on the two paths that can observe a missing
+# and would silently skip anyone who never ran it. `_ensure_backlog_numbers`
+# is idempotent and cheap, and runs on the paths that can observe a missing
 # number (full GET, and add).
 
 # Stored direction -> (label on the source item, label on the target item).
@@ -615,17 +642,110 @@ BACKLOG_LINK_TYPES = {
     'relates_to':   ('Relates to',    'Relates to'),
 }
 
+# Numbers are zero-padded to this width, so a young backlog reads MC-01 rather
+# than MC-1 and a column of keys lines up. Past 99 they simply get wider
+# (MC-100) — truncating would collide two items on one key.
+BACKLOG_NUM_PAD = 2
+
+# A key looks like PREFIX-NUMBER. The prefix is letters/digits only so it can
+# never contain the separator or a character that needs escaping in a URL.
+_BACKLOG_KEY_RE = re.compile(r'^([A-Za-z][A-Za-z0-9]{0,7})-0*(\d+)$')
+
+
+def _derive_backlog_key(name, taken=()):
+    """Pick a short prefix for a project: initials if it reads as several words,
+    otherwise the leading letters. 'Mission Control' -> MC, 'clayrune_website'
+    -> CW, 'MarketReplay' -> MR, 'engulfing-analyst' -> EA.
+
+    `taken` is the set of prefixes already in use. Two projects sharing one
+    prefix would make MC-12 mean two different items, which is the entire
+    property the prefix exists to provide — so a collision widens the key
+    rather than being tolerated.
+    """
+    raw = str(name or '').strip()
+    # Split on separators AND on camelCase humps, so MarketReplay reads as two
+    # words rather than one long token.
+    words = [w for w in re.split(r'[^A-Za-z0-9]+', raw) if w]
+    parts = []
+    for w in words:
+        parts.extend(re.findall(r'[A-Z]+(?![a-z])|[A-Z][a-z0-9]*|[a-z0-9]+', w) or [w])
+    parts = [p for p in parts if p]
+
+    if len(parts) >= 2:
+        base = ''.join(p[0] for p in parts[:3]).upper()
+    elif parts:
+        base = parts[0][:3].upper()
+    else:
+        base = 'PRJ'
+    base = re.sub(r'[^A-Z0-9]', '', base) or 'PRJ'
+    if not base[0].isalpha():
+        base = 'P' + base
+
+    taken = {str(t).upper() for t in taken}
+    if base not in taken:
+        return base
+    # Lengthen before numbering: MCO reads better than MC2, and only falls back
+    # to a digit when the name has no more letters to give.
+    flat = re.sub(r'[^A-Za-z0-9]', '', raw).upper()
+    for n in range(len(base) + 1, min(len(flat), 8) + 1):
+        cand = flat[:n]
+        if cand and cand not in taken:
+            return cand
+    for i in range(2, 100):
+        cand = f'{base[:6]}{i}'
+        if cand not in taken:
+            return cand
+    return base
+
+
+def _taken_backlog_keys(exclude_id=None):
+    """Prefixes already claimed by other projects. Read straight off the store —
+    the alternative is a registry file, and a registry that drifts out of sync
+    with the projects it indexes is worse than no registry."""
+    taken = set()
+    try:
+        for other in load_projects():
+            if exclude_id and other.get('id') == exclude_id:
+                continue
+            k = other.get('backlog_key')
+            if k:
+                taken.add(str(k).upper())
+    except Exception as e:
+        _log(f"[backlog] could not read sibling keys: {e}", flush=True)
+    return taken
+
+
+def _ensure_backlog_key(p):
+    """Give the project a stable `backlog_key`. Returns True if it was added.
+
+    Derived ONCE and then persisted, deliberately. Re-deriving on every read
+    would silently re-key every item the day the project is renamed, and every
+    `MC-12` already written down would stop resolving.
+    """
+    if p.get('backlog_key'):
+        return False
+    p['backlog_key'] = _derive_backlog_key(
+        p.get('name') or p.get('id'), _taken_backlog_keys(p.get('id')))
+    return True
+
+
+def _format_backlog_key(key, num):
+    if not key or not isinstance(num, int):
+        return ''
+    return f'{key}-{num:0{BACKLOG_NUM_PAD}d}'
+
 
 def _ensure_backlog_numbers(p):
-    """Give every backlog item a stable per-project `num`. Returns True if the
-    project dict was modified (caller decides whether to save).
+    """Give the project a key and every item a stable `num` + rendered `key`.
+    Returns True if the project dict was modified (caller decides whether to save).
 
-    Numbers are handed out in `created_at` order so the oldest item is #1 and
+    Numbers are handed out in `created_at` order so the oldest item is 01 and
     the sequence reads chronologically, which is what a person expects from a
     ticket number. `backlog_seq` is a high-water mark, never decremented — a
     deleted item's number is retired, not recycled, or every existing link to
     it would silently re-point at a different item.
     """
+    changed = _ensure_backlog_key(p)
     backlog = p.get('backlog') or []
     seq = int(p.get('backlog_seq') or 0)
     missing = [it for it in backlog if not isinstance(it.get('num'), int)]
@@ -634,24 +754,49 @@ def _ensure_backlog_numbers(p):
     for it in backlog:
         if isinstance(it.get('num'), int):
             seq = max(seq, it['num'])
-    if not missing and p.get('backlog_seq') == seq:
-        return False
     for it in sorted(missing, key=lambda x: (x.get('created_at') or '', x.get('id') or '')):
         seq += 1
         it['num'] = seq
-    p['backlog_seq'] = seq
-    return bool(missing) or p.get('backlog_seq') != seq
+        changed = True
+    if p.get('backlog_seq') != seq:
+        p['backlog_seq'] = seq
+        changed = True
+    # `key` is denormalised onto each item so every consumer — the modal, the
+    # cross-project list, an agent reading the JSON — renders the same string
+    # without having to know the padding rule or carry the project record.
+    pkey = p.get('backlog_key')
+    for it in backlog:
+        want = _format_backlog_key(pkey, it.get('num'))
+        if want and it.get('key') != want:
+            it['key'] = want
+            changed = True
+    return changed
 
 
-def _resolve_backlog_target(backlog, target):
-    """Resolve a user/agent-typed link target to an item. Accepts '#12', '12',
-    or the raw 8-char id, because all three are things someone will type."""
-    t = str(target or '').strip().lstrip('#')
+def _resolve_backlog_target(p, target):
+    """Resolve a user/agent-typed link target to an item in THIS project.
+
+    Accepts every form someone actually types: 'MC-12', 'mc-12', 'MC-012',
+    '#12', '12', or the raw 8-char id. A key carrying a DIFFERENT project's
+    prefix returns None rather than falling through to the number — resolving
+    `CW-3` against this backlog would silently link to the wrong item, which is
+    exactly the confusion the prefix exists to prevent.
+    """
+    backlog = p.get('backlog') or []
+    t = str(target or '').strip()
     if not t:
         return None
+
+    m = _BACKLOG_KEY_RE.match(t)
+    if m:
+        prefix, digits = m.group(1).upper(), int(m.group(2))
+        if prefix != str(p.get('backlog_key') or '').upper():
+            return None
+        return next((i for i in backlog if i.get('num') == digits), None)
+
+    t = t.lstrip('#')
     if t.isdigit():
-        n = int(t)
-        return next((i for i in backlog if i.get('num') == n), None)
+        return next((i for i in backlog if i.get('num') == int(t)), None)
     return next((i for i in backlog if i.get('id') == t), None)
 
 
@@ -692,6 +837,7 @@ def add_backlog_item(project_id):
     item = {
         'id': str(uuid.uuid4())[:8],
         'num': seq,
+        'key': _format_backlog_key(p.get('backlog_key'), seq),
         'text': data['text'].strip(),
         'priority': data.get('priority', 'normal'),
         'status': 'open',
@@ -834,9 +980,10 @@ def add_backlog_link(project_id, item_id):
     if item is None:
         return jsonify({'error': 'item not found'}), 404
 
-    target = _resolve_backlog_target(backlog, data.get('target'))
+    target = _resolve_backlog_target(p, data.get('target'))
     if target is None:
-        return jsonify({'error': f'no item matching {data.get("target")!r}'}), 404
+        return jsonify({'error': f'no item in this project matching '
+                                 f'{data.get("target")!r}'}), 404
     if target.get('id') == item_id:
         return jsonify({'error': 'an item cannot link to itself'}), 400
 
@@ -869,7 +1016,7 @@ def delete_backlog_link(project_id, item_id):
     if item is None:
         return jsonify({'error': 'item not found'}), 404
 
-    resolved = _resolve_backlog_target(backlog, target)
+    resolved = _resolve_backlog_target(p, target)
     target_id = resolved['id'] if resolved else target.lstrip('#')
 
     before = len(item.get('links') or [])

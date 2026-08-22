@@ -629,10 +629,10 @@ async function runBacklogLinksGuard(browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   let items = [
-    { id: 'itm_a', num: 1, text: 'the blocked one', status: 'open', priority: 'normal',
+    { id: 'itm_a', num: 1, key: 'SA-01', text: 'the blocked one', status: 'open', priority: 'normal',
       created_at: '2026-08-13T10:00:00Z', attachments: [], notes: [],
       links: [{ type: 'blocked_by', target: 'itm_b', ts: '2026-08-22T10:00:00Z' }] },
-    { id: 'itm_b', num: 2, text: 'the blocker', status: 'in_progress', priority: 'high',
+    { id: 'itm_b', num: 2, key: 'SA-02', text: 'the blocker', status: 'in_progress', priority: 'high',
       created_at: '2026-08-13T10:05:00Z', attachments: [], notes: [], links: [] },
   ];
   const linkPosts = [];
@@ -646,7 +646,7 @@ async function runBacklogLinksGuard(browser) {
       const id = path.split('/').slice(-2)[0];
       const body = JSON.parse(req.postData() || '{}');
       linkPosts.push({ id, ...body });
-      const target = items.find((i) => String(i.num) === String(body.target).replace('#', ''));
+      const target = items.find((i) => i.key === body.target);
       const item = items.find((i) => i.id === id);
       if (item && target) item.links = [...(item.links || []),
         { type: body.type, target: target.id, ts: '2026-08-22T11:00:00Z' }];
@@ -687,8 +687,9 @@ async function runBacklogLinksGuard(browser) {
 
       r.rowIds = Array.from(document.querySelectorAll('.backlog-list .backlog-item'))
         .map((e) => e.getAttribute('data-item-id'));
-      r.nums = Array.from(document.querySelectorAll('.backlog-list .backlog-num'))
+      r.keys = Array.from(document.querySelectorAll('.backlog-list .backlog-num'))
         .map((e) => (e.textContent || '').trim());
+      r.placeholder = (document.getElementById('linktarget-itm_a') || {}).placeholder;
       r.statusBadges = Array.from(document.querySelectorAll('.backlog-list .status-badge'))
         .map((e) => (e.textContent || '').trim());
 
@@ -708,7 +709,7 @@ async function runBacklogLinksGuard(browser) {
 
       // Add a link through the real UI path (select + input + button handler).
       document.getElementById('linktype-itm_b').value = 'relates_to';
-      document.getElementById('linktarget-itm_b').value = '#1';
+      document.getElementById('linktarget-itm_b').value = 'SA-01';
       await submitBacklogLink(pid, 'itm_b');
       await settle(700);
       r.panelBAfter = panelText('itm_b');
@@ -733,8 +734,10 @@ async function runBacklogLinksGuard(browser) {
     .forEach((e) => fails.push('uncaught: ' + e));
   if (!(out.rowIds || []).includes('itm_b'))
     fails.push('the in_progress item did NOT render - the open-vs-closed regression is back');
-  if (JSON.stringify(out.nums) !== JSON.stringify(['#1', '#2']))
-    fails.push('number badges wrong: ' + JSON.stringify(out.nums));
+  if (JSON.stringify(out.keys) !== JSON.stringify(['SA-01', 'SA-02']))
+    fails.push('key badges wrong: ' + JSON.stringify(out.keys));
+  if (out.placeholder !== 'SA-12')
+    fails.push('link input taught the wrong key format: ' + JSON.stringify(out.placeholder));
   if (!(out.statusBadges || []).some((t) => /in.progress/i.test(t)))
     fails.push('in_progress item rendered without a status badge');
   if (!/Blocked by/i.test(out.panelA || '') || !/the blocker/i.test(out.panelA || ''))
@@ -743,7 +746,7 @@ async function runBacklogLinksGuard(browser) {
     fails.push('inverse link not DERIVED on the target item: ' + JSON.stringify(out.panelB));
   if (!linkPosts.length)
     fails.push('submitBacklogLink never reached the server');
-  else if (linkPosts[0].type !== 'relates_to' || linkPosts[0].target !== '#1')
+  else if (linkPosts[0].type !== 'relates_to' || linkPosts[0].target !== 'SA-01')
     fails.push('link POST body wrong: ' + JSON.stringify(linkPosts[0]));
   if (!/Relates to/i.test(out.panelBAfter || ''))
     fails.push('the new link did not appear without a reopen');
@@ -754,7 +757,7 @@ async function runBacklogLinksGuard(browser) {
     fails.forEach((f) => console.error('       * ' + f));
     return false;
   }
-  console.log('✅ backlog links: #numbers render, in_progress stays visible, the inverse is derived, chips jump.');
+  console.log('✅ backlog links: MC-01 keys render, in_progress stays visible, the inverse is derived, chips jump.');
   return true;
 }
 

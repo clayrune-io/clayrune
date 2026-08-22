@@ -1,16 +1,21 @@
-"""Backlog item NUMBERS and item-to-item LINKS (mc/blueprints/project_routes.py).
+"""Backlog item KEYS (MC-01) and item-to-item LINKS (project_routes.py).
 
 Backs backlog item f52e0d8d: an 8-char uuid slice is stable but unspeakable, so
-until now nothing could point one item at another. `num` is the human handle and
-`links` are the JIRA-style relations built on it.
+until now nothing could point one item at another. The handle is a JIRA-style
+key — a short per-project prefix, a dash, a sequential number — and `links` are
+the relations built on it.
 
-Two properties carry the design and both are tested here:
+Three properties carry the design and all three are tested here:
 
-1. **Numbers are never recycled.** `backlog_seq` is a high-water mark, so a
+1. **A key names exactly one item on the machine.** The prefix is unique across
+   projects, so `MC-12` survives being pasted into a chat, an email, or another
+   project's item — which a bare `#12` does not, and the cross-project backlog
+   view puts several projects on screen at once by default.
+2. **Numbers are never recycled.** `backlog_seq` is a high-water mark, so a
    deleted item's number is retired. If it were reused, every stored link to the
    old item would silently re-point at a different one — a link that quietly
    lies is worse than a link that is gone.
-2. **Only one direction is persisted.** "A blocks B" is stored as A
+3. **Only one direction is persisted.** "A blocks B" is stored as A
    `blocked_by` B and the inverse is rendered client-side. A half-written pair
    is not representable, so the two directions cannot drift apart.
 
@@ -69,30 +74,89 @@ def _by_id(items, iid):
     return next(i for i in items if i['id'] == iid)
 
 
+# ── key derivation ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('name,expected', [
+    ('Mission Control', 'MC'),
+    ('clayrune_website', 'CW'),
+    ('engulfing-analyst', 'EA'),
+    ('MarketReplay', 'MR'),          # camelCase humps count as words
+    ('test', 'TES'),                 # single word -> leading letters
+    ('', 'PRJ'),                     # nothing to work with
+])
+def test_key_derivation(name, expected):
+    from mc.blueprints.project_routes import _derive_backlog_key
+    assert _derive_backlog_key(name) == expected
+
+
+def test_key_derivation_never_collides():
+    """Property 1. Two projects sharing a prefix would make MC-12 mean two
+    different items — the exact ambiguity the prefix exists to remove."""
+    from mc.blueprints.project_routes import _derive_backlog_key
+    assert _derive_backlog_key('Mission Control', {'MC'}) == 'MIS'
+    assert _derive_backlog_key('Mission Control', {'MC', 'MIS'}) == 'MISS'
+
+
+def test_key_is_derived_once_and_survives_a_rename(client):
+    """Re-deriving on read would re-key every item the day a project is renamed,
+    and every MC-12 already written down would stop resolving."""
+    _seed(client, name='Mission Control')
+    client.post('/api/project/tproj/backlog', json={'text': 'x'})
+    assert _rec(client)['backlog_key'] == 'MC'
+
+    rec = _rec(client)
+    rec['name'] = 'Something Else Entirely'
+    (client.data_dir / 'tproj.json').write_text(json.dumps(rec), encoding='utf-8')
+    items = client.get('/api/project/tproj/backlog').get_json()
+    assert _rec(client)['backlog_key'] == 'MC'
+    assert items[0]['key'] == 'MC-01'
+
+
+def test_changing_the_project_key_restamps_every_item(client):
+    """The key is stored on the project AND denormalised onto each item, so a
+    deliberate re-key has to reach the items or they'd render the old prefix."""
+    _seed(client, name='Mission Control')
+    client.post('/api/project/tproj/backlog', json={'text': 'x'})
+    rec = _rec(client)
+    rec['backlog_key'] = 'CTRL'
+    (client.data_dir / 'tproj.json').write_text(json.dumps(rec), encoding='utf-8')
+    items = client.get('/api/project/tproj/backlog').get_json()
+    assert items[0]['key'] == 'CTRL-01'
+
+
 # ── numbering ────────────────────────────────────────────────────────────────
 
-def test_new_items_get_sequential_numbers(client):
-    _seed(client)
-    nums = []
+def test_new_items_get_sequential_keys(client):
+    _seed(client, name='Mission Control')
+    keys = []
     for t in ('first', 'second', 'third'):
         r = client.post('/api/project/tproj/backlog', json={'text': t})
         assert r.status_code == 200
-        nums.append(r.get_json()['item']['num'])
-    assert nums == [1, 2, 3]
+        keys.append(r.get_json()['item']['key'])
+    # Zero-padded to 2, so a young backlog reads MC-01 and a column lines up.
+    assert keys == ['MC-01', 'MC-02', 'MC-03']
     assert _rec(client)['backlog_seq'] == 3
+
+
+def test_numbers_past_99_widen_rather_than_truncate(client):
+    """Padding is a minimum, not a field width — clipping would collide two
+    items on one key."""
+    _seed(client, name='Mission Control', backlog_seq=99)
+    r = client.post('/api/project/tproj/backlog', json={'text': 'hundredth'})
+    assert r.get_json()['item']['key'] == 'MC-100'
 
 
 def test_existing_items_backfilled_oldest_first_on_get(client):
     """Backfill is by created_at, not list order — the list is newest-first, but
     #1 should be the OLDEST item, the way a ticket number reads."""
-    _seed(client, backlog=[
+    _seed(client, name='Mission Control', backlog=[
         {'id': 'c', 'text': 'newest', 'status': 'open', 'created_at': '2026-03-03T00:00:00Z'},
         {'id': 'a', 'text': 'oldest', 'status': 'open', 'created_at': '2026-01-01T00:00:00Z'},
         {'id': 'b', 'text': 'middle', 'status': 'open', 'created_at': '2026-02-02T00:00:00Z'},
     ])
     items = client.get('/api/project/tproj/backlog').get_json()
-    assert (_by_id(items, 'a')['num'], _by_id(items, 'b')['num'],
-            _by_id(items, 'c')['num']) == (1, 2, 3)
+    assert (_by_id(items, 'a')['key'], _by_id(items, 'b')['key'],
+            _by_id(items, 'c')['key']) == ('MC-01', 'MC-02', 'MC-03')
     # Persisted, not recomputed per request.
     assert _by_id(_rec(client)['backlog'], 'a')['num'] == 1
 
@@ -122,7 +186,7 @@ def test_backfill_adopts_existing_numbers_without_reissuing(client):
 
 
 def test_deleted_number_is_retired_not_recycled(client):
-    """Property 1. Reuse would make every stored link to the old item silently
+    """Property 2. Reuse would make every stored link to the old item silently
     point at a different one."""
     _seed(client)
     a = client.post('/api/project/tproj/backlog', json={'text': 'a'}).get_json()['item']
@@ -136,7 +200,7 @@ def test_deleted_number_is_retired_not_recycled(client):
 # ── links ────────────────────────────────────────────────────────────────────
 
 def _two_items(client):
-    _seed(client)
+    _seed(client, name='Mission Control')
     a = client.post('/api/project/tproj/backlog', json={'text': 'A'}).get_json()['item']
     b = client.post('/api/project/tproj/backlog', json={'text': 'B'}).get_json()['item']
     return a, b
@@ -152,19 +216,33 @@ def test_link_each_supported_type(client, ltype):
     assert links[0]['type'] == ltype and links[0]['target'] == b['id']
 
 
-@pytest.mark.parametrize('form', ['#{num}', '{num}', '{id}'])
-def test_target_accepts_hash_bare_number_and_raw_id(client, form):
-    """All three are things a person or an agent will actually type."""
+@pytest.mark.parametrize('form', ['{key}', '{keylower}', 'MC-0{num}',
+                                  '#{num}', '{num}', '{id}'])
+def test_target_accepts_key_hash_bare_number_and_raw_id(client, form):
+    """Every one of these is a thing a person or an agent will actually type —
+    the key as displayed, in lower case, over-padded, or the old bare number."""
     a, b = _two_items(client)
-    target = form.format(num=b['num'], id=b['id'])
+    target = form.format(num=b['num'], id=b['id'], key=b['key'],
+                         keylower=b['key'].lower())
     r = client.post(f"/api/project/tproj/backlog/{a['id']}/links",
                     json={'type': 'relates_to', 'target': target})
     assert r.status_code == 200
     assert r.get_json()['item']['links'][0]['target'] == b['id']
 
 
+def test_a_foreign_project_key_does_not_fall_through_to_the_number(client):
+    """Property 1, enforced. 'CW-2' must NOT quietly resolve to this project's
+    #2 — silently linking the wrong item is the confusion the prefix exists to
+    prevent, and it would look like it worked."""
+    a, b = _two_items(client)
+    r = client.post(f"/api/project/tproj/backlog/{a['id']}/links",
+                    json={'type': 'relates_to', 'target': 'CW-2'})
+    assert r.status_code == 404
+    assert 'this project' in r.get_json()['error']
+
+
 def test_only_one_direction_is_persisted(client):
-    """Property 2. The inverse is rendered from the list, never written — so the
+    """Property 3. The inverse is rendered from the list, never written — so the
     two halves of a pair cannot disagree."""
     a, b = _two_items(client)
     client.post(f"/api/project/tproj/backlog/{a['id']}/links",
@@ -194,7 +272,7 @@ def test_two_different_types_to_same_target_both_kept(client):
 def test_link_rejects_self_unknown_type_and_missing_target(client):
     a, b = _two_items(client)
     assert client.post(f"/api/project/tproj/backlog/{a['id']}/links",
-                       json={'type': 'blocked_by', 'target': f"#{a['num']}"}
+                       json={'type': 'blocked_by', 'target': a['key']}
                        ).status_code == 400
     assert client.post(f"/api/project/tproj/backlog/{a['id']}/links",
                        json={'type': 'eats', 'target': f"#{b['num']}"}
@@ -216,7 +294,7 @@ def test_unlink_removes_only_the_named_type(client):
         client.post(f"/api/project/tproj/backlog/{a['id']}/links",
                     json={'type': t, 'target': f"#{b['num']}"})
     r = client.delete(f"/api/project/tproj/backlog/{a['id']}/links"
-                      f"?type=blocked_by&target=%23{b['num']}")
+                      f"?type=blocked_by&target={b['key']}")
     assert r.status_code == 200
     remaining = _by_id(_rec(client)['backlog'], a['id'])['links']
     assert [l['type'] for l in remaining] == ['relates_to']
@@ -274,3 +352,42 @@ def test_done_at_tracks_closure_not_the_literal_done_string(client):
     # Any live status clears it — an item that came back has no closure date.
     r = client.patch('/api/project/tproj/backlog/a', json={'status': 'in_progress'})
     assert r.get_json()['item']['done_at'] is None
+
+
+# ── hand-setting the project key ─────────────────────────────────────────────
+
+def test_project_key_can_be_set_by_hand_and_normalises(client):
+    _seed(client, name='Mission Control')
+    client.post('/api/project/tproj/backlog', json={'text': 'x'})
+    r = client.post('/api/project/tproj', json={'backlog_key': ' cr-l '})
+    assert r.status_code == 200
+    assert _rec(client)['backlog_key'] == 'CRL'
+    assert client.get('/api/project/tproj/backlog').get_json()[0]['key'] == 'CRL-01'
+
+
+def test_project_key_rejects_bad_shapes(client):
+    _seed(client, name='Mission Control')
+    assert client.post('/api/project/tproj',
+                       json={'backlog_key': '1MC'}).status_code == 400
+    assert client.post('/api/project/tproj',
+                       json={'backlog_key': 'WAYTOOLONGKEY'}).status_code == 400
+
+
+def test_project_key_rejects_one_already_taken(client):
+    """Two projects on one prefix would make MC-12 name two different items."""
+    _seed(client, pid='other', name='Other', backlog_key='XY')
+    _seed(client, name='Mission Control')
+    r = client.post('/api/project/tproj', json={'backlog_key': 'xy'})
+    assert r.status_code == 409
+    assert 'already used' in r.get_json()['error']
+
+
+def test_blank_key_hands_it_back_to_the_deriver(client):
+    _seed(client, name='Mission Control')
+    client.post('/api/project/tproj/backlog', json={'text': 'x'})
+    client.post('/api/project/tproj', json={'backlog_key': 'CRL'})
+    assert _rec(client)['backlog_key'] == 'CRL'
+    assert client.post('/api/project/tproj',
+                       json={'backlog_key': ''}).status_code == 200
+    assert 'backlog_key' not in _rec(client)
+    assert client.get('/api/project/tproj/backlog').get_json()[0]['key'] == 'MC-01'
