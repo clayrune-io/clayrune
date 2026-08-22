@@ -117,8 +117,15 @@ def main() -> int:
     if args.apply and not args.no_backup:
         stamp = datetime.now().strftime('%Y%m%d-%H%M%S')
         dest = pr.DATA_DIR.parent / f'projects_backup_{stamp}'
-        shutil.copytree(pr.DATA_DIR, dest)
-        print(f'backup: {dest}\n')
+        dest.mkdir(parents=True, exist_ok=True)
+        # Copy the records we might rewrite, file by file — NOT copytree.
+        # DATA_DIR accumulates strays (this machine had a zero-byte file
+        # literally named `nul`, a Windows reserved device name), and a single
+        # uncopyable entry aborts a whole-tree copy — taking the backup, and
+        # therefore the backfill, down with it.
+        for _f, _ in records:
+            shutil.copy2(_f, dest / _f.name)
+        print(f'backup: {dest} ({len(records)} records)\n')
 
     total_items = total_new = 0
     rows = []
