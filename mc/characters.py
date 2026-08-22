@@ -39,6 +39,44 @@ MAX_BODY_BYTES = 6 * 1024
 # valid subagent and @-mention / auto-delegate keep working.
 ENGINE_KEYS = ('provider', 'model', 'effort')
 
+# ── The name the agent goes by (Ron, 2026-08-22) ────────────────────────────
+# `name` is the file stem — an identifier: kebab-case, in URLs, unrenameable.
+# `agent_name` is what the agent CALLS ITSELF, and it is chosen by the agent
+# rather than typed by the user (see /api/characters/<scope>/<name>/name).
+#
+# Kept a separate key rather than reusing the display name because the two
+# answer different questions. "prd-writer" says what the type is FOR, and the
+# picker still needs that to be pickable; a self-chosen name says who is
+# speaking, and that is what belongs in a chat header. Overloading one field
+# would force a choice between a browsable library and an agent with a name.
+AGENT_NAME_KEY = 'agent_name'
+
+# Deliberately generous on charset (people and models pick names with accents,
+# apostrophes, spaces) and tight on length — this renders inside a pill.
+MAX_AGENT_NAME_LEN = 32
+
+
+def clean_agent_name(value):
+    """Normalise a self-chosen name, or return '' if it is unusable.
+
+    Collapses whitespace and trims to MAX_AGENT_NAME_LEN. Strips wrapping
+    quotes because a model asked for a single word very often answers with
+    one in quotes, and a pill reading '"Vector"' looks like a bug.
+    """
+    v = ' '.join(str(value or '').split())
+    # Smart quotes are ASYMMETRIC, so a naive first==last test misses the exact
+    # shape a model is most likely to emit ("Vector" with typographic quotes).
+    for _open, _close in (('"', '"'), ("'", "'"), ('“', '”'), ('‘', '’')):
+        if len(v) >= 2 and v[0] == _open and v[-1] == _close:
+            v = v[1:-1].strip()
+            break
+    v = v.strip('.,;:!')
+    # A model that ignores "one word" tends to answer in a sentence; there is
+    # no good truncation of that, so refuse rather than pill a fragment.
+    if len(v.split()) > 3:
+        return ''
+    return v[:MAX_AGENT_NAME_LEN]
+
 # Mirrors MC_EFFORT_CHOICES in static/js/modal-manager.js. Validated here so a
 # typo is refused at save time — an effort string the CLI does not understand
 # is dropped silently downstream, which reads as "the dial does nothing".
@@ -114,6 +152,9 @@ def _read_one(path: Path, scope: str, project_id: str | None,
     engine = _engine_from_meta(meta)
     if engine:
         rec['engine'] = engine
+    agent_name = clean_agent_name(meta.get(AGENT_NAME_KEY))
+    if agent_name:
+        rec[AGENT_NAME_KEY] = agent_name
     if project_id and scope == 'project':
         rec['project_id'] = project_id
     if include_body:
@@ -169,7 +210,8 @@ def read_character(scope: str, name: str, project_path: str | None = None,
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,
-                    engine: dict[str, Any] | None = None) -> dict[str, Any]:
+                    engine: dict[str, Any] | None = None,
+                    agent_name: str | None = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
     bad input, FileExistsError on collision without overwrite.
 
@@ -197,6 +239,19 @@ def write_character(scope: str, name: str, description: str, body: str,
         raise FileExistsError(f'character "{name}" already exists in {scope} scope')
 
     front: dict[str, Any] = {'name': name, 'description': description}
+    # None = leave the existing name alone, '' = clear it, a value = set it.
+    # The file is rewritten whole on every save, so "leave alone" has to be an
+    # explicit carry-forward — not setting the key DELETES it, which is how a
+    # plain description edit used to wipe a name the editor never showed.
+    if agent_name is None:
+        prior = _read_one(existing, scope, None, include_body=False) if existing else None
+        carried = (prior or {}).get(AGENT_NAME_KEY)
+        if carried:
+            front[AGENT_NAME_KEY] = carried
+    else:
+        cleaned = clean_agent_name(agent_name)
+        if cleaned:
+            front[AGENT_NAME_KEY] = cleaned
     for k in ENGINE_KEYS:
         v = (engine or {}).get(k)
         v = v.strip() if isinstance(v, str) else ''

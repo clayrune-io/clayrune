@@ -223,3 +223,57 @@ class TestProjectDefaultValidation:
         assert api.post('/api/project/dc',
                         json={'default_character': ''}).status_code == 200
         assert 'default_character' not in self._rec(api)
+
+
+class TestAgentNameInjection:
+    """The type has to KNOW its name, not just be labelled with it. Told who it
+    is only after several hundred words of role description, an agent tends to
+    introduce itself as the role ("I'm your code reviewer") — so the name goes
+    at the top of the character block."""
+
+    def _project(self, env):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude'}
+
+    def test_name_is_stated_before_the_character_body(self, env):
+        ctx = env['ar']._build_agent_context(
+            self._project(env), character_body='You review code.',
+            character_name='Quill')
+        assert 'Your name is Quill.' in ctx
+        assert ctx.index('Your name is Quill.') < ctx.index('You review code.')
+
+    def test_a_named_persona_overrides_the_global_assistant_name(self, env, monkeypatch):
+        """The collision this whole parameter had to dodge: a local
+        `agent_name = CONFIG['agent_name']` used to clobber it, so every
+        persona was still told it was the global assistant. Emitting both names
+        would be worse — the agent would pick one per turn."""
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(
+            self._project(env), character_body='You review code.',
+            character_name='Quill')
+        assert 'Your name is Quill.' in ctx
+        assert 'Your name is Vector.' not in ctx
+
+    def test_unnamed_persona_keeps_the_global_name(self, env, monkeypatch):
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(
+            self._project(env), character_body='You review code.')
+        assert 'Your name is Vector.' in ctx
+
+    def test_no_names_anywhere_means_no_line(self, env, monkeypatch):
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', '')
+        ctx = env['ar']._build_agent_context(
+            self._project(env), character_body='You review code.')
+        assert 'Your name is' not in ctx
+
+    def test_resolved_meta_carries_the_chosen_name(self, env):
+        from mc import characters as ch
+        ch.write_character('project', 'namer', 'desc', 'body',
+                           project_path=env['proj_path'], overwrite=True,
+                           agent_name='Vector')
+        meta, _ = env['ar']._resolve_character(env['proj_path'], 'project:namer')
+        assert meta['agent_name'] == 'Vector'
+        assert meta['name'] == 'namer'      # the identifier is untouched

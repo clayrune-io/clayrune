@@ -1769,7 +1769,8 @@ def _skills_catalog_block(project):
             "matches a skill's description, read its SKILL.md with your "
             "file tools and follow it.\n" + "\n".join(lines))
 
-def _build_agent_context(project, incognito=False, task='', character_body=''):
+def _build_agent_context(project, incognito=False, task='', character_body='',
+                         character_name=''):
     """Build system prompt context for the agent.
 
     character_body, when set, is the markdown body of a per-chat "character"
@@ -1801,9 +1802,17 @@ def _build_agent_context(project, incognito=False, task='', character_body=''):
     # So those sections are Claude-only; non-Claude still gets the targeted
     # read-floor (RELEVANT MEMORY) which is small and task-scoped.
     _is_claude = (project.get('provider') or 'claude').lower() == 'claude'
-    agent_name = state.CONFIG.get('agent_name', '')
+    # A persona that named itself outranks the global assistant name: for this
+    # chat, that IS who is speaking. Emitting both would tell the agent it has
+    # two names, and it would pick one at random per turn.
+    agent_name = character_name or state.CONFIG.get('agent_name', '')
     user_name = state.CONFIG.get('user_name', '')
-    if agent_name:
+    if agent_name and character_name:
+        parts.append(
+            f"Your name is {agent_name}. Use it when you introduce yourself or "
+            f"sign off; do not call yourself an assistant, a model, or the name "
+            f"of your role.")
+    elif agent_name:
         parts.append(f"Your name is {agent_name}.")
     if user_name:
         parts.append(f"The user's name is {user_name}. Address them accordingly.")
@@ -3895,7 +3904,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     try:
         if not incognito:
             system_prompt = _build_agent_context(p, incognito=False, task=task,
-                                                 character_body=character_body)
+                                                 character_body=character_body,
+                                                 character_name=(character_meta or {}).get('agent_name') or '')
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -3979,6 +3989,12 @@ def _resolve_character(pp, character, project=None):
     engine = rec.get('engine') or {}
     if engine:
         meta['engine'] = engine
+    # The name the type chose for itself. Distinct from `name` (the file stem,
+    # an identifier) and `display_name` (what the library lists it under) —
+    # this is who is speaking, and it is what the chat header shows.
+    agent_name = rec.get('agent_name')
+    if agent_name:
+        meta['agent_name'] = agent_name
     return meta, (rec.get('body') or '')
 
 
@@ -4128,6 +4144,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # itself, which is the user speaking about this one turn.
     _char_model = _character_engine(character_meta, 'model')
     _char_effort = _character_engine(character_meta, 'effort') or None
+    _char_agent_name = (character_meta or {}).get('agent_name') or ''
     if not model_override and _char_model:
         model_override = _char_model
     if resume_id:
@@ -4136,7 +4153,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 p, task,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
-                    character_body=character_body),
+                    character_body=character_body, character_name=_char_agent_name),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
@@ -4150,7 +4167,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          model_override=model_override,
                                          effort_override=_char_effort)
         context = _build_agent_context(p, incognito=incognito, task=task,
-                                       character_body=character_body)
+                                       character_body=character_body,
+                                       character_name=_char_agent_name)
         _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
@@ -4158,7 +4176,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 p, task,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
-                    character_body=character_body),
+                    character_body=character_body, character_name=_char_agent_name),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     # Per-dispatch telemetry — best-effort; never raises. requested = the

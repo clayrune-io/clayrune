@@ -6519,6 +6519,10 @@
   }
   /* Engine pickers in the persona editor — three selects on one row, each
      defaulting to "unpinned" so the row reads as optional at a glance. */
+  /* "Goes by" — the self-chosen name, with the dice button beside it. */
+  .persona-name-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: stretch; }
+  .persona-name-row input { flex: 1; min-width: 0; margin-bottom: 0 !important; }
+  .persona-name-row button { flex-shrink: 0; white-space: nowrap; }
   .persona-engine-row { display: flex; gap: 6px; margin-bottom: 8px; }
   .persona-engine-row select {
     flex: 1; min-width: 0; font-size: 11px; padding: 5px 6px;

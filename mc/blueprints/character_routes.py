@@ -14,6 +14,9 @@ from flask import Blueprint, jsonify, request
 
 import agent_runtime as _agent_runtime
 from mc import characters as _chars
+from mc import state
+from mc.core import _log
+from mc.memory import _scribe_call
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
 
 bp = Blueprint('characters', __name__)
@@ -172,15 +175,134 @@ def update_character_route(scope, name):
     if eng_err:
         return eng_err
 
+    # None = leave the name alone; '' = clear it. Same absent-vs-empty split the
+    # engine keys use, and for the same reason: a key the editor never sends
+    # must not silently wipe a value the editor never showed.
+    agent_name = data.get('agent_name') if 'agent_name' in data else None
+
     try:
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
-                                     overwrite=True, engine=engine)
+                                     overwrite=True, engine=engine,
+                                     agent_name=agent_name)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except OSError as e:
         return jsonify({'error': f'write failed: {e}'}), 500
     return jsonify(rec)
+
+
+# The agent picks its OWN name (Ron, 2026-08-22). Not a label the user types —
+# the type reads its own role and decides who it is, the way a person would.
+#
+# The prompt is deliberately narrow. Asked open-endedly, models reach for the
+# same handful of nouns (Atlas, Nova, Sage, Echo) across every role, which
+# produces a roster that all sounds alike and tells you nothing. Naming the
+# failure mode in the prompt is what buys variety.
+_NAME_PROMPT = (
+    "You are about to start work under the role definition below. Choose the "
+    "name you will go by.\n\n"
+    "Rules:\n"
+    "- Output ONLY the name. No quotes, no punctuation, no explanation.\n"
+    "- One word, or two at most.\n"
+    "- It should suit the role's temperament, not describe the job. A reviewer "
+    "is not called Reviewer.\n"
+    "- AVOID the obvious AI-assistant names: Atlas, Nova, Sage, Echo, Iris, "
+    "Orion, Lumen, Aria, Cipher, Vertex. They are overused and every role ends "
+    "up sounding the same.\n"
+    "- Pick something a person could plausibly be called, or a short "
+    "distinctive word. Make it memorable."
+)
+
+
+def _taken_agent_names(project_path, exclude):
+    """Names already in use, so a fresh pick does not collide.
+
+    Measured 2026-08-22: naming three types independently produced "Marlow"
+    and "Marlowe". Each call is blind to the others, so warning about the
+    generic AI-name cluster is not enough — the model has to see the actual
+    roster. Both pools are read: a global type shares a chat header with a
+    project one, so a clash across scopes is just as unreadable.
+    """
+    out = []
+    try:
+        for rec in _chars.list_characters(project_path=project_path):
+            if rec.get('name') == exclude:
+                continue
+            n = rec.get(_chars.AGENT_NAME_KEY)
+            if n:
+                out.append(n)
+    except Exception as e:
+        _log(f"[characters] could not read the existing roster: {e}")
+    return sorted(set(out))
+
+
+
+@bp.route('/api/characters/<scope>/<name>/name', methods=['POST'])
+def name_character_route(scope, name):
+    """Let the character name itself, and persist the answer.
+
+    POST with {"agent_name": "..."} to set one directly (the editor's manual
+    override); POST with no body to have the model choose. An empty string
+    clears it and the type falls back to its file name.
+    """
+    if scope not in ('global', 'project'):
+        return jsonify({'error': 'scope must be global|project'}), 400
+    data = request.get_json(silent=True) or {}
+    project_id = data.get('project_id') or request.args.get('project_id')
+    project_path, err = _resolve_project_path_or_400(scope, project_id)
+    if err:
+        return err
+
+    rec = _chars.read_character(scope, name, project_path=project_path)
+    if not rec:
+        return jsonify({'error': 'character not found'}), 404
+
+    if 'agent_name' in data:
+        chosen = _chars.clean_agent_name(data.get('agent_name'))
+        if data.get('agent_name') and not chosen:
+            return jsonify({'error': 'that name is unusable — one or two words, '
+                                     f'up to {_chars.MAX_AGENT_NAME_LEN} characters'}), 400
+    else:
+        # Ask the type itself. Run it on the model the type is PINNED to when
+        # it has one: a name is a voice decision, and the engine that will do
+        # the talking should be the one that picks.
+        model = ((rec.get('engine') or {}).get('model')
+                 or state.CONFIG.get('agent_model') or 'sonnet')
+        payload = (f"Role: {rec.get('description') or ''}\n\n"
+                   f"{rec.get('body') or ''}")[:6000]
+        prompt = _NAME_PROMPT
+        taken = _taken_agent_names(project_path, name)
+        if taken:
+            prompt += (
+                "\n- These names are ALREADY TAKEN by other agents on this "
+                "machine: " + ", ".join(taken) + ". Do not reuse any of them, "
+                "and do not pick anything that differs from one by only a "
+                "letter or two — the roster has to be readable at a glance.")
+        try:
+            raw = _scribe_call(model, prompt, payload)
+        except Exception as e:
+            _log(f"[characters] self-naming failed for {scope}:{name}: {e}")
+            return jsonify({'error': f'could not reach the model to pick a name: {e}'}), 502
+        chosen = _chars.clean_agent_name(raw)
+        if not chosen:
+            # A refusal here is honest: an un-cleanable answer means the model
+            # wrote a sentence, and pilling a fragment of it would be worse
+            # than leaving the type on its file name.
+            return jsonify({'error': 'the model did not return a usable name — '
+                                     'try again, or set one by hand'}), 502
+
+    try:
+        _chars.write_character(scope, name,
+                               rec.get('description') or '',
+                               rec.get('body') or '',
+                               project_path=project_path, overwrite=True,
+                               engine=(rec.get('engine') or {}),
+                               agent_name=chosen)
+    except (ValueError, OSError) as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(_chars.read_character(scope, name, project_path=project_path,
+                                         include_body=False))
 
 
 @bp.route('/api/characters/<scope>/<name>', methods=['DELETE'])

@@ -44,6 +44,46 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-22c] — agents name themselves
+
+An agent type was addressed by its filename. `prd-writer` says what the thing
+is for; it does not say who is talking to you, and a chat header full of
+kebab-case reads like a directory listing rather than a team.
+
+**A type now chooses its own name.** In the persona editor there is a *Goes by*
+field and a **🎲 Let it choose** button: the type is handed its own role
+definition and picks. You can also type one, or clear it and fall back to the
+file name. It shows up in the chat header pill, the composer picker, and the
+project-default picker — name first, role in parentheses.
+
+The three seeded types named themselves on the model each is pinned to:
+**Marlow** (prd-writer, Fable), **Quill** (market-researcher, Opus), **Fenn**
+(code-reviewer, Sonnet).
+
+Three details that took a second pass, because each failed the obvious way
+first:
+
+- **The chosen name outranks the global assistant name.** `_build_agent_context`
+  already emitted `Your name is …` from config — and a local reassignment a few
+  lines below the function signature silently clobbered the new parameter, so
+  every persona was still being told it was the global assistant. There is one
+  line now, character-first. Emitting both would tell the agent it has two
+  names, and it would pick one per turn.
+- **The roster is part of the prompt.** Naming three types independently
+  produced `Marlow` and `Marlowe` — each call is blind to the others, so
+  warning off the generic cluster (Atlas, Nova, Sage, Echo…) is not enough. The
+  model is now shown the names already in use across both scopes and told not
+  to pick a near-miss.
+- **An unusable answer is refused, not trimmed.** Asked for one word, a model
+  sometimes writes a sentence; pilling a fragment of "I would suggest the name
+  Vector" is worse than leaving the type on its filename. Wrapping quotes are
+  stripped first, including asymmetric smart quotes — the exact shape a model
+  is most likely to emit, and the one a naive first-equals-last check misses.
+
+Also fixed while here: a plain description edit used to **wipe** the chosen
+name. The file is rewritten whole on every save, so "don't touch this field"
+had to become an explicit carry-forward rather than simply not setting the key.
+
 ## [2026-08-22b] — a project can have a default agent, and an agent can have an engine
 
 Personas existed, and almost nobody used them. They were chosen per chat, they

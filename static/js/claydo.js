@@ -937,6 +937,13 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <div class="claydo-save-title">Edit persona</div>
       <label>Name <span class="claydo-save-hint">(fixed — it identifies the file)</span></label>
       <input id="pe-name" type="text" value="${esc(rec.name || name)}" disabled>
+      <label>Goes by <span class="claydo-save-hint">(what it calls itself — leave blank and it stays "${esc(rec.name || name)}")</span></label>
+      <div class="persona-name-row">
+        <input id="pe-agent-name" type="text" maxlength="32" spellcheck="false"
+          value="${esc(rec.agent_name || '')}" placeholder="unnamed">
+        <button type="button" class="claydo-ready-btn" id="pe-name-pick"
+          title="Ask this persona to choose its own name">&#x1F3B2; Let it choose</button>
+      </div>
       <label>Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
       <label>Instructions <span class="claydo-save-hint">(the persona's system prompt)</span></label>
@@ -1005,6 +1012,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
           provider: panel.querySelector('#pe-provider').value,
           model: panel.querySelector('#pe-model').value,
           effort: panel.querySelector('#pe-effort').value,
+          agent_name: panel.querySelector('#pe-agent-name').value,
           project_id: scope === 'project' ? projectId : null,
         }),
       });
@@ -1016,6 +1024,36 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     } catch (e) {
       btn.disabled = false;
       showErr('Network error: ' + (e.message || e));
+    }
+  };
+
+  // Self-naming: the persona reads its own role and picks. Runs on the model
+  // the type is pinned to, so it can take a few seconds — the button says so
+  // rather than looking dead.
+  panel.querySelector('#pe-name-pick').onclick = async () => {
+    const btn = panel.querySelector('#pe-name-pick');
+    const nameEl = panel.querySelector('#pe-agent-name');
+    const was = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Thinking…';
+    try {
+      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/name`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project_id: scope === 'project' ? projectId : null}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showErr(data.error || `Naming failed (${res.status})`); return; }
+      // The endpoint already persisted it; reflect that in the field so a
+      // subsequent Save does not send a stale value back over it.
+      nameEl.value = data.agent_name || '';
+      if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      if (typeof onDone === 'function') onDone();
+    } catch (e) {
+      showErr('Network error: ' + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = was;
     }
   };
 

@@ -56,7 +56,10 @@ function _composerCharacterPicker(p, resumeId) {
   const opts = list.map(c => {
     const val = esc((c.scope || 'global') + ':' + c.name);
     const eng = c.engine && (c.engine.model || c.engine.provider);
-    const label = esc(c.display_name || c.name)
+    // Name first, role in parentheses: the picker is "who do I want on this",
+    // and the role is the qualifier, not the identity.
+    const label = (c.agent_name ? esc(c.agent_name) + ' (' + esc(c.display_name || c.name) + ')'
+                                : esc(c.display_name || c.name))
       + (c.scope === 'global' ? ' (global)' : '')
       + (eng ? ' · ' + esc(_engShortLabel(c.engine)) : '');
     return `<option value="${val}" ${val === cur ? 'selected' : ''}>${label}</option>`;
@@ -166,6 +169,7 @@ function resolveCharacterMeta(projectId, character) {
   const meta = { name, scope, source: 'picked',
                  display_name: (rec && (rec.display_name || rec.name)) || name };
   if (rec && rec.engine) meta.engine = rec.engine;
+  if (rec && rec.agent_name) meta.agent_name = rec.agent_name;
   return meta;
 }
 window.setComposerCharacter = setComposerCharacter;
@@ -1203,7 +1207,11 @@ function agentPanelHTML(p) {
     // Persona pill (Prompt Builder Phase 2) — visible for the whole chat
     // when a character was chosen at spawn; immutable for this chat's life.
     const _char = activeSession && activeSession.character;
-    const _charName = _char && (_char.display_name || _char.name);
+    // The name the type chose for itself leads; the role follows in the
+    // tooltip. A pill reading "prd-writer" names a file, not whoever is
+    // actually talking to you.
+    const _charRole = _char && (_char.display_name || _char.name);
+    const _charName = _char && (_char.agent_name || _charRole);
     // An INHERITED persona (the project default, agent types Phase 1) must not
     // look identical to one the user picked — otherwise the agent appears to
     // have silently changed personality. The pill carries the source.
@@ -1214,6 +1222,7 @@ function agentPanelHTML(p) {
     const _charBadge = _charName
       ? `<span class="character-badge${_charInherited ? ' inherited' : ''}" title="${
           _charInherited ? 'Project default persona' : 'Persona for this chat'}: ${esc(_charName)}${
+          _char.agent_name ? ' — the ' + esc(_charRole) + ' type' : ''}${
           _char.scope === 'global' ? ' (global)' : ''}${
           _charEngBits.length ? ' — runs on ' + esc(_charEngBits.join(' · ')) : ''
         } — fixed for the conversation; start a new chat to change it">&#x1F3AD; ${esc(_charName)}${

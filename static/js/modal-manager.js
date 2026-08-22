@@ -674,9 +674,11 @@ function _pfdCharacterOptions(p) {
   const opts = list.map(c => {
     const val = (c.scope || 'global') + ':' + c.name;
     const eng = (typeof window._engShortLabel === 'function') ? window._engShortLabel(c.engine) : '';
-    return `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${
-      esc(c.display_name || c.name)}${c.scope === 'global' ? ' (global)' : ''}${
-      eng ? ' · ' + esc(eng) : ''}</option>`;
+    const who = c.agent_name
+      ? esc(c.agent_name) + ' (' + esc(c.display_name || c.name) + ')'
+      : esc(c.display_name || c.name);
+    return `<option value="${esc(val)}" ${val === cur ? 'selected' : ''}>${who}${
+      c.scope === 'global' ? ' (global)' : ''}${eng ? ' · ' + esc(eng) : ''}</option>`;
   }).join('');
   // A default that no longer resolves must stay visible and selected, or
   // reopening the dialog would silently show "None" over a live stale value.

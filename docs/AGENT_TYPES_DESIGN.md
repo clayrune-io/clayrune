@@ -71,6 +71,7 @@ auto-delegate keep working:
 ---
 name: prd-writer
 description: Turns a rough idea into a product requirements doc
+agent_name: Marlow        # optional — what it CALLS itself; the agent picks it
 provider: claude          # optional — else project/global default
 model: claude-fable-5     # optional — else the complexity router decides
 effort: high              # optional
@@ -79,6 +80,35 @@ autonomy: bounded         # optional — see §6
 ---
 You are a product writer who…
 ```
+
+### 3a. `name` vs `agent_name` — two fields because two questions
+
+`name` is the file stem: kebab-case, in URLs, the thing delete and read look
+up, unrenameable. It says what the type is **for**, and the library needs that
+to stay browsable.
+
+`agent_name` is who is **speaking**, and per Ron (2026-08-22) the *agent picks
+it*, not the user — `POST /api/characters/<scope>/<name>/name` with no body
+hands the type its own role definition and asks. Collapsing the two would force
+a choice between a browsable library and an agent with a name.
+
+Three things the implementation had to get right, each of which failed first:
+
+- **The name outranks the global assistant name.** `_build_agent_context`
+  already emitted `Your name is {CONFIG['agent_name']}` — and a local
+  reassignment twelve lines below the signature silently clobbered the new
+  parameter, so every persona was still told it was the global assistant.
+  There is now one line, sourced character-first. Emitting both would tell the
+  agent it has two names, and it would pick one per turn.
+- **The roster is passed into the prompt.** Naming three types independently
+  produced `Marlow` and `Marlowe`. Each call is blind to the others, so warning
+  about the generic AI-name cluster (Atlas, Nova, Sage, Echo…) is not enough —
+  the model has to see the names already taken, across both scopes.
+- **An unusable answer is refused, not truncated.** Asked for one word, a model
+  sometimes writes a sentence. Pilling a fragment of "I would suggest the name
+  Vector" is worse than leaving the type on its file name, so the endpoint
+  502s and keeps the old value. Wrapping quotes — including asymmetric smart
+  quotes — are stripped, since a pill reading `"Vector"` looks like a bug.
 
 Every added key is **optional**, and every one absent means "behave exactly as
 today". That is the migration story: there isn't one.
@@ -290,7 +320,7 @@ prd-writer?" — where a wrong guess costs a click, not a turn.
 
 | Phase | Scope | Size |
 |---|---|---|
-| **1** ✅ | `default_character` on the project **+** `provider`/`model`/`effort` in character frontmatter **+** the precedence chain; header pill shows the type and where the engine came from | **SHIPPED** — `mc/characters.py` (`ENGINE_KEYS`), `_resolve_character(project=…)`, `_build_claude_flags(effort_override=…)`, persona-editor Engine row, Project-profile picker |
+| **1** ✅ | `default_character` on the project **+** `provider`/`model`/`effort` **+** self-chosen `agent_name` (§3a) **+** the precedence chain; header pill shows the name, the type and where the engine came from | **SHIPPED** — `mc/characters.py` (`ENGINE_KEYS`), `_resolve_character(project=…)`, `_build_claude_flags(effort_override=…)`, persona-editor Engine row, Project-profile picker |
 | **2** | `bindings` — deterministic `{project, trigger} → character` | small once Phase 1 lands |
 | **3** | `handles:` + work-kind classifier as the last-resort inference step | medium |
 | **4** | `autonomy:` dial + non-escalating delegation + inherited unattended origin (§6a), with the Distiller refusal | small code, **needs a review** — it touches the authority bright line |

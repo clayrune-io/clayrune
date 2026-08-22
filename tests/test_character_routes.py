@@ -249,3 +249,94 @@ def test_engine_survives_an_unrelated_body_edit(client):
     rec = _read(client)
     assert rec['engine'] == {'model': 'claude-fable-5'}
     assert 'Rewritten' in rec['body']
+
+
+# ── Self-chosen names (Ron, 2026-08-22) ──────────────────────────────────────
+#
+# `name` is the file stem (an identifier). `agent_name` is what the agent calls
+# ITSELF, and the agent picks it — POST .../name with no body asks the model.
+# The two are separate keys because they answer different questions: the picker
+# needs a browsable role, the chat header needs whoever is speaking.
+
+def test_agent_name_round_trips_and_leads_the_record(client):
+    _mk(client, name='reviewer')
+    r = client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar', 'agent_name': 'Vector'})
+    assert r.status_code == 200
+    assert _read(client, 'reviewer')['agent_name'] == 'Vector'
+
+
+def test_model_chosen_name_is_cleaned_before_it_is_stored(client):
+    """Asked for one word, a model very often answers with one in quotes. A
+    pill reading '"Vector"' looks like a bug, so strip before persisting."""
+    from mc.blueprints import character_routes as cr
+    _mk(client, name='reviewer')
+    cr._scribe_call = lambda *a, **k: '  \u201cVector\u201d.  '
+    r = client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar'})
+    assert r.status_code == 200 and r.get_json()['agent_name'] == 'Vector'
+
+
+def test_a_sentence_is_refused_rather_than_truncated(client):
+    """Pilling a fragment of 'I would suggest the name Vector' is worse than
+    leaving the type on its file name — so fail loudly and keep the old one."""
+    from mc.blueprints import character_routes as cr
+    _mk(client, name='reviewer')
+    cr._scribe_call = lambda *a, **k: 'I would suggest the name Vector'
+    r = client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar'})
+    assert r.status_code == 502
+    assert 'usable name' in r.get_json()['error']
+    assert 'agent_name' not in _read(client, 'reviewer')
+
+
+def test_naming_runs_on_the_model_the_type_is_pinned_to(client):
+    """A name is a voice decision — the engine that will do the talking is the
+    one that should pick it."""
+    from mc.blueprints import character_routes as cr
+    _mk(client, name='reviewer', model='claude-fable-5')
+    seen = {}
+
+    def _fake(model, instruction, body):
+        seen['model'] = model
+        return 'Quill'
+    cr._scribe_call = _fake
+    assert client.post('/api/characters/project/reviewer/name',
+                       json={'project_id': 'tchar'}).status_code == 200
+    assert seen['model'] == 'claude-fable-5'
+
+
+def test_naming_preserves_the_engine_and_the_body(client):
+    from mc.blueprints import character_routes as cr
+    _mk(client, name='reviewer', model='claude-fable-5', effort='high')
+    cr._scribe_call = lambda *a, **k: 'Quill'
+    client.post('/api/characters/project/reviewer/name', json={'project_id': 'tchar'})
+    rec = _read(client, 'reviewer')
+    # No provider was pinned, so none should appear — naming must not invent
+    # engine keys, only carry the ones that were there.
+    assert rec['engine'] == {'model': 'claude-fable-5', 'effort': 'high'}
+    assert 'You write PRDs' in rec['body']
+
+
+def test_blank_clears_the_chosen_name(client):
+    _mk(client, name='reviewer')
+    client.post('/api/characters/project/reviewer/name',
+                json={'project_id': 'tchar', 'agent_name': 'Vector'})
+    r = client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar', 'agent_name': ''})
+    assert r.status_code == 200
+    assert 'agent_name' not in _read(client, 'reviewer')
+
+
+def test_put_omitting_agent_name_leaves_it_alone(client):
+    _mk(client, name='reviewer')
+    client.post('/api/characters/project/reviewer/name',
+                json={'project_id': 'tchar', 'agent_name': 'Vector'})
+    client.put('/api/characters/project/reviewer',
+               json={'project_id': 'tchar', 'description': 'edited'})
+    assert _read(client, 'reviewer')['agent_name'] == 'Vector'
+
+
+def test_naming_an_unknown_character_404s(client):
+    assert client.post('/api/characters/project/nope/name',
+                       json={'project_id': 'tchar'}).status_code == 404
