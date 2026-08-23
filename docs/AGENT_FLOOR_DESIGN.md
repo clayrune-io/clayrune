@@ -114,6 +114,110 @@ cards — name, role, engine pill, capability tags — grouped by scope
 (global / per-project) rather than by machine. Team is cheap: it is the
 Personas panel with a layout, and it is the natural home for "meet your team".
 
+## 4a. Mockup
+
+Drawn from the real state of this machine on 2026-08-23: 4 projects live
+(2 working, 2 idle), 16 quiet, and **no project has a default agent type set**,
+which is why nobody on the floor has a name yet. That is the honest starting
+picture, and it makes the gap visible on its own.
+
+### Frame 1 — today
+
+```
+┌ THE FLOOR ───────────────────────────── 4 live · 16 quiet · ⟳ 30s ┐
+│                                                                   │
+│ ┌ Mission Control ───────────┐ ┌ Day Trading Scanner ───────────┐ │
+│ │ ● no type · opus (routed)  │ │ ● no type · sonnet (routed)    │ │
+│ │   working                  │ │   working                      │ │
+│ │   "editing agent_routes.py"│ │   "running pytest -q"          │ │
+│ │                      12m   │ │                           4m   │ │
+│ └────────────────────────────┘ └────────────────────────────────┘ │
+│                                                                   │
+│ ┌ MarketReplay ──────────────┐ ┌ Find Ron a Job ────────────────┐ │
+│ │ ○ no type · sonnet         │ │ ○ no type · sonnet             │ │
+│ │   idle — waiting on you    │ │   idle — waiting on you        │ │
+│ │   "find the link to the…"  │ │   "I have an internal Googl…"  │ │
+│ │                       2h   │ │                          20h   │ │
+│ └────────────────────────────┘ └────────────────────────────────┘ │
+│                                                                   │
+│ ▸ 16 quiet projects — Clayrune Cloud, Engulfing Dashboard, …      │
+│                                                                   │
+├ BENCH — types with nothing running ───────────────────────────────┤
+│  ✍ Marlow      prd-writer         fable · high                    │
+│  🔍 Quill      market-researcher  opus  · max                     │
+│  🦉 Fenn       code-reviewer      sonnet· high                    │
+│  📈 (unnamed)  market-analyst     —                               │
+│                              click a type → dispatch it somewhere │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+`●` working · `○` idle · the quoted line is the **live activity string** we
+already stream, not a label. The age in the corner is what makes a forgotten
+20-hour session obvious — today it is invisible unless you open that modal.
+
+### Frame 2 — once types are assigned, and two agents share a project
+
+```
+┌ THE FLOOR ───────────────────────────── 5 live · 15 quiet · ⟳ 30s ┐
+│                                                                   │
+│ ┌ Mission Control ────────────────────────────────────────────┐   │
+│ │  ┌──────────────────────────┐    ┌─────────────────────────┐│   │
+│ │  │ ● 🦉 Fenn  code-reviewer │◀──▶│ ● ✍ Marlow  prd-writer  ││   │
+│ │  │   sonnet · high          │coord│   fable · high          ││   │
+│ │  │   "reviewing MC-142"     │    │   "drafting the spec"   ││   │
+│ │  └──────────────────────────┘    └─────────────────────────┘│   │
+│ │   two chats, one project — the header pill cannot show this │   │
+│ └─────────────────────────────────────────────────────────────┘   │
+│                                                                   │
+│ ┌ MarketReplay ──────────────┐ ┌ Find Ron a Job ────────────────┐ │
+│ │ ● 🔍 Quill  researcher     │ │ ○ ✍ Marlow  prd-writer         │ │
+│ │   opus · max               │ │   fable · high                 │ │
+│ │   "reading 3 competitor…"  │ │   idle — waiting on you        │ │
+│ └────────────────────────────┘ └────────────────────────────────┘ │
+│                                                                   │
+│ ▸ 15 quiet                                                        │
+├ BENCH ────────────────────────────────────────────────────────────┤
+│  📈 (unnamed)  market-analyst     —                               │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Marlow appears **twice** — once working on Mission Control, once idle on Find
+Ron a Job. That is correct and it is the point: a figure is a *session*, not a
+type. A type is a definition and can be in several places at once.
+
+### What a click does
+
+| target | action |
+|---|---|
+| a figure | open that project's modal on that session |
+| a room header | open the project |
+| a bench card | dispatch that type — project picker, then the composer |
+| the coord line | (Phase 3) show what the two published to each other |
+| `▸ N quiet` | expand the collapsed rooms |
+
+### Team view — the other half
+
+```
+┌ TEAM ─────────────────────────────────────────────────────────────┐
+│  GLOBAL — available on every project                              │
+│  ┌───────────────────────┐ ┌───────────────────────┐              │
+│  │ ✍ Marlow              │ │ 🔍 Quill              │              │
+│  │   prd-writer          │ │   market-researcher   │              │
+│  │   Turns a rough idea  │ │   Competitive and     │              │
+│  │   into a PRD.         │ │   market research.    │              │
+│  │   ⚙ fable · high      │ │   ⚙ opus · max        │              │
+│  └───────────────────────┘ └───────────────────────┘              │
+│                                                                   │
+│  MISSION CONTROL — project-scoped                                 │
+│  (none yet)                                                       │
+└───────────────────────────────────────────────────────────────────┘
+```
+
+Grouped by **scope** rather than by machine (the reference groups by machine
+because it runs on three; we do not). This is the Personas panel with a layout
+and the engine surfaced — the cheapest phase in the plan, and the natural home
+for "meet your team".
+
 ## 5. What earns its keep, and what is decoration
 
 Worth saying plainly, because the reference is *very* charming and charm is not
