@@ -226,7 +226,13 @@ function renderPlansTab(projectId) {
 
   if (!plans.length) {
     if (toolbar) toolbar.style.display = 'none';
-    container.innerHTML = '<div style="color:var(--text-faint);font-style:italic">No plans yet. Plans are created when an agent uses EnterPlanMode / ExitPlanMode.</div>';
+    // The old copy blamed EnterPlanMode / ExitPlanMode, which agents are
+    // explicitly told NOT to use (it hangs without a TTY). A plan is any
+    // markdown file written into ~/.claude/plans/ — say that, or the empty
+    // state sends the reader looking for a mode that never fires.
+    container.innerHTML = '<div style="color:var(--text-faint);font-style:italic">'
+      + 'No plans yet. A plan is any markdown file an agent writes into '
+      + '<code>~/.claude/plans/</code>.</div>';
     return;
   }
 

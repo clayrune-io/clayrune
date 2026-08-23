@@ -44,6 +44,39 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-23] — the PLAN tab was losing plans
+
+Two defects, found because a design doc written during a session never appeared
+in the tab. Both were silent, and both applied to **every project**.
+
+**A session could only ever register one plan.** `plan_file` was a scalar, so a
+session that wrote three of them kept the third and the other two were
+unreachable from every surface — no error, no partial list, they simply were
+not there. It is `plan_files` now, a list, with the scalar kept as "most
+recent" because the in-chat plan link and the approval banner are single-valued
+by nature. The read path falls back to the scalar, so the years of agent-log
+entries that predate the list keep working; `<id>_agent_log.json` is untracked
+user data and there is no migration to run.
+
+**Only `Write` and `Edit` registered a plan at all.** A plan created by a
+heredoc, a `cp`, or a `tee` produces no Write tool call, so it registered
+nowhere — permanently invisible. Bash commands are now scanned too.
+
+That scan deliberately does **not** carry its own copy of the plans-dir path.
+It looks for markdown-shaped tokens and lets the existing containment check
+decide, because two places that both know where plans live are two places that
+can disagree — and this one would fail *open*, registering nothing, which is
+exactly the kind of silence that hid the bug in the first place. `~` is
+expanded before the check: unexpanded, the common `~/.claude/plans/x.md` never
+resolves inside the plans dir and the detector sees nothing.
+
+Deleting a plan now also clears it from the list, not just the scalar.
+
+Also fixed: the empty-state copy blamed `EnterPlanMode` / `ExitPlanMode` —
+which agents are explicitly told not to use, since it hangs without a TTY. It
+now says what actually makes a plan: any markdown file written into
+`~/.claude/plans/`.
+
 ## [2026-08-22c] — agents name themselves
 
 An agent type was addressed by its filename. `prd-writer` says what the thing

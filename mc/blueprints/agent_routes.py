@@ -52,6 +52,7 @@ import concurrent.futures
 import hashlib
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -1551,6 +1552,69 @@ def _is_plan_path(fp: str) -> bool:
         return False
 
 
+# A plan written by something OTHER than the Write/Edit tool — a heredoc, a
+# `cp`, a `tee`. The detector below only ever saw tool calls, so a plan created
+# from the shell registered NOWHERE and the PLAN tab never mentioned it,
+# silently and forever.
+#
+# This scans for markdown-looking TOKENS and lets `_is_plan_path` decide, rather
+# than re-encoding the plans-dir path in a second regex. Two places that both
+# know where plans live is two places that can disagree — and the one here
+# would fail open (registering nothing), which is invisible.
+_MD_TOKEN_RE = re.compile(r"""[^\s'"<>|&;]+\.md""", re.IGNORECASE)
+_QUOTE_CHARS = "'\""
+
+
+def _plan_paths_in_command(cmd: str) -> list[str]:
+    """Plan-file paths referenced by a shell command.
+
+    Existence is NOT checked: `tool_use` is emitted before the command runs, so
+    the file does not exist yet. `get_project_plans` filters missing paths at
+    read time, which is the right place — a command that failed simply never
+    produces a file to list.
+    """
+    out = []
+    for m in _MD_TOKEN_RE.finditer(cmd or ''):
+        raw = m.group(0).strip(_QUOTE_CHARS)
+        # Strip a leading redirection operator the token regex may have kept.
+        raw = raw.lstrip('>')
+        try:
+            p = os.path.expanduser(raw)
+        except Exception:
+            continue
+        if _is_plan_path(p) and p not in out:
+            out.append(p)
+    return out
+
+
+def _register_plan_file(session, fp: str) -> bool:
+    """Attach a plan file to a session. Idempotent, order-preserving.
+
+    `plan_file` used to be a SCALAR, so a session that wrote three plans kept
+    only the third and the other two were unreachable from every UI. The list
+    is the real answer; the scalar stays as "most recent" because the in-chat
+    plan link and the approval banner are single-valued by nature.
+    """
+    if not fp or not _is_plan_path(fp):
+        return False
+    files = session.setdefault('plan_files', [])
+    if fp not in files:
+        files.append(fp)
+    session['plan_file'] = fp
+    return True
+
+
+def _session_plan_files(rec) -> list[str]:
+    """Every plan on a session record or agent-log entry, newest-registered
+    last. Falls back to the scalar so entries written before `plan_files`
+    existed keep working — there is no migration for the agent log."""
+    files = list((rec or {}).get('plan_files') or [])
+    scalar = (rec or {}).get('plan_file') or ''
+    if scalar and scalar not in files:
+        files.append(scalar)
+    return files
+
+
 def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     """Universal Clayrune-aware behaviors that apply to EVERY agent —
     regular project agents, hivemind workers, future agent types.
@@ -2457,16 +2521,22 @@ def _read_agent_stream(proc, session):
                                     # A plan written into ~/.claude/plans/
                                     # registers immediately (headless-safe; no
                                     # ExitPlanMode). Feeds the PLAN tab + link.
-                                    if _is_plan_path(fp):
-                                        session['plan_file'] = fp
+                                    _register_plan_file(session, fp)
+                            elif tool_name == 'Bash':
+                                # A plan written by heredoc / cp / tee never
+                                # produced a Write tool call, so it registered
+                                # nowhere and the PLAN tab never showed it.
+                                for _pf in _plan_paths_in_command(
+                                        tool_input.get('command', '')):
+                                    _register_plan_file(session, _pf)
                             elif tool_name == 'ExitPlanMode':
                                 # Same containment rule as the Write/Edit path
                                 # above: a plan is a .md file under
                                 # ~/.claude/plans/. Without this check this
                                 # branch registered ANY .md the agent had
                                 # touched, and /agent/plan-file then served it.
-                                if _is_plan_path(session.get('_last_md_file', '')):
-                                    session['plan_file'] = session['_last_md_file']
+                                _register_plan_file(session,
+                                                    session.get('_last_md_file', ''))
                                 session['waiting_for_plan_approval'] = True
                                 session['log_lines'].append('[Plan mode exit detected — waiting for user approval]')
                             elif tool_name == 'TodoWrite':
@@ -2669,16 +2739,22 @@ def _read_agent_stream_b(proc, session):
                                     # A plan written into ~/.claude/plans/
                                     # registers immediately (headless-safe; no
                                     # ExitPlanMode). Feeds the PLAN tab + link.
-                                    if _is_plan_path(fp):
-                                        session['plan_file'] = fp
+                                    _register_plan_file(session, fp)
+                            elif tool_name == 'Bash':
+                                # A plan written by heredoc / cp / tee never
+                                # produced a Write tool call, so it registered
+                                # nowhere and the PLAN tab never showed it.
+                                for _pf in _plan_paths_in_command(
+                                        tool_input.get('command', '')):
+                                    _register_plan_file(session, _pf)
                             elif tool_name == 'ExitPlanMode':
                                 # Same containment rule as the Write/Edit path
                                 # above: a plan is a .md file under
                                 # ~/.claude/plans/. Without this check this
                                 # branch registered ANY .md the agent had
                                 # touched, and /agent/plan-file then served it.
-                                if _is_plan_path(session.get('_last_md_file', '')):
-                                    session['plan_file'] = session['_last_md_file']
+                                _register_plan_file(session,
+                                                    session.get('_last_md_file', ''))
                                 session['waiting_for_plan_approval'] = True
                                 session['log_lines'].append('[Plan mode exit detected — waiting for user approval]')
                             elif tool_name == 'TodoWrite':
@@ -3334,6 +3410,7 @@ def _log_agent_dispatch_pending(session):
         'cost_usd': 0,
         'num_turns': 0,
         'plan_file': '',
+        'plan_files': [],
         'hivemind_id': session.get('hivemind_id', ''),
         'hivemind_ws_id': session.get('hivemind_ws_id', ''),
         'hivemind_role': session.get('hivemind_role', ''),
@@ -3427,6 +3504,7 @@ def _log_agent_completion(session):
         'cost_usd': session.get('cost_usd', 0),
         'num_turns': session.get('num_turns', 0),
         'plan_file': session.get('plan_file', ''),
+        'plan_files': _session_plan_files(session),
         'hivemind_id': session.get('hivemind_id', ''),
         'hivemind_ws_id': session.get('hivemind_ws_id', ''),
         'hivemind_role': session.get('hivemind_role', ''),
@@ -5817,6 +5895,9 @@ def delete_plans():
                 for entry in log:
                     if entry.get('plan_file', '') in deleted_paths:
                         entry['plan_file'] = ''
+                    if entry.get('plan_files'):
+                        entry['plan_files'] = [p for p in entry['plan_files']
+                                               if p not in deleted_paths]
                         changed = True
                 if changed:
                     log_file.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding='utf-8')
@@ -5868,6 +5949,7 @@ def agent_status(project_id):
                               or l.split(':')[1] in terminal_sessions],
                 'started_at': s['started_at'],
                 'plan_file': s.get('plan_file', ''),
+                'plan_files': _session_plan_files(s),
                 'usage': s.get('usage', {}),
                 'cost_usd': s.get('cost_usd', 0),
                 'num_turns': s.get('num_turns', 0),
@@ -6752,15 +6834,19 @@ def get_project_plans(project_id):
                 'session_id': session_id or '',
             })
 
-        # Live sessions first (may not be in the log yet)
+        # Live sessions first (may not be in the log yet). Every plan the
+        # session registered, not just the most recent — a session that wrote
+        # three of them used to surface one and silently drop the rest.
         for sid, s in agent_sessions.items():
             if s.get('project_id') != project_id:
                 continue
-            _add(s.get('plan_file', ''), s.get('task', ''),
-                 s.get('started_at', ''), s.get('session_id', ''))
+            for pf in _session_plan_files(s):
+                _add(pf, s.get('task', ''), s.get('started_at', ''),
+                     s.get('session_id', ''))
         for entry in log:
-            _add(entry.get('plan_file', ''), entry.get('task', ''),
-                 entry.get('ts', ''), entry.get('session_id', ''))
+            for pf in _session_plan_files(entry):
+                _add(pf, entry.get('task', ''), entry.get('ts', ''),
+                     entry.get('session_id', ''))
         return plans
 
     try:
