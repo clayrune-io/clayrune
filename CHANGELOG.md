@@ -44,6 +44,56 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-23e] — the continuity record: what you were part-way through
+
+The third memory layer, and the one that was missing entirely. **Facts** work —
+the read floor reaches 84% of turns that previously got nothing. **Episodic** is
+thin. **Continuity** did not exist: what a session was mid-way through, and what
+it had promised, evaporated the moment that session ended. That absence is most
+of why an agent reads as a stranger rather than a colleague, and no amount of
+better retrieval fixes it, because it is working state rather than knowledge.
+
+`continuity.md` per project, three slots:
+
+```
+## Where things stand      one short paragraph
+## In flight               up to 5 lines — started, not finished
+## Promised                up to 5 lines — said it would, hasn't yet
+```
+
+It is injected **directly** into every turn's context, not retrieved. "What am
+I part-way through" is relevant to every task by definition, so making it
+compete for a read-floor slot would be asking the wrong question.
+
+**Bounded by construction, which is the entire safety argument.** MEMORY.md
+needs a remover because it is an open-ended curated list, and MC-892 proved the
+remover is the hard part: the proposed eviction would have dropped 29–30 lines
+with no surviving delivery channel, and the gate built to catch exactly that
+returned green. A fixed-slot record cannot have that problem. Every write
+**replaces** the whole record, the caps are enforced in code rather than by the
+model, and finished work leaves by being omitted. There is no eviction policy
+because there is no growth — the file is held under 3 KB by a test.
+
+**Written by the checkpointer**, on the same transcript delta it has already
+rendered. No second transcript read, no second debounce, one cheap model call
+at a boundary that has already earned one — and it runs after the checkpoint
+entry is committed, so a failed extraction loses nothing. The extraction prompt
+asks for the **complete** record rather than a diff, on purpose: a model that
+emits "add this thread" makes the caller decide what falls off, which is the
+curation problem this design exists to avoid.
+
+Stored as markdown sections in the body, not frontmatter lists. The vault's
+minimal frontmatter parser has no list type and hands `['a','b']` back as a
+string, which then iterates character by character — nine tests caught it. The
+body format is also readable and hand-editable in the vault, which the rest of
+the memory design already leans on.
+
+Incognito sessions get no continuity block; leaking working state into a mode
+that exists to skip memory would defeat it.
+
+`GET`/`PUT /api/project/<id>/memory/continuity`. Config: `continuity_enabled`
+(default on).
+
 ## [2026-08-23d] — remembering what we decided NOT to do
 
 Every capture path Clayrune has is downstream of an **artifact**. The

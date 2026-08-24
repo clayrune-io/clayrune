@@ -2028,6 +2028,21 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if api_ref:
         parts.append("--- CLAYRUNE API REFERENCE ---\n" + api_ref)
 
+    # Continuity — what this project was part-way through, and what was
+    # promised. Injected DIRECTLY rather than retrieved: "what am I mid-way
+    # through" is relevant to every turn by definition, so making it compete
+    # for a read-floor slot would be asking the wrong question. Affordable
+    # because it is capped by construction (fixed slots, replace-never-append),
+    # not because it is small by luck.
+    if not incognito and state.CONFIG.get('continuity_enabled', True):
+        try:
+            from mc.memory import render_continuity as _render_cont
+            _cont = _render_cont(project)
+            if _cont:
+                parts.append(_cont)
+        except Exception as e:
+            _log(f"[continuity] render failed for {project.get('id')}: {e}")
+
     # Leg B.3 — deterministic read floor (no model; ranked grep). The agent
     # already auto-loads the curated index; this surfaces relevant topic-file /
     # archive / session-log detail for THIS task so the read side never depends

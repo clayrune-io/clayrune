@@ -556,6 +556,38 @@ def get_scribe_stats(project_id):
 
 
 # ── Memory retrieval (SPEC §3 Leg B) — read-only route; _memory_search wired ─────
+@bp.route('/api/project/<project_id>/memory/continuity', methods=['GET'])
+def get_continuity_route(project_id):
+    """What this project is part-way through, and what was promised."""
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    from mc import memory as _mem
+    return jsonify(_mem.read_continuity(p))
+
+
+@bp.route('/api/project/<project_id>/memory/continuity', methods=['PUT'])
+def put_continuity_route(project_id):
+    """Replace slots. Omitted slots are left alone; an empty list clears one.
+
+    Replace-only by design: there is no append, which is what keeps the record
+    a fixed size and removes the need for any eviction policy at all.
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    d = request.get_json(silent=True) or {}
+    from mc import memory as _mem
+    try:
+        return jsonify(_mem.write_continuity(
+            p,
+            threads=d.get('threads'),
+            commitments=d.get('commitments'),
+            understanding=d.get('understanding')))
+    except OSError as e:
+        return jsonify({'error': f'write failed: {e}'}), 500
+
+
 @bp.route('/api/project/<project_id>/memory/positions', methods=['GET'])
 def list_positions_route(project_id):
     """Standing positions for this project — what we decided, and why."""

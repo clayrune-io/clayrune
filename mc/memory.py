@@ -718,6 +718,231 @@ def _parse_position(text):
     }
 
 
+# ── Continuity: what is in flight, and what we owe each other ───────────────
+#
+# The third memory layer (DAVE_DESIGN §3). FACTS work — the read floor reaches
+# 84% of turns that previously got nothing. EPISODIC is thin. CONTINUITY did
+# not exist at all: what a session was mid-way through, and what it promised,
+# evaporated the moment that session ended. A colleague back from holiday does
+# not re-read the archive; they hold a small working set and look the rest up.
+#
+# BOUNDED BY CONSTRUCTION, which is the whole point. MEMORY.md needs a remover
+# because it is an open-ended curated list, and MC-892 proved the remover is
+# the hard part — the proposed eviction would have dropped 29-30 lines with no
+# surviving delivery channel, and the gate built to catch that returned green.
+# A fixed-slot record cannot have that problem: every write REPLACES the whole
+# record, caps are enforced here rather than by the model, and nothing
+# accumulates. There is no eviction policy because there is no growth.
+CONTINUITY_FILE = 'continuity.md'
+
+# Caps are deliberately small. This is a working set, not a log — the moment it
+# becomes something you scroll, it has stopped doing its job.
+_CONT_MAX_THREADS = 5
+_CONT_MAX_COMMITMENTS = 5
+_CONT_MAX_ITEM_CHARS = 160
+_CONT_MAX_UNDERSTANDING = 400
+
+
+def _cont_clean(items, cap):
+    # A bare string here is a hand-edit or an odd model reply; iterating it
+    # would silently produce a list of single CHARACTERS, which is exactly what
+    # the frontmatter-list format did before this moved into the body.
+    if isinstance(items, str):
+        items = [ln.strip('- ').strip() for ln in items.splitlines()]
+    out = []
+    for it in (items or []):
+        t = ' '.join(str(it or '').split())[:_CONT_MAX_ITEM_CHARS]
+        if t and t not in out:
+            out.append(t)
+    return out[:cap]
+
+
+# Section headings in the body. The record is stored as MARKDOWN, not as
+# frontmatter lists: the vault's minimal frontmatter parser has no list type
+# and hands `['a','b']` back as a string, which then iterates character by
+# character. Markdown sections also keep the file readable and hand-editable in
+# the vault, which the whole memory design leans on.
+_CONT_H_THREADS = '## In flight'
+_CONT_H_COMMITMENTS = '## Promised'
+_CONT_H_UNDERSTANDING = '## Where things stand'
+
+
+def _cont_section(body, heading):
+    """Bullet lines under a heading, until the next heading."""
+    out, inside = [], False
+    for ln in (body or '').splitlines():
+        t = ln.strip()
+        if t.startswith('## '):
+            inside = (t == heading)
+            continue
+        if inside and t.startswith('- '):
+            out.append(t[2:].strip())
+    return out
+
+
+def _cont_prose(body, heading):
+    out, inside = [], False
+    for ln in (body or '').splitlines():
+        t = ln.strip()
+        if t.startswith('## '):
+            if inside:
+                break
+            inside = (t == heading)
+            continue
+        if inside and t:
+            out.append(t)
+    return ' '.join(out)
+
+
+def read_continuity(project):
+    """The project's continuity record, or empty slots."""
+    empty = {'threads': [], 'commitments': [], 'understanding': '',
+             'updated': '', 'body': ''}
+    try:
+        fp = _get_memory_path(project).parent / CONTINUITY_FILE
+        if not fp.is_file():
+            return empty
+        meta, body = _skills.parse_skill_md(
+            fp.read_text(encoding='utf-8', errors='replace'))
+    except Exception as e:
+        _log(f'[continuity] read failed: {e}')
+        return empty
+    if not isinstance(meta, dict):
+        meta = {}
+    return {
+        'threads': _cont_clean(_cont_section(body, _CONT_H_THREADS),
+                               _CONT_MAX_THREADS),
+        'commitments': _cont_clean(_cont_section(body, _CONT_H_COMMITMENTS),
+                                   _CONT_MAX_COMMITMENTS),
+        'understanding': _cont_prose(body, _CONT_H_UNDERSTANDING
+                                     )[:_CONT_MAX_UNDERSTANDING],
+        'updated': str(meta.get('updated') or ''),
+        'body': body,
+    }
+
+
+def write_continuity(project, threads=None, commitments=None, understanding=None):
+    """Replace the continuity record. Returns the record as written.
+
+    REPLACE, never append — that is what keeps the size fixed and removes the
+    need for a remover at all. `None` leaves a slot untouched so a caller that
+    only learned about commitments does not blank the others; an empty list
+    CLEARS a slot, which is how finished work leaves the record.
+    """
+    cur = read_continuity(project)
+    rec = {
+        'threads': _cont_clean(threads if threads is not None else cur['threads'],
+                               _CONT_MAX_THREADS),
+        'commitments': _cont_clean(
+            commitments if commitments is not None else cur['commitments'],
+            _CONT_MAX_COMMITMENTS),
+        'understanding': ' '.join(str(
+            understanding if understanding is not None else cur['understanding']
+        ).split())[:_CONT_MAX_UNDERSTANDING],
+        'updated': now_iso(),
+    }
+    body = [
+        'Working state for this project — what is in flight and what was '
+        'promised. Rewritten in place at turn boundaries; fixed slots, so it '
+        'never grows and never needs pruning.',
+        '',
+        _CONT_H_UNDERSTANDING,
+        rec['understanding'] or '_nothing recorded yet_',
+        '',
+        _CONT_H_THREADS,
+    ]
+    body += [f'- {t}' for t in rec['threads']] or ['_nothing in flight_']
+    body += ['', _CONT_H_COMMITMENTS]
+    body += [f'- {c}' for c in rec['commitments']] or ['_nothing outstanding_']
+
+    mem_dir = _get_memory_path(project).parent
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(
+        mem_dir / CONTINUITY_FILE,
+        _skills.dump_skill_md({'name': 'continuity', 'updated': rec['updated']},
+                              '\n'.join(body) + '\n'))
+    return rec
+
+
+def render_continuity(project):
+    """The continuity block for the system prompt, or '' when there is nothing.
+
+    Injected DIRECTLY rather than retrieved: "what am I part-way through" is
+    relevant to every turn by definition, so making it compete for a read-floor
+    slot would be the wrong question. It is affordable because it is capped.
+    """
+    try:
+        rec = read_continuity(project)
+    except Exception:
+        return ''
+    if not (rec['threads'] or rec['commitments'] or rec['understanding']):
+        return ''
+    lines = []
+    if rec['understanding']:
+        lines.append(f"  Where things stand: {rec['understanding']}")
+    for t in rec['threads']:
+        lines.append(f"  • IN FLIGHT — {t}")
+    for c in rec['commitments']:
+        lines.append(f"  • YOU SAID YOU WOULD — {c}")
+    return ("--- CONTINUITY (what you were part-way through, and what you "
+            "promised; if you finish or drop one, say so) ---\n"
+            + "\n".join(lines))
+
+
+# The extraction prompt. Deliberately asks for the WHOLE record back rather
+# than a diff: a model that emits "add this thread" needs the caller to decide
+# what falls off, which is the curation problem this design exists to avoid.
+# Returning the full record makes supersession the only possible outcome.
+_SCRIBE_CONTINUITY = (
+    "You maintain a short working-state record for a software project — what "
+    "is IN FLIGHT and what was PROMISED. You are given the current record and "
+    "a new slice of conversation.\n\n"
+    "Return ONLY minified JSON, no prose, no code fence:\n"
+    '{"threads":["..."],"commitments":["..."],"understanding":"..."}\n\n'
+    "Rules:\n"
+    "- threads: work STARTED and NOT finished. Drop anything the slice shows "
+    "as completed or abandoned. Max 5, one short line each.\n"
+    "- commitments: things the assistant said it would do and has not done "
+    "yet. Drop them once done. Max 5.\n"
+    "- understanding: 1-2 sentences on where the work stands right now. "
+    "Replace it, do not append to it.\n"
+    "- Return the COMPLETE updated record, not a diff. Anything you omit is "
+    "dropped, which is how finished work leaves the record.\n"
+    "- Prefer specific over comprehensive. An empty list is a valid and often "
+    "correct answer."
+)
+
+
+def _extract_continuity(project, delta, model):
+    """One cheap call: fold a transcript slice into the record. Never raises."""
+    try:
+        cur = read_continuity(project)
+        payload = (
+            "CURRENT RECORD:\n"
+            + json.dumps({k: cur[k] for k in
+                          ('threads', 'commitments', 'understanding')},
+                         ensure_ascii=False)
+            + "\n\nNEW CONVERSATION SLICE:\n" + delta[:12000])
+        raw = _scribe_call(model, _SCRIBE_CONTINUITY, payload)
+        txt = (raw or '').strip()
+        if txt.startswith('```'):
+            txt = txt.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
+        i, j = txt.find('{'), txt.rfind('}')
+        if i < 0 or j <= i:
+            return None
+        d = json.loads(txt[i:j + 1])
+        if not isinstance(d, dict):
+            return None
+        return write_continuity(
+            project,
+            threads=d.get('threads') or [],
+            commitments=d.get('commitments') or [],
+            understanding=d.get('understanding') or '')
+    except Exception as e:
+        _log(f"[continuity] extraction failed: {e}")
+        return None
+
+
 def write_position(project, subject, verdict, reason,
                    expires_when='', decided='', body='', slug='', triggers=''):
     """Record a decision — usually a decision NOT to do something.
@@ -1746,6 +1971,13 @@ def _checkpoint_worker(snap):
                                  supersede_sid=sid):
             _dispatch_condense(p)
         _scribe_stat(pid, 'checkpoint_extracted')
+        # Continuity rides the SAME delta the checkpoint just rendered — no
+        # extra transcript read, no second debounce, one cheap model call at a
+        # boundary that has already earned one. Best-effort: the checkpoint has
+        # already been committed above, so a failure here loses nothing.
+        if state.CONFIG.get('continuity_enabled', True):
+            if _extract_continuity(p, delta, model) is not None:
+                _scribe_stat(pid, 'continuity_updated')
     except Exception:
         pass
     finally:
