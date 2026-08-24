@@ -686,6 +686,36 @@ def _position_triggers(rec):
         toks = _mem_tokens(str((rec or {}).get('subject') or ''))
     return {t for t in toks if t not in _POSITION_STOPWORDS and len(t) > 2}
 
+# Below this many documents a term is rare no matter what the corpus size
+# says. Without it the fraction test blocks everything on a small vault.
+_POSITION_TRIGGER_MIN_DOCS = 5
+
+
+def _position_trigger_max_df():
+    """How common a SUBJECT-derived trigger may be and still fire a position.
+
+    A fraction of the corpus. Measured 2026-08-24, the day delivery telemetry
+    first had numbers: the MC-898 position fired on 108 of 188 real tasks — 57%
+    — because its subject contains the word "agent", which appears in 32.7% of
+    this corpus. The coverage gate was an OR over subject tokens, so one
+    ubiquitous word was enough, and the position became exactly the permanent
+    prompt furniture the gate exists to prevent.
+
+    The English stopword list cannot fix this: "agent" is not a stopword, it is
+    a word this project happens to say constantly. Commonness is a property of
+    the corpus, so the test has to be too. At 0.10, the live positions keep
+    obsidian (0.6%), substrate (0.3%), nightly (0.4%) and research (1.5%), and
+    lose agent (32.7%) and memory (17.8%).
+
+    An EXPLICIT `triggers:` list is exempt — a human naming a term is stating
+    intent, and second-guessing it would make the field pointless.
+    """
+    try:
+        return float(state.CONFIG.get('position_trigger_max_df', 0.10) or 0.10)
+    except Exception:
+        return 0.10
+
+
 # Reserved top-k slots a position may take beyond the ordinary cut. Without
 # this a strong subject match can still be crowded out by a busy query, which
 # is how the Obsidian note lost — it was present, and it never surfaced.
@@ -1388,6 +1418,7 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
     for label, text, cls in units:
         toks = _mem_tokens(text)
         subject_terms = set()
+        trigger_explicit = False
         if not toks:
             continue
         if cls == 'topic':
@@ -1408,6 +1439,7 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             # Obsidian in passing, or it loses its own question.
             _pos = _parse_position(text)
             subject_terms = _position_triggers(_pos)
+            trigger_explicit = bool(str(_pos.get('triggers') or '').strip())
             toks = toks + _mem_tokens(_pos.get('subject', '')) * _POSITION_SUBJECT_BOOST
             toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
         tf = {}
@@ -1417,6 +1449,7 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
                     'len': len(toks), 'cls': cls,
                     'uid': _unit_uid(label, text, cls),
                     'subject_terms': subject_terms,
+                    'trigger_explicit': trigger_explicit,
                     'links': _mem_link_targets(text) if cls == 'topic' else []})
     with _memsearch_cache_lock:
         _memsearch_cache[key] = (sig, out)
@@ -1535,7 +1568,18 @@ def _memory_search(project, query, topk=3, expand=None, record=None):
         if not matched:
             continue
         _trig = u.get('subject_terms') or set()
-        _cover = 1.0 if (_trig & set(terms)) else 0.0
+        _hit_trig = _trig & set(terms)
+        if _hit_trig and not u.get('trigger_explicit'):
+            # Subject-derived triggers must DISTINGUISH. One word the whole
+            # corpus uses is not evidence the task is about this ruling — see
+            # `_position_trigger_max_df`.
+            # The floor matters: a fraction is meaningless on a small corpus,
+            # where one note out of six is already 17%. A term in five or fewer
+            # documents is rare by any measure, so it always passes.
+            _maxdf = max(_POSITION_TRIGGER_MIN_DOCS,
+                         _position_trigger_max_df() * n_docs)
+            _hit_trig = {t for t in _hit_trig if df.get(t, 0) <= _maxdf}
+        _cover = 1.0 if _hit_trig else 0.0
         scored.append({'file': u['file'], 'score': round(score, 4),
                        'cls': u['cls'], '_cover': _cover,
                        'uid': u.get('uid'),

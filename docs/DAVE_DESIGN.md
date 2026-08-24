@@ -205,7 +205,7 @@ lists every hired agent, and subagents appear nested under whoever spawned them
 | **2** | **Positions** — capture verdict + reason + expiry trigger; surface on subject, not keyword | **shipped** `19c0b00` (note class, trigger firing, routes) + `38d1ed2` (the system-prompt directive that gives the route a caller) |
 | **2b** | **A human surface** — read and correct both, in the Memory modal | **shipped** `8d7c1bf`. Not in the original order, and it should have been: a memory layer nobody can inspect is one nobody can correct |
 | **3** | **The reviewer** — walk the standing positions, test whether any reason has expired, report to Ron | **shipped**. `mc/positions_review.py` + `tools/position-review.py` + the `mc-position-review` skill + a weekly schedule |
-| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | **counters shipped** (`mc/memory_delivery.py`, read floor records, `_unit_uid` gives each archive LINE its own identity). The **mover is not built** — nothing promotes or demotes yet, and that step reports to a human first |
+| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | **counters shipped + baselined.** `mc/memory_delivery.py`; `_unit_uid` gives each archive LINE its own identity; `tools/memory-eval/delivery_backfill.py` replayed 188 real tasks. Result: topic layer 70/74 reachable, **529 of 586 archive lines never delivered** — that is the demotion pool. First finding: one position was riding 57% of tasks on the word "agent" (fixed, see §9b). The **mover is not built** — that step reports to a human first |
 | **5** | **Episodic retrieval** (deferred Step 7) | not built. Serves "like we discussed". Prerequisite: search-precision telemetry, i.e. Phase 4 |
 
 Phase 1 alone is what makes Dave stop being a costume.
@@ -244,6 +244,31 @@ never ran — the existing weekly MEMORY HEALTH CHECK had `next_run: null` and
 zero runs, ever. The UI never offered "weekly", but the API reference in every
 agent's prompt did, so agents kept choosing it. Fixed, plus a 400 on any type
 the engine cannot schedule, because accepting one silently is the whole bug.
+
+## 9b. What phase 4 caught before it was even wired to a screen (2026-08-24)
+
+The counters were baselined by replay rather than by waiting for traffic — the
+read floor is deterministic, so 188 already-dispatched tasks reproduce exactly
+what those sessions were served. Two findings, and the second one is the point.
+
+**Where the demotion pool actually is.** 70 of 74 topic notes get reached; 529 of
+586 archive lines never do. The topic layer is not the problem and never was —
+the guessing about which notes to cut was aimed at the wrong layer.
+
+**A standing ruling had become prompt furniture, silently.** The MC-898 position
+reached 108 of 188 tasks because its subject contains "agent", a word in 32.7% of
+this corpus, and the coverage gate was an OR over subject tokens. A ruling about
+a nightly research job was in the prompt for every task that mentioned an agent.
+
+The gate now requires a subject-derived trigger to *distinguish*: ≤10% of the
+corpus, floor of 5 documents. Explicit `triggers:` are exempt. 108 → 19, and both
+live positions still fire on their own subjects.
+
+The general lesson is the one this phase exists for: **a memory feature can be
+wrong in a direction nobody can see from the code.** The gate looked correct, its
+test passed, and only a count against real tasks showed it firing three times too
+often. That is the argument for the mover being driven by measurement rather than
+by anyone's judgement — including mine.
 
 ## 10. Open questions
 

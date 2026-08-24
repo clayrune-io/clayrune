@@ -120,9 +120,14 @@ def test_a_matching_position_survives_a_busy_query(env):
     """Reserved slots. Being present and never surfacing is exactly how the
     Obsidian ruling failed to stop the agent."""
     mem, tmp = env
+    # The noise notes share every query term EXCEPT the distinguishing one.
+    # Putting 'obsidian' in all forty made the trigger word ubiquitous in this
+    # fixture, which is the one thing that legitimately stops a position firing
+    # (see the rarity gate) — and it was masking the property under test rather
+    # than exercising it. The query stays just as busy.
     for i in range(40):
         (tmp / f'topic_{i}.md').write_text(
-            'obsidian memory vault graph notes ' * 30, encoding='utf-8')
+            'memory vault graph notes ' * 30, encoding='utf-8')
     mem.write_position(P, subject='Obsidian', verdict='declined',
                        reason='we built the graph ourselves')
     hits = mem._memory_search(P, 'obsidian memory vault graph', topk=3)
@@ -175,6 +180,60 @@ def test_asking_about_the_subject_directly_fires(env):
     hits = mem._memory_search(P, 'should we adopt obsidian as the substrate?',
                               topk=6)
     assert any(h['file'].startswith('position_') for h in hits)
+
+
+def test_a_word_the_whole_corpus_uses_cannot_fire_a_position(env):
+    """Measured, not hypothetical. On 2026-08-24 the first delivery telemetry
+    showed the MC-898 position reaching 108 of 188 real tasks — 57% — because
+    its subject contains "agent", a word in 32.7% of this corpus. The gate was
+    an OR over subject tokens, so one ubiquitous word was enough, and the
+    ruling became the permanent prompt furniture the gate exists to prevent.
+
+    An English stopword list cannot catch this: "agent" is not a stopword, it
+    is a word this project says constantly. Commonness is a property of the
+    corpus, so the test has to be too."""
+    mem, tmp = env
+    # A corpus where 'agent' is everywhere and 'zeppelin' is not.
+    d = mem._get_memory_path(P).parent
+    for i in range(12):
+        (d / f'note_{i}.md').write_text(
+            f'agent notes number {i} about the agent runtime', encoding='utf-8')
+    mem.write_position(P, subject='the nightly agent — how heavy',
+                       verdict='keep-simple', reason='it is a fetch-and-summarise job')
+
+    assert not any(h['file'].startswith('position_')
+                   for h in mem._memory_search(P, 'add a new agent to the roster',
+                                               topk=6)), \
+        'a position fired on a word a third of the corpus uses'
+    assert any(h['file'].startswith('position_')
+               for h in mem._memory_search(P, 'make the nightly job a hivemind',
+                                           topk=6)), \
+        'the position stopped firing on its own distinguishing subject'
+
+
+def test_an_explicit_trigger_is_never_second_guessed(env):
+    """A human naming a term is stating intent. Applying the rarity test to it
+    would make the field pointless — you could name a trigger and have it
+    silently ignored, with nothing anywhere saying so."""
+    mem, tmp = env
+    d = mem._get_memory_path(P).parent
+    for i in range(12):
+        (d / f'note_{i}.md').write_text('agent agent agent', encoding='utf-8')
+    mem.write_position(P, subject='whatever', verdict='declined', reason='r',
+                       triggers='agent')
+    assert any(h['file'].startswith('position_')
+               for h in mem._memory_search(P, 'the agent roster', topk=6))
+
+
+def test_the_rarity_threshold_is_configurable(env):
+    mem, tmp = env
+    from mc import state
+    assert mem._position_trigger_max_df() == 0.10
+    state.CONFIG['position_trigger_max_df'] = 0.5
+    try:
+        assert mem._position_trigger_max_df() == 0.5
+    finally:
+        state.CONFIG.pop('position_trigger_max_df', None)
 
 
 def test_the_result_shape_stays_public_api(env):

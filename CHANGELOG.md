@@ -6,6 +6,61 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24f] — the delivery counters get a baseline, and immediately catch one
+
+The counters shipped empty, which would have meant designing the residency
+decision against a blank file and waiting weeks for live traffic. They did not
+have to: the read floor is deterministic — no model, ranked grep — so replaying
+it over the tasks we already dispatched reproduces exactly what those sessions
+were served. `tools/memory-eval/delivery_backfill.py` does that over **188 real
+dispatched tasks** from 281 sessions (90 acknowledgement-only follow-ups
+excluded), writing under its own `backfill` context so live traffic stays
+separable.
+
+The baseline, against a 675-unit corpus:
+
+| | |
+|---|---|
+| tasks that surfaced nothing | **0** (was 17 before the archive-quota fix) |
+| topic notes ever reached | **70 / 74** |
+| archive lines never reached | **529 / 586** |
+| reached only by a `[[wikilink]]` hop | 2 |
+
+Two of those are the answer to a question that has been open since MC-892. The
+topic layer is essentially all reachable — the BM25 rewrite, the title boost and
+link expansion did their job. **The demotion candidates are in the archive**, and
+there are 529 of them.
+
+**What it caught on the first run.** The MC-898 position was being delivered on
+**108 of 188 tasks — 57%** — because its subject contains the word "agent", which
+appears in 32.7% of this corpus. The coverage gate was an OR over subject tokens,
+so a single ubiquitous word was enough, and a standing ruling about a nightly
+research job was riding along on every task that mentioned an agent. That is
+precisely the permanent-prompt-furniture failure the gate was built to prevent,
+and it had been live since positions shipped with nothing to reveal it.
+
+An English stopword list cannot fix it — "agent" is not a stopword, it is a word
+this project says constantly. Commonness is a property of the corpus, so the test
+now is too: a **subject-derived** trigger only fires if it appears in ≤10% of the
+corpus (with a floor of 5 documents, since a fraction is meaningless on a small
+vault). An **explicit** `triggers:` list is exempt — a human naming a term is
+stating intent, and second-guessing it would make the field pointless.
+
+Re-measured after the fix, same 188 tasks:
+
+- MC-898 position: 108 → **19** (57% → 10.1%)
+- Obsidian position: 31 → **3** (16.5% → 1.6%)
+- Both still fire on their own subject: *"should we adopt obsidian…"* and
+  *"lets build the nightly field research agent as a hivemind"* each surface
+  their ruling; *"add a new agent type to the roster"*, *"improve the memory
+  index"* and *"fix the cloudflare tunnel quota alarm"* now surface neither.
+
+One test fixture changed with it: `test_a_matching_position_survives_a_busy_query`
+built its forty noise notes containing the trigger word itself, which made the
+term ubiquitous in the fixture and masked the property it was pinning. The noise
+notes now share every query term except the distinguishing one — the query is
+just as busy, and the reserve is actually exercised.
+
 ## [2026-08-24e] — continuity belongs to an agent, not to the project
 
 Ron, looking at the Memory modal: *"the memory index does not yet differentiate
