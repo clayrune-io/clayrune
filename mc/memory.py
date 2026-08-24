@@ -1111,6 +1111,29 @@ def _append_to_archive(project, lines):
     _atomic_write_text(ap, prev + '\n' + '\n'.join(lines) + '\n')
 
 
+def _supersedable_hashes(wm_markers):
+    """Entry hashes that a LIVE session still intends to replace in place.
+
+    Every watermark carries `last_entry_hash` — the `_(live)_` line its next
+    checkpoint will supersede. The floor evicts oldest-first, so under budget
+    pressure it could pop exactly that line into the archive; and the archive is
+    append-only cold storage that is never truncated. From that moment the
+    supersede-by-hash lookup finds nothing and every subsequent checkpoint
+    APPENDS instead of replacing.
+
+    That is the whole mechanism behind the pile-up measured 2026-08-23: 1,684
+    of 2,222 archive lines superseded, worst single group 47 copies of one
+    conversation. Supersession was implemented and correct; it was simply
+    unreachable once the line had been relocated.
+    """
+    out = set()
+    for ln in wm_markers or []:
+        h = (_wm_parse(ln) or {}).get('last_entry_hash', '')
+        if h:
+            out.add(h)
+    return out
+
+
 def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
                           supersede_sid=None):
     """Leaf-locked atomic MEMORY.md commit — the write path shared by the
@@ -1186,9 +1209,28 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
             _log(f"[mem-dedup] {project_id}: demoted {len(overflow)} duplicate "
                  f"managed entr{'y' if len(overflow) == 1 else 'ies'} to archive "
                  f"(keeping {_MANAGED_DUP_KEEP} per date+label)")
-        while mem_entries and _over_floor(
+        # Oldest-first eviction, but never the line a live session is about to
+        # supersede (see _supersedable_hashes). Skipping past it preserves the
+        # ordering; a protected line is released the moment its session ends and
+        # `_wm_remove`/`_gc_stale_watermarks` drops the marker, so nothing is
+        # pinned permanently.
+        _protected = _supersedable_hashes(wm_markers)
+        _i, _skipped = 0, 0
+        while _i < len(mem_entries) and _over_floor(
                 _mem_compose(curated, mem_entries, wm_markers), hard_floor):
-            overflow.append(mem_entries.pop(0))  # oldest → archive
+            if _sha8(mem_entries[_i]) in _protected:
+                _i += 1
+                _skipped += 1
+                continue
+            overflow.append(mem_entries.pop(_i))  # oldest evictable → archive
+        if _skipped and _over_floor(
+                _mem_compose(curated, mem_entries, wm_markers), hard_floor):
+            # Every remaining entry belongs to a live session. Going over the
+            # floor for a few turns is the cheaper failure: the alternative is
+            # archiving a line that is still being updated, which is the bug
+            # this guard exists to prevent.
+            _log(f"[mem-floor] {project_id}: over floor with {_skipped} live "
+                 f"entr{'y' if _skipped == 1 else 'ies'} protected from eviction")
         _append_to_archive(p, overflow)
         _atomic_write_text(mem_path,
                            _mem_compose(curated, mem_entries, wm_markers))

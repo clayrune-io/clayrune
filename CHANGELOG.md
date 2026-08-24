@@ -44,6 +44,41 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-23c] — the checkpoint pile-up, at the root
+
+`[2026-08-23b]` stopped the read floor *choking* on 2,222 near-duplicate
+archive lines. This is why they existed.
+
+Step-6 checkpointing folds each transcript delta into a **cumulative** running
+summary, so every `_(live)_` entry it writes is a strict superset of the one
+before. `supersede_sid` was built for exactly that: drop the session's previous
+entry in the same atomic write, keyed on the `last_entry_hash` stashed on its
+watermark. **It was implemented, and it was correct.**
+
+It worked right up until the entry left `MEMORY.md`. The floor evicts
+oldest-first into `MEMORY_ARCHIVE.md` — append-only cold storage that is never
+truncated — with no regard for whether a *live* session was still going to
+replace that line. The moment one got relocated, the supersede-by-hash lookup
+found nothing, and every subsequent checkpoint appended instead of replacing.
+One conversation left **47 copies** that way.
+
+So the fix is one rule: **the floor may not evict a line a live watermark still
+points at.** Protected lines are skipped and eviction continues past them, so
+ordering is preserved and unrelated history still overflows normally. Nothing
+is pinned permanently — protection ends when the session does and its marker is
+removed by teardown or `_gc_stale_watermarks`. If *every* remaining entry
+belongs to a live session the index sits over its floor for a few turns and
+says so in the log; that is the cheaper failure, because the alternative is
+archiving a line that is still being written.
+
+Worth stating plainly, because it shapes where to look next time: this was not
+a missing feature. Supersession, watermarks, the hash pointer and the atomic
+write were all present and working. The defect was that two correct mechanisms
+— in-place supersession and oldest-first overflow — had no knowledge of each
+other, and the one that ran second silently disabled the first.
+
+Regression tests fail with the guard removed (verified, not assumed).
+
 ## [2026-08-23b] — the read floor was serving the agent its own stale first guesses
 
 One task in eight was getting **no memory at all** — six slots on the briefing
