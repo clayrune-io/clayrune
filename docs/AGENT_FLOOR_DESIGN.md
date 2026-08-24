@@ -248,6 +248,40 @@ the same as use:
 
 Phase 1 alone replaces "open 20 modals to find out what is running".
 
+## 6a. SETTLED — who gets a thread (2026-08-24, Ron)
+
+The question that was actually blocking the Floor was not where it lives, it was
+what a figure *is* when you tap it. Ron's expectation: talk to Dave, but also be
+able to talk to the others — "much like one of the renderings you did", i.e.
+Frame 2, where Fenn and Marlow are separate figures inside one room.
+
+The framing we were stuck on — one shared thread or N separate ones — is a false
+choice, and OpenClaw already resolves it by splitting on **lifespan** rather than
+on hierarchy:
+
+- a **subagent spawned for a task** runs in its own session in the background and
+  **announces its result back into the thread that spawned it**. You never leave
+  Dave's chat, and `list` / `info` / `log` pull its status and raw output into
+  that same thread rather than making you switch.
+- a **persistent agent** is bound to its own channel and works independently.
+
+So: **throwaway helpers report home; hired staff get their own room.**
+
+Which is exactly the shape we already have. Fenn, Quill and Marlow are characters
+a human hired, so each gets a thread. Something Dave spins up for one task
+reports into Dave's thread and appears as a nested figure on the Floor only while
+it is running.
+
+This also disposes of the objection to per-agent threads — that you end up
+managing N inboxes per project. You don't: a new thread appears only when *you*
+hired someone. The count is bounded by a human decision, not by how busy Dave is.
+
+Consistent with §8 of `DAVE_DESIGN` (hierarchy is for delegation, not for
+inspection — Dave is the first point of contact, never the only one) and with the
+Frame 2 caption: a figure is a *session*, not a type.
+
+Reference: OpenClaw sub-agents — https://docs.openclaw.ai/tools/subagents
+
 ## 7. Open questions
 
 1. **Where does it live** — a new sidebar entry ("Floor"), or a third view mode
