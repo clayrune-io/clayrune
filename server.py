@@ -1473,6 +1473,22 @@ _bp_coord.wire(
 app.register_blueprint(_bp_coord.bp)
 
 
+# ── The Floor (MC-897 phase 1) ────────────────────────────────────────────────
+# docs/AGENT_FLOOR_DESIGN.md. One cross-project read of the live `agent_sessions`
+# map: rooms = projects, one figure per live SESSION. Registered after _bp_agent
+# so it can borrow that map by reference — by reference on purpose, since the
+# dict is mutated in place and a copy would freeze the board at import time.
+from mc.blueprints import floor_routes as _bp_floor  # noqa: E402
+from mc import characters as _characters_mod  # noqa: E402
+
+_bp_floor.wire(
+    agent_sessions_ref=_bp_agent.agent_sessions,
+    load_projects_fn=_bp_projects.load_projects,
+    list_characters_fn=_characters_mod.list_characters,
+)
+app.register_blueprint(_bp_floor.bp)
+
+
 # ── Run history (recent-runs/search-chats/conversations/plans/usage) ──
 # moved to mc/blueprints/agent_routes.py (1.12).
 

@@ -4561,6 +4561,84 @@
     text-transform: uppercase; font-weight: 600; color: var(--text-faint);
     margin: 10px 0 4px;
   }
+
+  /* ── The Floor (MC-897) ─────────────────────────────────────────────────
+     Rooms are projects, a figure is a session. The room border is what makes
+     "two agents, one project" legible at a glance; a flat list of cards with a
+     project name on each reads as eight unrelated things. */
+  .fl-rooms { display: flex; flex-direction: column; gap: 12px; }
+  .fl-room {
+    border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px;
+    background: var(--bg);
+  }
+  .fl-room-head {
+    font-size: 12px; font-weight: 700; color: var(--text); cursor: pointer;
+    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+  }
+  .fl-room-head:hover { color: var(--accent); }
+  .fl-room-n {
+    font-size: 10px; font-weight: 600; color: var(--text-faint);
+    border: 1px solid var(--border); border-radius: 9px; padding: 0 6px;
+  }
+  .fl-figs { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fl-fig {
+    flex: 1 1 240px; min-width: 220px; max-width: 340px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    background: var(--bg-alt, var(--bg)); transition: border-color 0.15s;
+  }
+  .fl-fig:hover { border-color: var(--accent); }
+  /* A figure that needs a human is the only thing on this board with a real
+     deadline, so it gets the one loud edge. */
+  .fl-fig.fl-asking { border-color: var(--amber); }
+  .fl-fig-top { display: flex; align-items: center; gap: 6px; }
+  .fl-dot { font-size: 11px; line-height: 1; }
+  .fl-dot.fl-working { color: var(--green); }
+  .fl-dot.fl-idle { color: var(--text-faint); }
+  .fl-dot.fl-asking {
+    color: var(--amber); font-weight: 800; font-size: 12px;
+  }
+  .fl-who { font-size: 12px; font-weight: 700; color: var(--text); }
+  /* "no type" is a finding, not a placeholder — it is the gap the board exists
+     to make visible, so it is legible without pretending to be a name. */
+  .fl-who.fl-untyped {
+    font-weight: 500; font-style: italic; color: var(--text-faint);
+  }
+  .fl-age {
+    margin-left: auto; font-size: 10px; color: var(--text-faint);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .fl-engine {
+    font-size: 10px; color: var(--text-faint); margin-top: 2px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .fl-act { font-size: 11px; color: var(--text-dim, var(--text-faint)); margin-top: 5px; }
+  .fl-task {
+    font-size: 11px; color: var(--text-faint); margin-top: 3px; line-height: 1.4;
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .fl-quiet { margin-top: 14px; }
+  .fl-quiet-head {
+    font-size: 11px; color: var(--text-faint); cursor: pointer; user-select: none;
+  }
+  .fl-quiet-head:hover { color: var(--text); }
+  .fl-quiet-list {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+  }
+  .fl-quiet-item {
+    font-size: 11px; color: var(--text-faint); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+  }
+  .fl-quiet-item:hover { color: var(--accent); border-color: var(--accent); }
+  .fl-bench { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
+  .fl-section-head { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+  .fl-bench-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .fl-bench-card {
+    display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; max-width: 300px;
+    border: 1px dashed var(--border); border-radius: 6px; padding: 7px 10px;
+  }
+  .fl-bench-desc { font-size: 10px; color: var(--text-faint); line-height: 1.4; }
+
   /* One group per agent. The first label in a group names the owner, so it
      gets the accent treatment — a wall of identical uppercase labels made it
      impossible to see where one agent's slots ended and the next began. */

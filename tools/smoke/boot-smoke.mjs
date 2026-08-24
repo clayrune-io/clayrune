@@ -107,6 +107,7 @@ const INTERACTIONS_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'interac
 const RENDER_CORE_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'render-core.js'), 'utf8');
 const MODAL_MANAGER_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'modal-manager.js'), 'utf8');
 const AGENT_CONSOLE_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'agent-console.js'), 'utf8');
+const FLOOR_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'floor.js'), 'utf8');
 const HIVEMIND_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'hivemind.js'), 'utf8');
 const AGENT_LOG_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'agent-log.js'), 'utf8');
 const RESUME_PREVIEW_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'resume-preview.js'), 'utf8');
@@ -177,6 +178,7 @@ const STATIC_MAP = {
   '/static/js/render-core.js': ['text/javascript; charset=utf-8', RENDER_CORE_JS],
   '/static/js/modal-manager.js': ['text/javascript; charset=utf-8', MODAL_MANAGER_JS],
   '/static/js/agent-console.js': ['text/javascript; charset=utf-8', AGENT_CONSOLE_JS],
+  '/static/js/floor.js': ['text/javascript; charset=utf-8', FLOOR_JS],
   '/static/js/hivemind.js': ['text/javascript; charset=utf-8', HIVEMIND_JS],
   '/static/js/agent-log.js': ['text/javascript; charset=utf-8', AGENT_LOG_JS],
   '/static/js/resume-preview.js': ['text/javascript; charset=utf-8', RESUME_PREVIEW_JS],
@@ -1388,6 +1390,142 @@ async function runQuestionRepaintGuard(browser) {
 }
 
 
+// ── The Floor (MC-897 phase 1) ───────────────────────────────────────────────
+// A board nobody trusts is worse than no board: you keep opening the twenty
+// modals anyway and now you maintain a view as well. So this checks the three
+// things the board is FOR — two agents in one room render as two figures, the
+// room that needs a human sorts first, and clicking a figure reaches that
+// SESSION rather than merely that project.
+async function runFloorGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const FLOOR = {
+    rooms: [
+      { id: 'smoke_beta', name: 'Beta', emoji: '', color: '', figures: [
+        { session_id: 's-ask', claude_session_id: 'csid-ask', state: 'asking',
+          reason: 'question', activity: '', task: 'needs an answer',
+          character: { name: 'quill', display: 'Quill' }, provider: 'claude',
+          model: 'claude-opus-5', started_at: '2026-08-24T10:00:00Z', age: '2h',
+          trigger_type: 'manual', hivemind_id: '' } ] },
+      { id: 'smoke_alpha', name: 'Alpha', emoji: '', color: '', figures: [
+        { session_id: 's-fenn', claude_session_id: 'csid-fenn', state: 'working',
+          reason: null, activity: 'tool', task: 'reviewing MC-142',
+          character: { name: 'fenn', display: 'Fenn' }, provider: 'claude',
+          model: 'claude-sonnet-5', started_at: '2026-08-24T11:00:00Z', age: '12m',
+          trigger_type: 'manual', hivemind_id: '' },
+        { session_id: 's-anon', claude_session_id: 'csid-anon', state: 'idle',
+          reason: null, activity: '', task: 'no persona was picked',
+          character: null, provider: 'claude', model: '',
+          started_at: '2026-08-23T11:00:00Z', age: '20h',
+          trigger_type: 'manual', hivemind_id: '' } ] },
+    ],
+    quiet: [{ id: 'smoke_gamma', name: 'Gamma', emoji: '', color: '' }],
+    bench: [{ name: 'marlow', scope: 'global', display: 'Marlow',
+              description: 'writes specs', provider: 'claude',
+              model: 'claude-fable-5', effort: 'high' }],
+    counts: { rooms: 2, figures: 3, quiet: 1, bench: 1 },
+    activity_states: true, poll_seconds: 30,
+  };
+  let floorCalls = 0;
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (path === '/api/floor') { floorCalls++; return json(FLOOR); }
+    if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('FAIL floor guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async () => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    try {
+      // Through the real sidebar route, not by calling openFloor() directly —
+      // an unrouted nav entry is exactly the kind of break this catches.
+      sidebarNav('floor');
+      await settle();
+      const win = document.querySelector('[data-modal-id="__floor"]');
+      if (!win) throw new Error('the floor modal never opened');
+      r.rooms = win.querySelectorAll('.fl-room').length;
+      r.roomOrder = Array.from(win.querySelectorAll('.fl-room-head'))
+        .map((e) => e.textContent.trim().split('\n')[0].trim());
+      r.figsPerRoom = Array.from(win.querySelectorAll('.fl-figs'))
+        .map((e) => e.querySelectorAll('.fl-fig').length);
+      r.untyped = win.querySelectorAll('.fl-who.fl-untyped').length;
+      r.asking = win.querySelectorAll('.fl-fig.fl-asking').length;
+      r.text = (win.innerText || '').replace(/\s+/g, ' ');
+
+      // Quiet projects stay collapsed until asked for.
+      r.quietVisibleBefore = !!win.querySelector('.fl-quiet-list:not([hidden])');
+      floorToggleQuiet();
+      await settle();
+      const win2 = document.querySelector('[data-modal-id="__floor"]');
+      r.quietVisibleAfter = !!win2.querySelector('.fl-quiet-list:not([hidden])');
+
+      // Clicking a figure must route to the SESSION.
+      const calls = [];
+      const realOpenConv = window.openConversation;
+      const realOpenProj = window.openProjectModal;
+      window.openConversation = (pid, csid, mcid) => calls.push([pid, csid, mcid]);
+      window.openProjectModal = () => {};
+      const fig = document.querySelector('[data-modal-id="__floor"] .fl-fig');
+      fig.click();
+      await settle(700);
+      window.openConversation = realOpenConv;
+      window.openProjectModal = realOpenProj;
+      r.opened = calls;
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push('threw - ' + out.err);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  if (!floorCalls) fails.push('the board never called /api/floor');
+  if (out.rooms !== 2) fails.push('expected 2 rooms, got ' + out.rooms);
+  if (!/^Beta/.test(out.roomOrder && out.roomOrder[0] || ''))
+    fails.push('the room needing a human did not sort first: ' + JSON.stringify(out.roomOrder));
+  if (JSON.stringify(out.figsPerRoom) !== JSON.stringify([1, 2]))
+    fails.push('two agents in one project did not render as two figures: '
+      + JSON.stringify(out.figsPerRoom));
+  if (out.untyped !== 1) fails.push('an unnamed session was not marked untyped');
+  if (out.asking !== 1) fails.push('the asking figure got no attention styling');
+  if (!/Marlow/.test(out.text || '')) fails.push('the bench did not render');
+  if (out.quietVisibleBefore) fails.push('quiet projects were expanded by default');
+  if (!out.quietVisibleAfter) fails.push('the quiet section would not expand');
+  if (!out.opened || out.opened.length !== 1)
+    fails.push('clicking a figure opened no conversation');
+  else if (out.opened[0][1] !== 'csid-ask' || out.opened[0][2] !== 's-ask')
+    fails.push('a figure click did not carry its own session: '
+      + JSON.stringify(out.opened[0]));
+
+  if (fails.length) {
+    console.error('FAIL floor guard:');
+    fails.forEach((f) => console.error(`       * ${f}`));
+    return false;
+  }
+  console.log('OKAY the floor: rooms sort by who needs you, two agents in one project '
+    + 'render as two figures, quiet stays collapsed, a figure click carries its session.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -1402,9 +1540,10 @@ try {
   results.push(await runMemoryPanelGuard(browser));
   results.push(await runScheduleCalendarGuard(browser));
   results.push(await runQuestionRepaintGuard(browser));
+  results.push(await runFloorGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar & question-repaint guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, question-repaint & floor guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

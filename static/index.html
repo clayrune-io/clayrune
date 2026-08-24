@@ -439,6 +439,7 @@
     <symbol id="ic-automation" viewBox="0 0 24 24"><circle cx="12" cy="13" r="8"/><path d="M12 9v4l2 2"/><path d="M5 3 2 6"/><path d="m22 6-3-3"/><path d="M6.38 18.7 4 21"/><path d="M17.64 18.67 20 21"/></symbol>
     <symbol id="ic-calendar" viewBox="0 0 24 24"><rect x="3" y="4" width="18" height="18" rx="2"/><path d="M16 2v4"/><path d="M8 2v4"/><path d="M3 10h18"/></symbol>
     <symbol id="ic-history" viewBox="0 0 24 24"><path d="M3 12a9 9 0 1 0 9-9 9.75 9.75 0 0 0-6.74 2.74L3 8"/><path d="M3 3v5h5"/><path d="M12 7v5l4 2"/></symbol>
+    <symbol id="ic-floor" viewBox="0 0 24 24"><rect x="3" y="4" width="8" height="7" rx="1.5"/><rect x="13" y="4" width="8" height="7" rx="1.5"/><rect x="3" y="14" width="18" height="6" rx="1.5"/><circle cx="7" cy="7.5" r="1.3"/><circle cx="17" cy="7.5" r="1.3"/><circle cx="8" cy="17" r="1.3"/><circle cx="14" cy="17" r="1.3"/></symbol>
     <symbol id="ic-hivemind" viewBox="0 0 24 24"><circle cx="18" cy="5" r="3"/><circle cx="6" cy="12" r="3"/><circle cx="18" cy="19" r="3"/><line x1="8.59" x2="15.42" y1="13.51" y2="17.49"/><line x1="15.41" x2="8.59" y1="6.51" y2="10.49"/></symbol>
     <symbol id="ic-skills" viewBox="0 0 24 24"><path d="M15.5 6a3.5 3.5 0 0 0-6.9-.8L8.5 6H6a2 2 0 0 0-2 2v2.5l.8.1a3.5 3.5 0 0 1 0 6.9l-.8.1V20a2 2 0 0 0 2 2h2.5l-.1-.8a3.5 3.5 0 0 1 6.9 0l-.1.8H18a2 2 0 0 0 2-2v-2.5l-.8-.1a3.5 3.5 0 0 1 0-6.9l.8-.1V8a2 2 0 0 0-2-2h-2.5z"/></symbol>
     <symbol id="ic-personas" viewBox="0 0 24 24"><path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M22 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></symbol>
@@ -491,6 +492,10 @@
     <div class="sidebar-item" data-nav="inbox" onclick="sidebarNav('inbox')">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-inbox"/></svg><span class="si-badge" id="sidebar-inbox-badge" hidden></span></span>
       <span class="si-label">Inbox</span>
+    </div>
+    <div class="sidebar-item" data-nav="floor" onclick="sidebarNav('floor')" title="Who is working on what, across every project">
+      <span class="si-icon"><svg class="si-svg"><use href="#ic-floor"/></svg></span>
+      <span class="si-label">Floor</span>
     </div>
     <div class="sidebar-item si-new" data-nav="new" onclick="openNewProjectForm()">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-plus"/></svg></span>
@@ -1489,6 +1494,7 @@ function sidebarNav(target) {
     }
   }
   else if (target === 'inbox') openInboxSurface();
+  else if (target === 'floor') openFloor();
   else if (target === 'history') openHistory();
   else if (target === 'scheduler') openScheduler();
   else if (target === 'calendar') openSchedulerCalendar();
@@ -3503,6 +3509,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/provider-auth.js"></script>
 <script type="module" src="/static/js/schedule-banner.js"></script>
 <script type="module" src="/static/js/provider-settings.js"></script>
+<script type="module" src="/static/js/floor.js"></script>
 <script type="module" src="/static/js/process-manager.js"></script>
 <script type="module" src="/static/js/cross-hivemind.js"></script>
 <script type="module" src="/static/js/rich-text.js"></script>

@@ -6,6 +6,51 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24h] — the Floor: who is doing what, everywhere
+
+MC-897 phase 1. Until now the only way to learn what is running across twenty
+projects was to open twenty modals, and a session that had been idle for twenty
+hours was invisible until you happened to look at it.
+
+Rooms are projects; **a figure is a session, not a type**. That distinction is
+the whole design: one character can be running in three projects at once, and
+the chat header pill — one persona, one chat — structurally cannot say so. Two
+agents on the same project render as two figures inside one room, which is the
+shape no existing surface could draw.
+
+`GET /api/floor` is one call, not twenty. The build order had said "poll the
+endpoints that already exist", but `/api/project/<id>/agent/status` is
+per-project by design and ships each session's full log tail — twenty of those
+on a 30s poll to render twenty one-line cards. The new endpoint walks the
+in-memory `agent_sessions` map once and returns only what a card shows.
+
+What it refuses to do, each for a reason:
+
+- **It never renames an unnamed session.** "no type" is a finding, not a
+  placeholder — labelling every anonymous session with the configured default
+  name would hide the exact gap the board exists to make visible.
+- **It never shows incognito or housekeeping sessions.** Incognito's promise is
+  staying off the public indicators; a cross-project board is the most public
+  indicator there is.
+- **It never puts an activity string on an idle figure.** A stale "thinking…" is
+  a lie about a live system. With `activity_states_enabled` off there is no such
+  signal at all, so the board says so once at the bottom rather than leaving
+  every card looking stalled.
+
+State priority (`asking > working > idle`) is copied from `_project_live_agent`
+rather than reinvented, and a test pins it: two surfaces disagreeing about
+whether a project needs you is worse than either being wrong.
+
+Rooms with someone waiting on you sort first. Quiet projects are a collapsed
+count. Clicking a figure opens that project's chat **on that session** —
+hierarchy is for delegation, not for inspection. The bench (hired types with
+nothing running) renders read-only; dispatching from it is phase 2, and a button
+that does nothing is worse than no button.
+
+Lives in the sidebar beside Inbox, not under Workspace — both are
+cross-project, everything under Workspace is scoped to one. 14 endpoint tests
+plus a boot-smoke guard that drives the real `sidebarNav('floor')` route.
+
 ## [2026-08-24g] — phase 4 ends as a weekly watch, not a screen
 
 Phase 4 was going to end in a report screen and an automatic mover. Neither is

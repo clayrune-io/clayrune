@@ -240,7 +240,7 @@ the same as use:
 
 | Phase | Scope | Size |
 |---|---|---|
-| **1** | Floor view: rooms = projects, one card per live session with real status, click-to-open. Read-only, polls the endpoints that already exist | medium |
+| **1** | Floor view: rooms = projects, one card per live session with real status, click-to-open | **shipped** `mc/blueprints/floor_routes.py` + `static/js/floor.js`. One `/api/floor` call, not N — see §6b |
 | **2** | Bench: types with nothing running; click → dispatch with a project picker | small |
 | **3** | Coordination edges from `coord/roster` | small |
 | **4** | Team view: role cards from the character roster, grouped by scope | small |
@@ -281,6 +281,44 @@ inspection — Dave is the first point of contact, never the only one) and with 
 Frame 2 caption: a figure is a *session*, not a type.
 
 Reference: OpenClaw sub-agents — https://docs.openclaw.ai/tools/subagents
+
+## 6b. What phase 1 actually became (2026-08-24)
+
+**One endpoint, not the existing ones.** The build order said "polls the
+endpoints that already exist", and that was wrong. `/api/project/<id>/agent/
+status` is per-project by design — the chat modal wants one project's sessions
+with their full log tails. A cross-project board built on it is twenty HTTP
+calls carrying twenty log buffers to render twenty one-line cards, every thirty
+seconds. `/api/floor` walks the same in-memory `agent_sessions` map once and
+returns only what a card shows.
+
+**The state vocabulary is borrowed, deliberately.** `_figure_state` reproduces
+`_project_live_agent`'s `asking > working > idle` priority rather than inventing
+its own. Two surfaces disagreeing about whether a project needs you is worse
+than either being wrong, because you stop trusting both.
+
+**Three things it refuses to do:**
+
+- **It does not name an unnamed session.** "no type" is what Frame 1 is
+  *showing* — quietly labelling every anonymous session with the configured
+  default would hide the exact gap the view exists to make visible.
+- **It does not show incognito or housekeeping sessions.** Incognito's whole
+  promise is staying off the public indicators, and a cross-project board is the
+  most public indicator there is.
+- **It does not put an activity string on an idle figure.** A stale "thinking…"
+  is a lie about a live system. And when `activity_states_enabled` is off there
+  is no such signal at all, so the board says so once at the bottom rather than
+  leaving every card looking stalled.
+
+**Answers to two of §7.** It lives in the **sidebar**, beside Inbox rather than
+under Workspace — both are cross-project, and everything under Workspace is
+scoped to one. Quiet projects are a **collapsed count**, expandable, which is the
+dead-room failure in §3 avoided rather than restyled. §7.3 stands as written:
+polling, because a new always-on SSE stream costs a slot against the
+per-origin cap (`arch_sse_slot_management`).
+
+**The bench renders but does not dispatch** — that is phase 2, and it is drawn
+read-only rather than as a button that does nothing.
 
 ## 7. Open questions
 
