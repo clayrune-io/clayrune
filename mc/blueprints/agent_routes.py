@@ -2037,7 +2037,9 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if not incognito and state.CONFIG.get('continuity_enabled', True):
         try:
             from mc.memory import render_continuity as _render_cont
-            _cont = _render_cont(project)
+            # Scoped to THIS agent (same string as "Your name is …", which is
+            # what keeps read and write asking for the same bucket).
+            _cont = _render_cont(project, owner=agent_name)
             if _cont:
                 parts.append(_cont)
         except Exception as e:

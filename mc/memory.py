@@ -742,6 +742,16 @@ _CONT_MAX_THREADS = 5
 _CONT_MAX_COMMITMENTS = 5
 _CONT_MAX_ITEM_CHARS = 160
 _CONT_MAX_UNDERSTANDING = 400
+# How many agents keep a bucket. Structural eviction, the same lever as the
+# slot caps: an agent that has not worked here lately is not carrying live
+# working state, and the things worth keeping live elsewhere regardless.
+_CONT_MAX_OWNERS = 4
+# Another agent's work is context, not your list. A handful of lines.
+_CONT_MAX_OTHER_LINES = 3
+# What an ownerless bucket is called: the record predates owners, or the
+# session ran with no character. It belongs to the project, not to whoever
+# happens to write next.
+_CONT_SHARED_LABEL = '(project)'  # parenthesised so no agent name collides
 
 
 def _cont_clean(items, cap):
@@ -769,7 +779,7 @@ _CONT_H_UNDERSTANDING = '## Where things stand'
 
 
 def _cont_section(body, heading):
-    """Bullet lines under a heading, until the next heading."""
+    """Bullet lines under a heading, across ALL owners. Legacy/merged view."""
     out, inside = [], False
     for ln in (body or '').splitlines():
         t = ln.strip()
@@ -790,15 +800,109 @@ def _cont_prose(body, heading):
                 break
             inside = (t == heading)
             continue
-        if inside and t:
+        if inside and t and not t.startswith('### '):
             out.append(t)
     return ' '.join(out)
 
 
-def read_continuity(project):
-    """The project's continuity record, or empty slots."""
-    empty = {'threads': [], 'commitments': [], 'understanding': '',
-             'updated': '', 'body': ''}
+def _cont_owner_key(owner):
+    """The stable per-agent key. '' is the shared/legacy bucket.
+
+    A record written before owners existed, or by a session with no character,
+    has no owner and must not be silently attributed to whoever writes next —
+    it belongs to the project, and reads as such.
+    """
+    return ' '.join(str(owner or '').split())[:40]
+
+
+def _cont_parse_owner(raw):
+    """A `### <owner>` heading back to its bucket key.
+
+    The shared bucket is WRITTEN with a visible label so the file reads well by
+    hand, and must parse back to '' — otherwise it round-trips as a named agent
+    and stops merging into everyone's view, which is the one thing it is for.
+    """
+    k = _cont_owner_key(raw)
+    return '' if k == _CONT_SHARED_LABEL else k
+
+
+def _cont_owner_sections(body, heading):
+    """{owner: [lines]} under `heading`.
+
+    Lines with no `### owner` above them land in the '' bucket, which is what a
+    pre-owner file parses as — so the migration is "read the old file", not a
+    rewrite step that could lose it.
+    """
+    out, inside, cur = {}, False, ''
+    for ln in (body or '').splitlines():
+        t = ln.strip()
+        if t.startswith('## '):
+            inside = (t == heading)
+            cur = ''
+            continue
+        if not inside:
+            continue
+        if t.startswith('### '):
+            cur = _cont_parse_owner(t[4:].split('—')[0])
+            continue
+        if t.startswith('- '):
+            out.setdefault(cur, []).append(t[2:].strip())
+        elif t and heading == _CONT_H_UNDERSTANDING and not t.startswith('_'):
+            out.setdefault(cur, []).append(t)
+    return out
+
+
+def _cont_owner_stamps(body):
+    """{owner: iso} from the `### <owner> — <iso>` headings, best-effort.
+
+    Kept in the heading rather than the frontmatter because the vault's minimal
+    parser has no list or map type — the same reason the sections themselves
+    are markdown (see `_CONT_H_THREADS`).
+    """
+    out = {}
+    for ln in (body or '').splitlines():
+        t = ln.strip()
+        if not t.startswith('### ') or '—' not in t:
+            continue
+        name, _, stamp = t[4:].partition('—')
+        k = _cont_parse_owner(name)
+        st = stamp.strip()
+        if st > out.get(k, ''):
+            out[k] = st
+    return out
+
+
+def _session_owner(session):
+    """The continuity owner for a live session — the name the agent works under.
+
+    Must resolve to the SAME string the prompt builder uses for "Your name is
+    …" (`character_name or CONFIG['agent_name']`), or the write side files a
+    bucket the read side never asks for and every agent silently gets an empty
+    record. A session with no character and no configured name owns nothing and
+    writes to the shared bucket, which is honest: nobody can claim that work.
+    """
+    try:
+        ch = (session or {}).get('character') or {}
+        name = ch.get('agent_name') or ch.get('name') if isinstance(ch, dict) else ch
+        return _cont_owner_key(name or state.CONFIG.get('agent_name', ''))
+    except Exception:
+        return ''
+
+
+def _cont_empty_slots():
+    return {'threads': [], 'commitments': [], 'understanding': '', 'updated': ''}
+
+
+def read_continuity(project, owner=None):
+    """The continuity record. `owner=None` merges every agent's slots.
+
+    The merged view is what the human surface and the older callers want; ONE
+    agent's own working state is what belongs at the top of ITS prompt.
+    Conflating them is how five shared slots came to hold four different
+    sessions' half-finished threads with nothing marking whose.
+    """
+    empty = {**_cont_empty_slots(), 'body': '', 'by_owner': {},
+             'owner': _cont_owner_key(owner)}
     try:
         fp = _get_memory_path(project).parent / CONTINUITY_FILE
         if not fp.is_file():
@@ -810,74 +914,176 @@ def read_continuity(project):
         return empty
     if not isinstance(meta, dict):
         meta = {}
+
+    th = _cont_owner_sections(body, _CONT_H_THREADS)
+    cm = _cont_owner_sections(body, _CONT_H_COMMITMENTS)
+    un = _cont_owner_sections(body, _CONT_H_UNDERSTANDING)
+    stamps = _cont_owner_stamps(body)
+    by_owner = {}
+    for k in set(th) | set(cm) | set(un):
+        by_owner[k] = {
+            'threads': _cont_clean(th.get(k), _CONT_MAX_THREADS),
+            'commitments': _cont_clean(cm.get(k), _CONT_MAX_COMMITMENTS),
+            'understanding': ' '.join(' '.join(un.get(k) or []).split()
+                                      )[:_CONT_MAX_UNDERSTANDING],
+            'updated': stamps.get(k, ''),
+        }
+
+    key = _cont_owner_key(owner)
+    if owner is not None:
+        mine = dict(by_owner.get(key) or _cont_empty_slots())
+        # The ownerless bucket reads as YOURS, not as another agent's. It holds
+        # two things: a record written before owners existed, and whatever a
+        # human typed into the Memory modal. Neither belongs to a rival agent,
+        # and exiling them to the capped "another agent" block would have made
+        # every existing install lose its continuity the day this shipped.
+        shared = by_owner.get('') or _cont_empty_slots()
+        if key:
+            for slot, cap in (('threads', _CONT_MAX_THREADS),
+                              ('commitments', _CONT_MAX_COMMITMENTS)):
+                mine[slot] = _cont_clean(list(mine[slot]) + list(shared[slot]), cap)
+            mine['understanding'] = mine['understanding'] or shared['understanding']
+        return {**mine, 'updated': str(meta.get('updated') or ''),
+                'body': body, 'by_owner': by_owner, 'owner': key}
+
+    # Merged: every owner's slots as one set, newest-written owner first so a
+    # stale bucket cannot crowd out live work.
+    order = sorted(by_owner, key=lambda k: by_owner[k]['updated'], reverse=True)
     return {
-        'threads': _cont_clean(_cont_section(body, _CONT_H_THREADS),
-                               _CONT_MAX_THREADS),
-        'commitments': _cont_clean(_cont_section(body, _CONT_H_COMMITMENTS),
-                                   _CONT_MAX_COMMITMENTS),
-        'understanding': _cont_prose(body, _CONT_H_UNDERSTANDING
-                                     )[:_CONT_MAX_UNDERSTANDING],
+        'threads': _cont_clean([t for k in order for t in by_owner[k]['threads']],
+                               _CONT_MAX_THREADS * 2),
+        'commitments': _cont_clean(
+            [c for k in order for c in by_owner[k]['commitments']],
+            _CONT_MAX_COMMITMENTS * 2),
+        'understanding': next((by_owner[k]['understanding'] for k in order
+                               if by_owner[k]['understanding']), ''),
         'updated': str(meta.get('updated') or ''),
-        'body': body,
+        'body': body, 'by_owner': by_owner, 'owner': '',
     }
 
 
-def write_continuity(project, threads=None, commitments=None, understanding=None):
-    """Replace the continuity record. Returns the record as written.
+def write_continuity(project, threads=None, commitments=None,
+                     understanding=None, owner=None):
+    """Replace ONE owner's slots. Returns that owner's record as written.
 
     REPLACE, never append — that is what keeps the size fixed and removes the
     need for a remover at all. `None` leaves a slot untouched so a caller that
     only learned about commitments does not blank the others; an empty list
     CLEARS a slot, which is how finished work leaves the record.
+
+    WHY AN OWNER (2026-08-24). Every agent on a project shares its notes and
+    its positions, and that is the design — a ruling Vector recorded must bind
+    Dave, or positions would not work at all. But "what I was part-way through"
+    is worker state, not a project fact, and one shared set of slots meant each
+    agent's write silently replaced the others'. Measured on this project the
+    day this shipped: five threads from four different sessions, none marked
+    done, two of them describing work that had already landed.
     """
+    key = _cont_owner_key(owner)
     cur = read_continuity(project)
+    by_owner = dict(cur.get('by_owner') or {})
+    mine = by_owner.get(key) or _cont_empty_slots()
     rec = {
-        'threads': _cont_clean(threads if threads is not None else cur['threads'],
+        'threads': _cont_clean(threads if threads is not None else mine['threads'],
                                _CONT_MAX_THREADS),
         'commitments': _cont_clean(
-            commitments if commitments is not None else cur['commitments'],
+            commitments if commitments is not None else mine['commitments'],
             _CONT_MAX_COMMITMENTS),
         'understanding': ' '.join(str(
-            understanding if understanding is not None else cur['understanding']
+            understanding if understanding is not None else mine['understanding']
         ).split())[:_CONT_MAX_UNDERSTANDING],
         'updated': now_iso(),
     }
+    by_owner[key] = rec
+
+    # Claiming completes the migration. An agent rewrites the record it was
+    # SHOWN, which includes the shared bucket's lines — so a line it kept is
+    # now its own, and leaving the original in place would duplicate it in
+    # every agent's prompt forever. Anything the human typed and no agent
+    # picked up simply stays shared.
+    if key and '' in by_owner:
+        claimed = set(rec['threads']) | set(rec['commitments'])
+        sh = by_owner['']
+        by_owner[''] = {
+            **sh,
+            'threads': [t for t in sh['threads'] if t not in claimed],
+            'commitments': [c for c in sh['commitments'] if c not in claimed],
+            'understanding': ('' if sh['understanding'] == rec['understanding']
+                              else sh['understanding']),
+        }
+
+    # Structural eviction, the same lever as the slot caps: keep the N most
+    # recently written owners. An agent that has not worked here lately is not
+    # carrying live working state, and its facts and positions live elsewhere.
+    live = {k: v for k, v in by_owner.items()
+            if v['threads'] or v['commitments'] or v['understanding']}
+    if len(live) > _CONT_MAX_OWNERS:
+        keep = sorted(live, key=lambda k: live[k]['updated'],
+                      reverse=True)[:_CONT_MAX_OWNERS]
+        live = {k: live[k] for k in keep}
+    by_owner = live
+
+    order = sorted(by_owner, key=lambda k: by_owner[k]['updated'], reverse=True)
     body = [
         'Working state for this project — what is in flight and what was '
-        'promised. Rewritten in place at turn boundaries; fixed slots, so it '
-        'never grows and never needs pruning.',
+        'promised, PER AGENT. Rewritten in place at turn boundaries; fixed '
+        'slots, so it never grows and never needs pruning.',
         '',
         _CONT_H_UNDERSTANDING,
-        rec['understanding'] or '_nothing recorded yet_',
-        '',
-        _CONT_H_THREADS,
     ]
-    body += [f'- {t}' for t in rec['threads']] or ['_nothing in flight_']
-    body += ['', _CONT_H_COMMITMENTS]
-    body += [f'- {c}' for c in rec['commitments']] or ['_nothing outstanding_']
+    if any(by_owner[k]['understanding'] for k in order):
+        for k in order:
+            if by_owner[k]['understanding']:
+                body += [_cont_heading(k, by_owner[k]['updated']),
+                         by_owner[k]['understanding'], '']
+    else:
+        body += ['_nothing recorded yet_', '']
+    for heading, slot, blank in (
+            (_CONT_H_THREADS, 'threads', '_nothing in flight_'),
+            (_CONT_H_COMMITMENTS, 'commitments', '_nothing outstanding_')):
+        body.append(heading)
+        wrote = False
+        for k in order:
+            if not by_owner[k][slot]:
+                continue
+            wrote = True
+            body.append(_cont_heading(k, by_owner[k]['updated']))
+            body += [f'- {t}' for t in by_owner[k][slot]]
+        if not wrote:
+            body.append(blank)
+        body.append('')
 
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write_text(
         mem_dir / CONTINUITY_FILE,
         _skills.dump_skill_md({'name': 'continuity', 'updated': rec['updated']},
-                              '\n'.join(body) + '\n'))
+                              '\n'.join(body).rstrip() + '\n'))
     return rec
 
 
-def render_continuity(project):
+def _cont_heading(owner, updated):
+    return f'### {owner or _CONT_SHARED_LABEL} — {updated}'
+
+
+def render_continuity(project, owner=None):
     """The continuity block for the system prompt, or '' when there is nothing.
 
     Injected DIRECTLY rather than retrieved: "what am I part-way through" is
     relevant to every turn by definition, so making it compete for a read-floor
     slot would be the wrong question. It is affordable because it is capped.
+
+    YOUR working state comes first and in full; other agents' appear below,
+    named and capped. Hiding them would be the wrong call — two agents about to
+    edit the same file is precisely what you want to know before you start —
+    but presenting them as yours is what made the record actively misleading.
     """
     try:
-        rec = read_continuity(project)
+        rec = read_continuity(project, owner=owner)
     except Exception:
         return ''
-    if not (rec['threads'] or rec['commitments'] or rec['understanding']):
-        return ''
+    by_owner = rec.get('by_owner') or {}
+    key = _cont_owner_key(owner)
     lines = []
     if rec['understanding']:
         lines.append(f"  Where things stand: {rec['understanding']}")
@@ -885,9 +1091,30 @@ def render_continuity(project):
         lines.append(f"  • IN FLIGHT — {t}")
     for c in rec['commitments']:
         lines.append(f"  • YOU SAID YOU WOULD — {c}")
-    return ("--- CONTINUITY (what you were part-way through, and what you "
-            "promised; if you finish or drop one, say so) ---\n"
-            + "\n".join(lines))
+
+    others = []
+    if owner is not None:
+        for k in sorted((k for k in by_owner if k and k != key),
+                        key=lambda k: by_owner[k]['updated'], reverse=True):
+            for t in by_owner[k]['threads']:
+                others.append(f"  • {k or _CONT_SHARED_LABEL} — {t}")
+            if len(others) >= _CONT_MAX_OTHER_LINES:
+                break
+        others = others[:_CONT_MAX_OTHER_LINES]
+    if not lines and not others:
+        return ''
+    out = ''
+    if lines:
+        out = ("--- CONTINUITY (what you were part-way through, and what you "
+               "promised; if you finish or drop one, say so) ---\n"
+               + "\n".join(lines))
+    if others:
+        out += (("\n" if out else "")
+                + "--- ANOTHER AGENT ON THIS PROJECT IS PART-WAY THROUGH (not "
+                  "yours — do not adopt or report these as your own work, "
+                  "and coordinate before you touch the same files) ---\n"
+                + "\n".join(others))
+    return out
 
 
 def render_position_capture(project, port):
@@ -955,10 +1182,16 @@ _SCRIBE_CONTINUITY = (
 )
 
 
-def _extract_continuity(project, delta, model):
-    """One cheap call: fold a transcript slice into the record. Never raises."""
+def _extract_continuity(project, delta, model, owner=None):
+    """One cheap call: fold a transcript slice into the record. Never raises.
+
+    `owner` scopes the write to ONE agent's slots — the model is shown that
+    agent's record and rewrites only it. Showing it the merged view instead
+    would invite it to "tidy" another agent's threads, which is the overwrite
+    this owner dimension exists to stop.
+    """
     try:
-        cur = read_continuity(project)
+        cur = read_continuity(project, owner=owner)
         payload = (
             "CURRENT RECORD:\n"
             + json.dumps({k: cur[k] for k in
@@ -979,7 +1212,8 @@ def _extract_continuity(project, delta, model):
             project,
             threads=d.get('threads') or [],
             commitments=d.get('commitments') or [],
-            understanding=d.get('understanding') or '')
+            understanding=d.get('understanding') or '',
+            owner=owner)
     except Exception as e:
         _log(f"[continuity] extraction failed: {e}")
         return None
@@ -2040,6 +2274,10 @@ def _maybe_checkpoint(session):
             _checkpoint_inflight.add(sid)
         snap = {'pid': pid, 'sid': sid, 'csid': csid,
                 'task': (session.get('task', '') or '').strip(),
+                # Whose working state this turn belongs to. A session with no
+                # character writes to the shared bucket rather than claiming
+                # one — see `_cont_owner_key`.
+                'owner': _session_owner(session),
                 'tf': str(tf)}
         threading.Thread(target=_checkpoint_worker, args=(snap,),
                          daemon=True).start()
@@ -2117,7 +2355,8 @@ def _checkpoint_worker(snap):
         # boundary that has already earned one. Best-effort: the checkpoint has
         # already been committed above, so a failure here loses nothing.
         if state.CONFIG.get('continuity_enabled', True):
-            if _extract_continuity(p, delta, model) is not None:
+            if _extract_continuity(p, delta, model,
+                                   owner=snap.get('owner')) is not None:
                 _scribe_stat(pid, 'continuity_updated')
     except Exception:
         pass

@@ -67,11 +67,17 @@ def test_read_floor_is_gated_on_task_and_logs_failures():
     src = _source()
     idx = src.find('def _build_agent_context(')
     assert idx != -1, '_build_agent_context moved — update this test'
-    body = src[idx:idx + 12000]
+    # Anchor on the call itself rather than a fixed byte window. The function
+    # grows, and a window that quietly slides past the handler turns this into
+    # a test that fails for the wrong reason — which it did, twice, the day
+    # continuity and delivery telemetry each added a comment above it.
+    call = src.find('hits = _memory_search(', idx)
+    assert call != -1, 'the read floor no longer calls _memory_search'
+    body = src[idx:call]
+    handler = src[call:call + 1500]
 
     assert 'if task:' in body, 'the read floor is no longer gated on task'
-    m = re.search(r'hits = _memory_search\((.|\n)*?except Exception as e:(.|\n)*?_log\(',
-                  body)
+    m = re.search(r'except Exception as e:(.|\n)*?_log\(', handler)
     assert m, ('the read-floor search swallows its exception silently again — '
                'log it, per the exception-swallowing policy in CLAUDE.md')
 

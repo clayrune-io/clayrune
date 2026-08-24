@@ -843,12 +843,13 @@ async function runMemoryPanelGuard(browser) {
       const win = document.querySelector('[data-modal-id="__memory_' + pid + '"]');
       if (!win) throw new Error('memory modal never opened');
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
-      r.threads = (document.getElementById('cont-thr-' + pid) || {}).value;
+      // Per-agent groups now: the ownerless bucket renders as '_shared'.
+      r.threads = (document.getElementById('cont-thr-_shared-' + pid) || {}).value;
       r.cards = win.querySelectorAll('.dave-pos').length;
 
       // Save the working state through the real handler.
-      document.getElementById('cont-thr-' + pid).value = 'one thread\ntwo thread';
-      await saveContinuity(pid);
+      document.getElementById('cont-thr-_shared-' + pid).value = 'one thread\ntwo thread';
+      await saveContinuity(pid, '');
       await settle();
 
       // Edit a reason and Save -- must supersede, not fork.

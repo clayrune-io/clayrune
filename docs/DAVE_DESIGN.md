@@ -151,6 +151,32 @@ surfaced:
 
 So "uber-level agent" needs no new storage concept, and neither does Dave.
 
+**One refinement, found by using it (2026-08-24).** "Same store" is right for
+two of the three layers and wrong for the third. Facts and positions are the
+PROJECT's: a gotcha Vector learned must reach Dave, and a ruling Vector recorded
+must *bind* Dave, or positions do not work at all — the Obsidian failure in §2
+is exactly an agent not being bound by a standing ruling. Continuity is not like
+that. "What I am part-way through" is worker state, and it had one set of five
+slots for the whole project, written by whichever agent checkpointed last.
+
+Measured on this project the day it was found: five threads from four different
+sessions, none marked done, two describing work that had already shipped — and
+every session was served all five *as its own*. That is worse than no continuity
+record, because the failure mode of a shared one is confident wrongness.
+
+So the record gains an **owner** dimension: five slots each, your own rendered
+in full, other agents' named and capped at three lines under a heading that says
+they are not yours. Eviction stays structural — the four most recently written
+owners keep a bucket. The ownerless bucket is the *project's*, not a rival
+agent's: it holds anything a human typed and anything written before owners
+existed, so it merges into every agent's view rather than being exiled to the
+capped block. An agent that keeps a shared line in its own rewrite *claims* it,
+which is what stops the legacy lines duplicating forever.
+
+The invariant that makes this safe is the same one as §7 proper: the owner is a
+partition of one project's store, never a new boundary. Nothing crosses
+projects, and a human can read and correct every bucket in the Memory modal.
+
 ## 8. Delegation
 
 Dave may spin up others, under two rules already agreed (`AGENT_TYPES_DESIGN`

@@ -4561,6 +4561,17 @@
     text-transform: uppercase; font-weight: 600; color: var(--text-faint);
     margin: 10px 0 4px;
   }
+  /* One group per agent. The first label in a group names the owner, so it
+     gets the accent treatment — a wall of identical uppercase labels made it
+     impossible to see where one agent's slots ended and the next began. */
+  .dave-cont-owner {
+    border-left: 2px solid var(--border); padding-left: 12px; margin-top: 14px;
+  }
+  .dave-cont-owner:first-of-type { margin-top: 8px; }
+  .dave-cont-owner > .dave-label:first-child {
+    color: var(--accent); font-size: 11px; letter-spacing: 0.5px;
+    text-transform: none; margin-top: 0;
+  }
   .dave-ta { min-height: 0; resize: vertical; }
   .dave-input {
     width: 100%; background: var(--bg); border: 1px solid var(--border);

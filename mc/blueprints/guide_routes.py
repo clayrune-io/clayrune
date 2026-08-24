@@ -563,7 +563,12 @@ def get_continuity_route(project_id):
     if not p:
         return jsonify({'error': 'project not found'}), 404
     from mc import memory as _mem
-    return jsonify(_mem.read_continuity(p))
+    # No `owner` = the merged view, which is what a human wants: every agent's
+    # working state on one screen, with `by_owner` carrying the split for a UI
+    # that wants to show whose is whose.
+    owner = request.args.get('owner')
+    return jsonify(_mem.read_continuity(p, owner=owner) if owner is not None
+                   else _mem.read_continuity(p))
 
 
 @bp.route('/api/project/<project_id>/memory/continuity', methods=['PUT'])
@@ -583,7 +588,11 @@ def put_continuity_route(project_id):
             p,
             threads=d.get('threads'),
             commitments=d.get('commitments'),
-            understanding=d.get('understanding')))
+            understanding=d.get('understanding'),
+            # Editing without naming an owner touches the shared bucket, never
+            # an agent's own slots — a human correcting the record should not
+            # silently overwrite what Dave is part-way through.
+            owner=d.get('owner')))
     except OSError as e:
         return jsonify({'error': f'write failed: {e}'}), 500
 

@@ -221,7 +221,8 @@ const daveCache = {};  // projectId -> { continuity, positions }
 
 async function loadDave(projectId) {
   const base = API_BASE + '/api/project/' + projectId + '/memory';
-  const blank = { threads: [], commitments: [], understanding: '', updated: '' };
+  const blank = { threads: [], commitments: [], understanding: '', updated: '',
+                  by_owner: {} };
   let continuity = blank, positions = [];
   try {
     const r = await fetch(base + '/continuity');
@@ -237,34 +238,65 @@ async function loadDave(projectId) {
 
 function continuityHTML(p) {
   const c = (daveCache[p.id] || {}).continuity
-    || { threads: [], commitments: [], understanding: '', updated: '' };
+    || { threads: [], commitments: [], understanding: '', updated: '', by_owner: {} };
   const id = esc(p.id);
   const when = c.updated
     ? `<div class="dave-meta">last rewritten ${esc(String(c.updated).replace('T', ' ').slice(0, 16))}</div>`
     : `<div class="dave-meta">never written &mdash; no session has checkpointed here yet</div>`;
+
+  // One group per AGENT. The record is per-worker state: every agent on this
+  // project shares its notes and its positions, but "what I was part-way
+  // through" is not a project fact, and editing a merged view would write one
+  // agent's threads into another's slots — the exact collision the owner
+  // dimension was added to stop.
+  // A response with no `by_owner` — an older server, or a fetch that failed
+  // into `blank` — still has the merged slots, and the panel must show them
+  // rather than go silently empty.
+  let by = c.by_owner || {};
+  if (!Object.keys(by).length) {
+    by = { '': { threads: c.threads || [], commitments: c.commitments || [],
+                 understanding: c.understanding || '', updated: c.updated || '' } };
+  }
+  const keys = Object.keys(by).sort((a, b) =>
+    String(by[b].updated || '').localeCompare(String(by[a].updated || '')));
+  const groups = keys.map(k => continuityGroupHTML(id, k, by[k] || {})).join('');
+
   return `<section class="dave-block">
     <div class="dave-head">Working state
-      <span class="dave-sub">what this project is part-way through</span></div>
+      <span class="dave-sub">what each agent here is part-way through</span></div>
     <div class="memory-hint">Injected verbatim into every session, so it never
-      competes for a retrieval slot. Fixed slots &mdash; 5 in flight, 5 promised
-      &mdash; replaced whole on every write, which is why it never needs pruning.
-      Agents rewrite it at checkpoints, so an edit here is a correction to the
-      base they fold into, not a permanent note.</div>
-    <label class="dave-label">Where things stand</label>
-    <textarea class="memory-textarea dave-ta" id="cont-und-${id}" rows="3"
-      placeholder="One or two sentences on where the work stands right now.">${esc(c.understanding || '')}</textarea>
-    <label class="dave-label">In flight &mdash; one per line, max 5</label>
-    <textarea class="memory-textarea dave-ta" id="cont-thr-${id}" rows="5"
-      placeholder="Work started and not finished.">${esc((c.threads || []).join('\n'))}</textarea>
-    <label class="dave-label">Promised &mdash; one per line, max 5</label>
-    <textarea class="memory-textarea dave-ta" id="cont-com-${id}" rows="4"
-      placeholder="Things an agent said it would do and has not done.">${esc((c.commitments || []).join('\n'))}</textarea>
-    <div class="dave-actions">
-      <button class="btn-save-rules" onclick="saveContinuity('${id}')">Save working state</button>
-      <span class="rules-saved" id="cont-saved-${id}">Saved</span>
-    </div>
+      competes for a retrieval slot. Fixed slots &mdash; 5 in flight, 5 promised,
+      <b>per agent</b> &mdash; replaced whole on every write, which is why it
+      never needs pruning. An agent sees its own slots in full and the others'
+      named and capped. Agents rewrite these at checkpoints, so an edit here is
+      a correction to the base they fold into, not a permanent note.
+      <b>(project)</b> is the shared bucket: it reaches every agent, and is
+      where anything you type without naming an agent goes.</div>
+    ${groups}
     ${when}
   </section>`;
+}
+
+function continuityGroupHTML(id, owner, rec) {
+  const k = esc(owner);
+  const slug = owner ? owner.replace(/[^A-Za-z0-9_-]/g, '_') : '_shared';
+  const label = owner ? esc(owner) : '(project)';
+  return `<div class="dave-cont-owner" data-owner="${k}">
+    <label class="dave-label">${label}</label>
+    <textarea class="memory-textarea dave-ta" id="cont-und-${slug}-${id}" rows="2"
+      placeholder="Where things stand — one or two sentences.">${esc(rec.understanding || '')}</textarea>
+    <label class="dave-label">In flight &mdash; one per line, max 5</label>
+    <textarea class="memory-textarea dave-ta" id="cont-thr-${slug}-${id}" rows="5"
+      placeholder="Work started and not finished.">${esc((rec.threads || []).join('\n'))}</textarea>
+    <label class="dave-label">Promised &mdash; one per line, max 5</label>
+    <textarea class="memory-textarea dave-ta" id="cont-com-${slug}-${id}" rows="4"
+      placeholder="Things this agent said it would do and has not done.">${esc((rec.commitments || []).join('\n'))}</textarea>
+    <div class="dave-actions">
+      <button class="btn-save-rules"
+        onclick="saveContinuity('${id}', ${JSON.stringify(owner)})">Save ${label}</button>
+      <span class="rules-saved" id="cont-saved-${slug}-${id}">Saved</span>
+    </div>
+  </div>`;
 }
 
 function positionCardHTML(pid, r) {
@@ -310,13 +342,17 @@ function positionsHTML(p) {
   </section>`;
 }
 
-async function saveContinuity(projectId) {
-  const g = k => (document.getElementById(k + projectId) || {}).value || '';
+async function saveContinuity(projectId, owner) {
+  // Scoped to ONE agent's slots. Saving without an owner writes the shared
+  // bucket, which every agent reads — it never overwrites anyone's own.
+  const slug = owner ? String(owner).replace(/[^A-Za-z0-9_-]/g, '_') : '_shared';
+  const g = k => (document.getElementById(k + slug + '-' + projectId) || {}).value || '';
   const lines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
   try {
     const res = await fetch(API_BASE + '/api/project/' + projectId + '/memory/continuity', {
       method: 'PUT', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
+        owner: owner || '',
         understanding: g('cont-und-'),
         threads: lines(g('cont-thr-')),
         commitments: lines(g('cont-com-'))
@@ -324,10 +360,11 @@ async function saveContinuity(projectId) {
     });
     if (!res.ok) throw new Error(await res.text());
     // Re-read rather than trust the form: the server caps the lists and trims
-    // each line, so what was typed and what is stored can differ.
-    const rec = await res.json();
-    daveCache[projectId] = Object.assign({}, daveCache[projectId], { continuity: rec });
-    flashSaved('cont-saved-' + projectId);
+    // each line, so what was typed and what is stored can differ. The PUT
+    // returns only the edited owner's slots, so refetch the whole record.
+    await res.json();
+    await loadDave(projectId);
+    flashSaved('cont-saved-' + slug + '-' + projectId);
     refreshDavePanels(projectId);
   } catch (e) { alert('Failed to save working state: ' + e.message); }
 }

@@ -6,6 +6,50 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24e] — continuity belongs to an agent, not to the project
+
+Ron, looking at the Memory modal: *"the memory index does not yet differentiate
+between agents, so Dave and Vector all look the same and seem to be sharing the
+same memory."* Two of the three layers share correctly and one did not.
+
+**Facts and positions are the project's, deliberately.** A gotcha Vector learned
+must reach Dave, and a ruling Vector recorded must *bind* Dave — an agent not
+bound by a standing ruling is the exact failure that produced the positions
+feature in the first place. Per-agent positions would rebuild the bug.
+
+**Continuity is worker state, and it was shared by accident.** One `continuity.md`,
+five slots, written by whichever agent checkpointed last. On this project that
+meant five threads from four different sessions, none marked done, two of them
+describing work that had already landed — and every session was served all five
+as its own. A shared working-state record does not degrade into no record; it
+degrades into confident wrongness.
+
+The record now carries an owner:
+
+- Five in-flight and five promised **per agent**, and an agent's write only ever
+  replaces its own. Its prompt shows its own slots in full, then other agents'
+  named and capped at three lines under a heading that says they are not yours —
+  hiding them would be wrong (two agents about to edit the same file is worth
+  knowing) but presenting them as yours is what made the record misleading.
+- **The ownerless bucket is the project's**, not a rival's: it holds whatever a
+  human typed and everything written before owners existed, and it merges into
+  every agent's view. Exiling it to the capped block would have made every
+  existing install lose its continuity on upgrade. An agent that keeps a shared
+  line in its own rewrite *claims* it, which stops the legacy lines duplicating.
+- **Eviction stays structural** — the four most recently written owners keep a
+  bucket. No remover, no curator, same lever as the slot caps.
+- Read and write must agree on *who*: `_session_owner` resolves to the same
+  string the prompt's "Your name is …" line uses. If they diverged, every agent
+  would silently read an empty record and nothing anywhere would say so — the
+  same silent-death shape as the `weekly` schedule that stored fine and never
+  ran.
+- The Memory modal now edits one group per agent, so a human correction lands in
+  the bucket it is about instead of overwriting what Dave is part-way through.
+
+Also fixed: `test_read_floor_is_gated_on_task_and_logs_failures` matched inside a
+fixed 12,000-byte window of `_build_agent_context` and started failing for the
+wrong reason as the function grew. It anchors on the call site now.
+
 ## [2026-08-24d] — memory starts measuring which of it actually gets used
 
 **Dave phase 4, step one: the counters.** Residency is the only scarce resource
