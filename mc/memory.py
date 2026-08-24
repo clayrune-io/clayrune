@@ -27,6 +27,7 @@ from pathlib import Path
 from typing import Any, Callable, Optional
 import json
 import os
+import re
 import subprocess
 import math as _math
 import threading
@@ -579,6 +580,47 @@ def _mem_link_graph(units):
     return graph
 
 
+_ARCH_LINE_RE = re.compile(r'^- \[(\d{4}-\d{2}-\d{2})\] \*\*(.*?)\*\*')
+
+
+def _dedupe_archive_lines(lines):
+    """Keep only the LAST archive entry per (day, task) — read-time only.
+
+    The Step-6 checkpointer appends a fresh session-log line every time it
+    runs, so one long conversation leaves a trail of near-identical entries
+    that supersede each other. Measured 2026-08-23 on this project:
+    **1,684 of 2,222 archive lines (76%) are superseded**, one day/task group
+    reaching 47 copies, and 1,561 of the 2,222 are `_(live)_` — mid-session
+    checkpoints rather than finished runs.
+
+    That is not merely wasteful, it is WRONG. The early lines in a group are
+    the agent's first guess: for "do we have a /goal command?" the first entry
+    says "found no /goal command" and the last says it is verified working. The
+    ranker had no way to prefer the later one, so a perfectly-matching stale
+    line could take every slot on the card.
+
+    Dedupe happens HERE, on the way into the corpus — never on the file. The
+    archive is append-only cold storage and is never truncated (see the module
+    docstring); this only changes what retrieval *sees*.
+
+    Grouping key is (day, task). A task repeated on a DIFFERENT day is a
+    genuinely separate occasion and is kept — 57 tasks recur across days.
+    Within one day the only false merges are generic prompts ("ok", "Hi",
+    "restarted"): 45 groups, 149 lines, all of them worthless as retrieval keys
+    anyway.
+    """
+    last = {}          # (day, task) -> index of the most recent line
+    order = []
+    for ln in lines:
+        m = _ARCH_LINE_RE.match(ln)
+        key = (m.group(1), m.group(2)[:120]) if m else ('', ln)
+        if key in last:
+            order[last[key]] = None          # supersede the earlier one
+        last[key] = len(order)
+        order.append(ln)
+    return [ln for ln in order if ln is not None]
+
+
 def _mem_corpus(mem_dir, mem_name, arch_name):
     """Parse + tokenize the memory corpus into scoring units (cached).
 
@@ -608,9 +650,10 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             for e in _mem_split(txt)[1]:
                 units.append((f'{f.name}#managed', e, 'managed'))
         elif f.name == arch_name:
-            for ln in txt.splitlines():
-                if ln.strip().startswith('- ['):
-                    units.append((f.name, ln.strip(), 'archive'))
+            _arch = [ln.strip() for ln in txt.splitlines()
+                     if ln.strip().startswith('- [')]
+            for ln in _dedupe_archive_lines(_arch):
+                units.append((f.name, ln, 'archive'))
         else:
             units.append((f.name, txt, 'topic'))
     out = []

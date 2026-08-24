@@ -44,6 +44,47 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-23b] — the read floor was serving the agent its own stale first guesses
+
+One task in eight was getting **no memory at all** — six slots on the briefing
+card, all six filled with session-log lines, zero topic notes. Measured by
+replaying the read floor over 140 real task prompts from this project's log.
+
+**Why: 76% of the archive is superseded.** The Step-6 checkpointer appends a
+fresh session-log line every time it runs, so one long conversation leaves a
+trail of near-identical entries. 1,684 of 2,222 lines are superseded by a later
+line in the same day/task group; the worst group has **47 copies**; 1,561 are
+`_(live)_` — mid-session checkpoints rather than finished runs.
+
+It is not just waste, it is **wrong**. The early line in a group is the agent's
+first guess. Asked "do we have a `/goal` command?", the read floor returned six
+lines from one afternoon — the first saying *"found no /goal command"*, the
+last saying *"verified working in MC"*. The ranker had no way to prefer the
+later one, and the stale answer matched the query perfectly, so it swept the
+card.
+
+**Dedupe happens on the way into the corpus, never on the file.** The archive
+is append-only cold storage and is never truncated; this changes only what
+retrieval sees. Grouping is by `(day, task)` — the same task on a *different*
+day is a genuinely separate occasion and survives (57 tasks recur across days).
+The only false merges are same-day generic prompts (`ok`, `Hi`, `restarted`):
+45 groups, 149 lines, all worthless as retrieval keys.
+
+**And the archive quota is now on.** Archive lines outnumbered topic notes
+~30:1 and competed uncapped for the same six slots; `read_floor_archive_quota`
+existed but had never been turned on. Measured over the same 140 prompts:
+
+| | archive share of slots | tasks with zero topic notes |
+|---|---|---|
+| before | 34% | **17** |
+| dedupe only | 20% | 4 |
+| dedupe + quota 2 | 15% | **0** |
+
+Dedupe does most of the work; the quota finishes it. Set to **2** rather than 1
+deliberately — archive lines are the episodic layer, the record of *when we did
+what*, and cutting them to a single slot would strip the thing that makes an
+agent sound like it remembers events rather than only facts.
+
 ## [2026-08-23] — the PLAN tab was losing plans
 
 Two defects, found because a design doc written during a session never appeared
