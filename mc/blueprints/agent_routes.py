@@ -2066,7 +2066,8 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             hits = _memory_search(
                 project, task,
                 int(state.CONFIG.get('read_floor_topk', 6) or 6),
-                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0))
+                expand=int(state.CONFIG.get('read_floor_link_expand', 2) or 0),
+                record='read_floor')  # phase-4 delivery telemetry
         except Exception as e:
             # Was a bare `pass`. The read floor is the ONLY retrieval channel that
             # actually runs — agents open a memory file in 5% of sessions — so a

@@ -25,6 +25,7 @@ memory values they pass on.
 """
 from pathlib import Path
 from typing import Any, Callable, Optional
+import hashlib
 import json
 import os
 import re
@@ -1084,6 +1085,28 @@ def delete_position(project, filename):
     return True
 
 
+def _head(text, n=120):
+    """A one-line identifying prefix of a unit, for delivery reports."""
+    return ' '.join((text or '').split())[:n]
+
+
+def _unit_uid(label, text, cls):
+    """Stable identity for ONE scoring unit — what delivery telemetry counts.
+
+    A filename is not an identity here. `MEMORY_ARCHIVE.md` is ~2.5k separately
+    ranked lines under one label and `MEMORY.md#managed` a few hundred entries,
+    so keying on the container would credit every line with its neighbours'
+    hits. Whole-file classes (topic, position) keep their filename — that IS
+    their identity, and it survives an edit, which is what we want for a note.
+    Line classes get a content hash, so an edited line correctly starts a fresh
+    history: it is a different claim.
+    """
+    if cls in ('archive', 'managed'):
+        h = hashlib.sha1((text or '').strip().encode('utf-8')).hexdigest()[:10]
+        return f'{label}#{h}'
+    return label
+
+
 def _mem_corpus(mem_dir, mem_name, arch_name):
     """Parse + tokenize the memory corpus into scoring units (cached).
 
@@ -1158,6 +1181,7 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             tf[t] = tf.get(t, 0) + 1
         out.append({'file': label, 'text': text, 'tf': tf,
                     'len': len(toks), 'cls': cls,
+                    'uid': _unit_uid(label, text, cls),
                     'subject_terms': subject_terms,
                     'links': _mem_link_targets(text) if cls == 'topic' else []})
     with _memsearch_cache_lock:
@@ -1165,7 +1189,29 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
     return out
 
 
-def _memory_search(project, query, topk=3, expand=None):
+def corpus_uids(project):
+    """{uid: (file, cls, head)} for everything in the corpus RIGHT NOW.
+
+    The never-delivered set is the half that matters for demotion, and the
+    counters cannot produce it — they only know what arrived. Comparing against
+    a live corpus scan is also self-correcting: a unit that has been edited or
+    removed simply stops appearing, rather than lingering in the sidecar as a
+    phantom demotion candidate.
+    """
+    try:
+        mem_path = _get_memory_path(project)
+        mem_dir = mem_path.parent
+    except Exception:
+        return {}
+    if not mem_dir.is_dir():
+        return {}
+    out = {}
+    for u in _mem_corpus(mem_dir, mem_path.name, _get_archive_path(project).name):
+        out[u.get('uid') or u['file']] = (u['file'], u.get('cls'), _head(u.get('text')))
+    return out
+
+
+def _memory_search(project, query, topk=3, expand=None, record=None):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
@@ -1258,6 +1304,8 @@ def _memory_search(project, query, topk=3, expand=None):
         _cover = 1.0 if (_trig & set(terms)) else 0.0
         scored.append({'file': u['file'], 'score': round(score, 4),
                        'cls': u['cls'], '_cover': _cover,
+                       'uid': u.get('uid'),
+                       'head': _head(u['text']),
                        'snippet': _mem_snippet(u['text'], terms)})
     scored.sort(key=lambda r: (-r['score'], r['file']))
 
@@ -1298,16 +1346,32 @@ def _memory_search(project, query, topk=3, expand=None):
                 break
         scored = kept
     hits = _reserved + scored[:max(1, topk - len(_reserved))]
-    # `cls` is internal bookkeeping for the reserve — read-floor callers unpack
-    # these dicts and a test pins the exact key set, so it must not leak out.
+    n_expand = max(0, int(expand or 0))
+    if n_expand:
+        hits = hits + _mem_expand_links(units, hits, terms, n_expand)
+
+    # Delivery telemetry (DAVE_DESIGN §9 phase 4) runs HERE, before the
+    # internal keys are stripped: `uid` is the only thing that distinguishes one
+    # archive line from the 2.5k others sharing its filename, and the public
+    # result shape deliberately does not carry it. Opt-in per caller — a human
+    # typing in the memory-search box is not a delivery, and counting it would
+    # let anyone inflate a note's residency by searching for it.
+    if record:
+        try:
+            from mc import memory_delivery as _deliv
+            _deliv.record(project, hits, context=str(record),
+                          corpus_size=len(units))
+        except Exception as e:
+            _log(f'[delivery] telemetry skipped: {e}')
+
+    # `cls`/`uid`/`head` are internal bookkeeping — read-floor callers unpack
+    # these dicts and a test pins the exact key set, so they must not leak out.
     for _h in hits:
         _h.pop('cls', None)
         _h.pop('_cover', None)
-
-    n_expand = max(0, int(expand or 0))
-    if not n_expand:
-        return hits
-    return hits + _mem_expand_links(units, hits, terms, n_expand)
+        _h.pop('uid', None)
+        _h.pop('head', None)
+    return hits
 
 
 def _mem_snippet(text, terms):
@@ -1345,11 +1409,13 @@ def _mem_expand_links(units, hits, terms, n_expand):
                 # path, and out-beats-in is settled by the decay itself.
                 if prev is None or sc > prev['score']:
                     cand[nbr] = {'file': nbr, 'score': sc, 'via': h['file'],
-                                 'link': direction}
+                                 'link': direction,
+                                 'uid': (by_file.get(nbr) or {}).get('uid') or nbr}
     out = []
     for c in sorted(cand.values(), key=lambda r: (-r['score'], r['file']))[:n_expand]:
         u = by_file.get(c['file'])
         c['snippet'] = _mem_snippet(u['text'] if u else '', terms)
+        c['head'] = _head((u or {}).get('text'))
         out.append(c)
     return out
 

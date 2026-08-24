@@ -1,6 +1,6 @@
 # Dave — a project's agent, and how it gets wiser (MC-895 → MC-899)
 
-Status: **phases 1-3 shipped, 4-5 not built.** Designed 2026-08-23; phase 1 `de443bb`, phase 2 `19c0b00`+`38d1ed2`, the human-facing surface `8d7c1bf`, phase 3 below. Updated 2026-08-24.
+Status: **phases 1-3 shipped; 4 measuring, its mover not built; 5 not built.** Designed 2026-08-23; phase 1 `de443bb`, phase 2 `19c0b00`+`38d1ed2`, the human-facing surface `8d7c1bf`, phase 3 below. Updated 2026-08-24.
 Builds on `MC-895` (agent types, Phase 1 shipped), `MC-892` (memory index),
 `MC-885` (bounded autonomy), `MC-887` (coordination), `MC-897` (the Floor),
 `MC-898` (nightly research). Sibling docs: `AGENT_TYPES_DESIGN.md`,
@@ -179,7 +179,7 @@ lists every hired agent, and subagents appear nested under whoever spawned them
 | **2** | **Positions** — capture verdict + reason + expiry trigger; surface on subject, not keyword | **shipped** `19c0b00` (note class, trigger firing, routes) + `38d1ed2` (the system-prompt directive that gives the route a caller) |
 | **2b** | **A human surface** — read and correct both, in the Memory modal | **shipped** `8d7c1bf`. Not in the original order, and it should have been: a memory layer nobody can inspect is one nobody can correct |
 | **3** | **The reviewer** — walk the standing positions, test whether any reason has expired, report to Ron | **shipped**. `mc/positions_review.py` + `tools/position-review.py` + the `mc-position-review` skill + a weekly schedule |
-| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | not built. Removes the curator from the loop, and unblocks MC-892 |
+| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | **counters shipped** (`mc/memory_delivery.py`, read floor records, `_unit_uid` gives each archive LINE its own identity). The **mover is not built** — nothing promotes or demotes yet, and that step reports to a human first |
 | **5** | **Episodic retrieval** (deferred Step 7) | not built. Serves "like we discussed". Prerequisite: search-precision telemetry, i.e. Phase 4 |
 
 Phase 1 alone is what makes Dave stop being a costume.

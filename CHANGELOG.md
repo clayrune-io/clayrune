@@ -6,6 +6,44 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24d] — memory starts measuring which of it actually gets used
+
+**Dave phase 4, step one: the counters.** Residency is the only scarce resource
+in the vault — 21.9 KB always-resident against a 1.1 MB corpus — and nothing
+measured which units earn it. That is precisely why MC-892's eviction failed its
+safety review: with no delivery signal the only lever was an editor's judgement,
+and 29–30 of the 67 lines it proposed cutting had no surviving delivery channel
+at all. The answer is not a better editor. It is a cache keyed on retrieval:
+promote what gets delivered, demote what never does, **delete nothing**.
+
+`mc/memory_delivery.py` counts one thing — a unit reached a real prompt — into a
+JSON sidecar beside the notes (never under `DATA_DIR`; a stray `*.json` there
+becomes a malformed project and 500s both restart endpoints).
+
+Three properties it exists to hold:
+
+- **Identity is the unit, not the file.** `MEMORY_ARCHIVE.md` is ~2.5k
+  separately ranked lines under one label; keying on the label would credit
+  every line with its neighbours' hits. Line classes get a content hash
+  (`_unit_uid`), so an edited line correctly starts a fresh history — it is a
+  different claim — while a topic note keeps its history across edits.
+- **Recording is opt-in per call site.** The read floor records; the
+  memory-search box does not. A human looking a note up is not evidence that it
+  earns residency, and counting it would let anyone inflate a note by searching
+  for it.
+- **It can never cost the read floor.** The floor is the only retrieval channel
+  that actually runs (agents open a memory file in 5% of sessions), so every
+  entry point swallows and logs, and a test pins that a failing writer still
+  returns hits.
+
+The task counter is the denominator that makes a zero readable: never-delivered
+over three tasks is noise, never over three hundred is a demotion. `summary()`
+pairs the counters against a live corpus scan, because the never-delivered half
+is the one that matters and the counters only know what arrived.
+
+Not built yet, deliberately: the mover. Nothing promotes or demotes anything —
+that step reports to a human first, for the same reason `positions_review` does.
+
 ## [2026-08-24c] — positions get reviewed, and `weekly` schedules get to run
 
 **Dave phase 3.** A position records a verdict, a reason, and `expires_when` —
