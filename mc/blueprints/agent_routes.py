@@ -1833,6 +1833,42 @@ def _skills_catalog_block(project):
             "matches a skill's description, read its SKILL.md with your "
             "file tools and follow it.\n" + "\n".join(lines))
 
+def _is_position_hit(h):
+    """A read-floor hit that is a standing position rather than a note."""
+    try:
+        from mc.memory import _is_position_file
+        import os as _os
+        return _is_position_file(_os.path.basename(str(h.get('file', ''))))
+    except Exception:
+        return False
+
+
+def _render_position(project, h):
+    """One line: verdict, subject, the REASON, and what would reopen it.
+
+    The reason is the load-bearing part. A bare verdict is dogma an agent can
+    only obey; the reason is checkable, which is what lets it be re-opened
+    honestly instead of either ignored or followed blindly.
+    """
+    try:
+        from mc.memory import _get_memory_path, _parse_position
+        import os as _os
+        fp = _get_memory_path(project).parent / _os.path.basename(str(h.get('file')))
+        rec = _parse_position(fp.read_text(encoding='utf-8', errors='replace'))
+    except Exception:
+        rec = {}
+    if not rec:
+        return f"[{h.get('file')}] {h.get('snippet', '')}"
+    bits = [f"{(rec.get('verdict') or 'decided').upper()}: {rec.get('subject')}"]
+    if rec.get('reason'):
+        bits.append(f"because {rec['reason']}")
+    if rec.get('expires_when'):
+        bits.append(f"REOPEN IF {rec['expires_when']}")
+    if rec.get('decided'):
+        bits.append(f"({rec['decided']})")
+    return " — ".join(bits) + f"  [{h.get('file')}]"
+
+
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name=''):
     """Build system prompt context for the agent.
@@ -2010,13 +2046,28 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             # failures get logged; this subsystem was violating it.
             _log(f"[read-floor] {project.get('id')}: memory search failed: {e}")
             hits = []
-        if hits:
+        # Positions get their OWN block, above the rest. Mixed into "relevant
+        # memory" a standing ruling reads as background history — which is
+        # exactly what happened on 2026-08-23, when the Obsidian position was in
+        # context and the agent proposed Obsidian anyway. A decision that has
+        # already been made is not the same kind of thing as a relevant note,
+        # and it must not look like one.
+        _pos_hits = [h for h in hits if _is_position_hit(h)]
+        _mem_hits = [h for h in hits if not _is_position_hit(h)]
+        if _pos_hits:
+            pl = "\n".join(f"  • {_render_position(project, h)}" for h in _pos_hits)
+            parts.append(
+                "--- STANDING POSITIONS (already decided — do NOT re-propose "
+                "these without first checking whether the stated reason still "
+                "holds; if it has expired, say so explicitly and reopen it) "
+                "---\n" + pl)
+        if _mem_hits:
             # `via` marks a note reached by a [[wikilink]] hop rather than a
             # lexical match — say so, so the agent can weigh it accordingly.
             rl = "\n".join(
                 f"  • [{h['file']}] {h['snippet']}" if not h.get('via')
                 else f"  • [{h['file']}] (linked from {h['via']}) {h['snippet']}"
-                for h in hits)
+                for h in _mem_hits)
             parts.append(
                 "--- RELEVANT MEMORY (auto-surfaced for this task; "
                 "use the mc-memory-search skill to dig deeper) ---\n" + rl)

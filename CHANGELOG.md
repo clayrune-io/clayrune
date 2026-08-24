@@ -44,6 +44,60 @@ each input path, cursor-anchoring to within 4px, the window geometry, and a
 listener balance-sheet that fails if closing a viewer leaks a `document`
 handler. Wired into `npm test` under `tools/smoke/`.
 
+## [2026-08-23d] — remembering what we decided NOT to do
+
+Every capture path Clayrune has is downstream of an **artifact**. The
+checkpointer summarises what happened; the Scribe extracts from outcomes; the
+Distiller looks for recurrence. Deciding *not* to build something produces no
+commit, no file, no diff — so all three are structurally blind to it, while
+re-proposing a settled question costs an entire conversation.
+
+Demonstrated the hard way. Ron named two decisions the project's agent should
+have known. One of them — *"we evaluated Obsidian and declined, because we
+already have the vault shape and built the graph machinery ourselves"* — **was
+in the vault and in the always-loaded index**, and the very next turn the agent
+proposed adopting Obsidian and manufactured a justification for it.
+
+So this was never a storage gap. It was stored as *history*, and history does
+not fire when someone re-proposes the thing it settled.
+
+**Positions** are a new note class: `position_<slug>.md`, carrying a `subject`,
+a `verdict`, a **`reason`**, and `expires_when`. They ride the existing vault —
+same retrieval, same links, same archive machinery — with three differences:
+
+- **The reason is mandatory.** A bare verdict is dogma an agent can only obey.
+  A reason is checkable, which is what lets a position be re-opened honestly
+  instead of either ignored or followed blindly.
+- **They get their own block in the prompt**, above relevant memory, headed
+  "STANDING POSITIONS — already decided". Mixed into ordinary memory a ruling
+  reads as background, which is precisely how the Obsidian one failed.
+- **They fire on explicit `triggers:`**, defaulting to the subject's own words
+  minus stopwords, and reach the prompt *only* through gated reserved slots —
+  never the ordinary ranking.
+
+That last point took three attempts, and the failures are worth recording.
+Term-count coverage cannot tell "should we adopt Obsidian?" from a bare
+"memory": against the subject *"Obsidian as the memory substrate"* both cover
+one term of three. IDF weighting is better in principle and still wrong in
+practice — it makes firing depend on how often a word happens to appear
+elsewhere in the vault, so a position silently starts or stops working as
+unrelated notes get written. Explicit triggers are deterministic, and a misfire
+is a line you can read and fix. That is the same argument that settled agent
+routing earlier the same day.
+
+**Recording a position supersedes in place.** A reversal reads as one current
+ruling, not two contradictory ones, and the superseded reasoning is kept under
+a `## Previously` heading — "declined in August, reversed in November because
+Y" is worth more than either half alone.
+
+`GET`/`POST /api/project/<id>/memory/positions`. Two real positions recorded to
+start: the Obsidian ruling, and the nightly research agent's weight.
+
+Also fixed here: a first version of the "don't hijack unrelated queries" test
+asserted only that a position was not ranked *first*. Measured against the real
+vault, both recorded positions rode along on *"fix the cloudflare tunnel quota
+alarm"*. The assertion is absence now.
+
 ## [2026-08-23c] — the checkpoint pile-up, at the root
 
 `[2026-08-23b]` stopped the read floor *choking* on 2,222 near-duplicate

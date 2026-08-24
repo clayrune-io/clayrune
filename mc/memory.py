@@ -35,6 +35,7 @@ import time as _time
 import uuid
 
 import agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
+import skills as _skills                # frontmatter parse for position notes
 import distiller as _distiller          # Phase 4 learning observer (best-effort)
 
 from mc import state
@@ -621,6 +622,174 @@ def _dedupe_archive_lines(lines):
     return [ln for ln in order if ln is not None]
 
 
+# ── Positions: what we decided NOT to do, and why ───────────────────────────
+#
+# Every capture path we have is downstream of an ARTIFACT — the checkpointer
+# summarises what happened, the Scribe extracts from outcomes, the Distiller
+# looks for recurrence. Deciding *not* to build something produces no commit,
+# no file, no diff, so all three are structurally blind to it. Yet re-proposing
+# a settled question costs a whole conversation.
+#
+# Demonstrated 2026-08-23: Ron named two such decisions ("we evaluated Obsidian
+# and declined", "the nightly agent should be a simple cron job"). The Obsidian
+# one WAS in the vault and in the always-loaded index — and the next turn the
+# agent proposed adopting Obsidian anyway, then invented a justification for it.
+# So this is not a storage gap. It is stored as *history*, and history does not
+# fire when someone re-proposes the thing it settled.
+#
+# Hence a distinct note class. A position carries three things a topic note
+# does not:
+#   subject      — the thing it settles, plus the aliases someone would use
+#   reason       — WHY. A bare verdict is dogma; a reason is checkable, and it
+#                  is what lets the position be re-opened rather than obeyed.
+#   expires_when — what would change our mind. Makes review a test rather than
+#                  a re-read of the whole archive.
+POSITION_PREFIX = 'position_'
+
+# The subject is indexed this many extra times. A position must win its own
+# subject decisively — losing it to an ordinary note that merely mentions the
+# word is the exact failure this class exists to prevent. Higher than the topic
+# title boost for that reason.
+_POSITION_SUBJECT_BOOST = 6
+
+# Fraction of a position's SUBJECT terms the query must contain before it takes
+# a reserved slot. Coverage, not score: "is this task about the thing I
+# settled?" is a different question from "did we share a word?".
+# A position fires on explicit TRIGGER terms, not on a statistical threshold.
+#
+# Two gates were tried first and both were fragile. Raw term coverage cannot
+# tell "should we adopt Obsidian?" from a bare "memory" — against the subject
+# "Obsidian as the memory substrate" both cover exactly one term of three.
+# IDF-weighting is better in principle and still wrong in practice: it makes
+# firing depend on how often the word happens to appear elsewhere in the
+# vault, so a position starts or stops working as unrelated notes are written.
+#
+# The same argument settled routing earlier today (AGENT_TYPES_DESIGN §6b/§7):
+# deterministic rules beat inference precisely because a misfire is then a line
+# you can read and fix. `triggers:` is that line. It defaults to the subject's
+# own words, so most positions need nothing.
+_POSITION_STOPWORDS = {
+    'a', 'an', 'and', 'as', 'at', 'be', 'by', 'do', 'for', 'from', 'how', 'in',
+    'is', 'it', 'of', 'on', 'or', 'our', 'should', 'so', 'that', 'the', 'to',
+    'we', 'what', 'when', 'which', 'with',
+}
+
+
+def _position_triggers(rec):
+    """Terms that make this position fire. Explicit `triggers:` wins; otherwise
+    the subject's own words, minus the ones every sentence contains."""
+    raw = str((rec or {}).get('triggers') or '')
+    if raw.strip():
+        toks = _mem_tokens(raw.replace(',', ' '))
+    else:
+        toks = _mem_tokens(str((rec or {}).get('subject') or ''))
+    return {t for t in toks if t not in _POSITION_STOPWORDS and len(t) > 2}
+
+# Reserved top-k slots a position may take beyond the ordinary cut. Without
+# this a strong subject match can still be crowded out by a busy query, which
+# is how the Obsidian note lost — it was present, and it never surfaced.
+def _position_reserve():
+    try:
+        return max(0, int(state.CONFIG.get('read_floor_position_reserve', 2) or 0))
+    except (TypeError, ValueError):
+        return 2
+
+
+def _is_position_file(name):
+    return str(name or '').startswith(POSITION_PREFIX) and str(name).endswith('.md')
+
+
+def _parse_position(text):
+    """Frontmatter of a position note -> dict, or {} when it isn't one."""
+    try:
+        meta, body = _skills.parse_skill_md(text)
+    except Exception:
+        return {}
+    if not isinstance(meta, dict) or not meta.get('subject'):
+        return {}
+    return {
+        'subject': str(meta.get('subject') or ''),
+        'triggers': str(meta.get('triggers') or ''),
+        'verdict': str(meta.get('position') or meta.get('verdict') or ''),
+        'reason': str(meta.get('reason') or ''),
+        'expires_when': str(meta.get('expires_when') or ''),
+        'decided': str(meta.get('decided') or ''),
+        'body': body,
+    }
+
+
+def write_position(project, subject, verdict, reason,
+                   expires_when='', decided='', body='', slug='', triggers=''):
+    """Record a decision — usually a decision NOT to do something.
+
+    Returns the note's filename. Supersedes in place: recording a position on a
+    subject that already has one REPLACES it rather than adding a second, so a
+    reversal reads as one current ruling instead of two contradictory ones. The
+    superseded text is kept in the body under a `## Previously` heading, because
+    "we declined in August and reversed in November because Y" is worth more
+    than either half alone.
+
+    `reason` is required on purpose. A bare verdict is dogma an agent can only
+    obey; a reason is checkable, which is what lets a position be re-opened
+    honestly rather than either ignored or followed blindly.
+    """
+    subject = (subject or '').strip()
+    reason = (reason or '').strip()
+    if not subject:
+        raise ValueError('subject is required — it is what the position settles')
+    if not reason:
+        raise ValueError(
+            'reason is required — a verdict without one cannot be re-evaluated')
+    verdict = (verdict or 'declined').strip().lower()
+
+    mem_dir = _get_memory_path(project).parent
+    mem_dir.mkdir(parents=True, exist_ok=True)
+    slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
+    path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
+
+    prior = ''
+    if path.exists():
+        try:
+            old_txt = path.read_text(encoding='utf-8', errors='replace')
+            old_rec = _parse_position(old_txt)
+            if old_rec:
+                prior = (f"\n\n## Previously\n\n- **{old_rec.get('verdict')}**"
+                         f"{' (' + old_rec['decided'] + ')' if old_rec.get('decided') else ''}"
+                         f" — {old_rec.get('reason')}")
+                if old_rec.get('body', '').strip():
+                    prior += '\n' + old_rec['body'].strip()
+        except Exception as e:
+            _log(f'[position] could not read prior {path.name}: {e}')
+
+    front = {'name': slug, 'subject': subject, 'position': verdict,
+             'reason': reason}
+    if triggers:
+        front['triggers'] = triggers.strip()
+    if expires_when:
+        front['expires_when'] = expires_when.strip()
+    front['decided'] = (decided or '').strip() or now_iso()[:10]
+    text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
+    _atomic_write_text(path, text)
+    return path.name
+
+
+def list_positions(project):
+    """Every recorded position, newest decision first."""
+    try:
+        mem_dir = _get_memory_path(project).parent
+    except Exception:
+        return []
+    if not mem_dir.is_dir():
+        return []
+    out = []
+    for f in sorted(mem_dir.glob(f'{POSITION_PREFIX}*.md')):
+        rec = _parse_position(f.read_text(encoding='utf-8', errors='replace'))
+        if rec:
+            rec['file'] = f.name
+            out.append(rec)
+    return sorted(out, key=lambda r: r.get('decided', ''), reverse=True)
+
+
 def _mem_corpus(mem_dir, mem_name, arch_name):
     """Parse + tokenize the memory corpus into scoring units (cached).
 
@@ -654,11 +823,14 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
                      if ln.strip().startswith('- [')]
             for ln in _dedupe_archive_lines(_arch):
                 units.append((f.name, ln, 'archive'))
+        elif _is_position_file(f.name):
+            units.append((f.name, txt, 'position'))
         else:
             units.append((f.name, txt, 'topic'))
     out = []
     for label, text, cls in units:
         toks = _mem_tokens(text)
+        subject_terms = set()
         if not toks:
             continue
         if cls == 'topic':
@@ -673,11 +845,20 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             # is the container's filename, not a title, so folding it in would
             # make every one of the ~2k archive lines match the query "memory".
             toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
+        elif cls == 'position':
+            # The SUBJECT is what has to match, far more than the prose. A
+            # position about Obsidian must beat every note that merely mentions
+            # Obsidian in passing, or it loses its own question.
+            _pos = _parse_position(text)
+            subject_terms = _position_triggers(_pos)
+            toks = toks + _mem_tokens(_pos.get('subject', '')) * _POSITION_SUBJECT_BOOST
+            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
         tf = {}
         for t in toks:
             tf[t] = tf.get(t, 0) + 1
         out.append({'file': label, 'text': text, 'tf': tf,
                     'len': len(toks), 'cls': cls,
+                    'subject_terms': subject_terms,
                     'links': _mem_link_targets(text) if cls == 'topic' else []})
     with _memsearch_cache_lock:
         _memsearch_cache[key] = (sig, out)
@@ -773,9 +954,33 @@ def _memory_search(project, query, topk=3, expand=None):
             score += idf[t] * (f * (_BM25_K1 + 1.0)) / (f + denom_len)
         if not matched:
             continue
+        _trig = u.get('subject_terms') or set()
+        _cover = 1.0 if (_trig & set(terms)) else 0.0
         scored.append({'file': u['file'], 'score': round(score, 4),
+                       'cls': u['cls'], '_cover': _cover,
                        'snippet': _mem_snippet(u['text'], terms)})
     scored.sort(key=lambda r: (-r['score'], r['file']))
+
+    # Positions are pulled out BEFORE the quota/top-k cut and re-inserted at the
+    # front. A position that matches its own subject must reach the prompt even
+    # on a busy query — being present and never surfacing is precisely how the
+    # Obsidian ruling failed to stop the agent re-proposing Obsidian.
+    # Positions never ride the ordinary ranking. The reserve, with its coverage
+    # gate, is their ONLY admission path — otherwise a position surfaces on any
+    # query that shares a common word with it, which is the prompt-furniture
+    # failure the gate exists to stop.
+    _positions = [r for r in scored if r.get('cls') == 'position']
+    scored = [r for r in scored if r.get('cls') != 'position']
+
+    _reserve = _position_reserve()
+    _reserved = []
+    if _reserve:
+        # A reserved slot requires the query to actually be ABOUT the subject —
+        # not merely to share a word with it. Without this gate every position
+        # rides along on every task (measured: both fired on "fix the
+        # cloudflare tunnel quota alarm"), which is how a standing ruling turns
+        # into permanent prompt furniture and stops being read.
+        _reserved = [r for r in _positions if r.get('_cover')][:_reserve]
 
     # Archive quota (S4): the archive outnumbers topic files ~30:1, so archive
     # lines can take slots a whole note would have filled. Cap them, keeping
@@ -792,7 +997,12 @@ def _memory_search(project, query, topk=3, expand=None):
             if len(kept) >= max(1, topk):
                 break
         scored = kept
-    hits = scored[:max(1, topk)]
+    hits = _reserved + scored[:max(1, topk - len(_reserved))]
+    # `cls` is internal bookkeeping for the reserve — read-floor callers unpack
+    # these dicts and a test pins the exact key set, so it must not leak out.
+    for _h in hits:
+        _h.pop('cls', None)
+        _h.pop('_cover', None)
 
     n_expand = max(0, int(expand or 0))
     if not n_expand:

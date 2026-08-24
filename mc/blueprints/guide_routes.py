@@ -556,6 +556,46 @@ def get_scribe_stats(project_id):
 
 
 # ── Memory retrieval (SPEC §3 Leg B) — read-only route; _memory_search wired ─────
+@bp.route('/api/project/<project_id>/memory/positions', methods=['GET'])
+def list_positions_route(project_id):
+    """Standing positions for this project — what we decided, and why."""
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    from mc import memory as _mem
+    return jsonify(_mem.list_positions(p))
+
+
+@bp.route('/api/project/<project_id>/memory/positions', methods=['POST'])
+def write_position_route(project_id):
+    """Record a decision, usually a decision NOT to do something.
+
+    Body: {subject, position, reason, expires_when?, decided?, body?, slug?}
+
+    Capture is deliberately explicit rather than mined from transcripts. Most
+    "no" in a conversation is not a decision ("no, use tabs"), so a scan would
+    bury the twenty entries that matter under noise. The trigger that works is
+    narrow: the agent proposed something and it was declined, or the agent
+    evaluated something and recommended against it.
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    d = request.get_json(silent=True) or {}
+    from mc import memory as _mem
+    try:
+        fn = _mem.write_position(
+            p, d.get('subject', ''), d.get('position') or d.get('verdict', ''),
+            d.get('reason', ''), expires_when=d.get('expires_when', ''),
+            decided=d.get('decided', ''), body=d.get('body', ''),
+            slug=d.get('slug', ''), triggers=d.get('triggers', ''))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except OSError as e:
+        return jsonify({'error': f'write failed: {e}'}), 500
+    return jsonify({'ok': True, 'file': fn}), 201
+
+
 @bp.route('/api/project/<project_id>/memory/search', methods=['GET'])
 def memory_search(project_id):
     """Ranked-grep over the project memory corpus (SPEC §3 Leg B). The
