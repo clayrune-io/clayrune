@@ -6,6 +6,51 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24g] — phase 4 ends as a weekly watch, not a screen
+
+Phase 4 was going to end in a report screen and an automatic mover. Neither is
+being built, and the measurement it produced is the reason.
+
+**The mover has almost nothing to move.** 529 of 586 archive lines are never
+delivered, and that costs nothing — they are already in the coldest tier, so a
+line nobody retrieves spends no tokens. The §5 rule was *never delete, demote*,
+and these are already demoted. The only real lever the counters expose is
+promotion into the resident index, and across 189 tasks that came to **two
+notes** (`research_competitor_gtm_channels.md` at 50 deliveries and
+`decision_free_tier_feeds_adoption.md` at 34, both with no index line — added by
+hand; the index sits at 17.2 KB against its 24 KB cap). Automating two
+promotions a quarter is scaffolding.
+
+**What is worth keeping is the watch.** The position that had been reaching 57%
+of tasks was wrong from the day positions shipped, and the code, the tests and
+the UI could not have shown it — only a count against real tasks did. So
+`tools/memory-eval/delivery_review.py` runs weekly beside the memory health
+check and reports four things: a note fetched constantly with no index line, a
+position that has become prompt furniture, an indexed note gone dark, and the
+archive's share of delivered slots (which is the `expires_when` on the
+archive-quota position, so the review re-opens that ruling on its own terms).
+
+It reports; it never promotes, demotes, or edits a note — same rule as
+`positions_review`, and for the same reason. **A flag is raised once**, keyed to
+the finding's own content, so a known condition stays quiet and re-arms when it
+changes; `preference-5c17ba9d` is what that rule is for. Below 60 recorded tasks
+it refuses to judge at all, because a rate over five tasks is noise.
+
+One trap it is built to avoid, and has a test for: the vault's slugs drifted, so
+`[[feedback-grep-memory-dir]]` and `feedback_grep_memory_dir.md` are the same
+note. A naive string comparison calls that note unindexed *and* the link
+dangling — two false findings from one wrong match. It matches through
+`_mem_link_key`, the way the vault itself does.
+
+**And the archive-quota promise is answered.** Replaying the same 188 tasks at
+quota 0 / 1 / 2 / 3 / 6: starved tasks 0, topic reach 70/74, positions fired 22
+— identical at every setting, with archive holding 3.9–5.2% of slots regardless.
+The knob went in when archive lines held 34% of slots; read-time dedupe (2,222
+raw lines collapsing to 586 units) removed that flood, so the cap now caps
+something that no longer overflows. Recorded as a standing position: leave it at
+2 and stop tuning, re-open if archive share climbs back over 15% or dedupe is
+weakened.
+
 ## [2026-08-24f] — the delivery counters get a baseline, and immediately catch one
 
 The counters shipped empty, which would have meant designing the residency

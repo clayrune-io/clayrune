@@ -205,7 +205,7 @@ lists every hired agent, and subagents appear nested under whoever spawned them
 | **2** | **Positions** — capture verdict + reason + expiry trigger; surface on subject, not keyword | **shipped** `19c0b00` (note class, trigger firing, routes) + `38d1ed2` (the system-prompt directive that gives the route a caller) |
 | **2b** | **A human surface** — read and correct both, in the Memory modal | **shipped** `8d7c1bf`. Not in the original order, and it should have been: a memory layer nobody can inspect is one nobody can correct |
 | **3** | **The reviewer** — walk the standing positions, test whether any reason has expired, report to Ron | **shipped**. `mc/positions_review.py` + `tools/position-review.py` + the `mc-position-review` skill + a weekly schedule |
-| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | **counters shipped + baselined.** `mc/memory_delivery.py`; `_unit_uid` gives each archive LINE its own identity; `tools/memory-eval/delivery_backfill.py` replayed 188 real tasks. Result: topic layer 70/74 reachable, **529 of 586 archive lines never delivered** — that is the demotion pool. First finding: one position was riding 57% of tasks on the word "agent" (fixed, see §9b). The **mover is not built** — that step reports to a human first |
+| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | **done, and smaller than planned.** Counters (`mc/memory_delivery.py`) + baseline (`delivery_backfill.py`, 188 tasks) + a weekly watch (`delivery_review.py`, wired into the memory health check). **The screen and the automatic mover were dropped** — see §9c. Unblocks MC-892 by answering it: the demotion pool is 529 archive lines that already cost nothing |
 | **5** | **Episodic retrieval** (deferred Step 7) | not built. Serves "like we discussed". Prerequisite: search-precision telemetry, i.e. Phase 4 |
 
 Phase 1 alone is what makes Dave stop being a costume.
@@ -269,6 +269,34 @@ wrong in a direction nobody can see from the code.** The gate looked correct, it
 test passed, and only a count against real tasks showed it firing three times too
 often. That is the argument for the mover being driven by measurement rather than
 by anyone's judgement — including mine.
+
+## 9c. Why phase 4 has no screen and no mover (2026-08-24)
+
+The build order said "delivery telemetry → residency", and the residency half
+turned out to be almost empty. Worth writing down, because the instinct to build
+the mover anyway is strong and the measurement says not to.
+
+**Demotion has nothing to do.** 529 of 586 archive lines are never delivered.
+They are already in the coldest tier, so a line nobody retrieves costs no tokens
+— §5's rule was *never delete, demote*, and these are already demoted. Moving
+them would be motion, not progress.
+
+**Promotion is real but tiny.** Across 189 tasks the counters surfaced exactly
+two notes being fetched hard with no index line. That is a one-liner each, twice
+a quarter. An automatic mover for that volume is scaffolding around a decision a
+human makes faster.
+
+**The value was the anomaly.** A standing position had been reaching 57% of
+tasks — since the day positions shipped — because its subject contained a word
+32.7% of the corpus uses. The gate looked correct, its test passed, and the UI
+would have shown nothing. A count against real tasks was the only thing that
+could find it, and the only thing that can find the next one.
+
+So phase 4 ends as `delivery_review.py`, weekly, reporting four conditions and
+raising each once. The general shape is the same one phase 3 arrived at from the
+other direction: **the durable output of a memory subsystem is a watch, not a
+dashboard.** A dashboard is read when someone remembers to look; a watch that
+stays quiet until something changes is read when it speaks.
 
 ## 10. Open questions
 

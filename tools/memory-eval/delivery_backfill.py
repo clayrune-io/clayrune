@@ -33,10 +33,12 @@ import _harness  # noqa: E402
 # Windows consoles default to cp1252 and a box-drawing character is enough
 # to kill the run AFTER the sidecar has been written - a crash that looks
 # like the measurement failed when it actually succeeded.
-try:
-    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
-except Exception:
-    pass
+_rc = getattr(sys.stdout, 'reconfigure', None)
+if _rc:
+    try:
+        _rc(encoding='utf-8', errors='replace')
+    except Exception:
+        pass
 
 ROOT = os.path.join(os.path.expanduser("~"), ".claude", "projects")
 # Below this a "task" is an acknowledgement, not a dispatch. An earlier probe
