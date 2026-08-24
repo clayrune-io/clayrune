@@ -442,3 +442,92 @@ def test_moved_route_behind_lan_gate(ctx):
     """A non-loopback peer with no passcode is 401'd BEFORE the handler runs."""
     resp = ctx.client.get('/api/schedules', environ_overrides=LAN)
     assert resp.status_code == 401
+
+
+# ── schedule_type coverage: the silent-death class ───────────────────────────
+#
+# 'weekly' was documented in the API reference that every agent reads on every
+# prompt, accepted by POST with a 201, stored with enabled=True — and had no
+# branch in _compute_next_run, so it returned None and the row never fired.
+# Measured 2026-08-24: the weekly MEMORY HEALTH CHECK had next_run null,
+# last_run null and zero runs, ever. Nothing in the UI, the API or the logs
+# said so. These tests pin the two halves of the fix: the type computes, and
+# an unschedulable type is refused loudly at the door.
+
+def test_every_declared_schedule_type_computes_a_next_run(ctx):
+    """The invariant. A type in SCHEDULE_TYPES that _compute_next_run cannot
+    handle is an enabled schedule that never runs."""
+    from mc.blueprints import scheduler_routes as sr
+    from datetime import datetime, timedelta, timezone
+    soon = (datetime.now(timezone.utc) + timedelta(days=2)).isoformat()
+    samples = {
+        'once': {'run_at': soon},
+        'daily': {'time': '03:00'},
+        'weekly': {'time': '03:00', 'days': [1]},
+        'interval': {'interval_minutes': 30},
+        'cron': {'cron_expr': '0 6 * * 1'},
+    }
+    assert set(samples) == set(sr.SCHEDULE_TYPES), 'a type was added without a sample'
+    for stype, extra in samples.items():
+        nxt = sr._compute_next_run({'id': 't', 'schedule_type': stype, **extra})
+        assert nxt, f'{stype} computed no next_run — it would never fire'
+
+
+def test_weekly_lands_on_the_requested_weekday(ctx):
+    from mc.blueprints import scheduler_routes as sr
+    from datetime import datetime
+    for day, iso in ((1, 1), (7, 7)):
+        nxt = sr._compute_next_run({'id': 't', 'schedule_type': 'weekly',
+                                    'time': '03:00', 'days': [day]})
+        local = datetime.fromisoformat(nxt.replace('Z', '+00:00')).astimezone()
+        assert local.isoweekday() == iso, f'{nxt} is not weekday {iso}'
+
+
+def test_weekly_accepts_day_names_as_well_as_numbers(ctx):
+    """Nothing tells a caller which form to send, and the two rows that existed
+    when this shipped disagreed — one held [1], the other ["sunday"]. Dropping
+    the string form silently meant the schedule ran on no day at all."""
+    from mc.blueprints import scheduler_routes as sr
+    assert sr._normalize_days(['sunday']) == {7}
+    assert sr._normalize_days(['Mon', 'weds', '5']) == {1, 3, 5}
+    assert sr._normalize_days([1, 7]) == {1, 7}
+    assert sr._normalize_days(['nonsense', None, 0, 9, True]) == set()
+
+
+def test_weekly_with_no_usable_day_does_not_silently_become_daily(ctx):
+    """Seven times the runs the caller asked for is worse than a wrong day."""
+    from mc.blueprints import scheduler_routes as sr
+    from datetime import datetime
+    nxt = sr._compute_next_run({'id': 't', 'schedule_type': 'weekly',
+                                'time': '03:00', 'days': ['garbage']})
+    local = datetime.fromisoformat(nxt.replace('Z', '+00:00')).astimezone()
+    assert local.isoweekday() == 1
+
+
+def test_unknown_schedule_type_is_refused_at_create(ctx):
+    r = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 'x', 'schedule_type': 'fortnightly'})
+    assert r.status_code == 400
+    assert 'fortnightly' in r.get_json()['error']
+    assert not ctx.sched_path.exists() or json.loads(ctx.sched_path.read_text()) == []
+
+
+def test_unknown_schedule_type_is_refused_at_update(ctx):
+    """A working row must not be turned into a dead one by an edit."""
+    created = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 'x', 'schedule_type': 'daily',
+        'time': '03:00'}).get_json()
+    r = ctx.client.put(f"/api/schedules/{created['id']}",
+                       json={'schedule_type': 'fortnightly'})
+    assert r.status_code == 400
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert saved[0]['schedule_type'] == 'daily'
+
+
+def test_a_weekly_schedule_survives_the_create_round_trip(ctx):
+    r = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 'review positions',
+        'schedule_type': 'weekly', 'time': '04:00', 'days': ['sunday']})
+    assert r.status_code == 201
+    body = r.get_json()
+    assert body['next_run'], 'created enabled with no next_run — the old silent death'

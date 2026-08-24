@@ -204,6 +204,49 @@ def _next_cron_match(cron_expr, after_dt):
     return None
 
 
+# Every type `_compute_next_run` can actually schedule. Keep the two in step —
+# a type listed here that it cannot compute is an enabled schedule that never
+# fires, and a type it can compute that is missing here is rejected at create.
+SCHEDULE_TYPES = frozenset({'once', 'daily', 'weekly', 'interval', 'cron'})
+
+_DAY_NAMES = {
+    'mon': 1, 'monday': 1, 'tue': 2, 'tues': 2, 'tuesday': 2,
+    'wed': 3, 'weds': 3, 'wednesday': 3, 'thu': 4, 'thur': 4, 'thurs': 4,
+    'thursday': 4, 'fri': 5, 'friday': 5, 'sat': 6, 'saturday': 6,
+    'sun': 7, 'sunday': 7,
+}
+
+
+def _normalize_days(days):
+    """`days` -> a set of ISO weekdays (1=Mon..7=Sun). Unknown entries dropped.
+
+    Accepts names as well as numbers because nothing tells a caller which one
+    to send. The API reference an agent reads every prompt documents `days` as
+    a bare list, and the two rows that existed when this was written disagreed
+    with each other — one held `[1]`, the other `["sunday"]`. Silently ignoring
+    the string form meant the schedule ran on no day at all.
+    """
+    out = set()
+    for d in (days or []):
+        if isinstance(d, bool):
+            continue
+        if isinstance(d, int):
+            if 1 <= d <= 7:
+                out.add(d)
+            continue
+        n = _DAY_NAMES.get(str(d).strip().lower())
+        if n:
+            out.add(n)
+        else:
+            try:
+                v = int(str(d).strip())
+                if 1 <= v <= 7:
+                    out.add(v)
+            except Exception:
+                pass
+    return out
+
+
 def _compute_next_run(schedule):
     """Compute the next run time for a schedule. Returns UTC ISO string or None.
 
@@ -239,13 +282,27 @@ def _compute_next_run(schedule):
         except Exception:
             return None
 
-    elif stype == 'daily':
+    elif stype in ('daily', 'weekly'):
+        # 'weekly' shares this branch: it is daily-restricted-to-days. It used
+        # to fall off the end of this function to `return None`, which is a
+        # SILENT death — the row stores fine, the API returns 201, the UI shows
+        # enabled, and it never runs. Measured 2026-08-24: the weekly MEMORY
+        # HEALTH CHECK had been enabled with next_run null and zero runs ever.
+        # The type is in the API reference every agent reads, so agents kept
+        # choosing it; only the UI (daily/interval/once/cron) never offered it.
         time_str = schedule.get('time', '09:00')
-        days = schedule.get('days', [])  # 1=Mon..7=Sun, empty=every day
+        days = _normalize_days(schedule.get('days'))
         try:
             h, m = int(time_str.split(':')[0]), int(time_str.split(':')[1])
         except Exception:
             h, m = 9, 0
+        # A weekly schedule with no usable day would silently become daily,
+        # which is 7x the runs the caller asked for. Monday is the arbitrary
+        # part; running-something-weekly is what they actually asked for.
+        if stype == 'weekly' and not days:
+            _log(f"[scheduler] weekly schedule {schedule.get('id')} has no valid "
+                 f"days ({schedule.get('days')!r}); defaulting to Monday")
+            days = {1}
         # Build candidates in LOCAL time (matches the user's input intent).
         for offset in range(8):
             candidate = now_local.replace(hour=h, minute=m, second=0, microsecond=0) \
@@ -288,6 +345,11 @@ def _compute_next_run(schedule):
             return _to_utc_z(nxt)
         return None
 
+    # The failure that hid 'weekly' for as long as it did: an unhandled type
+    # returned None indistinguishably from "this once-schedule is in the past",
+    # so an enabled row simply never fired and nothing anywhere said why.
+    _log(f"[scheduler] schedule {schedule.get('id')} has unknown "
+         f"schedule_type {stype!r}; it will never run")
     return None
 
 
@@ -832,6 +894,14 @@ def create_schedule():
     stype = data.get('schedule_type', 'daily')
     if not pid or not task:
         return jsonify({'error': 'project_id and task required'}), 400
+    # Fail loudly here rather than at fire time. A row with a type nobody
+    # computes a next_run for stores fine, returns 201 and reads `enabled` —
+    # and never runs. That is how 'weekly' stayed broken: accepted, enabled,
+    # silent. A 400 with the list is the difference between a typo and a
+    # feature that quietly does nothing for months.
+    if stype not in SCHEDULE_TYPES:
+        return jsonify({'error': f'unknown schedule_type {stype!r}; '
+                                 f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
 
     sched = {
         'id': uuid.uuid4().hex[:8],
@@ -867,6 +937,11 @@ def update_schedule(schedule_id):
     sched = next((s for s in schedules if s['id'] == schedule_id), None)
     if not sched:
         return jsonify({'error': 'not found'}), 404
+    # Same reason as create: a type nothing can schedule turns a working row
+    # into an enabled one that never fires again, silently.
+    if 'schedule_type' in data and data['schedule_type'] not in SCHEDULE_TYPES:
+        return jsonify({'error': f'unknown schedule_type {data["schedule_type"]!r}; '
+                                 f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
 
     for key in ('project_id', 'task', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',

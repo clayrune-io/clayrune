@@ -1,6 +1,6 @@
 # Dave — a project's agent, and how it gets wiser (MC-895 → MC-899)
 
-Status: **design, not built.** 2026-08-23.
+Status: **phases 1-3 shipped, 4-5 not built.** Designed 2026-08-23; phase 1 `de443bb`, phase 2 `19c0b00`+`38d1ed2`, the human-facing surface `8d7c1bf`, phase 3 below. Updated 2026-08-24.
 Builds on `MC-895` (agent types, Phase 1 shipped), `MC-892` (memory index),
 `MC-885` (bounded autonomy), `MC-887` (coordination), `MC-897` (the Floor),
 `MC-898` (nightly research). Sibling docs: `AGENT_TYPES_DESIGN.md`,
@@ -173,15 +173,51 @@ lists every hired agent, and subagents appear nested under whoever spawned them
 
 ## 9. Build order
 
-| Phase | Scope | Why here |
+| Phase | Scope | State |
 |---|---|---|
-| **1** | **Continuity record** — fixed-slot, per-project, written at turn end: open threads, commitments, current understanding | The colleague feeling, and the cheapest of these |
-| **2** | **Positions** — capture verdict + reason + expiry trigger; surface on subject, not keyword | The proactive half. Fixes the failure in §2 |
-| **3** | **Nightly reviewer** (`MC-898`) — walk the standing positions, test whether any reason has expired, report to Ron | Makes Dave *wiser*, not just older. Human-facing output, `origin: unattended` |
-| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | Removes the curator from the loop, and unblocks MC-892 |
-| **5** | **Episodic retrieval** (deferred Step 7) | Serves "like we discussed". Prerequisite: search-precision telemetry, i.e. Phase 4 |
+| **1** | **Continuity record** — fixed-slot, per-project, written at turn end: open threads, commitments, current understanding | **shipped** `de443bb`. Injected directly into every prompt; excluded from the read floor, so it is delivered rather than retrieved |
+| **2** | **Positions** — capture verdict + reason + expiry trigger; surface on subject, not keyword | **shipped** `19c0b00` (note class, trigger firing, routes) + `38d1ed2` (the system-prompt directive that gives the route a caller) |
+| **2b** | **A human surface** — read and correct both, in the Memory modal | **shipped** `8d7c1bf`. Not in the original order, and it should have been: a memory layer nobody can inspect is one nobody can correct |
+| **3** | **The reviewer** — walk the standing positions, test whether any reason has expired, report to Ron | **shipped**. `mc/positions_review.py` + `tools/position-review.py` + the `mc-position-review` skill + a weekly schedule |
+| **4** | **Delivery telemetry → residency** — promote what gets retrieved, demote what never does | not built. Removes the curator from the loop, and unblocks MC-892 |
+| **5** | **Episodic retrieval** (deferred Step 7) | not built. Serves "like we discussed". Prerequisite: search-precision telemetry, i.e. Phase 4 |
 
 Phase 1 alone is what makes Dave stop being a costume.
+
+## 9a. What phase 3 turned out to be (2026-08-24)
+
+**It is the same job as MC-898**, which asked for a daily sweep of "what has
+changed in the field". An open-ended sweep has no stopping condition and no way
+to separate an interesting finding from a relevant one. The standing positions
+supply the query set: *has anything changed that trips one of our own rulings?*
+That question has an answer, and testing a named condition is cheap where
+re-reading an archive is not.
+
+Three properties the implementation exists to guarantee, each earned:
+
+- **The reviewer reports; it never edits.** An unattended agent rewriting the
+  rulings that steer every other agent is the authority-guard violation in a
+  different hat. `record_review` writes only its own sidecar, and a sidecar
+  cannot change what any prompt says. Enforced by test, stated in the skill.
+- **A flag is raised once.** Keyed to the position's *content* hash, so it
+  re-arms when a human edits the reason and stays silent while a known
+  condition keeps holding. A nightly "still tripping" mail is how the channel
+  stops being read, and then you lose the night it mattered.
+- **A position with no `expires_when` is still reviewed** — more worth a look,
+  not less. It is a ruling nobody has revisited since the day it was made, and
+  the useful output is "this needs a trigger", not a stale-check.
+
+**Cadence is weekly, not nightly.** Positions rest 7 days between reviews and
+there are a handful today, so a nightly pass would mostly print "nothing due".
+The rest-interval is the real cadence control; the schedule just has to fire
+often enough to keep up with it.
+
+**Found while building it:** `schedule_type: "weekly"` had no branch in
+`_compute_next_run`. It stored fine, returned 201, read `enabled: true`, and
+never ran — the existing weekly MEMORY HEALTH CHECK had `next_run: null` and
+zero runs, ever. The UI never offered "weekly", but the API reference in every
+agent's prompt did, so agents kept choosing it. Fixed, plus a 400 on any type
+the engine cannot schedule, because accepting one silently is the whole bug.
 
 ## 10. Open questions
 

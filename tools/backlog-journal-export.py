@@ -101,7 +101,7 @@ def main():
     if args.live_only:
         items = [i for i in items if i.get('status') in ('open', 'in_progress', 'blocked')]
 
-    written, index = 0, []
+    written, agent_written, index = 0, 0, []
     for it in items:
         p = write_journal(out_dir, it)
         if p:
@@ -110,19 +110,47 @@ def main():
             index.append((it.get('status') or '', it.get('id') or '', len(n), p.name,
                           ' '.join((it.get('text') or '').split())[:70]))
 
+    # Journals an AGENT wrote directly. This is the documented happy path —
+    # AGENT_RULES.md tells unattended cycles to append to
+    # docs/_journal/<item-id>-<slug>.md and points at INDEX.md as the map of
+    # "every item to its file". Indexing only the items that happen to carry
+    # legacy backlog NOTES left exactly the agent-authored journals invisible,
+    # which is the opposite of the intent.
+    by_id = {(i.get('id') or ''): i for i in items}
+    seen = {r[3] for r in index}
+    for f in sorted(out_dir.glob('*.md')):
+        if f.name in ('INDEX.md',) or f.name in seen:
+            continue
+        iid = f.stem.split('-', 1)[0]
+        it = by_id.get(iid) or {}
+        title = ' '.join((it.get('text') or '').split())[:70]
+        if not title:
+            # An orphan: the item was deleted, or this file predates it. Still
+            # list it — an unindexed journal is one nobody reads.
+            first = next((ln.strip('# ').strip()
+                          for ln in f.read_text(encoding='utf-8', errors='replace')
+                                     .splitlines() if ln.strip()), f.stem)
+            title = first[:70]
+        index.append((it.get('status') or '—', iid, 0, f.name, title))
+        agent_written += 1
+
     index.sort(key=lambda r: -r[2])
     idx = ['# Backlog journals', '',
-           f'Exported from `{args.project}` — {written} items with notes, '
-           f'{sum(r[2] for r in index)} entries total.', '',
+           f'Exported from `{args.project}` — {written} items with notes '
+           f'({sum(r[2] for r in index)} entries), plus {agent_written} '
+           f'agent-written journal(s).', '',
            'One file per backlog item. The item itself carries the ask and its current',
            'state; this is where the running log lives. Unattended agents append here.',
+           'A `0` in the notes column means the journal was written directly by an',
+           'agent rather than exported from legacy backlog notes — that is the',
+           'intended path, not a gap.',
            '',
            '| notes | status | item | file |', '|---:|---|---|---|']
     for status, iid, n, fname, title in index:
         idx.append(f'| {n} | {status} | `{iid}` {title} | [{fname}]({fname}) |')
     (out_dir / 'INDEX.md').write_text('\n'.join(idx) + '\n', encoding='utf-8')
 
-    print(f'wrote {written} journal files + INDEX.md to {out_dir}')
+    print(f'wrote {written} journal files (+{agent_written} agent-written already on disk) + INDEX.md to {out_dir}')
     return 0
 
 

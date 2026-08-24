@@ -6,6 +6,59 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24c] — positions get reviewed, and `weekly` schedules get to run
+
+**Dave phase 3.** A position records a verdict, a reason, and `expires_when` —
+the condition that would re-open it. Without anything testing those conditions a
+position only gets older, and a ruling whose reason quietly stopped being true is
+worse than no ruling, because it still outranks the notes around it in every
+agent's prompt.
+
+The reviewer **is** MC-898's daily field sweep, given a query set. "What's new in
+agentic mission control" has no stopping condition and no way to separate an
+interesting finding from a relevant one. "Has anything changed that trips one of
+our own rulings" has an answer.
+
+- `mc/positions_review.py` — which positions are due (7-day rest, or immediately
+  after a human edit), content-hash dedupe, and a JSON sidecar beside the notes.
+- `tools/position-review.py` — `brief` / `record` / `flags`.
+- The `mc-position-review` builtin skill, and a weekly schedule.
+
+Three properties it exists to guarantee:
+
+- **It reports; it never edits a position.** An unattended agent rewriting the
+  rulings that steer every other agent is the authority-guard violation in a
+  different hat. `record_review` writes only its own sidecar, and a sidecar
+  cannot change what any prompt says.
+- **A flag is raised once.** Keyed to the position's content hash, so it re-arms
+  when a human edits the reason and stays quiet while a known condition keeps
+  holding. A nightly "still tripping" mail is how a channel stops being read.
+- **A position with no trigger is still reviewed** — more worth a look, not
+  less. The useful output there is "this needs a trigger", not a stale-check.
+
+**And `schedule_type: "weekly"` never worked.** It had no branch in
+`_compute_next_run`, so it stored fine, returned 201, read `enabled: true` and
+never ran. The pre-existing weekly MEMORY HEALTH CHECK had `next_run: null`,
+`last_run: null` and zero runs in its entire life; nothing anywhere said so. The
+scheduler UI only offers daily/interval/once/cron — but the API reference in
+every agent's system prompt lists `weekly`, so agents kept choosing the one type
+that silently did nothing.
+
+Fixed: a real weekly branch (it is daily-restricted-to-days), `days` normalised
+to accept names or numbers because the two live rows disagreed with each other
+(`[1]` vs `["sunday"]`), a **400** on any `schedule_type` the engine cannot
+schedule, and a log line when an enabled row computes no `next_run`. Both weekly
+schedules self-heal on the next scheduler tick. `SCHEDULE_TYPES` is now the one
+list, asserted by a test that every declared type actually computes a run.
+
+`tools/backlog-journal-export.py` also indexes agent-written journals now.
+`AGENT_RULES.md` tells unattended cycles to write `docs/_journal/<id>-<slug>.md`
+and calls INDEX.md the map of every item to its file — but it only listed items
+carrying legacy backlog *notes*, so the journals written the documented way were
+the ones missing from it.
+
+1540 tests pass; pyright clean on both touched modules.
+
 ## [2026-08-24b] — you can finally read what the agents remember
 
 Working state and standing positions had no surface at all. Only agents could
