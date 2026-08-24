@@ -687,7 +687,7 @@ async function _renderSettings() {
 
     <div class="settings-section">
       <div class="settings-section-title">Advanced features</div>
-      <div class="settings-hint" style="margin-bottom:10px">Off by default for a simpler view. Enable only what you need.</div>
+      <div class="settings-hint" style="margin-bottom:10px">Mostly off by default for a simpler view. Enable what you need.</div>
       ${ADV_FEATURES.map(f => `
         <div class="settings-row">
           <div><div class="settings-label">${esc(f.label)}</div><div class="settings-hint">${esc(f.hint)}</div></div>

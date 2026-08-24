@@ -925,8 +925,23 @@ const ADV_FEATURES = [
   { key: 'tool-lines', label: 'Tool call lines',       hint: 'Show [tool: ExitPlanMode] / [tool: Read] markers in agent output' },
   { key: 'github',     label: 'GitHub sync badges',    hint: 'Issue links and sync buttons on backlog/modal' },
   { key: 'agent-log',  label: 'Agent Log tab',         hint: 'Per-project history of past agent sessions' },
-  { key: 'memory',     label: 'Memory & Rules menu',   hint: 'Edit per-project Memory and Rules from the three-dot menu' },
+  { key: 'memory',     label: 'Memory & Rules menu',   hint: 'On by default. Per-project Memory (working state, standing positions, MEMORY.md) and Rules, from the three-dot menu' },
 ];
+// ── Advanced feature toggles (default OFF = hidden) ─────────────────────────
+// Advanced features are off by default for a simpler first view — except this
+// one. 'memory' gates the ONLY entry point to per-project Memory and Rules, and
+// both are things the system writes to on its own: agents append to MEMORY.md,
+// the Scribe rewrites the continuity record every checkpoint, and agents record
+// standing positions that then steer every later turn. A surface you cannot
+// find is a surface you cannot correct, and Rules is a documented workflow
+// (CLAUDE.md, AGENT_RULES.md) whose only door this hides. That is a different
+// thing from a token counter or tool-line markers, which show you more of what
+// you already asked for.
+//
+// Merged UNDER stored flags, so an explicit `memory: false` still wins — an
+// unchecked box and a never-set one are distinguishable because
+// setAdvancedFlag always writes the key.
+const ADV_DEFAULTS = { memory: true };
 let advancedFlags = _loadAdvancedFlags();
 let currentTone   = localStorage.getItem('mc_tone')   || 'warm';
 let currentAccent = localStorage.getItem('mc_accent') || '';
@@ -2297,9 +2312,9 @@ function setTokenMode(mode) {
 function _loadAdvancedFlags() {
   try {
     const raw = localStorage.getItem('mc_advanced_flags');
-    if (raw) return JSON.parse(raw);
+    if (raw) return Object.assign({}, ADV_DEFAULTS, JSON.parse(raw));
   } catch(e) {}
-  return {};
+  return Object.assign({}, ADV_DEFAULTS);
 }
 function _saveAdvancedFlags(flags) {
   localStorage.setItem('mc_advanced_flags', JSON.stringify(flags));
