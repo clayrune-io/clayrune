@@ -6,6 +6,40 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24b] — you can finally read what the agents remember
+
+Working state and standing positions had no surface at all. Only agents could
+see them, which made "are the positions any good?" a question you could answer
+only by grepping the vault — and a memory layer nobody can inspect is a memory
+layer nobody can correct.
+
+**Both now live in the Memory modal**, above MEMORY.md rather than in a new
+sidebar entry: they are three layers of one thing, and split across three places
+nobody would ever compare them.
+
+- **Working state** — the understanding paragraph, the in-flight list and the
+  promised list, each editable. The panel says plainly that agents rewrite this
+  at checkpoints, so an edit is a correction to the base they fold into, not a
+  permanent note.
+- **Standing positions** — one card per ruling: verdict, subject, decision date,
+  and editable reason / expiry / trigger terms. **Save** re-posts the same slug,
+  so it supersedes in place and keeps the old reasoning under `## Previously`.
+  **Forget** is a real DELETE.
+
+`delete_position()` is new, and it is deliberately the opposite of the rule for
+notes ("never delete to save tokens — demote"). A note is an observation and a
+cold one costs nothing. A position is a *ruling*: it renders in its own prompt
+block and outranks the notes around it on its subject, so a wrong one is not
+dead weight, it actively misdirects every future turn. It takes a filename from
+the UI — the one string in this feature that reaches the filesystem — so it
+refuses anything that is not a bare `position_*.md` resolving inside the memory
+dir.
+
+The `memory-panel` smoke guard pins the three things that fail silently here:
+every inline handler needs its `window` bridge (ES modules), Save must supersede
+rather than fork a second contradictory ruling, and Forget must DELETE rather
+than edit a reason to "never mind". 1520 tests and 12 smoke scenarios pass.
+
 ## [2026-08-24] — positions get a caller, and continuity stops competing with itself
 
 Positions shipped the day before with storage, retrieval, a note class that

@@ -628,6 +628,32 @@ def write_position_route(project_id):
     return jsonify({'ok': True, 'file': fn}), 201
 
 
+@bp.route('/api/project/<project_id>/memory/positions/<path:filename>',
+          methods=['DELETE'])
+def delete_position_route(project_id, filename):
+    """Forget a position. The correction surface for a ruling that was wrong.
+
+    Notes are demoted, never deleted — a cold note costs nothing. A position is
+    different in kind: it gets its own prompt block and outranks the notes
+    around it on its subject, so a bad one actively misdirects every future
+    turn. Reversing a still-live question is a POST instead, which supersedes
+    in place and keeps the prior reasoning under `## Previously`.
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    from mc import memory as _mem
+    try:
+        removed = _mem.delete_position(p, filename)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except OSError as e:
+        return jsonify({'error': f'delete failed: {e}'}), 500
+    if not removed:
+        return jsonify({'error': 'position not found'}), 404
+    return jsonify({'ok': True})
+
+
 @bp.route('/api/project/<project_id>/memory/search', methods=['GET'])
 def memory_search(project_id):
     """Ranked-grep over the project memory corpus (SPEC §3 Leg B). The

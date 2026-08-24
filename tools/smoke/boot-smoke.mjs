@@ -762,6 +762,156 @@ async function runBacklogLinksGuard(browser) {
 }
 
 
+// -- Memory modal: working state + standing positions guard -------------------
+// Until this shipped, continuity and positions had no surface at all -- only
+// agents could read them, so "are the positions any good?" was a question you
+// could only answer by grepping the vault. Three things here fail silently:
+//
+//   * the handlers are inline onclick in an ES module, so every one needs a
+//     window bridge (the same class inline-handler-scope-check.mjs guards).
+//   * Save must SUPERSEDE -- POST the same slug and subject back. A save that
+//     posted a fresh slug would quietly leave two contradictory rulings on one
+//     question, which is the exact thing write_position exists to prevent.
+//   * Forget must be a real DELETE. Editing a reason to "never mind" leaves a
+//     ruling in the prompt block that still outranks the notes around it.
+async function runMemoryPanelGuard(browser) {
+  const PID = 'smoke_alpha';
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  let positions = [
+    { file: 'position_obsidian.md', subject: 'Obsidian as the memory substrate',
+      verdict: 'declined', reason: 'we built the graph machinery ourselves',
+      expires_when: 'if the link layer rots', triggers: 'obsidian,second brain',
+      decided: '2026-08-23', body: '' },
+  ];
+  let continuity = { threads: ['MC-903 phase 3'], commitments: ['re-measure the quota'],
+    understanding: 'positions just got a surface', updated: '2026-08-24T18:07:49Z' };
+  const posts = [], deletes = [], puts = [];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (/\/memory\/continuity$/.test(path)) {
+      if (req.method() === 'PUT') {
+        const b = JSON.parse(req.postData() || '{}');
+        puts.push(b);
+        continuity = Object.assign({}, continuity, b, { updated: '2026-08-24T19:00:00Z' });
+        return json(continuity);
+      }
+      return json(continuity);
+    }
+    if (/\/memory\/positions\/.+$/.test(path) && req.method() === 'DELETE') {
+      const gone = decodeURIComponent(path.split('/').pop());
+      deletes.push(gone);
+      positions = positions.filter((r) => r.file !== gone);
+      return json({ ok: true });
+    }
+    if (/\/memory\/positions$/.test(path)) {
+      if (req.method() === 'POST') {
+        const b = JSON.parse(req.postData() || '{}');
+        posts.push(b);
+        positions = positions.map((r) => (r.subject === b.subject
+          ? Object.assign({}, r, { reason: b.reason, expires_when: b.expires_when,
+              triggers: b.triggers })
+          : r));
+        return json({ ok: true, file: 'position_' + b.slug + '.md' });
+      }
+      return json(positions);
+    }
+    if (/\/memory$/.test(path)) return json({ content: '# index\n', path: '/smoke/MEMORY.md' });
+    if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('FAIL memory-panel guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async ({ pid }) => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 450));
+    try {
+      await openMemoryModal(pid);
+      await settle();
+      const win = document.querySelector('[data-modal-id="__memory_' + pid + '"]');
+      if (!win) throw new Error('memory modal never opened');
+      r.text = (win.innerText || '').replace(/\s+/g, ' ');
+      r.threads = (document.getElementById('cont-thr-' + pid) || {}).value;
+      r.cards = win.querySelectorAll('.dave-pos').length;
+
+      // Save the working state through the real handler.
+      document.getElementById('cont-thr-' + pid).value = 'one thread\ntwo thread';
+      await saveContinuity(pid);
+      await settle();
+
+      // Edit a reason and Save -- must supersede, not fork.
+      const ta = win.querySelector('.dave-pos [data-k="reason"]');
+      ta.value = 'still true, and cheaper than we thought';
+      await savePosition(pid, 'position_obsidian.md');
+      await settle();
+      r.reasonAfter = (win.querySelector('.dave-pos [data-k="reason"]') || {}).value;
+
+      // Forget it. confirm() is stubbed true for the duration.
+      const realConfirm = window.confirm;
+      window.confirm = () => true;
+      await forgetPosition(pid, 'position_obsidian.md');
+      await settle();
+      window.confirm = realConfirm;
+      r.cardsAfter = win.querySelectorAll('.dave-pos').length;
+      r.emptyAfter = !!win.querySelector('.dave-empty');
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  }, { pid: PID });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push('threw - ' + out.err);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  if (!/Working state/i.test(out.text || '')) fails.push('no working-state section rendered');
+  if (!/Standing positions/i.test(out.text || '')) fails.push('no positions section rendered');
+  if (!/Memory index/i.test(out.text || '')) fails.push('MEMORY.md section vanished from the modal');
+  if (out.threads !== 'MC-903 phase 3') fails.push('threads not loaded: ' + JSON.stringify(out.threads));
+  if (out.cards !== 1) fails.push('expected 1 position card, got ' + out.cards);
+  if (!puts.length) fails.push('saveContinuity never reached the server');
+  else if (JSON.stringify(puts[0].threads) !== JSON.stringify(['one thread', 'two thread']))
+    fails.push('continuity PUT did not split lines: ' + JSON.stringify(puts[0].threads));
+  if (!posts.length) fails.push('savePosition never reached the server');
+  else {
+    if (posts[0].slug !== 'obsidian')
+      fails.push('save forked a new slug instead of superseding: ' + JSON.stringify(posts[0].slug));
+    if (posts[0].subject !== 'Obsidian as the memory substrate')
+      fails.push('save lost the subject: ' + JSON.stringify(posts[0].subject));
+    if (!/cheaper than we thought/.test(posts[0].reason || ''))
+      fails.push('save sent the stale reason: ' + JSON.stringify(posts[0].reason));
+  }
+  if (out.reasonAfter !== 'still true, and cheaper than we thought')
+    fails.push('the saved reason did not survive the re-render: ' + JSON.stringify(out.reasonAfter));
+  if (deletes[0] !== 'position_obsidian.md')
+    fails.push('forget did not DELETE the right file: ' + JSON.stringify(deletes));
+  if (out.cardsAfter !== 0) fails.push('the forgotten position is still on screen');
+  if (!out.emptyAfter) fails.push('no empty state after forgetting the last position');
+
+  if (fails.length) {
+    console.error('FAIL memory-panel guard:');
+    fails.forEach((f) => console.error('       * ' + f));
+    return false;
+  }
+  console.log('OKAY memory panel: working state loads and saves, a position save supersedes its own slug, Forget deletes.');
+  return true;
+}
+
+
 // ── Scheduled-runs calendar guard ────────────────────────────────────────────
 // Two things here can be confidently wrong rather than obviously broken, which
 // is why they get asserted rather than eyeballed:
@@ -1248,11 +1398,12 @@ try {
   results.push(await runModelPickerGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
   results.push(await runBacklogLinksGuard(browser));
+  results.push(await runMemoryPanelGuard(browser));
   results.push(await runScheduleCalendarGuard(browser));
   results.push(await runQuestionRepaintGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, calendar & question-repaint guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar & question-repaint guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

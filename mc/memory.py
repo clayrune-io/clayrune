@@ -1056,6 +1056,34 @@ def list_positions(project):
     return sorted(out, key=lambda r: r.get('decided', ''), reverse=True)
 
 
+def delete_position(project, filename):
+    """Forget a position entirely. Returns True if a file was removed.
+
+    Deliberately a DELETE and not a demotion, which is the opposite of the rule
+    for notes ("never delete to save tokens — demote"). The rule exists because
+    a note is an observation and a cold one still costs nothing. A position is a
+    RULING: it renders in its own prompt block, outranks the notes around it on
+    its subject, and an agent is meant to obey it. A wrong one is not dead
+    weight, it is active misdirection — so there has to be a way to take it
+    back. Reversing a still-valid question is `write_position` instead, which
+    supersedes in place and keeps the old reasoning.
+    """
+    name = str(filename or '').strip()
+    # Name-only, and it must look like a position: a UI-supplied filename is
+    # the one string here that reaches the filesystem, and the memory dir also
+    # holds MEMORY.md and every topic note.
+    if not name or not _is_position_file(name) or '/' in name or '\\' in name:
+        raise ValueError('not a position filename')
+    mem_dir = _get_memory_path(project).parent
+    path = mem_dir / name
+    if path.resolve().parent != mem_dir.resolve():
+        raise ValueError('not a position filename')
+    if not path.is_file():
+        return False
+    path.unlink()
+    return True
+
+
 def _mem_corpus(mem_dir, mem_name, arch_name):
     """Parse + tokenize the memory corpus into scoring units (cached).
 

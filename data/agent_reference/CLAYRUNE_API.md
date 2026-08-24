@@ -31,6 +31,17 @@ It is curated + machine-managed; do NOT hand-edit the managed region.
 | PUT | `/api/project/<project_id>/memory` | Replace MEMORY.md (rare; UI uses this). |
 | POST | `/api/project/<project_id>/memory/append` | Append a session-log entry programmatically. |
 | GET | `/api/project/<project_id>/memory/search?q=…&k=N` | Ranked memory search (topic files + archive + log). Prefer the `mc-memory-search` skill. |
+| GET / PUT | `/api/project/<project_id>/memory/continuity` | Working state — what the project is part-way through and what was promised. Fixed slots, replaced whole; PUT omits nothing you want kept. Rendered into every prompt, so you rarely need to GET it. |
+| GET / POST | `/api/project/<project_id>/memory/positions` | Standing positions. **POST one whenever a question gets settled** — you recommended against something, or the user declined something you proposed. `{subject, position, reason, expires_when?, triggers?}`; `reason` is required. Posting the same subject SUPERSEDES rather than adding a second ruling. |
+| DELETE | `/api/project/<project_id>/memory/positions/<filename>` | Forget a position. Use when a ruling was simply wrong — reversing a still-live question is a POST instead, which keeps the prior reasoning. |
+
+**Positions vs notes.** A note is an observation and a cold one costs nothing, so
+notes are demoted rather than deleted. A position is a *ruling*: it renders in
+its own prompt block and outranks the notes around it on its subject. That is
+why it has a DELETE and why `reason` is mandatory — a bare verdict is dogma an
+agent can only obey; a reason is checkable, so the position can be re-opened.
+Record settled **questions** only, never ordinary preferences: every entry costs
+prompt space in every future turn that touches its subject.
 
 ## Rules
 

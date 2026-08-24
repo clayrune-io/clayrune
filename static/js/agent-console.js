@@ -209,6 +209,190 @@ async function saveMemory(projectId) {
   } catch(e) { alert('Failed to save memory'); }
 }
 
+// ── Working state + standing positions (DAVE_DESIGN §3-4) ───────────────────
+//
+// These live in the SAME modal as MEMORY.md rather than getting their own
+// sidebar entry: they are three layers of one thing, and split across three
+// places nobody would ever compare them. Until now they had no surface at all
+// — only agents could read them, which made "are the positions any good?" a
+// question you could only answer by grepping the vault.
+
+const daveCache = {};  // projectId -> { continuity, positions }
+
+async function loadDave(projectId) {
+  const base = API_BASE + '/api/project/' + projectId + '/memory';
+  const blank = { threads: [], commitments: [], understanding: '', updated: '' };
+  let continuity = blank, positions = [];
+  try {
+    const r = await fetch(base + '/continuity');
+    if (r.ok) continuity = Object.assign({}, blank, await r.json());
+  } catch (e) { /* leave blank; the panel says "nothing recorded yet" */ }
+  try {
+    const r = await fetch(base + '/positions');
+    if (r.ok) { const d = await r.json(); if (Array.isArray(d)) positions = d; }
+  } catch (e) { /* same */ }
+  daveCache[projectId] = { continuity, positions };
+  return daveCache[projectId];
+}
+
+function continuityHTML(p) {
+  const c = (daveCache[p.id] || {}).continuity
+    || { threads: [], commitments: [], understanding: '', updated: '' };
+  const id = esc(p.id);
+  const when = c.updated
+    ? `<div class="dave-meta">last rewritten ${esc(String(c.updated).replace('T', ' ').slice(0, 16))}</div>`
+    : `<div class="dave-meta">never written &mdash; no session has checkpointed here yet</div>`;
+  return `<section class="dave-block">
+    <div class="dave-head">Working state
+      <span class="dave-sub">what this project is part-way through</span></div>
+    <div class="memory-hint">Injected verbatim into every session, so it never
+      competes for a retrieval slot. Fixed slots &mdash; 5 in flight, 5 promised
+      &mdash; replaced whole on every write, which is why it never needs pruning.
+      Agents rewrite it at checkpoints, so an edit here is a correction to the
+      base they fold into, not a permanent note.</div>
+    <label class="dave-label">Where things stand</label>
+    <textarea class="memory-textarea dave-ta" id="cont-und-${id}" rows="3"
+      placeholder="One or two sentences on where the work stands right now.">${esc(c.understanding || '')}</textarea>
+    <label class="dave-label">In flight &mdash; one per line, max 5</label>
+    <textarea class="memory-textarea dave-ta" id="cont-thr-${id}" rows="5"
+      placeholder="Work started and not finished.">${esc((c.threads || []).join('\n'))}</textarea>
+    <label class="dave-label">Promised &mdash; one per line, max 5</label>
+    <textarea class="memory-textarea dave-ta" id="cont-com-${id}" rows="4"
+      placeholder="Things an agent said it would do and has not done.">${esc((c.commitments || []).join('\n'))}</textarea>
+    <div class="dave-actions">
+      <button class="btn-save-rules" onclick="saveContinuity('${id}')">Save working state</button>
+      <span class="rules-saved" id="cont-saved-${id}">Saved</span>
+    </div>
+    ${when}
+  </section>`;
+}
+
+function positionCardHTML(pid, r) {
+  const f = esc(r.file || '');
+  const v = esc((r.verdict || 'declined').toLowerCase());
+  return `<div class="dave-pos" data-file="${f}">
+    <div class="dave-pos-top">
+      <span class="dave-verdict dave-v-${v.replace(/[^a-z]/g, '') || 'other'}">${v}</span>
+      <span class="dave-pos-subject">${esc(r.subject || '')}</span>
+      <span class="dave-pos-date">${esc(r.decided || '')}</span>
+    </div>
+    <label class="dave-label">Reason &mdash; required; it is what lets this be re-opened</label>
+    <textarea class="memory-textarea dave-ta" data-k="reason" rows="2">${esc(r.reason || '')}</textarea>
+    <label class="dave-label">What would change our mind</label>
+    <input class="dave-input" data-k="expires_when" value="${esc(r.expires_when || '')}"
+      placeholder="the condition that reopens this">
+    <label class="dave-label">Triggers &mdash; comma-separated terms that make it fire</label>
+    <input class="dave-input" data-k="triggers" value="${esc(r.triggers || '')}"
+      placeholder="left blank, it fires on words from the subject">
+    <div class="dave-actions">
+      <button class="btn-save-rules" onclick="savePosition('${esc(pid)}','${f}')">Save</button>
+      <button class="dave-forget" onclick="forgetPosition('${esc(pid)}','${f}')">Forget</button>
+    </div>
+  </div>`;
+}
+
+function positionsHTML(p) {
+  const list = (daveCache[p.id] || {}).positions || [];
+  const body = list.length
+    ? list.map(r => positionCardHTML(p.id, r)).join('')
+    : `<div class="dave-empty">Nothing recorded yet. Agents write one when a
+       question gets settled &mdash; you declined something proposed, or an agent
+       evaluated something and recommended against it.</div>`;
+  return `<section class="dave-block">
+    <div class="dave-head">Standing positions
+      <span class="dave-sub">what we decided, and why</span></div>
+    <div class="memory-hint">A position outranks ordinary notes when its subject
+      comes up, and renders in its own prompt block &mdash; so a wrong one is not
+      dead weight, it actively misdirects. <b>Save</b> supersedes in place and
+      keeps the old reasoning; <b>Forget</b> removes it for good. Reversing a
+      call is a Save with a new reason, not a Forget.</div>
+    ${body}
+  </section>`;
+}
+
+async function saveContinuity(projectId) {
+  const g = k => (document.getElementById(k + projectId) || {}).value || '';
+  const lines = s => s.split('\n').map(x => x.trim()).filter(Boolean);
+  try {
+    const res = await fetch(API_BASE + '/api/project/' + projectId + '/memory/continuity', {
+      method: 'PUT', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        understanding: g('cont-und-'),
+        threads: lines(g('cont-thr-')),
+        commitments: lines(g('cont-com-'))
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    // Re-read rather than trust the form: the server caps the lists and trims
+    // each line, so what was typed and what is stored can differ.
+    const rec = await res.json();
+    daveCache[projectId] = Object.assign({}, daveCache[projectId], { continuity: rec });
+    flashSaved('cont-saved-' + projectId);
+    refreshDavePanels(projectId);
+  } catch (e) { alert('Failed to save working state: ' + e.message); }
+}
+
+function _posCardValues(projectId, file) {
+  const card = document.querySelector(
+    `[data-modal-id="__memory_${projectId}"] .dave-pos[data-file="${CSS.escape(file)}"]`);
+  if (!card) return null;
+  const out = {};
+  card.querySelectorAll('[data-k]').forEach(el => { out[el.dataset.k] = el.value; });
+  return out;
+}
+
+async function savePosition(projectId, file) {
+  const rec = ((daveCache[projectId] || {}).positions || [])
+    .find(r => r.file === file);
+  const edited = _posCardValues(projectId, file);
+  if (!rec || !edited) return;
+  if (!(edited.reason || '').trim()) {
+    alert('A reason is required. A verdict without one cannot be re-evaluated — '
+          + 'use Forget if the position should go away entirely.');
+    return;
+  }
+  try {
+    const res = await fetch(API_BASE + '/api/project/' + projectId + '/memory/positions', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // Same subject and slug => the server supersedes in place rather than
+      // adding a second, contradictory ruling on one question.
+      body: JSON.stringify({
+        subject: rec.subject, position: rec.verdict, reason: edited.reason,
+        expires_when: edited.expires_when || '', triggers: edited.triggers || '',
+        slug: file.replace(/^position_/, '').replace(/\.md$/, '')
+      })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await loadDave(projectId);
+    refreshDavePanels(projectId);
+  } catch (e) { alert('Failed to save position: ' + e.message); }
+}
+
+async function forgetPosition(projectId, file) {
+  const rec = ((daveCache[projectId] || {}).positions || [])
+    .find(r => r.file === file);
+  if (!confirm('Forget this position?\n\n' + (rec ? rec.subject : file)
+      + '\n\nIt stops steering every future turn on this subject. To reverse the '
+      + 'call but keep the history, edit the reason and Save instead.')) return;
+  try {
+    const res = await fetch(API_BASE + '/api/project/' + projectId
+      + '/memory/positions/' + encodeURIComponent(file), { method: 'DELETE' });
+    if (!res.ok) throw new Error(await res.text());
+    await loadDave(projectId);
+    refreshDavePanels(projectId);
+  } catch (e) { alert('Failed to forget position: ' + e.message); }
+}
+
+function refreshDavePanels(projectId) {
+  const win = document.querySelector(`[data-modal-id="__memory_${projectId}"]`);
+  if (!win) return;
+  const p = allProjects.find(x => x.id === projectId) || { id: projectId };
+  const c = win.querySelector('.dave-continuity');
+  const s = win.querySelector('.dave-positions');
+  if (c) c.innerHTML = continuityHTML(p);
+  if (s) s.innerHTML = positionsHTML(p);
+}
+
 async function openMemoryModal(projectId) {
   const modalId = '__memory_' + projectId;
   if (openModals.has(modalId)) {
@@ -230,13 +414,16 @@ async function openMemoryModal(projectId) {
       memoryCache[projectId] = { content: '', path: '', loaded: true };
     }
   }
+  // Always re-read: working state changes every checkpoint, so a cached copy
+  // would show yesterday's threads the one time it matters.
+  await loadDave(projectId);
 
   const win = document.createElement('div');
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
   content.className = 'modal-content';
-  content.style.height = '60vh';
+  content.style.height = '78vh';
   content.innerHTML = `
     <div class="modal-header" style="padding:16px 24px 12px 28px">
       <div class="modal-window-controls">
@@ -245,8 +432,14 @@ async function openMemoryModal(projectId) {
       </div>
       <h2 style="margin:0;font-size:18px;font-weight:700;color:var(--text)">Memory &mdash; ${esc(p.name || p.id)}</h2>
     </div>
-    <div class="memory-editor">
-      ${memoryTabHTML(p)}
+    <div class="memory-stack">
+      <div class="dave-continuity">${continuityHTML(p)}</div>
+      <div class="dave-positions">${positionsHTML(p)}</div>
+      <section class="dave-block">
+        <div class="dave-head">Memory index
+          <span class="dave-sub">MEMORY.md &mdash; auto-loaded into every prompt</span></div>
+        ${memoryTabHTML(p)}
+      </section>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
@@ -422,4 +615,8 @@ window.switchModalTab = switchModalTab;
 window.applyTabFilter = applyTabFilter;
 window.clearTabSearch = clearTabSearch;
 window.saveMemory = saveMemory;
+window.saveContinuity = saveContinuity;
+window.savePosition = savePosition;
+window.forgetPosition = forgetPosition;
+window.refreshDavePanels = refreshDavePanels;
 window.toggleConsoleSession = toggleConsoleSession;

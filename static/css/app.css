@@ -4536,6 +4536,78 @@
   }
   .memory-textarea:focus { border-color: var(--accent); }
 
+  /* ── WORKING STATE + POSITIONS (memory modal) ─────────────────── */
+  /* The memory modal used to hold one textarea and was laid out to flex-fill
+     around it. Three stacked sections need the opposite: natural heights and
+     one scroll for the lot. */
+  .memory-stack {
+    padding: 0 24px 20px; flex: 1; min-height: 0; overflow-y: auto;
+  }
+  .dave-block {
+    padding: 16px 0; border-bottom: 1px solid var(--border);
+  }
+  .dave-block:last-child { border-bottom: none; }
+  .dave-block .memory-section { padding: 0; }
+  .dave-head {
+    font-size: 13px; font-weight: 700; color: var(--text);
+    letter-spacing: 0.3px; margin-bottom: 8px;
+  }
+  .dave-sub {
+    font-weight: 400; color: var(--text-faint); font-size: 11px;
+    letter-spacing: 0; margin-left: 8px;
+  }
+  .dave-label {
+    display: block; font-size: 10px; letter-spacing: 0.7px;
+    text-transform: uppercase; font-weight: 600; color: var(--text-faint);
+    margin: 10px 0 4px;
+  }
+  .dave-ta { min-height: 0; resize: vertical; }
+  .dave-input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: 'JetBrains Mono', monospace;
+    font-size: 12px; padding: 7px 10px; border-radius: 5px; outline: none;
+    box-sizing: border-box; transition: border-color 0.15s;
+  }
+  .dave-input:focus { border-color: var(--accent); }
+  .dave-actions {
+    display: flex; align-items: center; gap: 8px; margin-top: 10px;
+  }
+  .dave-meta {
+    font-size: 10px; color: var(--text-faint); margin-top: 8px;
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .dave-empty {
+    font-size: 12px; color: var(--text-faint); line-height: 1.6;
+    padding: 12px 14px; border: 1px dashed var(--border); border-radius: 6px;
+  }
+  .dave-pos {
+    border: 1px solid var(--border); border-radius: 6px;
+    padding: 12px 14px; margin-top: 10px; background: var(--bg-alt, transparent);
+  }
+  .dave-pos-top {
+    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap;
+  }
+  .dave-pos-subject {
+    font-size: 13px; font-weight: 600; color: var(--text); flex: 1;
+  }
+  .dave-pos-date {
+    font-size: 10px; color: var(--text-faint);
+    font-family: 'JetBrains Mono', monospace;
+  }
+  .dave-verdict {
+    font-size: 9px; letter-spacing: 0.8px; text-transform: uppercase;
+    font-weight: 700; padding: 2px 7px; border-radius: 3px;
+    border: 1px solid var(--border); color: var(--text-faint);
+  }
+  .dave-verdict.dave-vdeclined { color: var(--red-text, #b4514c); }
+  .dave-verdict.dave-vadopted { color: var(--green-text); }
+  .dave-forget {
+    background: none; border: 1px solid var(--border); color: var(--text-faint);
+    font-size: 11px; padding: 5px 11px; border-radius: 4px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .dave-forget:hover { color: var(--red-text, #b4514c); border-color: currentColor; }
+
   /* ── PATH EDITOR ────────────────────────────────────────────── */
   .path-row {
     display: flex; align-items: center; gap: 8px; margin-top: 8px;

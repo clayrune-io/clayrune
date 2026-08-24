@@ -233,3 +233,38 @@ def test_capture_block_is_empty_without_a_project():
     from mc import memory as mem
     assert mem.render_position_capture({}, 5199) == ''
     assert mem.render_position_capture(None, 5199) == ''
+
+
+# ── forgetting one ───────────────────────────────────────────────────────────
+
+def test_forget_removes_it_from_the_corpus(env):
+    """Notes are demoted, never deleted — a cold note costs nothing. A position
+    is a RULING: it gets its own prompt block and outranks the notes around it
+    on its subject, so a wrong one is not dead weight, it misdirects. There has
+    to be a way to take one back."""
+    mem, _ = env
+    fn = mem.write_position(P, subject='Obsidian', verdict='declined',
+                            reason='we built the graph machinery ourselves')
+    assert len(mem.list_positions(P)) == 1
+    assert mem.delete_position(P, fn) is True
+    assert mem.list_positions(P) == []
+    assert not any(h.get('cls') == 'position'
+                   for h in mem._memory_search(P, 'Obsidian', 6))
+
+
+def test_forget_is_idempotent(env):
+    mem, _ = env
+    assert mem.delete_position(P, 'position_never_existed.md') is False
+
+
+def test_forget_refuses_anything_that_is_not_a_position(env):
+    """The filename is UI-supplied and the memory dir also holds MEMORY.md and
+    every topic note, so it is the one string here that reaches the filesystem."""
+    mem, tmp = env
+    (tmp / 'topic_keep.md').write_text('keep me\n', encoding='utf-8')
+    for bad in ('MEMORY.md', 'topic_keep.md', '', '../MEMORY.md',
+                'position_x.md/../../MEMORY.md', 'sub/position_x.md'):
+        with pytest.raises(ValueError):
+            mem.delete_position(P, bad)
+    assert (tmp / 'topic_keep.md').exists()
+    assert (tmp / 'MEMORY.md').exists()
