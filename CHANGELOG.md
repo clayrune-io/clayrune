@@ -6,6 +6,36 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24] — positions get a caller, and continuity stops competing with itself
+
+Positions shipped the day before with storage, retrieval, a note class that
+outranks ordinary notes on its own subject, and two REST routes. What they did
+not ship with was a **caller**. A day later the vault held exactly two
+positions, both hand-written while the feature was being designed — nothing had
+recorded one since, because nothing told any agent the route existed.
+
+Capture stays explicit rather than mined from transcripts; that part of the
+design is right (most "no" in a conversation is not a decision, so a scan buries
+the twenty entries that matter). But explicit only works if the agent is told,
+and an API nobody is told about is dead code. `render_position_capture()` now
+puts a short directive in every project's system prompt, next to continuity —
+**not** in the API reference, because reference material failing to fire is the
+exact failure positions exist to fix. It carries the project's own URL, marks
+`reason` as mandatory and says why, explains that recording supersedes rather
+than appends, and warns off ordinary preferences: every entry costs prompt space
+in every future turn that touches its subject.
+
+**And the continuity record no longer competes with itself.** It is injected
+verbatim into every prompt, yet it was also sitting in the read-floor corpus —
+so on two of three probe queries it won one of six retrieval slots with text the
+agent was guaranteed to already have, displacing a real note to do it. Excluded
+from the corpus; it is delivered, not retrieved.
+
+Verified live before the fix: a position ranks **first** on its own subject
+("should we adopt Obsidian as our memory vault?", "how heavy should the nightly
+research agent be?") and is **absent** from an unrelated one ("fix the
+cloudflare tunnel quota alarm"). 1517 tests pass.
+
 ## [2026-08-22] — the image viewer is a window you can pinch, not a modal
 
 Opening a picture used to take the whole dashboard hostage: a full-screen dim

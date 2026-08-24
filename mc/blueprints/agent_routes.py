@@ -2043,6 +2043,20 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         except Exception as e:
             _log(f"[continuity] render failed for {project.get('id')}: {e}")
 
+    # Positions had storage, retrieval and a route but no caller. Capture stays
+    # explicit (mining transcripts buries the twenty that matter under every
+    # "no, use tabs"), so the agent has to be TOLD — directive, and here rather
+    # than in the API reference, because reference material failing to fire is
+    # the exact failure positions exist to fix.
+    if not incognito and state.CONFIG.get('positions_enabled', True):
+        try:
+            from mc.memory import render_position_capture as _render_pos
+            _pos = _render_pos(project, port)
+            if _pos:
+                parts.append(_pos)
+        except Exception as e:
+            _log(f"[positions] render failed for {project.get('id')}: {e}")
+
     # Leg B.3 — deterministic read floor (no model; ranked grep). The agent
     # already auto-loads the curated index; this surfaces relevant topic-file /
     # archive / session-log detail for THIS task so the read side never depends

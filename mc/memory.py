@@ -889,6 +889,47 @@ def render_continuity(project):
             + "\n".join(lines))
 
 
+def render_position_capture(project, port):
+    """The standing instruction to RECORD a position, for the system prompt.
+
+    Positions have storage, retrieval and a route; what they did not have is a
+    caller. Capture is deliberately explicit rather than mined from transcripts
+    (see `write_position_route`) — but "explicit" only works if the agent is
+    told, and an API nobody is told about is dead code. Measured 2026-08-24:
+    two positions existed, both hand-written the day the feature shipped.
+
+    Directive, and placed next to continuity rather than in the API reference,
+    because the failure this whole class exists to fix was reference material
+    failing to fire. The reference describes; this instructs.
+    """
+    pid = (project or {}).get('id') or ''
+    if not pid:
+        return ''
+    return (
+        "--- RECORDING A POSITION (a decision NOT to do something) ---\n"
+        "  When a question gets SETTLED — you evaluated something and "
+        "recommended against it, or the user declined something you proposed — "
+        "record it before the turn ends. Nothing else captures this: every "
+        "other capture path (checkpointer, Scribe, Distiller) is downstream of "
+        "an artifact, and deciding not to build something produces no commit, "
+        "no file, no diff. Unwritten, it costs a whole conversation the next "
+        "time someone re-proposes it.\n"
+        f"  curl -s -X POST http://localhost:{port}/api/project/{pid}"
+        "/memory/positions -H 'Content-Type: application/json' -d "
+        "'{\"subject\":\"what the question was\",\"position\":\"declined\","
+        "\"reason\":\"why — REQUIRED\",\"expires_when\":\"what would change "
+        "our mind\",\"triggers\":\"comma,separated,terms that should make this "
+        "fire\"}'\n"
+        "  `reason` is mandatory on purpose: a bare verdict is dogma an agent "
+        "can only obey, a reason is checkable and can be re-opened honestly. "
+        "Recording a position on a subject that already has one SUPERSEDES it — "
+        "that is how you reverse a call, not by adding a second one.\n"
+        "  Record settled QUESTIONS only. Not preferences, not an in-the-moment "
+        "\"no, use tabs\" — every entry costs prompt space in every future turn "
+        "that touches its subject, and a position you invented outranks the "
+        "notes around it.")
+
+
 # The extraction prompt. Deliberately asks for the WHOLE record back rather
 # than a diff: a model that emits "add this thread" needs the caller to decide
 # what falls off, which is the curation problem this design exists to avoid.
@@ -1039,6 +1080,12 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
         try:
             txt = f.read_text(encoding='utf-8', errors='replace')
         except Exception:
+            continue
+        if f.name == CONTINUITY_FILE:
+            # Already injected verbatim into every prompt. Letting it also win a
+            # read-floor slot spends one of six on text the agent is guaranteed
+            # to have anyway — measured: it displaced real notes on 2 of 3 probe
+            # queries the day continuity shipped.
             continue
         if f.name == mem_name:
             for e in _mem_split(txt)[1]:

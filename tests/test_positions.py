@@ -213,3 +213,23 @@ def test_an_ordinary_note_is_not_treated_as_a_position(env):
     assert not ar._is_position_hit({'file': 'arch_memory_link_layer.md'})
     assert not ar._is_position_hit({'file': 'MEMORY_ARCHIVE.md'})
     assert not ar._is_position_hit({})
+
+
+# ── capture: the instruction that gives the route a caller ───────────────────
+
+def test_capture_block_names_the_project_and_the_route():
+    """Storage, retrieval and a route shipped together; a caller did not. Two
+    positions existed a day later, both hand-written. The route's own docstring
+    argues capture must stay explicit rather than mined from transcripts — but
+    explicit only works if the agent is told, so the telling is the feature."""
+    from mc import memory as mem
+    out = mem.render_position_capture({'id': 'mission_control'}, 5199)
+    assert '/api/project/mission_control/memory/positions' in out
+    assert 'localhost:5199' in out
+    assert 'reason' in out and 'expires_when' in out
+
+
+def test_capture_block_is_empty_without_a_project():
+    from mc import memory as mem
+    assert mem.render_position_capture({}, 5199) == ''
+    assert mem.render_position_capture(None, 5199) == ''

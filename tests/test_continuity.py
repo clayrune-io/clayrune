@@ -198,3 +198,20 @@ def test_extraction_never_raises(env, monkeypatch):
         raise RuntimeError('model down')
     monkeypatch.setattr(mem, '_scribe_call', boom)
     assert mem._extract_continuity(P, 'delta', 'haiku') is None
+
+
+# ── the record must not ALSO be retrieved ────────────────────────────────────
+
+def test_continuity_never_wins_a_read_floor_slot(env):
+    """It is injected verbatim into every prompt, so letting it also rank in
+    the read floor spends one of six slots on text the agent is guaranteed to
+    have. Measured the day continuity shipped: it displaced real notes on two
+    of three probe queries."""
+    mem, tmp = env
+    mem.write_continuity(P, threads=['fix the cloudflare tunnel quota alarm'],
+                         understanding='cloudflare tunnel work is in flight')
+    (tmp / 'topic_tunnel.md').write_text(
+        'cloudflare tunnel quota alarm notes\n', encoding='utf-8')
+    hits = mem._memory_search(P, 'fix the cloudflare tunnel quota alarm', 6)
+    assert hits, 'the ordinary topic note should still be found'
+    assert not any(mem.CONTINUITY_FILE in (h.get('file') or '') for h in hits)
