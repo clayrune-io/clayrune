@@ -6,6 +6,42 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24n] — the running agent looks like one, and every type has a face
+
+Ron: *"emphasize the colors of the running agent inside the project… make all
+agents tiles the same size, and add the option to edit them… Avatars are a must.
+Right now none of them has one."*
+
+**State now owns the figure card.** It was carried entirely by a 13px dot, so a
+figure mid-turn looked identical to one that had been idle for twenty hours. The
+card's left edge, its background tint and a new uppercase word all carry it:
+green for working, amber for needs-you, plain for idle.
+
+**Bench tiles are one shape.** They were a wrapping flex row, and flex items
+size to their content — four types with four description lengths made four
+different tiles. A grid of `1fr` columns with a stretched row fixes the width,
+`-webkit-line-clamp: 3` fixes the text, and `margin-top: auto` on the footer
+puts every card's last line at the same y.
+
+**Every bench card has a pencil**, opening the same persona editor the composer
+uses — not a Floor-flavoured second one. It takes no project id, because a
+global type belongs to no room, and `reloadCharacters` is now guarded for that
+path rather than refetching a picker for `null`.
+
+**And the editor can set a face**, which is why none of them had one: the route
+accepted `avatar` and an agent could set its own, but no human-facing surface
+ever asked. There is a text box and a row of ten one-click picks — typing an
+emoji on a desktop keyboard is the entire reason a field like this stays empty
+forever. Seeded the four existing types through the API: 🦉 Fenn, ✍️ Marlow,
+🔍 Quill, 📈 market-analyst-investor.
+
+**The stylesheet block was rewritten whole.** Five rounds of surgical patching
+had left four duplicate selectors (`.fl-fig:hover`, `.fl-bench-list`,
+`.fl-bench-main`, `.fl-bench-foot .fl-cta`) where the second silently won —
+a bug factory, since the next edit lands on whichever copy you happen to find
+and it may be the one that loses. 75 rules, no duplicates, checked by the patch
+that wrote them.
+
 ## [2026-08-24m] — the board reads as a board
 
 Ron: *"definitely improvement… but I think it still looks bit dull."* The

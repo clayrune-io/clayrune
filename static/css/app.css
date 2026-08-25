@@ -4563,16 +4563,17 @@
   }
 
   /* ── The Floor (MC-897) ─────────────────────────────────────────────────
-     Rooms are projects, a figure is a session. The room border is what makes
-     "two agents, one project" legible at a glance; a flat list of cards with a
-     project name on each reads as eight unrelated things. */
+     Rooms are projects, a figure is a SESSION. Three ideas carry the whole
+     block: a room is bounded so "two agents, one project" is legible; a
+     figure's STATE owns its card rather than a dot; and a bench tile is one
+     shape regardless of how much its description happens to say. */
   .fl-rooms { display: flex; flex-direction: column; gap: 12px; }
   .fl-room {
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px;
     background: var(--bg);
     /* The project's own colour, set inline from `modal_color`. Without it a
-       dozen rooms read as one grey list; it is also the same identity cue the
-       project modal uses, so a room and its modal look like the same place. */
+       dozen rooms read as one grey list, and it is the same identity cue the
+       project modal uses — so a room and its modal look like the same place. */
     border-left: 3px solid var(--border);
   }
   /* A room waiting on a human is the only thing here with a deadline. */
@@ -4581,8 +4582,7 @@
     font-size: 13px; font-weight: 700; color: var(--text);
     display: flex; align-items: center; gap: 8px; margin-bottom: 9px;
   }
-  /* A dot in the project's own colour beside its name — the same cue as the
-     left edge, at the point the eye actually lands. */
+  /* The colour again, at the point the eye actually lands. */
   .fl-room-swatch {
     width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px;
     background: var(--border);
@@ -4597,34 +4597,61 @@
     font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--amber);
     text-transform: uppercase;
   }
+
+  /* ── figures ──────────────────────────────────────────────────────────── */
   .fl-figs { display: flex; flex-wrap: wrap; gap: 8px; }
   .fl-fig {
     /* No max-width: one agent in a wide room used to sit in a 340px card with
        two-thirds of the room blank, which read as "mostly empty" rather than
        "one person working". */
     flex: 1 1 260px; min-width: 220px; cursor: pointer;
-    border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px;
+    border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: 6px; padding: 9px 11px;
     background: var(--bg-alt, var(--bg));
     transition: border-color 0.15s, box-shadow 0.15s;
   }
-  .fl-fig:hover { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07); }
-  .fl-fig:hover { border-color: var(--accent); }
-  /* A figure that needs a human is the only thing on this board with a real
-     deadline, so it gets the one loud edge. */
-  .fl-fig.fl-asking { border-color: var(--amber); }
+  .fl-fig:hover {
+    border-color: var(--accent); box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07);
+  }
+  /* STATE OWNS THE CARD, not just the dot. A figure mid-turn used to look
+     identical to one idle for twenty hours — the only difference was a 13px
+     glyph, which is not a difference you can see across a board. */
+  .fl-fig.fl-working {
+    border-left-color: var(--green);
+    background: color-mix(in srgb, var(--green) 6%, var(--bg-alt, var(--bg)));
+  }
+  .fl-fig.fl-asking {
+    border-color: var(--amber); border-left-color: var(--amber);
+    background: color-mix(in srgb, var(--amber) 9%, var(--bg-alt, var(--bg)));
+  }
+  .fl-fig.fl-idle { opacity: 0.92; }
   .fl-fig-top { display: flex; align-items: center; gap: 6px; }
-  .fl-dot { font-size: 13px; line-height: 1; }
-  /* The only thing on this board that is actually happening. Motion anywhere
-     else would be decoration; here it is the state. */
-  .fl-dot.fl-working { color: var(--green); animation: fl-pulse 1.8s ease-in-out infinite; }
+  .fl-dot { font-size: 13px; line-height: 1; flex: 0 0 auto; }
+  /* The only thing on this board that is actually happening, so the only thing
+     that moves. Motion anywhere else would be decoration. */
+  .fl-dot.fl-working {
+    color: var(--green); animation: fl-pulse 1.8s ease-in-out infinite;
+  }
   @keyframes fl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
-  @media (prefers-reduced-motion: reduce) {
-    .fl-dot.fl-working { animation: none; }
-  }
+  @media (prefers-reduced-motion: reduce) { .fl-dot.fl-working { animation: none; } }
   .fl-dot.fl-idle { color: var(--text-faint); }
-  .fl-dot.fl-asking {
-    color: var(--amber); font-weight: 800; font-size: 12px;
+  .fl-dot.fl-asking { color: var(--amber); font-weight: 800; font-size: 13px; }
+  .fl-state {
+    font-size: 9px; font-weight: 800; letter-spacing: 0.6px; flex: 0 0 auto;
+    text-transform: uppercase; padding: 1px 6px; border-radius: 8px;
   }
+  .fl-working .fl-state {
+    color: var(--green); background: color-mix(in srgb, var(--green) 15%, transparent);
+  }
+  .fl-asking .fl-state {
+    color: var(--amber); background: color-mix(in srgb, var(--amber) 18%, transparent);
+  }
+  .fl-idle .fl-state {
+    color: var(--text-faint);
+    background: color-mix(in srgb, var(--text-faint) 12%, transparent);
+  }
+
+  /* ── identity: a face, a name, a type ─────────────────────────────────── */
   .fl-face {
     font-size: 14px; line-height: 1; cursor: pointer;
     /* An emoji's own metrics vary wildly, so the slot is fixed — otherwise
@@ -4632,7 +4659,6 @@
     width: 18px; display: inline-block; text-align: center; flex: 0 0 18px;
   }
   .fl-face.fl-noface { color: var(--text-faint); font-size: 12px; opacity: 0.7; }
-  .fl-bench-top { display: flex; align-items: center; gap: 4px; }
   .fl-who {
     font-size: 12px; font-weight: 700; color: var(--text);
     cursor: text; border-bottom: 1px dashed transparent;
@@ -4642,23 +4668,22 @@
      default stamped on every untyped session looks like a decision. */
   .fl-who.fl-named { color: var(--accent); }
   .fl-type {
-    font-size: 10px; color: var(--text-faint);
+    font-size: 10px; color: var(--text-faint); flex: 0 0 auto; white-space: nowrap;
     border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
   }
   /* "no type" is a finding, not a placeholder — it is the gap the board exists
-     to make visible. It sits beside the name now rather than replacing it. */
+     to make visible. It sits beside the name rather than replacing it. */
   .fl-type.fl-untyped { font-style: italic; border-style: dashed; }
   .fl-age {
-    margin-left: auto; font-size: 10px; color: var(--text-faint);
+    margin-left: auto; font-size: 10px; color: var(--text-faint); flex: 0 0 auto;
     font-family: 'JetBrains Mono', monospace;
   }
   .fl-engine {
-    font-size: 10px; color: var(--text-faint); margin-top: 2px;
+    font-size: 10px; color: var(--text-faint); margin-top: 2px; min-width: 0;
     font-family: 'JetBrains Mono', monospace;
     /* A model id is one token. Letting it wrap split "claude-sonnet-" from "5"
        and dragged whatever sat beside it into two lines as well. */
     white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-    min-width: 0;
   }
   .fl-act { font-size: 11px; color: var(--text-dim, var(--text-faint)); margin-top: 5px; }
   .fl-task {
@@ -4668,7 +4693,7 @@
   }
   /* Ron: "it was not even clear that I could click on agent name to launch it."
      A hover border is not an affordance on a card that is already bordered —
-     the card says what it does, and the hover just confirms it. */
+     the card says what it does, and the hover only confirms it. */
   .fl-cta {
     font-size: 10px; font-weight: 600; color: var(--text-faint);
     margin-top: 6px; opacity: 0.75; transition: color 0.15s, opacity 0.15s;
@@ -4676,40 +4701,8 @@
   .fl-fig:hover .fl-cta, .fl-bench-card:hover .fl-cta {
     color: var(--accent); opacity: 1;
   }
-  .fl-quiet {
-    margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border);
-  }
-  .fl-quiet-head {
-    font-size: 11px; color: var(--text-faint); cursor: pointer; user-select: none;
-  }
-  .fl-quiet-head:hover { color: var(--text); }
-  /* Toggled by CLASS, not by the `hidden` attribute: `hidden` works through a
-     UA `display: none`, and this author `display: flex` beats it at the same
-     specificity. The arrow said collapsed while twenty chips said otherwise. */
-  .fl-quiet-list {
-    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
-  }
-  .fl-quiet-list.fl-collapsed { display: none; }
-  /* An empty board is a normal state, not a failure — it should look composed
-     rather than like a page that failed to load, and it should point at the one
-     thing you can do from here. */
-  .fl-empty {
-    text-align: center; padding: 34px 20px 30px;
-    border: 1px dashed var(--border); border-radius: 10px;
-  }
-  .fl-empty-mark { font-size: 22px; color: var(--text-faint); opacity: 0.5; }
-  .fl-empty-head {
-    font-size: 13px; font-weight: 700; color: var(--text); margin-top: 8px;
-  }
-  .fl-empty-sub { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
-  .fl-quiet-item {
-    font-size: 11px; color: var(--text-faint); cursor: pointer;
-    border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
-  }
-  .fl-quiet-item:hover { color: var(--accent); border-color: var(--accent); }
-  /* The bench is a section break, not another card in the list — a heavier rule
-     than the one between rooms, because what is below it is a different kind of
-     thing (who you COULD deploy, not who is deployed). */
+
+  /* ── the bench ────────────────────────────────────────────────────────── */
   .fl-bench {
     margin-top: 20px; padding-top: 14px; border-top: 2px solid var(--border);
   }
@@ -4718,45 +4711,6 @@
     display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
     margin-bottom: 10px;
   }
-  .fl-bench-list { display: flex; flex-wrap: wrap; gap: 8px; }
-  .fl-bench-card {
-    display: flex; flex-direction: column; gap: 2px;
-    /* A fixed basis with no max: four cards tile evenly instead of three wide
-       ones and a runt, and a long name can no longer set the column width. */
-    flex: 1 1 220px; min-width: 0;
-    border: 1px solid var(--border); border-left: 3px solid var(--border);
-    border-radius: 6px; padding: 9px 11px;
-  }
-  .fl-bench-main { min-width: 0; }
-  /* The name owns the row; the type tag keeps its own width and never wraps.
-     Before this, `market-analyst-investor` (no self-chosen name, so the file
-     name IS the display name) wrapped to three lines and pushed the tag into a
-     tall box beside it. */
-  .fl-bench-top { min-width: 0; }
-  .fl-bench-top .fl-who {
-    flex: 1 1 auto; min-width: 0; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
-  }
-  .fl-bench-top .fl-type { flex: 0 0 auto; white-space: nowrap; }
-  /* What the type is FOR, which is the question a bench answers. It used to sit
-     under the engine string in 10px grey — the least readable line on a card
-     whose entire job is to say when to reach for this one. */
-  .fl-bench-desc {
-    font-size: 11px; color: var(--text-dim, var(--text)); line-height: 1.45;
-    margin-top: 4px;
-  }
-  .fl-bench-foot {
-    display: flex; align-items: baseline; justify-content: space-between;
-    gap: 10px; margin-top: 8px; min-width: 0;
-  }
-  .fl-bench-foot .fl-engine { flex: 1 1 auto; }
-  .fl-bench-foot .fl-cta { flex: 0 0 auto; white-space: nowrap; }
-  .fl-bench-foot .fl-cta { margin-top: 0; }
-  .fl-bench-card.fl-bench-open { border-style: solid; border-color: var(--accent); }
-  .fl-bench-list { align-items: flex-start; }
-  .fl-bench-card { cursor: pointer; transition: border-color 0.15s; }
-  .fl-bench-card:hover { border-color: var(--accent); }
-  .fl-bench-main { display: flex; flex-direction: column; gap: 2px; }
   .fl-hire {
     margin-left: auto; font-size: 12px; font-weight: 700; cursor: pointer;
     background: var(--accent); color: var(--bg);
@@ -4764,6 +4718,56 @@
     white-space: nowrap; transition: filter 0.15s;
   }
   .fl-hire:hover { filter: brightness(1.1); }
+  /* A GRID, not a wrapping flex row. Flex items size to their content, so four
+     types with four different description lengths produced four different
+     tiles; `1fr` columns with a stretched row make them one shape. */
+  .fl-bench-list {
+    display: grid; grid-template-columns: repeat(auto-fill, minmax(215px, 1fr));
+    gap: 10px; align-items: stretch;
+  }
+  .fl-bench-card {
+    display: flex; flex-direction: column; min-width: 0; cursor: pointer;
+    border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: 6px; padding: 9px 11px; transition: border-color 0.15s;
+  }
+  .fl-bench-card:hover { border-color: var(--accent); }
+  .fl-bench-card.fl-bench-open { border-color: var(--accent); }
+  /* The card fills its grid cell and the footer sits on the floor of it, so a
+     two-line description and a three-line one still end at the same y. */
+  .fl-bench-main {
+    min-width: 0; display: flex; flex-direction: column; flex: 1 1 auto;
+  }
+  /* The name owns the row; the type tag keeps its own width and never wraps.
+     Before this, `market-analyst-investor` (no self-chosen name, so the file
+     name IS the display name) wrapped to three lines and pushed the tag into a
+     tall box beside it. */
+  .fl-bench-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  .fl-bench-top .fl-who {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fl-bench-desc {
+    font-size: 11px; color: var(--text-dim, var(--text)); line-height: 1.45;
+    margin-top: 5px;
+    /* Three lines for everyone. The server already clips on a word boundary;
+       this guards a description that is short in characters but wide in words,
+       which would otherwise still make one tile taller than its neighbours. */
+    display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
+    overflow: hidden;
+  }
+  .fl-bench-foot {
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; margin-top: auto; padding-top: 8px; min-width: 0;
+  }
+  .fl-bench-foot .fl-engine { flex: 1 1 auto; }
+  .fl-bench-foot .fl-cta { flex: 0 0 auto; white-space: nowrap; margin-top: 0; }
+  .fl-edit {
+    margin-left: auto; flex: 0 0 auto; cursor: pointer; font-size: 12px;
+    line-height: 1; padding: 3px 6px; background: none; color: var(--text-faint);
+    border: 1px solid transparent; border-radius: 5px;
+  }
+  .fl-bench-card:hover .fl-edit { border-color: var(--border); }
+  .fl-edit:hover { color: var(--accent); border-color: var(--accent); }
   .fl-pick-row {
     display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
     margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
@@ -4776,6 +4780,48 @@
   .fl-pick:hover { color: var(--accent); border-color: var(--accent); }
   .fl-pick-empty { font-size: 10px; color: var(--text-faint); margin-top: 6px; }
 
+  /* ── the quiet tail, and an empty board ───────────────────────────────── */
+  .fl-quiet {
+    margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border);
+  }
+  .fl-quiet-head {
+    font-size: 11px; color: var(--text-faint); cursor: pointer; user-select: none;
+  }
+  .fl-quiet-head:hover { color: var(--text); }
+  /* Toggled by CLASS, never by the `hidden` attribute: `hidden` works through a
+     UA `display: none`, and this author `display: flex` beats it at the same
+     specificity. The arrow said collapsed while twenty chips said otherwise. */
+  .fl-quiet-list { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .fl-quiet-list.fl-collapsed { display: none; }
+  .fl-quiet-item {
+    font-size: 11px; color: var(--text-faint); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
+  }
+  .fl-quiet-item:hover { color: var(--accent); border-color: var(--accent); }
+  /* An empty board is a normal state, not a failure — it should look composed
+     rather than like a page that failed to load, and point at the one thing you
+     can do from here. */
+  .fl-empty {
+    text-align: center; padding: 34px 20px 30px;
+    border: 1px dashed var(--border); border-radius: 10px;
+  }
+  .fl-empty-mark { font-size: 22px; color: var(--text-faint); opacity: 0.5; }
+  .fl-empty-head {
+    font-size: 13px; font-weight: 700; color: var(--text); margin-top: 8px;
+  }
+  .fl-empty-sub { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
+
+  /* ── the persona editor's face picker ─────────────────────────────────── */
+  .persona-face-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
+  .persona-face-row input {
+    width: 62px; flex: 0 0 62px; text-align: center; font-size: 16px;
+  }
+  .pe-face-pick {
+    font-size: 15px; line-height: 1; cursor: pointer; padding: 4px 6px;
+    background: none; border: 1px solid var(--border); border-radius: 5px;
+  }
+  .pe-face-pick:hover { border-color: var(--accent); }
+
   /* The Floor on a phone. `.fl-fig` carries min-width:220px so figures tile
      inside a room on desktop; at 360px that plus the room padding overflows and
      the board scrolls sideways — the horizontal-scroll failure this app's
@@ -4785,8 +4831,9 @@
      fine, and did nothing, because the desktop values are 3,500 lines further
      down at the same specificity. */
   @media (max-width: 960px) {
-    .fl-fig { min-width: 0; max-width: none; flex: 1 1 100%; }
-    .fl-bench-card { min-width: 0; max-width: none; flex: 1 1 100%; }
+    .fl-fig { min-width: 0; flex: 1 1 100%; }
+    /* The bench is a grid now, so one column rather than a flex basis. */
+    .fl-bench-list { grid-template-columns: 1fr; }
     .fl-room { padding: 8px 10px 10px; }
     .fl-task { -webkit-line-clamp: 3; }
   }

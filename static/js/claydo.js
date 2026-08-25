@@ -944,6 +944,15 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         <button type="button" class="claydo-ready-btn" id="pe-name-pick"
           title="Ask this persona to choose its own name">&#x1F3B2; Let it choose</button>
       </div>
+      <label>Face <span class="claydo-save-hint">(one emoji — it appears on the Floor and in the chat header)</span></label>
+      <div class="persona-face-row">
+        <input id="pe-avatar" type="text" maxlength="8" spellcheck="false"
+          value="${esc(rec.avatar || '')}" placeholder="🙂">
+        ${['\u{1F989}', '\u{270D}', '\u{1F50D}', '\u{1F4C8}', '\u{1F9EA}', '\u{1F5FA}',
+           '\u{1F6E0}', '\u{1F4DA}', '\u{1F9ED}', '\u{1F41B}']
+          .map((e) => `<button type="button" class="pe-face-pick" data-face="${e}">${e}</button>`)
+          .join('')}
+      </div>
       <label>Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
       <label>Instructions <span class="claydo-save-hint">(the persona's system prompt)</span></label>
@@ -987,6 +996,12 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
   bodyEl.addEventListener('input', paintSize);
   paintSize();
 
+  // Typing an emoji on a desktop keyboard is the entire reason a field like
+  // this stays empty forever. One click, or type your own.
+  panel.querySelectorAll('.pe-face-pick').forEach((b) => {
+    b.onclick = () => { panel.querySelector('#pe-avatar').value = b.dataset.face; };
+  });
+
   panel.querySelector('#pe-cancel').onclick = close;
   panel.addEventListener('mousedown', (e) => { if (e.target === panel) close(); });
 
@@ -1013,13 +1028,22 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
           model: panel.querySelector('#pe-model').value,
           effort: panel.querySelector('#pe-effort').value,
           agent_name: panel.querySelector('#pe-agent-name').value,
+          // Always sent, like the engine pins: the API treats an ABSENT key as
+          // "leave alone" and an EMPTY one as "clear", so omitting it would
+          // make a face unremovable from the only screen that sets one.
+          avatar: panel.querySelector('#pe-avatar').value,
           project_id: scope === 'project' ? projectId : null,
         }),
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }
       close();
-      if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      // Guarded: the Floor opens this editor with no project (a global type
+      // belongs to no room), and reloading a project's picker for `null` would
+      // refetch and repaint nothing.
+      if (projectId && typeof window.reloadCharacters === 'function') {
+        window.reloadCharacters(projectId);
+      }
       if (typeof onDone === 'function') onDone();
     } catch (e) {
       btn.disabled = false;

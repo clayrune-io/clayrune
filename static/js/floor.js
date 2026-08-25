@@ -140,6 +140,10 @@ function _floorFigure(pid, f) {
   const nameTitle = chosen
     ? (f.name_from === 'self' ? 'named itself — click to change' : 'you named this — click to change')
     : 'click to name this figure';
+  // The state is the most important thing on this card, and it was carried by
+  // a single 13px dot — a figure mid-turn looked identical to one that had been
+  // idle for twenty hours. It owns the edge, the tint and a word now.
+  const stateWord = { asking: 'needs you', working: 'working', idle: 'idle' }[f.state] || f.state;
   return `<div class="fl-fig fl-${esc(f.state)}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
@@ -147,6 +151,7 @@ function _floorFigure(pid, f) {
         title="${esc(nameTitle)}"
         onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
       >${esc(f.name || 'unnamed')}</span>${type}
+      <span class="fl-state">${esc(stateWord)}</span>
       <span class="fl-age">${esc(f.age || '')}</span></div>
     <div class="fl-engine">${esc(engine)}</div>
     <div class="fl-act">${esc(_floorLine(f))}</div>
@@ -228,7 +233,10 @@ function _floorBench(bench, rooms, quiet) {
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
         <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
           >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span>
-          ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}</span>
+          ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
+          <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
+            onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
+            >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
         <span class="fl-bench-foot">
           <span class="fl-engine">${esc(eng) || 'follows the project default'}</span>
@@ -280,6 +288,14 @@ function floorPlace(scope, name, display, projectId) {
       showToast('New chat with ' + display + ' — type what you want done.', 4000);
     }
   }, 500);
+}
+
+function floorEditType(scope, name) {
+  // The same editor the composer's pencil opens — one persona editor, not a
+  // Floor-flavoured second one. No project id: a global type belongs to no
+  // room, and the editor guards that path.
+  if (typeof window.openPersonaEditor !== 'function') return;
+  window.openPersonaEditor(null, scope, name, () => refreshFloor());
 }
 
 function floorHire() {
@@ -380,3 +396,4 @@ window.floorSetAvatar = floorSetAvatar;
 window.floorTogglePicker = floorTogglePicker;
 window.floorPlace = floorPlace;
 window.floorHire = floorHire;
+window.floorEditType = floorEditType;

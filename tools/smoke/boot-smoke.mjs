@@ -1541,6 +1541,22 @@ async function runFloorGuard(browser) {
       r.newTabs = newTabs;
       r.dispatched = dispatched.length;
 
+      // Every bench card must offer an edit route, and it must be the SHARED
+      // persona editor rather than a Floor-flavoured second one.
+      const edits = [];
+      const realEditor = window.openPersonaEditor;
+      window.openPersonaEditor = (pid3, sc, nm) => edits.push([sc, nm]);
+      const eb = document.querySelector('[data-modal-id="__floor"] .fl-edit');
+      r.editButtons = document.querySelectorAll('[data-modal-id="__floor"] .fl-edit').length;
+      if (eb) eb.click();
+      await settle(300);
+      window.openPersonaEditor = realEditor;
+      r.edits = edits;
+
+      // Every state must be visible as a WORD, not only as a coloured dot.
+      r.stateWords = Array.from(win.querySelectorAll('.fl-state'))
+        .map((e) => e.textContent.trim());
+
       // + Hire must route to Claydo's character mode, not a second builder.
       const modes = [];
       const realSetMode = window.setClaydoMode;
@@ -1612,6 +1628,15 @@ async function runFloorGuard(browser) {
     fails.push('quiet projects are not last: ' + JSON.stringify(out.sectionOrder));
   if (!out.roomTint)
     fails.push('a room did not wear its project colour');
+  if (out.editButtons !== 1)
+    fails.push('a bench card had no edit affordance');
+  if (!(out.edits || []).length)
+    fails.push('the edit button never reached the persona editor');
+  else if (JSON.stringify(out.edits[0]) !== JSON.stringify(['global', 'marlow']))
+    fails.push('the edit button opened the wrong persona: ' + JSON.stringify(out.edits[0]));
+  if (JSON.stringify((out.stateWords || []).sort())
+      !== JSON.stringify(['idle', 'needs you', 'working']))
+    fails.push('a figure state is not readable as a word: ' + JSON.stringify(out.stateWords));
   if (JSON.stringify(out.hireModes || []) !== JSON.stringify(['character']))
     fails.push('+ Hire did not open Claydo in character mode: '
       + JSON.stringify(out.hireModes));
