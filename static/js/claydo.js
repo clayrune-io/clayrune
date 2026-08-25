@@ -935,6 +935,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
   panel.innerHTML = `
     <div class="claydo-save-inner persona-editor-inner">
       <div class="claydo-save-title">Edit persona</div>
+      <div class="pe-scroll">
       <label>Name <span class="claydo-save-hint">(fixed — it identifies the file)</span></label>
       <input id="pe-name" type="text" value="${esc(rec.name || name)}" disabled>
       <label>Goes by <span class="claydo-save-hint">(what it calls itself — leave blank and it stays "${esc(rec.name || name)}")</span></label>
@@ -971,6 +972,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <div class="persona-editor-meta">
         <span>${scope === 'global' ? 'Global — all projects' : 'This project only'}</span>
         <span id="pe-size"></span>
+      </div>
       </div>
       <div class="claydo-save-err" id="pe-err" style="display:none"></div>
       <div class="claydo-save-actions">
@@ -1034,8 +1036,25 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     });
   })();
 
-  panel.querySelector('#pe-cancel').onclick = close;
-  panel.addEventListener('mousedown', (e) => { if (e.target === panel) close(); });
+  // A dirty check on the backdrop click. Ron lost an edit to exactly this: the
+  // Save button was off the bottom of the panel, so clicking away looked like
+  // the only exit and threw the work away without a word.
+  const _initial = () => JSON.stringify([
+    panel.querySelector('#pe-agent-name').value,
+    panel.querySelector('#pe-avatar').value,
+    panel.querySelector('#pe-desc').value,
+    panel.querySelector('#pe-skills').value,
+    bodyEl.value,
+  ]);
+  const _snapshot = _initial();
+  const closeIfClean = () => {
+    if (_initial() !== _snapshot
+        && !confirm('Discard your changes to this persona?')) return;
+    close();
+  };
+
+  panel.querySelector('#pe-cancel').onclick = closeIfClean;
+  panel.addEventListener('mousedown', (e) => { if (e.target === panel) closeIfClean(); });
 
   panel.querySelector('#pe-save').onclick = async () => {
     const desc = panel.querySelector('#pe-desc').value.trim();

@@ -4661,7 +4661,7 @@
      row's line-height, so every px of avatar pushed the text around — which is
      why 40 felt like the ceiling when the real ceiling was the layout. */
   .fl-face {
-    width: 56px; height: 56px; flex: 0 0 56px; cursor: pointer; line-height: 0;
+    width: 72px; height: 72px; flex: 0 0 72px; cursor: pointer; line-height: 0;
     display: inline-flex; align-items: center; justify-content: center;
   }
   .fl-fig { display: flex; align-items: flex-start; gap: 10px; }
@@ -4753,7 +4753,12 @@
      Before this, `market-analyst-investor` (no self-chosen name, so the file
      name IS the display name) wrapped to three lines and pushed the tag into a
      tall box beside it. */
-  .fl-bench-top { display: flex; align-items: center; gap: 4px; min-width: 0; }
+  /* The float takes 72px out of the FIRST lines only, so the name row is the
+     one thing that gets squeezed — the description wraps back to full width
+     underneath. Let it wrap rather than crush the name to an ellipsis. */
+  .fl-bench-top {
+    display: flex; align-items: center; gap: 4px; min-width: 0; flex-wrap: wrap;
+  }
   .fl-bench-top .fl-who {
     flex: 1 1 auto; min-width: 0; overflow: hidden;
     text-overflow: ellipsis; white-space: nowrap;
@@ -6913,20 +6918,35 @@
      show the grabber at all, but auto would let the panel scroll internally
      instead of handing the space to the textarea.) */
   .persona-editor-inner {
-    width: min(560px, 92vw); height: min(560px, 86vh);
+    width: min(620px, 92vw); height: min(680px, 88vh);
     min-width: 340px; min-height: 300px;
     max-width: 96vw; max-height: 92vh;
-    /* Custom 8-way handles (makeResizable) replace native `resize: both`.
-       overflow:hidden required so the flex textarea hands space to the window. */
-    overflow: hidden;
+    /* POSITIONED, or `makeResizable`'s absolutely-placed handles anchor to the
+       nearest positioned ancestor — which was the full-screen backdrop, putting
+       every grab target at the edge of the SCREEN instead of on this dialog.
+       That is why its corners could not be dragged. */
+    position: relative;
+    /* NOT overflow:hidden. The handles sit at negative offsets so they straddle
+       the border, and hiding overflow here clipped them out of existence. The
+       scrolling belongs to .pe-scroll instead. */
+    overflow: visible;
   }
+  /* The fields scroll; the title and the action bar do not. Without this the
+     action bar — Delete / Cancel / SAVE — simply fell off the bottom of a
+     fixed-height panel, and clicking away discarded the edit silently. */
+  .persona-editor-inner .pe-scroll {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column; gap: 6px;
+    padding-right: 4px;   /* room for the scrollbar, so it never covers a field */
+  }
+  .persona-editor-inner .claydo-save-actions { flex: 0 0 auto; }
   .persona-editor-inner textarea {
     background: var(--bg); border: 1px solid var(--border);
     color: var(--text); font-family: var(--mono, ui-monospace, monospace);
     font-size: 12.5px; line-height: 1.5;
     padding: 8px 10px; border-radius: 5px; outline: none;
-    resize: none;              /* the WINDOW resizes; the textarea follows it */
-    flex: 1; min-height: 120px;
+    resize: vertical;          /* the panel resizes, and so may this */
+    flex: 1 1 auto; min-height: 200px;
   }
   .persona-editor-inner textarea:focus { border-color: var(--accent); }
   .persona-editor-inner input:disabled {

@@ -29,7 +29,10 @@ async function openFloor() {
   win.dataset.modalId = FLOOR_MODAL;
   const content = document.createElement('div');
   content.className = 'modal-content';
-  _clampModalSize(content, 980);
+  // Wider than the default: this is a cross-project board, not a form. At 980
+  // the bench fitted three 72px-figure cards and wrapped the fourth onto a row
+  // of its own, which reads as a mistake rather than as a grid.
+  _clampModalSize(content, 1120);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">The Floor
@@ -116,7 +119,7 @@ function _floorHue(name) {
 // row, so growing it grew that row's line-height and shoved the name sideways.
 // It is a left COLUMN now, which is the shape every chat list uses and the
 // reason a 49px WhatsApp avatar never feels cramped.
-const FLOOR_FACE_PX = 56;
+const FLOOR_FACE_PX = 72;
 
 function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();

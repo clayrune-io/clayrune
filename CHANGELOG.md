@@ -6,6 +6,39 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25c] — the persona editor: reach Save, and resize the panel
+
+Ron: *"when I edit the agent, there is no save button. So if I click anywhere
+else to close the screen, nothing is saved… also cannot increase or change the
+size of that edit popup."*
+
+Three causes, and the resize one was worse than it looked.
+
+**The action bar fell off the bottom.** The panel is a fixed height with
+`overflow: hidden`, and its children simply flow past. Adding the face picker
+and the skills row pushed Delete / Cancel / **Save changes** past the end, where
+nothing could scroll to them. The fields now live in a `.pe-scroll` between a
+pinned title and a pinned action bar.
+
+**The resize handles were clipped.** `makeResizable` places them at negative
+offsets so they straddle the border — and `overflow: hidden` on the same element
+removed them entirely.
+
+**And they were anchored to the wrong element.** `.claydo-save-inner` had no
+`position`, so absolutely-positioned handles resolved against the nearest
+positioned ancestor: the full-screen backdrop. Every grab target sat at the edge
+of the SCREEN, nowhere near the dialog, which is why dragging its corner did
+nothing at all. The panel is `position: relative` now, and a check confirms the
+south-east handle lands on its own bottom-right corner.
+
+**Closing the backdrop no longer discards silently.** Ron lost an edit to
+exactly that: with Save off-screen, clicking away looked like the only exit. A
+dirty check compares the five editable fields against their opening values and
+asks before throwing the work away — clean edits still close on one click.
+
+The panel is also a little larger by default (620×680 from 560×560), and the
+instructions textarea can be dragged vertically on its own.
+
 ## [2026-08-25b] — the faces get a column, and 56px in it
 
 Ron: *"the characters are still too small, we should be comfortable to increase
