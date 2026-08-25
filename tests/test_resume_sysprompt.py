@@ -50,7 +50,11 @@ class TestRespawnSyspromptArgs:
         calls = []
         monkeypatch.setattr(
             agent_routes, '_build_agent_context',
-            lambda project, incognito=False, task='', character_body='':
+            # **kw: the rebuild path also passes character_name, session_id
+            # and character_skills now, so a fixed-signature stub would raise
+            # TypeError, get swallowed by the best-effort catch, and make this
+            # test pass or fail for a reason that has nothing to do with it.
+            lambda project, incognito=False, task='', **kw:
                 calls.append((project, incognito, task)) or 'BUILT-CTX')
 
         session = {}
@@ -64,7 +68,7 @@ class TestRespawnSyspromptArgs:
         seen = {}
         monkeypatch.setattr(
             agent_routes, '_build_agent_context',
-            lambda project, incognito=False, task='', character_body='':
+            lambda project, incognito=False, task='', **kw:
                 seen.update(incognito=incognito) or 'CTX')
         _, path = agent_routes._respawn_sysprompt_args(
             {'incognito': True}, {'id': 'p1'})

@@ -573,6 +573,68 @@ def _sysprompt_file_args(context):
     return ['--append-system-prompt-file', path], path
 
 
+def _context_fingerprint(project):
+    """Cheap signature of everything `_build_agent_context` reads that can
+    change while a session is alive. Empty string = could not compute.
+
+    Deliberately mtime+size rather than content hashes: this runs on every
+    respawn, and stat-ing ~60 paths is microseconds where reading a 1 MB vault
+    is not. The failure mode of mtime is a same-second same-size edit, which
+    costs one stale turn, not a wrong answer.
+    """
+    import hashlib
+    h = hashlib.sha1()
+    def stamp(p):
+        try:
+            st = os.stat(p)
+            h.update(f'{p}|{st.st_mtime_ns}|{st.st_size}|'.encode('utf-8', 'replace'))
+        except OSError:
+            h.update(f'{p}|-|'.encode('utf-8', 'replace'))
+    def listing(d):
+        try:
+            for n in sorted(os.listdir(d)):
+                stamp(os.path.join(d, n))
+        except OSError:
+            h.update(f'{d}|-|'.encode('utf-8', 'replace'))
+
+    pp = (project or {}).get('project_path') or ''
+    try:
+        from mc import memory as _mem
+        mp = _mem._get_memory_path(project)
+        if mp:
+            # The index and the working state, which every prompt carries.
+            stamp(str(mp))
+            stamp(str(Path(mp).parent / 'continuity.md'))
+            # Positions are a whole class of prompt content; the dir stamp
+            # catches one being added, edited or forgotten.
+            listing(str(Path(mp).parent))
+    except Exception:
+        pass
+    if pp:
+        stamp(os.path.join(pp, 'AGENT_RULES.md'))
+        listing(os.path.join(pp, '.claude', 'skills'))
+        listing(os.path.join(pp, '.claude', 'agents'))
+    # The wired path, not a derived one: SHARED_RULES.md is read verbatim into
+    # every agent's prompt on every project, so guessing its location here would
+    # silently stop noticing edits to the single most widely-injected file.
+    try:
+        stamp(str(SHARED_RULES_PATH))
+    except Exception:
+        pass
+    try:
+        import skills as _sk
+        from mc import characters as _ch
+        listing(str(_sk.GLOBAL_SKILLS_DIR))
+        listing(str(_ch.GLOBAL_AGENTS_DIR))
+    except Exception:
+        pass
+    # Config values that reach the prompt directly.
+    for k in ('agent_name', 'user_name', 'read_floor_topk',
+              'read_floor_link_expand', 'sticky_agent_settings'):
+        h.update(f'{k}={state.CONFIG.get(k)}|'.encode('utf-8', 'replace'))
+    return h.hexdigest()[:16]
+
+
 def _respawn_sysprompt_args(session, project, task=''):
     """Sysprompt args for a `-r` / `--continue` respawn of an existing session.
 
@@ -582,25 +644,58 @@ def _respawn_sysprompt_args(session, project, task=''):
     See memory discovery-claude-resume-ignores-append-system-prompt (reversed
     2026-07-11) — the old "resume restores the original prompt" rule is false.
 
-    Prefers the context stashed on the session at spawn (instant — safe under
-    mgr.lock, and byte-identical content keeps the resumed prefix
-    cache-friendly). Rebuilds only when the stash is missing (sessions
-    predating the stash) and remembers the rebuild for next time. Best-effort:
-    a rebuild failure degrades to a context-less resume, never blocks the
-    respawn itself.
+    INVALIDATE ON CHANGE, not rebuild every turn. The stash exists because
+    byte-identical content keeps the resumed prefix cache-friendly, and
+    rebuilding on every turn throws that away on every turn for nothing. But
+    reusing it unconditionally froze a long-lived chat's rules, memory index,
+    roster and skill list at the moment it spawned — forever. So the stash is
+    kept while `_context_fingerprint` holds and dropped the moment it moves.
+
+    A rebuild reproduces the session's own persona and id rather than a generic
+    context: without that, a resumed persona chat that ever rebuilt would
+    silently lose its persona mid-conversation. Re-reading the persona's body
+    from disk also means an EDITED persona takes effect next turn rather than
+    never. Best-effort throughout: a rebuild failure degrades to reusing the
+    stash, and a missing stash to a context-less resume — never a blocked turn.
     """
     context = (session or {}).get('_system_prompt') or ''
-    if not context:
-        try:
-            context = _build_agent_context(
-                project, incognito=bool((session or {}).get('incognito')),
-                task=task)
-        except Exception as e:
-            _log(f"[respawn] sysprompt rebuild failed: {e}")
-            return [], None
-        if session is not None:
-            session['_system_prompt'] = context
-    return _sysprompt_file_args(context)
+    fp = ''
+    try:
+        fp = _context_fingerprint(project)
+    except Exception as e:
+        _log(f"[respawn] fingerprint failed, reusing stash: {e}")
+    stale = bool(fp) and (session or {}).get('_system_prompt_fp') != fp
+
+    if context and not stale:
+        return _sysprompt_file_args(context)
+
+    try:
+        ch = (session or {}).get('character') or {}
+        body, name, sk = '', '', []
+        if isinstance(ch, dict) and ch.get('name'):
+            pp = (project or {}).get('project_path') or ''
+            _meta, body = _resolve_character(
+                pp, f"{ch.get('scope') or 'global'}:{ch['name']}", project)
+            name = (_meta or ch).get('agent_name') or ''
+            sk = (_meta or ch).get('skills') or []
+        rebuilt = _build_agent_context(
+            project, incognito=bool((session or {}).get('incognito')),
+            task=task, character_body=body, character_name=name,
+            session_id=(session or {}).get('session_id', ''),
+            character_skills=sk)
+    except Exception as e:
+        _log(f"[respawn] sysprompt rebuild failed: {e}")
+        # A stale context beats no context: the alternative is a turn with no
+        # rules and no memory at all.
+        return _sysprompt_file_args(context) if context else ([], None)
+
+    if session is not None:
+        session['_system_prompt'] = rebuilt
+        session['_system_prompt_fp'] = fp
+        if stale and context:
+            _log(f"[respawn] context refreshed for {session.get('session_id')} "
+                 f"— project config changed since spawn")
+    return _sysprompt_file_args(rebuilt)
 
 
 def _sysprompt_cleanup(path, proc):

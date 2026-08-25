@@ -6,6 +6,47 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24p] — a live session picks up config that changed under it
+
+Ron, straight after the relocation: *"we need to guarantee that when invoking
+Dave for a project another time it will grab any changes that happened."* He was
+right, and it was broader than skills.
+
+`_respawn_sysprompt_args` preferred `session['_system_prompt']` — a blob stashed
+**once at spawn** — and rebuilt only when the stash was missing. So a long-lived
+chat froze its rules, its memory index, its positions, its roster and its skill
+list at the moment it started, permanently. The session writing this changelog
+is still listing the 22 skills that moved projects an hour ago.
+
+**The stash exists for a real reason**, stated in its own comment: byte-identical
+content keeps the resumed prefix cache-friendly, and rebuilding every turn throws
+that away every turn for nothing. So the fix is not "always rebuild" — it is
+**invalidate on change**. `_context_fingerprint` stat-stamps everything the
+context is built from (both rules files, the memory dir including positions and
+continuity, the global and project skills dirs, both agents dirs, and the config
+keys that reach the prompt) and the stash is kept while that holds, dropped the
+moment it moves. mtime+size rather than content hashes deliberately: this runs
+on every respawn, and stat-ing ~60 paths is microseconds where reading a 1 MB
+vault is not.
+
+**Two bugs fell out of making the rebuild trustworthy**, both invisible until
+now because the stash was almost always present so the rebuild path never really
+ran:
+
+- **It rebuilt with no character.** A resumed persona chat that ever fell through
+  would have silently lost its persona mid-conversation.
+- **It rebuilt with no session id**, so the agent lost the ability to name its
+  own figure on the Floor.
+
+Both now come off the session, with the persona's body re-read from disk — which
+also means an **edited persona takes effect on the next turn** instead of never.
+
+Failure posture unchanged and now tested: a fingerprint failure reuses the
+stash, and a failed rebuild falls back to the stale context rather than sending
+a turn with no rules and no memory at all. Two stubs in
+`test_resume_sysprompt.py` had fixed signatures that the new kwargs made raise —
+they take `**kw` now, so they fail for their own reasons rather than for this.
+
 ## [2026-08-24o] — skills belong to a project, and a type declares its own
 
 Two halves of one answer to *"connect agent type / character with a set of
