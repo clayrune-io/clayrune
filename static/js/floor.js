@@ -83,6 +83,17 @@ function _floorLine(f) {
          || 'working…';
 }
 
+// A stable hue per name. Not random and not configured: the same type is the
+// same colour on every machine and after every restart, which is the only
+// property that matters — it is an identity cue, not a palette.
+function _floorHue(name) {
+  let h = 0;
+  for (let i = 0; i < (name || '').length; i++) {
+    h = ((h << 5) - h + name.charCodeAt(i)) | 0;
+  }
+  return Math.abs(h) % 360;
+}
+
 // A neutral placeholder, not a random face. The board's discipline is that
 // absence is a finding — a figure nobody gave a face to should look unassigned,
 // not look like it chose this one.
@@ -170,6 +181,7 @@ function _floorRoom(r) {
   const needs = r.figures.some(f => f.state === 'asking');
   return `<div class="fl-room${needs ? ' fl-room-needs' : ''}"${tint}>
     <div class="fl-room-head">
+      <span class="fl-room-swatch"${r.color ? ` style="background:${esc(r.color)}"` : ''}></span>
       <span class="fl-room-name" onclick="openProjectModal('${esc(r.id)}')"
         >${r.emoji ? esc(r.emoji) + ' ' : ''}${esc(r.name)}</span>
       <span class="fl-room-n">${r.figures.length} here</span>
@@ -189,7 +201,7 @@ function _floorQuiet(quiet) {
       ${floorQuietOpen ? '&#9662;' : '&#9656;'} ${quiet.length} project${quiet.length === 1 ? '' : 's'}
       with nobody in ${quiet.length === 1 ? 'it' : 'them'}
     </div>
-    <div class="fl-quiet-list" ${floorQuietOpen ? '' : 'hidden'}>${names}</div>
+    <div class="fl-quiet-list${floorQuietOpen ? '' : ' fl-collapsed'}">${names}</div>
   </div>`;
 }
 
@@ -210,11 +222,13 @@ function _floorBench(bench, rooms, quiet) {
   const cards = bench.map(b => {
     const open = floorPickerFor === b.name;
     const eng = [b.provider, b.model, b.effort].filter(Boolean).join(' · ');
-    return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}">
+    const hue = _floorHue(b.name || b.display || '');
+    const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
+    return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
         <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
           >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span>
-          <span class="fl-type">${esc(b.name)}</span></span>
+          ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}</span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
         <span class="fl-bench-foot">
           <span class="fl-engine">${esc(eng) || 'follows the project default'}</span>
@@ -319,7 +333,11 @@ async function refreshFloor() {
 
   const rooms = (d.rooms || []).map(_floorRoom).join('');
   const empty = !(d.rooms || []).length
-    ? `<div class="dave-empty">Nothing is running right now. Every project is quiet.</div>` : '';
+    ? `<div class="fl-empty">
+         <div class="fl-empty-mark">&#9675;</div>
+         <div class="fl-empty-head">Nobody is working right now</div>
+         <div class="fl-empty-sub">Pick someone off the bench below and put them in a room.</div>
+       </div>` : '';
   // Said once, not guessed per card: with partial-message streaming off there
   // is no thinking/writing signal at all, and a row reading "working…" for a
   // whole turn should be explained rather than look broken.

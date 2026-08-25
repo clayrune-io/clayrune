@@ -4578,8 +4578,14 @@
   /* A room waiting on a human is the only thing here with a deadline. */
   .fl-room-needs { background: color-mix(in srgb, var(--amber) 5%, var(--bg)); }
   .fl-room-head {
-    font-size: 12px; font-weight: 700; color: var(--text);
-    display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
+    font-size: 13px; font-weight: 700; color: var(--text);
+    display: flex; align-items: center; gap: 8px; margin-bottom: 9px;
+  }
+  /* A dot in the project's own colour beside its name — the same cue as the
+     left edge, at the point the eye actually lands. */
+  .fl-room-swatch {
+    width: 9px; height: 9px; border-radius: 50%; flex: 0 0 9px;
+    background: var(--border);
   }
   .fl-room-name { cursor: pointer; }
   .fl-room-name:hover { color: var(--accent); text-decoration: underline; }
@@ -4593,17 +4599,28 @@
   }
   .fl-figs { display: flex; flex-wrap: wrap; gap: 8px; }
   .fl-fig {
-    flex: 1 1 240px; min-width: 220px; max-width: 340px; cursor: pointer;
-    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
-    background: var(--bg-alt, var(--bg)); transition: border-color 0.15s;
+    /* No max-width: one agent in a wide room used to sit in a 340px card with
+       two-thirds of the room blank, which read as "mostly empty" rather than
+       "one person working". */
+    flex: 1 1 260px; min-width: 220px; cursor: pointer;
+    border: 1px solid var(--border); border-radius: 6px; padding: 9px 11px;
+    background: var(--bg-alt, var(--bg));
+    transition: border-color 0.15s, box-shadow 0.15s;
   }
+  .fl-fig:hover { box-shadow: 0 1px 6px rgba(0, 0, 0, 0.07); }
   .fl-fig:hover { border-color: var(--accent); }
   /* A figure that needs a human is the only thing on this board with a real
      deadline, so it gets the one loud edge. */
   .fl-fig.fl-asking { border-color: var(--amber); }
   .fl-fig-top { display: flex; align-items: center; gap: 6px; }
-  .fl-dot { font-size: 11px; line-height: 1; }
-  .fl-dot.fl-working { color: var(--green); }
+  .fl-dot { font-size: 13px; line-height: 1; }
+  /* The only thing on this board that is actually happening. Motion anywhere
+     else would be decoration; here it is the state. */
+  .fl-dot.fl-working { color: var(--green); animation: fl-pulse 1.8s ease-in-out infinite; }
+  @keyframes fl-pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.35; } }
+  @media (prefers-reduced-motion: reduce) {
+    .fl-dot.fl-working { animation: none; }
+  }
   .fl-dot.fl-idle { color: var(--text-faint); }
   .fl-dot.fl-asking {
     color: var(--amber); font-weight: 800; font-size: 12px;
@@ -4638,6 +4655,10 @@
   .fl-engine {
     font-size: 10px; color: var(--text-faint); margin-top: 2px;
     font-family: 'JetBrains Mono', monospace;
+    /* A model id is one token. Letting it wrap split "claude-sonnet-" from "5"
+       and dragged whatever sat beside it into two lines as well. */
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    min-width: 0;
   }
   .fl-act { font-size: 11px; color: var(--text-dim, var(--text-faint)); margin-top: 5px; }
   .fl-task {
@@ -4662,9 +4683,25 @@
     font-size: 11px; color: var(--text-faint); cursor: pointer; user-select: none;
   }
   .fl-quiet-head:hover { color: var(--text); }
+  /* Toggled by CLASS, not by the `hidden` attribute: `hidden` works through a
+     UA `display: none`, and this author `display: flex` beats it at the same
+     specificity. The arrow said collapsed while twenty chips said otherwise. */
   .fl-quiet-list {
     display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
   }
+  .fl-quiet-list.fl-collapsed { display: none; }
+  /* An empty board is a normal state, not a failure — it should look composed
+     rather than like a page that failed to load, and it should point at the one
+     thing you can do from here. */
+  .fl-empty {
+    text-align: center; padding: 34px 20px 30px;
+    border: 1px dashed var(--border); border-radius: 10px;
+  }
+  .fl-empty-mark { font-size: 22px; color: var(--text-faint); opacity: 0.5; }
+  .fl-empty-head {
+    font-size: 13px; font-weight: 700; color: var(--text); margin-top: 8px;
+  }
+  .fl-empty-sub { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
   .fl-quiet-item {
     font-size: 11px; color: var(--text-faint); cursor: pointer;
     border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
@@ -4683,9 +4720,24 @@
   }
   .fl-bench-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .fl-bench-card {
-    display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; max-width: 300px;
-    border: 1px dashed var(--border); border-radius: 6px; padding: 7px 10px;
+    display: flex; flex-direction: column; gap: 2px;
+    /* A fixed basis with no max: four cards tile evenly instead of three wide
+       ones and a runt, and a long name can no longer set the column width. */
+    flex: 1 1 220px; min-width: 0;
+    border: 1px solid var(--border); border-left: 3px solid var(--border);
+    border-radius: 6px; padding: 9px 11px;
   }
+  .fl-bench-main { min-width: 0; }
+  /* The name owns the row; the type tag keeps its own width and never wraps.
+     Before this, `market-analyst-investor` (no self-chosen name, so the file
+     name IS the display name) wrapped to three lines and pushed the tag into a
+     tall box beside it. */
+  .fl-bench-top { min-width: 0; }
+  .fl-bench-top .fl-who {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fl-bench-top .fl-type { flex: 0 0 auto; white-space: nowrap; }
   /* What the type is FOR, which is the question a bench answers. It used to sit
      under the engine string in 10px grey — the least readable line on a card
      whose entire job is to say when to reach for this one. */
@@ -4694,9 +4746,11 @@
     margin-top: 4px;
   }
   .fl-bench-foot {
-    display: flex; align-items: center; justify-content: space-between;
-    gap: 8px; margin-top: 6px;
+    display: flex; align-items: baseline; justify-content: space-between;
+    gap: 10px; margin-top: 8px; min-width: 0;
   }
+  .fl-bench-foot .fl-engine { flex: 1 1 auto; }
+  .fl-bench-foot .fl-cta { flex: 0 0 auto; white-space: nowrap; }
   .fl-bench-foot .fl-cta { margin-top: 0; }
   .fl-bench-card.fl-bench-open { border-style: solid; border-color: var(--accent); }
   .fl-bench-list { align-items: flex-start; }

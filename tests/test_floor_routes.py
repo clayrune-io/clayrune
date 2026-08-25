@@ -483,3 +483,51 @@ def test_an_unreadable_roster_never_costs_the_prompt(tmp_path, monkeypatch):
         raise RuntimeError('agents dir on fire')
     monkeypatch.setattr(chars, 'list_characters', boom)
     assert ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199) == ''
+
+
+# ── text that has to fit on a card ──────────────────────────────────────────
+
+def test_a_clipped_line_never_ends_mid_word(floor):
+    """Both screenshots showed it: "real design probl", "a rough idea turned
+    i". A hard slice lands wherever it lands, and a card ending mid-word reads
+    as broken rather than abbreviated — the reader stops to work out whether
+    something is missing."""
+    fr, c, sessions, projects, chars = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    long_desc = ('Use to review a diff, branch, or file for correctness bugs '
+                 'and real design problems before it lands, and to say plainly '
+                 'which of them actually matter.')
+    chars.append({'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global',
+                  'description': long_desc})
+    got = _get(c)['bench'][0]['description']
+    assert got.endswith('…')
+    assert long_desc.startswith(got[:-1].rstrip('…').rstrip())
+    # the surviving text is whole words
+    assert got[:-1].rstrip() in long_desc
+
+
+def test_a_short_line_is_left_completely_alone(floor):
+    fr, c, sessions, projects, chars = floor
+    chars.append({'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global',
+                  'description': 'reviews a diff'})
+    assert _get(c)['bench'][0]['description'] == 'reviews a diff'
+
+
+def test_one_enormous_token_still_gets_cut(floor):
+    """No space to break on — a hard cut is the only option, and returning the
+    whole 4KB string would blow out the card instead."""
+    fr, c, sessions, projects, chars = floor
+    chars.append({'name': 'x', 'agent_name': 'X', 'scope': 'global',
+                  'description': 'q' * 400})
+    assert len(_get(c)['bench'][0]['description']) <= fr._DESC_CHARS + 1
+
+
+def test_the_task_line_is_clipped_the_same_way(floor):
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', task='so resuming the memory work for '
+                                            'Dave, as of now, we are still I '
+                                            'believe at the very top tier of '
+                                            'the thing we set out to build')
+    got = _get(c)['rooms'][0]['figures'][0]['task']
+    assert got.endswith('…') and not got.endswith('ti…')

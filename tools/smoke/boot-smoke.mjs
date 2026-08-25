@@ -1480,7 +1480,16 @@ async function runFloorGuard(browser) {
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
 
       // Quiet projects stay collapsed until asked for.
-      r.quietVisibleBefore = !!win.querySelector('.fl-quiet-list:not([hidden])');
+      // Ask what RENDERED, not what attribute is set. The old check looked for
+      // `:not([hidden])` and passed while the list was visible the whole time:
+      // `hidden` works through a UA `display:none`, and the author's
+      // `display:flex` beat it. A test that asserts the mechanism instead of
+      // the outcome cannot see that.
+      const _qVis = (w) => {
+        const el = w.querySelector('.fl-quiet-list');
+        return !!el && getComputedStyle(el).display !== 'none';
+      };
+      r.quietVisibleBefore = _qVis(win);
       // Quiet is the least important section and must sit LAST — it used to
       // land between the rooms and the bench, so the eye hit a grey count on
       // the way to the thing it wanted.
@@ -1492,7 +1501,7 @@ async function runFloorGuard(browser) {
       floorToggleQuiet();
       await settle();
       const win2 = document.querySelector('[data-modal-id="__floor"]');
-      r.quietVisibleAfter = !!win2.querySelector('.fl-quiet-list:not([hidden])');
+      r.quietVisibleAfter = _qVis(win2);
 
       // Renaming must be reachable from the card AND must not open the chat
       // underneath it — the name sits inside the figure's own click target.

@@ -36,8 +36,26 @@ agent_sessions: dict = {}
 load_projects: Callable[[], list] = None  # type: ignore[assignment]
 list_characters: Callable[..., Any] = None  # type: ignore[assignment]
 
-# A card shows one line of task. The full string is in the chat.
-_TASK_CHARS = 90
+# A card shows a couple of lines of task. The full string is in the chat.
+_TASK_CHARS = 110
+# What a type is FOR is the question the bench answers, so it gets room to say
+# it. Still bounded — the card is a summary, and the full text is in the editor.
+_DESC_CHARS = 130
+
+
+def _clip(text, n):
+    """Cut at a word boundary and mark it, or return the whole thing untouched.
+
+    A hard slice lands mid-word and the card reads as broken rather than
+    abbreviated, which is worse than showing less: the reader stops to work out
+    whether something is missing. Falls back to a hard cut only when there is no
+    space to break on (one very long token).
+    """
+    t = ' '.join(str(text or '').split())
+    if len(t) <= n:
+        return t
+    cut = t[:n].rsplit(' ', 1)[0]
+    return (cut if len(cut) >= n * 0.6 else t[:n]).rstrip(' ,.;:—-') + '…'
 # A name is a name, not a sentence.
 _NAME_CHARS = 32
 # An avatar is one emoji — which is frequently several codepoints (a ZWJ
@@ -234,7 +252,7 @@ def _figure(s, proj_default='', labels=None):
         # 'thinking' | 'writing' | 'tool' | '' — only present while a turn is
         # actually streaming, and only when activity_states_enabled is on.
         'activity': s.get('activity_state', '') if st == 'working' else '',
-        'task': (s.get('task') or '').strip()[:_TASK_CHARS],
+        'task': _clip(s.get('task'), _TASK_CHARS),
         'character': ch,
         # Who this figure IS, always populated. `name_from` is 'user' | 'self' |
         # 'character' | 'default', so the card can show a chosen name
@@ -353,7 +371,7 @@ def floor():
                           'avatar': c.get('avatar') or '',
                           'display': (c.get('agent_name')
                                       or c.get('display_name') or c.get('name')),
-                          'description': (c.get('description') or '')[:80],
+                          'description': _clip(c.get('description'), _DESC_CHARS),
                           'provider': eng.get('provider') or '',
                           'model': eng.get('model') or '',
                           'effort': eng.get('effort') or ''})

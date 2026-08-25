@@ -6,6 +6,53 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24m] — the board reads as a board
+
+Ron: *"definitely improvement… but I think it still looks bit dull."* The
+screenshots showed five bugs behind the dullness, not a palette problem.
+
+**The quiet list was never collapsing.** `.fl-quiet-list { display: flex }`
+beats the `hidden` attribute — `hidden` works through a UA `display: none`, and
+an author rule wins at the same specificity. So the arrow said collapsed while
+twenty project chips said otherwise, which is exactly the "sits there in mid
+screen" complaint from the round before: moving the section to the bottom did
+not help because it was never closing. Toggled by class now.
+
+**And the smoke guard was passing the whole time**, because it asserted
+`:not([hidden])` — the mechanism — instead of what rendered. It reads
+`getComputedStyle().display` now. A test that checks the attribute you set
+cannot see a rule that overrides it.
+
+**A long type name broke its card.** `market-analyst-investor` has no
+`agent_name`, so the file name IS the display name: it wrapped to three lines
+and shoved the type tag into a tall box beside it. The name truncates on one
+line now, the tag never shrinks below its own text, and a type whose display
+name equals its file name stops printing the same string twice.
+
+**The engine string wrapped mid-token** — `claude-sonnet-` / `5 · high` — and
+dragged "Put in a room →" into two lines with it. A model id is one token: one
+line, ellipsis, never a break.
+
+**Descriptions and tasks were cut mid-word.** "real design probl", "a rough idea
+turned i", "at the very top ti". `_clip` cuts on a word boundary and marks it;
+a card that ends mid-word reads as broken rather than abbreviated, and the
+reader stops to work out whether something is missing.
+
+Then the actual dullness:
+
+- **A lone figure looked lost.** `max-width: 340px` left two-thirds of a wide
+  room blank, so one agent working read as a mostly-empty box.
+- **Every type looked identical.** A stable hue derived from the character name
+  tints each bench card's edge — same colour on every machine and after every
+  restart, because it is an identity cue and not a palette.
+- **A room wears its colour where the eye lands**, as a swatch beside the name,
+  not only on the far-left edge.
+- **The working dot pulses.** The only thing on the board that is actually
+  happening, so the only thing that moves — and it respects
+  `prefers-reduced-motion`.
+- **An empty board is a composed state**, not a grey sentence: it says nobody is
+  working and points at the bench, which is the one thing you can do from there.
+
 ## [2026-08-24l] — the persona is visible where you actually need it
 
 Ron used the Floor and reported six things. Two were defects, not styling.
