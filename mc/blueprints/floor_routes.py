@@ -76,7 +76,23 @@ def _character_of(s):
     return {'name': ch.get('name') or '', 'display': name} if name else None
 
 
-def _figure(s):
+def _figure_model(s, proj_default):
+    """The engine string, resolved the way the chat header resolves it.
+
+    A session dispatched before `agent_model` was captured per-dispatch carries
+    nothing, and the header falls back to the project default — so reading the
+    session dict flat renders a blank pill next to a header that shows a model,
+    for the same session. The fallback is claude-ONLY: a project's `agent_model`
+    is always a claude id, and applying it to a codex/gemini run would make the
+    card claim "codex · claude-opus-5" for a spawn that received no --model.
+    """
+    own = s.get('model') or s.get('agent_model') or ''
+    if own:
+        return own
+    return proj_default if (s.get('provider') or 'claude') == 'claude' else ''
+
+
+def _figure(s, proj_default=''):
     st, reason = _figure_state(s)
     ch = _character_of(s)
     return {
@@ -90,7 +106,7 @@ def _figure(s):
         'task': (s.get('task') or '').strip()[:_TASK_CHARS],
         'character': ch,
         'provider': s.get('provider') or 'claude',
-        'model': s.get('model') or s.get('agent_model') or '',
+        'model': _figure_model(s, proj_default),
         'started_at': s.get('started_at', ''),
         # The corner age. A forgotten twenty-hour session is invisible today
         # unless you open its modal; this is the whole reason it is on the card.
@@ -100,7 +116,7 @@ def _figure(s):
     }
 
 
-def _live_sessions():
+def _live_sessions(defaults=None):
     """Sessions worth drawing, grouped by project.
 
     Housekeeping and incognito are excluded for the same reason
@@ -117,7 +133,8 @@ def _live_sessions():
         pid = s.get('project_id')
         if not pid:
             continue
-        rooms.setdefault(pid, []).append(_figure(s))
+        rooms.setdefault(pid, []).append(
+            _figure(s, (defaults or {}).get(pid, '')))
     order = {'asking': 0, 'working': 1, 'idle': 2}
     for figs in rooms.values():
         figs.sort(key=lambda f: (order.get(f['state'], 3),
@@ -128,9 +145,14 @@ def _live_sessions():
 @bp.route('/api/floor')
 def floor():
     """Rooms with something live, the quiet ones by name only, and the bench."""
-    rooms = _live_sessions()
+    projects = load_projects() or []
+    # Global default under the project's own, mirroring the chat header's
+    # resolution order (`agent_status`: project agent_model, then CONFIG).
+    _global = state.CONFIG.get('agent_model') or ''
+    defaults = {p.get('id'): (p.get('agent_model') or _global) for p in projects}
+    rooms = _live_sessions(defaults)
     live, quiet = [], []
-    for p in (load_projects() or []):
+    for p in projects:
         pid = p.get('id')
         card = {'id': pid, 'name': p.get('name') or pid,
                 'emoji': p.get('emoji') or '', 'color': p.get('modal_color') or ''}

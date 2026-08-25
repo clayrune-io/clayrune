@@ -218,3 +218,28 @@ def test_the_activity_string_is_only_for_a_running_turn(floor):
     figs = {f['session_id']: f for f in _get(c)['rooms'][0]['figures']}
     assert figs['1']['activity'] == 'thinking'
     assert figs['2']['activity'] == ''
+
+
+def test_the_model_pill_matches_what_the_chat_header_would_show(floor):
+    """A session dispatched before `agent_model` was captured carries nothing,
+    and the header falls back to the project default. Reading the session dict
+    flat renders a blank pill beside a header showing a model — for the SAME
+    session, which is the two-surfaces-disagreeing failure again."""
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha', 'agent_model': 'claude-opus-5'})
+    sessions['1'] = _session('a', '1')                       # no model of its own
+    sessions['2'] = _session('a', '2', model='claude-haiku-4-5')
+    figs = {f['session_id']: f for f in _get(c)['rooms'][0]['figures']}
+    assert figs['1']['model'] == 'claude-opus-5'
+    assert figs['2']['model'] == 'claude-haiku-4-5', 'a session model was overridden'
+
+
+def test_a_non_claude_session_never_inherits_the_claude_default(floor):
+    """A project's `agent_model` is always a claude id — the Agent-settings
+    picker offers nothing else. Applying it to a codex run made the chat header
+    read "codex - claude-opus-5" for a spawn that received no --model at all."""
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha', 'agent_model': 'claude-opus-5'})
+    sessions['1'] = _session('a', '1', provider='codex')
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['provider'], f['model']) == ('codex', '')
