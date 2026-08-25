@@ -1869,6 +1869,50 @@ def _render_position(project, h):
     return " — ".join(bits) + f"  [{h.get('file')}]"
 
 
+def _roster_block(project, port):
+    """Who the hired types are, and which of the two ways to call them shows up.
+
+    NOT "these types exist" — the harness already lists them as agent types,
+    because a character IS a Claude Code subagent file in ~/.claude/agents/.
+    What it does not say is who they are (Ron says "Fenn", the list says
+    `code-reviewer`) or that the two ways of calling one differ in whether the
+    work is visible.
+    """
+    try:
+        from mc import characters as _chars
+        pp = (project or {}).get('project_path') or ''
+        recs = _chars.list_characters(project_path=pp or None,
+                                      project_id=(project or {}).get('id'))
+    except Exception as e:
+        _log(f"[roster] unavailable: {e}")
+        return ''
+    named = [r for r in (recs or []) if r.get('agent_name')]
+    if not named:
+        return ''   # a heading over an empty list is worse than silence
+    lines = []
+    for r in sorted(named, key=lambda r: (r.get('agent_name') or '').lower()):
+        face = (r.get('avatar') or '').strip()
+        lines.append(
+            f"  • {face + ' ' if face else ''}{r['agent_name']} — `{r['name']}`"
+            f" ({r.get('scope', 'global')}) — {(r.get('description') or '').strip()[:100]}")
+    pid = (project or {}).get('id') or ''
+    return (
+        "--- THE ROSTER (hired agent types, and what Ron calls them) ---\n"
+        + "\n".join(lines)
+        + "\n  The backticked name is the agent type; the other is what the type "
+          "calls itself, and it is the one Ron will say. Two ways to call one, "
+          "and they differ in something that matters:\n"
+          "  • The Task tool runs it IN THIS PROCESS. Fast, and invisible — it "
+          "never becomes a session, so it never appears on the Floor and Ron "
+          "cannot open it. Right for a quick helper whose answer you fold into "
+          "your own.\n"
+          f"  • curl -s -X POST http://localhost:{port}/api/project/{pid}"
+          "/agent/dispatch -d '{\"task\":\"…\",\"character\":\"global:<type>\"}' "
+          "spawns a REAL session: its own figure on the Floor, its own chat Ron "
+          "can open and argue with. Right for work that outlives your turn or "
+          "that he should be able to watch.")
+
+
 def _build_agent_context(project, incognito=False, task='', character_body='',
                          character_name='', session_id=''):
     """Build system prompt context for the agent.
@@ -1931,6 +1975,10 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "doing when it distinguishes you from the other figures — a board "
             "where every session renamed itself would be as unreadable as one "
             "where none did.")
+    if session_id and not incognito:
+        _ros = _roster_block(project, state.CONFIG.get('port', 5199))
+        if _ros:
+            parts.append(_ros)
     if user_name:
         parts.append(f"The user's name is {user_name}. Address them accordingly.")
     # Sticky brevity: when sticky_agent_settings is on, the device-neutral brief

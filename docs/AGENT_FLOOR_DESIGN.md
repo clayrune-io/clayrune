@@ -241,7 +241,7 @@ the same as use:
 | Phase | Scope | Size |
 |---|---|---|
 | **1** | Floor view: rooms = projects, one card per live session with real status, click-to-open | **shipped** `mc/blueprints/floor_routes.py` + `static/js/floor.js`. One `/api/floor` call, not N — see §6b |
-| **2** | Bench: types with nothing running; click → dispatch with a project picker | small |
+| **2** | Bench: types with nothing running; click → pick a room → the chat opens with that persona set. Plus **+ Hire** → Claydo's character workshop | **shipped**. It sets the persona and does NOT dispatch — see §6d |
 | **3** | Coordination edges from `coord/roster` | small |
 | **4** | Team view: role cards from the character roster, grouped by scope | small |
 | **5** | Optional sprite skin, if the view has earned it | medium, deferred by default |
@@ -363,6 +363,45 @@ did, outside the lock, for the reason its own comment gives.
 
 The prompt line **offers** rather than demands. A board where every session
 renamed itself would be as unreadable as one where none did.
+
+## 6d. The board stops being read-only (2026-08-24)
+
+Ron: *"right now it is only a view and nothing more."* Two actions, both routed
+to machinery that already existed rather than rebuilt.
+
+**A bench card places a type in a room — it does not dispatch.** Clicking asks
+which project, then opens that chat with the persona already selected. A bench
+click knows WHO but not WHAT, and inventing a task to make the button feel
+decisive is exactly how an agent ends up doing something nobody asked for. Ron
+types the task; everything before it is done for him.
+
+**"+ Hire" opens Claydo's character workshop**, which has existed since the
+Prompt Builder: a brief, a fenced draft, a `[clayrune:character-ready]` marker
+and a "Save character…" panel. It was simply unreachable from here, and nothing
+on the Floor hinted it existed. A second creation flow would disagree with the
+first about what a character is inside a week.
+
+**Still deliberately absent: stop/kill from the Floor.** This is a read surface
+with one write — identity. Killing work from a board you skim is how you kill
+the wrong session, and the chat is one click away with the control already on it.
+
+### And a correction about what agents already know
+
+I claimed earlier that nothing tells Dave the roster exists. That was wrong, and
+checking cost thirty seconds: a character IS a Claude Code subagent file in
+`~/.claude/agents/`, so the harness already lists every one of them as an
+available agent type in every agent's prompt. Dave could already call
+`code-reviewer`.
+
+Two real gaps remained, and the roster block addresses those instead:
+
+- **He knew them by file name, not by who they are.** Ron says "Fenn"; the
+  agent-types list says `code-reviewer`. Nothing mapped the two, so a request in
+  Ron's vocabulary landed on nothing.
+- **A Task-tool subagent is invisible.** It runs in-process, never becomes an MC
+  session, and therefore never appears on the Floor. Dispatching through MC
+  makes a real figure with its own chat. Which route to take is a genuine choice
+  with a genuine consequence, and nothing anywhere was saying so.
 
 ## 7. Open questions
 

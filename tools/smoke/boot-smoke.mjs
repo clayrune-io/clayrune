@@ -1499,6 +1499,38 @@ async function runFloorGuard(browser) {
       window.openProjectModal = realOpenProj0;
       r.renameOpenedChat = openedByRename.length;
 
+      // A bench card must offer rooms, and picking one must SET the persona
+      // without dispatching — a bench click knows who, never what.
+      const placed = [];
+      const realSetChar = window.setComposerCharacter;
+      const dispatched = [];
+      window.setComposerCharacter = (pid2, ch) => placed.push([pid2, ch]);
+      const realOpenProj1 = window.openProjectModal;
+      window.openProjectModal = () => {};
+      document.querySelector('[data-modal-id="__floor"] .fl-bench-main').click();
+      await settle();
+      const w3 = document.querySelector('[data-modal-id="__floor"]');
+      r.picks = Array.from(w3.querySelectorAll('.fl-pick')).map((e) => e.textContent.trim());
+      const pick = w3.querySelector('.fl-pick');
+      if (pick) pick.click();
+      await settle(700);
+      window.setComposerCharacter = realSetChar;
+      window.openProjectModal = realOpenProj1;
+      r.placed = placed;
+      r.dispatched = dispatched.length;
+
+      // + Hire must route to Claydo's character mode, not a second builder.
+      const modes = [];
+      const realSetMode = window.setClaydoMode;
+      const realOpenClaydo = window.openClaydo;
+      window.setClaydoMode = (m) => modes.push(m);
+      window.openClaydo = () => Promise.resolve();
+      document.querySelector('[data-modal-id="__floor"] .fl-hire').click();
+      await settle(400);
+      window.setClaydoMode = realSetMode;
+      window.openClaydo = realOpenClaydo;
+      r.hireModes = modes;
+
       // Clicking a figure must route to the SESSION.
       const calls = [];
       const realOpenConv = window.openConversation;
@@ -1543,6 +1575,17 @@ async function runFloorGuard(browser) {
     fails.push('a figure lost its face: ' + JSON.stringify(out.faces));
   if (out.nofaces !== 1)
     fails.push('a figure with no avatar did not get the neutral placeholder');
+  if (!(out.picks || []).length)
+    fails.push('a bench card offered no rooms to place the type into');
+  if (!(out.placed || []).length)
+    fails.push('picking a room never set the persona');
+  else if (out.placed[0][1] !== 'global:marlow')
+    fails.push('the wrong persona reached the composer: ' + JSON.stringify(out.placed[0]));
+  if (out.dispatched)
+    fails.push('a bench click dispatched work nobody described');
+  if (JSON.stringify(out.hireModes || []) !== JSON.stringify(['character']))
+    fails.push('+ Hire did not open Claydo in character mode: '
+      + JSON.stringify(out.hireModes));
   if (out.asking !== 1) fails.push('the asking figure got no attention styling');
   if (!/Marlow/.test(out.text || '')) fails.push('the bench did not render');
   if (out.quietVisibleBefore) fails.push('quiet projects were expanded by default');
@@ -1559,8 +1602,8 @@ async function runFloorGuard(browser) {
     return false;
   }
   console.log('OKAY the floor: rooms sort by who needs you, two agents in one project render '
-    + 'as two figures, every figure has a name you can click to change, quiet stays '
-    + 'collapsed, and a figure click carries its session.');
+    + 'as two figures, faces and names are settable, a bench card places a type into a '
+    + 'room without dispatching, and + Hire routes to Claydo.');
   return true;
 }
 

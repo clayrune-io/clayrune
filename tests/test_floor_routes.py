@@ -425,3 +425,61 @@ def test_the_bench_shows_a_types_face(floor):
     chars.append({'name': 'quill', 'agent_name': 'Quill', 'scope': 'global',
                   'avatar': '\U0001F50D'})
     assert _get(c)['bench'][0]['avatar'] == '\U0001F50D'
+
+
+# ── the roster block in an agent's prompt ───────────────────────────────────
+
+def test_the_roster_maps_what_ron_says_to_what_the_agent_calls(tmp_path, monkeypatch):
+    """The harness already lists agent TYPES — characters are Claude Code
+    subagent files, so `code-reviewer` is in every prompt already. What is
+    missing is that Ron says "Fenn", and nothing maps the two."""
+    import server  # noqa: F401
+    from mc.blueprints import agent_routes as ar
+    from mc import characters as chars
+    monkeypatch.setattr(chars, 'list_characters', lambda **kw: [
+        {'name': 'code-reviewer', 'agent_name': 'Fenn', 'scope': 'global',
+         'avatar': '\U0001F989', 'description': 'reviews a diff'},
+    ])
+    out = ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199)
+    assert 'Fenn' in out and '`code-reviewer`' in out
+    assert '\U0001F989' in out, 'the roster dropped the face'
+
+
+def test_the_roster_says_which_route_is_visible(tmp_path, monkeypatch):
+    """Task-tool subagents run in-process and never become sessions, so they
+    never reach the Floor. Which route to take is a real choice with a real
+    consequence, and nothing was saying so."""
+    import server  # noqa: F401
+    from mc.blueprints import agent_routes as ar
+    from mc import characters as chars
+    monkeypatch.setattr(chars, 'list_characters', lambda **kw: [
+        {'name': 'code-reviewer', 'agent_name': 'Fenn', 'scope': 'global',
+         'description': 'reviews a diff'}])
+    out = ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199)
+    assert 'Task tool' in out and 'Floor' in out
+    assert '/agent/dispatch' in out
+
+
+def test_an_empty_roster_prints_nothing(tmp_path, monkeypatch):
+    """A heading over an empty list is worse than silence — it spends prompt
+    space to tell an agent it has nobody."""
+    import server  # noqa: F401
+    from mc.blueprints import agent_routes as ar
+    from mc import characters as chars
+    monkeypatch.setattr(chars, 'list_characters', lambda **kw: [])
+    assert ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199) == ''
+    # A type with no self-chosen name adds nothing the harness has not said.
+    monkeypatch.setattr(chars, 'list_characters', lambda **kw: [
+        {'name': 'code-reviewer', 'scope': 'global', 'description': 'x'}])
+    assert ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199) == ''
+
+
+def test_an_unreadable_roster_never_costs_the_prompt(tmp_path, monkeypatch):
+    import server  # noqa: F401
+    from mc.blueprints import agent_routes as ar
+    from mc import characters as chars
+
+    def boom(**kw):
+        raise RuntimeError('agents dir on fire')
+    monkeypatch.setattr(chars, 'list_characters', boom)
+    assert ar._roster_block({'id': 'p1', 'project_path': str(tmp_path)}, 5199) == ''

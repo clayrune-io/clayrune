@@ -4655,6 +4655,27 @@
     border: 1px dashed var(--border); border-radius: 6px; padding: 7px 10px;
   }
   .fl-bench-desc { font-size: 10px; color: var(--text-faint); line-height: 1.4; }
+  .fl-bench-card { cursor: pointer; transition: border-color 0.15s; }
+  .fl-bench-card:hover { border-color: var(--accent); }
+  .fl-bench-main { display: flex; flex-direction: column; gap: 2px; }
+  .fl-hire {
+    margin-left: auto; font-size: 10px; font-weight: 600; cursor: pointer;
+    background: none; color: var(--text-faint);
+    border: 1px dashed var(--border); border-radius: 5px; padding: 2px 8px;
+  }
+  .fl-hire:hover { color: var(--accent); border-color: var(--accent); }
+  .fl-section-head { display: flex; align-items: center; gap: 8px; }
+  .fl-pick-row {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+  }
+  .fl-pick-label { font-size: 10px; color: var(--text-faint); }
+  .fl-pick {
+    font-size: 10px; color: var(--text); cursor: pointer;
+    border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px;
+  }
+  .fl-pick:hover { color: var(--accent); border-color: var(--accent); }
+  .fl-pick-empty { font-size: 10px; color: var(--text-faint); margin-top: 6px; }
 
   /* The Floor on a phone. `.fl-fig` carries min-width:220px so figures tile
      inside a room on desktop; at 360px that plus the room padding overflows and

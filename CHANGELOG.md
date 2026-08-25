@@ -6,6 +6,45 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24k] — the Floor can put someone in a room, and hire
+
+Ron: *"right now it is only a view and nothing more."* Two actions, both routed
+to machinery that already existed.
+
+**A bench card places a type in a room and does not dispatch.** Click a type,
+pick a project, and that chat opens with the persona already selected. A bench
+click knows WHO but not WHAT — inventing a task so the button feels decisive is
+how an agent ends up doing something nobody asked for. Ron types the task;
+everything before it is done for him.
+
+**"+ Hire" opens Claydo's character workshop.** That has existed since the
+Prompt Builder — a brief, a fenced draft, a `[clayrune:character-ready]` marker
+and a "Save character…" panel — and was simply unreachable from the Floor, with
+nothing hinting it existed. Not a second builder: two creation flows would
+disagree about what a character is within a week.
+
+Still deliberately absent: stop/kill from the Floor. It is a read surface with
+one write. Killing work from a board you skim is how you kill the wrong session,
+and the chat is one click away with the control already on it.
+
+**A correction, and the roster block it produced.** I had said nothing tells an
+agent that the hired types exist. Wrong, and checking cost thirty seconds: a
+character IS a Claude Code subagent file in `~/.claude/agents/`, so the harness
+already lists every one as an available agent type in every prompt.
+
+The two gaps that were real:
+
+- **Names.** Ron says "Fenn"; the agent-types list says `code-reviewer`. Nothing
+  mapped them, so a request in Ron's vocabulary landed on nothing.
+- **Visibility.** A Task-tool subagent runs in-process, never becomes a session,
+  and never appears on the Floor. Dispatching through MC makes a real figure
+  with its own chat. A genuine choice with a genuine consequence that nothing
+  was mentioning.
+
+`_roster_block` states both, generated from the live roster, and prints nothing
+at all when no type has a self-chosen name — a heading over an empty list is
+worse than silence.
+
 ## [2026-08-24j] — a figure can have a face
 
 Ron: *"let's give the agents the ability to choose their avatar."* One emoji, on

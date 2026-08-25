@@ -183,18 +183,79 @@ function _floorQuiet(quiet) {
   </div>`;
 }
 
-function _floorBench(bench) {
-  if (!bench.length) return '';
+// Which bench card has its room picker open, by character name. Only ever one:
+// two open pickers is two half-made decisions on screen.
+let floorPickerFor = null;
+
+function _floorBench(bench, rooms, quiet) {
+  const hire = `<button class="fl-hire" onclick="floorHire()"
+      title="Describe a new agent type and save it">&#43; Hire</button>`;
+  const head = `<div class="fl-section-head">Bench
+      <span class="dave-sub">types with nothing running &mdash; click one to put it in a room</span>
+      ${hire}</div>`;
+  if (!bench.length) {
+    return `<div class="fl-bench">${head}
+      <div class="dave-empty">Every type you have is out on the floor.</div></div>`;
+  }
   const cards = bench.map(b => `<div class="fl-bench-card">
-      <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
-        >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span></span>
-      <span class="fl-engine">${esc([b.provider, b.model, b.effort].filter(Boolean).join(' · ')) || '&mdash;'}</span>
-      <span class="fl-bench-desc">${esc(b.description || '')}</span>
+      <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
+        <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
+          >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span></span>
+        <span class="fl-engine">${esc([b.provider, b.model, b.effort].filter(Boolean).join(' · ')) || '&mdash;'}</span>
+        <span class="fl-bench-desc">${esc(b.description || '')}</span>
+      </div>
+      ${floorPickerFor === b.name ? _floorRoomPicker(b, rooms, quiet) : ''}
     </div>`).join('');
-  return `<div class="fl-bench">
-    <div class="fl-section-head">Bench <span class="dave-sub">hired types with nothing running</span></div>
+  return `<div class="fl-bench">${head}
     <div class="fl-bench-list">${cards}</div>
   </div>`;
+}
+
+function _floorRoomPicker(b, rooms, quiet) {
+  // Busy rooms first: putting a second agent somewhere already active is the
+  // more common intent than waking a project that has been quiet for a week.
+  const all = (rooms || []).concat(quiet || []);
+  if (!all.length) return '<div class="fl-pick-empty">No projects.</div>';
+  const items = all.map(r =>
+    `<span class="fl-pick" onclick="floorPlace('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(r.id)}')"
+      >${esc(r.name)}</span>`).join('');
+  return `<div class="fl-pick-row"><span class="fl-pick-label">into&hellip;</span>${items}</div>`;
+}
+
+function floorTogglePicker(name) {
+  floorPickerFor = floorPickerFor === name ? null : name;
+  refreshFloor();
+}
+
+function floorPlace(scope, name, projectId) {
+  // Opens the chat with the persona chosen; it does NOT dispatch. A bench click
+  // knows WHO but not WHAT, and inventing a task to make the button feel
+  // decisive is how an agent ends up doing something nobody asked for.
+  floorPickerFor = null;
+  openProjectModal(projectId);
+  setTimeout(() => {
+    if (typeof window.setComposerCharacter === 'function') {
+      window.setComposerCharacter(projectId, scope + ':' + name);
+    }
+    if (window.showToast) {
+      showToast('Persona set — type what you want done.', 3500);
+    }
+  }, 500);
+}
+
+function floorHire() {
+  // Claydo's character mode, not a second builder. Two creation flows would
+  // disagree about what a character is within a week.
+  const toChar = () => {
+    if (typeof window.setClaydoMode === 'function') window.setClaydoMode('character');
+  };
+  try {
+    if (typeof window.openClaydo === 'function') {
+      Promise.resolve(window.openClaydo()).then(toChar).catch(toChar);
+    } else {
+      toChar();
+    }
+  } catch (e) { /* the button is a shortcut, never the only route */ }
 }
 
 function floorToggleQuiet() {
@@ -242,7 +303,7 @@ async function refreshFloor() {
        (<code>activity_states_enabled</code>), so a running figure just reads "working".</div>` : '';
 
   body.innerHTML = `<div class="fl-rooms">${rooms}</div>${empty}
-    ${_floorQuiet(d.quiet || [])}${_floorBench(d.bench || [])}${note}`;
+    ${_floorQuiet(d.quiet || [])}${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}${note}`;
 
   if (!floorTimer) {
     const secs = Math.max(10, parseInt(d.poll_seconds, 10) || 30);
@@ -269,3 +330,6 @@ window.floorToggleQuiet = floorToggleQuiet;
 window.floorOpenFigure = floorOpenFigure;
 window.floorRename = floorRename;
 window.floorSetAvatar = floorSetAvatar;
+window.floorTogglePicker = floorTogglePicker;
+window.floorPlace = floorPlace;
+window.floorHire = floorHire;
