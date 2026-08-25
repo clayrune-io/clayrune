@@ -6,6 +6,48 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25] — an agent can wear a figure, not just an emoji
+
+Nine clay characters, generated from a style brief built off Claydo, cut and
+keyed by `tools/avatars/slice_sheet.py`, and now reachable from the app.
+
+**One field, two shapes.** `avatar` is still the single "face" fact; a `fig:`
+prefix says it names a figure in `assets/avatars/` rather than being an emoji.
+Two separate keys would have doubled the precedence logic at every site that
+resolves a face — session label, then character, then default — and each of
+those sites would have had to agree about which kind wins.
+
+**A bare name, never a path.** `fig:wizard` resolves through `/api/avatars/
+<name>`, which validates against the directory listing. An absolute path would
+bake this machine's checkout location into a character file that is meant to be
+portable, and put an arbitrary filesystem string on a public API. Traversal is a
+404, not a read.
+
+**`MAX_AVATAR_LEN` was 8** — sized for one emoji including a ZWJ sequence — so
+it silently truncated `fig:wizard` to `fig:wiza` and produced a face that simply
+never resolved. Caught live: the first assignment through the running server
+wrote `fig:scho` for all four personas before the raised cap was loaded.
+
+**One renderer, in `render-core.js`.** Three copies of a five-line helper is how
+the surfaces end up disagreeing about what an avatar is — which already happened
+once, when the chat header showed a generic mask while the Floor showed the
+persona's own face.
+
+The Floor's face slot goes 18px → **40px** (Ron: *"on the floor area we can show
+them in bigger size"*). It stays a FIXED box so every card's name still starts at
+the same x; only the size changed, and the smoke guard now pins that 40 as well
+as checking that a `fig:` avatar renders as an `<img>` and an emoji does not.
+
+The persona editor gains a row of the nine figures beside the emoji field,
+fetched from `/api/avatars` rather than hardcoded — a hardcoded list and the
+directory would disagree the first time anyone drops a new file in.
+
+**No portrait crop.** One was built and dropped: sweeping the crop fraction
+showed 78% is barely distinguishable from the full figure, and tighter crops cut
+through the mouth — these are blob figures whose faces sit lower than a human
+head. The tightest usable setting traded a slightly bigger head for the lute,
+the anvil and the spear, and the props carry more identity than the face does.
+
 ## [2026-08-24p] — a live session picks up config that changed under it
 
 Ron, straight after the relocation: *"we need to guarantee that when invoking

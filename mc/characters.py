@@ -65,7 +65,27 @@ MAX_AGENT_NAME_LEN = 32
 # 1-char cap silently truncates 👩‍💻 into 👩. Long enough for those, short
 # enough that nobody fits a word in it.
 AVATAR_KEY = 'avatar'
-MAX_AVATAR_LEN = 8
+# Long enough for `fig:<name>` as well as an emoji. It was 8 — sized for one
+# emoji including a ZWJ sequence — which silently truncated `fig:wizard` to
+# `fig:wiza` and produced a face that simply never resolved.
+MAX_AVATAR_LEN = 40
+# A figure from `assets/avatars/`, as opposed to an emoji. A prefix rather than
+# a second frontmatter key: the face is ONE fact, and splitting it would double
+# the precedence logic at every site that resolves it.
+AVATAR_FIG_PREFIX = 'fig:'
+
+
+def avatar_figure(value):
+    """The figure NAME in `fig:<name>`, or '' when this avatar is not a figure.
+
+    Kept deliberately strict — alphanumerics, dash and underscore only. This
+    string reaches a filesystem lookup, and a name is a name.
+    """
+    v = str(value or '').strip()
+    if not v.startswith(AVATAR_FIG_PREFIX):
+        return ''
+    n = v[len(AVATAR_FIG_PREFIX):].strip().lower()
+    return n if n and all(c.isalnum() or c in '-_' for c in n) else ''
 
 
 # ── The toolkit it works with (Ron, 2026-08-24) ─────────────────────────────
@@ -111,6 +131,21 @@ def clean_avatar(value):
     """
     v = ' '.join(str(value or '').split())
     return v[:MAX_AVATAR_LEN]
+
+
+AVATARS_DIR = None  # wired by server.py; assets/avatars/
+
+
+def list_figures():
+    """Figure names available on this install. Never raises."""
+    try:
+        from pathlib import Path
+        d = Path(AVATARS_DIR) if AVATARS_DIR else None
+        if not d or not d.is_dir():
+            return []
+        return sorted(f.stem for f in d.glob('*.webp'))
+    except Exception:
+        return []
 
 
 def clean_agent_name(value):

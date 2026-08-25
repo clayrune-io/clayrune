@@ -83,6 +83,20 @@ function _floorLine(f) {
          || 'working…';
 }
 
+// The figure list, fetched once. Small, and it only changes when someone drops
+// a new file into assets/avatars/.
+let _floorFigCache = null;
+async function _floorFigures() {
+  if (_floorFigCache) return _floorFigCache;
+  try {
+    const r = await fetch(API_BASE + '/api/avatars');
+    _floorFigCache = (await r.json()).figures || [];
+  } catch (e) {
+    _floorFigCache = [];
+  }
+  return _floorFigCache;
+}
+
 // A stable hue per name. Not random and not configured: the same type is the
 // same colour on every machine and after every restart, which is the only
 // property that matters — it is an identity cue, not a palette.
@@ -94,22 +108,24 @@ function _floorHue(name) {
   return Math.abs(h) % 360;
 }
 
-// A neutral placeholder, not a random face. The board's discipline is that
-// absence is a finding — a figure nobody gave a face to should look unassigned,
-// not look like it chose this one.
-const FLOOR_NO_FACE = '\u25CC';   // dotted circle
+// Ron: "on the floor area we can show them in bigger size." A figure is a
+// character, not a glyph — at 18px it was a smudge, and the whole reason to
+// have artwork is that you can tell who is in the room at a glance.
+const FLOOR_FACE_PX = 40;
 
 function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();
-  return `<span class="fl-face${has ? '' : ' fl-noface'}"
-      title="${has ? 'click to change the face' : 'click to give this figure a face'}"
+  return `<span class="fl-face" title="${has ? 'click to change the face' : 'click to give this figure a face'}"
       onclick="event.stopPropagation();floorSetAvatar('${esc(f.session_id)}','${esc(f.avatar || '')}')"
-    >${esc(f.avatar || FLOOR_NO_FACE)}</span>`;
+    >${window.avatarHTML(f.avatar, FLOOR_FACE_PX)}</span>`;
 }
 
 async function floorSetAvatar(sessionId, current) {
+  const figs = await _floorFigures();
   const next = window.prompt(
-    'One emoji for this figure (blank clears it):', current || '');
+    'A face for this figure — one emoji, or one of:\n\n  '
+    + figs.map((n) => 'fig:' + n).join('   ')
+    + '\n\n(blank clears it)', current || '');
   if (next === null) return;
   try {
     const res = await fetch(API_BASE + '/api/floor/figure/' + encodeURIComponent(sessionId) + '/name', {
@@ -231,8 +247,8 @@ function _floorBench(bench, rooms, quiet) {
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
-        <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
-          >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span>
+        <span class="fl-bench-top"><span class="fl-face"
+          >${window.avatarHTML(b.avatar, FLOOR_FACE_PX)}</span><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
             onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"

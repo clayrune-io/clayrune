@@ -1229,7 +1229,8 @@ function agentPanelHTML(p) {
           // The persona's own face when it has one. A generic mask on every
           // persona answers "there is a persona" but not "which one", which is
           // the question you actually have three messages into a chat.
-          _char && _char.avatar ? esc(_char.avatar) : '&#x1F3AD;'} ${esc(_charName)}${
+          _char && _char.avatar ? window.avatarHTML(_char.avatar, 18, 'av-pill')
+                                : '&#x1F3AD;'} ${esc(_charName)}${
           _charInherited ? '<span class="cb-src">default</span>' : ''}</span>`
       : '';
     // APK version pill — visible only inside the Capacitor APK (the native

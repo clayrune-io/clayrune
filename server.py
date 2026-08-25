@@ -1481,6 +1481,11 @@ app.register_blueprint(_bp_coord.bp)
 from mc.blueprints import floor_routes as _bp_floor  # noqa: E402
 from mc import characters as _characters_mod  # noqa: E402
 
+# Figures live beside the other brand assets, in the repo — they ship WITH the
+# app rather than being per-install data, which is why this is _APP_DIR and not
+# the data root.
+_characters_mod.AVATARS_DIR = _APP_DIR / 'assets' / 'avatars'
+
 _bp_floor.wire(
     agent_sessions_ref=_bp_agent.agent_sessions,
     load_projects_fn=_bp_projects.load_projects,

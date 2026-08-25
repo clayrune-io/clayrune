@@ -4652,13 +4652,16 @@
   }
 
   /* ── identity: a face, a name, a type ─────────────────────────────────── */
+  /* Ron: "on the floor area we can show them in bigger size." A figure is a
+     character, not a glyph — at 18px it was a smudge, and being able to tell
+     who is in the room at a glance is the entire reason to have artwork. The
+     slot stays FIXED so every card's name starts at the same x; only its size
+     changed. */
   .fl-face {
-    font-size: 14px; line-height: 1; cursor: pointer;
-    /* An emoji's own metrics vary wildly, so the slot is fixed — otherwise
-       every card's name starts at a different x and the column reads ragged. */
-    width: 18px; display: inline-block; text-align: center; flex: 0 0 18px;
+    width: 40px; height: 40px; flex: 0 0 40px; cursor: pointer; line-height: 0;
+    display: inline-flex; align-items: center; justify-content: center;
   }
-  .fl-face.fl-noface { color: var(--text-faint); font-size: 12px; opacity: 0.7; }
+  .fl-fig-top { align-items: center; }
   .fl-who {
     font-size: 12px; font-weight: 700; color: var(--text);
     cursor: text; border-bottom: 1px dashed transparent;
@@ -4822,6 +4825,31 @@
   .fl-empty-sub { font-size: 11px; color: var(--text-faint); margin-top: 4px; }
 
   /* ── the persona editor's face picker ─────────────────────────────────── */
+  /* ── an agent's face, wherever it appears ─────────────────────────────── */
+  .av { display: inline-block; vertical-align: middle; flex: 0 0 auto; }
+  .av-fig {
+    object-fit: contain;
+    /* The figures are already trimmed to their subject, so any further inset
+       here would shrink them inside a slot that was sized for them. */
+    display: block;
+  }
+  .av-emoji, .av-none {
+    display: inline-flex; align-items: center; justify-content: center;
+    line-height: 1;
+  }
+  .av-none { color: var(--text-faint); opacity: 0.7; }
+  /* Inside the chat header pill, where it sits on a line of text. */
+  .character-badge .av { margin-right: 2px; }
+
+  .persona-fig-row {
+    display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px;
+  }
+  .pe-fig {
+    padding: 3px; line-height: 0; cursor: pointer; background: none;
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .pe-fig:hover { border-color: var(--accent); }
+  .pe-fig.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .persona-face-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .persona-face-row input {
     width: 62px; flex: 0 0 62px; text-align: center; font-size: 16px;

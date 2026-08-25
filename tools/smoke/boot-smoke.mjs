@@ -1411,7 +1411,7 @@ async function runFloorGuard(browser) {
       { id: 'smoke_alpha', name: 'Alpha', emoji: '', color: '', figures: [
         { session_id: 's-fenn', claude_session_id: 'csid-fenn', state: 'working',
           reason: null, activity: 'tool', task: 'reviewing MC-142',
-          name: 'Scout', name_from: 'self', avatar: '\u{1F989}',
+          name: 'Scout', name_from: 'self', avatar: 'fig:wizard',
           character: { name: 'fenn', display: 'Fenn' }, provider: 'claude',
           model: 'claude-sonnet-5', started_at: '2026-08-24T11:00:00Z', age: '12m',
           trigger_type: 'manual', hivemind_id: '' },
@@ -1474,8 +1474,15 @@ async function runFloorGuard(browser) {
       r.untyped = win.querySelectorAll('.fl-type.fl-untyped').length;
       r.names = Array.from(win.querySelectorAll('.fl-who')).map((e) => e.textContent.trim());
       r.chosen = win.querySelectorAll('.fl-who.fl-named').length;
-      r.faces = Array.from(win.querySelectorAll('.fl-fig .fl-face')).map((e) => e.textContent.trim());
-      r.nofaces = win.querySelectorAll('.fl-fig .fl-face.fl-noface').length;
+      // An avatar is one field with two shapes: an emoji, or fig:<name>
+      // rendered as an image. Both live inside the same .fl-face slot.
+      r.faces = Array.from(win.querySelectorAll('.fl-fig .av-emoji')).map((e) => e.textContent.trim());
+      r.figs = Array.from(win.querySelectorAll('.fl-fig img.av-fig'))
+        .map((e) => new URL(e.getAttribute('src'), location.href).pathname);
+      r.nofaces = win.querySelectorAll('.fl-fig .av-none').length;
+      // The slot is FIXED so every card's name starts at the same x.
+      const _slot = win.querySelector('.fl-fig .fl-face');
+      r.faceBox = _slot ? Math.round(_slot.getBoundingClientRect().width) : 0;
       r.asking = win.querySelectorAll('.fl-fig.fl-asking').length;
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
 
@@ -1609,10 +1616,14 @@ async function runFloorGuard(browser) {
   else if (renames[0][1] !== 'Scribe')
     fails.push('the rename sent the wrong name: ' + JSON.stringify(renames[0]));
   if (out.renameOpenedChat) fails.push('renaming also opened the chat underneath');
-  if (!(out.faces || []).includes('\u{1F989}'))
-    fails.push('a figure lost its face: ' + JSON.stringify(out.faces));
+  if (!(out.faces || []).includes('\u{1F50D}'))
+    fails.push('an emoji face did not render: ' + JSON.stringify(out.faces));
+  if (!(out.figs || []).includes('/api/avatars/wizard'))
+    fails.push('a fig: avatar did not render as an image: ' + JSON.stringify(out.figs));
   if (out.nofaces !== 1)
     fails.push('a figure with no avatar did not get the neutral placeholder');
+  if (out.faceBox !== 40)
+    fails.push('the face slot is not the fixed 40px the layout assumes: ' + out.faceBox);
   if (!(out.picks || []).length)
     fails.push('a bench card offered no rooms to place the type into');
   if (!(out.placed || []).length)

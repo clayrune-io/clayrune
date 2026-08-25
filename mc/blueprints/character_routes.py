@@ -243,6 +243,32 @@ def _taken_agent_names(project_path, exclude):
 
 
 
+@bp.route('/api/avatars')
+def list_avatars():
+    """Figure names this install can draw. Names only — the UI builds the URL."""
+    return jsonify({'figures': _chars.list_figures(),
+                    'prefix': _chars.AVATAR_FIG_PREFIX})
+
+
+@bp.route('/api/avatars/<name>')
+def serve_avatar(name):
+    """Serve `assets/avatars/<name>.webp`.
+
+    Its own route rather than `/api/serve-image?path=…`: that one takes an
+    absolute path, which would mean the frontend knowing this machine's
+    checkout location and an arbitrary filesystem string travelling over a
+    public API. Here the name is checked against the directory listing, so a
+    bad one is a 404 and never a traversal.
+    """
+    from flask import send_file
+    n = _chars.avatar_figure(_chars.AVATAR_FIG_PREFIX + str(name or ''))
+    if not n or n not in _chars.list_figures():
+        return jsonify({'error': 'no such figure'}), 404
+    from pathlib import Path
+    return send_file(Path(_chars.AVATARS_DIR) / f'{n}.webp',
+                     mimetype='image/webp', max_age=86400)
+
+
 @bp.route('/api/characters/<scope>/<name>/name', methods=['POST'])
 def name_character_route(scope, name):
     """Let the character name itself, and persist the answer.

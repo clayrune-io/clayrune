@@ -1,3 +1,39 @@
+
+// ── Agent faces ──────────────────────────────────────────────────────────────
+// An avatar is ONE field with two shapes: an emoji, or `fig:<name>` naming a
+// figure in assets/avatars/. Rendering lives here rather than in each surface
+// because three copies of this drift — the chat header once showed a generic
+// mask while the Floor showed the persona's own face, for exactly that reason.
+const AVATAR_FIG_PREFIX = 'fig:';
+
+function avatarIsFigure(v) {
+  return typeof v === 'string' && v.trim().startsWith(AVATAR_FIG_PREFIX);
+}
+
+function avatarFigureName(v) {
+  return avatarIsFigure(v) ? v.trim().slice(AVATAR_FIG_PREFIX.length) : '';
+}
+
+// `size` is the px box. A figure is drawn to fill it; an emoji is sized to sit
+// optically level with one, which is smaller than the box because emoji glyphs
+// carry their own padding.
+function avatarHTML(value, size, extraClass) {
+  const cls = 'av' + (extraClass ? ' ' + extraClass : '');
+  const v = (value || '').trim();
+  if (avatarIsFigure(v)) {
+    const n = encodeURIComponent(avatarFigureName(v));
+    return `<img class="${cls} av-fig" src="${API_BASE}/api/avatars/${n}" alt=""
+      width="${size}" height="${size}" draggable="false">`;
+  }
+  if (v) {
+    return `<span class="${cls} av-emoji" style="font-size:${Math.round(size * 0.78)}px;
+      width:${size}px;height:${size}px">${esc(v)}</span>`;
+  }
+  // Absence is a finding on this board — a neutral mark, never a random face.
+  return `<span class="${cls} av-none" style="font-size:${Math.round(size * 0.6)}px;
+    width:${size}px;height:${size}px">\u25CC</span>`;
+}
+
 // ── Tile HTML (compact grid card) ───────────────────────────────────────────
 
 // /api/projects no longer ships the `backlog` array — only a summary of it
@@ -880,6 +916,9 @@ function listRowHTML(p) {
 
 
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
+window.avatarHTML = avatarHTML;
+window.avatarIsFigure = avatarIsFigure;
+window.avatarFigureName = avatarFigureName;
 window.backlogSummary = backlogSummary;
 window.computeLiveStatus = computeLiveStatus;
 window.friendlyStatus = friendlyStatus;

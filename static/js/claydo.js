@@ -944,10 +944,11 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         <button type="button" class="claydo-ready-btn" id="pe-name-pick"
           title="Ask this persona to choose its own name">&#x1F3B2; Let it choose</button>
       </div>
-      <label>Face <span class="claydo-save-hint">(one emoji — it appears on the Floor and in the chat header)</span></label>
+      <label>Face <span class="claydo-save-hint">(a figure, or any emoji — it appears on the Floor and in the chat header)</span></label>
+      <div id="pe-figs" class="persona-fig-row"></div>
       <div class="persona-face-row">
-        <input id="pe-avatar" type="text" maxlength="8" spellcheck="false"
-          value="${esc(rec.avatar || '')}" placeholder="🙂">
+        <input id="pe-avatar" type="text" maxlength="40" spellcheck="false"
+          value="${esc(rec.avatar || '')}" placeholder="🙂 or fig:wizard">
         ${['\u{1F989}', '\u{270D}', '\u{1F50D}', '\u{1F4C8}', '\u{1F9EA}', '\u{1F5FA}',
            '\u{1F6E0}', '\u{1F4DA}', '\u{1F9ED}', '\u{1F41B}']
           .map((e) => `<button type="button" class="pe-face-pick" data-face="${e}">${e}</button>`)
@@ -1002,9 +1003,36 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
 
   // Typing an emoji on a desktop keyboard is the entire reason a field like
   // this stays empty forever. One click, or type your own.
+  const setFace = (v) => {
+    panel.querySelector('#pe-avatar').value = v;
+    panel.querySelectorAll('.pe-fig').forEach(
+      (e) => e.classList.toggle('sel', e.dataset.face === v));
+  };
   panel.querySelectorAll('.pe-face-pick').forEach((b) => {
-    b.onclick = () => { panel.querySelector('#pe-avatar').value = b.dataset.face; };
+    b.onclick = () => setFace(b.dataset.face);
   });
+
+  // The figures. Fetched rather than hardcoded so dropping a new file into
+  // assets/avatars/ is the whole install step — a hardcoded list would make
+  // the picker and the directory disagree the first time anyone adds one.
+  (async () => {
+    let figs = [];
+    try {
+      const r = await fetch(API_BASE + '/api/avatars');
+      figs = (await r.json()).figures || [];
+    } catch (e) { /* emoji still works; the row just stays empty */ }
+    const row = panel.querySelector('#pe-figs');
+    if (!row || !figs.length) return;
+    const cur = (rec.avatar || '').trim();
+    row.innerHTML = figs.map((n) => {
+      const v = 'fig:' + n;
+      return `<button type="button" class="pe-fig${v === cur ? ' sel' : ''}"
+        data-face="${esc(v)}" title="${esc(n)}">${window.avatarHTML(v, 38)}</button>`;
+    }).join('');
+    row.querySelectorAll('.pe-fig').forEach((b) => {
+      b.onclick = () => setFace(b.dataset.face);
+    });
+  })();
 
   panel.querySelector('#pe-cancel').onclick = close;
   panel.addEventListener('mousedown', (e) => { if (e.target === panel) close(); });
