@@ -45,3 +45,25 @@ being removed, then an uneven collapse where figures start being eaten:
 The default (10) is that knee. The script prints coverage per figure and flags
 anything outside 20–55%: below means the fill ate the body, above means it never
 started. Eyeballing is what let the first bug ship.
+
+## Two crops per character
+
+Full-body figures do not survive a small circular slot: at 44px a standing
+figure puts its head at ~12px, while the same circle filled by a head reads
+perfectly — which is exactly what WhatsApp's 49px avatars demonstrate.
+
+So each character has two files:
+
+| file | crop | used for |
+|---|---|---|
+| `<name>.webp` | whole figure | the Floor, where there is room for it |
+| `<name>-face.webp` | head and shoulders | chat headers, lists, anywhere small |
+
+`portrait()` takes the top **68%** of the subject's bounding box, then re-bounds
+that slice horizontally so a held-out prop (the angler's rod, the guard's spear)
+cannot drag the frame sideways off the head.
+
+That 68% was swept, not guessed. At 55% the slice takes hat and forehead and
+cuts through the mouth on most of the cast — these are blob figures whose faces
+sit on the body, lower than a human head. Above ~78% the head shrinks back
+toward full-figure framing and the crop stops earning itself.
