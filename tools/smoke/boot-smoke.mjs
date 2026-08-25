@@ -1483,6 +1483,15 @@ async function runFloorGuard(browser) {
       // The slot is FIXED so every card's name starts at the same x.
       const _slot = win.querySelector('.fl-fig .fl-face');
       r.faceBox = _slot ? Math.round(_slot.getBoundingClientRect().width) : 0;
+      // THE BOARD MUST OWN A SCROLL AREA. `.modal-content` is a flex column
+      // with overflow:hidden by design, so a surface without its own scroller
+      // silently truncates — which is exactly what happened on a phone: 728px
+      // of window, 1,339px of board, 611px unreachable and nothing to swipe.
+      // Desktop hid it because the board happened to fit.
+      const _fb = document.getElementById('floor-body');
+      r.bodyScrolls = !!_fb && getComputedStyle(_fb).overflowY === 'auto';
+      const _mc = win.querySelector('.modal-content');
+      r.contentClipsContent = !!_mc && _mc.scrollHeight > _mc.clientHeight + 2;
       r.asking = win.querySelectorAll('.fl-fig.fl-asking').length;
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
 
@@ -1622,6 +1631,10 @@ async function runFloorGuard(browser) {
     fails.push('a fig: avatar did not render as an image: ' + JSON.stringify(out.figs));
   if (out.nofaces !== 1)
     fails.push('a figure with no avatar did not get the neutral placeholder');
+  if (!out.bodyScrolls)
+    fails.push('the floor body is not a scroll area — long boards will be unreachable on a phone');
+  if (out.contentClipsContent)
+    fails.push('modal-content is overflowing: content below the fold with nothing to scroll');
   if (out.faceBox !== 72)
     fails.push('the face slot is not the fixed 72px the layout assumes: ' + out.faceBox);
   if (!(out.picks || []).length)

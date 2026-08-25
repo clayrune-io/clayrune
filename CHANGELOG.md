@@ -6,6 +6,26 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25d] — the Floor scrolls
+
+Ron, on a phone: *"trying to open the floor screen on mobile but I cannot scroll
+down."*
+
+`.modal-content` is a flex column with `overflow: hidden` **by design** — every
+surface owns its own scroll area — and the Floor never had one. Measured at a
+390×780 viewport: a 728px window holding **1,339px of board**, `overflow-y:
+hidden`, 611px unreachable and nothing to swipe. Desktop hid it completely,
+because there the board happened to fit.
+
+`#floor-body` is now the scroller (`flex: 1 1 auto; min-height: 0; overflow-y:
+auto`), verified by driving `scrollTop` rather than by reading a computed style:
+0 → 400 with 588px of travel. Side padding also drops from 52px to 24px below
+960px, where 52px is 13% of the screen.
+
+The smoke guard now checks both halves — that the body is a scroll area, and
+that `.modal-content` is not overflowing — because a surface that forgets its
+scroller looks perfect on a desktop and truncates silently on a phone.
+
 ## [2026-08-25c] — the persona editor: reach Save, and resize the panel
 
 Ron: *"when I edit the agent, there is no save button. So if I click anywhere

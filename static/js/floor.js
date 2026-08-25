@@ -44,7 +44,7 @@ async function openFloor() {
         <button class="modal-close" onclick="closeFloor()" title="Close">&#10005;</button>
       </div>
     </div>
-    <div style="padding:4px 24px 20px 28px" id="floor-body"></div>`;
+    <div class="fl-body" id="floor-body"></div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
 

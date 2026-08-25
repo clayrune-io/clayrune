@@ -4567,6 +4567,16 @@
      block: a room is bounded so "two agents, one project" is legible; a
      figure's STATE owns its card rather than a dot; and a bench tile is one
      shape regardless of how much its description happens to say. */
+  /* THE BOARD SCROLLS. `.modal-content` is a flex column with overflow:hidden
+     by design — every surface owns its own scroll area — and the Floor never
+     had one. It simply happened to fit on a desktop screen. On a phone it was
+     728px of window holding 1,339px of board, with 611px unreachable and
+     nothing to swipe. Measured, not guessed. */
+  .fl-body {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    -webkit-overflow-scrolling: touch;
+    padding: 4px 24px 20px 28px;
+  }
   .fl-rooms { display: flex; flex-direction: column; gap: 12px; }
   .fl-room {
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px;
@@ -4891,6 +4901,8 @@
      fine, and did nothing, because the desktop values are 3,500 lines further
      down at the same specificity. */
   @media (max-width: 960px) {
+    /* 52px of side padding is 13% of a 390px screen. */
+    .fl-body { padding: 4px 12px 20px 12px; }
     .fl-fig { min-width: 0; flex: 1 1 100%; }
     /* The bench is a grid now, so one column rather than a flex basis. */
     .fl-bench-list { grid-template-columns: 1fr; }
