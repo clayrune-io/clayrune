@@ -187,3 +187,52 @@ def test_the_prompt_builder_asks_for_the_same_bucket(env):
         assert 'Dave — dave is mid-refactor' in other
     finally:
         state.CONFIG.pop('agent_name', None)
+
+
+# ── an ephemeral owns nothing ───────────────────────────────────────────────
+
+def test_a_global_type_owns_no_bucket(env):
+    """A global character is ephemeral by construction — it can work on any
+    project precisely because it keeps nothing between calls. Giving it a
+    bucket made its half-finished thought durable project working state."""
+    mem, _ = env
+    assert mem._session_owner(
+        {'character': {'name': 'code-reviewer', 'agent_name': 'Fenn',
+                       'scope': 'global'}}) is None
+    assert mem._session_owner(
+        {'character': {'name': 'dave', 'agent_name': 'Dave',
+                       'scope': 'project'}}) == 'Dave'
+
+
+def test_none_is_not_the_shared_bucket(env):
+    """`owner=None` must mean "writes nothing", never "writes to ''". The
+    shared bucket is read by EVERY agent, so falling through to it is the worst
+    of the three outcomes, not a safe default."""
+    mem, _ = env
+    assert mem._cont_owner_key(None) == ''      # the coercion that would bite
+    src = (Path(mem.__file__).read_text(encoding='utf-8'))
+    assert "snap.get('owner') is not None" in src, \
+        'the checkpoint no longer gates continuity on owner-is-None'
+
+
+def test_helpers_passing_through_cannot_evict_the_projects_own_agent(env):
+    """`_CONT_MAX_OWNERS` is 4 on least-recently-written eviction, so three
+    ephemerals writing buckets would push the project's own agent out of its
+    own record."""
+    mem, _ = env
+    mem.write_continuity(P, threads=['dave is mid-refactor'], owner='Dave')
+    for who in ('Fenn', 'Quill', 'Marlow', 'Scout'):
+        owner = mem._session_owner({'character': {'name': who.lower(),
+                                                  'agent_name': who,
+                                                  'scope': 'global'}})
+        assert owner is None, f'{who} claimed a bucket'
+    assert mem.read_continuity(P, owner='Dave')['threads'] == ['dave is mid-refactor']
+
+
+def test_an_ephemeral_still_READS_the_record(env):
+    """It must see what the project is part-way through — that is how it avoids
+    duplicating the work. Only the write side is closed."""
+    mem, _ = env
+    mem.write_continuity(P, threads=['dave is mid-refactor'], owner='Dave')
+    out = mem.render_continuity(P, owner='Fenn')
+    assert 'dave is mid-refactor' in out

@@ -4639,6 +4639,21 @@
   }
   .fl-bench-desc { font-size: 10px; color: var(--text-faint); line-height: 1.4; }
 
+  /* The Floor on a phone. `.fl-fig` carries min-width:220px so figures tile
+     inside a room on desktop; at 360px that plus the room padding overflows and
+     the board scrolls sideways — the horizontal-scroll failure this app's
+     mobile bugs keep arriving as. One figure per row instead.
+     PLACEMENT MATTERS: this must sit AFTER the rules it overrides. Written into
+     the first ≤960px block near the top of the file it parsed fine, matched
+     fine, and did nothing, because the desktop values are 3,500 lines further
+     down at the same specificity. */
+  @media (max-width: 960px) {
+    .fl-fig { min-width: 0; max-width: none; flex: 1 1 100%; }
+    .fl-bench-card { min-width: 0; max-width: none; flex: 1 1 100%; }
+    .fl-room { padding: 8px 10px 10px; }
+    .fl-task { -webkit-line-clamp: 3; }
+  }
+
   /* One group per agent. The first label in a group names the owner, so it
      gets the accent treatment — a wall of identical uppercase labels made it
      impossible to see where one agent's slots ended and the next began. */

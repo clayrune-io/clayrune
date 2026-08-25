@@ -173,6 +173,21 @@ existed, so it merges into every agent's view rather than being exiled to the
 capped block. An agent that keeps a shared line in its own rewrite *claims* it,
 which is what stops the legacy lines duplicating forever.
 
+**And an ephemeral owns nothing at all** (Ron, 2026-08-24). A *global* type can
+work on any project precisely because it keeps nothing between calls — that is
+the same fact that lets it be global without being a leak channel (§7). So
+`_session_owner` returns `None` for a global character and the checkpoint skips
+the continuity write entirely. `None` is deliberately not `''`: the empty key is
+the SHARED bucket every agent reads, so falling through to it would have been
+the worst of the three outcomes rather than a safe default.
+
+Shipping the owner dimension without this was destructive in two directions: a
+helper's half-finished thought became durable project working state injected
+into every later prompt, and with four owner slots on least-recently-written
+eviction, three helpers passing through would push the project's own agent out
+of its own record. The read side stays open — a helper *should* see what the
+project is part-way through, which is how it avoids duplicating Dave's work.
+
 The invariant that makes this safe is the same one as §7 proper: the owner is a
 partition of one project's store, never a new boundary. Nothing crosses
 projects, and a human can read and correct every bucket in the Memory modal.

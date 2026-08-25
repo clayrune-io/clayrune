@@ -903,18 +903,32 @@ def _cont_owner_stamps(body):
 
 
 def _session_owner(session):
-    """The continuity owner for a live session — the name the agent works under.
+    """The continuity owner for a live session, or None when it owns no state.
 
     Must resolve to the SAME string the prompt builder uses for "Your name is
     …" (`character_name or CONFIG['agent_name']`), or the write side files a
     bucket the read side never asks for and every agent silently gets an empty
-    record. A session with no character and no configured name owns nothing and
-    writes to the shared bucket, which is honest: nobody can claim that work.
+    record.
+
+    **A GLOBAL character owns nothing — it returns None.** A global type is
+    ephemeral by construction: it works on any project precisely because it
+    keeps nothing between calls, which is also why it can be global without
+    being a cross-project leak channel (`AGENT_TYPES_DESIGN` §5). Giving one a
+    bucket was destructive in two directions — its half-finished thought became
+    durable project working state injected into every later prompt, and with
+    `_CONT_MAX_OWNERS` at 4 on least-recently-written eviction, three helpers
+    passing through would push the project's OWN agent out of its own record.
+
+    A session with no character at all still owns a bucket under the configured
+    default name: that is the project's own agent, which is the continuous one.
     """
     try:
         ch = (session or {}).get('character') or {}
-        name = ch.get('agent_name') or ch.get('name') if isinstance(ch, dict) else ch
-        return _cont_owner_key(name or state.CONFIG.get('agent_name', ''))
+        if isinstance(ch, dict) and ch:
+            if (ch.get('scope') or '') == 'global':
+                return None
+            return _cont_owner_key(ch.get('agent_name') or ch.get('name'))
+        return _cont_owner_key(state.CONFIG.get('agent_name', ''))
     except Exception:
         return ''
 
@@ -2398,7 +2412,11 @@ def _checkpoint_worker(snap):
         # extra transcript read, no second debounce, one cheap model call at a
         # boundary that has already earned one. Best-effort: the checkpoint has
         # already been committed above, so a failure here loses nothing.
-        if state.CONFIG.get('continuity_enabled', True):
+        # `owner is None` = an ephemeral (global) type: it writes no working
+        # state at all. Note this is NOT the same as `owner == ''`, which is the
+        # shared bucket every agent reads — falling through to that would be the
+        # worst of the three outcomes rather than a safe default.
+        if state.CONFIG.get('continuity_enabled', True) and snap.get('owner') is not None:
             if _extract_continuity(p, delta, model,
                                    owner=snap.get('owner')) is not None:
                 _scribe_stat(pid, 'continuity_updated')
