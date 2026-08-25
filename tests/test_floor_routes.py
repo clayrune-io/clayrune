@@ -157,7 +157,11 @@ def test_projects_with_nothing_running_are_quiet_not_empty_rooms(floor):
     assert len(d['quiet']) == 4 and 'figures' not in d['quiet'][0]
 
 
-def test_the_bench_is_types_with_nothing_running_anywhere(floor):
+def test_the_bench_is_the_whole_roster_busy_or_not(floor):
+    """It used to be "types with nothing running anywhere", so a type vanished
+    from the board the moment it started working — taking with it the only two
+    things you can do to a type: put it in a room, and edit it. Free ones sort
+    first; a busy one says where it already is."""
     fr, c, sessions, projects, chars = floor
     projects.append({'id': 'a', 'name': 'Alpha'})
     chars += [{'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global',
@@ -165,8 +169,22 @@ def test_the_bench_is_types_with_nothing_running_anywhere(floor):
               {'name': 'quill', 'agent_name': 'Quill', 'scope': 'global'}]
     sessions['1'] = _session('a', '1', character={'name': 'fenn', 'agent_name': 'Fenn'})
     d = _get(c)
-    assert [b['display'] for b in d['bench']] == ['Quill']
-    assert d['counts']['bench'] == 1
+    assert [b['display'] for b in d['bench']] == ['Quill', 'Fenn']
+    assert d['counts']['bench'] == 2
+    assert {b['display']: b['rooms'] for b in d['bench']} ==         {'Quill': [], 'Fenn': ['Alpha']}
+
+
+def test_a_type_working_in_two_rooms_names_both_once(floor):
+    """The reason this view exists is that one character runs in several places
+    at once. Two sessions in the SAME room must not print that room twice."""
+    fr, c, sessions, projects, chars = floor
+    projects += [{'id': 'a', 'name': 'Alpha'}, {'id': 'b', 'name': 'Beta'}]
+    chars.append({'name': 'dave', 'agent_name': 'Dave', 'scope': 'global'})
+    ch = {'name': 'dave', 'agent_name': 'Dave'}
+    sessions['1'] = _session('a', '1', character=ch)
+    sessions['2'] = _session('a', '2', character=ch)
+    sessions['3'] = _session('b', '3', character=ch)
+    assert _get(c)['bench'][0]['rooms'] == ['Alpha', 'Beta']
 
 
 def test_the_bench_reads_the_engine_off_its_own_key(floor):

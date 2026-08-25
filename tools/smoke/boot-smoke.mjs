@@ -1423,10 +1423,15 @@ async function runFloorGuard(browser) {
           trigger_type: 'manual', hivemind_id: '' } ] },
     ],
     quiet: [{ id: 'smoke_gamma', name: 'Gamma', emoji: '', color: '' }],
+    // The bench is the whole roster: a free type AND one already working, which
+    // is the case that used to disappear off the board entirely.
     bench: [{ name: 'marlow', scope: 'global', display: 'Marlow',
               description: 'writes specs', avatar: '\u{270D}', provider: 'claude',
-              model: 'claude-fable-5', effort: 'high' }],
-    counts: { rooms: 2, figures: 3, quiet: 1, bench: 1 },
+              model: 'claude-fable-5', effort: 'high', rooms: [] },
+            { name: 'fenn', scope: 'global', display: 'Fenn',
+              description: 'reviews diffs', avatar: '\u{1F4D6}', provider: 'claude',
+              model: 'claude-sonnet-5', effort: '', rooms: ['Alpha'] }],
+    counts: { rooms: 2, figures: 3, quiet: 1, bench: 2 },
     activity_states: true, poll_seconds: 30,
   };
   let floorCalls = 0;
@@ -1562,12 +1567,21 @@ async function runFloorGuard(browser) {
       const edits = [];
       const realEditor = window.openPersonaEditor;
       window.openPersonaEditor = (pid3, sc, nm) => edits.push([sc, nm]);
-      const eb = document.querySelector('[data-modal-id="__floor"] .fl-edit');
-      r.editButtons = document.querySelectorAll('[data-modal-id="__floor"] .fl-edit').length;
-      if (eb) eb.click();
-      await settle(300);
+      r.benchEdits = win.querySelectorAll('.fl-bench-card .fl-edit').length;
+      // A WORKING agent must be editable too. This is the whole bug: the
+      // pencil lived only on bench cards, and a busy type was filtered off the
+      // bench — so starting an agent removed the only way to edit it.
+      r.figEdits = win.querySelectorAll('.fl-fig .fl-edit').length;
+      const fe = win.querySelector('.fl-fig .fl-edit');
+      if (fe) fe.click();
+      await settle(200);
+      const be = win.querySelector('.fl-bench-card .fl-edit');
+      if (be) be.click();
+      await settle(200);
       window.openPersonaEditor = realEditor;
       r.edits = edits;
+      // A busy type stays on the bench and says where it already is.
+      r.busy = Array.from(win.querySelectorAll('.fl-busy')).map((e) => e.textContent.trim());
 
       // Every state must be visible as a WORD, not only as a coloured dot.
       r.stateWords = Array.from(win.querySelectorAll('.fl-state'))
@@ -1652,12 +1666,16 @@ async function runFloorGuard(browser) {
     fails.push('quiet projects are not last: ' + JSON.stringify(out.sectionOrder));
   if (!out.roomTint)
     fails.push('a room did not wear its project colour');
-  if (out.editButtons !== 1)
-    fails.push('a bench card had no edit affordance');
-  if (!(out.edits || []).length)
-    fails.push('the edit button never reached the persona editor');
-  else if (JSON.stringify(out.edits[0]) !== JSON.stringify(['global', 'marlow']))
-    fails.push('the edit button opened the wrong persona: ' + JSON.stringify(out.edits[0]));
+  if (out.benchEdits !== 2)
+    fails.push('a bench card had no edit affordance: ' + out.benchEdits);
+  if (out.figEdits !== 2)
+    fails.push('a working agent has no edit affordance — starting one must not '
+      + 'take away the only way to edit its type: ' + out.figEdits);
+  if (JSON.stringify(out.edits || []) !== JSON.stringify([['global', 'quill'], ['global', 'marlow']]))
+    fails.push('the edit buttons did not reach the shared persona editor with the '
+      + 'right persona: ' + JSON.stringify(out.edits));
+  if (JSON.stringify(out.busy || []) !== JSON.stringify(['already in Alpha']))
+    fails.push('a type already working did not say where: ' + JSON.stringify(out.busy));
   if (JSON.stringify((out.stateWords || []).sort())
       !== JSON.stringify(['idle', 'needs you', 'working']))
     fails.push('a figure state is not readable as a word: ' + JSON.stringify(out.stateWords));

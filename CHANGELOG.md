@@ -6,6 +6,73 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25f] — the bench is the roster, not the free half
+
+Ron: *"when an agent is working in a project you cannot edit its details… we
+need to be able and launch Dave on more than one project."*
+
+One cause under both. The bench was defined as **"types with nothing running
+anywhere"**, so the moment Dave started working he vanished from the board — and
+with him the only two things you can do to a type, because both live on a bench
+card: **put it in a room**, and the **✎** that opens the persona editor. Nothing
+said he was gone or why.
+
+That filter also contradicted the view's own premise. The module docstring says
+one character appears in several rooms at once *because it is running in several
+places* — "that is the fact the header pill cannot express and the reason this
+view exists." The bench was hiding exactly that case.
+
+- **The bench is now the whole roster.** Where a type is already working is a
+  line **on** the card (`already in Mission Control`), not a filter. Free types
+  still sort first, because "who can I put on this?" is the question the bench
+  is read with — a busy one is the weaker answer, not an invalid one.
+- **A room it is already in stays pickable**, marked `· again` and dashed, so a
+  second figure there reads as a decision rather than a misclick.
+- **The pencil rides with the type, wherever the type appears** — figures in
+  rooms have it now, so a working agent is editable from where you can see it.
+
+Smoke guards both: two bench pencils and two figure pencils, each reaching the
+shared persona editor with the right persona, and a busy card naming its room.
+
+## [2026-08-25e] — a resumed conversation keeps its agent
+
+Ron: *"I resumed the conversation which started with Dave… but it brought up
+Vector."*
+
+The persona picker is hidden on a resume, so `character` arrives **empty** at
+dispatch and `_resolve_character` fell through to the **project default**. That
+is not a cosmetic pill — the same value builds the system prompt, so the
+resumed process was genuinely told it was somebody else.
+
+The spawn persona was already written to every `agent_log` entry, *so the header
+pill would survive a restart*. Nothing read it back. `_prior_character` does, and
+returns three distinct answers because they mean three different things:
+
+- `"scope:name"` — restore it.
+- `''` — that conversation deliberately ran with **no** persona. The same bug
+  mirrored: a plain chat must not acquire one because the project default
+  changed since.
+- `None` — no record; leave normal precedence alone.
+
+Verified against the real log: `212c2fe3` → `global:dave`.
+
+## [2026-08-25e2] — the faces come back, and the type is readable
+
+Every figure in a room drew a broken image. `_AVATAR_CHARS = 8` in
+`floor_routes` was a hand-copied "mirror" of `characters.MAX_AVATAR_LEN`; when
+that grew to 40 to hold `fig:<name>`, the copy stayed at 8 and cut `fig:guard`
+to `fig:guar` on the way out of `/api/floor` — a face that never resolved, with
+the correct value sitting untouched in `dave.md`.
+
+Two caps cannot mirror each other by comment, so now there is one rule in one
+place: `characters.clean_avatar` keeps the **short** cap for an emoji (what
+stops the field becoming a second name) and the long one only for `fig:` — the
+shape that is checkable, since a bogus figure name draws nothing rather than a
+sentence.
+
+Also: the type chip was the faintest thing on a card at `--text-faint`, under
+3:1 on cream, and it is what you scan for. It is a real chip now.
+
 ## [2026-08-25d] — the Floor scrolls
 
 Ron, on a phone: *"trying to open the floor screen on mobile but I cannot scroll

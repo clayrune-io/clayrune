@@ -158,8 +158,14 @@ function _floorFigure(pid, f) {
   const engine = [f.provider, f.model].filter(Boolean).join(' · ');
   const chosen = f.name_from === 'user' || f.name_from === 'self';
   const nameCls = 'fl-who' + (chosen ? ' fl-named' : '');
+  // The pencil rides with the TYPE, wherever the type appears. It used to live
+  // only on bench cards, and a busy type was not on the bench — so the moment
+  // an agent started working you lost the only way to edit it.
   const type = f.character
-    ? `<span class="fl-type">${esc(f.character.display)}</span>`
+    ? `<span class="fl-type">${esc(f.character.display)}</span><button class="fl-edit"
+        title="Edit this persona — face, description, instructions, engine"
+        onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}')"
+        >&#9998;</button>`
     : `<span class="fl-type fl-untyped">no type</span>`;
   const nameTitle = chosen
     ? (f.name_from === 'self' ? 'named itself — click to change' : 'you named this — click to change')
@@ -245,11 +251,11 @@ function _floorBench(bench, rooms, quiet) {
   const hire = `<button class="fl-hire" onclick="floorHire()"
       title="Describe a new agent type with Claydo, then save it">&#43; Hire someone new</button>`;
   const head = `<div class="fl-section-head">Bench
-      <span class="dave-sub">types with nothing running &mdash; click one to put it in a room</span>
+      <span class="dave-sub">everyone you have hired &mdash; click one to put it in a room</span>
       ${hire}</div>`;
   if (!bench.length) {
     return `<div class="fl-bench">${head}
-      <div class="dave-empty">Every type you have is out on the floor.</div></div>`;
+      <div class="dave-empty">You have not hired anyone yet.</div></div>`;
   }
   const cards = bench.map(b => {
     const open = floorPickerFor === b.name;
@@ -265,6 +271,10 @@ function _floorBench(bench, rooms, quiet) {
             onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
             >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
+        ${(b.rooms || []).length
+          ? `<span class="fl-busy" title="Already working there. You can still put it in another room — one type runs in as many projects as you like.">already in ${
+              b.rooms.map(esc).join(', ')}</span>`
+          : ''}
         ${(b.skills || []).length
           ? `<span class="fl-skills">${(b.skills || []).slice(0, 4)
               .map((k) => `<span class="fl-skill">${esc(k)}</span>`).join('')}${
@@ -272,7 +282,8 @@ function _floorBench(bench, rooms, quiet) {
           : ''}
         <span class="fl-bench-foot">
           <span class="fl-engine">${esc(eng) || 'follows the project default'}</span>
-          <span class="fl-cta">${open ? 'Pick a room &#8595;' : 'Put in a room &#8594;'}</span>
+          <span class="fl-cta">${open ? 'Pick a room &#8595;'
+            : ((b.rooms || []).length ? 'Put in another room &#8594;' : 'Put in a room &#8594;')}</span>
         </span>
       </div>
       ${open ? _floorRoomPicker(b, rooms, quiet) : ''}
@@ -288,9 +299,14 @@ function _floorRoomPicker(b, rooms, quiet) {
   // more common intent than waking a project that has been quiet for a week.
   const all = (rooms || []).concat(quiet || []);
   if (!all.length) return '<div class="fl-pick-empty">No projects.</div>';
+  const inAlready = new Set(b.rooms || []);
   const items = all.map(r =>
-    `<span class="fl-pick" onclick="floorPlace('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(r.id)}')"
-      >${esc(r.name)}</span>`).join('');
+    `<span class="fl-pick${inAlready.has(r.name) ? ' fl-pick-again' : ''}"
+      title="${inAlready.has(r.name)
+        ? esc(b.display) + ' is already working here — this starts a SECOND one'
+        : 'Start ' + esc(b.display) + ' here'}"
+      onclick="floorPlace('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(r.id)}')"
+      >${esc(r.name)}${inAlready.has(r.name) ? ' &#183; again' : ''}</span>`).join('');
   return `<div class="fl-pick-row"><span class="fl-pick-label">into&hellip;</span>${items}</div>`;
 }
 

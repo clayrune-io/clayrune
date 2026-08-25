@@ -4806,12 +4806,22 @@
   .fl-bench-foot .fl-engine { flex: 1 1 auto; }
   .fl-bench-foot .fl-cta { flex: 0 0 auto; white-space: nowrap; margin-top: 0; }
   .fl-edit {
-    margin-left: auto; flex: 0 0 auto; cursor: pointer; font-size: 12px;
+    flex: 0 0 auto; cursor: pointer; font-size: 12px;
     line-height: 1; padding: 3px 6px; background: none; color: var(--text-faint);
     border: 1px solid transparent; border-radius: 5px;
   }
-  .fl-bench-card:hover .fl-edit { border-color: var(--border); }
+  /* On a bench card the pencil owns the right end of the title row. On a
+     figure it sits tight against the type it edits, because `.fl-age` already
+     claims that end and two `margin-left:auto` in one row is a fight. */
+  .fl-bench-top .fl-edit { margin-left: auto; }
+  .fl-fig-top .fl-edit { padding: 1px 4px; font-size: 11px; }
+  .fl-bench-card:hover .fl-edit, .fl-fig:hover .fl-edit { border-color: var(--border); }
   .fl-edit:hover { color: var(--accent); border-color: var(--accent); }
+  /* Where a type is already working. A fact on the card, not a reason to hide
+     it — one type can run in as many rooms as you like. */
+  .fl-busy {
+    display: block; font-size: 10px; margin-top: 4px; color: var(--text-dim);
+  }
   .fl-pick-row {
     display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
     margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
@@ -4822,6 +4832,9 @@
     border: 1px solid var(--border); border-radius: 4px; padding: 2px 7px;
   }
   .fl-pick:hover { color: var(--accent); border-color: var(--accent); }
+  /* A room it is already in stays clickable — a second figure there is a real
+     thing to want — but it should not look like an empty seat. */
+  .fl-pick-again { color: var(--text-dim); border-style: dashed; }
   .fl-pick-empty { font-size: 10px; color: var(--text-faint); margin-top: 6px; }
 
   /* ── the quiet tail, and an empty board ───────────────────────────────── */

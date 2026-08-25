@@ -13,7 +13,9 @@ the same in-memory `agent_sessions` map once and returns only what a card shows.
 WHAT A FIGURE IS. A *session*, never a type — the Frame 2 caption in the design.
 One character can appear in several rooms at once because it is running in
 several places; that is the fact the header pill cannot express and the reason
-this view exists. The bench is the inverse: types with nothing running anywhere.
+this view exists. The bench is the whole roster, marked with where each type
+is already working — never filtered by it, or a busy type would have nowhere
+to be placed or edited from.
 
 Read-only. It starts nothing, stops nothing, and touches no state.
 """
@@ -357,19 +359,30 @@ def floor():
     live.sort(key=room_rank)
     quiet.sort(key=lambda r: (r['name'] or '').lower())
 
-    # The bench: hired types with nothing running anywhere. Keyed on the
-    # character's file name, which is its identity — `agent_name` is what it
-    # calls itself and two characters may pick the same one.
-    running = {(f['character'] or {}).get('name')
-               for r in live for f in r['figures']}
+    # The bench is the ROSTER — every hired type, whether or not it is already
+    # working. It used to be "types with nothing running anywhere", which made
+    # a busy type vanish from the board entirely, and with it the only two
+    # things you can do to a type: put it in a room, and edit it. So while Dave
+    # was working in one project you could neither open him in a second one nor
+    # fix a typo in his instructions, and nothing said why he was gone.
+    #
+    # One character running in several rooms at once is the fact this whole view
+    # exists to show (the module docstring) — the bench must not contradict it.
+    # Where it is already working is now a line ON the card, not a filter.
+    # Keyed on the character's file name, which is its identity — `agent_name`
+    # is what it calls itself and two characters may pick the same one.
+    rooms_of: dict = {}
+    for r in live:
+        for f in r['figures']:
+            nm = (f['character'] or {}).get('name')
+            if nm and r['name'] not in rooms_of.setdefault(nm, []):
+                rooms_of[nm].append(r['name'])
     bench = []
     try:
         # Global pool only. A project-scoped character is not dispatchable
         # anywhere, so putting it on a cross-project bench would offer a click
         # that cannot be honoured; it belongs in that project's own roster.
         for c in (list_characters() or []):
-            if c.get('name') in running:
-                continue
             eng = c.get('engine') or {}
             bench.append({'name': c.get('name'), 'scope': c.get('scope'),
                           'avatar': c.get('avatar') or '',
@@ -379,11 +392,16 @@ def floor():
                           'description': _clip(c.get('description'), _DESC_CHARS),
                           'provider': eng.get('provider') or '',
                           'model': eng.get('model') or '',
-                          'effort': eng.get('effort') or ''})
+                          'effort': eng.get('effort') or '',
+                          # Rooms this type is ALREADY working in. Empty = free.
+                          'rooms': rooms_of.get(c.get('name')) or []})
     except Exception as e:
         _log(f'[floor] bench unavailable: {e}')
         bench = []
-    bench.sort(key=lambda c: (c.get('scope') or '', (c.get('display') or '').lower()))
+    # Free types first — "who can I put on this?" is the question the bench is
+    # read with, and a busy one is the weaker answer, not an invalid one.
+    bench.sort(key=lambda c: (1 if c.get('rooms') else 0, c.get('scope') or '',
+                              (c.get('display') or '').lower()))
 
     n_fig = sum(len(r['figures']) for r in live)
     return jsonify({
