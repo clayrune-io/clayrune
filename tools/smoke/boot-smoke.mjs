@@ -1401,7 +1401,7 @@ async function runFloorGuard(browser) {
   const page = await ctx.newPage();
   const FLOOR = {
     rooms: [
-      { id: 'smoke_beta', name: 'Beta', emoji: '', color: '', figures: [
+      { id: 'smoke_beta', name: 'Beta', emoji: '', color: '#c86', figures: [
         { session_id: 's-ask', claude_session_id: 'csid-ask', state: 'asking',
           reason: 'question', activity: '', task: 'needs an answer',
           name: 'Quill', name_from: 'character', avatar: '\u{1F50D}',
@@ -1481,6 +1481,14 @@ async function runFloorGuard(browser) {
 
       // Quiet projects stay collapsed until asked for.
       r.quietVisibleBefore = !!win.querySelector('.fl-quiet-list:not([hidden])');
+      // Quiet is the least important section and must sit LAST — it used to
+      // land between the rooms and the bench, so the eye hit a grey count on
+      // the way to the thing it wanted.
+      const _sections = Array.from(win.querySelectorAll('.fl-bench, .fl-quiet'))
+        .map((e) => (e.className.indexOf('fl-bench') === 0 ? 'bench' : 'quiet'));
+      r.sectionOrder = _sections;
+      r.roomTint = (win.querySelector('.fl-room') || {}).style
+        ? win.querySelector('.fl-room').style.borderLeftColor : '';
       floorToggleQuiet();
       await settle();
       const win2 = document.querySelector('[data-modal-id="__floor"]');
@@ -1502,9 +1510,12 @@ async function runFloorGuard(browser) {
       // A bench card must offer rooms, and picking one must SET the persona
       // without dispatching — a bench click knows who, never what.
       const placed = [];
+      const newTabs = [];
       const realSetChar = window.setComposerCharacter;
+      const realNewTab = window.newAgentTab;
       const dispatched = [];
       window.setComposerCharacter = (pid2, ch) => placed.push([pid2, ch]);
+      window.newAgentTab = (pid2) => newTabs.push(pid2);
       const realOpenProj1 = window.openProjectModal;
       window.openProjectModal = () => {};
       document.querySelector('[data-modal-id="__floor"] .fl-bench-main').click();
@@ -1515,8 +1526,10 @@ async function runFloorGuard(browser) {
       if (pick) pick.click();
       await settle(700);
       window.setComposerCharacter = realSetChar;
+      window.newAgentTab = realNewTab;
       window.openProjectModal = realOpenProj1;
       r.placed = placed;
+      r.newTabs = newTabs;
       r.dispatched = dispatched.length;
 
       // + Hire must route to Claydo's character mode, not a second builder.
@@ -1583,6 +1596,13 @@ async function runFloorGuard(browser) {
     fails.push('the wrong persona reached the composer: ' + JSON.stringify(out.placed[0]));
   if (out.dispatched)
     fails.push('a bench click dispatched work nobody described');
+  if (JSON.stringify(out.newTabs || []) !== JSON.stringify(['smoke_beta']))
+    fails.push('placing a type did not open the NEW-chat screen, so the persona '
+      + 'was set on a screen the user is not looking at: ' + JSON.stringify(out.newTabs));
+  if (JSON.stringify(out.sectionOrder || []) !== JSON.stringify(['bench', 'quiet']))
+    fails.push('quiet projects are not last: ' + JSON.stringify(out.sectionOrder));
+  if (!out.roomTint)
+    fails.push('a room did not wear its project colour');
   if (JSON.stringify(out.hireModes || []) !== JSON.stringify(['character']))
     fails.push('+ Hire did not open Claydo in character mode: '
       + JSON.stringify(out.hireModes));

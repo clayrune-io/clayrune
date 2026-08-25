@@ -140,6 +140,7 @@ function _floorFigure(pid, f) {
     <div class="fl-engine">${esc(engine)}</div>
     <div class="fl-act">${esc(_floorLine(f))}</div>
     <div class="fl-task">${esc(f.task || '')}</div>
+    <div class="fl-cta">Open this chat &#8594;</div>
   </div>`;
 }
 
@@ -161,10 +162,18 @@ async function floorRename(sessionId, current) {
 }
 
 function _floorRoom(r) {
-  return `<div class="fl-room">
-    <div class="fl-room-head" onclick="openProjectModal('${esc(r.id)}')">
-      ${r.emoji ? esc(r.emoji) + ' ' : ''}${esc(r.name)}
-      <span class="fl-room-n">${r.figures.length}</span>
+  // The project's own colour on the left edge. `modal_color` is the identity
+  // cue the project modal already uses, the endpoint has always sent it, and
+  // the board was throwing it away — which is most of why twelve rooms read as
+  // one grey list.
+  const tint = r.color ? ` style="border-left-color:${esc(r.color)}"` : '';
+  const needs = r.figures.some(f => f.state === 'asking');
+  return `<div class="fl-room${needs ? ' fl-room-needs' : ''}"${tint}>
+    <div class="fl-room-head">
+      <span class="fl-room-name" onclick="openProjectModal('${esc(r.id)}')"
+        >${r.emoji ? esc(r.emoji) + ' ' : ''}${esc(r.name)}</span>
+      <span class="fl-room-n">${r.figures.length} here</span>
+      ${needs ? '<span class="fl-room-flag">needs you</span>' : ''}
     </div>
     <div class="fl-figs">${r.figures.map(f => _floorFigure(r.id, f)).join('')}</div>
   </div>`;
@@ -177,7 +186,8 @@ function _floorQuiet(quiet) {
   ).join('');
   return `<div class="fl-quiet">
     <div class="fl-quiet-head" onclick="floorToggleQuiet()">
-      ${floorQuietOpen ? '&#9662;' : '&#9656;'} ${quiet.length} quiet project${quiet.length === 1 ? '' : 's'}
+      ${floorQuietOpen ? '&#9662;' : '&#9656;'} ${quiet.length} project${quiet.length === 1 ? '' : 's'}
+      with nobody in ${quiet.length === 1 ? 'it' : 'them'}
     </div>
     <div class="fl-quiet-list" ${floorQuietOpen ? '' : 'hidden'}>${names}</div>
   </div>`;
@@ -189,7 +199,7 @@ let floorPickerFor = null;
 
 function _floorBench(bench, rooms, quiet) {
   const hire = `<button class="fl-hire" onclick="floorHire()"
-      title="Describe a new agent type and save it">&#43; Hire</button>`;
+      title="Describe a new agent type with Claydo, then save it">&#43; Hire someone new</button>`;
   const head = `<div class="fl-section-head">Bench
       <span class="dave-sub">types with nothing running &mdash; click one to put it in a room</span>
       ${hire}</div>`;
@@ -197,15 +207,23 @@ function _floorBench(bench, rooms, quiet) {
     return `<div class="fl-bench">${head}
       <div class="dave-empty">Every type you have is out on the floor.</div></div>`;
   }
-  const cards = bench.map(b => `<div class="fl-bench-card">
+  const cards = bench.map(b => {
+    const open = floorPickerFor === b.name;
+    const eng = [b.provider, b.model, b.effort].filter(Boolean).join(' · ');
+    return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}">
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
         <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
-          >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span></span>
-        <span class="fl-engine">${esc([b.provider, b.model, b.effort].filter(Boolean).join(' · ')) || '&mdash;'}</span>
-        <span class="fl-bench-desc">${esc(b.description || '')}</span>
+          >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span>
+          <span class="fl-type">${esc(b.name)}</span></span>
+        <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
+        <span class="fl-bench-foot">
+          <span class="fl-engine">${esc(eng) || 'follows the project default'}</span>
+          <span class="fl-cta">${open ? 'Pick a room &#8595;' : 'Put in a room &#8594;'}</span>
+        </span>
       </div>
-      ${floorPickerFor === b.name ? _floorRoomPicker(b, rooms, quiet) : ''}
-    </div>`).join('');
+      ${open ? _floorRoomPicker(b, rooms, quiet) : ''}
+    </div>`;
+  }).join('');
   return `<div class="fl-bench">${head}
     <div class="fl-bench-list">${cards}</div>
   </div>`;
@@ -217,7 +235,7 @@ function _floorRoomPicker(b, rooms, quiet) {
   const all = (rooms || []).concat(quiet || []);
   if (!all.length) return '<div class="fl-pick-empty">No projects.</div>';
   const items = all.map(r =>
-    `<span class="fl-pick" onclick="floorPlace('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(r.id)}')"
+    `<span class="fl-pick" onclick="floorPlace('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(r.id)}')"
       >${esc(r.name)}</span>`).join('');
   return `<div class="fl-pick-row"><span class="fl-pick-label">into&hellip;</span>${items}</div>`;
 }
@@ -227,18 +245,25 @@ function floorTogglePicker(name) {
   refreshFloor();
 }
 
-function floorPlace(scope, name, projectId) {
-  // Opens the chat with the persona chosen; it does NOT dispatch. A bench click
-  // knows WHO but not WHAT, and inventing a task to make the button feel
-  // decisive is how an agent ends up doing something nobody asked for.
+function floorPlace(scope, name, display, projectId) {
+  // Lands on the +NEW CHAT screen, not on whatever chat happened to be open.
+  // `setComposerCharacter` sets the persona for the next dispatch, so pointing
+  // at an existing conversation showed a toast about a screen Ron was not
+  // looking at — he could not tell whether his open chat had just changed
+  // personality. Now the persona row is on screen with the choice in it.
+  //
+  // Still does NOT dispatch: a bench click knows WHO but not WHAT, and
+  // inventing a task to make the button feel decisive is how an agent ends up
+  // doing something nobody asked for.
   floorPickerFor = null;
   openProjectModal(projectId);
   setTimeout(() => {
+    if (typeof window.newAgentTab === 'function') window.newAgentTab(projectId);
     if (typeof window.setComposerCharacter === 'function') {
       window.setComposerCharacter(projectId, scope + ':' + name);
     }
     if (window.showToast) {
-      showToast('Persona set — type what you want done.', 3500);
+      showToast('New chat with ' + display + ' — type what you want done.', 4000);
     }
   }, 500);
 }
@@ -302,8 +327,12 @@ async function refreshFloor() {
     ? `<div class="memory-hint" style="margin-top:10px">Live thinking/writing states are off
        (<code>activity_states_enabled</code>), so a running figure just reads "working".</div>` : '';
 
+  // Order is the priority order: who is working, then who you could put to
+  // work, then — last — the projects with nobody in them. Quiet sat in the
+  // middle and the eye hit a collapsed grey count on its way to the bench.
   body.innerHTML = `<div class="fl-rooms">${rooms}</div>${empty}
-    ${_floorQuiet(d.quiet || [])}${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}${note}`;
+    ${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}
+    ${_floorQuiet(d.quiet || [])}${note}`;
 
   if (!floorTimer) {
     const secs = Math.max(10, parseInt(d.poll_seconds, 10) || 30);

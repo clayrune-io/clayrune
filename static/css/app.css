@@ -4570,15 +4570,26 @@
   .fl-room {
     border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px 12px;
     background: var(--bg);
+    /* The project's own colour, set inline from `modal_color`. Without it a
+       dozen rooms read as one grey list; it is also the same identity cue the
+       project modal uses, so a room and its modal look like the same place. */
+    border-left: 3px solid var(--border);
   }
+  /* A room waiting on a human is the only thing here with a deadline. */
+  .fl-room-needs { background: color-mix(in srgb, var(--amber) 5%, var(--bg)); }
   .fl-room-head {
-    font-size: 12px; font-weight: 700; color: var(--text); cursor: pointer;
+    font-size: 12px; font-weight: 700; color: var(--text);
     display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
   }
-  .fl-room-head:hover { color: var(--accent); }
+  .fl-room-name { cursor: pointer; }
+  .fl-room-name:hover { color: var(--accent); text-decoration: underline; }
   .fl-room-n {
     font-size: 10px; font-weight: 600; color: var(--text-faint);
     border: 1px solid var(--border); border-radius: 9px; padding: 0 6px;
+  }
+  .fl-room-flag {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--amber);
+    text-transform: uppercase;
   }
   .fl-figs { display: flex; flex-wrap: wrap; gap: 8px; }
   .fl-fig {
@@ -4634,7 +4645,19 @@
     display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical;
     overflow: hidden;
   }
-  .fl-quiet { margin-top: 14px; }
+  /* Ron: "it was not even clear that I could click on agent name to launch it."
+     A hover border is not an affordance on a card that is already bordered —
+     the card says what it does, and the hover just confirms it. */
+  .fl-cta {
+    font-size: 10px; font-weight: 600; color: var(--text-faint);
+    margin-top: 6px; opacity: 0.75; transition: color 0.15s, opacity 0.15s;
+  }
+  .fl-fig:hover .fl-cta, .fl-bench-card:hover .fl-cta {
+    color: var(--accent); opacity: 1;
+  }
+  .fl-quiet {
+    margin-top: 18px; padding-top: 12px; border-top: 1px solid var(--border);
+  }
   .fl-quiet-head {
     font-size: 11px; color: var(--text-faint); cursor: pointer; user-select: none;
   }
@@ -4647,24 +4670,46 @@
     border: 1px solid var(--border); border-radius: 5px; padding: 3px 8px;
   }
   .fl-quiet-item:hover { color: var(--accent); border-color: var(--accent); }
-  .fl-bench { margin-top: 18px; border-top: 1px solid var(--border); padding-top: 12px; }
-  .fl-section-head { font-size: 12px; font-weight: 700; color: var(--text); margin-bottom: 8px; }
+  /* The bench is a section break, not another card in the list — a heavier rule
+     than the one between rooms, because what is below it is a different kind of
+     thing (who you COULD deploy, not who is deployed). */
+  .fl-bench {
+    margin-top: 20px; padding-top: 14px; border-top: 2px solid var(--border);
+  }
+  .fl-section-head {
+    font-size: 12px; font-weight: 700; color: var(--text);
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    margin-bottom: 10px;
+  }
   .fl-bench-list { display: flex; flex-wrap: wrap; gap: 8px; }
   .fl-bench-card {
     display: flex; flex-direction: column; gap: 2px; flex: 1 1 200px; max-width: 300px;
     border: 1px dashed var(--border); border-radius: 6px; padding: 7px 10px;
   }
-  .fl-bench-desc { font-size: 10px; color: var(--text-faint); line-height: 1.4; }
+  /* What the type is FOR, which is the question a bench answers. It used to sit
+     under the engine string in 10px grey — the least readable line on a card
+     whose entire job is to say when to reach for this one. */
+  .fl-bench-desc {
+    font-size: 11px; color: var(--text-dim, var(--text)); line-height: 1.45;
+    margin-top: 4px;
+  }
+  .fl-bench-foot {
+    display: flex; align-items: center; justify-content: space-between;
+    gap: 8px; margin-top: 6px;
+  }
+  .fl-bench-foot .fl-cta { margin-top: 0; }
+  .fl-bench-card.fl-bench-open { border-style: solid; border-color: var(--accent); }
+  .fl-bench-list { align-items: flex-start; }
   .fl-bench-card { cursor: pointer; transition: border-color 0.15s; }
   .fl-bench-card:hover { border-color: var(--accent); }
   .fl-bench-main { display: flex; flex-direction: column; gap: 2px; }
   .fl-hire {
-    margin-left: auto; font-size: 10px; font-weight: 600; cursor: pointer;
-    background: none; color: var(--text-faint);
-    border: 1px dashed var(--border); border-radius: 5px; padding: 2px 8px;
+    margin-left: auto; font-size: 12px; font-weight: 700; cursor: pointer;
+    background: var(--accent); color: var(--bg);
+    border: none; border-radius: 6px; padding: 7px 14px;
+    white-space: nowrap; transition: filter 0.15s;
   }
-  .fl-hire:hover { color: var(--accent); border-color: var(--accent); }
-  .fl-section-head { display: flex; align-items: center; gap: 8px; }
+  .fl-hire:hover { filter: brightness(1.1); }
   .fl-pick-row {
     display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
     margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);

@@ -6,6 +6,49 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24l] — the persona is visible where you actually need it
+
+Ron used the Floor and reported six things. Two were defects, not styling.
+
+**Placing a type set the persona on a screen he was not looking at.**
+`setComposerCharacter` sets `pendingDispatchCharacter[pid]`, which applies to
+the next dispatch from the +New composer — but `openProjectModal` lands on
+whatever chat was already open. So the only evidence was a toast, and, in his
+words, *"I don't know if the chat I already have on is with the new persona or
+continue with the one from before."* Placing now opens the **+New chat screen**,
+where the persona row is on display with the choice in it. Seeing beats being
+told, and there is no longer a question about which chat it applied to.
+
+**The chat header wore a generic mask.** Every persona rendered 🎭, which
+answers "there is a persona" but not "which one" — the question you actually
+have three messages in. `character_meta` now carries the persona's `avatar`, so
+the badge shows the same face the Floor draws. One persona, one face, wherever
+it appears.
+
+The four presentation problems, each taken literally:
+
+- **"the 19 quiet projects sits there in mid screen and looks very confusing"** —
+  it sat between the rooms and the bench, so the eye hit a collapsed grey count
+  on its way to the thing it wanted. Quiet is the least important section on the
+  page and is now last, under its own rule, reading "N projects with nobody in
+  them" rather than a bare count.
+- **"the entire pane lacks some color distinction"** — every project already
+  carries `modal_color`, the endpoint has always sent it, and the board was
+  throwing it away. A room wears it on its left edge now, which is the same
+  identity cue the project modal uses. A room waiting on a human also gets a
+  warm tint and a "needs you" flag.
+- **"the hire button is too small"** — it was a 10px dashed ghost floated right
+  of a section label. It is the only creative act on the page and now looks like
+  a button: "+ Hire someone new".
+- **"it was not even clear that I could click on agent name to launch it"** — a
+  hover border is not an affordance on a card that is already bordered. Cards
+  say what they do in words now ("Open this chat →", "Put in a room →"), and the
+  hover just confirms it.
+- **"agent abilities and definitions are not observable enough"** — a bench card
+  led with its engine string and buried the one sentence describing what the
+  type is FOR in 10px grey. Reversed: the description is the card, the engine is
+  a footnote, and a type with no description says so rather than showing blank.
+
 ## [2026-08-24k] — the Floor can put someone in a room, and hire
 
 Ron: *"right now it is only a view and nothing more."* Two actions, both routed

@@ -4222,6 +4222,12 @@ def _resolve_character(pp, character, project=None):
     agent_name = rec.get('agent_name')
     if agent_name:
         meta['agent_name'] = agent_name
+    # The face rides along so the chat header can show WHO is speaking rather
+    # than a generic mask. Same string the Floor draws — one persona, one face,
+    # wherever it appears.
+    avatar = rec.get('avatar')
+    if avatar:
+        meta['avatar'] = avatar
     return meta, (rec.get('body') or '')
 
 

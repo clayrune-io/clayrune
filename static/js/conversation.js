@@ -1225,7 +1225,11 @@ function agentPanelHTML(p) {
           _char.agent_name ? ' — the ' + esc(_charRole) + ' type' : ''}${
           _char.scope === 'global' ? ' (global)' : ''}${
           _charEngBits.length ? ' — runs on ' + esc(_charEngBits.join(' · ')) : ''
-        } — fixed for the conversation; start a new chat to change it">&#x1F3AD; ${esc(_charName)}${
+        } — fixed for the conversation; start a new chat to change it">${
+          // The persona's own face when it has one. A generic mask on every
+          // persona answers "there is a persona" but not "which one", which is
+          // the question you actually have three messages into a chat.
+          _char && _char.avatar ? esc(_char.avatar) : '&#x1F3AD;'} ${esc(_charName)}${
           _charInherited ? '<span class="cb-src">default</span>' : ''}</span>`
       : '';
     // APK version pill — visible only inside the Capacitor APK (the native
