@@ -129,7 +129,8 @@ def create_character_route():
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
                                      overwrite=overwrite, engine=engine,
-                                     avatar=data.get('avatar'))
+                                     avatar=data.get('avatar'),
+                                     skills=data.get('skills'))
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
     except ValueError as e:
@@ -181,12 +182,14 @@ def update_character_route(scope, name):
     # must not silently wipe a value the editor never showed.
     agent_name = data.get('agent_name') if 'agent_name' in data else None
     avatar = data.get('avatar') if 'avatar' in data else None
+    skills = data.get('skills') if 'skills' in data else None
 
     try:
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
                                      overwrite=True, engine=engine,
-                                     agent_name=agent_name, avatar=avatar)
+                                     agent_name=agent_name, avatar=avatar,
+                                     skills=skills)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except OSError as e:
@@ -301,10 +304,11 @@ def name_character_route(scope, name):
                                project_path=project_path, overwrite=True,
                                engine=(rec.get('engine') or {}),
                                agent_name=chosen,
-                               # Carry it: this path rewrites the file whole, so
-                               # naming itself would otherwise delete the face
-                               # it had already chosen.
-                               avatar=rec.get('avatar'))
+                               # Carry these: this path rewrites the file
+                               # whole, so naming itself would otherwise delete
+                               # the face and the toolkit it already had.
+                               avatar=rec.get('avatar'),
+                               skills=rec.get('skills'))
     except (ValueError, OSError) as e:
         return jsonify({'error': str(e)}), 400
     return jsonify(_chars.read_character(scope, name, project_path=project_path,

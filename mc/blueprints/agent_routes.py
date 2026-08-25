@@ -1914,7 +1914,7 @@ def _roster_block(project, port):
 
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
-                         character_name='', session_id=''):
+                         character_name='', session_id='', character_skills=None):
     """Build system prompt context for the agent.
 
     character_body, when set, is the markdown body of a per-chat "character"
@@ -1979,6 +1979,16 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
         _ros = _roster_block(project, state.CONFIG.get('port', 5199))
         if _ros:
             parts.append(_ros)
+    # A declared toolkit. NOT a restriction — the harness decides which skills
+    # exist, and nothing here narrows that. It says which of them are YOURS,
+    # because a list of sixty says nothing about who you are and three named
+    # ones do.
+    if character_skills and not incognito:
+        parts.append(
+            "Your own skills, as declared on your type: "
+            + ', '.join(f'`{k}`' for k in character_skills)
+            + ". Others are still available if a task genuinely calls for one — "
+            "this names the ones you were hired for, it does not fence you in.")
     if user_name:
         parts.append(f"The user's name is {user_name}. Address them accordingly.")
     # Sticky brevity: when sticky_agent_settings is on, the device-neutral brief
@@ -4132,7 +4142,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             system_prompt = _build_agent_context(p, incognito=False, task=task,
                                                  character_body=character_body,
                                                  character_name=(character_meta or {}).get('agent_name') or '',
-                                                 session_id=session_id)
+                                                 session_id=session_id,
+                                                 character_skills=(character_meta or {}).get('skills') or [])
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -4228,6 +4239,9 @@ def _resolve_character(pp, character, project=None):
     avatar = rec.get('avatar')
     if avatar:
         meta['avatar'] = avatar
+    skills = rec.get('skills')
+    if skills:
+        meta['skills'] = skills
     return meta, (rec.get('body') or '')
 
 
@@ -4388,6 +4402,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     _char_model = _character_engine(character_meta, 'model')
     _char_effort = _character_engine(character_meta, 'effort') or None
     _char_agent_name = (character_meta or {}).get('agent_name') or ''
+    _char_skills = (character_meta or {}).get('skills') or []
     if not model_override and _char_model:
         model_override = _char_model
     if resume_id:
@@ -4397,7 +4412,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
-                    session_id=_planned_sid),
+                    session_id=_planned_sid, character_skills=_char_skills),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
@@ -4413,7 +4428,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body,
                                        character_name=_char_agent_name,
-                                       session_id=_planned_sid)
+                                       session_id=_planned_sid,
+                                       character_skills=_char_skills)
         _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
@@ -4422,7 +4438,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
-                    session_id=_planned_sid),
+                    session_id=_planned_sid, character_skills=_char_skills),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     # Per-dispatch telemetry — best-effort; never raises. requested = the

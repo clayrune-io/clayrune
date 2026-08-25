@@ -68,6 +68,39 @@ AVATAR_KEY = 'avatar'
 MAX_AVATAR_LEN = 8
 
 
+# ── The toolkit it works with (Ron, 2026-08-24) ─────────────────────────────
+# A DECLARATION, never a gate. Claude Code decides which skills it exposes and
+# nothing here narrows that — what this does is tell the agent which of them are
+# its own (a list of sixty says nothing about who you are; three named ones do)
+# and put a type's abilities on its bench card, which is what "abilities are not
+# observable enough" was asking for.
+#
+# Comma-separated rather than a YAML list, for the reason the frontmatter
+# already documents: the minimal parser has no list type and hands `['a','b']`
+# back as a string that then iterates character by character.
+SKILLS_KEY = 'skills'
+MAX_SKILLS = 12
+
+
+def clean_skills(value):
+    """Normalise to a de-duplicated list of skill names, order preserved.
+
+    Accepts a comma-separated string (what the file holds) or a list (what a
+    JSON caller sends), because both arrive and rejecting either would just move
+    the bug to the caller.
+    """
+    if isinstance(value, (list, tuple)):
+        parts = [str(v) for v in value]
+    else:
+        parts = str(value or '').replace('\n', ',').split(',')
+    out = []
+    for raw in parts:
+        n = ' '.join(str(raw or '').split()).strip().lower()
+        if n and n not in out:
+            out.append(n)
+    return out[:MAX_SKILLS]
+
+
 def clean_avatar(value):
     """Normalise an avatar, or '' if unusable. Whitespace-stripped, capped.
 
@@ -182,6 +215,9 @@ def _read_one(path: Path, scope: str, project_id: str | None,
     avatar = clean_avatar(meta.get(AVATAR_KEY))
     if avatar:
         rec[AVATAR_KEY] = avatar
+    skills = clean_skills(meta.get(SKILLS_KEY))
+    if skills:
+        rec[SKILLS_KEY] = skills
     if project_id and scope == 'project':
         rec['project_id'] = project_id
     if include_body:
@@ -239,7 +275,8 @@ def write_character(scope: str, name: str, description: str, body: str,
                     overwrite: bool = False,
                     engine: dict[str, Any] | None = None,
                     agent_name: str | None = None,
-                    avatar: str | None = None) -> dict[str, Any]:
+                    avatar: str | None = None,
+                    skills: Any = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
     bad input, FileExistsError on collision without overwrite.
 
@@ -293,6 +330,16 @@ def write_character(scope: str, name: str, description: str, body: str,
         cleaned_av = clean_avatar(avatar)
         if cleaned_av:
             front[AVATAR_KEY] = cleaned_av
+    # Same three-state contract again: None carries forward, '' or [] clears.
+    if skills is None:
+        prior = _read_one(existing, scope, None, include_body=False) if existing else None
+        carried = (prior or {}).get(SKILLS_KEY)
+        if carried:
+            front[SKILLS_KEY] = ', '.join(carried)
+    else:
+        cleaned_sk = clean_skills(skills)
+        if cleaned_sk:
+            front[SKILLS_KEY] = ', '.join(cleaned_sk)
     for k in ENGINE_KEYS:
         v = (engine or {}).get(k)
         v = v.strip() if isinstance(v, str) else ''

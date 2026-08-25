@@ -6,6 +6,40 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24o] — skills belong to a project, and a type declares its own
+
+Two halves of one answer to *"connect agent type / character with a set of
+skills, or leave them at project level?"*
+
+**The bulk of it was a misfiling, not a missing feature.** Measured: 63 global
+skills cost **~3,258 tokens in every prompt on every project**, and 22 of them
+were the job-hunting toolkit — `resume-ats-optimizer`, `salary-negotiation-prep`,
+`cover-letter-generator` and the rest — loaded into sessions about the Floor, a
+trading scanner and a 3D modelling project alike. `skills.py` has had
+`project_skills_dir()` and a `project` scope the whole time; nobody had moved
+them. Relocated to `find_ron_a_job/.claude/skills/`: global is now 41 skills
+(~2,670 tokens), **~590 tokens back on every prompt of every other project**,
+and the job project still sees all 22. The mover names each skill explicitly
+rather than pattern-matching a prefix, and writes a manifest so it reverses.
+
+**Then the character half, which is a declaration and never a gate.** Claude
+Code decides which skills it exposes and nothing here narrows that — saying
+otherwise in a prompt would claim an enforcement the system does not have, and
+an agent that believes it cannot reach a skill it can reach is worse off than
+one told nothing. What `skills:` on a character buys is two real things: the
+agent is told which of the available skills are ITS OWN (a list of sixty says
+nothing about who you are; three named ones do), and a bench card can show what
+a type can reach for rather than only what it is for — which is the
+"abilities are not observable enough" gap from two rounds ago.
+
+Stored comma-separated, not as a YAML list, for the reason the frontmatter
+already documents: the minimal parser has no list type and hands `['a','b']`
+back as a string that then iterates character by character. `clean_skills`
+accepts either, because the editor sends a string and an API caller sends a
+list, and rejecting one would only move the bug to the caller. Same three-state
+contract as `agent_name` and `avatar` — absent carries forward, empty clears —
+so a plain description edit cannot wipe a toolkit the editor never showed.
+
 ## [2026-08-24n] — the running agent looks like one, and every type has a face
 
 Ron: *"emphasize the colors of the running agent inside the project… make all

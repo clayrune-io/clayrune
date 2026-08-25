@@ -369,6 +369,7 @@ def floor():
             eng = c.get('engine') or {}
             bench.append({'name': c.get('name'), 'scope': c.get('scope'),
                           'avatar': c.get('avatar') or '',
+                          'skills': c.get('skills') or [],
                           'display': (c.get('agent_name')
                                       or c.get('display_name') or c.get('name')),
                           'description': _clip(c.get('description'), _DESC_CHARS),

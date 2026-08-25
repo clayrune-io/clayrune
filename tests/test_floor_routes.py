@@ -531,3 +531,20 @@ def test_the_task_line_is_clipped_the_same_way(floor):
                                             'the thing we set out to build')
     got = _get(c)['rooms'][0]['figures'][0]['task']
     assert got.endswith('…') and not got.endswith('ti…')
+
+
+# ── a declared toolkit ──────────────────────────────────────────────────────
+
+def test_a_type_carries_its_declared_skills_to_the_bench(floor):
+    """A description says what a type is FOR; the toolkit says what it can
+    reach for. That is the "abilities are not observable enough" gap."""
+    fr, c, sessions, projects, chars = floor
+    chars.append({'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global',
+                  'skills': ['audit-doc', 'code-review']})
+    assert _get(c)['bench'][0]['skills'] == ['audit-doc', 'code-review']
+
+
+def test_a_type_with_no_toolkit_reports_an_empty_one(floor):
+    fr, c, sessions, projects, chars = floor
+    chars.append({'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global'})
+    assert _get(c)['bench'][0]['skills'] == []

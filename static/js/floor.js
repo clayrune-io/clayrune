@@ -238,6 +238,11 @@ function _floorBench(bench, rooms, quiet) {
             onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
             >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
+        ${(b.skills || []).length
+          ? `<span class="fl-skills">${(b.skills || []).slice(0, 4)
+              .map((k) => `<span class="fl-skill">${esc(k)}</span>`).join('')}${
+              (b.skills || []).length > 4 ? `<span class="fl-skill fl-skill-more">+${b.skills.length - 4}</span>` : ''}</span>`
+          : ''}
         <span class="fl-bench-foot">
           <span class="fl-engine">${esc(eng) || 'follows the project default'}</span>
           <span class="fl-cta">${open ? 'Pick a room &#8595;' : 'Put in a room &#8594;'}</span>

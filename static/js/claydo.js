@@ -957,6 +957,10 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
       <label>Instructions <span class="claydo-save-hint">(the persona's system prompt)</span></label>
       <textarea id="pe-body" spellcheck="true" rows="10">${esc(rec.body || '')}</textarea>
+      <label>Skills <span class="claydo-save-hint">(comma-separated — which of the available skills are this one's own)</span></label>
+      <input id="pe-skills" type="text" spellcheck="false"
+        value="${esc((rec.skills || []).join(', '))}"
+        placeholder="audit-doc, frontend-design">
       <label>Engine <span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
       <div class="persona-engine-row">
         <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
@@ -1032,6 +1036,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
           // "leave alone" and an EMPTY one as "clear", so omitting it would
           // make a face unremovable from the only screen that sets one.
           avatar: panel.querySelector('#pe-avatar').value,
+          skills: panel.querySelector('#pe-skills').value,
           project_id: scope === 'project' ? projectId : null,
         }),
       });

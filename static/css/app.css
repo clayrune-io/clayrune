@@ -4755,6 +4755,16 @@
     display: -webkit-box; -webkit-line-clamp: 3; -webkit-box-orient: vertical;
     overflow: hidden;
   }
+  /* A description says what a type is for; the toolkit says what it can reach
+     for. Capped at four on the card so a well-equipped type cannot make its
+     tile taller than its neighbours — the grid's whole point. */
+  .fl-skills { display: flex; flex-wrap: wrap; gap: 3px; margin-top: 6px; }
+  .fl-skill {
+    font-size: 9px; color: var(--text-faint); font-family: 'JetBrains Mono', monospace;
+    border: 1px solid var(--border); border-radius: 3px; padding: 0 4px;
+    max-width: 96px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fl-skill-more { border-style: dashed; }
   .fl-bench-foot {
     display: flex; align-items: baseline; justify-content: space-between;
     gap: 10px; margin-top: auto; padding-top: 8px; min-width: 0;
