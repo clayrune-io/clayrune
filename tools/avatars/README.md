@@ -46,24 +46,20 @@ The default (10) is that knee. The script prints coverage per figure and flags
 anything outside 20–55%: below means the fill ate the body, above means it never
 started. Eyeballing is what let the first bug ship.
 
-## Two crops per character
+## One crop, not two — the head crop was tried and dropped
 
-Full-body figures do not survive a small circular slot: at 44px a standing
-figure puts its head at ~12px, while the same circle filled by a head reads
-perfectly — which is exactly what WhatsApp's 49px avatars demonstrate.
+WhatsApp's 49px circular avatars settle the size question: that is plenty for a
+figure to read, so "too small" was never the problem.
 
-So each character has two files:
+A head-and-shoulders variant was built anyway, on the theory that a full-body
+figure wastes a circular slot. Sweeping the crop fraction against the cast
+showed otherwise: **78% is barely distinguishable from the full figure**, and
+tighter crops start cutting through the mouth — these are blob figures whose
+faces sit on the body, lower than a human head would be. The tightest usable
+setting bought a slightly larger head in exchange for losing the lute, the
+anvil, the spear and the ribbons, which are most of what makes each character
+recognisable at a glance.
 
-| file | crop | used for |
-|---|---|---|
-| `<name>.webp` | whole figure | the Floor, where there is room for it |
-| `<name>-face.webp` | head and shoulders | chat headers, lists, anywhere small |
-
-`portrait()` takes the top **68%** of the subject's bounding box, then re-bounds
-that slice horizontally so a held-out prop (the angler's rod, the guard's spear)
-cannot drag the frame sideways off the head.
-
-That 68% was swept, not guessed. At 55% the slice takes hat and forehead and
-cuts through the mouth on most of the cast — these are blob figures whose faces
-sit on the body, lower than a human head. Above ~78% the head shrinks back
-toward full-figure framing and the crop stops earning itself.
+So: one file per character, shown at whatever size the slot allows. Do not
+re-add a portrait crop without re-running that comparison — the finding is that
+the props carry more identity than the face does.

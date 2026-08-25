@@ -183,38 +183,3 @@ def main():
 
 if __name__ == '__main__':
     main()
-
-
-def portrait(im, size, head_frac=0.68, pad=0.04):
-    """A head-and-shoulders crop, for the small circular slots.
-
-    The figures are FULL BODY. In a 44px circle — the size WhatsApp proves is
-    plenty for a portrait — a whole standing figure puts its head at about 12px
-    and the face disappears, while the same circle filled by a head reads
-    perfectly. So small contexts get a different crop, not a smaller one.
-
-    0.68 was picked by sweeping it, not guessed. At 0.55 the slice takes hat and
-    forehead and cuts straight through the mouth on most of the cast — these are
-    blob figures whose faces sit on the body, lower than a human head would be.
-    Above ~0.78 the head shrinks back toward the full-figure framing and the
-    crop stops earning itself.
-
-    Heuristic and deliberately so: take the top slice of the subject's bounding
-    box, then re-bound THAT slice horizontally. Re-bounding is what stops a
-    held-out prop (the angler's rod, the guard's spear) from dragging the frame
-    sideways off the head — the prop is in the slice, but the head is what the
-    slice is mostly made of.
-    """
-    bb = im.getbbox()
-    if not bb:
-        return im.resize((size, size), Image.LANCZOS)
-    x0, y0, x1, y1 = bb
-    head = im.crop((x0, y0, x1, y0 + int((y1 - y0) * head_frac)))
-    hb = head.getbbox()
-    if hb:
-        head = head.crop(hb)
-    w, h = head.size
-    side = int(max(w, h) * (1 + pad * 2))
-    canvas = Image.new('RGBA', (side, side), (0, 0, 0, 0))
-    canvas.paste(head, ((side - w) // 2, (side - h) // 2))
-    return canvas.resize((size, size), Image.LANCZOS)
