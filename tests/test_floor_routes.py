@@ -548,3 +548,20 @@ def test_a_type_with_no_toolkit_reports_an_empty_one(floor):
     fr, c, sessions, projects, chars = floor
     chars.append({'name': 'fenn', 'agent_name': 'Fenn', 'scope': 'global'})
     assert _get(c)['bench'][0]['skills'] == []
+
+
+def test_a_figure_avatar_survives_the_length_cap(floor, tmp_path):
+    """`fig:guard` is 9 chars. The cap here was a hand-copied `= 8` "mirroring"
+    characters.MAX_AVATAR_LEN; when that went 8 -> 40 this copy stayed behind
+    and served `fig:guar` — a broken <img> on every card, with the correct
+    value sitting untouched in the character file. It imports the constant now.
+    """
+    fr, c, sessions, projects, chars = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={
+        'name': 'dave', 'agent_name': 'Dave', 'scope': 'global',
+        'avatar': 'fig:guard'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:guard'
+    c.post('/api/floor/figure/1/name', json={'avatar': 'fig:gardener'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:gardener'

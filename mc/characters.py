@@ -65,9 +65,13 @@ MAX_AGENT_NAME_LEN = 32
 # 1-char cap silently truncates 👩‍💻 into 👩. Long enough for those, short
 # enough that nobody fits a word in it.
 AVATAR_KEY = 'avatar'
-# Long enough for `fig:<name>` as well as an emoji. It was 8 — sized for one
-# emoji including a ZWJ sequence — which silently truncated `fig:wizard` to
-# `fig:wiza` and produced a face that simply never resolved.
+# TWO caps, because an avatar has two shapes and one number cannot serve both.
+# An emoji stays SHORT — a handful of codepoints for a ZWJ sequence or a skin
+# tone, short enough that nobody fits a word in it, which is the only thing
+# stopping this becoming a second name field. A `fig:<name>` reference is a
+# filename and needs room: a flat 8 truncated `fig:wizard` to `fig:wiza` and
+# `fig:guard` to `fig:guar`, producing a face that simply never resolved.
+MAX_EMOJI_LEN = 8
 MAX_AVATAR_LEN = 40
 # A figure from `assets/avatars/`, as opposed to an emoji. A prefix rather than
 # a second frontmatter key: the face is ONE fact, and splitting it would double
@@ -127,10 +131,14 @@ def clean_avatar(value):
     Deliberately NOT validated as "is this really an emoji": the emoji set grows
     every year, any allowlist we write is wrong by the next Unicode release, and
     the failure mode of being wrong is refusing a face somebody picked. The cap
-    is the real guard — it is what stops this becoming a second name field.
+    is the real guard — it is what stops this becoming a second name field — so
+    it only relaxes for the shape that is checkable: `fig:<name>` resolves
+    against a real file, and a bogus one draws nothing rather than a sentence.
     """
     v = ' '.join(str(value or '').split())
-    return v[:MAX_AVATAR_LEN]
+    if v.startswith(AVATAR_FIG_PREFIX):
+        return v[:MAX_AVATAR_LEN]
+    return v[:MAX_EMOJI_LEN]
 
 
 AVATARS_DIR = None  # wired by server.py; assets/avatars/

@@ -25,6 +25,7 @@ from typing import Any, Callable
 from flask import Blueprint, jsonify, request
 
 from mc import state
+from mc.characters import MAX_EMOJI_LEN, clean_avatar
 from mc.core import _atomic_write_text, _log, time_ago
 
 bp = Blueprint('floor_routes', __name__)
@@ -58,10 +59,13 @@ def _clip(text, n):
     return (cut if len(cut) >= n * 0.6 else t[:n]).rstrip(' ,.;:—-') + '…'
 # A name is a name, not a sentence.
 _NAME_CHARS = 32
-# An avatar is one emoji — which is frequently several codepoints (a ZWJ
-# sequence, a skin-tone modifier), so a 1-char cap would silently truncate
-# 👩‍💻 into 👩. Mirrors characters.MAX_AVATAR_LEN.
-_AVATAR_CHARS = 8
+# The avatar rule lives in ONE place — `characters.clean_avatar`. This module
+# used to keep its own hand-copied `= 8` "mirroring characters.MAX_AVATAR_LEN";
+# when that grew to hold `fig:<name>` the copy stayed behind and served
+# `fig:guar` for `fig:guard`, a broken image on every card with the correct
+# value sitting untouched in the character file. Two caps cannot mirror each
+# other by comment, so there is only one.
+_AVATAR_CHARS = MAX_EMOJI_LEN
 
 # Per-session name overrides. OUTSIDE DATA_DIR on purpose: `load_projects()`
 # treats every *.json under data/projects/ as a project, and a stray one becomes
@@ -86,7 +90,7 @@ def _clean_name(v):
 
 
 def _clean_avatar(v):
-    return ' '.join(str(v or '').split())[:_AVATAR_CHARS]
+    return clean_avatar(v)
 
 
 def read_labels():
