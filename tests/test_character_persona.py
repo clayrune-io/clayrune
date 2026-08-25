@@ -277,3 +277,50 @@ class TestAgentNameInjection:
         meta, _ = env['ar']._resolve_character(env['proj_path'], 'project:namer')
         assert meta['agent_name'] == 'Vector'
         assert meta['name'] == 'namer'      # the identifier is untouched
+
+
+class TestResumeKeepsItsPersona:
+    """A resume continues the conversation it is resuming — including WHO was
+    in it. The picker is hidden on a resume, so `character` arrives empty and
+    the project default used to take over: Ron resumed a chat he had started
+    with Dave and it came back as Vector, same conversation, different agent.
+    """
+
+    def _log(self, monkeypatch, env, entries):
+        monkeypatch.setattr(env['ar'], '_load_agent_log', lambda pid: entries)
+
+    def test_the_spawn_persona_is_read_back_off_the_log(self, env, monkeypatch):
+        self._log(monkeypatch, env, [
+            {'claude_session_id': 'abc', 'character':
+                {'name': 'docs-writer', 'scope': 'global', 'source': 'picked'}},
+        ])
+        assert env['ar']._prior_character('p', 'abc') == 'global:docs-writer'
+
+    def test_the_newest_entry_without_one_does_not_hide_an_older_one(self, env, monkeypatch):
+        # One conversation gets an agent_log row per RUN. A row that never
+        # recorded a persona must not read as "this chat had none".
+        self._log(monkeypatch, env, [
+            {'claude_session_id': 'abc', 'character': None},
+            {'claude_session_id': 'abc', 'character':
+                {'name': 'docs-writer', 'scope': 'global'}},
+        ])
+        assert env['ar']._prior_character('p', 'abc') == 'global:docs-writer'
+
+    def test_a_chat_that_ran_with_no_persona_reports_that_it_had_none(self, env, monkeypatch):
+        """`''`, not None — the mirror of the same bug. A plain chat must not
+        acquire a persona just because the project default changed since."""
+        self._log(monkeypatch, env, [{'claude_session_id': 'abc', 'character': None}])
+        assert env['ar']._prior_character('p', 'abc') == ''
+
+    def test_an_unknown_conversation_leaves_precedence_alone(self, env, monkeypatch):
+        self._log(monkeypatch, env, [{'claude_session_id': 'other'}])
+        assert env['ar']._prior_character('p', 'abc') is None
+
+    def test_a_fresh_dispatch_never_consults_the_log(self, env, monkeypatch):
+        assert env['ar']._prior_character('p', '') is None
+
+    def test_an_unreadable_log_is_not_fatal(self, env, monkeypatch):
+        def boom(pid):
+            raise OSError('log is gone')
+        monkeypatch.setattr(env['ar'], '_load_agent_log', boom)
+        assert env['ar']._prior_character('p', 'abc') is None

@@ -4340,6 +4340,44 @@ def _resolve_character(pp, character, project=None):
     return meta, (rec.get('body') or '')
 
 
+def _prior_character(project_id, resume_id):
+    """The persona a conversation was ALREADY running, for a resume to keep.
+
+    Returns "scope:name", or `''` when that conversation deliberately had none,
+    or None when we have no record of it (leave the caller's normal precedence
+    alone).
+
+    WHY THIS EXISTS. `character` is only read off a FRESH dispatch — the picker
+    is hidden on a resume — so a resumed chat rebuilt its system prompt from the
+    PROJECT DEFAULT. Ron resumed a conversation he had started with Dave and it
+    came back as Vector: same conversation, different agent, no event anywhere
+    to explain it. The persona is already written to the agent log on every
+    entry (so the header pill survives a restart); nothing was reading it back.
+
+    The `''` case is the same bug mirrored: a chat that ran with no persona must
+    not silently acquire one because the project default changed since. A resume
+    continues what the conversation WAS, never what the project is now.
+    """
+    if not resume_id:
+        return None
+    try:
+        seen = False
+        for e in _load_agent_log(project_id):
+            if e.get('claude_session_id') != resume_id:
+                continue
+            seen = True
+            ch = e.get('character') or {}
+            scope = (ch.get('scope') or '').strip().lower()
+            name = (ch.get('name') or '').strip()
+            if scope in ('project', 'global') and name:
+                return f'{scope}:{name}'
+        return '' if seen else None
+    except Exception as e:
+        _log(f"[dispatch] could not recover the persona for "
+             f"{resume_id[:12]}: {e}")
+        return None
+
+
 def _character_engine(character_meta, key):
     """One engine key off a resolved character, or '' when unpinned."""
     v = ((character_meta or {}).get('engine') or {}).get(key)
@@ -4387,9 +4425,21 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         raise ValueError('project_path not set or invalid')
 
     # Resolve the per-chat character (persona) now, at spawn — the only point
-    # a system prompt can be set (claude -r restores the original). Immutable
-    # for this chat's lifetime; switching personas = a new chat.
-    character_meta, character_body = _resolve_character(pp, character, project=p)
+    # a system prompt can be set. Immutable for this chat's lifetime; switching
+    # personas = a new chat.
+    #
+    # On a RESUME the picker is hidden, so `character` arrives empty and the
+    # project default would take over mid-conversation. Recover what this
+    # conversation was actually running instead — see `_prior_character`.
+    _prior = _prior_character(project_id, resume_id) if resume_id else None
+    if _prior is not None and not character:
+        character = _prior
+    if _prior == '' and not character:
+        # It ran with no persona. Keep it that way — don't hand it the project
+        # default just because a resume passed through here.
+        character_meta, character_body = None, ''
+    else:
+        character_meta, character_body = _resolve_character(pp, character, project=p)
 
     # ── Multi-provider routing ──────────────────────────────────────────────
     # If the conversation selects a non-claude provider, dispatch through the
