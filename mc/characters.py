@@ -55,6 +55,30 @@ AGENT_NAME_KEY = 'agent_name'
 # apostrophes, spaces) and tight on length — this renders inside a pill.
 MAX_AGENT_NAME_LEN = 32
 
+# ── The face it goes by (Ron, 2026-08-24) ───────────────────────────────────
+# One emoji. Same home and the same reasoning as ENGINE_KEYS: in the frontmatter
+# so the file stays the single artifact, and harmless to a Claude Code that has
+# never heard of it.
+#
+# Capped at a handful of characters rather than one, because a single "emoji" is
+# frequently several codepoints — a ZWJ sequence or a skin-tone modifier — and a
+# 1-char cap silently truncates 👩‍💻 into 👩. Long enough for those, short
+# enough that nobody fits a word in it.
+AVATAR_KEY = 'avatar'
+MAX_AVATAR_LEN = 8
+
+
+def clean_avatar(value):
+    """Normalise an avatar, or '' if unusable. Whitespace-stripped, capped.
+
+    Deliberately NOT validated as "is this really an emoji": the emoji set grows
+    every year, any allowlist we write is wrong by the next Unicode release, and
+    the failure mode of being wrong is refusing a face somebody picked. The cap
+    is the real guard — it is what stops this becoming a second name field.
+    """
+    v = ' '.join(str(value or '').split())
+    return v[:MAX_AVATAR_LEN]
+
 
 def clean_agent_name(value):
     """Normalise a self-chosen name, or return '' if it is unusable.
@@ -155,6 +179,9 @@ def _read_one(path: Path, scope: str, project_id: str | None,
     agent_name = clean_agent_name(meta.get(AGENT_NAME_KEY))
     if agent_name:
         rec[AGENT_NAME_KEY] = agent_name
+    avatar = clean_avatar(meta.get(AVATAR_KEY))
+    if avatar:
+        rec[AVATAR_KEY] = avatar
     if project_id and scope == 'project':
         rec['project_id'] = project_id
     if include_body:
@@ -211,7 +238,8 @@ def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,
                     engine: dict[str, Any] | None = None,
-                    agent_name: str | None = None) -> dict[str, Any]:
+                    agent_name: str | None = None,
+                    avatar: str | None = None) -> dict[str, Any]:
     """Create or update `<scope agents dir>/<name>.md`. Raises ValueError on
     bad input, FileExistsError on collision without overwrite.
 
@@ -252,6 +280,19 @@ def write_character(scope: str, name: str, description: str, body: str,
         cleaned = clean_agent_name(agent_name)
         if cleaned:
             front[AGENT_NAME_KEY] = cleaned
+    # Same three-state contract as agent_name: None carries forward, '' clears,
+    # a value sets. The file is rewritten whole, so "leave alone" has to be an
+    # explicit carry — omitting the key DELETES it, which is how a plain
+    # description edit once wiped a name the editor never showed.
+    if avatar is None:
+        prior = _read_one(existing, scope, None, include_body=False) if existing else None
+        carried = (prior or {}).get(AVATAR_KEY)
+        if carried:
+            front[AVATAR_KEY] = carried
+    else:
+        cleaned_av = clean_avatar(avatar)
+        if cleaned_av:
+            front[AVATAR_KEY] = cleaned_av
     for k in ENGINE_KEYS:
         v = (engine or {}).get(k)
         v = v.strip() if isinstance(v, str) else ''

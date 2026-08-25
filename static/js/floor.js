@@ -83,6 +83,37 @@ function _floorLine(f) {
          || 'working…';
 }
 
+// A neutral placeholder, not a random face. The board's discipline is that
+// absence is a finding — a figure nobody gave a face to should look unassigned,
+// not look like it chose this one.
+const FLOOR_NO_FACE = '\u25CC';   // dotted circle
+
+function _floorAvatar(f) {
+  const has = !!(f.avatar || '').trim();
+  return `<span class="fl-face${has ? '' : ' fl-noface'}"
+      title="${has ? 'click to change the face' : 'click to give this figure a face'}"
+      onclick="event.stopPropagation();floorSetAvatar('${esc(f.session_id)}','${esc(f.avatar || '')}')"
+    >${esc(f.avatar || FLOOR_NO_FACE)}</span>`;
+}
+
+async function floorSetAvatar(sessionId, current) {
+  const next = window.prompt(
+    'One emoji for this figure (blank clears it):', current || '');
+  if (next === null) return;
+  try {
+    const res = await fetch(API_BASE + '/api/floor/figure/' + encodeURIComponent(sessionId) + '/name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      // `avatar` only — the server leaves an absent field alone, so setting a
+      // face must not clear a name.
+      body: JSON.stringify({ avatar: next })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshFloor();
+  } catch (e) {
+    alert('Could not set the face: ' + e.message);
+  }
+}
+
 function _floorFigure(pid, f) {
   // NAME and TYPE are two facts, not one. The card used to print "no type"
   // where the name goes, which put the board at odds with that session's own
@@ -101,7 +132,7 @@ function _floorFigure(pid, f) {
   return `<div class="fl-fig fl-${esc(f.state)}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
-    <div class="fl-fig-top">${_floorDot(f.state)}<span class="${nameCls}"
+    <div class="fl-fig-top">${_floorDot(f.state)}${_floorAvatar(f)}<span class="${nameCls}"
         title="${esc(nameTitle)}"
         onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
       >${esc(f.name || 'unnamed')}</span>${type}
@@ -155,7 +186,8 @@ function _floorQuiet(quiet) {
 function _floorBench(bench) {
   if (!bench.length) return '';
   const cards = bench.map(b => `<div class="fl-bench-card">
-      <span class="fl-who">${esc(b.display)}</span>
+      <span class="fl-bench-top"><span class="fl-face${b.avatar ? '' : ' fl-noface'}"
+        >${esc(b.avatar || FLOOR_NO_FACE)}</span><span class="fl-who">${esc(b.display)}</span></span>
       <span class="fl-engine">${esc([b.provider, b.model, b.effort].filter(Boolean).join(' · ')) || '&mdash;'}</span>
       <span class="fl-bench-desc">${esc(b.description || '')}</span>
     </div>`).join('');
@@ -236,3 +268,4 @@ window.refreshFloor = refreshFloor;
 window.floorToggleQuiet = floorToggleQuiet;
 window.floorOpenFigure = floorOpenFigure;
 window.floorRename = floorRename;
+window.floorSetAvatar = floorSetAvatar;

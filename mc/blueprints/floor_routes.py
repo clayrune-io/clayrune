@@ -40,6 +40,10 @@ list_characters: Callable[..., Any] = None  # type: ignore[assignment]
 _TASK_CHARS = 90
 # A name is a name, not a sentence.
 _NAME_CHARS = 32
+# An avatar is one emoji — which is frequently several codepoints (a ZWJ
+# sequence, a skin-tone modifier), so a 1-char cap would silently truncate
+# 👩‍💻 into 👩. Mirrors characters.MAX_AVATAR_LEN.
+_AVATAR_CHARS = 8
 
 # Per-session name overrides. OUTSIDE DATA_DIR on purpose: `load_projects()`
 # treats every *.json under data/projects/ as a project, and a stray one becomes
@@ -63,6 +67,10 @@ def _clean_name(v):
     return ' '.join(str(v or '').split())[:_NAME_CHARS]
 
 
+def _clean_avatar(v):
+    return ' '.join(str(v or '').split())[:_AVATAR_CHARS]
+
+
 def read_labels():
     """{session_id: {name, by}}. Never raises — an unreadable file reads empty."""
     try:
@@ -75,18 +83,30 @@ def read_labels():
         return {}
 
 
-def set_label(session_id, name, by='user'):
-    """Name a figure, or clear the name with an empty string. Returns the record.
+def set_label(session_id, name=None, by='user', avatar=None):
+    """Name a figure and/or give it a face. `''` clears a field; None leaves it.
 
     `by` is kept because the two paths mean different things: a name the agent
     chose for itself is a statement, and one Ron typed is an instruction. The
     card says which, so a self-chosen name never reads as a decision he made.
+
+    Absent-vs-empty matters here for the same reason it does on a character
+    file: this record is rewritten whole, so a caller that only sets an avatar
+    must not thereby delete the name.
     """
-    name = _clean_name(name)
     with _labels_lock:
         labels = read_labels()
-        if name:
-            labels[session_id] = {'name': name, 'by': by}
+        cur = labels.get(session_id) or {}
+        rec = {'name': cur.get('name', ''), 'avatar': cur.get('avatar', ''),
+               'by': cur.get('by') or by}
+        if name is not None:
+            rec['name'] = _clean_name(name)
+            rec['by'] = by
+        if avatar is not None:
+            rec['avatar'] = _clean_avatar(avatar)
+            rec['by'] = by
+        if rec['name'] or rec['avatar']:
+            labels[session_id] = rec
         else:
             labels.pop(session_id, None)
         try:
@@ -99,11 +119,16 @@ def set_label(session_id, name, by='user'):
     # write failed — a name that vanishes on save looks like the click missed.
     sess = (agent_sessions or {}).get(session_id)
     if isinstance(sess, dict):
-        if name:
-            sess['floor_label'] = name
-            sess['floor_label_by'] = by
+        saved = labels.get(session_id) or {}
+        for key, val in (('floor_label', saved.get('name')),
+                         ('floor_avatar', saved.get('avatar'))):
+            if val:
+                sess[key] = val
+            else:
+                sess.pop(key, None)
+        if saved:
+            sess['floor_label_by'] = saved.get('by') or by
         else:
-            sess.pop('floor_label', None)
             sess.pop('floor_label_by', None)
     return labels.get(session_id)
 
@@ -163,6 +188,24 @@ def _figure_name(s, labels):
     return _clean_name(state.CONFIG.get('agent_name', '')), 'default'
 
 
+def _figure_avatar(s, labels):
+    """The face, resolved like the name: explicit override, then the type's own.
+
+    No default. A figure with no face gets a neutral placeholder in the UI
+    rather than a random one here — the board's discipline is that absence is a
+    finding, so it must not be papered over server-side.
+    """
+    lab = labels.get(s.get('session_id')) or {}
+    if isinstance(lab, dict) and lab.get('avatar'):
+        return _clean_avatar(lab['avatar'])
+    if s.get('floor_avatar'):
+        return _clean_avatar(s['floor_avatar'])
+    ch = s.get('character')
+    if isinstance(ch, dict):
+        return _clean_avatar(ch.get('avatar'))
+    return ''
+
+
 def _figure_model(s, proj_default):
     """The engine string, resolved the way the chat header resolves it.
 
@@ -198,6 +241,7 @@ def _figure(s, proj_default='', labels=None):
         # differently from an inherited one.
         'name': name,
         'name_from': name_from,
+        'avatar': _figure_avatar(s, labels or {}),
         'provider': s.get('provider') or 'claude',
         'model': _figure_model(s, proj_default),
         'started_at': s.get('started_at', ''),
@@ -251,8 +295,14 @@ def name_figure(session_id):
         return jsonify({'error': 'no such live session'}), 404
     d = request.get_json(silent=True) or {}
     by = 'self' if (d.get('by') or '').strip().lower() == 'self' else 'user'
-    rec = set_label(session_id, d.get('name'), by=by)
+    # Absent means "leave it", not "clear it" — a caller setting only an avatar
+    # must not wipe the name, and vice versa.
+    rec = set_label(session_id,
+                    name=d.get('name') if 'name' in d else None,
+                    avatar=d.get('avatar') if 'avatar' in d else None,
+                    by=by)
     return jsonify({'ok': True, 'name': (rec or {}).get('name', ''),
+                    'avatar': (rec or {}).get('avatar', ''),
                     'by': (rec or {}).get('by', '')})
 
 
@@ -300,6 +350,7 @@ def floor():
                 continue
             eng = c.get('engine') or {}
             bench.append({'name': c.get('name'), 'scope': c.get('scope'),
+                          'avatar': c.get('avatar') or '',
                           'display': (c.get('agent_name')
                                       or c.get('display_name') or c.get('name')),
                           'description': (c.get('description') or '')[:80],

@@ -6,6 +6,45 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24j] — a figure can have a face
+
+Ron: *"let's give the agents the ability to choose their avatar."* One emoji, on
+the same route and with the same two authors as the name.
+
+**Emoji, not an image.** The Floor design's own mockup already drew them
+(`✍ Marlow`, `🔍 Quill`, `🦉 Fenn`). An emoji needs no upload path, no
+storage, no serving route, no allowlist entry and no mobile sizing pass, and it
+cannot 404 — and the same string renders in the Floor, the bench, the chat
+header pill and the persona picker without any of them knowing about the others.
+An image avatar is a strictly larger feature and can arrive later behind the
+same key, since a value that looks like a path is distinguishable from one that
+does not.
+
+`avatar` lives in the character's **frontmatter**, for the reason
+`mc/characters.py` already gives for the engine keys: the file stays the single
+artifact, so copying it to another machine keeps the type intact, and Claude
+Code ignores keys it has never heard of — the file remains a valid subagent.
+
+Three things worth their comments:
+
+- **The cap is 8 characters, not 1.** A "single emoji" is frequently several
+  codepoints — a ZWJ sequence, a skin-tone modifier — so a 1-char cap silently
+  truncates 👩‍💻 into 👩. Long enough for those, short enough that nobody
+  fits a word in it. It is also the only guard: no allowlist decides what counts
+  as an emoji, because any list we write is wrong by the next Unicode release
+  and the failure mode of being wrong is refusing a face somebody picked.
+- **Absent means "leave it", not "clear it".** The session-label record is
+  rewritten whole, so a caller setting only a face must not wipe the name — and
+  the self-naming path on a character file carries the avatar forward for the
+  same reason, or naming itself would delete the face it had chosen. Both
+  directions are pinned by test.
+- **A figure with no face gets a neutral dotted circle, never a random one.**
+  Absence is a finding on this board — the same discipline that shows "no type"
+  rather than papering over it.
+
+The agent sets its own through the route it already names itself with; Ron
+clicks the face on the card. `by` records which, as before.
+
 ## [2026-08-24i] — a figure has a name, and it can be changed
 
 Ron: *"the floor should allow the agent to either name itself or let the user

@@ -336,3 +336,92 @@ def test_a_name_is_a_name_not_a_paragraph(floor, tmp_path):
     sessions['1'] = _session('a', '1')
     c.post('/api/floor/figure/1/name', json={'name': 'x' * 200})
     assert len(_get(c)['rooms'][0]['figures'][0]['name']) == fr._NAME_CHARS
+
+
+# ── the face ────────────────────────────────────────────────────────────────
+
+def test_a_type_brings_its_own_face(floor):
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'quill',
+                                                  'agent_name': 'Quill',
+                                                  'avatar': '\U0001F50D'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == '\U0001F50D'
+
+
+def test_a_figure_with_no_face_gets_no_face_not_a_random_one(floor):
+    """Absence is a finding on this board. Server-side defaulting would paper
+    over the same gap "no type" exists to show."""
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == ''
+
+
+def test_setting_a_face_does_not_wipe_the_name(floor, tmp_path):
+    """The label record is rewritten whole, so absent has to mean "leave it".
+    A caller that only sets a face must not clear the name, or the two UI
+    controls silently undo each other."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'Scout'})
+    c.post('/api/floor/figure/1/name', json={'avatar': '\U0001F989'})
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['avatar']) == ('Scout', '\U0001F989')
+
+    c.post('/api/floor/figure/1/name', json={'name': 'Scribe'})
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['avatar']) == ('Scribe', '\U0001F989'), 'renaming ate the face'
+
+
+def test_an_explicit_face_beats_the_types_own(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'quill',
+                                                  'agent_name': 'Quill',
+                                                  'avatar': '\U0001F50D'})
+    c.post('/api/floor/figure/1/name', json={'avatar': '\U0001F989'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == '\U0001F989'
+
+
+def test_a_multi_codepoint_emoji_is_not_truncated(floor, tmp_path):
+    """A "single emoji" is often several codepoints — a ZWJ sequence or a
+    skin-tone modifier. A 1-char cap silently turns a woman technologist into
+    a woman."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    zwj = '\U0001F469‍\U0001F4BB'          # 3 codepoints
+    c.post('/api/floor/figure/1/name', json={'avatar': zwj})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == zwj
+
+
+def test_an_avatar_cannot_become_a_second_name_field(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'avatar': 'the code reviewer'})
+    assert len(_get(c)['rooms'][0]['figures'][0]['avatar']) == fr._AVATAR_CHARS
+
+
+def test_clearing_both_forgets_the_figure_entirely(floor, tmp_path):
+    """Otherwise the label file grows a row per session, forever."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'Scout', 'avatar': '\U0001F989'})
+    c.post('/api/floor/figure/1/name', json={'name': '', 'avatar': ''})
+    assert fr.read_labels() == {}
+
+
+def test_the_bench_shows_a_types_face(floor):
+    fr, c, sessions, projects, chars = floor
+    chars.append({'name': 'quill', 'agent_name': 'Quill', 'scope': 'global',
+                  'avatar': '\U0001F50D'})
+    assert _get(c)['bench'][0]['avatar'] == '\U0001F50D'

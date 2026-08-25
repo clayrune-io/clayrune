@@ -128,7 +128,8 @@ def create_character_route():
     try:
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
-                                     overwrite=overwrite, engine=engine)
+                                     overwrite=overwrite, engine=engine,
+                                     avatar=data.get('avatar'))
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
     except ValueError as e:
@@ -179,12 +180,13 @@ def update_character_route(scope, name):
     # engine keys use, and for the same reason: a key the editor never sends
     # must not silently wipe a value the editor never showed.
     agent_name = data.get('agent_name') if 'agent_name' in data else None
+    avatar = data.get('avatar') if 'avatar' in data else None
 
     try:
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
                                      overwrite=True, engine=engine,
-                                     agent_name=agent_name)
+                                     agent_name=agent_name, avatar=avatar)
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
     except OSError as e:
@@ -298,7 +300,11 @@ def name_character_route(scope, name):
                                rec.get('body') or '',
                                project_path=project_path, overwrite=True,
                                engine=(rec.get('engine') or {}),
-                               agent_name=chosen)
+                               agent_name=chosen,
+                               # Carry it: this path rewrites the file whole, so
+                               # naming itself would otherwise delete the face
+                               # it had already chosen.
+                               avatar=rec.get('avatar'))
     except (ValueError, OSError) as e:
         return jsonify({'error': str(e)}), 400
     return jsonify(_chars.read_character(scope, name, project_path=project_path,

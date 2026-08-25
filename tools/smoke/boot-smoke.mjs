@@ -1404,27 +1404,27 @@ async function runFloorGuard(browser) {
       { id: 'smoke_beta', name: 'Beta', emoji: '', color: '', figures: [
         { session_id: 's-ask', claude_session_id: 'csid-ask', state: 'asking',
           reason: 'question', activity: '', task: 'needs an answer',
-          name: 'Quill', name_from: 'character',
+          name: 'Quill', name_from: 'character', avatar: '\u{1F50D}',
           character: { name: 'quill', display: 'Quill' }, provider: 'claude',
           model: 'claude-opus-5', started_at: '2026-08-24T10:00:00Z', age: '2h',
           trigger_type: 'manual', hivemind_id: '' } ] },
       { id: 'smoke_alpha', name: 'Alpha', emoji: '', color: '', figures: [
         { session_id: 's-fenn', claude_session_id: 'csid-fenn', state: 'working',
           reason: null, activity: 'tool', task: 'reviewing MC-142',
-          name: 'Scout', name_from: 'self',
+          name: 'Scout', name_from: 'self', avatar: '\u{1F989}',
           character: { name: 'fenn', display: 'Fenn' }, provider: 'claude',
           model: 'claude-sonnet-5', started_at: '2026-08-24T11:00:00Z', age: '12m',
           trigger_type: 'manual', hivemind_id: '' },
         { session_id: 's-anon', claude_session_id: 'csid-anon', state: 'idle',
           reason: null, activity: '', task: 'no persona was picked',
-          name: 'Vector', name_from: 'default',
+          name: 'Vector', name_from: 'default', avatar: '',
           character: null, provider: 'claude', model: '',
           started_at: '2026-08-23T11:00:00Z', age: '20h',
           trigger_type: 'manual', hivemind_id: '' } ] },
     ],
     quiet: [{ id: 'smoke_gamma', name: 'Gamma', emoji: '', color: '' }],
     bench: [{ name: 'marlow', scope: 'global', display: 'Marlow',
-              description: 'writes specs', provider: 'claude',
+              description: 'writes specs', avatar: '\u{270D}', provider: 'claude',
               model: 'claude-fable-5', effort: 'high' }],
     counts: { rooms: 2, figures: 3, quiet: 1, bench: 1 },
     activity_states: true, poll_seconds: 30,
@@ -1474,6 +1474,8 @@ async function runFloorGuard(browser) {
       r.untyped = win.querySelectorAll('.fl-type.fl-untyped').length;
       r.names = Array.from(win.querySelectorAll('.fl-who')).map((e) => e.textContent.trim());
       r.chosen = win.querySelectorAll('.fl-who.fl-named').length;
+      r.faces = Array.from(win.querySelectorAll('.fl-fig .fl-face')).map((e) => e.textContent.trim());
+      r.nofaces = win.querySelectorAll('.fl-fig .fl-face.fl-noface').length;
       r.asking = win.querySelectorAll('.fl-fig.fl-asking').length;
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
 
@@ -1537,6 +1539,10 @@ async function runFloorGuard(browser) {
   else if (renames[0][1] !== 'Scribe')
     fails.push('the rename sent the wrong name: ' + JSON.stringify(renames[0]));
   if (out.renameOpenedChat) fails.push('renaming also opened the chat underneath');
+  if (!(out.faces || []).includes('\u{1F989}'))
+    fails.push('a figure lost its face: ' + JSON.stringify(out.faces));
+  if (out.nofaces !== 1)
+    fails.push('a figure with no avatar did not get the neutral placeholder');
   if (out.asking !== 1) fails.push('the asking figure got no attention styling');
   if (!/Marlow/.test(out.text || '')) fails.push('the bench did not render');
   if (out.quietVisibleBefore) fails.push('quiet projects were expanded by default');

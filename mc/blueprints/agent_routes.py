@@ -1922,13 +1922,15 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if session_id and not incognito:
         parts.append(
             f"You appear on the Floor as a figure named {agent_name or 'unnamed'}. "
-            f"If a more useful name would tell Ron at a glance what you are "
-            f"doing here, set it once: curl -s -X POST "
+            f"If a name or a one-emoji face would tell Ron at a glance what you "
+            f"are doing here, set it once: curl -s -X POST "
             f"http://localhost:{state.CONFIG.get('port', 5199)}/api/floor/figure/"
             f"{session_id}/name -H 'Content-Type: application/json' "
-            + '-d \'{"name":"...","by":"self"}\'. Only worth doing when it '
-            f"distinguishes you from the other figures — not every session needs "
-            f"a new name.")
+            + '-d \'{"name":"...","avatar":"<one emoji>","by":"self"}\'. Both '
+            "fields are optional and an absent one is left as it was. Only worth "
+            "doing when it distinguishes you from the other figures — a board "
+            "where every session renamed itself would be as unreadable as one "
+            "where none did.")
     if user_name:
         parts.append(f"The user's name is {user_name}. Address them accordingly.")
     # Sticky brevity: when sticky_agent_settings is on, the device-neutral brief
