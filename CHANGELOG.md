@@ -6,6 +6,23 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25b] — the faces get a column, and 56px in it
+
+Ron: *"the characters are still too small, we should be comfortable to increase
+them a bit."*
+
+The number was 40, but the number was not the constraint. The face sat **inline
+in the name row**, so growing it grew that row's line-height and pushed the name
+sideways — which is why 40 felt like a ceiling when the real ceiling was the
+layout. It has a column of its own now: a left column on a figure card, a
+float-left on a bench card so the description still wraps to full width under
+it. The card gets no taller and the face gets 16px bigger.
+
+Also fixed while looking at it: the empty slot. A dotted-circle glyph read as
+"unassigned" at 18px; at 56 it is a speck floating in an empty box, which reads
+as broken. It fills its slot as a dashed ring instead — clearly a placeholder,
+clearly deliberate, and the same shape as the figure that will replace it.
+
 ## [2026-08-25] — an agent can wear a figure, not just an emoji
 
 Nine clay characters, generated from a style brief built off Claydo, cut and

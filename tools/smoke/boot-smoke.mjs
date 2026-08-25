@@ -1622,8 +1622,8 @@ async function runFloorGuard(browser) {
     fails.push('a fig: avatar did not render as an image: ' + JSON.stringify(out.figs));
   if (out.nofaces !== 1)
     fails.push('a figure with no avatar did not get the neutral placeholder');
-  if (out.faceBox !== 40)
-    fails.push('the face slot is not the fixed 40px the layout assumes: ' + out.faceBox);
+  if (out.faceBox !== 56)
+    fails.push('the face slot is not the fixed 56px the layout assumes: ' + out.faceBox);
   if (!(out.picks || []).length)
     fails.push('a bench card offered no rooms to place the type into');
   if (!(out.placed || []).length)

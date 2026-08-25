@@ -108,10 +108,15 @@ function _floorHue(name) {
   return Math.abs(h) % 360;
 }
 
-// Ron: "on the floor area we can show them in bigger size." A figure is a
-// character, not a glyph — at 18px it was a smudge, and the whole reason to
-// have artwork is that you can tell who is in the room at a glance.
-const FLOOR_FACE_PX = 40;
+// Ron: "on the floor area we can show them in bigger size", then "still too
+// small". A figure is a character, not a glyph — the whole reason to have
+// artwork is being able to tell who is in the room at a glance.
+//
+// The size was never the binding constraint: the face sat INLINE in the name
+// row, so growing it grew that row's line-height and shoved the name sideways.
+// It is a left COLUMN now, which is the shape every chat list uses and the
+// reason a 49px WhatsApp avatar never feels cramped.
+const FLOOR_FACE_PX = 56;
 
 function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();
@@ -163,16 +168,19 @@ function _floorFigure(pid, f) {
   return `<div class="fl-fig fl-${esc(f.state)}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
-    <div class="fl-fig-top">${_floorDot(f.state)}${_floorAvatar(f)}<span class="${nameCls}"
-        title="${esc(nameTitle)}"
-        onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
-      >${esc(f.name || 'unnamed')}</span>${type}
-      <span class="fl-state">${esc(stateWord)}</span>
-      <span class="fl-age">${esc(f.age || '')}</span></div>
-    <div class="fl-engine">${esc(engine)}</div>
-    <div class="fl-act">${esc(_floorLine(f))}</div>
-    <div class="fl-task">${esc(f.task || '')}</div>
-    <div class="fl-cta">Open this chat &#8594;</div>
+    ${_floorAvatar(f)}
+    <div class="fl-fig-body">
+      <div class="fl-fig-top">${_floorDot(f.state)}<span class="${nameCls}"
+          title="${esc(nameTitle)}"
+          onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
+        >${esc(f.name || 'unnamed')}</span>${type}
+        <span class="fl-state">${esc(stateWord)}</span>
+        <span class="fl-age">${esc(f.age || '')}</span></div>
+      <div class="fl-engine">${esc(engine)}</div>
+      <div class="fl-act">${esc(_floorLine(f))}</div>
+      <div class="fl-task">${esc(f.task || '')}</div>
+      <div class="fl-cta">Open this chat &#8594;</div>
+    </div>
   </div>`;
 }
 
@@ -247,8 +255,8 @@ function _floorBench(bench, rooms, quiet) {
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
-        <span class="fl-bench-top"><span class="fl-face"
-          >${window.avatarHTML(b.avatar, FLOOR_FACE_PX)}</span><span class="fl-who">${esc(b.display)}</span>
+        <span class="fl-face fl-face-bench">${window.avatarHTML(b.avatar, FLOOR_FACE_PX)}</span>
+        <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
             onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
