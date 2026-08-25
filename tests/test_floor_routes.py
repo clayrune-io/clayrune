@@ -243,3 +243,96 @@ def test_a_non_claude_session_never_inherits_the_claude_default(floor):
     sessions['1'] = _session('a', '1', provider='codex')
     f = _get(c)['rooms'][0]['figures'][0]
     assert (f['provider'], f['model']) == ('codex', '')
+
+
+# ── name vs type, and naming a figure ───────────────────────────────────────
+
+def test_a_figure_always_has_a_name_even_with_no_persona(floor, monkeypatch):
+    """The board used to print "no type" where the name goes, while that same
+    session's prompt says "Your name is Vector" — two surfaces disagreeing
+    about who someone is. The role is a separate fact and still shown."""
+    fr, c, sessions, projects, _ = floor
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character=None)
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('Vector', 'default')
+    assert f['character'] is None, 'the type is still reported as absent'
+
+
+def test_a_personas_own_name_beats_the_configured_default(floor, monkeypatch):
+    fr, c, sessions, projects, _ = floor
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'fenn', 'agent_name': 'Fenn'})
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('Fenn', 'character')
+
+
+def test_naming_a_figure_outranks_both(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'fenn', 'agent_name': 'Fenn'})
+
+    r = c.post('/api/floor/figure/1/name', json={'name': 'Scout'})
+    assert r.status_code == 200 and r.get_json()['name'] == 'Scout'
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('Scout', 'user')
+    assert f['character']['display'] == 'Fenn', 'renaming changed the TYPE'
+
+
+def test_who_named_it_is_recorded(floor, tmp_path):
+    """A name the agent chose is a statement about itself; one Ron typed is an
+    instruction. Reading the first as the second is how you end up trusting a
+    label nobody set."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'Scribe', 'by': 'self'})
+    assert _get(c)['rooms'][0]['figures'][0]['name_from'] == 'self'
+
+
+def test_an_empty_name_clears_it(floor, tmp_path, monkeypatch):
+    fr, c, sessions, projects, _ = floor
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'Scout'})
+    c.post('/api/floor/figure/1/name', json={'name': '  '})
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('Vector', 'default')
+
+
+def test_a_name_survives_the_session_dict_being_rebuilt(floor, tmp_path):
+    """Sessions are revived from the agent log after a restart. A name that
+    only lived on the in-memory dict would vanish there."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'Scout'})
+    sessions['1'] = _session('a', '1')          # revived: a fresh dict
+    assert _get(c)['rooms'][0]['figures'][0]['name'] == 'Scout'
+
+
+def test_naming_a_dead_session_is_refused(floor, tmp_path):
+    """A name for a figure that no longer exists is a leak in a file nothing
+    ever prunes."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    assert c.post('/api/floor/figure/ghost/name', json={'name': 'X'}).status_code == 404
+
+
+def test_a_name_is_a_name_not_a_paragraph(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'name': 'x' * 200})
+    assert len(_get(c)['rooms'][0]['figures'][0]['name']) == fr._NAME_CHARS

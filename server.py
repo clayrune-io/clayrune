@@ -1485,6 +1485,8 @@ _bp_floor.wire(
     agent_sessions_ref=_bp_agent.agent_sessions,
     load_projects_fn=_bp_projects.load_projects,
     list_characters_fn=_characters_mod.list_characters,
+    # NOT under data/projects/ — see the DATA_DIR-pollution rule in CLAUDE.md.
+    labels_path=_DATA_ROOT / 'data' / 'agent_labels.json',
 )
 app.register_blueprint(_bp_floor.bp)
 

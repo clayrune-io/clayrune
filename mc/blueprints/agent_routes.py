@@ -1870,7 +1870,7 @@ def _render_position(project, h):
 
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
-                         character_name=''):
+                         character_name='', session_id=''):
     """Build system prompt context for the agent.
 
     character_body, when set, is the markdown body of a per-chat "character"
@@ -1914,6 +1914,21 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             f"of your role.")
     elif agent_name:
         parts.append(f"Your name is {agent_name}.")
+    # Naming your own figure. The Floor shows a figure per live session and a
+    # name is how Ron tells two of them apart at a glance; the default one is
+    # inherited, not chosen, so an agent doing something distinct should say so.
+    # Offered rather than demanded — a board where every session renamed itself
+    # would be as unreadable as one where none did.
+    if session_id and not incognito:
+        parts.append(
+            f"You appear on the Floor as a figure named {agent_name or 'unnamed'}. "
+            f"If a more useful name would tell Ron at a glance what you are "
+            f"doing here, set it once: curl -s -X POST "
+            f"http://localhost:{state.CONFIG.get('port', 5199)}/api/floor/figure/"
+            f"{session_id}/name -H 'Content-Type: application/json' "
+            + '-d \'{"name":"...","by":"self"}\'. Only worth doing when it '
+            f"distinguishes you from the other figures — not every session needs "
+            f"a new name.")
     if user_name:
         parts.append(f"The user's name is {user_name}. Address them accordingly.")
     # Sticky brevity: when sticky_agent_settings is on, the device-neutral brief
@@ -4066,7 +4081,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         if not incognito:
             system_prompt = _build_agent_context(p, incognito=False, task=task,
                                                  character_body=character_body,
-                                                 character_name=(character_meta or {}).get('agent_name') or '')
+                                                 character_name=(character_meta or {}).get('agent_name') or '',
+                                                 session_id=session_id)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -4297,6 +4313,16 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # memory discovery-claude-resume-ignores-append-system-prompt (reversed
     # 2026-07-11) — the old "resume restores the original prompt" rule is false.
     _sp_args = []
+    # The id this session WILL get. Minted before the system prompt is built
+    # because the prompt has to name it — an agent cannot name its own figure
+    # without knowing which figure it is. `_maybe_isolate_worktree` consumes the
+    # same value further down, still outside the lock. If the lock path ends up
+    # choosing reuse_session_id instead, the unused tree is reaped by gc_stale
+    # (it holds no work).
+    _fresh_sid = uuid.uuid4().hex[:12]
+    _planned_sid = (reuse_session_id
+                    if (reuse_session_id and reuse_session_id not in agent_sessions)
+                    else _fresh_sid)
     _sp_path = None
     _router_fallback_reason = ''
     # A character's pinned model is an explicit choice by whoever authored the
@@ -4314,7 +4340,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 p, task,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
-                    character_body=character_body, character_name=_char_agent_name),
+                    character_body=character_body, character_name=_char_agent_name,
+                    session_id=_planned_sid),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
@@ -4329,7 +4356,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          effort_override=_char_effort)
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body,
-                                       character_name=_char_agent_name)
+                                       character_name=_char_agent_name,
+                                       session_id=_planned_sid)
         _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
@@ -4337,7 +4365,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 p, task,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
-                    character_body=character_body, character_name=_char_agent_name),
+                    character_body=character_body, character_name=_char_agent_name,
+                    session_id=_planned_sid),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     # Per-dispatch telemetry — best-effort; never raises. requested = the
@@ -4358,13 +4387,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # ── Per-agent worktree isolation (b264200a) ─────────────────────────────
     # Decided and CREATED OUTSIDE mgr.lock: `git worktree add` takes seconds
     # and must never pin the project lock (the RC-2 constraint above). The id
-    # is pre-minted here so the worktree can be named before we take the lock;
-    # if the lock path ends up choosing reuse_session_id instead, the unused
-    # tree is reaped by gc_stale (it holds no work).
-    _fresh_sid = uuid.uuid4().hex[:12]
-    _planned_sid = (reuse_session_id
-                    if (reuse_session_id and reuse_session_id not in agent_sessions)
-                    else _fresh_sid)
+    # itself is minted further up (it also has to reach the system prompt, so
+    # the agent can name its own figure); only the tree is created here.
     _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
 
     with mgr.lock:

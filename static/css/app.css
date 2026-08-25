@@ -4597,12 +4597,21 @@
   .fl-dot.fl-asking {
     color: var(--amber); font-weight: 800; font-size: 12px;
   }
-  .fl-who { font-size: 12px; font-weight: 700; color: var(--text); }
-  /* "no type" is a finding, not a placeholder — it is the gap the board exists
-     to make visible, so it is legible without pretending to be a name. */
-  .fl-who.fl-untyped {
-    font-weight: 500; font-style: italic; color: var(--text-faint);
+  .fl-who {
+    font-size: 12px; font-weight: 700; color: var(--text);
+    cursor: text; border-bottom: 1px dashed transparent;
   }
+  .fl-who:hover { border-bottom-color: var(--text-faint); }
+  /* A chosen name reads differently from an inherited one — otherwise the
+     default stamped on every untyped session looks like a decision. */
+  .fl-who.fl-named { color: var(--accent); }
+  .fl-type {
+    font-size: 10px; color: var(--text-faint);
+    border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+  }
+  /* "no type" is a finding, not a placeholder — it is the gap the board exists
+     to make visible. It sits beside the name now rather than replacing it. */
+  .fl-type.fl-untyped { font-style: italic; border-style: dashed; }
   .fl-age {
     margin-left: auto; font-size: 10px; color: var(--text-faint);
     font-family: 'JetBrains Mono', monospace;

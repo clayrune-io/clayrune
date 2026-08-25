@@ -6,6 +6,43 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-24i] — a figure has a name, and it can be changed
+
+Ron: *"the floor should allow the agent to either name itself or let the user
+name him."* Building it surfaced a bug shipped hours earlier.
+
+The card printed **"no type"** where the name goes — while that same session's
+system prompt says *"Your name is Vector"*. Two surfaces disagreeing about who
+someone is, which is exactly the failure `_figure_state` was copied from
+`_project_live_agent` to avoid.
+
+They were two facts wearing one slot. A figure always has a **name**; it
+separately may or may not have a **type**. "no type" still shows, because it is
+still the gap Frame 1 exists to make visible — it just stops standing in for a
+name it never was.
+
+Precedence mirrors the prompt's, with an override on top: explicit label >
+the persona's own `agent_name` > the configured default. `name_from` says which
+fired, so a chosen name renders differently from an inherited one; otherwise the
+default stamped on every anonymous session reads like somebody's decision.
+
+`POST /api/floor/figure/<sid>/name` serves both paths, because they are one act
+with different authors. `by` distinguishes them: a name the agent chose is a
+statement about itself, one Ron typed is an instruction. Empty clears it.
+Naming a dead session is a 404 — a name for a figure that no longer exists is a
+leak in a file nothing prunes. Labels live in `data/agent_labels.json`, outside
+`DATA_DIR`, keyed by session id so they survive the revival that rebuilds
+sessions from the agent log.
+
+Self-naming needed one piece of plumbing: the session id was minted *after* the
+system prompt was built, so the prompt could not tell an agent which figure it
+is. `_planned_sid` already computed that id — it exists so a worktree can be
+named before the lock is taken — and just sat forty lines too late. Moved above
+the context build; the worktree call still runs where it did, outside the lock.
+
+The prompt line offers rather than demands. A board where every session renamed
+itself would be as unreadable as one where none did.
+
 ## [2026-08-24h] — the Floor: who is doing what, everywhere
 
 MC-897 phase 1. Until now the only way to learn what is running across twenty

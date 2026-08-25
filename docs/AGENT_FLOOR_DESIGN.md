@@ -320,6 +320,50 @@ per-origin cap (`arch_sse_slot_management`).
 **The bench renders but does not dispatch** — that is phase 2, and it is drawn
 read-only rather than as a button that does nothing.
 
+## 6c. A figure has a name AND a type (2026-08-24, Ron)
+
+> "the floor should allow the agent to either name itself or let the user name him"
+
+Building that surfaced a bug in §6b. The card printed **"no type"** where the
+name goes — but the same session's system prompt says *"Your name is Vector"*.
+Two surfaces disagreeing about who someone is, which is precisely the failure
+`_figure_state` is copied from `_project_live_agent` to avoid.
+
+The two facts were conflated. A figure always has a **name** — what it works
+under — and separately may or may not have a **type**, the character it was
+hired as. "no type" is still shown, because it is still what Frame 1 exists to
+make visible; it just stops standing in for a name it never was.
+
+Name precedence mirrors the prompt's, with one addition on top:
+
+    explicit label  >  the persona's own agent_name  >  the configured default
+
+`name_from` reports which fired (`user` / `self` / `character` / `default`), so
+a chosen name renders differently from an inherited one. Without that, the
+default stamped on every anonymous session reads like a decision somebody made.
+
+**Both naming paths use one route** — `POST /api/floor/figure/<sid>/name` —
+because they are the same act with different authors. `by` distinguishes them:
+a name the agent chose is a statement about itself, a name Ron typed is an
+instruction, and reading the first as the second is how you end up trusting a
+label nobody set. An empty name clears it. Naming a dead session is a 404: a
+name for a figure that no longer exists is a leak in a file nothing prunes.
+
+Labels persist in `data/agent_labels.json` — **outside `DATA_DIR`**, since a
+stray `*.json` under `data/projects/` becomes a malformed project and 500s both
+restart endpoints. Keyed by session id so a name survives the revival that
+rebuilds sessions from the agent log.
+
+**Self-naming needed one piece of plumbing.** The session id was minted *after*
+the system prompt was built, so the prompt could not say "you are this figure".
+`_planned_sid` already computed exactly the id the session would get — it exists
+so a worktree can be named before the lock is taken — and simply sat forty lines
+too late. Moved above the context build; the worktree call still runs where it
+did, outside the lock, for the reason its own comment gives.
+
+The prompt line **offers** rather than demands. A board where every session
+renamed itself would be as unreadable as one where none did.
+
 ## 7. Open questions
 
 1. **Where does it live** — a new sidebar entry ("Floor"), or a third view mode

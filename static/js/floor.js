@@ -84,18 +84,49 @@ function _floorLine(f) {
 }
 
 function _floorFigure(pid, f) {
-  const who = f.character ? esc(f.character.display) : 'no type';
+  // NAME and TYPE are two facts, not one. The card used to print "no type"
+  // where the name goes, which put the board at odds with that session's own
+  // prompt — it says "Your name is Vector" to a figure the board called
+  // untyped. The role still shows as "no type"; it just stops standing in for
+  // a name it never was.
   const engine = [f.provider, f.model].filter(Boolean).join(' · ');
-  const cls = f.character ? 'fl-who' : 'fl-who fl-untyped';
+  const chosen = f.name_from === 'user' || f.name_from === 'self';
+  const nameCls = 'fl-who' + (chosen ? ' fl-named' : '');
+  const type = f.character
+    ? `<span class="fl-type">${esc(f.character.display)}</span>`
+    : `<span class="fl-type fl-untyped">no type</span>`;
+  const nameTitle = chosen
+    ? (f.name_from === 'self' ? 'named itself — click to change' : 'you named this — click to change')
+    : 'click to name this figure';
   return `<div class="fl-fig fl-${esc(f.state)}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
-    <div class="fl-fig-top">${_floorDot(f.state)}<span class="${cls}">${who}</span>
+    <div class="fl-fig-top">${_floorDot(f.state)}<span class="${nameCls}"
+        title="${esc(nameTitle)}"
+        onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
+      >${esc(f.name || 'unnamed')}</span>${type}
       <span class="fl-age">${esc(f.age || '')}</span></div>
     <div class="fl-engine">${esc(engine)}</div>
     <div class="fl-act">${esc(_floorLine(f))}</div>
     <div class="fl-task">${esc(f.task || '')}</div>
   </div>`;
+}
+
+async function floorRename(sessionId, current) {
+  // `prompt` rather than an inline editor: renaming is rare, and a text input
+  // living inside a card that repaints every 30s loses what you typed.
+  const next = window.prompt('Name this figure (blank clears it):', current || '');
+  if (next === null) return;
+  try {
+    const res = await fetch(API_BASE + '/api/floor/figure/' + encodeURIComponent(sessionId) + '/name', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name: next })
+    });
+    if (!res.ok) throw new Error(await res.text());
+    await refreshFloor();
+  } catch (e) {
+    alert('Could not rename: ' + e.message);
+  }
 }
 
 function _floorRoom(r) {
@@ -204,3 +235,4 @@ window.closeFloor = closeFloor;
 window.refreshFloor = refreshFloor;
 window.floorToggleQuiet = floorToggleQuiet;
 window.floorOpenFigure = floorOpenFigure;
+window.floorRename = floorRename;

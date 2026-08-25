@@ -1404,17 +1404,20 @@ async function runFloorGuard(browser) {
       { id: 'smoke_beta', name: 'Beta', emoji: '', color: '', figures: [
         { session_id: 's-ask', claude_session_id: 'csid-ask', state: 'asking',
           reason: 'question', activity: '', task: 'needs an answer',
+          name: 'Quill', name_from: 'character',
           character: { name: 'quill', display: 'Quill' }, provider: 'claude',
           model: 'claude-opus-5', started_at: '2026-08-24T10:00:00Z', age: '2h',
           trigger_type: 'manual', hivemind_id: '' } ] },
       { id: 'smoke_alpha', name: 'Alpha', emoji: '', color: '', figures: [
         { session_id: 's-fenn', claude_session_id: 'csid-fenn', state: 'working',
           reason: null, activity: 'tool', task: 'reviewing MC-142',
+          name: 'Scout', name_from: 'self',
           character: { name: 'fenn', display: 'Fenn' }, provider: 'claude',
           model: 'claude-sonnet-5', started_at: '2026-08-24T11:00:00Z', age: '12m',
           trigger_type: 'manual', hivemind_id: '' },
         { session_id: 's-anon', claude_session_id: 'csid-anon', state: 'idle',
           reason: null, activity: '', task: 'no persona was picked',
+          name: 'Vector', name_from: 'default',
           character: null, provider: 'claude', model: '',
           started_at: '2026-08-23T11:00:00Z', age: '20h',
           trigger_type: 'manual', hivemind_id: '' } ] },
@@ -1427,11 +1430,17 @@ async function runFloorGuard(browser) {
     activity_states: true, poll_seconds: 30,
   };
   let floorCalls = 0;
+  const renames = [];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify(body) });
+    const rn = path.match(/^\/api\/floor\/figure\/([^/]+)\/name$/);
+    if (rn) {
+      renames.push([rn[1], JSON.parse(req.postData() || '{}').name]);
+      return json({ ok: true });
+    }
     if (path === '/api/floor') { floorCalls++; return json(FLOOR); }
     if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
     return fulfillStaticOrAbort(route);
@@ -1462,7 +1471,9 @@ async function runFloorGuard(browser) {
         .map((e) => e.textContent.trim().split('\n')[0].trim());
       r.figsPerRoom = Array.from(win.querySelectorAll('.fl-figs'))
         .map((e) => e.querySelectorAll('.fl-fig').length);
-      r.untyped = win.querySelectorAll('.fl-who.fl-untyped').length;
+      r.untyped = win.querySelectorAll('.fl-type.fl-untyped').length;
+      r.names = Array.from(win.querySelectorAll('.fl-who')).map((e) => e.textContent.trim());
+      r.chosen = win.querySelectorAll('.fl-who.fl-named').length;
       r.asking = win.querySelectorAll('.fl-fig.fl-asking').length;
       r.text = (win.innerText || '').replace(/\s+/g, ' ');
 
@@ -1472,6 +1483,19 @@ async function runFloorGuard(browser) {
       await settle();
       const win2 = document.querySelector('[data-modal-id="__floor"]');
       r.quietVisibleAfter = !!win2.querySelector('.fl-quiet-list:not([hidden])');
+
+      // Renaming must be reachable from the card AND must not open the chat
+      // underneath it — the name sits inside the figure's own click target.
+      const realPrompt = window.prompt;
+      window.prompt = () => 'Scribe';
+      const openedByRename = [];
+      const realOpenProj0 = window.openProjectModal;
+      window.openProjectModal = (id) => openedByRename.push(id);
+      document.querySelector('[data-modal-id="__floor"] .fl-who').click();
+      await settle(600);
+      window.prompt = realPrompt;
+      window.openProjectModal = realOpenProj0;
+      r.renameOpenedChat = openedByRename.length;
 
       // Clicking a figure must route to the SESSION.
       const calls = [];
@@ -1504,7 +1528,15 @@ async function runFloorGuard(browser) {
   if (JSON.stringify(out.figsPerRoom) !== JSON.stringify([1, 2]))
     fails.push('two agents in one project did not render as two figures: '
       + JSON.stringify(out.figsPerRoom));
-  if (out.untyped !== 1) fails.push('an unnamed session was not marked untyped');
+  if (out.untyped !== 1) fails.push('the typeless figure lost its "no type" tag');
+  if (!(out.names || []).includes('Vector'))
+    fails.push('a figure with no persona showed no name at all: ' + JSON.stringify(out.names));
+  if (out.chosen !== 1)
+    fails.push('a self-chosen name was not distinguished from an inherited one');
+  if (!renames.length) fails.push('renaming a figure never reached the server');
+  else if (renames[0][1] !== 'Scribe')
+    fails.push('the rename sent the wrong name: ' + JSON.stringify(renames[0]));
+  if (out.renameOpenedChat) fails.push('renaming also opened the chat underneath');
   if (out.asking !== 1) fails.push('the asking figure got no attention styling');
   if (!/Marlow/.test(out.text || '')) fails.push('the bench did not render');
   if (out.quietVisibleBefore) fails.push('quiet projects were expanded by default');
@@ -1520,8 +1552,9 @@ async function runFloorGuard(browser) {
     fails.forEach((f) => console.error(`       * ${f}`));
     return false;
   }
-  console.log('OKAY the floor: rooms sort by who needs you, two agents in one project '
-    + 'render as two figures, quiet stays collapsed, a figure click carries its session.');
+  console.log('OKAY the floor: rooms sort by who needs you, two agents in one project render '
+    + 'as two figures, every figure has a name you can click to change, quiet stays '
+    + 'collapsed, and a figure click carries its session.');
   return true;
 }
 
