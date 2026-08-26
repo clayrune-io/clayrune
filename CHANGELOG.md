@@ -6,6 +6,34 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25h] — Claydo survives a refresh
+
+Ron: *"Claydo interaction box does not survive screen refresh."*
+
+`mc_open_modals` deliberately skips every `__`-prefixed modal as transient.
+That is right for a terminal or a hivemind view and wrong for a conversation,
+which is exactly the thing you were part-way through: an accidental F5 cost the
+whole exchange, and in a builder mode that is an interview you then have to redo.
+
+Claydo keeps its own snapshot now: the mode (a builder mode has its own greeting
+and header), the transcript, whether it was minimized, and whatever was
+half-typed in the box. Saved after each turn and on `beforeunload` +
+`pagehide` — minimize, an unsent draft and a close all happen without a turn,
+and only the unload hooks catch those. Closed is recorded as a decision, so a
+dismissed conversation is not resurrected.
+
+The ready-card kind rides along on the assistant message. The stored text has
+its markers stripped on purpose (so Claydo does not re-emit its own highlights
+next turn), which also means a restore cannot re-derive "this reply had a draft
+to save" from the text — and a draft you can read but no longer save would be
+worse than no restore at all.
+
+**The smoke guard earned its keep immediately.** `openClaydo` and
+`_claydoResetConversation` both clear `_claydoHistory`, and the former saves on
+the way out, so a restore left an *empty* session in storage. One reload looked
+perfect; the second lost everything. Verified against the real app end to end,
+then caught by the guard's "did the restored session stay saved?" check.
+
 ## [2026-08-25g] — hover a face, see the whole figure
 
 The cast went from 9 figures to 25, and at the picker's 38px a beekeeper's

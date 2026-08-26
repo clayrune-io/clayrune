@@ -490,6 +490,73 @@ async function runModelPickerGuard(browser) {
 //     Backlog tab reopened straight back onto Backlog.
 //
 // Both are pure client state, so only a real browser catches them.
+// Claydo must survive a refresh. `mc_open_modals` skips every `__`-prefixed
+// modal as transient, which is right for a terminal and wrong for a
+// conversation — an accidental F5 used to cost the whole exchange, and in a
+// builder mode that is an interview you would have to redo. Claydo keeps its
+// own snapshot; this boots straight into one.
+async function runClaydoRestoreGuard(browser) {
+  const SESSION = {
+    mode: 'character', minimized: false, draft: 'half-typed follow-up',
+    history: [
+      { role: 'user', text: 'a strict reviewer' },
+      { role: 'assistant', text: 'Here is the draft.', ready: 'character-ready' },
+    ],
+  };
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.addInitScript((st) => {
+    localStorage.setItem('mc_claydo_session', JSON.stringify(st));
+  }, SESSION);
+  await page.route('**/*', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/projects') return route.fulfill({ status: 200,
+      contentType: 'application/json', body: PROJECTS_JSON });
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  const out = await page.evaluate(() => {
+    const win = document.querySelector('[data-modal-id="__claydo"]');
+    return {
+      open: !!win,
+      msgs: win ? Array.from(win.querySelectorAll('.claydo-msg'))
+        .map((e) => e.textContent.trim().slice(0, 40)) : [],
+      draft: (document.getElementById('claydo-input') || {}).value || '',
+      subtitle: (document.getElementById('claydo-subtitle') || {}).textContent || '',
+      // A restored session must not immediately overwrite itself with an
+      // empty one — that would make the SECOND refresh lose everything.
+      saved: JSON.parse(localStorage.getItem('mc_claydo_session') || 'null'),
+    };
+  });
+  await ctx.close();
+
+  const fails = [];
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  if (!out.open) fails.push('Claydo did not come back after a reload');
+  if (!out.msgs.includes('a strict reviewer'))
+    fails.push('the transcript was not replayed: ' + JSON.stringify(out.msgs));
+  if (out.draft !== 'half-typed follow-up')
+    fails.push('the half-typed draft was lost: ' + JSON.stringify(out.draft));
+  if (!/Character workshop/.test(out.subtitle))
+    fails.push('the restore came back in the wrong mode: ' + out.subtitle);
+  if (!out.saved || (out.saved.history || []).length !== 2)
+    fails.push('the restored session did not stay saved, so a second refresh '
+      + 'would lose it: ' + JSON.stringify(out.saved && out.saved.history));
+
+  if (fails.length) {
+    console.error('FAIL claydo restore guard:');
+    fails.forEach((f) => console.error(`       * ${f}`));
+    return false;
+  }
+  console.log('OKAY claydo: the box, the transcript, the mode and the unsent draft '
+    + 'all survive a page reload.');
+  return true;
+}
+
 async function runBacklogRefreshGuard(browser) {
   const PID = 'smoke_alpha';
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -1764,6 +1831,7 @@ try {
   // regression is reported on its own first.
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
+  results.push(await runClaydoRestoreGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
   results.push(await runBacklogLinksGuard(browser));
   results.push(await runMemoryPanelGuard(browser));

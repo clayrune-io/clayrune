@@ -142,6 +142,75 @@ function _claydoLoadFabPosition() {
   }, 200);
 })();
 
+// ── Surviving a reload ──────────────────────────────────────────────────────
+// Claydo used to vanish on refresh, conversation and all. `mc_open_modals`
+// deliberately skips every `__`-prefixed modal as "transient" — right for a
+// terminal or a hivemind view, wrong for a conversation, which is precisely
+// the thing you were part-way through. An accidental F5 cost the whole
+// exchange, and in a builder mode that is an interview you have to redo.
+//
+// So Claydo keeps its own snapshot. Stored, not derived: the mode (a builder
+// mode has a different greeting and header), the transcript, whether it was
+// minimized, and whatever was half-typed in the box.
+const _CLAYDO_LS = 'mc_claydo_session';
+
+function _claydoSaveSession() {
+  try {
+    const entry = (typeof openModals !== 'undefined') && openModals.get('__claydo');
+    // Closed IS a decision, and it has to be recorded as one — otherwise the
+    // last snapshot would resurrect a conversation the user dismissed.
+    if (!entry) { localStorage.removeItem(_CLAYDO_LS); return; }
+    localStorage.setItem(_CLAYDO_LS, JSON.stringify({
+      mode: _claydoMode,
+      minimized: !!entry.minimized,
+      history: _claydoHistory.slice(-24),
+      draft: (document.getElementById('claydo-input') || {}).value || '',
+    }));
+  } catch (e) { /* a full quota must not break the chat */ }
+}
+
+// Save on the way out as well as after each turn: minimize, an unsent draft
+// and a close all happen without a turn, and only this catches them.
+// `pagehide` as well as `beforeunload` — iOS Safari fires only the former.
+window.addEventListener('beforeunload', _claydoSaveSession);
+window.addEventListener('pagehide', _claydoSaveSession);
+
+async function restoreClaydoSession() {
+  let st = null;
+  try { st = JSON.parse(localStorage.getItem(_CLAYDO_LS) || 'null'); } catch (e) { return; }
+  if (!st || !Array.isArray(st.history)) return;
+  await openClaydo();
+  const mode = _CLAYDO_MODE_UI[st.mode] ? st.mode : 'ask';
+  // Rebuild the greeting + chips for that mode first; the transcript replays
+  // on top of it, exactly as it was built the first time.
+  _claydoResetConversation(mode);
+  const histDiv = document.getElementById('claydo-history');
+  if (histDiv) {
+    for (const m of st.history) {
+      const el = document.createElement('div');
+      el.className = 'claydo-msg ' + (m.role === 'user' ? 'user' : 'bot');
+      if (m.role === 'user') el.textContent = m.text || '';
+      else el.innerHTML = _claydoFormatText(m.text || '');
+      histDiv.appendChild(el);
+      // A draft you can read but no longer save would be worse than no
+      // restore at all, so the hand-off card comes back with its message.
+      if (m.role !== 'user' && m.ready) {
+        _claydoRenderReadyCard(el, [{kind: m.ready}], m.text || '');
+      }
+    }
+    histDiv.scrollTop = histDiv.scrollHeight;
+  }
+  _claydoHistory = st.history.slice();
+  const input = document.getElementById('claydo-input');
+  if (input && st.draft) input.value = st.draft;
+  if (st.minimized && typeof minimizeModal === 'function') minimizeModal('__claydo');
+  // Re-save LAST, and this line is load-bearing. `openClaydo` and
+  // `_claydoResetConversation` both clear `_claydoHistory` and the former
+  // saves on the way out, so a restore left an EMPTY session in storage — the
+  // first refresh looked perfect and the second one lost the conversation.
+  _claydoSaveSession();
+}
+
 async function openClaydo() {
   // Stop the pulse the first time the user opens it (persisted).
   localStorage.setItem('claydo_opened', '1');
@@ -209,6 +278,7 @@ async function openClaydo() {
   focusModal(modalId);
   _claydoResetConversation('ask');
   setTimeout(() => document.getElementById('claydo-input')?.focus(), 50);
+  _claydoSaveSession();
 }
 
 // ── Modes: ask (help desk) / prompt / character workshops ─────────────────
@@ -263,6 +333,7 @@ function _claydoResetConversation(mode) {
 function setClaydoMode(mode) {
   if (!_CLAYDO_MODE_UI[mode] || mode === _claydoMode) return;
   _claydoResetConversation(mode);
+  _claydoSaveSession();
 }
 
 // The project the user is "in" right now = topmost open, non-minimized
@@ -430,13 +501,20 @@ async function submitClaydo() {
           botMsg.innerHTML = _claydoFormatText(cleanText);
           // Store the cleaned text (NO markers) so Claydo's next turn doesn't
           // re-emit the same highlights from seeing them in its own prior reply.
-          _claydoHistory.push({role: 'assistant', text: cleanText});
+          // The ready-card kind rides along. The stored text has its markers
+          // stripped on purpose (so Claydo does not re-emit its own
+          // highlights next turn), which also means a restore cannot re-derive
+          // "this reply had a draft to save" from the text alone.
+          const _ready = (actions.find(
+            (x) => x.kind === 'prompt-ready' || x.kind === 'character-ready') || {}).kind || '';
+          _claydoHistory.push({role: 'assistant', text: cleanText, ready: _ready});
           const histCap = _claydoMode === 'ask' ? 12 : 24;
           if (_claydoHistory.length > histCap) {
             _claydoHistory = _claydoHistory.slice(-histCap);
           }
           _claydoDispatchActions(actions);
           _claydoRenderReadyCard(botMsg, actions, cleanText);
+          _claydoSaveSession();
         }
       }
     }
@@ -1198,3 +1276,5 @@ window.submitClaydo = submitClaydo;
 window.setClaydoMode = setClaydoMode;
 window.openClaydo = openClaydo;
 window.openPersonaEditor = openPersonaEditor;
+window.restoreClaydoSession = restoreClaydoSession;
+window._claydoSaveSession = _claydoSaveSession;

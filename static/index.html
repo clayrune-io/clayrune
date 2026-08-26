@@ -3135,6 +3135,13 @@ fetchProjects().then(async () => {
     }
     _mcBootMark(`restored ${_restored} modal(s) of ${snapshot.length} in snapshot`);
   }
+  // Claydo keeps its OWN snapshot — `mc_open_modals` skips every `__`-prefixed
+  // modal as transient, which is right for a terminal and wrong for a
+  // conversation. Restored on every width, unlike project modals: this is one
+  // window the user explicitly left open, not a desktop workspace layout.
+  try {
+    if (typeof restoreClaydoSession === 'function') await restoreClaydoSession();
+  } catch (e) { console.warn('claydo restore failed', e); }
   // Restore agent sessions into the console — LAZILY. The old code awaited
   // fetchAgentStatus() for EVERY project, serially: a 30+-link sequential chain
   // of HTTP round-trips (each with an 8s fail-fast ceiling) that rebuilt the
