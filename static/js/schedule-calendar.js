@@ -315,6 +315,14 @@ function _scalLayoutDay(items) {
   return placed.map((p) => ({ ...p, total }));
 }
 
+// The face of whoever runs it. The board reads as WHO is running, the same way
+// the Floor does — a grid of identical chips cannot tell you that at a glance.
+function _scalWhoHTML(s) {
+  const cd = s && s.character_display;
+  if (!cd || cd.missing) return '';
+  return `<span class="scal-block-who">${window.avatarHTML(cd.avatar, 13)}</span>`;
+}
+
 function _scalBlockHTML(p, range) {
   const { it, mins, col, total } = p;
   const s = it.s;
@@ -326,8 +334,10 @@ function _scalBlockHTML(p, range) {
              left:${(col * width).toFixed(2)}%;width:calc(${width.toFixed(2)}% - 3px);
              height:${SCAL_EVENT_MIN_H}px"
       onclick="scalOpenDetail('${esc(s.id)}')"
-      title="${esc(_scalTitle(s))} — ${esc(_scalHhmm(it.when))}">
+      title="${esc(_scalTitle(s))} — ${esc(_scalHhmm(it.when))}${
+        s.character_display ? ' — runs as ' + esc(s.character_display.name) : ''}">
     <span class="scal-block-time">${esc(_scalHhmm(it.when))}</span>
+    ${_scalWhoHTML(s)}
     <span class="scal-block-title">${esc(_scalTitle(s))}</span>
   </div>`;
 }

@@ -595,7 +595,8 @@ def _scheduler_loop():
                                                               resume_id=resume_id,
                                                               trigger_type='schedule',
                                                               trigger_id=sched_id,
-                                                              reuse_session_id=reuse_sid)
+                                                              reuse_session_id=reuse_sid,
+                                                              character=sched.get('character') or '')
                                 tag = ' (resumed)' if resume_id else ''
                                 _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
                         except Exception as e:
@@ -880,10 +881,103 @@ def _scheduled_continue(p, project_id, session_id, task):
 def get_schedules():
     schedules = _load_schedules()
     # Enrich with project names
-    projects_map = {p['id']: p.get('name', p['id']) for p in load_projects()}
+    projects = load_projects()
+    projects_map = {p['id']: p.get('name', p['id']) for p in projects}
+    by_id = {p['id']: p for p in projects}
     for s in schedules:
-        s['project_name'] = projects_map.get(s.get('project_id', ''), s.get('project_id', ''))
+        s['project_id'] = s.get('project_id', '')
+        s['project_name'] = projects_map.get(s['project_id'], s['project_id'])
+        # Who runs it, resolved for display. Read-only enrichment, never
+        # persisted — a persona's face and chosen name are edited on the
+        # persona, and a copy baked into 24 schedule rows would go stale the
+        # first time one is renamed.
+        s['character_display'] = _schedule_character_display(
+            s.get('character') or '', by_id.get(s['project_id']))
     return jsonify(schedules)
+
+
+def _schedule_character_display(character, project):
+    """{name, avatar, inherited} for whoever this schedule dispatches as.
+
+    `inherited` distinguishes a persona the user pinned on the schedule from
+    one it merely picks up off the project — the same distinction
+    `_resolve_character` records as source 'picked' vs 'project'. Without it a
+    row silently changes who it runs as when someone edits the project, and
+    the list gives no sign.
+    """
+    inherited = False
+    value = (character or '').strip()
+    if not value:
+        value = ((project or {}).get('default_character') or '').strip()
+        inherited = True
+    if not value:
+        return None
+    scope, _, name = value.partition(':')
+    scope, name = (scope or '').strip().lower(), (name or '').strip()
+    if scope not in ('project', 'global') or not name:
+        return None
+    try:
+        from mc import characters as _chars
+        rec = _chars.read_character(
+            scope, name,
+            project_path=((project or {}).get('project_path') if scope == 'project' else None))
+    except Exception as e:
+        _log(f"[scheduler] character display lookup failed for {value!r}: {e}")
+        return None
+    if not rec:
+        # Deleted out from under the schedule. Say so rather than showing
+        # nothing — nothing reads as "project default", which is a different
+        # and quieter thing than "the persona this points at is gone".
+        return {'name': name, 'avatar': '', 'inherited': inherited, 'missing': True}
+    return {'name': rec.get('agent_name') or rec.get('display_name') or name,
+            'avatar': rec.get('avatar') or '',
+            'inherited': inherited}
+
+
+def _validated_schedule_character(character, project_id):
+    """Check a schedule's persona now, not at fire time. Returns (value, error).
+
+    Same rule this file already applies to `schedule_type`: a row that stores
+    fine, returns 201 and reads `enabled` — and then runs with no persona at
+    all — is the failure mode that costs months. `_resolve_character` is
+    deliberately best-effort at dispatch (a deleted persona must never block a
+    run), so the only place a typo can still be caught loudly is here.
+
+    The trap this actually guards is not a typo: pick a project persona, then
+    change the schedule's project. The persona does not exist over there, and
+    nothing downstream would ever say so.
+    """
+    value = (character or '').strip()
+    if not value:
+        return '', None          # empty = inherit the project's default
+    scope, _, name = value.partition(':')
+    scope = (scope or '').strip().lower()
+    name = (name or '').strip()
+    if scope not in ('project', 'global') or not name:
+        return None, (jsonify({
+            'error': f'character must look like "global:<name>" or '
+                     f'"project:<name>", got {character!r}'}), 400)
+    project_path = None
+    if scope == 'project':
+        proj = load_project(project_id) or {}
+        project_path = proj.get('project_path')
+        if not project_path:
+            return None, (jsonify({
+                'error': f'{project_id!r} has no folder, so it cannot hold a '
+                         f'project persona'}), 400)
+    try:
+        from mc import characters as _chars
+        rec = _chars.read_character(scope, name,
+                                    project_path=(project_path if scope == 'project' else None))
+    except Exception as e:
+        _log(f"[scheduler] character lookup failed for {value!r}: {e}")
+        return None, (jsonify({'error': f'could not read persona {value!r}: {e}'}), 400)
+    if not rec:
+        where = f'project {project_id!r}' if scope == 'project' else 'the global pool'
+        return None, (jsonify({
+            'error': f'no persona called {name!r} in {where} — pick one that '
+                     f'lives there, or leave it on the project default'}), 400)
+    return f'{scope}:{name}', None
 
 
 @bp.route('/api/schedules', methods=['POST'])
@@ -902,12 +996,19 @@ def create_schedule():
     if stype not in SCHEDULE_TYPES:
         return jsonify({'error': f'unknown schedule_type {stype!r}; '
                                  f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
+    character, cerr = _validated_schedule_character(data.get('character'), pid)
+    if cerr:
+        return cerr
 
     sched = {
         'id': uuid.uuid4().hex[:8],
         'enabled': True,
         'project_id': pid,
         'task': task,
+        # Who runs it. "" inherits the project's default_character, exactly as
+        # a manual dispatch does — a schedule should not be the one surface
+        # where a project's persona silently stops applying.
+        'character': character,
         'description': (data.get('description') or '').strip(),
         'continue_session': bool(data.get('continue_session', True)),
         'schedule_type': stype,
@@ -942,6 +1043,17 @@ def update_schedule(schedule_id):
     if 'schedule_type' in data and data['schedule_type'] not in SCHEDULE_TYPES:
         return jsonify({'error': f'unknown schedule_type {data["schedule_type"]!r}; '
                                  f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
+
+    # Re-validate against the project this row will END UP on: moving a
+    # schedule to another project can orphan a project-scoped persona, and the
+    # PUT is the last moment anything can say so.
+    if 'character' in data or 'project_id' in data:
+        target_pid = data.get('project_id', sched.get('project_id', ''))
+        raw = data.get('character', sched.get('character', ''))
+        character, cerr = _validated_schedule_character(raw, target_pid)
+        if cerr:
+            return cerr
+        sched['character'] = character
 
     for key in ('project_id', 'task', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
@@ -1013,7 +1125,8 @@ def schedule_run_now(schedule_id):
         sid = _dispatch_agent_internal(pid, dispatch_task, resume_id=resume_id,
                                        trigger_type='schedule',
                                        trigger_id=schedule_id,
-                                       reuse_session_id=reuse_sid)
+                                       reuse_session_id=reuse_sid,
+                                       character=sched.get('character') or '')
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code

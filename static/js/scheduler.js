@@ -161,10 +161,23 @@ async function refreshScheduleList() {
       const continueBadge = (s.continue_session === false)
         ? `<span title="Each run starts a fresh session" style="color:var(--text-muted)">Fresh each run</span>`
         : `<span title="Resumes from previous run so the agent remembers prior work" style="color:var(--accent)">Continues prior session</span>`;
+      // Who runs it. An inherited persona is marked as such: it changes when
+      // someone edits the project, and a row that looks pinned but isn't is
+      // the kind of surprise that only shows up in a transcript.
+      const cd = s.character_display;
+      const agentPill = cd
+        ? `<span class="sched-who${cd.inherited ? ' inherited' : ''}${cd.missing ? ' missing' : ''}"
+             title="${esc(cd.missing ? `Persona "${cd.name}" no longer exists — this runs with no persona`
+                        : cd.inherited ? `Inherited from the project's default persona`
+                        : `Runs as ${cd.name}`)}"
+             >${window.avatarHTML(cd.avatar, 16)}<span>${esc(cd.name)}</span>${
+               cd.missing ? '<span class="sched-who-tag">missing</span>'
+               : cd.inherited ? '<span class="sched-who-tag">default</span>' : ''}</span>`
+        : '';
       return `<div class="schedule-card-wrap">
         <div class="schedule-card${cardClass}">
           <div class="schedule-card-body">
-            <div class="schedule-card-project">${esc(s.project_name || s.project_id)}</div>
+            <div class="schedule-card-project">${esc(s.project_name || s.project_id)}${agentPill}</div>
             ${descLine}
             <div class="schedule-card-task" title="${esc(s.task)}">${esc(s.task)}</div>
             <div class="schedule-card-meta">
@@ -315,11 +328,18 @@ function showScheduleForm(existing) {
   // (field absent) keep the old "stay disabled" behavior.
   const selDeleteAfter = existing ? !!existing.delete_after_run : true;
 
+  const selCharacter = (existing && existing.character) || '';
+
   area.innerHTML = `<div class="schedule-form">
     <label>Project</label>
-    <select id="sched-project">${projects.map(p =>
+    <select id="sched-project" onchange="reloadSchedCharacters()">${projects.map(p =>
       `<option value="${esc(p.id)}"${p.id === selPid ? ' selected' : ''}>${esc(p.name)}</option>`
     ).join('')}</select>
+    <label>Agent <span class="memory-hint" style="margin:0;font-weight:normal">(who runs it &mdash; a persona from this project, or a global one)</span></label>
+    <div class="sched-agent-row">
+      <span id="sched-agent-face" class="sched-agent-face"></span>
+      <select id="sched-agent"><option value="">Loading…</option></select>
+    </div>
     <label>Description <span class="memory-hint" style="margin:0;font-weight:normal">(for you &mdash; not sent to the agent)</span></label>
     <textarea id="sched-description" rows="2" placeholder="Why this schedule exists, what &ldquo;done&rdquo; looks like, etc.">${esc(selDescription)}</textarea>
     <label>Task <span class="memory-hint" style="margin:0;font-weight:normal">(the prompt sent on every run)</span></label>
@@ -344,6 +364,7 @@ function showScheduleForm(existing) {
     </div>
   </div>`;
   renderSchedTypeFields(selType, { time: selTime, days: selDays, interval_minutes: selInterval, run_at: selRunAt, cron_expr: selCron, delete_after_run: selDeleteAfter });
+  reloadSchedCharacters(selCharacter);
   // The form sits below the Stewards section and the whole schedule list, so on
   // anything smaller than a desktop it opens off-screen and reads as "nothing
   // happened" — true for Edit from the calendar too, not just the new
@@ -356,6 +377,88 @@ function hideScheduleForm() {
   const area = document.getElementById('schedule-form-area');
   if (area) area.innerHTML = '';
   schedulerEditId = null;
+  _schedCharCache.clear();
+}
+
+// ── Who runs it ─────────────────────────────────────────────────────────────
+// A schedule used to be a project-level task, so it ran as whatever the project
+// happened to default to. With the Floor, an agent is a thing you can point at
+// — so a scheduled run names one, the same way a chat does.
+//
+// Cached per project because switching the Project select refetches, and a
+// user comparing two projects flips back and forth.
+const _schedCharCache = new Map();
+
+async function _schedCharactersFor(pid) {
+  if (_schedCharCache.has(pid)) return _schedCharCache.get(pid);
+  const res = await fetch(API_BASE + '/api/characters?project_id=' + encodeURIComponent(pid));
+  if (!res.ok) throw new Error('characters ' + res.status);
+  const list = await res.json();
+  _schedCharCache.set(pid, list);
+  return list;
+}
+
+// `want` is the value to preselect. Passing nothing keeps whatever is already
+// chosen — so a project change that still offers the same persona does not
+// silently reset it.
+async function reloadSchedCharacters(want) {
+  const sel = document.getElementById('sched-agent');
+  const pid = document.getElementById('sched-project')?.value || '';
+  if (!sel || !pid) return;
+  const target = (want === undefined) ? sel.value : (want || '');
+  sel.innerHTML = '<option value="">Loading…</option>';
+  let list;
+  try {
+    list = await _schedCharactersFor(pid);
+  } catch (e) {
+    // A picker that cannot list is still usable as "project default" — but say
+    // so, rather than showing an empty dropdown that looks like "no personas".
+    sel.innerHTML = '<option value="">Project default (persona list unavailable)</option>';
+    _paintSchedAgentFace(null);
+    return;
+  }
+  const proj = list.filter(c => c.scope === 'project');
+  const glob = list.filter(c => c.scope !== 'project' && !c.shadowed_by_project);
+  const label = (c) => (c.agent_name ? `${c.agent_name} — ${c.display_name || c.name}`
+                                     : (c.display_name || c.name));
+  const opt = (c) => {
+    const v = c.scope + ':' + c.name;
+    return `<option value="${esc(v)}"${v === target ? ' selected' : ''}>${esc(label(c))}</option>`;
+  };
+  // Naming the inherited persona matters: an unnamed "default" is the one that
+  // changes under you when someone edits the project.
+  const dflt = _schedProjectDefault(pid, list);
+  const group = (name, rows) => rows.length
+    ? `<optgroup label="${esc(name)}">${rows.map(opt).join('')}</optgroup>` : '';
+  sel.innerHTML =
+    `<option value=""${target ? '' : ' selected'}>${esc(dflt ? `Project default — ${label(dflt)}` : 'Project default (no persona)')}</option>`
+    + group('This project', proj)
+    + group('Global', glob);
+  // A project-scoped pick that does not exist over here cannot be preserved.
+  if (target && sel.value !== target) sel.value = '';
+  sel.onchange = () => _paintSchedAgentFace(_schedCharCache.get(pid));
+  _paintSchedAgentFace(list);
+}
+
+function _schedProjectDefault(pid, list) {
+  const p = (allProjects || []).find(x => x.id === pid);
+  const d = p && p.default_character;
+  if (!d) return null;
+  const [scope, name] = String(d).split(':');
+  return list.find(c => c.scope === scope && c.name === name) || null;
+}
+
+function _paintSchedAgentFace(list) {
+  const box = document.getElementById('sched-agent-face');
+  const sel = document.getElementById('sched-agent');
+  if (!box || !sel) return;
+  const pid = document.getElementById('sched-project')?.value || '';
+  let rec = null;
+  if (list) {
+    const v = sel.value;
+    rec = v ? list.find(c => (c.scope + ':' + c.name) === v) : _schedProjectDefault(pid, list);
+  }
+  box.innerHTML = window.avatarHTML(rec && rec.avatar, 26);
 }
 
 function setSchedType(type) {
@@ -429,6 +532,9 @@ async function saveSchedule() {
     description,
     continue_session: continueSession,
     schedule_type: activeType,
+    // Always sent, empty included: '' is a real value here (inherit the
+    // project default), so an absent key could never clear a pinned persona.
+    character: document.getElementById('sched-agent')?.value || '',
   };
 
   if (activeType === 'daily') {
@@ -501,6 +607,7 @@ window.formatScheduleTime = formatScheduleTime;  // schedule-banner Next-run lin
 window.loadScheduleRunsPage = loadScheduleRunsPage; // pagination onclick built by inline renderRunsPagination
 // region-generated on*= handler targets:
 window.showScheduleForm = showScheduleForm;
+window.reloadSchedCharacters = reloadSchedCharacters;   // Project select onchange
 window.hideScheduleForm = hideScheduleForm;
 window.setSchedType = setSchedType;
 window.saveSchedule = saveSchedule;

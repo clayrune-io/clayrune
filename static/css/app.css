@@ -5553,6 +5553,31 @@
      to reach them. Sections size to content now; `.scheduler-body` scrolls. */
   .scheduler-body { flex: 1; min-height: 0; overflow-y: auto; }
   .scheduler-section { padding: 24px 28px 28px; }
+
+  /* Who runs a scheduled task. The face sits OUTSIDE the select because a
+     native <option> cannot hold an image — so the picker shows the name and
+     the box beside it shows the face, repainted on change. */
+  .sched-agent-row { display: flex; align-items: center; gap: 8px; }
+  .sched-agent-row select { flex: 1; min-width: 0; }
+  .sched-agent-face {
+    flex: 0 0 26px; width: 26px; height: 26px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .sched-who {
+    display: inline-flex; align-items: center; gap: 4px; margin-left: 8px;
+    font-size: 10px; font-weight: 600; text-transform: none; letter-spacing: 0;
+    color: var(--text-muted); vertical-align: middle;
+  }
+  .sched-who .av { flex-shrink: 0; }
+  /* An inherited persona reads quieter than a pinned one: it is the project's
+     choice showing through, not this schedule's. */
+  .sched-who.inherited { opacity: 0.75; }
+  .sched-who.missing { color: var(--red-text); }
+  .sched-who-tag {
+    font-size: 9px; font-weight: 500; padding: 0 4px; border-radius: 4px;
+    border: 1px solid var(--border); color: var(--text-faint);
+  }
+  .sched-who.missing .sched-who-tag { border-color: var(--red); color: var(--red-text); }
   .schedule-card {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: flex-start; gap: 12px;
@@ -5794,6 +5819,11 @@
   @container (max-width: 200px) { .scal-block-time { display: none; } }
   .scal-block-time { font-size: 10px; font-weight: 700; color: var(--text-dim);
                      flex-shrink: 0; font-variant-numeric: tabular-nums; }
+  /* The face survives the container queries that hide the time and, on a
+     narrow column, the title — at the smallest size WHO is running is more
+     legible than a clipped four-word prompt. */
+  .scal-block-who { flex-shrink: 0; display: flex; align-items: center; }
+  .scal-block.dead .scal-block-who { opacity: 0.45; }
   .scal-block-title {
     font-size: 11px; font-weight: 600; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;

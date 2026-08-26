@@ -999,9 +999,18 @@ async function runSchedulerLayoutGuard(browser) {
   // Enough rows that the list cannot fit — the bug is only visible when the
   // content overflows.
   const SCHEDULES = Array.from({ length: 12 }, (_, i) => ({
-    id: 'sch_' + i, project_id: 'alpha', project_name: 'Alpha', enabled: i % 2 === 0,
+    id: 'sch_' + i, project_id: 'smoke_alpha', project_name: 'Smoke Test Alpha',
+    enabled: i % 2 === 0,
     schedule_type: 'daily', time: '09:30', days: [], task: 'Scheduled task number ' + i,
+    character: i === 0 ? 'project:scout' : '',
+    character_display: i === 0 ? { name: 'Posy', avatar: 'fig:courier', inherited: false } : null,
   }));
+  const CHARACTERS = [
+    { name: 'archivist', display_name: 'archivist', scope: 'global',
+      agent_name: 'Quill', avatar: 'fig:archivist', description: 'Files things' },
+    { name: 'scout', display_name: 'scout', scope: 'project', project_id: 'smoke_alpha',
+      agent_name: 'Posy', avatar: 'fig:courier', description: 'Looks around' },
+  ];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -1009,6 +1018,15 @@ async function runSchedulerLayoutGuard(browser) {
     if (path === '/api/schedules' && req.method() === 'GET') return json(SCHEDULES);
     if (path === '/api/config') return json({ scheduler_paused: false });
     if (path === '/api/steward/loop-health') return json({ ok: true });
+    if (path === '/api/characters') return json(CHARACTERS);
+    // The form's Project select is built from projects that HAVE a folder, and
+    // the shared fixture ships project_path="" — without this the select is
+    // empty, the picker never loads, and the guard fails for the wrong reason.
+    if (path === '/api/projects') {
+      const patched = JSON.parse(PROJECTS_JSON);
+      if (patched[0]) patched[0].project_path = '/smoke/alpha';
+      return json(patched);
+    }
     if (/\/steward$/.test(path)) return json({ enabled: false });
     return fulfillStaticOrAbort(route);
   });
@@ -1074,6 +1092,28 @@ async function runSchedulerLayoutGuard(browser) {
         const bb = body.getBoundingClientRect();
         r.lastCardVisible = lb.top < bb.bottom + 2 && lb.bottom > bb.top - 2;
       }
+
+      // 4. A scheduled task names WHO runs it. The card says so without an
+      //    Edit round-trip, and the form offers the roster rather than making
+      //    the persona a project-level accident.
+      const who = document.querySelector('#schedule-list .sched-who');
+      r.whoPill = who ? who.textContent.trim() : null;
+      r.whoFace = !!(who && who.querySelector('img.av-fig'));
+      r.whoPillCount = document.querySelectorAll('#schedule-list .sched-who').length;
+
+      showScheduleForm();
+      await settle(700);
+      const agent = document.getElementById('sched-agent');
+      r.hasAgentPicker = !!agent;
+      if (agent) {
+        r.agentOptions = [...agent.options].map((o) => o.value);
+        r.agentGroups = [...agent.querySelectorAll('optgroup')].map((g) => g.label);
+        r.agentDefaultsToInherit = agent.value === '';
+        agent.value = 'project:scout';
+        agent.dispatchEvent(new Event('change'));
+        await settle(200);
+        r.faceAfterPick = !!document.querySelector('#sched-agent-face img.av-fig');
+      }
     } catch (e) {
       r.err = String((e && e.message) || e);
     }
@@ -1097,10 +1137,26 @@ async function runSchedulerLayoutGuard(browser) {
   if (!out.bodyScrolled) fail('the body did not scroll.');
   if (out.cardCount !== 12) fail(`expected 12 schedule cards, saw ${out.cardCount}.`);
   if (!out.lastCardVisible) fail('the last schedule card is unreachable after scrolling to the bottom.');
+  if (out.whoPillCount !== 1) fail(`expected 1 "runs as" pill, saw ${out.whoPillCount}.`);
+  if (!/Posy/.test(out.whoPill || '')) fail(`the card does not name who runs it: ${out.whoPill}`);
+  if (!out.whoFace) fail('the "runs as" pill has no face.');
+  if (!out.hasAgentPicker) fail('the schedule form has no Agent picker.');
+  if (!out.agentDefaultsToInherit) fail('the Agent picker does not default to the project default.');
+  if (!(out.agentOptions || []).includes('project:scout')) {
+    fail('the Agent picker does not offer this project’s personas: ' + JSON.stringify(out.agentOptions));
+  }
+  if (!(out.agentOptions || []).includes('global:archivist')) {
+    fail('the Agent picker does not offer global personas: ' + JSON.stringify(out.agentOptions));
+  }
+  if ((out.agentGroups || []).length !== 2) {
+    fail('project and global personas are not grouped: ' + JSON.stringify(out.agentGroups));
+  }
+  if (!out.faceAfterPick) fail('picking an agent did not paint its face.');
   if (pageErrors.length) fail('page errors: ' + pageErrors.join(' | '));
   if (ok) {
     console.log('OKAY scheduler: one scroll container, no section is its own scroll box, '
-      + `no dead space, and all ${out.cardCount} schedules are reachable.`);
+      + `no dead space, all ${out.cardCount} schedules are reachable, and a task `
+      + 'names the agent that runs it (card pill + grouped picker).');
   }
   await ctx.close();
   return ok;
