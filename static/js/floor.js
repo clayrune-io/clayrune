@@ -164,7 +164,7 @@ function _floorFigure(pid, f) {
   const type = f.character
     ? `<span class="fl-type">${esc(f.character.display)}</span><button class="fl-edit"
         title="Edit this persona — face, description, instructions, engine"
-        onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}')"
+        onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(pid)}')"
         >&#9998;</button>`
     : `<span class="fl-type fl-untyped">no type</span>`;
   const nameTitle = chosen
@@ -271,7 +271,7 @@ function _floorBench(bench, rooms, quiet) {
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
-            onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
+            onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.project_id || '')}')"
             >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
         ${b.project_name
@@ -351,12 +351,19 @@ function floorPlace(scope, name, display, projectId) {
   }, 500);
 }
 
-function floorEditType(scope, name) {
+function floorEditType(scope, name, projectId) {
   // The same editor the composer's pencil opens — one persona editor, not a
-  // Floor-flavoured second one. No project id: a global type belongs to no
-  // room, and the editor guards that path.
+  // Floor-flavoured second one.
+  //
+  // The project id is NOT optional for a project-scoped persona: the editor
+  // fetches /api/characters/project/<name>, and that route 400s without a
+  // project_id because a project persona's identity is (project, name), not
+  // name. This used to pass a hard `null` on the reasoning that "a global type
+  // belongs to no room" — true, and irrelevant the day project personas
+  // reached the bench: every pencil on a project card opened an alert instead
+  // of an editor. A global type still passes nothing, which is correct.
   if (typeof window.openPersonaEditor !== 'function') return;
-  window.openPersonaEditor(null, scope, name, () => refreshFloor());
+  window.openPersonaEditor(projectId || null, scope, name, () => refreshFloor());
 }
 
 function floorHire() {

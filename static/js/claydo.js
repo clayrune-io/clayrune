@@ -1274,9 +1274,9 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }
       close();
-      // Guarded: the Floor opens this editor with no project (a global type
-      // belongs to no room), and reloading a project's picker for `null` would
-      // refetch and repaint nothing.
+      // Guarded: a GLOBAL type belongs to no room, so it opens with no project,
+      // and reloading a project's picker for `null` would refetch and repaint
+      // nothing.
       if (projectId && typeof window.reloadCharacters === 'function') {
         window.reloadCharacters(projectId);
       }
