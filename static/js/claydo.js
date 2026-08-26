@@ -1056,6 +1056,8 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
            '\u{1F6E0}', '\u{1F4DA}', '\u{1F9ED}', '\u{1F41B}']
           .map((e) => `<button type="button" class="pe-face-pick" data-face="${e}">${e}</button>`)
           .join('')}
+        <button type="button" class="claydo-ready-btn pe-face-choose" id="pe-face-pick-ai"
+          title="Ask this persona to choose its own face">&#x1F3B2; Let it choose</button>
       </div>
       <label>Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
@@ -1195,47 +1197,54 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
 
   // ── Move it somewhere else ────────────────────────────────────────────
   // A move rewrites the file at a new path, so it must not race the field
-  // values: an unsaved edit would be silently dropped at the old home. Refuse
-  // while dirty rather than trying to save-and-move in one click, which turns
-  // one failure mode into two.
-  {
-    const homeSel = panel.querySelector('#pe-home');
-    const moveBtn = panel.querySelector('#pe-move');
-    const home0 = homeSel.value;
-    homeSel.onchange = () => { moveBtn.disabled = homeSel.value === home0; };
-    moveBtn.onclick = async () => {
-      if (_initial() !== _snapshot) {
-        return showErr('Save your changes first — a move rewrites the file, and '
-          + 'anything unsaved would be left behind at the old home.');
-      }
-      const [toScope, toProject] = homeSel.value.split(':');
-      const where = homeSel.options[homeSel.selectedIndex].textContent;
-      if (!confirm(`Move this persona to ${where}?`)) return;
-      moveBtn.disabled = true;
-      try {
-        const qs = scope === 'project' && projectId
-          ? '?project_id=' + encodeURIComponent(projectId) : '';
-        const res = await fetch(API_BASE
-          + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/move` + qs, {
-          method: 'POST', headers: {'Content-Type': 'application/json'},
-          body: JSON.stringify({to_scope: toScope, to_project_id: toProject || null}),
-        });
-        const out = await res.json().catch(() => ({}));
-        if (!res.ok || !out.ok) throw new Error(out.error || `move failed (${res.status})`);
-        close();
-        if (typeof onDone === 'function') onDone();
-        // `window.` — floor.js is a module, so its top-level names are not
-        // globals; it publishes this one explicitly.
-        if (typeof window.refreshFloor === 'function') window.refreshFloor();
-        // Reopen at the NEW home. Closing on a move and leaving the user
-        // staring at the board is the moment they wonder whether it worked.
-        openPersonaEditor(toProject || null, toScope, name, onDone);
-      } catch (e) {
-        moveBtn.disabled = false;
-        showErr(e.message || String(e));
-      }
-    };
-  }
+  // values: an unsaved edit would be silently dropped at the old home. Hence
+  // the ordering below — Save always goes first, and the move only runs once
+  // the PUT has landed.
+  const homeSel = panel.querySelector('#pe-home');
+  const moveBtn = panel.querySelector('#pe-move');
+  const home0 = homeSel.value;
+  const homeChanged = () => homeSel.value !== home0;
+
+  // Shared by the Move button and by Save. Returns true when it moved, so the
+  // caller knows the editor has already been closed and reopened elsewhere.
+  const doMove = async () => {
+    const [toScope, toProject] = homeSel.value.split(':');
+    const qs = scope === 'project' && projectId
+      ? '?project_id=' + encodeURIComponent(projectId) : '';
+    const res = await fetch(API_BASE
+      + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/move` + qs, {
+      method: 'POST', headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({to_scope: toScope, to_project_id: toProject || null}),
+    });
+    const out = await res.json().catch(() => ({}));
+    if (!res.ok || !out.ok) throw new Error(out.error || `move failed (${res.status})`);
+    close();
+    if (typeof onDone === 'function') onDone();
+    // `window.` — floor.js is a module, so its top-level names are not
+    // globals; it publishes this one explicitly.
+    if (typeof window.refreshFloor === 'function') window.refreshFloor();
+    if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+    // Reopen at the NEW home. Closing on a move and leaving the user staring
+    // at the board is the moment they wonder whether it worked.
+    openPersonaEditor(toProject || null, toScope, name, onDone);
+  };
+
+  homeSel.onchange = () => { moveBtn.disabled = !homeChanged(); };
+  moveBtn.onclick = async () => {
+    if (_initial() !== _snapshot) {
+      return showErr('Save your changes first — a move rewrites the file, and '
+        + 'anything unsaved would be left behind at the old home.');
+    }
+    const where = homeSel.options[homeSel.selectedIndex].textContent;
+    if (!confirm(`Move this persona to ${where}?`)) return;
+    moveBtn.disabled = true;
+    try {
+      await doMove();
+    } catch (e) {
+      moveBtn.disabled = false;
+      showErr(e.message || String(e));
+    }
+  };
 
   panel.querySelector('#pe-cancel').onclick = closeIfClean;
   panel.addEventListener('mousedown', (e) => { if (e.target === panel) closeIfClean(); });
@@ -1273,6 +1282,20 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }
+      // "Belongs to" sits among the fields and reads like one, so a changed
+      // home has to be part of Save — leaving it to the separate Move button
+      // meant picking Global, pressing Save, and being told nothing while the
+      // persona stayed exactly where it was. The PUT above has landed, so
+      // there is nothing unsaved left to strand at the old home.
+      if (homeChanged()) {
+        try {
+          await doMove();   // closes + reopens at the new home
+          return;
+        } catch (e) {
+          btn.disabled = false;
+          return showErr('Saved, but the move failed: ' + (e.message || e));
+        }
+      }
       close();
       // Guarded: a GLOBAL type belongs to no room, so it opens with no project,
       // and reloading a project's picker for `null` would refetch and repaint
@@ -1307,6 +1330,34 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // The endpoint already persisted it; reflect that in the field so a
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
+      if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      if (typeof onDone === 'function') onDone();
+    } catch (e) {
+      showErr('Network error: ' + (e.message || e));
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = was;
+    }
+  };
+
+  // Self-facing: the sibling of self-naming. Same shape, same caveat — it runs
+  // on the pinned model, so it can take a few seconds.
+  panel.querySelector('#pe-face-pick-ai').onclick = async () => {
+    const btn = panel.querySelector('#pe-face-pick-ai');
+    const was = btn.innerHTML;
+    btn.disabled = true;
+    btn.textContent = 'Thinking…';
+    try {
+      const res = await fetch(API_BASE + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/avatar`, {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({project_id: scope === 'project' ? projectId : null}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) { showErr(data.error || `Choosing a face failed (${res.status})`); return; }
+      // Already persisted server-side; mirror it into the field so a later
+      // Save does not push a stale value back over it.
+      setFace(data.avatar || '');
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
       if (typeof onDone === 'function') onDone();
     } catch (e) {

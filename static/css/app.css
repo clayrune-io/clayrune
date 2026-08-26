@@ -4933,6 +4933,9 @@
     background: none; border: 1px solid var(--border); border-radius: 5px;
   }
   .pe-face-pick:hover { border-color: var(--accent); }
+  /* Sits at the end of the emoji strip and wraps with it, so it never squeezes
+     the faces off the row on a narrow editor. */
+  .pe-face-choose { flex-shrink: 0; white-space: nowrap; margin-left: 4px; }
 
   /* The Floor on a phone. `.fl-fig` carries min-width:220px so figures tile
      inside a room on desktop; at 360px that plus the room padding overflows and

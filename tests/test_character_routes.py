@@ -416,3 +416,129 @@ class TestMove:
                         json={'to_scope': 'project', 'to_project_id': 'nopath'})
         assert r.status_code == 400
         assert (client.global_dir / 'helper.md').exists()
+
+
+# ── Self-chosen faces (Ron, 2026-08-26) ──────────────────────────────────────
+#
+# The sibling of self-naming: POST .../avatar with no body asks the model to
+# pick a figure off this install's roster. Same engine rule, same refusal
+# discipline — a face nobody asked for is worse than no face.
+
+class TestSelfChosenFace:
+
+    @pytest.fixture(autouse=True)
+    def _figures(self, monkeypatch):
+        from mc import characters as ch
+        monkeypatch.setattr(ch, 'list_figures',
+                            lambda: ['courier', 'scholar', 'lamplighter'])
+
+    def test_a_named_figure_is_stored_as_a_fig_ref(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        cr._scribe_call = lambda *a, **k: 'courier'
+        r = client.post('/api/characters/project/reviewer/avatar',
+                        json={'project_id': 'tchar'})
+        assert r.status_code == 200
+        assert _read(client, 'reviewer')['avatar'] == 'fig:courier'
+
+    def test_a_figure_named_inside_a_sentence_still_resolves(self, client):
+        """Asked for one word off a list, a model still answers 'The courier.'
+        — one unambiguous hit is a choice, not a guess."""
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        cr._scribe_call = lambda *a, **k: 'The courier.'
+        r = client.post('/api/characters/project/reviewer/avatar',
+                        json={'project_id': 'tchar'})
+        assert r.status_code == 200 and r.get_json()['avatar'] == 'fig:courier'
+
+    def test_two_figures_in_one_answer_are_refused(self, client):
+        """It listed options instead of choosing. Taking the first would be a
+        coin flip wearing a decision."""
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        cr._scribe_call = lambda *a, **k: 'either the scholar or the courier'
+        r = client.post('/api/characters/project/reviewer/avatar',
+                        json={'project_id': 'tchar'})
+        assert r.status_code == 502
+        assert 'avatar' not in _read(client, 'reviewer')
+
+    def test_prose_with_no_figure_is_refused(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        cr._scribe_call = lambda *a, **k: 'I do not think any of these fit'
+        assert client.post('/api/characters/project/reviewer/avatar',
+                           json={'project_id': 'tchar'}).status_code == 502
+
+    def test_an_emoji_answer_is_kept_as_the_face(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        cr._scribe_call = lambda *a, **k: '\U0001F989'
+        r = client.post('/api/characters/project/reviewer/avatar',
+                        json={'project_id': 'tchar'})
+        assert r.status_code == 200 and r.get_json()['avatar'] == '\U0001F989'
+
+    def test_choosing_a_face_runs_on_the_pinned_model(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer', model='claude-fable-5')
+        seen = {}
+
+        def _fake(model, instruction, body):
+            seen['model'] = model
+            seen['instruction'] = instruction
+            return 'courier'
+        cr._scribe_call = _fake
+        assert client.post('/api/characters/project/reviewer/avatar',
+                           json={'project_id': 'tchar'}).status_code == 200
+        assert seen['model'] == 'claude-fable-5'
+        # The roster has to reach the model, or it invents a figure that this
+        # install cannot draw.
+        assert 'lamplighter' in seen['instruction']
+
+    def test_choosing_a_face_preserves_the_name_engine_and_body(self, client):
+        """This path rewrites the file whole — the same trap /name had."""
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer', model='claude-fable-5', effort='high')
+        client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar', 'agent_name': 'Vector'})
+        cr._scribe_call = lambda *a, **k: 'courier'
+        client.post('/api/characters/project/reviewer/avatar',
+                    json={'project_id': 'tchar'})
+        rec = _read(client, 'reviewer')
+        assert rec['agent_name'] == 'Vector'
+        assert rec['engine'] == {'model': 'claude-fable-5', 'effort': 'high'}
+        assert 'You write PRDs' in rec['body']
+
+    def test_a_face_can_be_set_by_hand_and_cleared(self, client):
+        _mk(client, name='reviewer')
+        assert client.post('/api/characters/project/reviewer/avatar',
+                           json={'project_id': 'tchar',
+                                 'avatar': 'fig:scholar'}).status_code == 200
+        assert _read(client, 'reviewer')['avatar'] == 'fig:scholar'
+        assert client.post('/api/characters/project/reviewer/avatar',
+                           json={'project_id': 'tchar',
+                                 'avatar': ''}).status_code == 200
+        assert 'avatar' not in _read(client, 'reviewer')
+
+    def test_an_unknown_character_404s(self, client):
+        r = client.post('/api/characters/project/nobody/avatar',
+                        json={'project_id': 'tchar'})
+        assert r.status_code == 404
+
+    def test_faces_already_worn_are_named_in_the_prompt(self, client):
+        """Two agents sharing a face makes the Floor unreadable — the picker
+        is blind to the others unless the roster is handed to it."""
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer')
+        _mk(client, name='scout')
+        client.post('/api/characters/project/scout/avatar',
+                    json={'project_id': 'tchar', 'avatar': 'fig:scholar'})
+        seen = {}
+
+        def _fake(model, instruction, body):
+            seen['instruction'] = instruction
+            return 'courier'
+        cr._scribe_call = _fake
+        client.post('/api/characters/project/reviewer/avatar',
+                    json={'project_id': 'tchar'})
+        assert 'do NOT reuse' in seen['instruction']
+        assert 'scholar' in seen['instruction'].split('do NOT reuse')[1]

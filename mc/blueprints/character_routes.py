@@ -8,6 +8,7 @@ the UI word for them is "Characters" — never "agents", which is taken by
 MC's dispatched session.
 """
 
+import re
 from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
@@ -334,6 +335,133 @@ def name_character_route(scope, name):
                                # whole, so naming itself would otherwise delete
                                # the face and the toolkit it already had.
                                avatar=rec.get('avatar'),
+                               skills=rec.get('skills'))
+    except (ValueError, OSError) as e:
+        return jsonify({'error': str(e)}), 400
+    return jsonify(_chars.read_character(scope, name, project_path=project_path,
+                                         include_body=False))
+
+
+_FACE_PROMPT = (
+    "You are about to start work under the role definition below. Choose the "
+    "face you will wear on the board.\n\n"
+    "Rules:\n"
+    "- Output ONLY one figure name from the list. No quotes, no explanation.\n"
+    "- Pick the figure whose CRAFT rhymes with how you work, not one that "
+    "illustrates your job title. A researcher is not automatically the "
+    "scholar.\n"
+    "- If genuinely nothing on the list fits, output a single emoji instead."
+)
+
+
+def _taken_avatars(project_path, exclude):
+    """Faces already worn, so a fresh pick does not collide.
+
+    Same reasoning as _taken_agent_names: each call is blind to the others,
+    and two agents sharing a face makes the Floor unreadable at a glance.
+    """
+    out = []
+    try:
+        for rec in _chars.list_characters(project_path=project_path):
+            if rec.get('name') == exclude:
+                continue
+            fig = _chars.avatar_figure(rec.get(_chars.AVATAR_KEY) or '')
+            if fig:
+                out.append(fig)
+    except Exception as e:
+        _log(f"[characters] could not read the existing faces: {e}")
+    return sorted(set(out))
+
+
+def _resolve_face(raw, figures):
+    """Turn a model's answer into `fig:<name>` or an emoji, or '' if unusable.
+
+    A model asked for one word off a list still sometimes answers "the
+    lamplighter" or "fig:lamplighter." — so match a figure name ANYWHERE in
+    the reply before falling back to reading the whole thing as an emoji.
+    """
+    v = ' '.join(str(raw or '').split()).lower()
+    if not v:
+        return ''
+    words = set(re.findall(r'[a-z]+', v))
+    hits = [f for f in figures if f.lower() in words]
+    if len(hits) == 1:
+        return _chars.clean_avatar(_chars.AVATAR_FIG_PREFIX + hits[0])
+    if len(hits) > 1:
+        # Ambiguous: it listed options instead of choosing. Refusing is honest;
+        # taking the first would be a coin flip wearing a decision.
+        return ''
+    cleaned = _chars.clean_avatar(str(raw or '').strip())
+    # Latin letters in it means prose, not an emoji.
+    if not cleaned or re.search(r'[A-Za-z]', cleaned):
+        return ''
+    return cleaned
+
+
+@bp.route('/api/characters/<scope>/<name>/avatar', methods=['POST'])
+def avatar_character_route(scope, name):
+    """Let the character choose its own face, and persist the answer.
+
+    Sibling of `/name`. POST with {"avatar": "..."} to set one directly (the
+    editor's manual override); POST with no body to have the model pick from
+    this install's figures. An empty string clears it.
+    """
+    if scope not in ('global', 'project'):
+        return jsonify({'error': 'scope must be global|project'}), 400
+    data = request.get_json(silent=True) or {}
+    project_id = data.get('project_id') or request.args.get('project_id')
+    project_path, err = _resolve_project_path_or_400(scope, project_id)
+    if err:
+        return err
+
+    rec = _chars.read_character(scope, name, project_path=project_path)
+    if not rec:
+        return jsonify({'error': 'character not found'}), 404
+
+    if 'avatar' in data:
+        chosen = _chars.clean_avatar(data.get('avatar'))
+        if data.get('avatar') and not chosen:
+            return jsonify({'error': 'that face is unusable — one emoji, or '
+                                     'fig:<name>'}), 400
+    else:
+        figures = _chars.list_figures()
+        if not figures:
+            return jsonify({'error': 'this install has no figures to '
+                                     'choose from'}), 400
+        # Same engine rule as self-naming: the model that will do the talking
+        # is the one that should pick how it looks.
+        model = ((rec.get('engine') or {}).get('model')
+                 or state.CONFIG.get('agent_model') or 'sonnet')
+        payload = (f"Role: {rec.get('description') or ''}\n\n"
+                   f"{rec.get('body') or ''}")[:6000]
+        prompt = _FACE_PROMPT + "\n\nFigures available: " + ", ".join(figures)
+        taken = _taken_avatars(project_path, name)
+        if taken:
+            prompt += ("\n\nAlready worn by other agents on this machine — do "
+                       "NOT reuse any of these: " + ", ".join(taken))
+        try:
+            raw = _scribe_call(model, prompt, payload)
+        except Exception as e:
+            _log(f"[characters] self-facing failed for {scope}:{name}: {e}")
+            return jsonify({'error': f'could not reach the model to pick a '
+                                     f'face: {e}'}), 502
+        chosen = _resolve_face(raw, figures)
+        if not chosen:
+            return jsonify({'error': 'the model did not return a usable face '
+                                     '— try again, or pick one by hand'}), 502
+
+    try:
+        _chars.write_character(scope, name,
+                               rec.get('description') or '',
+                               rec.get('body') or '',
+                               project_path=project_path, overwrite=True,
+                               engine=(rec.get('engine') or {}),
+                               # Carried for the same reason as in /name: this
+                               # path rewrites the file whole, so choosing a
+                               # face would otherwise delete the name and the
+                               # toolkit it already had.
+                               agent_name=rec.get('agent_name'),
+                               avatar=chosen,
                                skills=rec.get('skills'))
     except (ValueError, OSError) as e:
         return jsonify({'error': str(e)}), 400
