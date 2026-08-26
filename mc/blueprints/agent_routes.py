@@ -7043,6 +7043,39 @@ def _is_auth_probe_transcript(c: dict) -> bool:
             and str(c.get('last_user') or '').strip().lower() in ('ok', ''))
 
 
+def _conversation_character_display(log_entry, project):
+    """{agent_name, display_name, avatar, scope} for a past chat's persona.
+
+    RE-RESOLVED from disk rather than served out of the log row: the row is a
+    snapshot of the persona as it was at spawn, so a re-faced or renamed
+    persona would show its old face forever on every chat it ever ran. The
+    stored row is the fallback for a persona that has since been deleted —
+    which still names who the chat was with, and is the one case where the
+    snapshot is the only truth left.
+    """
+    ch = (log_entry or {}).get('character') or {}
+    if not (isinstance(ch, dict) and ch.get('name')):
+        return None
+    scope = (ch.get('scope') or 'global').strip().lower()
+    try:
+        from mc import characters as _chars
+        rec = _chars.read_character(
+            scope, ch['name'],
+            project_path=((project or {}).get('project_path') if scope == 'project' else None))
+    except Exception as e:
+        _log(f"[conversations] persona lookup failed for {ch.get('name')!r}: {e}")
+        rec = None
+    src = rec or ch
+    return {
+        'name': ch['name'],
+        'scope': scope,
+        'display_name': src.get('display_name') or ch['name'],
+        'agent_name': src.get('agent_name') or '',
+        'avatar': src.get('avatar') or '',
+        'deleted': rec is None,
+    }
+
+
 @bp.route('/api/project/<project_id>/conversations')
 def get_project_conversations(project_id):
     """Return recent Claude Code conversations for a project, read from .jsonl transcripts.
@@ -7148,6 +7181,11 @@ def get_project_conversations(project_id):
             'source': (log_entry.get('source') or '') if log_entry else '',
             'steward': is_steward,
             'steward_objective': (p.get('steward_objective') or '') if is_steward else '',
+            # WHO the chat was with. The log entry has carried this all along;
+            # nothing emitted it, so the transcript-derived lists (mobile
+            # Layer 2, reconstructed past chats) had no way to draw a face and
+            # fell back to a generic bubble on every row.
+            'character': _conversation_character_display(log_entry, p),
         })
     return jsonify(out)
 

@@ -1229,7 +1229,7 @@ function agentPanelHTML(p) {
           // The persona's own face when it has one. A generic mask on every
           // persona answers "there is a persona" but not "which one", which is
           // the question you actually have three messages into a chat.
-          _char && _char.avatar ? window.avatarHTML(_char.avatar, 18, 'av-pill')
+          _char && _char.avatar ? window.avatarHTML(_char.avatar, 26, 'av-pill')
                                 : '&#x1F3AD;'} ${esc(_charName)}${
           _charInherited ? '<span class="cb-src">default</span>' : ''}</span>`
       : '';
@@ -1782,6 +1782,17 @@ function mobileUserConversationsHTML(p, convos) {
     const incIcon = _convIsIncognito(c)
       ? '<span class="conv-inc-icon" title="Incognito — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>'
       : '';
+    // Who the chat was with. These rows are transcript-derived and had no
+    // persona at all until /conversations started emitting one, so every chat
+    // in the list looked identical — you had to open one to find out whether
+    // it was the review with Fenn or the plan with Marlow.
+    const _cChar = c.character;
+    const _cWho = _cChar && (_cChar.agent_name || _cChar.display_name);
+    const face = (_cChar && _cChar.avatar)
+      ? `<span class="conv-face" title="${esc(_cWho || '')}${
+          _cChar.deleted ? ' (persona since deleted)' : ''}">${
+          window.avatarHTML(_cChar.avatar, 28)}</span>`
+      : '';
     const hideBtn = isHidden
       ? `<button class="conv-hide" onclick="unhideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
       : `<button class="conv-hide" onclick="hideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
@@ -1801,12 +1812,14 @@ function mobileUserConversationsHTML(p, convos) {
       ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
       : '';
     return `<div class="conv-row ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
+      ${face}
       <div class="conv-main">
         <div class="conv-top">
           <span class="conv-name">${dot}${incIcon}${label}</span>
           <span class="conv-time">${badge || esc(c.ts_relative || '')}</span>
         </div>
-        <div class="conv-bot"><span class="conv-sub">${esc(meta)}</span></div>
+        <div class="conv-bot"><span class="conv-sub">${
+          _cWho ? `<span class="conv-who">${esc(_cWho)}</span>` : ''}${esc(meta)}</span></div>
       </div>
       ${splitBtn}${hideBtn}
     </div>`;
@@ -2632,17 +2645,34 @@ function conversationRowHTML(p, h) {
     : 'done';  // idle / completed / stopped — turn finished
   const isOrch = isHivemindOrchestrator(h);
   const isInc = h.incognito || cache.incognito;
-  const glyph = isOrch ? '⬡' : isInc ? '🕶️' : '💬';
   const name = esc((h.task || '').substring(0, 70) || 'Session');
   const when = esc(timeAgoJS(h.startedAt) || '');
   const statusText = esc(consoleStatusLabel(sst, cache));
   const convProv = h.provider || cache.provider || p.provider || 'claude';
   const _convChar = h.character || cache.character;
-  const _convCharName = _convChar && (_convChar.display_name || _convChar.name);
+  // Who this chat is WITH. `agent_name` is the name the persona chose for
+  // itself and the only one a human recognises — `display_name`/`name` are the
+  // file stem, so a row for Dave used to read "dave".
+  const _convCharName = _convChar
+    && (_convChar.agent_name || _convChar.display_name || _convChar.name);
+  const _convCharRole = _convChar && (_convChar.display_name || _convChar.name);
+  // The row already had a 42px avatar slot with the status ring around it, and
+  // it was spending it on a generic 💬 while the persona's real face sat unused
+  // in a text tag. The face answers "which chat is this" from across the list;
+  // the glyphs are the fallback, not the default. ⬡/🕶️ keep their text tags, so
+  // nothing is lost by preferring the face.
+  const glyph = (_convChar && _convChar.avatar)
+    ? window.avatarHTML(_convChar.avatar, 34)
+    : isOrch ? '⬡' : isInc ? '🕶️' : '💬';
   const tags = [
     isOrch ? '<span class="conv-tag orch">Hivemind</span>' : '',
     isInc ? '<span class="conv-tag inc">Incognito</span>' : '',
-    _convCharName ? `<span class="conv-tag char" title="Persona: ${esc(_convCharName)}">&#x1F3AD; ${esc(_convCharName)}</span>` : '',
+    // No mask glyph here any more — the face is in the avatar slot, and two
+    // faces on one row is noise. The name stays: a figure is recognisable, a
+    // name is searchable.
+    _convCharName ? `<span class="conv-tag char" title="Persona: ${esc(_convCharName)}${
+      _convCharRole && _convCharRole !== _convCharName ? ' — the ' + esc(_convCharRole) + ' type' : ''
+    }">${esc(_convCharName)}</span>` : '',
     _providerBadge(convProv),
   ].join('');
   const isPinnedConv = (typeof cache.pinned === 'boolean')

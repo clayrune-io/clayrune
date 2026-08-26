@@ -3096,6 +3096,17 @@
     transition: background 0.12s;
   }
   .conv-row:last-child { border-bottom: none; }
+  /* Transcript-derived rows (mobile Layer 2 / the rail) carry a smaller face
+     than the desktop row's 42px status disc — they are a list to scan, not a
+     board to read, and a 42px slot there costs a third of the row height. */
+  .conv-face {
+    flex: 0 0 28px; width: 28px; height: 28px;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .conv-face .av-fig { border-radius: 50%; background: var(--surface3); }
+  /* The name leads the sub-line so a scan down the column reads as a list of
+     WHO, with the timing behind it. */
+  .conv-who { font-weight: 600; color: var(--text-dim); margin-right: 6px; }
   .conv-row:hover { background: var(--surface3); }
   .conv-av {
     position: relative; width: 42px; height: 42px; flex-shrink: 0;
@@ -4899,7 +4910,10 @@
     box-sizing: border-box;
   }
   /* Inside the chat header pill, where it sits on a line of text. */
-  .character-badge .av { margin-right: 2px; }
+  /* No extra margin: `gap` spaces it, and a figure is drawn to fill its box —
+     an inset here would shrink it inside a slot sized for it. */
+  .character-badge .av { margin-right: 0; }
+  .character-badge .av-fig { border-radius: 50%; background: var(--surface3); }
 
   .persona-fig-row {
     display: flex; flex-wrap: wrap; gap: 5px; margin-bottom: 6px;
@@ -6050,12 +6064,17 @@
   }
   /* Persona pill in the chat header (Prompt Builder Phase 2). Distinct
      from provider/model so the active character reads at a glance. */
+  /* Who you are talking to, in the chat header. This used to be a 10px pill
+     with an 18px face wedged into it: it answered "there is a persona" but you
+     had to lean in to see WHICH. The face now leads at 26px and the pill is
+     built around it — face flush to the left edge so it reads as an avatar
+     with a label, not an icon inside a chip. */
   .character-badge {
-    display: inline-flex; align-items: center; gap: 2px;
-    font-size: 10px; font-weight: 600; letter-spacing: 0.2px;
-    padding: 1px 8px; border-radius: 8px;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px; font-weight: 600; letter-spacing: 0.2px;
+    padding: 2px 10px 2px 2px; border-radius: 15px;
     background: rgba(139,92,246,0.16); color: #a78bfa;
-    white-space: nowrap; flex-shrink: 0; max-width: 160px;
+    white-space: nowrap; flex-shrink: 0; max-width: 220px;
     overflow: hidden; text-overflow: ellipsis;
   }
   /* An INHERITED persona (the project default) must be tellable from one the
