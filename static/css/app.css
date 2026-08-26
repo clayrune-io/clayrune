@@ -4901,6 +4901,20 @@
     border: 1px solid var(--border); border-radius: 7px;
   }
   .pe-fig:hover { border-color: var(--accent); }
+  /* The hover preview. FIXED because the chips sit inside `.pe-scroll`, which
+     clips its overflow — anything that grows in place is cut off by its own
+     container. pointer-events:none so the panel cannot steal the hover that
+     summoned it and flicker. */
+  .pe-peek {
+    position: fixed; z-index: 1300; display: none; pointer-events: none;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 8px; text-align: center;
+    box-shadow: 0 12px 30px rgba(0, 0, 0, 0.3);
+  }
+  .pe-peek .av { display: block; }
+  .pe-peek-name {
+    display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim);
+  }
   .pe-fig.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .persona-face-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .persona-face-row input {

@@ -1448,6 +1448,16 @@ async function runFloorGuard(browser) {
     }
     if (path === '/api/floor') { floorCalls++; return json(FLOOR); }
     if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
+    // The persona editor, opened for real at the end of this guard.
+    if (path.startsWith('/api/characters/')) return json({
+      name: 'marlow', scope: 'global', agent_name: 'Marlow', avatar: 'fig:wizard',
+      description: 'writes specs', body: 'You write specs.', skills: [],
+      engine: {}, });
+    if (path === '/api/avatars') return json({
+      figures: ['wizard', 'beekeeper', 'archivist', 'warden'], prefix: 'fig:' });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({
+      status: 200, contentType: 'image/png',
+      body: Buffer.from(PNG.split(',')[1], 'base64') });
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -1583,6 +1593,34 @@ async function runFloorGuard(browser) {
       // A busy type stays on the bench and says where it already is.
       r.busy = Array.from(win.querySelectorAll('.fl-busy')).map((e) => e.textContent.trim());
 
+      // The face picker: a 38px chip cannot show a beekeeper's smoker, so
+      // hovering one must lift the full render OUT of `.pe-scroll` — which
+      // clips its overflow, so anything that grows in place is cut off.
+      await window.openPersonaEditor('smoke_alpha', 'global', 'marlow');
+      await settle(400);
+      const pe = document.querySelector('.persona-editor');
+      const chip = pe && pe.querySelector('.pe-fig');
+      r.pickerChips = pe ? pe.querySelectorAll('.pe-fig').length : 0;
+      if (chip) {
+        chip.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
+        await settle(120);
+        const pk = pe.querySelector('.pe-peek');
+        const img = pk && pk.querySelector('.av');
+        r.peekShown = !!(pk && getComputedStyle(pk).display !== 'none');
+        r.peekSize = img ? Math.round(img.getBoundingClientRect().width) : 0;
+        r.peekChipSize = Math.round(chip.getBoundingClientRect().width);
+        // Inside .pe-scroll it would be clipped by the scroller, which is the
+        // whole reason it is a floating node.
+        r.peekInScroll = !!(pk && pk.closest('.pe-scroll'));
+        const b = pk ? pk.getBoundingClientRect() : null;
+        r.peekOnScreen = !!(b && b.top >= 0 && b.left >= 0
+          && b.bottom <= window.innerHeight && b.right <= window.innerWidth);
+        chip.dispatchEvent(new MouseEvent('mouseleave', { bubbles: false }));
+        await settle(120);
+        r.peekHidden = getComputedStyle(pe.querySelector('.pe-peek')).display === 'none';
+      }
+      pe && pe.remove();
+
       // Every state must be visible as a WORD, not only as a coloured dot.
       r.stateWords = Array.from(win.querySelectorAll('.fl-state'))
         .map((e) => e.textContent.trim());
@@ -1676,6 +1714,19 @@ async function runFloorGuard(browser) {
       + 'right persona: ' + JSON.stringify(out.edits));
   if (JSON.stringify(out.busy || []) !== JSON.stringify(['already in Alpha']))
     fails.push('a type already working did not say where: ' + JSON.stringify(out.busy));
+  if (out.pickerChips !== 4)
+    fails.push('the persona editor listed the wrong number of faces: ' + out.pickerChips);
+  if (!out.peekShown) fails.push('hovering a face showed no preview');
+  if (!(out.peekSize >= 120))
+    fails.push('the hover preview is not full size: ' + out.peekSize + 'px');
+  if (!(out.peekSize > out.peekChipSize * 2))
+    fails.push('the hover preview is barely bigger than the chip it previews: '
+      + out.peekSize + ' vs ' + out.peekChipSize);
+  if (out.peekInScroll)
+    fails.push('the hover preview lives inside .pe-scroll, which clips it');
+  if (!out.peekOnScreen)
+    fails.push('the hover preview rendered partly off-screen');
+  if (!out.peekHidden) fails.push('the hover preview never went away');
   if (JSON.stringify((out.stateWords || []).sort())
       !== JSON.stringify(['idle', 'needs you', 'working']))
     fails.push('a figure state is not readable as a word: ' + JSON.stringify(out.stateWords));

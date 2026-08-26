@@ -1031,9 +1031,43 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       return `<button type="button" class="pe-fig${v === cur ? ' sel' : ''}"
         data-face="${esc(v)}" title="${esc(n)}">${window.avatarHTML(v, 38)}</button>`;
     }).join('');
+    // A 38px chip cannot show a beekeeper's smoker or an astronomer's star
+    // chart, and picking a face you cannot make out is guessing. Hovering one
+    // lifts the full-size render out of the row.
+    //
+    // A FLOATING node, not a scale on the chip itself: the row lives inside
+    // `.pe-scroll`, which clips its overflow, so a chip that grows in place is
+    // cut off by its own container. `pointer-events: none` because a hover
+    // panel that can take the pointer flickers as it steals its own trigger.
+    const peek = document.createElement('div');
+    peek.className = 'pe-peek';
+    panel.appendChild(peek);
+    const hidePeek = () => { peek.style.display = 'none'; };
+    const showPeek = (b) => {
+      const px = Math.max(120, Math.min(256, window.innerWidth - 80,
+                                        window.innerHeight - 120));
+      peek.innerHTML = window.avatarHTML(b.dataset.face, px)
+        + `<span class="pe-peek-name">${esc(b.title || '')}</span>`;
+      peek.style.display = 'block';
+      const r = b.getBoundingClientRect();
+      const pw = peek.offsetWidth, ph = peek.offsetHeight;
+      // Above the chip, or below it when there is no room up there.
+      let top = r.top - ph - 8;
+      if (top < 8) top = Math.min(r.bottom + 8, window.innerHeight - ph - 8);
+      peek.style.top = Math.max(8, top) + 'px';
+      peek.style.left = Math.max(8, Math.min(r.left + r.width / 2 - pw / 2,
+                                             window.innerWidth - pw - 8)) + 'px';
+    };
     row.querySelectorAll('.pe-fig').forEach((b) => {
-      b.onclick = () => setFace(b.dataset.face);
+      b.onclick = () => { setFace(b.dataset.face); hidePeek(); };
+      b.addEventListener('mouseenter', () => showPeek(b));
+      b.addEventListener('mouseleave', hidePeek);
     });
+    // Scrolling the fields moves the chip out from under a preview anchored to
+    // where it USED to be, so the panel would keep a face floating over an
+    // unrelated field.
+    const sc = panel.querySelector('.pe-scroll');
+    if (sc) sc.addEventListener('scroll', hidePeek);
   })();
 
   // A dirty check on the backdrop click. Ron lost an edit to exactly this: the

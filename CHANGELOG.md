@@ -6,6 +6,27 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-25g] — hover a face, see the whole figure
+
+The cast went from 9 figures to 25, and at the picker's 38px a beekeeper's
+smoker, an astronomer's star chart and a courier's satchel are all the same
+brown smudge. Picking a face was guessing.
+
+Hovering a chip now lifts the full 256px render out of the row, with the
+figure's name under it.
+
+It is a **floating node**, not a scale on the chip. The picker lives inside
+`.pe-scroll`, which clips its overflow, so anything that grows in place is cut
+off by its own container. `pointer-events: none` for the same class of reason a
+hover panel usually flickers: one that can take the pointer steals the hover
+that summoned it. It flips above or below the chip depending on room, clamps to
+the viewport, and hides on scroll so a face cannot end up floating over an
+unrelated field.
+
+Smoke guards it against the real editor: 4 chips listed, preview shown at full
+size, more than twice the chip, **not** a descendant of `.pe-scroll`, fully
+on-screen, and gone on mouseleave.
+
 ## [2026-08-25f] — the bench is the roster, not the free half
 
 Ron: *"when an agent is working in a project you cannot edit its details… we
