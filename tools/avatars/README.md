@@ -46,6 +46,48 @@ The default (10) is that knee. The script prints coverage per figure and flags
 anything outside 20–55%: below means the fill ate the body, above means it never
 started. Eyeballing is what let the first bug ship.
 
+## A magenta screen: key on HUE, then take the spill back out
+
+The 2026-08-25 magenta sheets are what the pipeline is tuned for, and they
+changed two things about how it keys.
+
+**Hue, not distance.** A distance key cannot see a cast SHADOW: a shadow on the
+backdrop keeps its hue exactly and loses only brightness, so it lands far
+outside any sane tolerance and survives. That residue was the grey smear under
+every figure on the old sheets — invisible on a cream card, obvious the moment
+an avatar was composited onto anything else, which is exactly how it was
+reported ("not cropped properly, it shows at full size"). Against a saturated
+screen the same shadow is unmistakably the screen's own hue, so
+`detect_screen()` switches the key to "is this pixel the screen's hue,
+saturated?" — which clears the screen AND its shadow in one pass. Grey-backdrop
+sheets still take the palette key; nothing about them changed.
+
+**The saturation floor is the setting that matters**, and it is a fraction of
+the screen's OWN saturation (`--screen-floor`, default 0.85). A screen does not
+just sit behind the subject, it BOUNCES onto it: a grey shield or a pale scroll
+picks up real magenta and lands on the screen's hue. At 0.22 absolute the
+warden lost half its body and the astronomer lost its legs. A cast shadow, by
+contrast, scales value and leaves saturation alone — so a high floor keeps the
+shadow-clearing and lets the bounce-lit figure through. Measured on the
+astronomer: 0.55 → chewed, 0.65 → still bitten, 0.85 → intact, 0.95 → the key
+stops working (55% kept).
+
+**Despill is not optional.** A perfect key still leaves the bounce IN the
+figure: the gardener's trowel came out pink, the prospector's scroll came out
+pink, the pale figures wore a lilac cast down one side. `despill()` removes it,
+and the discriminator has to be the screen's SHAPE rather than warmth — magenta
+is high red AND high blue with green below both, so `min(R, B) > G` catches the
+cast and leaves terracotta alone. Terracotta is high red with LOW blue, and it
+is the base colour of the entire cast: a naive "is it warm?" despill would
+drain every figure we have.
+
+**Screen quality varies more than you would expect.** Three magenta sheets
+arrived the same day. The two vivid ones (hue 310°, sat 0.76+) keyed with a
+plateau so flat that coverage moved 0.8% across tolerance 10 → 26 — the
+signature of a key that is not a judgement call. The muted one (183, 58, 124)
+left pink blocks behind and was discarded; its six figures were kept at their
+old renders instead.
+
 ## Coverage is a smoke alarm, not a verdict — LOOK at the output
 
 The 20–55% flag catches a fill that ran away. It does **not** catch a figure

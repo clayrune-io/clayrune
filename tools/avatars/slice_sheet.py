@@ -18,6 +18,7 @@ where it does not: a hard cut at the feet reads as an amputation, and the
 alternative (erasing everything soft) eats the figure's own contact edge.
 """
 import argparse
+import colorsys
 from collections import deque
 from pathlib import Path
 
@@ -97,7 +98,45 @@ def detect_checker(im, probe=6):
     return per, tone(False), tone(True)
 
 
-def key_out(im, tol=10, fringe=2):
+def detect_screen(im, probe=4):
+    """(hue, sat) of a saturated flat backdrop — a chroma-key screen — or None.
+
+    WHY HUE AND NOT DISTANCE. The palette key measures how far a pixel is from
+    the backdrop's colour, which cannot see a SHADOW: a shadow cast on the
+    screen keeps the screen's hue exactly and loses only brightness, so it sits
+    far outside any sane tolerance and survives. On the old warm-grey sheets
+    that residue was a grey smear under every figure, invisible on a cream card
+    and obvious the moment an avatar was composited onto anything else — the
+    "not cropped properly, it shows at full size" report.
+
+    Against a magenta screen the same residue is unmistakably magenta, and hue
+    separates it in one step: no clay figure in this cast is magenta at any
+    brightness, so "is this pixel the screen's hue, saturated?" clears the
+    screen AND its shadow AND leaves the figures untouched.
+
+    Returns None unless the border is genuinely saturated, so every
+    grey-backdrop sheet still goes through the palette key.
+    """
+    im = im.convert('RGB')
+    w, h = im.size
+    px = im.load()
+    hs, ss = [], []
+    for x in range(0, w, 3):
+        for y in (probe, h - 1 - probe):
+            r, g, b = px[x, y]
+            hh, ss_, _ = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+            hs.append(hh)
+            ss.append(ss_)
+    if not hs:
+        return None
+    sat = sorted(ss)[len(ss) // 2]
+    if sat < 0.45:
+        return None             # a muted backdrop: not a screen
+    hue = sorted(hs)[len(hs) // 2]
+    return hue, sat
+
+
+def key_out(im, tol=10, fringe=2, screen=None, screen_floor=0.85):
     """RGBA copy with the border-connected backdrop made transparent.
 
     FIXED reference, never a propagating one. Comparing each pixel to its
@@ -128,6 +167,24 @@ def key_out(im, tol=10, fringe=2):
             c = px[x, y][:3]
             if all(abs(c[0]-q[0]) + abs(c[1]-q[1]) + abs(c[2]-q[2]) > 12 for q in pal):
                 pal.append(c)
+
+    def is_bg_screen(c):
+        """The screen's hue, at any brightness. That last part is the point —
+        it is what takes the cast shadow with it."""
+        hue, sat = screen
+        hh, ss_, vv = colorsys.rgb_to_hsv(c[0] / 255, c[1] / 255, c[2] / 255)
+        # The floor is RELATIVE to the screen's own saturation, and it is the
+        # setting that matters. A screen BOUNCES onto the figures standing on
+        # it: a grey shield or a pale scroll picks up real magenta, lands on
+        # the screen's hue, and an absolute floor of 0.22 ate them (the warden
+        # lost half its body, the astronomer its legs). A cast SHADOW, by
+        # contrast, scales value and leaves saturation alone — so a high floor
+        # keeps the shadow-clearing that hue keying is here for, and lets the
+        # bounce-lit figure through.
+        if ss_ < sat * screen_floor or vv < 0.06:
+            return False        # a figure lit by the screen, not the screen
+        d = abs(hh - hue)
+        return min(d, 1.0 - d) <= 0.055
 
     def is_bg(c):
         """Close in distance AND in warmth.
@@ -165,7 +222,8 @@ def key_out(im, tol=10, fringe=2):
             continue
         seen[i] = 1
         r, g, b, _ = px[x, y]
-        if not is_bg((r, g, b)):
+        ok = is_bg_screen((r, g, b)) if screen else is_bg((r, g, b))
+        if not ok:
             continue
         px[x, y] = (r, g, b, 0)
         cleared += 1
@@ -195,13 +253,60 @@ def key_out(im, tol=10, fringe=2):
         for x, y in edge:
             r, g, b, _ = px[x, y]
             warmth = r - b
-            if any(abs(r-q[0]) + abs(g-q[1]) + abs(b-q[2]) <= loose
-                   and abs(warmth - (q[0] - q[2])) <= 14 for q in pal):
+            if screen:
+                hh, ss_, _v = colorsys.rgb_to_hsv(r / 255, g / 255, b / 255)
+                d = abs(hh - screen[0])
+                hit = ss_ >= screen[1] * screen_floor * 0.5 and min(d, 1.0 - d) <= 0.10
+            else:
+                hit = any(abs(r-q[0]) + abs(g-q[1]) + abs(b-q[2]) <= loose
+                          and abs(warmth - (q[0] - q[2])) <= 14 for q in pal)
+            if hit:
                 px[x, y] = (r, g, b, 0)
                 cleared += 1
 
     kept = 1.0 - cleared / float(w * h)
     return im, kept
+
+
+def despill(im, screen, strength=0.9):
+    """Take the screen's colour back OUT of the figure.
+
+    A chroma screen does not just sit behind the subject, it bounces onto it:
+    against magenta the gardener's trowel came out pink, the prospector's
+    scroll came out pink, and the pale figures picked up a lilac cast down one
+    side. No keying threshold fixes that — the contamination is in the render,
+    and it survives a perfect key.
+
+    The discriminator has to be the SCREEN's shape, not brightness. Magenta is
+    high red AND high blue with green sitting below both, so `min(R, B) > G`
+    catches a magenta cast and leaves terracotta alone (terracotta is high red
+    with LOW blue, which is the whole cast's base colour — a naive
+    "is it warm?" despill would drain every figure we have).
+    """
+    hue = screen[0]
+    # Only implemented for the magenta/green screens this pipeline sees; a hue
+    # it does not know is left untouched rather than damaged.
+    magenta = min(abs(hue - 5 / 6), 1 - abs(hue - 5 / 6)) < 0.12
+    green = min(abs(hue - 1 / 3), 1 - abs(hue - 1 / 3)) < 0.12
+    if not (magenta or green):
+        return im
+    px = im.load()
+    w, h = im.size
+    for y in range(h):
+        for x in range(w):
+            r, g, b, a = px[x, y]
+            if a == 0:
+                continue
+            if magenta:
+                excess = min(r, b) - g
+                if excess > 0:
+                    cut = int(excess * strength)
+                    px[x, y] = (max(0, r - cut), g, max(0, b - cut), a)
+            else:
+                excess = g - max(r, b)
+                if excess > 0:
+                    px[x, y] = (r, max(0, g - int(excess * strength)), b, a)
+    return im
 
 
 def square(im, size, pad=0.06):
@@ -239,6 +344,12 @@ def main():
     ap.add_argument('--tol', type=int, default=10,
                 help='the knee: sweep it against coverage, do not guess')
     ap.add_argument('--fringe', type=int, default=2)
+    ap.add_argument('--no-despill', action='store_true',
+                    help='keep the screen colour that bounced onto the figures')
+    ap.add_argument('--screen-floor', type=float, default=0.85,
+                    help='chroma-key saturation floor, as a fraction of the '
+                         'screen own saturation: lower eats bounce-lit figures, '
+                         'higher leaves the cast shadow behind')
     ap.add_argument('--force', action='store_true',
                     help='slice anyway when the sheet has a painted checker background')
     a = ap.parse_args()
@@ -250,7 +361,12 @@ def main():
     if len(names) != cells:
         ap.error(f'--grid {a.grid} is {cells} cells but --names has {len(names)}')
     sheet = Image.open(a.sheet)
-    ck = detect_checker(sheet)
+    screen = detect_screen(sheet)
+    if screen:
+        print(f'  (chroma screen detected at hue {screen[0]*360:.0f}°, '
+              f'sat {screen[1]:.2f} — keying on hue, which takes the cast '
+              f'shadow with it)')
+    ck = None if screen else detect_checker(sheet)
     if ck and not a.force:
         ap.error(
             f'this sheet has a PAINTED transparency checker ({ck[0]}px squares, '
@@ -270,12 +386,15 @@ def main():
         col, row = i % cols, i // cols
         cell = sheet.crop((col * cw, row * ch,
                            (col + 1) * cw, (row + 1) * ch - a.caption))
-        keyed, kept = key_out(cell, a.tol, a.fringe)
+        keyed, kept = key_out(cell, a.tol, a.fringe, screen=screen,
+                              screen_floor=a.screen_floor)
         # Eyeballing is what let the propagating-reference bug ship. Measured
         # across all nine at the tolerance knee, a figure holds 33-40% of its
         # cell; well outside that band is a keying failure, not a slim
         # character. Low = the fill ate the body, high = it never started.
         flag = '' if 0.20 <= kept <= 0.55 else '   <-- CHECK: keyed badly'
+        if screen and not a.no_despill:
+            keyed = despill(keyed, screen)
         out = square(keyed, a.size)
         p = OUT / f'{name}.webp'
         out.save(p, 'WEBP', quality=88, method=6)
