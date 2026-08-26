@@ -72,6 +72,46 @@ The pattern in all of them: a **neutral or pale** figure. Warm terracotta,
 green and deep blue cells key at the default every time; grey robes, grey
 shields and blonde hair are the ones to check first.
 
+## "Transparent background" gets you a PAINTED checkerboard — the tool refuses it
+
+Asked for a transparent background, the generator draws the transparency
+checker instead, in ordinary opaque pixels. Three sheets in a row came back
+that way on 2026-08-25, every one reporting `alpha extrema (255, 255)` — fully
+opaque. The failure is invisible without checking: the file opens, the tool
+runs, the output is quietly ruined.
+
+`detect_checker()` now spots it and `slice_sheet.py` **refuses to run**, naming
+the square size and both tones, unless you pass `--force`.
+
+**A checker cannot be keyed, even though it looks like the easy case.** It
+spans TWO tones, so whichever one you tune for the other collides with
+something. On the dark sheet (74 / 112 grey) the fill entered ten of twelve
+figures — not through their lit sides but through their own *shaded* sides,
+which are dark and neutral and sit exactly on the dark square. No tolerance
+helps: at 6 the figures are already chewed, at 18 they are gone.
+
+**Keying against the pattern instead of a palette was tried, and does not
+rescue it.** The idea is sound — a dark figure pixel standing in a LIGHT square
+is protected outright, and a fill that slips through a dark square is stopped
+by the next light one. But the squares are *drawn*, not computed: transitions
+run 19, 19, 20, 19… so a phase fixed at the sheet origin has drifted half a
+cell by the bottom row and the model inverts, clearing the light squares and
+leaving the dark ones as a residual grid. Re-detecting the phase per cell
+narrows the drift, still leaves that grid, and still destroyed one figure.
+
+**Ask for this instead** — and never use the word "transparent", which is what
+makes it draw the checker:
+
+> Same character sheet, same figures. **No ground shadow, no contact shadow.**
+> Background must be **one flat solid pure magenta (#FF00FF)**, uniform edge to
+> edge. **No text labels.**
+
+Magenta because nothing in a clay palette is near it, so the key stops being a
+judgement call. It also fixes the ground shadow for free: a shadow cast on
+magenta is magenta-tinted and keys out with the rest of the background, where
+against a warm grey it survives as the grey smear you can see under every
+current figure the moment it is composited onto anything but cream.
+
 ## Two figures on one prop is one figure too many
 
 `navigator` (lantern **and** pocket compass) keyed cleanly apart from the

@@ -27,6 +27,76 @@ REPO = Path(__file__).resolve().parents[2]
 OUT = REPO / 'assets' / 'avatars'
 
 
+def detect_checker(im, probe=6):
+    """(period, tone_lo, tone_hi) when the sheet's background is a PAINTED
+    transparency checker, else None.
+
+    The generator cannot emit alpha. Asked for a transparent background it
+    draws the checkerboard instead, in ordinary opaque pixels — three sheets in
+    a row came back that way, every one reporting alpha 255 everywhere. This
+    exists to say so out loud, because the failure is otherwise invisible: the
+    file opens, the tool runs, and the output is quietly ruined.
+
+    WHY A CHECKER CANNOT BE KEYED, even though it looks like the easy case. It
+    spans TWO tones, so whichever you tune for, the other collides with
+    something: the dark sheet (74/112 grey) ate ten of twelve figures — not
+    through their lit sides but through their own SHADED sides, which are dark
+    and neutral and sit exactly on the dark square.
+
+    Keying against the PATTERN instead of a palette was tried and does not
+    rescue it. The squares are drawn, not computed: transitions run 19, 19, 20,
+    19… so a phase fixed at the sheet's origin has drifted half a cell by the
+    bottom row and the model inverts — the light squares clear and the dark
+    ones stay behind as a residual grid. Re-detecting the phase per cell
+    narrows it and still leaves that grid, and still destroyed one figure.
+
+    The fix is one flat colour the figures do not contain, and it belongs in
+    the prompt, not here.
+    """
+    im = im.convert('RGB')
+    w, h = im.size
+    px = im.load()
+
+    def runs(vals):
+        out, cur, n = [], vals[0], 0
+        for v in vals:
+            if v == cur:
+                n += 1
+            else:
+                out.append(n)
+                cur, n = v, 1
+        out.append(n)
+        return out[1:-1]        # drop the partial runs at both ends
+
+    tops = [px[x, probe][0] for x in range(w)]
+    lo, hi = min(tops), max(tops)
+    if hi - lo < 20:
+        return None             # one flat tone: not a checker, carry on
+    mid = (lo + hi) / 2
+    rl = runs([v > mid for v in tops]) + runs([px[probe, y][0] > mid for y in range(h)])
+    if len(rl) < 8:
+        return None
+    per = sorted(rl)[len(rl) // 2]
+    if per < 4 or sum(1 for r in rl if abs(r - per) > 1) > len(rl) * 0.15:
+        return None             # not a regular grid
+
+    def tone(bright):
+        # MEDIAN, not mean: the border strip crosses figures and caption text
+        # on some sheets, and an average lands a few levels off the real tone.
+        chans = ([], [], [])
+        for x in range(0, w, 3):
+            for y in (probe, h - 1 - probe):
+                c = px[x, y]
+                if (c[0] > mid) == bright:
+                    for i in range(3):
+                        chans[i].append(c[i])
+        if not chans[0]:
+            return (0, 0, 0)
+        return tuple(sorted(ch)[len(ch) // 2] for ch in chans)
+
+    return per, tone(False), tone(True)
+
+
 def key_out(im, tol=10, fringe=2):
     """RGBA copy with the border-connected backdrop made transparent.
 
@@ -169,6 +239,8 @@ def main():
     ap.add_argument('--tol', type=int, default=10,
                 help='the knee: sweep it against coverage, do not guess')
     ap.add_argument('--fringe', type=int, default=2)
+    ap.add_argument('--force', action='store_true',
+                    help='slice anyway when the sheet has a painted checker background')
     a = ap.parse_args()
 
     names = [n.strip() for n in a.names.split(',') if n.strip()]
@@ -177,7 +249,19 @@ def main():
     cells = rows * cols
     if len(names) != cells:
         ap.error(f'--grid {a.grid} is {cells} cells but --names has {len(names)}')
-    sheet = Image.open(a.sheet).convert('RGB')
+    sheet = Image.open(a.sheet)
+    ck = detect_checker(sheet)
+    if ck and not a.force:
+        ap.error(
+            f'this sheet has a PAINTED transparency checker ({ck[0]}px squares, '
+            f'{ck[1]} / {ck[2]}) — the alpha channel is opaque everywhere, so the '
+            'checkerboard is just pixels. It cannot be keyed: it spans two tones, '
+            'and whichever you tune for, the other collides with the shading inside '
+            'the figures. Re-generate on ONE flat saturated colour the clay palette '
+            'does not contain (pure magenta), and do not use the word "transparent" '
+            'in the prompt — that is what makes it draw the checker. --force to '
+            'slice anyway.')
+    sheet = sheet.convert('RGB')
     W, H = sheet.size
     cw, ch = W // cols, H // rows
     OUT.mkdir(parents=True, exist_ok=True)
