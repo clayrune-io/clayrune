@@ -1,8 +1,10 @@
-"""Cut a 3x3 character sheet into nine transparent avatars.
+"""Cut a character sheet into one transparent avatar per cell.
 
 The generator emits a contact sheet on a soft grey backdrop with a baked
-ground shadow, in RGB with no alpha. This turns that into nine square RGBA
-WebPs the app can use.
+ground shadow, in RGB with no alpha. This turns that into square RGBA WebPs
+the app can use. Grid is `--grid RxC` (3x3 by default); sheets that print a
+caption under each figure need `--caption <px>` so the word is cropped off
+BEFORE keying.
 
 WHY FLOOD FILL AND NOT A COLOUR THRESHOLD. The backdrop is a gradient, so a
 single "everything near #E8E4DE is background" rule either eats the pale
@@ -152,7 +154,17 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument('sheet')
     ap.add_argument('--names', required=True,
-                    help='comma-separated, row-major, 9 of them')
+                    help='comma-separated, row-major, one per cell')
+    # The generator does not always emit 3x3. A later sheet came back 4x4 with
+    # a caption printed under every figure, and a hardcoded 3x3 quietly sliced
+    # nine wrong rectangles out of it rather than failing.
+    ap.add_argument('--grid', default='3x3', help='ROWSxCOLS, e.g. 4x4')
+    # Baked-in captions are DARK TEXT ON THE BACKDROP, so the key leaves them
+    # standing as a floating word under the figure. Crop them off before
+    # keying, never after: `square()` trims to the subject's bbox, and the
+    # caption is part of that bbox.
+    ap.add_argument('--caption', type=int, default=0,
+                    help='px of caption band to drop off the bottom of each cell')
     ap.add_argument('--size', type=int, default=256)
     ap.add_argument('--tol', type=int, default=10,
                 help='the knee: sweep it against coverage, do not guess')
@@ -160,14 +172,20 @@ def main():
     a = ap.parse_args()
 
     names = [n.strip() for n in a.names.split(',') if n.strip()]
+    rows, _, cols = a.grid.lower().partition('x')
+    rows, cols = int(rows), int(cols)
+    cells = rows * cols
+    if len(names) != cells:
+        ap.error(f'--grid {a.grid} is {cells} cells but --names has {len(names)}')
     sheet = Image.open(a.sheet).convert('RGB')
     W, H = sheet.size
-    cw, ch = W // 3, H // 3
+    cw, ch = W // cols, H // rows
     OUT.mkdir(parents=True, exist_ok=True)
 
-    for i, name in enumerate(names[:9]):
-        col, row = i % 3, i // 3
-        cell = sheet.crop((col * cw, row * ch, (col + 1) * cw, (row + 1) * ch))
+    for i, name in enumerate(names):
+        col, row = i % cols, i // cols
+        cell = sheet.crop((col * cw, row * ch,
+                           (col + 1) * cw, (row + 1) * ch - a.caption))
         keyed, kept = key_out(cell, a.tol, a.fringe)
         # Eyeballing is what let the propagating-reference bug ship. Measured
         # across all nine at the tolerance knee, a figure holds 33-40% of its
@@ -178,7 +196,7 @@ def main():
         p = OUT / f'{name}.webp'
         out.save(p, 'WEBP', quality=88, method=6)
         print(f'  {name:14} {p.stat().st_size // 1024:>3} KB   kept {kept*100:4.1f}%{flag}')
-    print(f'\n{len(names[:9])} avatars -> {OUT}')
+    print(f'\n{len(names)} avatars -> {OUT}')
 
 
 if __name__ == '__main__':

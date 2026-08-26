@@ -46,6 +46,45 @@ The default (10) is that knee. The script prints coverage per figure and flags
 anything outside 20–55%: below means the fill ate the body, above means it never
 started. Eyeballing is what let the first bug ship.
 
+## Coverage is a smoke alarm, not a verdict — LOOK at the output
+
+The 20–55% flag catches a fill that ran away. It does **not** catch a figure
+that was hollowed out while staying in band. On the 2026-08-25 sheet a grey
+`locksmith` keyed at **24.8%** — inside the pass band, no warning — with the
+whole lit half of its body and its shield gone. It was found by compositing the
+cast onto a cream card and looking, which is now the last step of the pipeline.
+
+**Some cells cannot be keyed at all, and that is the generator's problem.**
+Measured on that figure: its lit side is `rgb(166,159,151)`, warmth `15`;
+the backdrop beside it is `rgb(172,166,154)`, warmth `18`. Sum-of-absolute
+difference **16**, warmth delta **3** — inside *both* gates at every tolerance
+in the sweep, including the lowest. No colour rule can separate a neutral figure
+lit to the backdrop's own value. Sweeping the tolerance on that cell is wasted
+effort (24.8% → 23.8% across tol 4–7, hollow throughout).
+
+When that happens, **re-render the cell** — a different body colour, or a darker
+backdrop — rather than hand-patching alpha. Six cells were dropped for this on
+2026-08-25: `locksmith` and `navigator`'s compass from the 3x3 sheet, then
+`king` (5.3% at tol 10, still hollow at 15.3% by tol 6), `queen`, and the
+blonde `potter`, whose hair is the backdrop's own colour.
+
+The pattern in all of them: a **neutral or pale** figure. Warm terracotta,
+green and deep blue cells key at the default every time; grey robes, grey
+shields and blonde hair are the ones to check first.
+
+## Two figures on one prop is one figure too many
+
+`navigator` (lantern **and** pocket compass) keyed cleanly apart from the
+compass face, which is a small pale disc that went with the backdrop. It was
+dropped anyway: `lamplighter` already carries a lantern and keyed clean, so the
+pair was redundant at 40px regardless of the compass.
+
+## No wordmarks in a prop
+
+Two cells put the figure on a plinth reading CLAYRUNE / CLAYDO. At the bench's
+40px the text is mush and the figure reads as "blob beside a white box" — it has
+no prop of its own left. Brand furniture is not an avatar; both were dropped.
+
 ## One crop, not two — the head crop was tried and dropped
 
 WhatsApp's 49px circular avatars settle the size question: that is plenty for a
