@@ -85,8 +85,20 @@ from mc.state import browser_sessions, browser_lock
 
 bp = Blueprint('browser_routes', __name__)
 
-# Fixed render viewport — the pane scales displayed coords back to these.
+# The CONTENT viewport we aim to give the page. The pane seeds its coordinate
+# space with these and then adopts the real numbers off the first frame.
 VIEW_W, VIEW_H = 1280, 800
+
+# Chromium's headless window is bigger than the page area it hands out: a
+# scrollbar horizontally, and a simulated window chrome vertically. Measured on
+# this build at 16 x 151 px, so the window is launched that much larger and the
+# page lands on VIEW_W x VIEW_H.
+#
+# THIS IS A HINT, NOT A CONTRACT. Being wrong here only makes the viewport a
+# little short or tall; it can no longer make part of the page unreachable,
+# because nothing tells the page a size other than the one it actually has.
+# See the setDeviceMetricsOverride note in _pump() for what that cost us.
+WINDOW_CHROME_W, WINDOW_CHROME_H = 16, 151
 
 # ── wired by server.py ───────────────────────────────────────────────────────
 _register_process: Callable[..., Any] = None  # type: ignore[assignment]
@@ -340,16 +352,34 @@ def _run_cdp(session):
             ws.send(json.dumps({'id': _next_id(), 'method': method, 'params': params or {}}))
 
         def start_screencast():
+            # The caps only DOWNSCALE an oversized frame; they must stay at
+            # or above the real viewport or the image is shrunk and the pane
+            # adopts a coordinate space smaller than the page's.
             send('Page.startScreencast',
-                 {'format': 'jpeg', 'quality': 55, 'maxWidth': VIEW_W,
-                  'maxHeight': VIEW_H, 'everyNthFrame': 1})
+                 {'format': 'jpeg', 'quality': 55,
+                  'maxWidth': VIEW_W + WINDOW_CHROME_W,
+                  'maxHeight': VIEW_H + WINDOW_CHROME_H, 'everyNthFrame': 1})
 
         send('Page.enable')
         # A background tab renders nothing in headless Chromium, so the tab we
         # attached to must be the frontmost one or every frame is a no-show.
         send('Page.bringToFront')
-        send('Emulation.setDeviceMetricsOverride',
-             {'width': VIEW_W, 'height': VIEW_H, 'deviceScaleFactor': 1, 'mobile': False})
+        # NO Emulation.setDeviceMetricsOverride HERE, deliberately.
+        #
+        # It used to declare 1280x800. The page believed it and laid out in an
+        # 800px-tall viewport — but the screencast captures the REAL window
+        # surface, which is 1264x649. So 151px of every page was laid out and
+        # never shown, and scrolling could not reach it: the page had
+        # scrollHeight == clientHeight == 800 and was certain everything fit.
+        #
+        # Ron hit it on a Discord captcha whose Submit sat in that dead band —
+        # visible to the page, invisible to him, and unreachable by scrolling.
+        # Measured 2026-08-26: with the override, page 1280x800 vs frame
+        # 1264x649; without it, both report 1264x649 and agree exactly.
+        #
+        # If you reintroduce an override, it MUST match what the screencast
+        # actually captures, or you are re-creating a band of the page that
+        # cannot be seen or reached.
         # Present a normal (non-headless) User-Agent. Chromium's --headless=new
         # advertises "HeadlessChrome/…", which sites like Hacker News block with
         # a "Sorry." page. Derive from the real browser UA (so the Chrome version
@@ -517,7 +547,8 @@ def _launch_browser(project_id, url, profile=None, ephemeral=False):
         chromium, '--headless=new', f'--remote-debugging-port={port}',
         '--remote-allow-origins=*', f'--user-data-dir={udd}',
         '--no-first-run', '--no-default-browser-check', '--disable-gpu',
-        f'--window-size={VIEW_W},{VIEW_H}', 'about:blank',
+        f'--window-size={VIEW_W + WINDOW_CHROME_W},{VIEW_H + WINDOW_CHROME_H}',
+        'about:blank',
     ]
     try:
         proc = subprocess.Popen(args, stdout=subprocess.DEVNULL,
