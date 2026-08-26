@@ -40,6 +40,27 @@ printf "%s======================================%s\n" "$C" "$R"
 printf "%s  Clayrune Installer%s\n" "$B" "$R"
 printf "%s======================================%s\n\n" "$C" "$R"
 
+
+# -- Contact on failure ----------------------------------------------------
+# Every non-zero exit below is a person who bounced before ever opening
+# Clayrune. They are the only ones who can tell us whether install is the
+# gate, and until now every one of these paths exited in silence. An EXIT
+# trap covers all of them at once, including any added later, so no failure
+# path can go back to being a dead end.
+CLAYRUNE_CONTACT="hello@clayrune.io"
+
+_clayrune_exit_footer() {
+  code=$?
+  if [ "$code" -ne 0 ]; then
+    printf "\n%s------------------------------------------------------------%s\n" "$Y" "$R"
+    printf "  This did not work, and we would like to know why.\n"
+    printf "  Email %s%s%s and paste the output above.\n" "$C" "$CLAYRUNE_CONTACT" "$R"
+    printf "  A one-line \"it failed here\" is plenty. No account needed.\n"
+    printf "%s------------------------------------------------------------%s\n" "$Y" "$R"
+  fi
+}
+trap _clayrune_exit_footer EXIT
+
 # ── Helpers ────────────────────────────────────────────────────────────────
 
 # Refresh PATH so a freshly-installed `claude` is discoverable without forcing

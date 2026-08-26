@@ -490,6 +490,30 @@ Write-Host '  Clayrune Installer' -ForegroundColor White
 Write-Host '======================================'
 Write-Host ''
 
+# -- Contact on failure ----------------------------------------------------
+# Every non-zero exit is a person who bounced before ever opening Clayrune.
+# They are the only ones who can tell us whether install is the gate, and
+# until now every one of these paths exited in silence.
+#
+# NOTE: [Environment]::Exit() terminates the process immediately and does NOT
+# run trap/finally blocks, so unlike install.sh this cannot be a single trap.
+# Every non-zero exit must call Exit-WithContact instead. Exit code is passed
+# through unchanged -- ClayruneInstaller.exe keys its remediation menu off
+# code 3, so the contract at the top of this file still holds.
+$ClayruneContact = 'hello@clayrune.io'
+
+function Exit-WithContact {
+    param([Parameter(Mandatory = $true)][int]$Code)
+    Write-Host ''
+    Write-Host '------------------------------------------------------------' -ForegroundColor Yellow
+    Write-Host '  This did not work, and we would like to know why.'
+    Write-Host "  Email $ClayruneContact and paste the output above." -ForegroundColor Cyan
+    Write-Host '  A one-line "it failed here" is plenty. No account needed.'
+    Write-Host '------------------------------------------------------------' -ForegroundColor Yellow
+    [Environment]::Exit($Code)
+}
+
+
 # -- Step 0: Ensure Node 18+ is available -----------------------------------
 
 if (-not (Get-BoolResult (Setup-Node))) {
@@ -612,7 +636,7 @@ if (-not (Test-ClaudeAuth)) {
     # Exit code 3 = "not authenticated", specifically. See the EXIT CODES
     # contract at the top of this file: ClayruneInstaller.exe keys its
     # remediation menu off this, so only THIS path may return 3.
-    [Environment]::Exit(3)
+    Exit-WithContact 3
 }
 Write-Host 'OK Authenticated' -ForegroundColor Green
 Write-Host ''
@@ -677,7 +701,7 @@ if (Test-Path $installDir) {
             & git -C $installDir fetch --prune origin
             if ($LASTEXITCODE -ne 0) {
                 Write-Host '[STEP 1/5] FAIL git fetch failed - check your network connection.' -ForegroundColor Red
-                [Environment]::Exit(2)
+                Exit-WithContact 2
             }
 
             # Which remote branch to land on. Detached HEAD (or an unknown
@@ -695,7 +719,7 @@ if (Test-Path $installDir) {
                 Write-Host '          installer to get a fresh clone:' -ForegroundColor Red
                 Write-Host "          Rename-Item '$installDir' '$installDir.old'" -ForegroundColor Cyan
                 Write-Host '          (your projects live in the .old copy under data\ - copy them back after)' -ForegroundColor Red
-                [Environment]::Exit(2)
+                Exit-WithContact 2
             }
             if ($oldSha) {
                 Write-Host "  Re-synced to origin/$branch. Previous commit was $oldSha" -ForegroundColor DarkGray
@@ -705,13 +729,13 @@ if (Test-Path $installDir) {
     } else {
         Write-Host "[STEP 1/5] FAIL $installDir exists but is not a git checkout." -ForegroundColor Red
         Write-Host '          Remove it or set CLAYRUNE_HOME to a different path, then re-run.' -ForegroundColor Red
-        [Environment]::Exit(2)
+        Exit-WithContact 2
     }
 } else {
     & git clone $repoUrl $installDir
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[STEP 1/5] FAIL git clone failed' -ForegroundColor Red
-        [Environment]::Exit(2)
+        Exit-WithContact 2
     }
 }
 Write-Host '[STEP 1/5] OK' -ForegroundColor Green
@@ -824,7 +848,7 @@ if (-not $pythonExe) {
 if (-not $pythonExe) {
     Write-Host '[STEP 2/5] FAIL could not find or install Python 3.11+' -ForegroundColor Red
     Write-Host '          Install manually from https://python.org/downloads, then re-run.' -ForegroundColor Red
-    [Environment]::Exit(2)
+    Exit-WithContact 2
 }
 Write-Host "  Using: $pythonExe"
 
@@ -833,7 +857,7 @@ if (-not (Test-Path (Join-Path $venvPath 'Scripts\python.exe'))) {
     & $pythonExe -m venv $venvPath
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[STEP 2/5] FAIL venv creation failed' -ForegroundColor Red
-        [Environment]::Exit(2)
+        Exit-WithContact 2
     }
 }
 $venvPip = Join-Path $venvPath 'Scripts\pip.exe'
@@ -842,7 +866,7 @@ if (Test-Path $reqPath) {
     & $venvPip install --quiet -r $reqPath
     if ($LASTEXITCODE -ne 0) {
         Write-Host '[STEP 2/5] FAIL pip install failed' -ForegroundColor Red
-        [Environment]::Exit(2)
+        Exit-WithContact 2
     }
 }
 Write-Host '[STEP 2/5] OK' -ForegroundColor Green
@@ -857,7 +881,7 @@ $hiddenVbs = Join-Path $installDir 'installer\start-hidden.vbs'
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
 if (-not (Test-Path $startBat)) {
     Write-Host "[STEP 3/5] FAIL $startBat not found in checkout" -ForegroundColor Red
-    [Environment]::Exit(2)
+    Exit-WithContact 2
 }
 $iconPath = Join-Path $installDir 'assets\clayrune.ico'
 $wsh = New-Object -ComObject WScript.Shell
@@ -948,7 +972,7 @@ if ($missing.Count -gt 0) {
     Write-Host '  Missing:'
     foreach ($m in $missing) { Write-Host "    - $m" -ForegroundColor Red }
     Write-Host '  This should not happen - please report this output as an issue.'
-    [Environment]::Exit(2)
+    Exit-WithContact 2
 }
 
 Write-Host ''
