@@ -95,7 +95,14 @@ let dispatched = false;
 page.on('request', r => { if (/\/agent\/dispatch$/.test(r.url())) dispatched = true; });
 await page.route('**/*', router);
 const pageErrors = [];
-page.on('pageerror', e => pageErrors.push(e.message || String(e)));
+// The router ABORTS every external request by design, so the SPA's lazy
+// mermaid import from the CDN rejects. That is the harness working, not the
+// page breaking — counting it failed this suite on a clean tree.
+page.on('pageerror', (e) => {
+  const m = e.message || String(e);
+  if (/dynamically imported module/.test(m) && /cdn\./.test(m)) return;
+  pageErrors.push(m);
+});
 await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
 await page.waitForSelector('#projects-col .card', { timeout: 15000 });
 

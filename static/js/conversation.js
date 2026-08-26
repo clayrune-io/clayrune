@@ -920,6 +920,7 @@ function agentPanelHTML(p) {
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
     <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
+      data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
       onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
@@ -1113,6 +1114,7 @@ function agentPanelHTML(p) {
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
             <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
+              data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
               onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
@@ -2800,6 +2802,7 @@ function splitPaneHTML(p, sid, isPrimary) {
       <div class="agent-chat-separator"></div>
       <div class="agent-chat-input"><div class="agent-chat-input-row">
         <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
+          data-project="${esc(p.id)}"
           placeholder="${isRunning ? 'Interrupt and redirect… (Enter)' : 'Send follow-up…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"></textarea>
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>

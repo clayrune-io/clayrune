@@ -3246,6 +3246,12 @@
     padding: 6px 10px; border-radius: 7px; cursor: pointer;
   }
   .slash-ac-row.active { background: var(--accent-dim); }
+  /* The @mention picker borrows the slash picker's shell so the two are one
+     thing to learn; only the face is extra. A figure beside the name is what
+     makes the list read as your team rather than a list of strings. */
+  .mention-ac .mention-ac-face { flex: 0 0 20px; }
+  .mention-ac .mention-ac-face.av-fig { border-radius: 50%; background: var(--surface3); }
+  .mention-ac .slash-ac-hint { font-style: italic; }
   .slash-ac-name { font-size: 13px; font-weight: 700; color: var(--accent); white-space: nowrap; }
   .slash-ac-hint { font-size: 11px; color: var(--text-faint); white-space: nowrap; }
   .slash-ac-desc {
