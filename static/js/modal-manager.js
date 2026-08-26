@@ -482,6 +482,15 @@ async function setProjectColor(projectId, color, bg) {
       body: JSON.stringify({ modal_color: { color, bg } })
     });
     await refreshSilent();
+    // A project's accent is its identity across the whole app, not just its
+    // tile — the Floor room, its runs on the calendar and its rows in the
+    // scheduler all draw from it. refreshSilent() repaints the grid and the
+    // open project modal; these surfaces live in their OWN modals and would
+    // otherwise keep the old colour until reopened, which reads as "the setting
+    // didn't take".
+    if (typeof window.renderScheduleCalendar === 'function') window.renderScheduleCalendar();
+    if (typeof window.refreshScheduleList === 'function') window.refreshScheduleList();
+    if (typeof window.refreshFloor === 'function') window.refreshFloor();
   } catch(e) {}
 }
 

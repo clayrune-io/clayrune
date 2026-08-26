@@ -134,6 +134,16 @@ async function toggleSchedulerPause() {
   if (window.refreshScheduleBanner) window.refreshScheduleBanner();
 }
 
+// The project's own accent, so a row here, its block on the calendar, the
+// project's tile and its room on the Floor are all one colour. See
+// _scalProjectColor — same rule, same fallback.
+function _schedProjectColor(projectId) {
+  let projects = [];
+  try { projects = (typeof allProjects === 'undefined') ? [] : (allProjects || []); } catch (e) {}
+  const p = projects.find(x => x && x.id === projectId);
+  return (p && p.modal_color && p.modal_color.color) || 'var(--accent)';
+}
+
 async function refreshScheduleList() {
   const container = document.getElementById('schedule-list');
   if (!container) return;
@@ -177,7 +187,8 @@ async function refreshScheduleList() {
       return `<div class="schedule-card-wrap">
         <div class="schedule-card${cardClass}">
           <div class="schedule-card-body">
-            <div class="schedule-card-project">${esc(s.project_name || s.project_id)}${agentPill}</div>
+            <div class="schedule-card-project" style="color:${_schedProjectColor(s.project_id)}">${
+              esc(s.project_name || s.project_id)}${agentPill}</div>
             ${descLine}
             <div class="schedule-card-task" title="${esc(s.task)}">${esc(s.task)}</div>
             <div class="schedule-card-meta">
@@ -618,6 +629,7 @@ window.deleteSchedule = deleteSchedule;
 window.runScheduleNow = runScheduleNow;
 window.toggleSchedulerPause = toggleSchedulerPause; // pause-bar toggle (generated onclick)
 window.refreshSchedulerPause = refreshSchedulerPause; // settings-pane mirror re-reads it
+window.refreshScheduleList = refreshScheduleList;   // repaint when a project's accent changes
 // Cross-module reads for schedule-calendar.js. `_schedPaused` and
 // `scheduleDescription` are MODULE-scoped to this file: another ES module
 // cannot see them as bare identifiers (unlike a classic-script top-level

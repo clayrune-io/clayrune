@@ -5598,6 +5598,8 @@
   }
   .schedule-card.disabled { opacity: 0.5; }
   .schedule-card-body { flex: 1; min-width: 0; }
+  /* `color` is set inline from the project's own accent — the fallback here
+     is what an uncoloured project gets, matching its tile. */
   .schedule-card-project { font-size: 11px; font-weight: 600; color: var(--accent); text-transform: uppercase; letter-spacing: 0.5px; }
   .schedule-card-task { font-size: 13px; color: var(--text); margin: 2px 0 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .schedule-card-meta { display: flex; gap: 12px; font-size: 11px; color: var(--text-faint); }
@@ -5655,7 +5657,7 @@
 
   /* --- Scheduled-runs calendar (static/js/schedule-calendar.js) ------------
      A real time grid: hour gutter down the left, day columns across, each run
-     positioned at its own time. Per-project colour comes from --scal-hue, set
+     positioned at its own time. Per-project colour comes from --scal-color, set
      inline from a hash of the project id, so a project keeps its colour.
 
      `.dead` = will not fire (disabled, or the master switch is on). Struck
@@ -5721,8 +5723,8 @@
   .scal-strip-body { display: flex; flex-wrap: wrap; gap: 4px; }
   .scal-pill {
     padding: 2px 9px; border-radius: 999px; cursor: pointer; color: var(--text);
-    background: hsl(var(--scal-hue) 60% 50% / 0.14);
-    border: 1px solid hsl(var(--scal-hue) 60% 50% / 0.45);
+    background: color-mix(in srgb, var(--scal-color) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--scal-color) 45%, transparent);
   }
   .scal-pill.dead { background: var(--surface2); border-color: var(--border);
                     color: var(--text-faint); text-decoration: line-through; }
@@ -5773,10 +5775,10 @@
     font-size: 10px; font-weight: 600; line-height: 1.4;
     padding: 1px 5px; border-radius: 4px; cursor: pointer;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
-    background: hsl(var(--scal-hue) 60% 50% / 0.18);
-    border-left: 3px solid hsl(var(--scal-hue) 60% 50%);
+    background: color-mix(in srgb, var(--scal-color) 18%, transparent);
+    border-left: 3px solid var(--scal-color);
   }
-  .scal-allday-chip:hover { background: hsl(var(--scal-hue) 60% 50% / 0.3); }
+  .scal-allday-chip:hover { background: color-mix(in srgb, var(--scal-color) 30%, transparent); }
   .scal-allday-chip.dead {
     background: var(--surface3); border-left-color: var(--text-faint);
     color: var(--text-faint); text-decoration: line-through;
@@ -5824,10 +5826,10 @@
     position: absolute; z-index: 2; box-sizing: border-box; overflow: hidden;
     display: flex; align-items: center; gap: 5px; cursor: pointer;
     margin-left: 2px; padding: 2px 5px; border-radius: 5px;
-    background: hsl(var(--scal-hue) 60% 50% / 0.18);
-    border-left: 3px solid hsl(var(--scal-hue) 60% 50%);
+    background: color-mix(in srgb, var(--scal-color) 18%, transparent);
+    border-left: 3px solid var(--scal-color);
   }
-  .scal-block:hover { background: hsl(var(--scal-hue) 60% 50% / 0.3); }
+  .scal-block:hover { background: color-mix(in srgb, var(--scal-color) 30%, transparent); }
   /* Sharing a column halves the width again — drop the time there regardless. */
   .scal-block.multi .scal-block-time { display: none; }
   @container (max-width: 200px) { .scal-block-time { display: none; } }
@@ -5872,7 +5874,7 @@
     width: min(520px, calc(100% - 32px)); max-height: calc(100% - 48px);
     display: flex; flex-direction: column;
     background: var(--surface); border: 1px solid var(--border);
-    border-left: 4px solid hsl(var(--scal-hue) 60% 50%);
+    border-left: 4px solid var(--scal-color);
     border-radius: 12px; box-shadow: 0 12px 40px rgba(0,0,0,0.3);
   }
   .scal-detail-head {
@@ -5938,8 +5940,8 @@
   .scal-mchip {
     font-size: 10px; line-height: 1.35; padding: 1px 5px; border-radius: 4px;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--text);
-    background: hsl(var(--scal-hue) 60% 50% / 0.18);
-    border-left: 2px solid hsl(var(--scal-hue) 60% 50%);
+    background: color-mix(in srgb, var(--scal-color) 18%, transparent);
+    border-left: 2px solid var(--scal-color);
   }
   .scal-mchip.dead { background: var(--surface2); border-left-color: var(--text-faint);
                      color: var(--text-faint); text-decoration: line-through; }

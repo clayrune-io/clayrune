@@ -228,11 +228,25 @@ const SCAL_GUTTER = 54;       // hour-label column
 const SCAL_MONTH_MAX = 3;     // chips per month cell before "+N more"
 
 // Stable per-project accent so a project keeps its colour across views.
-function _scalProjectHue(projectId) {
-  let h = 0;
-  const str = String(projectId || '');
-  for (let i = 0; i < str.length; i++) h = (h * 31 + str.charCodeAt(i)) % 360;
-  return h;
+// A run is coloured by the PROJECT IT BELONGS TO, using the project's own
+// accent — the same `modal_color` the dashboard tile and the Floor room draw.
+// It used to be a hash of the project id, which meant the calendar was the one
+// surface where a project's colour was something nobody could choose and
+// nothing else agreed with. Changing a project's accent now moves the tile, the
+// room and its runs together.
+//
+// Bare `allProjects`, like every other module reads it: it is a top-level `let`
+// in index.html's classic script, so it lives in the global lexical scope and
+// is NOT a property of `window`.
+function _scalProjectColor(projectId) {
+  let projects = [];
+  try { projects = (typeof allProjects === 'undefined') ? [] : (allProjects || []); } catch (e) {}
+  const p = projects.find(x => x && x.id === projectId);
+  // An unset project is drawn in the default accent — which is precisely what
+  // its tile and its colour picker already show it as. A random hue would be
+  // more distinguishable and less TRUE, and the way to tell two of them apart
+  // is now to give one a colour, which finally has a visible effect here.
+  return (p && p.modal_color && p.modal_color.color) || 'var(--accent)';
 }
 
 // The master switch lives in scheduler.js module scope — reachable only via its
@@ -330,7 +344,7 @@ function _scalBlockHTML(p, range) {
   const top = ((mins - range.start * 60) / 60) * SCAL_ROW_H;
   const width = 100 / total;
   return `<div class="scal-block${live ? '' : ' dead'}${total > 1 ? ' multi' : ''}"
-      style="--scal-hue:${_scalProjectHue(s.project_id)};top:${top.toFixed(1)}px;
+      style="--scal-color:${_scalProjectColor(s.project_id)};top:${top.toFixed(1)}px;
              left:${(col * width).toFixed(2)}%;width:calc(${width.toFixed(2)}% - 3px);
              height:${SCAL_EVENT_MIN_H}px"
       onclick="scalOpenDetail('${esc(s.id)}')"
@@ -351,7 +365,7 @@ function _scalAllDayChipHTML(s) {
   const live = _scalWillRun(s);
   const every = typeof scheduleDescription === 'function' ? scheduleDescription(s) : '';
   return `<div class="scal-allday-chip${live ? '' : ' dead'}"
-      style="--scal-hue:${_scalProjectHue(s.project_id)}"
+      style="--scal-color:${_scalProjectColor(s.project_id)}"
       onclick="scalOpenDetail('${esc(s.id)}')"
       title="${esc(_scalTitle(s))}${every ? ' — ' + esc(every) : ''}">${esc(_scalTitle(s))}</div>`;
 }
@@ -371,7 +385,7 @@ function _scalStripHTML(cls, title, hint, schedules) {
   const pills = schedules.map((s) => {
     const live = _scalWillRun(s);
     return `<span class="scal-pill${live ? '' : ' dead'}"
-        style="--scal-hue:${_scalProjectHue(s.project_id)}"
+        style="--scal-color:${_scalProjectColor(s.project_id)}"
         onclick="scalOpenDetail('${esc(s.id)}')"
         title="${esc(s.project_name || s.project_id)}">${esc(_scalTitle(s))}</span>`;
   }).join('');
@@ -534,7 +548,7 @@ function _scalRenderMonth(host, days, always, unparsed) {
     const chips = shown.map((it) => {
       const live = _scalWillRun(it.s);
       return `<div class="scal-mchip${live ? '' : ' dead'}"
-          style="--scal-hue:${_scalProjectHue(it.s.project_id)}"
+          style="--scal-color:${_scalProjectColor(it.s.project_id)}"
           onclick="event.stopPropagation();scalOpenDetail('${esc(it.s.id)}')"
           title="${esc(_scalHhmm(it.when))} · ${esc(_scalTitle(it.s))}">${esc(_scalTitle(it.s))}</div>`;
     }).join('');
@@ -604,7 +618,7 @@ function scalOpenDetail(id) {
   const lastRun = s.last_run && typeof timeAgoShort === 'function' ? timeAgoShort(s.last_run) : 'never';
   host.innerHTML = `
     <div class="scal-detail-back" onclick="scalCloseDetail()"></div>
-    <div class="scal-detail" style="--scal-hue:${_scalProjectHue(s.project_id)}">
+    <div class="scal-detail" style="--scal-color:${_scalProjectColor(s.project_id)}">
       <div class="scal-detail-head">
         <span>
           <span class="scal-detail-title">${esc(_scalTitle(s))}</span>

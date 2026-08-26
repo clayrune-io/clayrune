@@ -1205,6 +1205,19 @@ async function runScheduleCalendarGuard(browser) {
       return json({ ok: true });
     }
     if (path === '/api/config') return json({ scheduler_paused: false });
+    // A run is coloured by the project it belongs to, using that project's own
+    // accent. `gamma` deliberately has none, so the fallback is exercised too.
+    if (path === '/api/projects') {
+      return json([
+        { id: 'alpha', name: 'Alpha', project_path: '/smoke/alpha',
+          modal_color: { color: 'var(--green-text)', bg: 'var(--green-dim)' } },
+        { id: 'beta', name: 'Beta', project_path: '/smoke/beta',
+          modal_color: { color: 'var(--purple-text)', bg: 'var(--purple-dim)' } },
+        { id: 'gamma', name: 'Gamma', project_path: '/smoke/gamma' },
+        { id: 'delta', name: 'Delta', project_path: '/smoke/delta',
+          modal_color: { color: 'var(--red-text)', bg: 'var(--red-dim)' } },
+      ]);
+    }
     return fulfillStaticOrAbort(route);
   });
   const pageErrors = [];
@@ -1250,6 +1263,19 @@ async function runScheduleCalendarGuard(browser) {
       r.hourLabels = Array.from(document.querySelectorAll('#schedule-calendar .scal-hour span'))
         .map((e) => e.textContent.trim());
       r.blockCount = document.querySelectorAll('#schedule-calendar .scal-block').length;
+      // A run wears its PROJECT's accent — the same one the tile and the Floor
+      // room draw. It used to be a hash of the project id, which made the
+      // calendar the one surface whose colours nobody could set and nothing
+      // else agreed with.
+      r.blockColors = {};
+      document.querySelectorAll('#schedule-calendar .scal-block').forEach((el) => {
+        const t = el.getAttribute('title') || '';
+        const c = (el.style.getPropertyValue('--scal-color') || '').trim();
+        if (/standup/i.test(t)) r.blockColors.alpha = c;         // sch_daily
+        if (/Every single day/i.test(t)) r.blockColors.beta = c;  // sch_everyday
+        if (/Monday cron/i.test(t)) r.blockColors.delta = c;     // sch_cron
+      });
+      r.hueLeftovers = document.querySelectorAll('#schedule-calendar [style*="--scal-hue"]').length;
       r.deadCount = document.querySelectorAll('#schedule-calendar .scal-block.dead').length;
       // Always-running schedules belong in an all-day band INSIDE the frame
       // (Outlook/Google style), one cell per day column — not a separate strip
@@ -1534,6 +1560,18 @@ async function runScheduleCalendarGuard(browser) {
     fails.push('the prefilled form offers Run Now for a schedule that does not exist yet');
   if (out.gotRunAt !== out.wantRunAt)
     fails.push('prefilled run-at is ' + out.gotRunAt + ', want local ' + out.wantRunAt);
+  // Per-project colour: the project's OWN accent, and two projects must differ.
+  const _bc = out.blockColors || {};
+  if (_bc.alpha !== 'var(--green-text)')
+    fails.push("a run does not wear its project's accent: alpha=" + _bc.alpha + ' (want var(--green-text))');
+  if (_bc.beta !== 'var(--purple-text)')
+    fails.push("a run does not wear its project's accent: beta=" + _bc.beta + ' (want var(--purple-text))');
+  if (_bc.delta !== 'var(--red-text)')
+    fails.push("a run does not wear its project's accent: delta=" + _bc.delta + ' (want var(--red-text))');
+  if (_bc.alpha && _bc.alpha === _bc.beta)
+    fails.push('two projects render in the same colour - the calendar stops identifying anything');
+  if (out.hueLeftovers)
+    fails.push(out.hueLeftovers + ' block(s) still set the old hashed --scal-hue');
 
   if (fails.length) {
     console.error('CALFAIL calendar guard:');
