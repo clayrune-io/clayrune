@@ -1,0 +1,12 @@
+# Blank issues stay ON deliberately. A template is a hurdle, and this project's
+# problem is silence, not noise: zero issues had been filed in the 5.5 months
+# after the repo was created. Someone who wants to type one sentence should be
+# able to.
+blank_issues_enabled: true
+contact_links:
+  - name: Email the maintainer
+    url: mailto:leviran1@gmail.com?subject=Clayrune
+    about: Prefer not to post in public, or it is not really a bug. Write directly.
+  - name: Try it first, no install
+    url: https://clayrune.io/demo
+    about: A simulated walkthrough in the browser if you want to see it working before setting anything up.

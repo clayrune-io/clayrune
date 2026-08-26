@@ -1,0 +1,28 @@
+name: Something is broken
+description: It crashed, it did not install, or it does not do what it says.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Only the first box is required. Everything else helps, but a one-line
+        report is better than a report you did not send.
+  - type: textarea
+    id: what
+    attributes:
+      label: What happened
+      description: If the installer stopped, the last line it printed is the single most useful thing you can paste.
+      placeholder: The installer got to STEP 1/5 and quit with "git clone failed".
+    validations:
+      required: true
+  - type: input
+    id: os
+    attributes:
+      label: OS
+      placeholder: Windows 11 / macOS 15 / Ubuntu 24.04
+  - type: input
+    id: version
+    attributes:
+      label: Clayrune version
+      description: Shown next to the logo in the app. Skip it if you never got that far.
+      placeholder: v2.0.2

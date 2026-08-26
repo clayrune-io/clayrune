@@ -1,0 +1,15 @@
+name: Feedback, a question, or an idea
+description: Anything that is not a bug. Half-formed is fine.
+labels: [feedback]
+body:
+  - type: textarea
+    id: body
+    attributes:
+      label: Go ahead
+      description: |
+        A question, something confusing, a feature you expected and did not find,
+        or just what you were hoping this would do. There is no wrong way to
+        write this.
+      placeholder: I wanted to point it at two repos at once and could not work out whether that was supported.
+    validations:
+      required: true
