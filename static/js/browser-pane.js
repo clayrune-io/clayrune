@@ -7,6 +7,15 @@
 // window.* (see discovery_es_module_cross_boundary_globals).
 
 const BP_VIEW_W = 1280, BP_VIEW_H = 800;
+// The page coordinate space clicks are mapped into. NOT a constant: CDP's
+// Emulation.setDeviceMetricsOverride does not take effect, so a 1280x800
+// window actually renders a 1264x649 content viewport once browser chrome and
+// the scrollbar come out. Mapping into a hardcoded 1280x800 put a click at the
+// bottom edge ~150px below where the user aimed, which is what made the pane
+// feel misaligned on first load. The server now ships the frame's real
+// deviceWidth/deviceHeight and we scale to that; the constants are only a
+// first-frame fallback.
+let _bpViewW = BP_VIEW_W, _bpViewH = BP_VIEW_H;
 let _bpSession = null, _bpES = null, _bpMoveTs = 0, _bpPressed = false;
 // The mouseup handler lives on `window` (a drag can end off the image), so it
 // must be tracked and removed on teardown — otherwise every re-open stacks
@@ -48,8 +57,8 @@ function _bpSend(body) {
 function _bpCoords(img, e) {
   const r = img.getBoundingClientRect();
   return {
-    x: Math.max(0, Math.min(BP_VIEW_W, (e.clientX - r.left) / r.width * BP_VIEW_W)),
-    y: Math.max(0, Math.min(BP_VIEW_H, (e.clientY - r.top) / r.height * BP_VIEW_H)),
+    x: Math.max(0, Math.min(_bpViewW, (e.clientX - r.left) / r.width * _bpViewW)),
+    y: Math.max(0, Math.min(_bpViewH, (e.clientY - r.top) / r.height * _bpViewH)),
   };
 }
 
@@ -312,8 +321,8 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
     // finger up → content scrolls down: deltaY = (prev - current), scaled to page px
     _bpSend({
       type: 'wheel', ..._bpCoords(img, t),
-      deltaX: (touch.x - t.clientX) * (BP_VIEW_W / r.width),
-      deltaY: (touch.y - t.clientY) * (BP_VIEW_H / r.height),
+      deltaX: (touch.x - t.clientX) * (_bpViewW / r.width),
+      deltaY: (touch.y - t.clientY) * (_bpViewH / r.height),
     });
     touch.x = t.clientX; touch.y = t.clientY;
   }, { passive: false });
@@ -328,8 +337,28 @@ async function openBrowserPane(url, projectId, sessionId, profile) {
 
   // ── frame stream ──
   _bpES = new EventSource((window.API_BASE || '') + '/api/browser/stream?session_id=' + _bpSession);
+  // Fallback for the frame's true size when the server is older than this
+  // file and sends no w/h: the decoded JPEG IS the viewport. CDP only scales a
+  // frame down when the viewport exceeds maxWidth/maxHeight, and the window is
+  // launched at exactly that size, so naturalWidth/Height is the page's own
+  // coordinate space. Without this, clicks map into a 1280x800 space that does
+  // not exist and land up to ~150px low.
+  img.addEventListener('load', () => {
+    const w = img.naturalWidth, h = img.naturalHeight;
+    if (w && h && (w !== _bpViewW || h !== _bpViewH)) {
+      _bpViewW = w; _bpViewH = h;
+      img.style.aspectRatio = w + '/' + h;
+    }
+  });
   _bpES.onmessage = ev => {
     let d; try { d = JSON.parse(ev.data); } catch { return; }
+    if (d.w && d.h && (d.w !== _bpViewW || d.h !== _bpViewH)) {
+      // Adopt the frame's real viewport for BOTH hit-testing and layout. Setting
+      // aspect-ratio from the frame also kills the vertical stretch the fixed
+      // 1280/800 ratio caused (an <img> defaults to object-fit:fill).
+      _bpViewW = d.w; _bpViewH = d.h;
+      img.style.aspectRatio = d.w + '/' + d.h;
+    }
     if (d.img) { img.src = 'data:image/jpeg;base64,' + d.img; spin.style.color = '#4caf50'; }
     if (d.url && document.activeElement !== urlInput) urlInput.value = d.url;
     if (d.status && d.status !== 'running') { spin.textContent = '×'; spin.style.color = '#e57373'; }
@@ -345,6 +374,9 @@ function closeBrowserPane() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   _bpPressed = false;
+  // Reset the viewport guess: the next session may render at a different
+  // size, and a stale value would mis-map every click before its first frame.
+  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H;
   // Explicit close ends the backend session — so don't restore it on next load.
   try { localStorage.removeItem('mc_browser_pane_open'); } catch (e) {}
   if (_bpSession) {
@@ -388,6 +420,9 @@ function _bpDetachView() {
   if (_bpES) { try { _bpES.close(); } catch (e) {} _bpES = null; }
   if (_bpUpHandler) { window.removeEventListener('mouseup', _bpUpHandler); _bpUpHandler = null; }
   _bpPressed = false;
+  // Reset the viewport guess: the next session may render at a different
+  // size, and a stale value would mis-map every click before its first frame.
+  _bpViewW = BP_VIEW_W; _bpViewH = BP_VIEW_H;
   const w = document.getElementById('mc-browser-pane');
   if (w) w.remove();
 }

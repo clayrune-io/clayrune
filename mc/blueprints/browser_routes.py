@@ -369,6 +369,17 @@ def _run_cdp(session):
             if method == 'Page.screencastFrame':
                 p = msg['params']
                 session['frame'] = p.get('data')
+                # CDP reports the frame's TRUE viewport in CSS px. It is NOT
+                # VIEW_W x VIEW_H: Emulation.setDeviceMetricsOverride does not
+                # take effect here, so a 1280x800 window yields a 1264x649
+                # content viewport once chrome and the scrollbar come out. The
+                # pane used to map clicks into a hardcoded 1280x800 space, which
+                # put a click at the bottom edge ~150px below where the user
+                # aimed. Ship the real numbers so the client scales to them.
+                md = p.get('metadata') or {}
+                dw, dh = md.get('deviceWidth'), md.get('deviceHeight')
+                if dw and dh:
+                    session['frame_w'], session['frame_h'] = int(dw), int(dh)
                 session['frame_seq'] = session.get('frame_seq', 0) + 1
                 try:
                     ws.send(json.dumps({'id': _next_id(),
@@ -638,7 +649,9 @@ def browser_stream():
                 last = seq
                 idle = 0
                 payload = json.dumps({'seq': seq, 'img': session['frame'],
-                                      'url': session.get('url')})
+                                      'url': session.get('url'),
+                                      'w': session.get('frame_w'),
+                                      'h': session.get('frame_h')})
                 yield f'data: {payload}\n\n'
             else:
                 idle += 1
