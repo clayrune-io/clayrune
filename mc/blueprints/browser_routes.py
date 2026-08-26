@@ -64,6 +64,7 @@ vault makes about its file key backend.
 """
 
 import glob
+from urllib.parse import urlsplit as _urlsplit
 import json
 import os
 import queue
@@ -246,6 +247,45 @@ def _import_ws():
         return None
 
 
+def _pick_page_target(targets, want_url=''):
+    """Choose which tab to attach to.
+
+    Was `first page target, whatever it is`. A named profile restores its
+    previous tabs and SSO flows open their own, so that routinely picked the
+    wrong one -- and a tab that is not frontmost renders NOTHING in headless
+    Chromium, so the pane went permanently black while the URL bar still
+    showed the address we asked for. Measured on the cloudflare profile: the
+    foreground tab emitted a frame immediately, the background sign-in tab
+    emitted zero in 5s.
+    """
+    pages = [t for t in targets
+             if t.get('type') == 'page' and t.get('webSocketDebuggerUrl')]
+    if not pages:
+        return None
+
+    def _origin(u):
+        try:
+            sp = _urlsplit(u or '')
+            return (sp.scheme, sp.netloc)
+        except Exception:
+            return ('', '')
+
+    if want_url:
+        for t in pages:                       # exact page we asked for
+            if t.get('url') == want_url:
+                return t
+        wo = _origin(want_url)
+        if wo != ('', ''):                    # same site, post-redirect
+            for t in pages:
+                if _origin(t.get('url')) == wo:
+                    return t
+    for t in pages:                           # any real page over a blank one
+        u = t.get('url') or ''
+        if u and not u.startswith(('about:', 'chrome://', 'devtools://')):
+            return t
+    return pages[0]
+
+
 def _run_cdp(session):
     """Single CDP thread: connect, drive screencast, dispatch queued commands.
 
@@ -273,7 +313,7 @@ def _run_cdp(session):
             try:
                 targets = json.load(urllib.request.urlopen(
                     f'http://127.0.0.1:{port}/json/list', timeout=1))
-                page = next((t for t in targets if t.get('type') == 'page'), None)
+                page = _pick_page_target(targets, session.get('url') or '')
                 if page and page.get('webSocketDebuggerUrl'):
                     break
             except Exception:
@@ -305,6 +345,9 @@ def _run_cdp(session):
                   'maxHeight': VIEW_H, 'everyNthFrame': 1})
 
         send('Page.enable')
+        # A background tab renders nothing in headless Chromium, so the tab we
+        # attached to must be the frontmost one or every frame is a no-show.
+        send('Page.bringToFront')
         send('Emulation.setDeviceMetricsOverride',
              {'width': VIEW_W, 'height': VIEW_H, 'deviceScaleFactor': 1, 'mobile': False})
         # Present a normal (non-headless) User-Agent. Chromium's --headless=new
@@ -389,6 +432,13 @@ def _run_cdp(session):
                     session['status'] = 'error'
                     session['error'] = f'ack failed: {e}'
                     break
+            elif method == 'Page.frameNavigated':
+                # The pane used to display the URL we REQUESTED, so a redirect to
+                # an SSO page (or attaching to the wrong tab) left the bar showing
+                # a confident, wrong address over a blank pane. Report the truth.
+                fr = (msg.get('params') or {}).get('frame') or {}
+                if not fr.get('parentId') and fr.get('url'):
+                    session['live_url'] = fr['url']
             elif method == 'Page.frameStoppedLoading':
                 # A cross-document navigation (typed URL, clicked link, or a
                 # queued Page.navigate) STOPS the active screencast on this ws.
@@ -649,7 +699,7 @@ def browser_stream():
                 last = seq
                 idle = 0
                 payload = json.dumps({'seq': seq, 'img': session['frame'],
-                                      'url': session.get('url'),
+                                      'url': session.get('live_url') or session.get('url'),
                                       'w': session.get('frame_w'),
                                       'h': session.get('frame_h')})
                 yield f'data: {payload}\n\n'
@@ -728,7 +778,9 @@ def _read_page_selection(session):
     try:
         targets = json.load(urllib.request.urlopen(
             f'http://127.0.0.1:{port}/json/list', timeout=2))
-        page = next((t for t in targets if t.get('type') == 'page'), None)
+        # Same picker as the reader thread: attaching to an arbitrary tab is why
+        # this used to return '' on any site that opened a second tab.
+        page = _pick_page_target(targets, session.get('live_url') or session.get('url') or '')
         if not page or not page.get('webSocketDebuggerUrl'):
             return ''
         ws = websocket.create_connection(page['webSocketDebuggerUrl'],
