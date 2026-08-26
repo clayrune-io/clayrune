@@ -340,3 +340,79 @@ def test_put_omitting_agent_name_leaves_it_alone(client):
 def test_naming_an_unknown_character_404s(client):
     assert client.post('/api/characters/project/nope/name',
                        json={'project_id': 'tchar'}).status_code == 404
+
+
+class TestMove:
+    """A persona's home was decided once, at creation, and could never change:
+    Ron wrote a marketing persona into one project with no way to promote it to
+    global or hand it to another short of retyping the whole thing."""
+
+    def _mk_project(self, client, **over):
+        r = client.post('/api/characters', json=_payload(
+            name='social-media-strategist',
+            avatar='fig:courier', skills=['frontend-design'], **over))
+        assert r.status_code == 201, r.get_json()
+        # The self-chosen name is set through its own route, not on create.
+        assert client.post(
+            '/api/characters/project/social-media-strategist/name',
+            json={'agent_name': 'Posy', 'project_id': 'tchar'}).status_code == 200
+
+    def test_project_to_global_carries_the_whole_record(self, client):
+        self._mk_project(client)
+        r = client.post('/api/characters/project/social-media-strategist/move'
+                        '?project_id=tchar', json={'to_scope': 'global'})
+        assert r.status_code == 200, r.get_json()
+        rec = r.get_json()['character']
+        # Everything, not just the body: an avatar or a pinned engine silently
+        # dropped by a move is a persona that behaves differently afterwards.
+        assert rec['scope'] == 'global' and rec['agent_name'] == 'Posy'
+        assert rec['avatar'] == 'fig:courier'
+        assert rec['skills'] == ['frontend-design']
+        moved = (client.global_dir / 'social-media-strategist.md').read_text(encoding='utf-8')
+        assert 'strict senior code reviewer' in moved
+        # And it is GONE from the old home — a move, not a copy.
+        assert not (client.proj_agents / 'social-media-strategist.md').exists()
+        assert (client.global_dir / 'social-media-strategist.md').exists()
+
+    def test_global_to_project(self, client):
+        assert client.post('/api/characters', json=_payload(
+            name='helper', scope='global', project_id=None)).status_code == 201
+        r = client.post('/api/characters/global/helper/move',
+                        json={'to_scope': 'project', 'to_project_id': 'tchar'})
+        assert r.status_code == 200, r.get_json()
+        assert (client.proj_agents / 'helper.md').exists()
+        assert not (client.global_dir / 'helper.md').exists()
+
+    def test_a_collision_refuses_and_leaves_BOTH_files_standing(self, client):
+        """Copy-then-delete, in that order, so a failure anywhere keeps the
+        original. The body is the part nobody can retype from memory."""
+        self._mk_project(client)
+        assert client.post('/api/characters', json=_payload(
+            name='social-media-strategist', scope='global',
+            project_id=None)).status_code == 201
+        r = client.post('/api/characters/project/social-media-strategist/move'
+                        '?project_id=tchar', json={'to_scope': 'global'})
+        assert r.status_code == 409
+        assert 'already lives there' in r.get_json()['error']
+        assert (client.proj_agents / 'social-media-strategist.md').exists()
+        assert (client.global_dir / 'social-media-strategist.md').exists()
+
+    def test_moving_somewhere_it_already_is_is_refused(self, client):
+        self._mk_project(client)
+        r = client.post('/api/characters/project/social-media-strategist/move'
+                        '?project_id=tchar',
+                        json={'to_scope': 'project', 'to_project_id': 'tchar'})
+        assert r.status_code == 400
+
+    def test_an_unknown_character_is_a_404_not_an_empty_file(self, client):
+        r = client.post('/api/characters/global/nobody/move',
+                        json={'to_scope': 'project', 'to_project_id': 'tchar'})
+        assert r.status_code == 404
+
+    def test_a_project_with_no_folder_cannot_be_a_destination(self, client):
+        assert client.post('/api/characters', json=_payload(
+            name='helper', scope='global', project_id=None)).status_code == 201
+        r = client.post('/api/characters/global/helper/move',
+                        json={'to_scope': 'project', 'to_project_id': 'nopath'})
+        assert r.status_code == 400
+        assert (client.global_dir / 'helper.md').exists()

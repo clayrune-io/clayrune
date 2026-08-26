@@ -993,6 +993,30 @@ function _peEffortOptions(cur) {
   return _peOpts(choices, cur);
 }
 
+// Where a persona lives, as a picker rather than a printed fact. Scope used to
+// be decided once at creation and be unchangeable forever: a persona written
+// into one project could not be promoted to global or handed to another
+// project short of retyping the whole thing. Filing decisions get revised.
+function _peHomeOptions(scope, projectId) {
+  const cur = scope === 'project' ? 'project:' + projectId : 'global';
+  const rows = [['global', 'Global — every project']];
+  // A project with no folder cannot hold an agents dir, so it cannot be a home.
+  // Bare `allProjects`, like every other module reads it: it is a top-level
+  // `let` in index.html's classic script, which lives in the global lexical
+  // scope and is therefore NOT a property of `window`.
+  const projects = (typeof allProjects === 'undefined') ? [] : (allProjects || []);
+  for (const p of projects.filter((p) => p.project_path)) {
+    rows.push(['project:' + p.id, p.name || p.id]);
+  }
+  // A home the list does not know about (the project was deleted, or its
+  // folder was cleared) must stay visible and selected — otherwise the picker
+  // would silently read "Global" over a persona that is not global, and the
+  // first Move would be a move nobody asked for.
+  if (!rows.some((r) => r[0] === cur)) rows.push([cur, projectId + ' (missing)']);
+  return rows.map(([v, label]) =>
+    `<option value="${esc(v)}"${v === cur ? ' selected' : ''}>${esc(label)}</option>`).join('');
+}
+
 async function openPersonaEditor(projectId, scope, name, onDone) {
   document.querySelector('.persona-editor')?.remove();
 
@@ -1047,8 +1071,12 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         <select id="pe-model">${_peModelOptions((rec.engine || {}).model)}</select>
         <select id="pe-effort">${_peEffortOptions((rec.engine || {}).effort)}</select>
       </div>
+      <label>Belongs to <span class="claydo-save-hint">(a global persona works in every project; a project one only works in its own)</span></label>
+      <div class="persona-move-row">
+        <select id="pe-home">${_peHomeOptions(scope, projectId)}</select>
+        <button type="button" class="claydo-ready-btn" id="pe-move" disabled>Move</button>
+      </div>
       <div class="persona-editor-meta">
-        <span>${scope === 'global' ? 'Global — all projects' : 'This project only'}</span>
         <span id="pe-size"></span>
       </div>
       </div>
@@ -1164,6 +1192,50 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         && !confirm('Discard your changes to this persona?')) return;
     close();
   };
+
+  // ── Move it somewhere else ────────────────────────────────────────────
+  // A move rewrites the file at a new path, so it must not race the field
+  // values: an unsaved edit would be silently dropped at the old home. Refuse
+  // while dirty rather than trying to save-and-move in one click, which turns
+  // one failure mode into two.
+  {
+    const homeSel = panel.querySelector('#pe-home');
+    const moveBtn = panel.querySelector('#pe-move');
+    const home0 = homeSel.value;
+    homeSel.onchange = () => { moveBtn.disabled = homeSel.value === home0; };
+    moveBtn.onclick = async () => {
+      if (_initial() !== _snapshot) {
+        return showErr('Save your changes first — a move rewrites the file, and '
+          + 'anything unsaved would be left behind at the old home.');
+      }
+      const [toScope, toProject] = homeSel.value.split(':');
+      const where = homeSel.options[homeSel.selectedIndex].textContent;
+      if (!confirm(`Move this persona to ${where}?`)) return;
+      moveBtn.disabled = true;
+      try {
+        const qs = scope === 'project' && projectId
+          ? '?project_id=' + encodeURIComponent(projectId) : '';
+        const res = await fetch(API_BASE
+          + `/api/characters/${encodeURIComponent(scope)}/${encodeURIComponent(name)}/move` + qs, {
+          method: 'POST', headers: {'Content-Type': 'application/json'},
+          body: JSON.stringify({to_scope: toScope, to_project_id: toProject || null}),
+        });
+        const out = await res.json().catch(() => ({}));
+        if (!res.ok || !out.ok) throw new Error(out.error || `move failed (${res.status})`);
+        close();
+        if (typeof onDone === 'function') onDone();
+        // `window.` — floor.js is a module, so its top-level names are not
+        // globals; it publishes this one explicitly.
+        if (typeof window.refreshFloor === 'function') window.refreshFloor();
+        // Reopen at the NEW home. Closing on a move and leaving the user
+        // staring at the board is the moment they wonder whether it worked.
+        openPersonaEditor(toProject || null, toScope, name, onDone);
+      } catch (e) {
+        moveBtn.disabled = false;
+        showErr(e.message || String(e));
+      }
+    };
+  }
 
   panel.querySelector('#pe-cancel').onclick = closeIfClean;
   panel.addEventListener('mousedown', (e) => { if (e.target === panel) closeIfClean(); });

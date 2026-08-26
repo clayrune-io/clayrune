@@ -341,6 +341,65 @@ def name_character_route(scope, name):
                                          include_body=False))
 
 
+@bp.route('/api/characters/<scope>/<name>/move', methods=['POST'])
+def move_character_route(scope, name):
+    """Move a persona between scopes / projects.
+
+    A character's home was decided once, at creation, and could never be
+    changed after: Ron wrote a marketing persona into one project and had no
+    way to promote it to global or hand it to another project short of
+    retyping the whole thing somewhere else. Scope is a filing decision, and
+    filing decisions get revised.
+
+    Copy-then-delete rather than a rename, so a failure anywhere leaves the
+    ORIGINAL standing. The alternative loses the file when the destination
+    write fails, and the body is the part nobody can retype from memory.
+    """
+    data = request.get_json() or {}
+    to_scope = (data.get('to_scope') or '').strip()
+    to_project_id = data.get('to_project_id')
+    if scope not in ('global', 'project') or to_scope not in ('global', 'project'):
+        return jsonify({'error': 'scope must be global|project'}), 400
+
+    from_path, err = _resolve_project_path_or_400(scope, request.args.get('project_id'))
+    if err:
+        return err
+    to_path, err = _resolve_project_path_or_400(to_scope, to_project_id)
+    if err:
+        return err
+    if scope == to_scope and (from_path or '') == (to_path or ''):
+        return jsonify({'error': 'it is already there'}), 400
+
+    rec = _chars.read_character(scope, name, project_path=from_path,
+                                include_body=True)
+    if not rec:
+        return jsonify({'error': 'character not found'}), 404
+    try:
+        moved = _chars.write_character(
+            to_scope, name, rec.get('description') or '', rec.get('body') or '',
+            project_path=to_path, overwrite=False,
+            engine=rec.get('engine'), agent_name=rec.get('agent_name'),
+            avatar=rec.get('avatar'), skills=rec.get('skills'))
+    except FileExistsError:
+        return jsonify({
+            'error': f'a character called {name!r} already lives there — '
+                     'rename one of them first'}), 409
+    except (ValueError, OSError) as e:
+        return jsonify({'error': f'move failed: {e}'}), 400
+
+    try:
+        _chars.delete_character(scope, name, project_path=from_path)
+    except OSError as e:
+        # The copy landed. Say so plainly rather than reporting a clean move —
+        # two files with the same name in two scopes is a shadowing surprise
+        # the user has to know about to fix.
+        return jsonify({
+            'ok': False, 'copied': True, 'character': moved,
+            'error': f'copied to the new home, but the original could not be '
+                     f'removed ({e}) — it is now in both places'}), 500
+    return jsonify({'ok': True, 'character': moved})
+
+
 @bp.route('/api/characters/<scope>/<name>', methods=['DELETE'])
 def delete_character_route(scope, name):
     if scope not in ('global', 'project'):

@@ -583,3 +583,54 @@ def test_a_figure_avatar_survives_the_length_cap(floor, tmp_path):
     assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:guard'
     c.post('/api/floor/figure/1/name', json={'avatar': 'fig:gardener'})
     assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:gardener'
+
+
+def test_a_project_persona_reaches_the_bench_and_says_where_it_lives(floor):
+    """The bench was global-only, on the reasoning that a project-scoped type
+    "is not dispatchable anywhere". That is the wrong half: it is dispatchable
+    into exactly one room, its own. Ron wrote a persona into a project and it
+    simply was not on the board -- no card, no pencil, nothing saying why."""
+    fr, c, sessions, projects, chars = floor
+    projects.append({'id': 'w', 'name': 'Website', 'project_path': '/w'})
+    chars.append({'name': 'dave', 'agent_name': 'Dave', 'scope': 'global'})
+    fr.list_characters = lambda project_path=None, project_id=None: (
+        chars if not project_path else chars + [
+            {'name': 'social-media-strategist', 'agent_name': 'Posy',
+             'scope': 'project', 'description': 'writes the posts'}])
+    d = _get(c)
+    posy = [b for b in d['bench'] if b['display'] == 'Posy']
+    assert len(posy) == 1, 'the project persona is missing from the bench'
+    assert (posy[0]['project_id'], posy[0]['project_name']) == ('w', 'Website')
+    # The globals come back once, not once per project that lists them too.
+    assert len([b for b in d['bench'] if b['display'] == 'Dave']) == 1
+
+
+def test_a_project_type_only_counts_rooms_in_its_own_project(floor):
+    """Two projects may each hire a type with the same file name. Merging them
+    on name alone would report a room the OTHER one is standing in."""
+    fr, c, sessions, projects, chars = floor
+    projects += [{'id': 'w', 'name': 'Website', 'project_path': '/w'},
+                 {'id': 'x', 'name': 'Other', 'project_path': '/x'}]
+    ch = {'name': 'scout', 'agent_name': 'Scout', 'scope': 'project'}
+    fr.list_characters = lambda project_path=None, project_id=None: (
+        [] if not project_path else [dict(ch)])
+    sessions['1'] = _session('x', '1', character={'name': 'scout',
+                                                  'agent_name': 'Scout',
+                                                  'scope': 'project'})
+    by_project = {b['project_id']: b['rooms'] for b in _get(c)['bench']}
+    assert by_project == {'w': [], 'x': ['Other']}
+
+
+def test_a_project_with_no_folder_cannot_hold_a_roster(floor):
+    """`project_agents_dir` needs a path. Asking for one without a folder would
+    be a scan of nothing at best and a crash at worst."""
+    fr, c, sessions, projects, chars = floor
+    projects.append({'id': 'w', 'name': 'Website'})   # no project_path
+    asked = []
+
+    def spy(project_path=None, project_id=None):
+        asked.append(project_path)
+        return []
+    fr.list_characters = spy
+    _get(c)
+    assert asked == [None], f'scanned a project with no folder: {asked}'

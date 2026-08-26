@@ -4822,6 +4822,14 @@
   .fl-busy {
     display: block; font-size: 10px; margin-top: 4px; color: var(--text-dim);
   }
+  /* A project persona: it lives in one project and can only work there. Worth
+     saying on the card, because it is why its room picker offers one room. */
+  .fl-owned {
+    display: inline-block; font-size: 9px; font-weight: 700; margin-top: 5px;
+    letter-spacing: 0.3px; text-transform: uppercase; padding: 1px 6px;
+    border-radius: 8px; color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 13%, transparent);
+  }
   .fl-pick-row {
     display: flex; flex-wrap: wrap; align-items: center; gap: 5px;
     margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
@@ -7002,6 +7010,14 @@
      defaulting to "unpinned" so the row reads as optional at a glance. */
   /* "Goes by" — the self-chosen name, with the dice button beside it. */
   .persona-name-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: stretch; }
+  /* "Belongs to" — the home picker and its Move button on one row. */
+  .persona-move-row { display: flex; gap: 6px; margin-bottom: 8px; align-items: stretch; }
+  .persona-move-row select {
+    flex: 1 1 auto; min-width: 0; background: var(--bg);
+    border: 1px solid var(--border); color: var(--text);
+    border-radius: 6px; padding: 6px 8px; font-size: 12px;
+  }
+  .persona-move-row .claydo-ready-btn { flex: 0 0 auto; }
   .persona-name-row input { flex: 1; min-width: 0; margin-bottom: 0 !important; }
   .persona-name-row button { flex-shrink: 0; white-space: nowrap; }
   .persona-engine-row { display: flex; gap: 6px; margin-bottom: 8px; }

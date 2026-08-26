@@ -371,30 +371,70 @@ def floor():
     # Where it is already working is now a line ON the card, not a filter.
     # Keyed on the character's file name, which is its identity — `agent_name`
     # is what it calls itself and two characters may pick the same one.
+    # (scope, name) rather than name alone: a project may hire a type with the
+    # same file name as a global one, and merging them would report a room the
+    # other one is standing in.
     rooms_of: dict = {}
     for r in live:
         for f in r['figures']:
-            nm = (f['character'] or {}).get('name')
-            if nm and r['name'] not in rooms_of.setdefault(nm, []):
-                rooms_of[nm].append(r['name'])
+            ch = f['character'] or {}
+            nm = ch.get('name')
+            if not nm:
+                continue
+            lst = rooms_of.setdefault(((ch.get('scope') or 'global'), nm), [])
+            if (r['id'], r['name']) not in lst:
+                lst.append((r['id'], r['name']))
+
+    def _bench_card(c, project_id='', project_name=''):
+        eng = c.get('engine') or {}
+        seen = rooms_of.get(((c.get('scope') or 'global'), c.get('name'))) or []
+        if project_id:
+            # A project type can only ever run in its own project, so a room
+            # of the same name elsewhere is a different type entirely.
+            seen = [x for x in seen if x[0] == project_id]
+        return {'name': c.get('name'), 'scope': c.get('scope'),
+                'avatar': c.get('avatar') or '',
+                'skills': c.get('skills') or [],
+                'display': (c.get('agent_name')
+                            or c.get('display_name') or c.get('name')),
+                'description': _clip(c.get('description'), _DESC_CHARS),
+                'provider': eng.get('provider') or '',
+                'model': eng.get('model') or '',
+                'effort': eng.get('effort') or '',
+                # Where this type LIVES. Empty for a global one, which is
+                # dispatchable into any room; set for a project-scoped one,
+                # which is only dispatchable into its own.
+                'project_id': project_id, 'project_name': project_name,
+                # Rooms this type is ALREADY working in. Empty = free.
+                'rooms': [nm for _, nm in seen]}
+
     bench = []
     try:
-        # Global pool only. A project-scoped character is not dispatchable
-        # anywhere, so putting it on a cross-project bench would offer a click
-        # that cannot be honoured; it belongs in that project's own roster.
+        # The global pool AND every project's own. The bench used to be global
+        # only, on the reasoning that a project-scoped type "is not dispatchable
+        # anywhere" so offering it here would be a click that cannot be
+        # honoured. That is half right and the wrong half: it is dispatchable
+        # into exactly one room, its own. Leaving it off meant Ron wrote a
+        # persona into a project and it simply was not on the board — no card,
+        # no pencil, and nothing saying where it had gone.
         for c in (list_characters() or []):
-            eng = c.get('engine') or {}
-            bench.append({'name': c.get('name'), 'scope': c.get('scope'),
-                          'avatar': c.get('avatar') or '',
-                          'skills': c.get('skills') or [],
-                          'display': (c.get('agent_name')
-                                      or c.get('display_name') or c.get('name')),
-                          'description': _clip(c.get('description'), _DESC_CHARS),
-                          'provider': eng.get('provider') or '',
-                          'model': eng.get('model') or '',
-                          'effort': eng.get('effort') or '',
-                          # Rooms this type is ALREADY working in. Empty = free.
-                          'rooms': rooms_of.get(c.get('name')) or []})
+            bench.append(_bench_card(c))
+        for p in (load_projects() or []):
+            pp = p.get('project_path')
+            if not pp:
+                continue
+            try:
+                own = list_characters(project_path=pp, project_id=p.get('id'))
+            except Exception as e:
+                _log(f"[floor] roster unreadable for {p.get('id')}: {e}")
+                continue
+            for c in (own or []):
+                # `list_characters` returns the globals alongside a project's
+                # own; those are already on the bench once.
+                if (c.get('scope') or '') != 'project':
+                    continue
+                bench.append(_bench_card(c, p.get('id') or '',
+                                         p.get('name') or p.get('id') or ''))
     except Exception as e:
         _log(f'[floor] bench unavailable: {e}')
         bench = []

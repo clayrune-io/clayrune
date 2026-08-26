@@ -243,27 +243,30 @@ function _floorQuiet(quiet) {
   </div>`;
 }
 
-// Which bench card has its room picker open, by character name. Only ever one:
-// two open pickers is two half-made decisions on screen.
+// Which bench card has its room picker open, keyed "scope:project:name". Not
+// the name alone — two projects may each hire a `researcher`, and one click
+// would open both cards' pickers. Only ever one open: two is two half-made
+// decisions on screen.
 let floorPickerFor = null;
 
 function _floorBench(bench, rooms, quiet) {
   const hire = `<button class="fl-hire" onclick="floorHire()"
       title="Describe a new agent type with Claydo, then save it">&#43; Hire someone new</button>`;
   const head = `<div class="fl-section-head">Bench
-      <span class="dave-sub">everyone you have hired &mdash; click one to put it in a room</span>
+      <span class="dave-sub">everyone you have hired, global and per-project &mdash; click one to put it in a room</span>
       ${hire}</div>`;
   if (!bench.length) {
     return `<div class="fl-bench">${head}
       <div class="dave-empty">You have not hired anyone yet.</div></div>`;
   }
   const cards = bench.map(b => {
-    const open = floorPickerFor === b.name;
+    const key = (b.scope || 'global') + ':' + (b.project_id || '') + ':' + b.name;
+    const open = floorPickerFor === key;
     const eng = [b.provider, b.model, b.effort].filter(Boolean).join(' · ');
     const hue = _floorHue(b.name || b.display || '');
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
-      <div class="fl-bench-main" onclick="floorTogglePicker('${esc(b.name)}')">
+      <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
         <span class="fl-face fl-face-bench">${window.avatarHTML(b.avatar, FLOOR_FACE_PX)}</span>
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
@@ -271,6 +274,9 @@ function _floorBench(bench, rooms, quiet) {
             onclick="event.stopPropagation();floorEditType('${esc(b.scope || 'global')}','${esc(b.name)}')"
             >&#9998;</button></span>
         <span class="fl-bench-desc">${esc(b.description || 'no description — nothing tells an agent when to use this one')}</span>
+        ${b.project_name
+          ? `<span class="fl-owned" title="A project persona. It lives in this project and can only work here — the global ones go anywhere.">only in ${esc(b.project_name)}</span>`
+          : ''}
         ${(b.rooms || []).length
           ? `<span class="fl-busy" title="Already working there. You can still put it in another room — one type runs in as many projects as you like.">already in ${
               b.rooms.map(esc).join(', ')}</span>`
@@ -297,8 +303,15 @@ function _floorBench(bench, rooms, quiet) {
 function _floorRoomPicker(b, rooms, quiet) {
   // Busy rooms first: putting a second agent somewhere already active is the
   // more common intent than waking a project that has been quiet for a week.
-  const all = (rooms || []).concat(quiet || []);
-  if (!all.length) return '<div class="fl-pick-empty">No projects.</div>';
+  let all = (rooms || []).concat(quiet || []);
+  // A project persona is only dispatchable in its own project. Offering the
+  // other nineteen rooms would be nineteen clicks that cannot be honoured.
+  if (b.project_id) all = all.filter((r) => r.id === b.project_id);
+  if (!all.length) {
+    return `<div class="fl-pick-empty">${b.project_name
+      ? esc(b.project_name) + ' is not on the board right now.'
+      : 'No projects.'}</div>`;
+  }
   const inAlready = new Set(b.rooms || []);
   const items = all.map(r =>
     `<span class="fl-pick${inAlready.has(r.name) ? ' fl-pick-again' : ''}"
@@ -310,8 +323,8 @@ function _floorRoomPicker(b, rooms, quiet) {
   return `<div class="fl-pick-row"><span class="fl-pick-label">into&hellip;</span>${items}</div>`;
 }
 
-function floorTogglePicker(name) {
-  floorPickerFor = floorPickerFor === name ? null : name;
+function floorTogglePicker(key) {
+  floorPickerFor = floorPickerFor === key ? null : key;
   refreshFloor();
 }
 
