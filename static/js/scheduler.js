@@ -30,6 +30,7 @@ async function openScheduler() {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
+    <div class="scheduler-body">
     <div class="scheduler-section" style="padding-top:4px;padding-bottom:0">
       <div id="scheduler-pause-bar"></div>
     </div>
@@ -54,6 +55,7 @@ async function openScheduler() {
       </div>
       <div id="schedule-form-area"></div>
       <div id="schedule-list"><div class="schedule-empty">Loading...</div></div>
+    </div>
     </div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);

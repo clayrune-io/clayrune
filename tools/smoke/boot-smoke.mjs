@@ -982,6 +982,131 @@ async function runMemoryPanelGuard(browser) {
 }
 
 
+// ── Scheduled Tasks modal layout guard ──────────────────────────────────────
+// The modal grew from one section to three (pause switch, stewards, schedules)
+// while `.scheduler-section` still carried `height: calc(100% - 56px)` and its
+// own `overflow-y:auto`. Three flex items each demanding the full body height
+// get shrunk to a third apiece, so every section turned into its own stunted
+// scroll box: a 62px pause bar padded out with dead space, and two dozen
+// schedule cards sealed inside a ~250px window with no outer scrollbar to
+// reach them. Nothing threw and nothing looked broken in code review — it is a
+// pure layout failure, so it needs a layout assertion.
+//
+// The invariant: ONE scroll container for the modal, and no section is one.
+async function runSchedulerLayoutGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1400, height: 900 } });
+  const page = await ctx.newPage();
+  // Enough rows that the list cannot fit — the bug is only visible when the
+  // content overflows.
+  const SCHEDULES = Array.from({ length: 12 }, (_, i) => ({
+    id: 'sch_' + i, project_id: 'alpha', project_name: 'Alpha', enabled: i % 2 === 0,
+    schedule_type: 'daily', time: '09:30', days: [], task: 'Scheduled task number ' + i,
+  }));
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
+    if (path === '/api/schedules' && req.method() === 'GET') return json(SCHEDULES);
+    if (path === '/api/config') return json({ scheduler_paused: false });
+    if (path === '/api/steward/loop-health') return json({ ok: true });
+    if (/\/steward$/.test(path)) return json({ enabled: false });
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('SCHEDFAIL scheduler layout guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async () => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 500));
+    try {
+      await openScheduler();
+      await settle(900);
+      const content = document.querySelector('[data-modal-id="__scheduler"] .modal-content');
+      if (!content) { r.err = 'scheduler modal did not open'; return r; }
+      const body = content.querySelector('.scheduler-body');
+      r.hasBody = !!body;
+      if (!body) { r.err = 'no .scheduler-body scroll container'; return r; }
+
+      // 1. The body is the scroller, and it actually has something to scroll.
+      r.bodyScrolls = body.scrollHeight > body.clientHeight + 4;
+      body.scrollTop = body.scrollHeight;
+      await settle(200);
+      r.bodyScrolled = body.scrollTop > 10;
+
+      // 2. No section is its own scroll box, and none is taller than its own
+      //    content — that inflation IS the dead space the user sees.
+      // Dead space = the gap between where the last child ends and where the
+      // section's own padding ends. Summing child heights instead would count
+      // margins as dead space and cry wolf on every normal layout.
+      r.sections = [...content.querySelectorAll('.scheduler-section')].map((el) => {
+        const cs = getComputedStyle(el);
+        const rect = el.getBoundingClientRect();
+        const last = el.lastElementChild;
+        const dead = last
+          ? rect.bottom - parseFloat(cs.paddingBottom) - last.getBoundingClientRect().bottom
+          : 0;
+        return {
+          overflowY: cs.overflowY,
+          height: Math.round(rect.height),
+          deadSpace: Math.round(dead),
+          fixedHeight: cs.height,
+        };
+      });
+      r.sectionCount = r.sections.length;
+      r.anySectionScrolls = r.sections.some((x) => x.overflowY === 'auto' || x.overflowY === 'scroll');
+      // 40px of slack: the bug left 100px+ under every section, while normal
+      // collapsed margins account for well under that.
+      r.anySectionInflated = r.sections.some((x) => x.deadSpace > 40);
+
+      // 3. Every schedule row is reachable, not sealed off below the fold.
+      r.cardCount = document.querySelectorAll('#schedule-list .schedule-card').length;
+      const last = [...document.querySelectorAll('#schedule-list .schedule-card')].pop();
+      if (last) {
+        const lb = last.getBoundingClientRect();
+        const bb = body.getBoundingClientRect();
+        r.lastCardVisible = lb.top < bb.bottom + 2 && lb.bottom > bb.top - 2;
+      }
+    } catch (e) {
+      r.err = String((e && e.message) || e);
+    }
+    return r;
+  });
+
+  let ok = true;
+  const fail = (m) => { console.error('SCHEDFAIL ' + m); ok = false; };
+  if (out.err) fail(out.err);
+  if (!out.hasBody) fail('the modal has no single .scheduler-body scroll container.');
+  if (out.sectionCount !== 3) fail(`expected 3 sections, saw ${out.sectionCount}.`);
+  if (out.anySectionScrolls) {
+    fail('a .scheduler-section is its own scroll box — the modal must have exactly '
+       + 'one scroller: ' + JSON.stringify(out.sections));
+  }
+  if (out.anySectionInflated) {
+    fail('a .scheduler-section is taller than its content (dead space): '
+       + JSON.stringify(out.sections));
+  }
+  if (!out.bodyScrolls) fail('the body does not overflow — the fixture should not fit.');
+  if (!out.bodyScrolled) fail('the body did not scroll.');
+  if (out.cardCount !== 12) fail(`expected 12 schedule cards, saw ${out.cardCount}.`);
+  if (!out.lastCardVisible) fail('the last schedule card is unreachable after scrolling to the bottom.');
+  if (pageErrors.length) fail('page errors: ' + pageErrors.join(' | '));
+  if (ok) {
+    console.log('OKAY scheduler: one scroll container, no section is its own scroll box, '
+      + `no dead space, and all ${out.cardCount} schedules are reachable.`);
+  }
+  await ctx.close();
+  return ok;
+}
+
+
 // ── Scheduled-runs calendar guard ────────────────────────────────────────────
 // Two things here can be confidently wrong rather than obviously broken, which
 // is why they get asserted rather than eyeballed:
@@ -1836,11 +1961,12 @@ try {
   results.push(await runBacklogLinksGuard(browser));
   results.push(await runMemoryPanelGuard(browser));
   results.push(await runScheduleCalendarGuard(browser));
+  results.push(await runSchedulerLayoutGuard(browser));
   results.push(await runQuestionRepaintGuard(browser));
   results.push(await runFloorGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, question-repaint & floor guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint & floor guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);
