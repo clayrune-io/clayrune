@@ -19,21 +19,34 @@
   answers. That makes the task safe to fire repeatedly, and safe to run by hand
   while the server is already up.
 
-  LOGON, NOT STARTUP — deliberate. An at-startup task would have to run as SYSTEM
-  or store a password. SYSTEM has a different profile, so it would not see
-  ~/.clayrune (the secrets vault + browser profiles), the Claude CLI's auth, or
-  the user's PATH — Clayrune would boot and then fail at the first agent dispatch.
-  Running at logon as the real user keeps all of that intact. The trade-off:
-  after an unattended reboot this fires when the machine is signed in, so pair it
-  with Windows' "automatically sign in after an update restart" if you want the
-  gap closed completely.
+  LOGON BY DEFAULT, AT BOOT WITH -AtBoot. The original reasoning here was that an
+  at-startup task must run as SYSTEM or store a password, and SYSTEM has a
+  different profile — it would not see ~/.clayrune (the secrets vault + browser
+  profiles), the Claude CLI's auth, or the user's PATH, so Clayrune would boot and
+  then fail at the first agent dispatch. That is still true of SYSTEM, but it
+  missed a third option: LogonType S4U runs the task AS THE REAL USER with no
+  password stored anywhere.
+
+  The risk S4U carries is DPAPI — an S4U logon cannot always decrypt
+  user-protected data, and the remote-access device identity lives in Windows
+  Credential Manager, which is DPAPI-backed. That failure would be the worst kind:
+  Clayrune up, tunnel dead, reachable only from the machine you are not at.
+  Measured 2026-08-29 before adopting it — an S4U task reads all six
+  `mission-control-remote` keys (WinVaultKeyring), and a full server booted and
+  served pre-login in ~4s. So -AtBoot closes the gap this header used to hand to
+  Windows' "automatically sign in after an update restart".
+
+  Use -Install for the logon task (a machine someone signs into), -Install -AtBoot
+  for the boot task (a machine you reach only remotely). -AtBoot needs an elevated
+  PowerShell; registering an S4U principal is an admin operation.
 #>
 
 [CmdletBinding()]
 param(
   [switch]$Install,
   [switch]$Uninstall,
-  [switch]$Launch
+  [switch]$Launch,
+  [switch]$AtBoot
 )
 
 $ErrorActionPreference = 'Continue'
@@ -73,12 +86,19 @@ function Resolve-Python {
 # cheerfully start a second server alongside the first.
 function Resolve-Port {
   if ($env:MC_PORT) { return [int]$env:MC_PORT }
-  $cfg = Join-Path $dir 'data\config.json'
-  if (Test-Path $cfg) {
-    try {
-      $j = Get-Content $cfg -Raw | ConvertFrom-Json
-      if ($j.PSObject.Properties.Name -contains 'port' -and $j.port) { return [int]$j.port }
-    } catch {}
+  # server.py: CONFIG_PATH = _DATA_ROOT / 'config.json' — the repo ROOT, not
+  # data/. This used to look in data\config.json, which never exists, so it
+  # silently fell back to 5199. Harmless while the port IS 5199 and a
+  # split-brain waiting to happen the day it isn't: the probe would find
+  # nothing on 5199 and start a second server on the real port. data\ is kept
+  # as a fallback in case an older layout ever put it there.
+  foreach ($cfg in @((Join-Path $dir 'config.json'), (Join-Path $dir 'data\config.json'))) {
+    if (Test-Path $cfg) {
+      try {
+        $j = Get-Content $cfg -Raw | ConvertFrom-Json
+        if ($j.PSObject.Properties.Name -contains 'port' -and $j.port) { return [int]$j.port }
+      } catch {}
+    }
   }
   return 5199
 }
@@ -98,15 +118,39 @@ function Test-ClayruneUp([int]$port) {
 if ($Install) {
   $self = $MyInvocation.MyCommand.Path
   $action = New-ScheduledTaskAction -Execute 'powershell.exe' -Argument ('-NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "{0}" -Launch' -f $self)
-  $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
   # A minute of delay lets the network stack and any mapped drives settle; a
   # server that boots before DNS resolves just fails its first outbound calls.
-  $trigger.Delay = 'PT45S'
+  if ($AtBoot) {
+    # S4U: the real user's identity, no password stored. See the header for why
+    # this is safe (DPAPI/Credential Manager was measured, not assumed) and why
+    # SYSTEM is not. Registering an S4U principal requires elevation.
+    $id = [Security.Principal.WindowsIdentity]::GetCurrent()
+    if (-not ([Security.Principal.WindowsPrincipal]::new($id)).IsInRole(
+          [Security.Principal.WindowsBuiltInRole]::Administrator)) {
+      Write-Output "-AtBoot needs an elevated PowerShell (Run as administrator)."
+      exit 1
+    }
+    $trigger = New-ScheduledTaskTrigger -AtStartup
+    $trigger.Delay = 'PT30S'
+    $principal = New-ScheduledTaskPrincipal -UserId $id.Name -LogonType S4U -RunLevel Limited
+    $desc = 'Start Clayrune at boot (before login) if it is not already running.'
+    $when = 'at system startup, before login, 30s delay'
+  } else {
+    $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
+    $trigger.Delay = 'PT45S'
+    $principal = $null
+    $desc = 'Start Clayrune at logon if it is not already running.'
+    $when = 'at logon, 45s delay'
+  }
   $settings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable -ExecutionTimeLimit ([TimeSpan]::Zero) -MultipleInstances IgnoreNew
   try {
-    Register-ScheduledTask -TaskName $TaskName -Action $action -Trigger $trigger -Settings $settings -Description 'Start Clayrune at logon if it is not already running.' -Force -ErrorAction Stop | Out-Null
-    Log "installed task $TaskName -> $self"
-    Write-Output "Installed scheduled task '$TaskName' (at logon, 45s delay)."
+    $reg = @{ TaskName = $TaskName; Action = $action; Trigger = $trigger;
+              Settings = $settings; Description = $desc; Force = $true;
+              ErrorAction = 'Stop' }
+    if ($principal) { $reg['Principal'] = $principal }
+    Register-ScheduledTask @reg | Out-Null
+    Log "installed task $TaskName ($when) -> $self"
+    Write-Output "Installed scheduled task '$TaskName' ($when)."
     Write-Output ('Uninstall with: powershell -File "' + $self + '" -Uninstall')
   } catch {
     Write-Output "FAILED to register task: $_"
@@ -153,8 +197,21 @@ if (-not (Test-Path $serverPy)) {
 }
 
 Log "starting: $py server.py"
+# Capture the server's own output. Without this, a server that starts and dies
+# leaves only "port never answered" below and no cause — and after an unattended
+# reboot that log is the only thing anyone can read remotely.
+#
+# Deliberately NOT data\logs\clayrune.log: start.bat / start-hidden.vbs hold
+# that file open with a share mode that denies a second writer, so writing there
+# fails exactly when a second launcher is involved. These two files are ours.
+# They are truncated per launch, so what you read is this boot, not a year of them.
+$logDir = Join-Path $dir 'data\logs'
+try { if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir -Force | Out-Null } } catch {}
+$outLog = Join-Path $logDir 'clayrune-autostart-server.log'
+$errLog = Join-Path $logDir 'clayrune-autostart-server.err.log'
 try {
-  Start-Process -FilePath $py -ArgumentList 'server.py' -WorkingDirectory $dir -WindowStyle Hidden -ErrorAction Stop | Out-Null
+  Start-Process -FilePath $py -ArgumentList 'server.py' -WorkingDirectory $dir -WindowStyle Hidden `
+    -RedirectStandardOutput $outLog -RedirectStandardError $errLog -ErrorAction Stop | Out-Null
 } catch {
   Log "start failed: $_"
   Write-Output "Failed to start Clayrune: $_"
@@ -174,6 +231,6 @@ if ($up) {
   Write-Output "Clayrune started on port $port."
   exit 0
 }
-Log "started but port $port never answered after ~40s"
-Write-Output "Clayrune was launched but port $port never answered. See $log"
+Log "started but port $port never answered after ~40s — server output in $outLog / $errLog"
+Write-Output "Clayrune was launched but port $port never answered. See $log and $errLog"
 exit 1

@@ -11,40 +11,51 @@
 Ron: *"setting Clayrune to auto load when the PC restart or reboot ... This is
 mainly for cases where I'm remote and do not have physical access to the PC."*
 
-`tools/install-autostart.ps1` registers a `Clayrune` scheduled task that runs
-`installer/start-boot.bat` at system startup. The Startup folder was the obvious
-choice and the wrong one: it only fires at interactive logon, so a machine that
-reboots overnight and stops at the lock screen leaves Clayrune down until
-somebody physically logs in, which is exactly the case remote access exists for.
+`tools/clayrune-autostart.ps1` already started Clayrune at logon. Its header
+explained why logon and not boot: an at-startup task must run as SYSTEM or store
+a password, and SYSTEM has a different profile — no `~/.clayrune`, no Claude CLI
+auth — so Clayrune would boot and fail at the first agent dispatch. It closed by
+handing the remaining gap to Windows' "automatically sign in after an update
+restart".
 
-The task runs with `LogonType S4U` — the user's identity, no password stored
-anywhere. The risk that buys is DPAPI: S4U logons cannot always decrypt
-user-protected data, and the remote-access device identity lives in Windows
-Credential Manager, which is DPAPI-backed. If that failed, Clayrune would come
-up at boot with the tunnel dead — reachable only from the machine you are not
-sitting at. Probed it before committing to the design: an S4U task reads all six
-`mission-control-remote` keys via WinVaultKeyring. Verified end to end by
-booting on a spare port under a real S4U task: serving in ~4s, pre-login.
+That gap is the whole case for remote access: a 3am Windows Update reboot that
+stops at the lock screen leaves the phone with nothing to talk to. The reasoning
+had missed a third option — **LogonType S4U**, which runs as the real user with
+no password stored anywhere. `-Install -AtBoot` now registers the task that way.
 
-Two things this shook out:
+S4U carries one real risk, so it was measured rather than assumed. An S4U logon
+cannot always decrypt DPAPI-protected data, and the remote-access device identity
+lives in Windows Credential Manager, which is DPAPI-backed — that failure would
+be the worst shape available: Clayrune up, tunnel dead, reachable only from the
+machine you are not sitting at. A probe task read all six
+`mission-control-remote` keys (WinVaultKeyring), and a full server booted and
+served in ~4s under a real S4U task. Both the skip path and the start path were
+then verified against the live install.
 
-**A locked log file made the task lie.** The launcher first appended to
-`clayrune.log`, the file `start.bat` already holds open with a share mode that
-denies a second writer (the same lock the restart path hit on 2026-07-27). When
-cmd cannot open a `>>` target it prints an error, skips the command, and leaves
-`ERRORLEVEL` at 0. So the task logged "starting server", logged "server exited
-rc=0" in the same hundredth of a second, started nothing, and reported success
-to Task Scheduler — which also means the retry-on-failure setting would never
-fire. The boot launcher owns `data/logs/clayrune-boot.log` now; nothing else
-writes it.
+Three things this shook out:
 
-**`_check_port_conflict` does not catch a second instance on Windows.** With a
-live Clayrune on 5199, a second one booted all the way through and announced
-"Clayrune running at http://localhost:5199" — no conflict banner, no exit 2. The
-guard bind-tests `0.0.0.0`, and on Windows that bind succeeds against a listener
-that set `SO_REUSEADDR`, which Werkzeug does. That is the split-brain the guard
-exists to prevent. Not fixed here (it is a server-side change worth its own
-review); the boot launcher defends itself with a connect probe instead, which
+**`Resolve-Port` was reading a file that does not exist.** It looked for
+`data\config.json`; `server.py` resolves `CONFIG_PATH = _DATA_ROOT / 'config.json'`
+— the repo root. So the port probe always fell back to 5199. Harmless while the
+port *is* 5199, and a split-brain the day it isn't: the probe would find nothing
+on 5199 and start a second server on the real port. It now reads the root file,
+with `data\` kept as a fallback.
+
+**The server's output was going nowhere.** `Start-Process pythonw` with no
+redirect meant a server that started and died left only "port never answered"
+and no cause — after an unattended reboot, that log is the only thing readable
+remotely. Output now lands in `data/logs/clayrune-autostart-server.log`.
+Deliberately not `clayrune.log`: `start.bat` holds that one open with a share
+mode that denies a second writer, and when cmd cannot open a `>>` target it
+prints an error, skips the command, and leaves `ERRORLEVEL` at 0 — a launcher
+sharing that file reports success while starting nothing.
+
+**`_check_port_conflict` does not catch a second instance on Windows (MC-908).**
+With a live Clayrune on 5199, a second one booted all the way through and
+announced "Clayrune running at http://localhost:5199" — no conflict banner, no
+exit 2. The guard bind-tests `0.0.0.0`, and that bind succeeds against a
+Werkzeug listener holding `SO_REUSEADDR`. Filed rather than fixed here; the
+autostart script does not depend on it, because it connect-probes instead, which
 answers the question a bind test cannot: is something already serving?
 
 ## [2026-08-25h] — Claydo survives a refresh
