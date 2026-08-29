@@ -29,7 +29,10 @@ take — that's what it's for.
 
 ### The one thing that will ruin the take
 
-> **On the phone, open `http://192.168.86.4:5200` — the LAN IP. NEVER the tunnel.**
+> **On the phone, open `http://<this-machine's-LAN-IP>:5200` — the LAN IP. NEVER the tunnel.**
+>
+> Get the IP on the capture machine first: `ipconfig` (Windows) / `ipconfig getifaddr en0`
+> (macOS) / `hostname -I` (Linux). Do not hardcode it here — this file is tracked and public.
 
 The tunnel (`<you>.clayrune.io`) points at your **real** instance on :5199 and
 would put your real project names, your real work, and your real backlog on
