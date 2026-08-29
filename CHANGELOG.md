@@ -6,6 +6,47 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-29] — Clayrune starts itself at boot, before you log in
+
+Ron: *"setting Clayrune to auto load when the PC restart or reboot ... This is
+mainly for cases where I'm remote and do not have physical access to the PC."*
+
+`tools/install-autostart.ps1` registers a `Clayrune` scheduled task that runs
+`installer/start-boot.bat` at system startup. The Startup folder was the obvious
+choice and the wrong one: it only fires at interactive logon, so a machine that
+reboots overnight and stops at the lock screen leaves Clayrune down until
+somebody physically logs in, which is exactly the case remote access exists for.
+
+The task runs with `LogonType S4U` — the user's identity, no password stored
+anywhere. The risk that buys is DPAPI: S4U logons cannot always decrypt
+user-protected data, and the remote-access device identity lives in Windows
+Credential Manager, which is DPAPI-backed. If that failed, Clayrune would come
+up at boot with the tunnel dead — reachable only from the machine you are not
+sitting at. Probed it before committing to the design: an S4U task reads all six
+`mission-control-remote` keys via WinVaultKeyring. Verified end to end by
+booting on a spare port under a real S4U task: serving in ~4s, pre-login.
+
+Two things this shook out:
+
+**A locked log file made the task lie.** The launcher first appended to
+`clayrune.log`, the file `start.bat` already holds open with a share mode that
+denies a second writer (the same lock the restart path hit on 2026-07-27). When
+cmd cannot open a `>>` target it prints an error, skips the command, and leaves
+`ERRORLEVEL` at 0. So the task logged "starting server", logged "server exited
+rc=0" in the same hundredth of a second, started nothing, and reported success
+to Task Scheduler — which also means the retry-on-failure setting would never
+fire. The boot launcher owns `data/logs/clayrune-boot.log` now; nothing else
+writes it.
+
+**`_check_port_conflict` does not catch a second instance on Windows.** With a
+live Clayrune on 5199, a second one booted all the way through and announced
+"Clayrune running at http://localhost:5199" — no conflict banner, no exit 2. The
+guard bind-tests `0.0.0.0`, and on Windows that bind succeeds against a listener
+that set `SO_REUSEADDR`, which Werkzeug does. That is the split-brain the guard
+exists to prevent. Not fixed here (it is a server-side change worth its own
+review); the boot launcher defends itself with a connect probe instead, which
+answers the question a bind test cannot: is something already serving?
+
 ## [2026-08-25h] — Claydo survives a refresh
 
 Ron: *"Claydo interaction box does not survive screen refresh."*

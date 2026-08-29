@@ -58,6 +58,7 @@ A Claude-driven installer. The user runs one command; Claude executes the instal
 | `start.command` | Per-user launcher (macOS). Same role as `start.sh`. The installer copies it to `~/Applications/Clayrune.command`. |
 | `start.bat` | Per-user launcher (Windows). Same role. Run directly for a visible dev console (live logs). The `.lnk` shortcut does **not** target it directly — see `start-hidden.vbs`. |
 | `start-hidden.vbs` | Default Windows entry point. Runs `start.bat` with **no console window** (end users shouldn't see the server log console) and sets `CLAYRUNE_HIDDEN=1` so logs are written to `data\logs\clayrune.log` instead. The installer points the Desktop / Start Menu `.lnk` here (via `wscript.exe`). |
+| `start-boot.bat` | Windows **boot** launcher, used only by the `Clayrune` scheduled task that `tools\install-autostart.ps1` registers. Headless: never opens a browser (at boot it runs before anyone logs in) and never prompts. Logs to its own `data\logs\clayrune-boot.log` — **not** `clayrune.log`, which `start.bat` holds locked; cmd leaves `ERRORLEVEL` at 0 when a `>>` target is locked, so sharing the file made the task report success while starting nothing. Skips launching if something already answers on the port. |
 
 ## Why this design
 
