@@ -1775,7 +1775,32 @@ def _check_port_conflict():
             except Exception: pass
             return False
 
-    if _try_bind():
+    def _someone_answers():
+        # Windows: the bind() probe above PASSES when the live listener is the
+        # dual-stack AF_INET6 socket _serve_dual_stack() opens with SO_REUSEADDR
+        # (on Windows SO_REUSEADDR means "another socket may bind this port too").
+        # Seen 2026-08-29: the ClayruneAutostart task held 5199 and start.bat
+        # started a second server on the same port anyway; the pair then split
+        # traffic, the newer one's startup reaper killed the older one's agents,
+        # and an agent "cleaned up the duplicate" by taskkilling a server.
+        # A connect() probe cannot be fooled: if anything accepts, the port is taken.
+        for fam, addr in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
+            s = socket.socket(fam, socket.SOCK_STREAM)
+            s.settimeout(0.5)
+            try:
+                s.connect((addr, PORT))
+                return True
+            except OSError:
+                pass
+            finally:
+                try: s.close()
+                except Exception: pass
+        return False
+
+    def _port_free():
+        return _try_bind() and not _someone_answers()
+
+    if _port_free():
         return  # Clean — port is free.
 
     # Restart re-exec window: the parent we just replaced may still be releasing
@@ -1785,7 +1810,7 @@ def _check_port_conflict():
         deadline = _time.time() + 15.0
         while _time.time() < deadline:
             _time.sleep(0.3)
-            if _try_bind():
+            if _port_free():
                 # Clean — clear the marker so a subsequent restart starts fresh
                 # and doesn't inherit a stale value.
                 os.environ.pop('MC_RESTART_FROM_PID', None)

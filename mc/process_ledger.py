@@ -157,6 +157,23 @@ def _reap_prior_instance_strays():
         return
     me = os.getpid()
     prior_mc = data.get('mc_pid')
+    # Split-brain guard [2026-08-29]: the ledger describes the PRIOR instance's
+    # children, and "prior" was always assumed dead (restart/crash). When a
+    # second server starts beside a live one (Windows lets two MCs share a
+    # port), those children are NOT orphans — they are the live instance's
+    # running agents, and reaping them here killed 4 agent trees mid-session.
+    # If the ledger's owner is still a live python, leave its ledger and its
+    # children alone; _check_port_conflict is the layer that should have
+    # stopped this instance from starting at all.
+    try:
+        if prior_mc and int(prior_mc) != me and _pid_is_alive(int(prior_mc)):
+            img, _ct = _proc_identity(int(prior_mc))
+            if img and img.startswith('python'):
+                _log(f"[reaper] prior MC PID {prior_mc} is still alive — not reaping "
+                     f"its children (split-brain guard)")
+                return
+    except Exception:
+        pass
     reaped = 0
     for entry in (data.get('children') or []):
         try:

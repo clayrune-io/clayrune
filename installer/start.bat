@@ -45,7 +45,16 @@ if not exist ".venv\Scripts\activate.bat" (
 
 call ".venv\Scripts\activate.bat"
 
-echo [Clayrune] Starting server on http://localhost:5199
+REM SINGLE INSTANCE IS LOAD-BEARING (see tools\clayrune-autostart.ps1). If a server
+REM already answers on 5199 (the ClayruneAutostart task, another console, a Tauri
+REM shell), do NOT start a second one: Windows lets two servers share the port,
+REM traffic then splits between them and each kills the other's agents
+REM (2026-08-29). Just open the app window against the running server and leave.
+set "MC_ALREADY_UP="
+powershell.exe -NoProfile -Command "$c=New-Object Net.Sockets.TcpClient; try { $c.Connect('127.0.0.1',5199); exit 0 } catch { exit 1 } finally { $c.Close() }" >nul 2>&1
+if not errorlevel 1 set "MC_ALREADY_UP=1"
+if defined MC_ALREADY_UP echo [Clayrune] A server is already running on http://localhost:5199 - opening the window only.
+if not defined MC_ALREADY_UP echo [Clayrune] Starting server on http://localhost:5199
 
 REM Open Clayrune as a STANDALONE app window (its own taskbar icon), not a tab
 REM grouped with the user's other browser tabs. Chrome/Edge "--app=" mode gives
@@ -76,6 +85,9 @@ REM (fresh Windows installs) would otherwise show the Edge logo. Done in a
 REM detached, hidden PowerShell so neither the windowless nor the dev launch
 REM flashes a console.
 if defined MC_APPBROWSER start "" /b powershell.exe -NoProfile -ExecutionPolicy Bypass -WindowStyle Hidden -File "%CLAYRUNE_DIR%\installer\launch-app-window.ps1" -Browser "%MC_APPBROWSER%" -IconPath "%CLAYRUNE_DIR%\assets\clayrune.ico"
+
+REM A server was already up: the window is launched above, nothing else to do.
+if defined MC_ALREADY_UP exit /b 0
 
 REM Always keep a log directory available for the windowless launch path.
 if not exist "%CLAYRUNE_DIR%\data\logs" mkdir "%CLAYRUNE_DIR%\data\logs"
