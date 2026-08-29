@@ -17,13 +17,26 @@ only** — the closed-source Rust `mc-tunnel` moat is unaffected.
 
 ```bash
 pyinstaller build-macos.spec --noconfirm     # builds dist/Clayrune.app
-tools/notarize-macos.sh                        # -> MissionControl-macOS.zip (signed + notarized)
+tools/notarize-macos.sh                        # -> Clayrune-macOS.zip (signed + notarized)
 ```
 
-Then **upload `MissionControl-macOS.zip` over the website / GitHub release
-asset.** The CI workflow (`build-macos.yml`) auto-attaches an *unsigned* zip on
-every release — you must replace it with the signed one, or users still hit the
-warning.
+Then **upload `Clayrune-macOS.zip` to the GitHub release.** This is not
+optional polish — it is the release itself:
+
+```bash
+gh release upload vX.Y.Z Clayrune-macOS.zip --clobber
+```
+
+The website's macOS button is a fixed URL,
+`https://github.com/ronle/clayrune/releases/latest/download/Clayrune-macOS.zip`,
+which GitHub resolves against whatever release is *latest*. **Publish a release
+without that asset and the download button 404s for every Mac visitor**, with
+nothing on our side reporting a problem. That is what v2.0.1 and v2.0.2 did
+(caught 2026-08-29 by a user, not by us).
+
+CI (`build-macos.yml`) attaches `Clayrune-macOS-unsigned.zip` — a deliberately
+different name, so an unsigned build can never end up behind the website's
+button. It is a build check, not a shipping artifact.
 
 ---
 
@@ -81,7 +94,7 @@ warning.
    and aborts + prints the log if the status isn't `Accepted`.
 5. `stapler staple`s the ticket into the `.app` and confirms `spctl` reports
    `source=Notarized Developer ID`.
-6. Re-zips the **stapled** app to `MissionControl-macOS.zip`.
+6. Re-zips the **stapled** app to `Clayrune-macOS.zip`.
 
 ---
 

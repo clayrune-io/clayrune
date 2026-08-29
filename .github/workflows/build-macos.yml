@@ -1,17 +1,21 @@
 name: Build macOS .app
 
-# Builds dist/Clayrune.app, zips it to MissionControl-macOS.zip, and either
+# Builds dist/Clayrune.app, zips it to Clayrune-macOS-unsigned.zip, and either
 # attaches the zip to the triggering release (release event) or uploads it as
 # a workflow artifact (manual dispatch). Mirrors the Windows path so future
 # Mac users can download → unzip → right-click → Open (Gatekeeper one-time)
 # without a Terminal step.
 #
-# This CI build is UNSIGNED. The release-ready artifact is signed + notarized
-# manually post-build via tools/notarize-macos.sh (see docs/MACOS_NOTARIZATION.md),
-# which produces a Gatekeeper-clean MissionControl-macOS.zip. Folding signing
-# into this workflow is a deferred follow-up. Until then: do NOT ship the zip
-# this workflow attaches to a release — replace it with the script's output, or
-# users hit the "Apple could not verify…" block.
+# This CI build is UNSIGNED, and its asset name says so: Clayrune-macOS-unsigned.zip.
+# The SHIPPING asset is Clayrune-macOS.zip — signed + notarized via
+# tools/notarize-macos.sh (see docs/MACOS_NOTARIZATION.md) and uploaded by hand.
+#
+# The two names must stay distinct. The website's macOS button is the fixed URL
+# .../releases/latest/download/Clayrune-macOS.zip and the page promises a
+# notarized build, so CI must never occupy that filename with an unsigned zip.
+# Corollary: EVERY published release needs the notarized Clayrune-macOS.zip
+# uploaded, or that button 404s for every Mac visitor — which is what happened
+# on v2.0.1 and v2.0.2 (found 2026-08-29, by a user).
 
 on:
   workflow_dispatch:
@@ -73,15 +77,15 @@ jobs:
           cd dist
           # ditto preserves macOS extended attributes (xattrs) so the
           # zipped .app re-launches cleanly. zip(1) loses them.
-          ditto -c -k --sequesterRsrc --keepParent Clayrune.app MissionControl-macOS.zip
-          ls -lh MissionControl-macOS.zip
+          ditto -c -k --sequesterRsrc --keepParent Clayrune.app Clayrune-macOS-unsigned.zip
+          ls -lh Clayrune-macOS-unsigned.zip
 
       - name: Upload as workflow artifact (manual dispatch)
         if: github.event_name == 'workflow_dispatch'
         uses: actions/upload-artifact@v4
         with:
-          name: MissionControl-macOS
-          path: dist/MissionControl-macOS.zip
+          name: Clayrune-macOS-unsigned
+          path: dist/Clayrune-macOS-unsigned.zip
           retention-days: 14
 
       - name: Attach to release
@@ -90,4 +94,4 @@ jobs:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           gh release upload "${{ github.event.release.tag_name }}" \
-            dist/MissionControl-macOS.zip --clobber
+            dist/Clayrune-macOS-unsigned.zip --clobber
