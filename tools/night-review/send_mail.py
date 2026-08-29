@@ -19,7 +19,8 @@ Credentials (never committed) are read from, in order of precedence:
 Gmail requires an App Password (https://myaccount.google.com/apppasswords),
 NOT your normal account password. See tools/night-review/README.md.
 
-Exit codes: 0 = sent, 2 = credentials missing / invalid args, 1 = send failed.
+Exit codes: 0 = sent, 2 = credentials missing / invalid args, 1 = send failed,
+            3 = accepted by SMTP but --verify could not find it in the mailbox.
 """
 from __future__ import annotations
 
@@ -63,6 +64,52 @@ def _load_config() -> dict:
     return cfg
 
 
+def _verify_delivered(user: str, app_password: str, subject: str,
+                      tries: int = 5, gap: int = 20) -> bool:
+    """Read the mailbox back and confirm `subject` is really there.
+
+    WHY: smtp.send_message() only proves Gmail ACCEPTED the message. On
+    2026-08-28 an escalation printed "sent", exited 0, and never appeared in
+    INBOX, All Mail, Sent or any spam folder. An unattended agent had no way
+    to know its only channel to a human had silently dropped the message.
+    Acceptance is not delivery, so when it matters, check.
+
+    Only meaningful when sending to yourself, which is the night-review and
+    steward pattern. Returns True as soon as the subject is found.
+    """
+    import imaplib
+    import time
+    # IMAP SEARCH cannot express a literal quote, so drop it from the needle
+    # and match on the rest. Substring match is what HEADER SUBJECT does.
+    needle = subject.replace('"', ' ').strip()
+    for attempt in range(tries):
+        try:
+            M = imaplib.IMAP4_SSL("imap.gmail.com", 993, timeout=30)
+            try:
+                M.login(user, app_password)
+                for box in ('"INBOX"', '"[Gmail]/All Mail"'):
+                    try:
+                        M.select(box, readonly=True)
+                        typ, data = M.uid(
+                            "search", None,
+                            '(HEADER SUBJECT "%s")' % needle)
+                        if typ == "OK" and data and data[0].split():
+                            return True
+                    except Exception:
+                        continue
+            finally:
+                try:
+                    M.logout()
+                except Exception:
+                    pass
+        except Exception as e:
+            print("[send_mail] verify: IMAP check failed: %s" % e,
+                  file=sys.stderr)
+        if attempt < tries - 1:
+            time.sleep(gap)
+    return False
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="Send a plain-text email via Gmail SMTP.")
@@ -71,6 +118,9 @@ def main() -> int:
     ap.add_argument("--body-file",
                     help="Path to a file whose contents become the body.")
     ap.add_argument("--to", help="Override recipient (default from config/env).")
+    ap.add_argument("--verify", action="store_true",
+                    help="After sending, reconnect over IMAP and confirm the "
+                         "message actually landed. Exit 3 if it did not.")
     args = ap.parse_args()
 
     # Resolve body: --body > --body-file > stdin.
@@ -131,6 +181,15 @@ def main() -> int:
         return 1
 
     print(f"[send_mail] sent '{args.subject}' to {to_addr}")
+
+    if args.verify:
+        if _verify_delivered(user, app_password, args.subject):
+            print("[send_mail] verified: message is in the mailbox")
+        else:
+            print("[send_mail] NOT DELIVERED: Gmail accepted the message but "
+                  "it is not in INBOX or All Mail. Treat this send as failed.",
+                  file=sys.stderr)
+            return 3
     return 0
 
 
