@@ -2823,11 +2823,16 @@ class CodexRuntime(AgentRuntime):
 
     name = 'codex'
     display_name = 'Codex CLI'
+    # Verified 2026-08-31 against ~/.codex/models_cache.json from codex 0.151.
+    # Internal/special-purpose entries (gpt-reserve, codex-auto-review) are not
+    # general chat choices and intentionally stay out of the composer.
     MODEL_CHOICES = [
-        ('gpt-5-codex', 'GPT-5 Codex'),
-        ('gpt-5', 'GPT-5'),
-        ('gpt-5-mini', 'GPT-5 mini'),
-        ('o3', 'o3'),
+        ('gpt-5.6-sol', 'GPT-5.6 Sol'),
+        ('gpt-5.6-terra', 'GPT-5.6 Terra'),
+        ('gpt-5.6-luna', 'GPT-5.6 Luna'),
+        ('gpt-5.5', 'GPT-5.5'),
+        ('gpt-5.4', 'GPT-5.4'),
+        ('gpt-5.4-mini', 'GPT-5.4 Mini'),
     ]
 
     _bin_cache: Optional[str] = None

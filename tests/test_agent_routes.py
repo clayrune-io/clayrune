@@ -374,7 +374,10 @@ def test_providers_endpoint_carries_per_provider_model_catalog(client):
     by_name = {p['name']: p for p in provs}
     assert 'models' in by_name['claude']
     assert any(m['id'] == 'claude-opus-5' for m in by_name['claude']['models'])
-    assert any(m['id'] == 'gpt-5-codex' for m in by_name['codex']['models'])
+    assert [m['id'] for m in by_name['codex']['models']] == [
+        'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
+        'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini',
+    ]
     # No claude id may appear in a non-claude catalog — that cross-contamination
     # is exactly what produced `codex -m claude-opus-5`.
     for name in ('codex', 'gemini'):
@@ -393,11 +396,11 @@ def test_resolve_runtime_model_blocks_the_claude_id_leak():
     codex = agent_runtime.get_runtime('codex')
     proj = {'agent_model': 'claude-opus-5'}
     assert ar._resolve_runtime_model(codex, proj) == ''
-    assert ar._resolve_runtime_model(codex, proj, 'gpt-5-codex') == 'gpt-5-codex'
+    assert ar._resolve_runtime_model(codex, proj, 'gpt-5.6-sol') == 'gpt-5.6-sol'
     # A custom id we've never catalogued is still the user's explicit intent.
     assert ar._resolve_runtime_model(codex, proj, 'gpt-6-future') == 'gpt-6-future'
     # A project default the runtime DOES accept is still inherited.
-    assert ar._resolve_runtime_model(codex, {'agent_model': 'gpt-5'}) == 'gpt-5'
+    assert ar._resolve_runtime_model(codex, {'agent_model': 'gpt-5.6-terra'}) == 'gpt-5.6-terra'
 
 
 def test_status_model_field_does_not_borrow_the_claude_default():

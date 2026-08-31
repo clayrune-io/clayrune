@@ -976,7 +976,7 @@ def test_model_catalogs_do_not_cross_providers():
     fails at the CLI. model_supported() is the gate that stops the inherit."""
     codex = agent_runtime.get_runtime('codex')
     assert not codex.model_supported('claude-opus-5')
-    assert codex.model_supported('gpt-5')
+    assert codex.model_supported('gpt-5.6-sol')
 
     claude = agent_runtime.get_runtime('claude')
     assert claude.model_supported('claude-opus-5')
@@ -986,6 +986,19 @@ def test_model_catalogs_do_not_cross_providers():
     oc = agent_runtime.get_runtime('opencode')
     assert oc.model_supported('anthropic/claude-sonnet-5')
     assert not oc.model_supported('claude-sonnet-5')
+
+
+def test_codex_catalog_matches_current_cli_models():
+    """The picker must not keep retired model ids after Codex moves on."""
+    codex = agent_runtime.get_runtime('codex')
+    assert [model_id for model_id, _label in codex.model_choices()] == [
+        'gpt-5.6-sol',
+        'gpt-5.6-terra',
+        'gpt-5.6-luna',
+        'gpt-5.5',
+        'gpt-5.4',
+        'gpt-5.4-mini',
+    ]
 
 
 def test_model_supported_rejects_empty():
@@ -1011,9 +1024,9 @@ def test_session_model_survives_a_respawn():
     handle = agent_runtime.SessionHandle(
         mc_session_id='abc', provider='codex', mode='A',
         project_path='.', project_id='p',
-        session_dict={'agent_model': 'gpt-5-codex'},
+        session_dict={'agent_model': 'gpt-5.6-sol'},
     )
-    assert agent_runtime.AgentRuntime.session_model(handle) == 'gpt-5-codex'
+    assert agent_runtime.AgentRuntime.session_model(handle) == 'gpt-5.6-sol'
     # Absent/garbage session dicts must degrade to "provider default", not raise.
     empty = agent_runtime.SessionHandle(
         mc_session_id='abc', provider='codex', mode='A',

@@ -148,6 +148,9 @@ strip is hidden.
 In the **Agent** tab, type a task and click **Dispatch**. The agent runs
 in the background, output streams live into the modal AND into the bottom
 **Agent Console** so you can keep watching it from any other surface.
+The **Model** menu follows the selected provider: Codex offers its current Sol,
+Terra, Luna, and supported prior-generation models, while **Custom** accepts a
+newer model ID that Clayrune has not catalogued yet.
 
 - **Multiple sessions per project**:
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.

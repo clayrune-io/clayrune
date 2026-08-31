@@ -6,6 +6,14 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — Codex model picker catches up to the installed CLI
+
+The Codex composer still offered `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, and
+`o3`, even though the installed Codex CLI had moved to the GPT-5.6 family.
+Replaced that stale catalog with `gpt-5.6-sol`, `gpt-5.6-terra`,
+`gpt-5.6-luna`, `gpt-5.5`, `gpt-5.4`, and `gpt-5.4-mini`. The free-text
+Custom path remains available for model IDs newer than Clayrune's catalog.
+
 ## [2026-08-31] — Codex renders as chat, not as raw JSONL
 
 MC-933. With codex finally spawning (MC-932), the chat pane printed its wire
