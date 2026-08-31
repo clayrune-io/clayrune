@@ -6,6 +6,73 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — Session completion is now a runtime-agnostic event
+
+MC-930. `_log_agent_completion` — the ONE writer of the agent log, and the
+place the Scribe is triggered — was called from exactly two sites, and both
+are the CLAUDE stream readers (`_read_agent_stream`, `_read_agent_stream_b`).
+Non-claude providers dispatch through `_dispatch_via_runtime`, whose runtimes
+own their own reader threads, and that path had no completion logging and no
+Scribe trigger at all. A finished Gemini session existed only in the in-memory
+`agent_sessions` map and left no trace on disk.
+
+That single gap starved the two fixes that shipped before it, which is why
+each was correct and yet Ron still could not find his conversation:
+
+- **MC-929** taught the conversation rail to union agent-log rows for
+  providers with no transcript. Correct, but there were no rows to union.
+- **MC-922** gave the Scribe a `log_lines` fallback for providers with no
+  transcript. Correct, but the Scribe is *triggered from the completion
+  path* — so the fallback never fired and a Gemini chat wrote no memory.
+  (The only other `_write_session_memory` caller, the startup reconciler in
+  `server.py`, is doubly blocked here: it iterates the agent log, which was
+  empty for these sessions, and it `continue`s on any row without a
+  `claude_session_id`.)
+
+**The fix is a hook, not a second writer.** Both generic runtime readers
+(`_mode_a_reader`, and `GeminiRuntime._read_stream`) already fire an
+`on_process_exit` callback and nothing was listening. `_runtime_log_completion`
+now listens, takes the per-project lock the claude readers take, and calls the
+same `_log_agent_completion`. Two independent writers of the agent log is how
+this drift started; there is still exactly one.
+
+Wired at **all three** places MC builds a non-claude `SessionHandle`, which is
+the part that is easy to get half-right: `_dispatch_via_runtime`, plus the two
+follow-up paths (`/agent/send`, `/agent/interrupt`) that rebuild a handle from
+scratch with no `meta`. Fixing only the dispatch site logs turn 1 and silently
+drops every turn after it — a chat that appears once and then stops growing.
+
+Fires once per PROCESS EXIT, which for Mode A (every non-claude runtime today,
+one respawned process per turn) is one row per turn — exactly the shape
+`_non_claude_conversation_rows` groups on. Both readers gate the callback on
+`session['proc'] is proc`, so a turn whose process was replaced mid-flight is
+skipped, matching the claude readers' `_session_owned_by` gate. Every existing
+exclusion is preserved by construction, because the reused function is the one
+that owns them: incognito writes nothing, housekeeping writes a row but no
+memory. Claude never reaches `_dispatch_via_runtime`, so it never gets the hook
+and cannot be double-logged.
+
+**Verified end to end with the real `gemini` CLI**, as the market-scout persona
+(Halloway, `gemini-3.6-flash`), in an isolated `MC_DATA_DIR`: the session wrote
+one agent-log row (`provider=gemini`, empty `claude_session_id`), appeared
+exactly once in `GET /api/project/<id>/conversations` with its persona and
+`resume_mode=readonly`, and produced a real `## Session Log` entry in MEMORY.md
+with the scribe counter landing on **`scribe_extracted_from_log: 1`** — MC-922's
+fallback specifically, not a transcript read. A second run drove two real turns
+through `/agent/send` and got two rows grouped into one conversation
+(`turns=2`).
+
+Not fixed, filed as separate findings: non-claude **hivemind** workers dispatch
+via a third `rt.dispatch()` site (`hivemind_routes.py`) that has the same gap —
+harmless today since those sessions are `housekeeping` (excluded from the rail
+and from memory), but it is the same class; and `explain_exit_error` can pick
+the user's own echoed prompt out of the log tail and render it as
+`[hint] Gemini error: <your message>`, the same mis-selection class MC-926 fixed
+for startup noise.
+
+**Rollback**: revert this commit. The claude path is untouched — the hook is
+additive and only ever attached to non-claude handles.
+
 ## [2026-08-31] — A real PTY behind the terminal pop-out
 
 MC-928. The pop-out's "TTY shim" was a PYTHONPATH `sitecustomize.py`

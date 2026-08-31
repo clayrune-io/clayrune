@@ -4222,6 +4222,51 @@ def _log_agent_completion(session):
             pass  # never fail the completion flow for memory
 
 
+def _runtime_log_completion(ev, session):
+    """`on_process_exit` hook for runtime-owned (non-claude) readers — MC-930.
+
+    The two claude stream readers call `_log_agent_completion` from their own
+    `finally` blocks; nothing did for a runtime-dispatched session, because the
+    runtime owns its reader thread. So a finished Gemini chat wrote NO agent-log
+    row at all, which starved BOTH downstream fixes: MC-929's conversation-rail
+    union has no rows to union, and MC-922's log_lines Scribe fallback never
+    fires because the Scribe is triggered from the completion path.
+
+    This is a hook, not a second writer. `_log_agent_completion` stays the ONE
+    place an agent-log row is written and the ONE place the Scribe is triggered
+    — two independent writers of that log is how this drift started.
+
+    Fires once per PROCESS EXIT, which for Mode A (every non-claude runtime
+    today, one respawned process per turn) means one row per turn — exactly the
+    shape `_non_claude_conversation_rows` groups on. Both readers already gate
+    the callback on `session['proc'] is proc`, so a turn whose process was
+    replaced mid-flight is skipped, matching the claude readers'
+    `_session_owned_by` gate.
+
+    Takes the per-project lock for the same reason the claude readers do: it
+    serialises the read-modify-write of the agent log against a concurrent
+    agent_stop. Never raises — a completion hook must not kill the reader
+    thread during teardown.
+    """
+    try:
+        project_id = session.get('project_id')
+        if not project_id:
+            return
+        with get_manager(project_id).lock:
+            _log_agent_completion(session)
+    except Exception as e:
+        _log(f"[runtime-completion] agent-log write failed: {e}")
+
+
+# Wired onto every SessionHandle MC hands a non-claude runtime. Module-level
+# and stateless on purpose: the runtime passes the session dict back into the
+# callback, so there is nothing per-session to close over — and the followup
+# paths rebuild their own SessionHandle, so a per-dispatch closure would be
+# silently dropped from turn 2 onward (which is how a fix here logs the first
+# turn of a chat and nothing after it).
+_RUNTIME_CALLBACKS = {'on_process_exit': _runtime_log_completion}
+
+
 def _auto_dispatch_followup(session, message):
     """Auto-dispatch a queued follow-up after the current task completes."""
     project_id = session.get('project_id')
@@ -4654,6 +4699,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             session_dict=session,
             project_id=project_id,
             register_process=_register_process,
+            # MC-930: the runtime owns its reader thread, so completion has to
+            # be handed to it as a hook or no agent-log row is ever written for
+            # this session. See _runtime_log_completion.
+            callbacks=_RUNTIME_CALLBACKS,
         )
     except Exception as e:
         session['status'] = 'error'
@@ -5864,6 +5913,12 @@ def agent_followup(project_id):
                     project_path=pp,
                     project_id=project_id,
                     session_dict=existing,
+                    # MC-930: this rebuilds the handle from scratch rather than
+                    # reusing the dispatch one, so the completion hook has to be
+                    # re-attached here or every turn after the first goes
+                    # unlogged — the chat would show one row and then stop
+                    # growing.
+                    meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
                 runtime.write_followup(handle, message)
             except Exception as e:
@@ -6455,6 +6510,12 @@ def agent_interrupt(project_id):
                     project_path=pp,
                     project_id=project_id,
                     session_dict=session,
+                    # MC-930: this rebuilds the handle from scratch rather than
+                    # reusing the dispatch one, so the completion hook has to be
+                    # re-attached here or every turn after the first goes
+                    # unlogged — the chat would show one row and then stop
+                    # growing.
+                    meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
                 runtime.write_followup(handle, message)
             except Exception as e:
