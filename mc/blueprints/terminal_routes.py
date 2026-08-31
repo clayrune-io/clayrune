@@ -18,6 +18,17 @@ OTP); every other origin must hold the LAN passcode cookie or gets
 The process-ledger fns (_register_process/_unregister_process) and
 get_manager are dispatch-family (shared with agent/hivemind/housekeeping
 spawns) — they stay in server.py and are wire()d in; they re-home at 1.12.
+
+MC-928 — real PTY, opt-in via `"pty": true` on /api/terminal/launch: the
+TTY-shim above only fixes Python children (Node CLIs like `gemini` need
+actual terminal semantics to draw their Ink TUIs). mc/pty_backend.py gives
+this file a second session shape — `session['pty']` (a pty_backend session)
+instead of `session['proc']` (a subprocess.Popen) — read/write/kill all
+branch on which key is set. Default (`pty` omitted/false) is byte-for-byte
+the original pipe+shim path; nothing already relying on it changes.
+launch_pty_session() is the in-process counterpart (no HTTP, no loopback
+gate) for callers already running inside this server, e.g. agent_routes'
+remote-login flow.
 """
 
 import json
@@ -32,6 +43,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
+from mc import pty_backend
 from mc.core import _is_loopback_request
 from mc.state import agent_sessions, terminal_lock, terminal_sessions
 
@@ -109,8 +121,94 @@ def _read_terminal_stream(proc, session):
                 session['output_lines'].append(f'\r\n[Process exited with code {rc}]')
 
 
+def _read_pty_stream(pty_sess, session):
+    """Reader thread for a real-PTY session (mirrors _read_terminal_stream's
+    shape). An empty read() is unambiguous EOF on both backends — POSIX's
+    blocking os.read() only returns b'' at EOF (pty_backend.py converts the
+    Linux EIO-on-exit variant to '' too), and winpty's read() only returns ''
+    after its internal reader thread observed the ConPTY close — so no
+    isalive() polling/busy-loop is needed here, unlike a naive port of the
+    pipe reader above."""
+    my_pty = pty_sess
+    try:
+        while True:
+            if session.get('pty') is not my_pty:
+                return
+            text = pty_sess.read(4096)
+            if not text:
+                break
+            session['output_lines'].append(text)
+            if len(session['output_lines']) > 5000:
+                session['output_lines'] = session['output_lines'][-3000:]
+    except Exception as e:
+        if session.get('pty') is my_pty:
+            session['output_lines'].append(f'[stream error: {e}]')
+    finally:
+        rc = pty_sess.wait()
+        _unregister_process(pty_sess.pid)
+        if session.get('pty') is my_pty:
+            session['exit_code'] = rc
+            if session['status'] == 'running':
+                session['status'] = 'completed' if rc == 0 else 'error'
+                session['output_lines'].append(f'\r\n[Process exited with code {rc}]')
+
+
+def launch_pty_session(project_id, command, cwd=None):
+    """In-process counterpart to terminal_launch()'s pty branch — no HTTP, no
+    loopback gate, for callers already running inside this server (the
+    remote-login flow in agent_routes.py). Returns (session_id, None) on
+    success or (None, error_message) on failure — never raises, so a caller
+    building a JSON error response doesn't need its own try/except.
+    """
+    if not pty_backend.pty_available():
+        return None, ('Real-PTY terminal sessions need pywinpty on Windows '
+                       "('pip install pywinpty') — not installed.")
+    session_id = uuid.uuid4().hex[:12]
+    env = {
+        **os.environ,
+        'PYTHONIOENCODING': 'utf-8',
+        'PYTHONUNBUFFERED': '1',
+        'TERM': 'xterm-256color',
+        'COLUMNS': '120',
+        'LINES': '30',
+    }
+    try:
+        pty_sess = pty_backend.spawn(command, cwd=cwd, env=env, cols=120, rows=30)
+    except pty_backend.PtyUnavailable as e:
+        return None, str(e)
+    except Exception as e:
+        return None, f'Failed to launch: {e}'
+
+    session = {
+        'pty': pty_sess,
+        'proc': None,
+        'status': 'running',
+        'command': command,
+        'output_lines': [],
+        'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'session_id': session_id,
+        'project_id': project_id,
+        'exit_code': None,
+        'is_pty': True,
+    }
+    _register_process(pty_sess, 'Terminal', 'terminal',
+                      session_id, project_id, command[:80])
+    with terminal_lock:
+        terminal_sessions[session_id] = session
+    threading.Thread(target=_read_pty_stream, args=(pty_sess, session), daemon=True).start()
+    return session_id, None
+
+
 def _kill_terminal_session(session):
-    """Kill a terminal session's subprocess."""
+    """Kill a terminal session's subprocess (pipe backend) or PTY child."""
+    pty_sess = session.get('pty')
+    if pty_sess is not None:
+        try:
+            pty_sess.close(force=True)
+        except Exception:
+            pass
+        _unregister_process(pty_sess.pid)
+        return
     proc = session.get('proc')
     if not proc:
         return
@@ -161,6 +259,22 @@ def terminal_launch():
 
     pp = p.get('project_path', '')
     cwd = pp if pp and Path(pp).is_dir() else None
+
+    # MC-928: real PTY, opt-in via {"pty": true}. See launch_pty_session()
+    # (this file) and mc/pty_backend.py — a wholly separate spawn path so the
+    # default (pty omitted/false) below is untouched.
+    if data.get('pty'):
+        session_id, err = launch_pty_session(project_id, command, cwd=cwd)
+        if err:
+            return jsonify({'error': err}), 400
+        mgr = get_manager(project_id)
+        with mgr.lock:
+            for sid in list(mgr.session_ids):
+                asess = agent_sessions.get(sid)
+                if asess and asess['status'] in ('running', 'idle'):
+                    cmd_label = command.replace('\n', ' ').replace('\r', '')[:60]
+                    asess['log_lines'].append(f'[terminal:{session_id}:{cmd_label}]')
+        return jsonify({'ok': True, 'session_id': session_id, 'is_pty': True})
 
     session_id = uuid.uuid4().hex[:12]
     # TTY shim: inject sitecustomize.py via PYTHONPATH so child Python
@@ -273,12 +387,44 @@ def terminal_stdin():
     if not session or session['status'] != 'running':
         return jsonify({'error': 'session not running'}), 400
 
+    pty_sess = session.get('pty')
+    if pty_sess is not None:
+        try:
+            pty_sess.write(text)
+        except Exception:
+            pass
+        return jsonify({'ok': True})
+
     try:
         session['proc'].stdin.write(text.encode('utf-8'))
         session['proc'].stdin.flush()
     except (BrokenPipeError, OSError):
         pass
 
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/terminal/resize', methods=['POST'])
+def terminal_resize():
+    """Resize a real-PTY session's window (MC-928). No-op target for pipe
+    sessions — they have no PTY geometry to resize, so 400 rather than
+    silently doing nothing, same as calling stdin on a dead session."""
+    data = request.get_json() or {}
+    session_id = data.get('session_id', '').strip()
+    cols, rows = data.get('cols'), data.get('rows')
+    if not session_id or not cols or not rows:
+        return jsonify({'error': 'session_id, cols, rows required'}), 400
+
+    session = terminal_sessions.get(session_id)
+    if not session or session['status'] != 'running':
+        return jsonify({'error': 'session not running'}), 400
+    pty_sess = session.get('pty')
+    if pty_sess is None:
+        return jsonify({'error': 'not a pty session'}), 400
+    try:
+        pty_sess.resize(int(cols), int(rows))
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
     return jsonify({'ok': True})
 
 
@@ -319,6 +465,7 @@ def terminal_status(project_id):
                 'output_lines': s['output_lines'],
                 'started_at': s['started_at'],
                 'exit_code': s.get('exit_code'),
+                'is_pty': bool(s.get('is_pty')),
             })
         else:
             # Purge non-running sessions from memory

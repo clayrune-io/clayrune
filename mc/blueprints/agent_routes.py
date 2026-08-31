@@ -101,6 +101,8 @@ from mc.blueprints.project_routes import (
 )
 from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 shim
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
+from mc.blueprints.terminal_routes import launch_pty_session    # MC-928
+from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
 
@@ -1640,8 +1642,12 @@ def _captured_login_status_payload(session: dict) -> dict:
 def agent_auth_login_remote(provider):
     """Remote-friendly login: capture the OAuth URL from a piped subprocess
     instead of opening a host terminal window. Returns remote_capable:False
-    (200, not an error) for providers whose CLI needs a real console — see
-    the module comment above and AgentRuntime.auth_login_argv().
+    (200, not an error) for providers whose CLI needs a real console AND no
+    real-PTY backend is available — see the module comment above and
+    AgentRuntime.auth_login_argv(). When a real PTY IS available (MC-928),
+    those providers get a PTY-backed terminal pop-out session instead of a
+    plain 'no' — that's the general fix the URL-capture path above was a
+    stopgap for.
     """
     try:
         rt = _agent_runtime.get_runtime(provider)
@@ -1652,11 +1658,25 @@ def agent_auth_login_remote(provider):
         return jsonify({'error': f'{provider} CLI is not installed'}), 400
     argv = rt.auth_login_argv(str(bin_path))
     if not argv:
+        if pty_backend.pty_available():
+            session_id, err = launch_pty_session(
+                '_auth_probe', str(bin_path), cwd=_auth_probe_cwd())
+            if err:
+                return jsonify({'ok': False, 'remote_capable': False, 'error': err}), 200
+            return jsonify({
+                'ok': True,
+                'remote_capable': True,
+                'pty': True,
+                'session_id': session_id,
+                'command': str(bin_path),
+            }), 200
         return jsonify({
             'ok': False,
             'remote_capable': False,
             'error': (f'{provider} needs a real console to sign in — its '
-                      'interactive login can\'t be driven over a plain pipe. '
+                      'interactive login can\'t be driven over a plain pipe, '
+                      'and this machine has no real-PTY backend installed '
+                      '(pip install pywinpty on Windows). '
                       'Use "Launch terminal login" on the host machine.'),
         }), 200
 

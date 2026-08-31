@@ -6,6 +6,56 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — A real PTY behind the terminal pop-out
+
+MC-928. The pop-out's "TTY shim" was a PYTHONPATH `sitecustomize.py`
+injection that makes child *Python* processes report `isatty()=True`. Node
+CLIs never saw it — `gemini`'s account picker is an Ink TUI that needs raw-
+mode keyboard input just to draw a frame, so a piped invocation produced
+zero output before hanging (this is what MC-927 worked around with a
+URL-capture fallback, and why `gemini` was explicitly blocked from it).
+
+`mc/pty_backend.py` gives the pop-out a second session shape behind a real
+PTY: ConPTY via `pywinpty` on Windows, stdlib `pty`/`termios`/`fcntl` on
+POSIX (untested live — built and verified on Windows only; the POSIX path
+follows the standard pexpect/ptyprocess openpty+`preexec_fn=os.setsid`
+recipe, but treat it as unverified until run on a real Linux/macOS box).
+`mc/blueprints/terminal_routes.py` opts into it via `{"pty": true}` on
+`/api/terminal/launch` — the existing pipe+shim path is untouched by
+default. `/api/agent/<provider>/auth-login-remote` now launches a PTY
+session instead of returning `remote_capable:false` for any provider whose
+CLI needs a real console, once a PTY backend is available. The frontend
+(`terminal.js`) wires xterm.js's raw keystroke stream to `/api/terminal/stdin`
+for PTY sessions, replacing the line-buffered "Send input" box that a
+single-keypress arrow-key picker can't drive.
+
+Verified against the real case, not a toy: launched `gemini` through the
+pop-out over HTTP and watched its actual Ink TUI draw (gradient ASCII
+banner, a bordered "Waiting for auth..." spinner, then the "How would you
+like to authenticate" picker), then sent one raw down-arrow byte sequence
+through `/api/terminal/stdin` and confirmed the selection marker moved from
+"Login with Google" to "Use Gemini API Key" in the next captured frame.
+
+Teardown was the sharper risk than the read/write path: `gemini` launches a
+real process tree (its own `cmd.exe`, two `node.exe` respawns from a
+self-update, and an `npx`-spawned MCP server subprocess chain — 7 processes
+in the run this was tested against), and pywinpty's `terminate()` only
+signals the single PID it holds. Empirically that PID's job-object teardown
+cascaded the whole tree anyway (all 7 gone within ~2s), but that's a
+Windows platform behavior this module doesn't control, so `close()` backs it
+with an explicit `taskkill /F /T /PID` — the same tree-kill shape
+`agent_routes._kill_pid(tree=True)` already uses elsewhere — rather than
+trust the cascade silently.
+
+`pywinpty` ships prebuilt wheels for cp310–cp314 on win_amd64/win_arm64 (no
+compiler needed), gated `sys_platform == "win32"` in `requirements.txt` so a
+POSIX install never attempts it; the macOS PyInstaller spec doesn't
+reference it and doesn't need to. One cross-cutting bug caught by the new
+tests before it shipped: `/api/processes` (the Process Manager tab) assumed
+every tracked "proc" was `subprocess.Popen`-shaped (`.poll()`); a tracked PTY
+session 500'd it. Fixed by giving both PTY backends `.poll()`/`.kill()`
+matching that contract.
+
 ## [2026-08-31] — The Scribe was Claude-only, so every other runtime forgot
 
 MC-922. `_session_transcript_path()` hardcoded `get_runtime('claude')` and its

@@ -289,6 +289,16 @@ async function settingsRemoteLogin(provider, btnEl) {
       showToast(data.error || `Remote sign-in isn't available for ${provider} yet.`, 10000);
       return;
     }
+    // MC-928: the CLI needs a real console (its login draws an interactive
+    // TUI, e.g. gemini's account picker) — the server gave us a real-PTY
+    // terminal session instead of a captured URL. Open the pop-out; it's
+    // the same surface openTerminalPopout always renders, with raw
+    // keystrokes wired through for pty sessions (see terminal.js).
+    if (data.pty && data.session_id) {
+      openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider);
+      showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
+      return;
+    }
     let tries = 0;
     while (data.status === 'waiting_url' && tries < 20) {
       await new Promise(r => setTimeout(r, 750));

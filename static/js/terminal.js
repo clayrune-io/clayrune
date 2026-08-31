@@ -10,11 +10,13 @@ window.terminalEventSources = window.terminalEventSources || {};   // session_id
 window.terminalOutputBuffers = window.terminalOutputBuffers || {};  // session_id → string[]
 window.terminalOutputCount = window.terminalOutputCount || {};   // session_id → int
 window.terminalDismissed = window.terminalDismissed || new Set(); // session IDs closed by user — don't reopen from replayed markers
+window.terminalIsPty = window.terminalIsPty || {};               // session_id → bool (MC-928: real PTY vs pipe+shim)
 
 // ── Terminal Pop-Out ──────────────────────────────────────────────────────
 
-function openTerminalPopout(projectId, sessionId, command) {
+function openTerminalPopout(projectId, sessionId, command, isPty) {
   const modalId = `__terminal_${sessionId}`;
+  terminalIsPty[sessionId] = !!isPty;
 
   // If already open, focus it
   if (openModals.has(modalId)) {
@@ -47,7 +49,7 @@ function openTerminalPopout(projectId, sessionId, command) {
       </div>
     </div>
     <div class="terminal-container" id="terminal-container-${esc(sessionId)}"></div>
-    <div class="terminal-stdin-row">
+    <div class="terminal-stdin-row" id="terminal-stdin-row-${esc(sessionId)}" ${isPty ? 'style="display:none"' : ''}>
       <input type="text" class="terminal-stdin-input" id="terminal-stdin-${esc(sessionId)}"
         placeholder="Send input to process..."
         onkeydown="if(event.key==='Enter'){sendTerminalInput('${esc(sessionId)}');event.preventDefault()}"
@@ -68,7 +70,7 @@ function openTerminalPopout(projectId, sessionId, command) {
   // Initialize xterm.js after DOM is ready
   setTimeout(async () => {
     await ensureXterm();
-    initTerminalXterm(sessionId);
+    initTerminalXterm(sessionId, !!isPty);
     connectTerminalStream(projectId, sessionId);
   }, 50);
 }
@@ -96,7 +98,7 @@ function ensureXterm() {
   return _xtermPromise;
 }
 
-function initTerminalXterm(sessionId) {
+function initTerminalXterm(sessionId, isPty) {
   const container = document.getElementById(`terminal-container-${sessionId}`);
   if (!container || terminalInstances[sessionId]) return;
   if (!window.Terminal || !window.FitAddon) {
@@ -123,8 +125,13 @@ function initTerminalXterm(sessionId) {
     fontFamily: "'JetBrains Mono', monospace",
     fontSize: _isMobileDevice ? 9 : 12,
     lineHeight: 1.4,
-    cursorBlink: false,
-    disableStdin: true,
+    cursorBlink: !!isPty,
+    // Pipe sessions: input goes through the "Send input" box below (line-
+    // buffered, matches the pipe's own stdin). Real-PTY sessions (MC-928)
+    // need raw keystrokes — arrow keys, single chars with no Enter — for an
+    // Ink TUI like gemini's account picker to be navigable at all, so stdin
+    // is enabled and wired to onData() below instead.
+    disableStdin: !isPty,
     convertEol: false,
     scrollback: 5000,
   });
@@ -139,9 +146,30 @@ function initTerminalXterm(sessionId) {
   const sizeLabel = document.getElementById('term-fontsize-' + sessionId);
   if (sizeLabel) sizeLabel.textContent = term.options.fontSize;
 
-  // Re-fit on container resize
+  if (isPty) {
+    term.onData((data) => {
+      fetch(API_BASE + '/api/terminal/stdin', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: sessionId, text: data }),
+      }).catch(() => {});
+    });
+  }
+
+  // Re-fit on container resize; for a real PTY, also tell the server so the
+  // child's ioctl window size (and anything that queries it, e.g. an Ink
+  // TUI's layout) matches what's actually on screen.
   new ResizeObserver(() => {
-    try { fitAddon.fit(); } catch {}
+    try {
+      fitAddon.fit();
+      if (isPty && term.cols && term.rows) {
+        fetch(API_BASE + '/api/terminal/resize', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ session_id: sessionId, cols: term.cols, rows: term.rows }),
+        }).catch(() => {});
+      }
+    } catch {}
   }).observe(container);
 
   // Write any buffered output
@@ -257,7 +285,7 @@ async function fetchTerminalStatus(projectId) {
         // Restore buffer and open pop-out
         terminalOutputBuffers[s.session_id] = s.output_lines || [];
         terminalOutputCount[s.session_id] = (s.output_lines || []).length;
-        openTerminalPopout(projectId, s.session_id, s.command);
+        openTerminalPopout(projectId, s.session_id, s.command, s.is_pty);
       }
     }
   } catch {}
@@ -281,6 +309,7 @@ function cleanupTerminalModal(modalId) {
   }
   delete terminalOutputBuffers[sessionId];
   delete terminalOutputCount[sessionId];
+  delete terminalIsPty[sessionId];
   // Tell server to remove the session entirely (kills process if still running)
   fetch(API_BASE + `/api/terminal/delete`, {
     method: 'POST',
