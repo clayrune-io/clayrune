@@ -74,6 +74,94 @@ class FakeProc:
         self._exit(-9)
 
 
+class FakePtyUnavailable(RuntimeError):
+    pass
+
+
+class FakePty:
+    """pty_backend session stand-in: real OS pipe for the reader thread
+    (same trick as FakeProc), plus the narrow interface terminal_routes.py
+    actually drives — no real ConPTY/pty.openpty() involved."""
+    _next_pid = 995000
+
+    def __init__(self):
+        r, w = os.pipe()
+        self._r_fd = r
+        self._w = w
+        self.written = []
+        self.resized = None
+        self.closed_with = None
+        FakePty._next_pid += 1
+        self.pid = FakePty._next_pid
+        self._rc = None
+
+    def read(self, size=4096):
+        try:
+            data = os.read(self._r_fd, size)
+        except OSError:
+            return ''
+        return data.decode('utf-8', errors='replace')
+
+    def write(self, text):
+        self.written.append(text)
+
+    def resize(self, cols, rows):
+        self.resized = (cols, rows)
+
+    def isalive(self):
+        return self._rc is None
+
+    def poll(self):
+        return self._rc
+
+    def kill(self):
+        self.close(force=True)
+
+    def wait(self, timeout=None):
+        return self._rc if self._rc is not None else 0
+
+    def close(self, force=True):
+        self.closed_with = force
+        self._exit(-9 if force else 0)
+
+    # — test controls —
+    def feed(self, text: str):
+        os.write(self._w, text.encode('utf-8'))
+
+    def eof(self, rc: int = 0):
+        self._exit(rc)
+
+    def _exit(self, rc):
+        if self._rc is None:
+            self._rc = rc
+            try:
+                os.close(self._w)
+            except OSError:
+                pass
+
+
+def _fake_pty_backend(available=True):
+    """A pty_backend-shaped namespace (pty_available/spawn/PtyUnavailable)
+    for monkeypatching tr.pty_backend — no real ConPTY/stdlib pty involved,
+    so these tests run identically on Windows and POSIX CI."""
+    spawned = []
+
+    def _spawn(command, cwd=None, env=None, cols=120, rows=30):
+        if not available:
+            raise FakePtyUnavailable('no pty backend installed')
+        p = FakePty()
+        spawned.append((command, cwd, env, cols, rows, p))
+        return p
+
+    ns = types.SimpleNamespace(
+        pty_available=lambda: available,
+        spawn=_spawn,
+        PtyUnavailable=FakePtyUnavailable,
+    )
+    ns.spawned = spawned
+    return ns
+
+
 @pytest.fixture()
 def state():
     """Run against EMPTY shared mc.state dicts; restore prior contents after.
@@ -119,9 +207,16 @@ def client(tmp_path, monkeypatch, state):
 
     monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
         Popen=_popen, PIPE=-1, STDOUT=-2))
+
+    # Default: a real-PTY backend IS available, spawning FakePty instances —
+    # individual pty tests override with _fake_pty_backend(available=False).
+    fake_pty = _fake_pty_backend(available=True)
+    monkeypatch.setattr(tr, 'pty_backend', fake_pty)
+
     server.app.config['TESTING'] = True
     c = server.app.test_client()
     c._popen_calls = calls  # type: ignore[attr-defined]
+    c._fake_pty = fake_pty  # type: ignore[attr-defined]
     return c
 
 
@@ -294,6 +389,122 @@ class TestStopDeleteStatus:
         sessions = r.get_json()['sessions']
         assert [s['session_id'] for s in sessions] == [run['session_id']]
         assert 'deadsession1' not in state.terminal_sessions  # purged
+
+
+class TestLaunchPty:
+    """MC-928: {"pty": true} routes through pty_backend instead of
+    subprocess+shim. Same reader-thread/EOF/teardown contract as the pipe
+    path (TestLaunchHappyPath above), proven against a fake backend so these
+    run on any CI platform without a real ConPTY/pty.openpty()."""
+
+    def test_launch_pty_streams_and_tracks_process(self, client, state):
+        r = client.post('/api/terminal/launch',
+                        json={'project_id': 'tterm', 'command': 'gemini', 'pty': True})
+        assert r.status_code == 200
+        j = r.get_json()
+        assert j == {'ok': True, 'session_id': j['session_id'], 'is_pty': True}
+        sid = j['session_id']
+        assert client._popen_calls == []  # never touched the pipe/shim path
+
+        session = state.terminal_sessions[sid]
+        assert session['status'] == 'running'
+        assert session['is_pty'] is True
+        assert session['proc'] is None
+        pty = session['pty']
+
+        (command, cwd, env, cols, rows, spawned) = client._fake_pty.spawned[0]
+        assert command == 'gemini' and spawned is pty
+        # No TTY-shim PYTHONPATH injection for a real PTY — it isn't needed.
+        assert 'PYTHONPATH' not in env or 'mc_tty_shim' not in env.get('PYTHONPATH', '')
+
+        procs = client.get('/api/processes').get_json()
+        mine = [p for p in procs if p['session_id'] == sid]
+        assert mine and mine[0]['type'] == 'terminal' and mine[0]['alive'] is True
+
+        pty.feed('drawing an Ink TUI\x1b[2J')
+        assert _wait_until(lambda: any('Ink TUI' in l for l in session['output_lines']))
+        pty.eof(rc=0)
+        assert _wait_until(lambda: session['status'] == 'completed')
+        assert session['exit_code'] == 0
+        assert _wait_until(lambda: pty.pid not in state.tracked_processes)
+
+    def test_launch_pty_unavailable_400(self, client, state, monkeypatch):
+        from mc.blueprints import terminal_routes as tr
+        monkeypatch.setattr(tr, 'pty_backend', _fake_pty_backend(available=False))
+        r = client.post('/api/terminal/launch',
+                        json={'project_id': 'tterm', 'command': 'gemini', 'pty': True})
+        assert r.status_code == 400
+        assert 'pywinpty' in r.get_json()['error']
+        assert state.terminal_sessions == {}
+
+    def test_launch_pty_spawn_failure_400(self, client, state, monkeypatch):
+        from mc.blueprints import terminal_routes as tr
+
+        def _boom(*a, **kw):
+            raise OSError('gemini.CMD not found')
+        monkeypatch.setattr(tr.pty_backend, 'spawn', _boom)
+        r = client.post('/api/terminal/launch',
+                        json={'project_id': 'tterm', 'command': 'gemini', 'pty': True})
+        assert r.status_code == 400
+        assert 'gemini.CMD not found' in r.get_json()['error']
+        assert state.terminal_sessions == {}
+
+
+def _seed_pty_session(state, client, sid='ptyseeded1234', status='running'):
+    pty = FakePty()
+    client._fake_pty.spawned.append(('seed', None, {}, 120, 30, pty))
+    s = {
+        'pty': pty,
+        'proc': None,
+        'status': status,
+        'command': 'gemini',
+        'output_lines': [],
+        'started_at': '2026-08-31T00:00:00Z',
+        'session_id': sid,
+        'project_id': 'tterm',
+        'exit_code': None,
+        'is_pty': True,
+    }
+    state.terminal_sessions[sid] = s
+    return s
+
+
+class TestPtyStdinResizeStop:
+    def test_stdin_writes_raw_to_pty_not_proc(self, client, state):
+        s = _seed_pty_session(state, client)
+        r = client.post('/api/terminal/stdin',
+                        json={'session_id': s['session_id'], 'text': '\x1b[B'})
+        assert r.status_code == 200 and r.get_json() == {'ok': True}
+        assert s['pty'].written == ['\x1b[B']
+
+    def test_resize_happy_path(self, client, state):
+        s = _seed_pty_session(state, client)
+        r = client.post('/api/terminal/resize',
+                        json={'session_id': s['session_id'], 'cols': 100, 'rows': 40})
+        assert r.status_code == 200 and r.get_json() == {'ok': True}
+        assert s['pty'].resized == (100, 40)
+
+    def test_resize_rejects_pipe_session(self, client, state):
+        s = _seed_session(state)  # pipe-backed FakeProc, no 'pty' key
+        r = client.post('/api/terminal/resize',
+                        json={'session_id': s['session_id'], 'cols': 100, 'rows': 40})
+        assert r.status_code == 400
+        assert r.get_json()['error'] == 'not a pty session'
+
+    def test_resize_missing_fields_400(self, client, state):
+        s = _seed_pty_session(state, client)
+        r = client.post('/api/terminal/resize', json={'session_id': s['session_id']})
+        assert r.status_code == 400
+
+    def test_stop_closes_pty_and_unregisters(self, client, state):
+        s = _seed_pty_session(state, client)
+        pid = s['pty'].pid
+        state.tracked_processes[pid] = {'pid': pid}
+        r = client.post('/api/terminal/stop', json={'session_id': s['session_id']})
+        assert r.status_code == 200 and r.get_json() == {'ok': True}
+        assert s['status'] == 'stopped'
+        assert s['pty'].closed_with is True  # force=True
+        assert pid not in state.tracked_processes
 
 
 class TestStream:

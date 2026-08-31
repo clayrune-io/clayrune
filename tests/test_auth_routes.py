@@ -353,19 +353,64 @@ class TestRemoteLogin:
             resp = c.post('/api/agent/claude/auth-login-remote')
         assert resp.status_code == 400
 
-    def test_remote_login_not_capable_reports_plainly(self):
-        """Gemini has no auth_login_argv override — the route must say so
-        (200, remote_capable:False) instead of hanging or spawning a CLI that
-        will never emit anything over a pipe."""
+    def test_remote_login_not_capable_without_pty_reports_plainly(self):
+        """Gemini has no auth_login_argv override AND no real-PTY backend is
+        available — the route must say so (200, remote_capable:False)
+        instead of hanging or spawning a CLI that will never emit anything
+        over a pipe. (MC-928: when a PTY IS available this path instead
+        launches a PTY terminal session — see the sibling test below.)"""
+        from mc.blueprints import agent_routes as ar
         c, _ = _get_flask_client()
         with patch.object(_ar.GeminiRuntime, 'resolve_binary',
-                           return_value=Path('/fake/gemini')):
+                           return_value=Path('/fake/gemini')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=False):
             resp = c.post('/api/agent/gemini/auth-login-remote')
         assert resp.status_code == 200
         body = json.loads(resp.data)
         assert body['ok'] is False
         assert body['remote_capable'] is False
         assert 'console' in body['error']
+
+    def test_remote_login_falls_back_to_pty_when_available(self):
+        """MC-928: a provider whose CLI needs a real console (gemini) gets a
+        real-PTY terminal pop-out session instead of a plain 'no', once a
+        PTY backend is available — the general fix the URL-capture path
+        above was a stopgap for. launch_pty_session itself is exercised
+        directly by tests/test_terminal_routes.py; here we only need to
+        confirm the route wires into it and shapes the response."""
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                           return_value=Path('/fake/gemini')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=('abc123', None)) as mock_launch:
+            resp = c.post('/api/agent/gemini/auth-login-remote')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body == {
+            'ok': True,
+            'remote_capable': True,
+            'pty': True,
+            'session_id': 'abc123',
+            'command': str(Path('/fake/gemini')),
+        }
+        mock_launch.assert_called_once()
+        assert mock_launch.call_args.args[1] == str(Path('/fake/gemini'))
+
+    def test_remote_login_pty_launch_failure_reports_not_capable(self):
+        """A PTY backend is installed but the spawn itself fails (e.g. the
+        binary vanished between resolve_binary() and spawn()) — still a
+        plain 200/remote_capable:False, not a 500."""
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                           return_value=Path('/fake/gemini')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=(None, 'boom')):
+            resp = c.post('/api/agent/gemini/auth-login-remote')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body == {'ok': False, 'remote_capable': False, 'error': 'boom'}
 
     @pytest.mark.skipif(not _HAS_CLAUDE_CLI, reason='claude CLI not on PATH')
     def test_remote_login_claude_captures_real_url(self):

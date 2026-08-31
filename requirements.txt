@@ -33,3 +33,15 @@ Pillow>=12.2.0
 # (the Chromium binary) is NOT a dependency — it comes from the Playwright MCP
 # install and is resolved at runtime, so the pane 501s gracefully without it.
 websocket-client>=1.9.0
+
+# ── Real PTY for the terminal pop-out (MC-928) ───────────────────────────────
+# mc/pty_backend.py: ConPTY bindings for an interactive CLI (e.g. `gemini`
+# login's Ink TUI) to run INSIDE the pop-out instead of needing a host
+# terminal window. Windows-only native dependency — ships as a prebuilt wheel
+# (no compiler needed; verified cp314-win_amd64 2026-08-31), so it does not
+# turn a fresh install into a build-from-source. POSIX needs nothing extra
+# (mc/pty_backend.py uses the stdlib `pty` module there). Optional: if this
+# isn't installed, pty_backend.pty_available() reports False on Windows and
+# callers fall back to the existing pipe+shim path or an explicit error —
+# never a silent failure.
+pywinpty>=3.0.5; sys_platform == "win32"
