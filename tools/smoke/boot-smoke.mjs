@@ -76,6 +76,7 @@ const CROSS_BACKLOG_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'cross-
 const SCHEDULER_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'scheduler.js'), 'utf8');
 // Scheduled-runs calendar ES module — same serve-or-it-boots-without-it rule.
 const SCHEDULE_CALENDAR_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'schedule-calendar.js'), 'utf8');
+const AUTOMATION_SUGGESTIONS_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'automation-suggestions.js'), 'utf8');
 // MCP servers ES module (Phase 3 module 14) — same rule as claydo.js above.
 const MCP_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'mcp.js'), 'utf8');
 // Secrets vault ES module — same rule as claydo.js above.
@@ -161,6 +162,7 @@ const STATIC_MAP = {
   '/static/js/cross-backlog.js': ['text/javascript; charset=utf-8', CROSS_BACKLOG_JS],
   '/static/js/scheduler.js': ['text/javascript; charset=utf-8', SCHEDULER_JS],
   '/static/js/schedule-calendar.js': ['text/javascript; charset=utf-8', SCHEDULE_CALENDAR_JS],
+  '/static/js/automation-suggestions.js': ['text/javascript; charset=utf-8', AUTOMATION_SUGGESTIONS_JS],
   '/static/js/mcp.js': ['text/javascript; charset=utf-8', MCP_JS],
   '/static/js/secrets-panel.js': ['text/javascript; charset=utf-8', SECRETS_PANEL_JS],
   '/static/js/system-status.js': ['text/javascript; charset=utf-8', SYSTEM_STATUS_JS],
@@ -1010,6 +1012,19 @@ async function runSchedulerLayoutGuard(browser) {
     character: i === 0 ? 'project:scout' : '',
     character_display: i === 0 ? { name: 'Posy', avatar: 'fig:courier', inherited: false } : null,
   }));
+  // Consent-first automation suggestions (MC-915). One pending row so the
+  // section actually renders and its layout is held to the same one-scroller
+  // invariant as the rest of the modal — an empty queue hides the section, so
+  // stubbing it empty would have added a DOM node nothing ever checked.
+  const SUGGESTIONS = [{
+    id: 'a1b2c3d4e5f6a7b8', project_id: 'smoke_alpha', project_name: 'Smoke Test Alpha',
+    source: 'recurring_manual_dispatch',
+    title: 'Run the nightly ledger reconciliation',
+    rationale: 'Dispatched by hand 6 times on 6 different days, and no schedule covers it.',
+    evidence: { count: 6, distinct_days: 6, first_seen: '', last_seen: '' },
+    spec: { project_id: 'smoke_alpha', task: 'Run the nightly ledger reconciliation',
+            schedule_type: 'daily', time: '14:00', character: '', continue_session: false },
+  }];
   const CHARACTERS = [
     { name: 'archivist', display_name: 'archivist', scope: 'global',
       agent_name: 'Quill', avatar: 'fig:archivist', description: 'Files things' },
@@ -1021,6 +1036,7 @@ async function runSchedulerLayoutGuard(browser) {
     const path = new URL(req.url()).pathname;
     const json = (b) => route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(b) });
     if (path === '/api/schedules' && req.method() === 'GET') return json(SCHEDULES);
+    if (path === '/api/automation/suggestions' && req.method() === 'GET') return json(SUGGESTIONS);
     if (path === '/api/config') return json({ scheduler_paused: false });
     if (path === '/api/steward/loop-health') return json({ ok: true });
     if (path === '/api/characters') return json(CHARACTERS);
@@ -1084,6 +1100,23 @@ async function runSchedulerLayoutGuard(browser) {
         };
       });
       r.sectionCount = r.sections.length;
+
+      // Consent-first automation suggestions (MC-915). The safety property is
+      // that a suggestion is INERT until a human clicks Accept, so the guard
+      // checks the card offers both a way in and a way out and says so — a
+      // card with only an Accept button is a nag, and one with neither is a
+      // dead end that leaves the row on screen forever.
+      const sCards = document.querySelectorAll('#automation-suggestion-list .schedule-card');
+      r.suggestionCards = sCards.length;
+      const sc = sCards[0];
+      if (sc) {
+        const btns = [...sc.querySelectorAll('button')].map((b) => b.textContent.trim());
+        r.suggestionButtons = btns;
+        // Only the final action button carries the accent (modal convention).
+        r.suggestionAccentBtns = [...sc.querySelectorAll('button.btn-add')]
+          .map((b) => b.textContent.trim());
+        r.suggestionSaysInert = /until you accept/i.test(sc.textContent || '');
+      }
       r.anySectionScrolls = r.sections.some((x) => x.overflowY === 'auto' || x.overflowY === 'scroll');
       // 40px of slack: the bug left 100px+ under every section, while normal
       // collapsed margins account for well under that.
@@ -1129,7 +1162,22 @@ async function runSchedulerLayoutGuard(browser) {
   const fail = (m) => { console.error('SCHEDFAIL ' + m); ok = false; };
   if (out.err) fail(out.err);
   if (!out.hasBody) fail('the modal has no single .scheduler-body scroll container.');
-  if (out.sectionCount !== 3) fail(`expected 3 sections, saw ${out.sectionCount}.`);
+  // 4 since MC-915: suggestions, pause switch, stewards, schedules. The
+  // suggestions section is display:none when the queue is empty, so this only
+  // reads 4 because the fixture stubs one pending row.
+  if (out.sectionCount !== 4) fail(`expected 4 sections, saw ${out.sectionCount}.`);
+  if (out.suggestionCards !== 1) fail(`expected 1 suggestion card, saw ${out.suggestionCards}.`);
+  if (String(out.suggestionButtons) !== 'Dismiss,Accept') {
+    fail('a suggestion must offer exactly Dismiss and Accept, saw: '
+       + JSON.stringify(out.suggestionButtons));
+  }
+  if (String(out.suggestionAccentBtns) !== 'Accept') {
+    fail('only the final action button may carry the accent, saw: '
+       + JSON.stringify(out.suggestionAccentBtns));
+  }
+  if (!out.suggestionSaysInert) {
+    fail('the suggestion card must say nothing runs until the human accepts it.');
+  }
   if (out.anySectionScrolls) {
     fail('a .scheduler-section is its own scroll box — the modal must have exactly '
        + 'one scroller: ' + JSON.stringify(out.sections));
@@ -1160,8 +1208,9 @@ async function runSchedulerLayoutGuard(browser) {
   if (pageErrors.length) fail('page errors: ' + pageErrors.join(' | '));
   if (ok) {
     console.log('OKAY scheduler: one scroll container, no section is its own scroll box, '
-      + `no dead space, all ${out.cardCount} schedules are reachable, and a task `
-      + 'names the agent that runs it (card pill + grouped picker).');
+      + `no dead space, all ${out.cardCount} schedules are reachable, a task `
+      + 'names the agent that runs it (card pill + grouped picker), and a '
+      + 'suggestion offers Accept + Dismiss and says nothing runs until you accept.');
   }
   await ctx.close();
   return ok;

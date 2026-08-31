@@ -465,6 +465,12 @@ SHARED_RULES_PATH = Path(CONFIG.get('shared_rules_path', ''))
 PROJECTS_BASE = Path(CONFIG.get('projects_base', str(Path.home())))
 SETTINGS_PATH = _DATA_ROOT / 'data' / 'settings.json'
 SCHEDULES_PATH = _DATA_ROOT / 'data' / 'schedules.json'
+# Consent-first automation suggestions (MC-915). A SIBLING of DATA_DIR, never a
+# member of it — load_projects() parses every *.json under data/projects/ as a
+# project record, so a file there would become a malformed "project" and 500 the
+# restart endpoints (the LOAD-BEARING DATA_DIR rule in CLAUDE.md). Same shelf as
+# schedules.json, for the same reason.
+AUTOMATION_SUGGESTIONS_PATH = _DATA_ROOT / 'data' / 'automation_suggestions.json'
 
 MEMORY_DIR = _DATA_ROOT / 'data' / 'memory'  # fallback for projects without project_path
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
@@ -1595,6 +1601,21 @@ app.register_blueprint(_bp_sched.bp)
 # Scheduler continuation helpers (_latest_*_for_schedule,
 # _scheduled_run_marker, _scheduled_continue) + the /api/schedules CRUD
 # routes -- moved to mc/blueprints/scheduler_routes.py (1.13).
+
+
+# ── Consent-first automation suggestions (MC-915) ────────────────────────────
+# The agent proposes a ready-to-run scheduled job; the human accepts (which
+# creates it through the scheduler's own create path) or dismisses (latched).
+# Registered AFTER the scheduler blueprint because accept calls straight into
+# scheduler_routes.create_schedule_from_spec -- one job engine, not two.
+from mc.blueprints import automation_routes as _bp_automation  # noqa: E402
+_bp_automation.wire(
+    load_agent_log_fn=_bp_agent._load_agent_log,
+    load_projects_fn=_bp_projects.load_projects,
+    load_project_fn=_bp_projects.load_project,
+    store_path=AUTOMATION_SUGGESTIONS_PATH,
+)
+app.register_blueprint(_bp_automation.bp)
 
 
 # ── Static ───────────────────────────────────────────────────────────────────

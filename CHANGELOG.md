@@ -6,6 +6,64 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — The agent proposes a scheduled job; you decide
+
+MC-915. Clayrune's binding learning rail says a human must be on at least one
+side of every loop, and that learning may never expand what the agent is allowed
+to do. A suggestion queue satisfies both by construction — the agent proposes,
+the human disposes — and it makes the agent's learning *visible* rather than
+silent. The Scheduler modal now grows a **Suggested Automations** section when
+the agent has something to propose, with Accept and Dismiss, and the section is
+hidden entirely when the queue is empty.
+
+**The safety property is structural, not a convention.** `mc/automation_suggestions.py`
+has no code path to the schedules store at all; `mc/blueprints/automation_routes.py`
+is the only bridge, and the bridge is exactly one explicit POST wide. There are
+three routes and a test pins the surface at three, because a fourth route is how
+an auto-accept would arrive.
+
+**No second job engine.** `create_schedule()` was split into
+`create_schedule_from_spec(spec)` plus a thin request wrapper; accept calls the
+same function `POST /api/schedules` calls. One validator, one `next_run`
+computation. A parallel writer would drift, which is how `weekly` stayed silently
+broken once already.
+
+**The latch reuses the Distiller's pattern rather than inventing one.** Keyed by
+a content fingerprint, not a row id; consulted at *generation* time so a dismissed
+pattern never re-enters the store; permanent for "no" while "yes" stays
+observable-dynamic. That last split matters: deleting an accepted schedule makes
+the ask proposable again, which is what un-accepting should mean. A dismissal
+keyed by a row id would expire the moment the miner regenerated the row — exactly
+how `preference-1ba8d678` ended up live in `~/.claude/skills/` while sitting in
+`_rejected/`.
+
+**One suggestion source, and it is the cheapest real one:** recurring *manual*
+dispatch, read from the agent log that is already on disk and already parsed.
+No new instrumentation, no model call, deterministic enough to test from a
+fixture, and its evidence is checkable by the person being asked to consent —
+"you have run this by hand 50 times across 42 days" is a fact they can dispute.
+A curated catalog would have been a static menu demonstrating no learning at all.
+Schedule-triggered runs are excluded, so an existing job cannot argue for its own
+creation.
+
+The thresholds were measured, not guessed. Count plus distinct days alone yielded
+19 candidates across 20 real projects and about half were noise — a bug report
+retyped nine times over three days, a design question asked in one sitting. Every
+one of those *clustered*: high count, short span. Adding a 7-day span gate cut
+19 → 11 and removed essentially all of it while keeping every real job. A burst is
+a bad afternoon; a habit recurs across weeks.
+
+The store is `data/automation_suggestions.json` — a sibling of `data/projects/`,
+never a member of it, on the `schedules.json` shelf and for the same reason: a
+stray `*.json` under `DATA_DIR` becomes a malformed "project" and 500s both
+restart endpoints.
+
+21 new tests (accept creates exactly one real schedule; dismiss latches; a
+dismissed suggestion is not re-offered after a restart, simulated by reloading
+the module against the same store and re-mining the same log). The boot smoke
+test's scheduler guard now stubs a pending suggestion so the new section's layout
+is held to the same one-scroller invariant as the rest of the modal.
+
 ## [2026-08-29] — Clayrune starts itself at boot, before you log in
 
 Ron: *"setting Clayrune to auto load when the PC restart or reboot ... This is

@@ -34,6 +34,13 @@ async function openScheduler() {
     <div class="scheduler-section" style="padding-top:4px;padding-bottom:0">
       <div id="scheduler-pause-bar"></div>
     </div>
+    <div class="scheduler-section" id="automation-suggestion-section" style="padding-top:12px;display:none">
+      <div style="margin-bottom:12px">
+        <span style="font-size:13px;font-weight:700;color:var(--text)">Suggested Automations
+          <span class="memory-hint" style="margin:0;font-weight:normal;display:block">Jobs proposed from work you keep dispatching by hand. Nothing runs until you accept it; dismissing one retires it for good.</span></span>
+      </div>
+      <div id="automation-suggestion-list"></div>
+    </div>
     <div class="scheduler-section" style="padding-top:12px">
       <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
         <span style="font-size:13px;font-weight:700;color:var(--text)">Autonomous Stewards
@@ -70,6 +77,9 @@ async function openScheduler() {
   await refreshSchedulerPause();
   if (window.renderStewards) window.renderStewards();
   await refreshScheduleList();
+  // Last, and never blocking: the suggestion queue is the least urgent thing in
+  // this modal, and its section stays hidden when there is nothing pending.
+  if (window.refreshAutomationSuggestions) window.refreshAutomationSuggestions();
 }
 
 // ── Master kill-switch ─────────────────────────────────────────────────────
@@ -636,4 +646,5 @@ window.refreshScheduleList = refreshScheduleList;   // repaint when a project's 
 // `let`, which lands in the shared global lexical scope). Bridge, or the
 // calendar throws ReferenceError the moment it renders.
 window.getSchedulerPaused = () => _schedPaused;
+window._schedProjectColor = _schedProjectColor; // automation-suggestions cards reuse the row accent
 window.scheduleDescription = scheduleDescription;

@@ -980,25 +980,35 @@ def _validated_schedule_character(character, project_id):
     return f'{scope}:{name}', None
 
 
-@bp.route('/api/schedules', methods=['POST'])
-def create_schedule():
-    data = request.get_json() or {}
+def create_schedule_from_spec(data: dict):
+    """THE schedule-create path. Returns (sched, None) or (None, (resp, code)).
+
+    Extracted from create_schedule() so a second caller can create a schedule
+    without a second job engine — the automation-suggestion accept endpoint
+    (MC-915) hands its stored spec straight to this function. The body below is
+    the original handler verbatim; create_schedule() is now a thin request
+    wrapper around it.
+
+    Anything that creates a schedule MUST come through here. A parallel writer
+    would validate differently, compute next_run differently, and drift — which
+    is how 'weekly' stayed silently broken once already.
+    """
     pid = (data.get('project_id') or '').strip()
     task = (data.get('task') or '').strip()
     stype = data.get('schedule_type', 'daily')
     if not pid or not task:
-        return jsonify({'error': 'project_id and task required'}), 400
+        return None, (jsonify({'error': 'project_id and task required'}), 400)
     # Fail loudly here rather than at fire time. A row with a type nobody
     # computes a next_run for stores fine, returns 201 and reads `enabled` —
     # and never runs. That is how 'weekly' stayed broken: accepted, enabled,
     # silent. A 400 with the list is the difference between a typo and a
     # feature that quietly does nothing for months.
     if stype not in SCHEDULE_TYPES:
-        return jsonify({'error': f'unknown schedule_type {stype!r}; '
-                                 f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
+        return None, (jsonify({'error': f'unknown schedule_type {stype!r}; '
+                               f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400)
     character, cerr = _validated_schedule_character(data.get('character'), pid)
     if cerr:
-        return cerr
+        return None, cerr
 
     sched = {
         'id': uuid.uuid4().hex[:8],
@@ -1028,6 +1038,14 @@ def create_schedule():
     schedules = _load_schedules()
     schedules.append(sched)
     _save_schedules(schedules)
+    return sched, None
+
+
+@bp.route('/api/schedules', methods=['POST'])
+def create_schedule():
+    sched, err = create_schedule_from_spec(request.get_json() or {})
+    if err:
+        return err
     return jsonify(sched), 201
 
 
