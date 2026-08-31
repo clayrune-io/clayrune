@@ -46,10 +46,11 @@ function _renderProviderSettings(cfg) {
     if (isClaude) {
       actionBtns = `<div style="display:flex;gap:6px;flex-shrink:0">
         <button class="btn-add" onclick="settingsClaudeLogin()">Sign in</button>
+        <button class="btn-add" style="background:var(--surface3);color:var(--text)" onclick="settingsRemoteLogin('claude',this)">Sign in remotely</button>
         <button class="btn-add" style="background:var(--surface3);color:var(--text)" onclick="settingsClaudeAuthCheck()">Check</button>
       </div>`;
-      authControls = `<div class="settings-hint" style="margin-top:6px">
-        Opens a terminal; type <code>/login</code> to finish sign-in.
+      authControls = `<div class="settings-hint" style="margin-top:6px" data-remote-login-anchor="claude">
+        Opens a terminal; type <code>/login</code> to finish sign-in. "Sign in remotely" works over the tunnel too.
         <span id="claude-auth-status-line" style="display:inline-block;margin-left:6px"></span>
       </div>`;
     } else if (installed) {
@@ -65,9 +66,11 @@ function _renderProviderSettings(cfg) {
         </div>` : '';
       const loginBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px;margin-right:6px"
                                onclick="settingsProviderTerminalLogin('${esc(p.name)}',this)">Launch terminal login</button>`;
+      const remoteLoginBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px;margin-right:6px"
+                               onclick="settingsRemoteLogin('${esc(p.name)}',this)">Sign in remotely</button>`;
       const refreshBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
                                   onclick="settingsProviderRefresh('${esc(p.name)}')">Refresh</button>`;
-      authControls = keyInput + `<div>${loginBtn}${refreshBtn}</div>`;
+      authControls = keyInput + `<div data-remote-login-anchor="${esc(p.name)}">${loginBtn}${remoteLoginBtn}${refreshBtn}</div>`;
     }
 
     return `
