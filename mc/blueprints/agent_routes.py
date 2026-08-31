@@ -1535,6 +1535,213 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
         return str(e)
 
 
+# ── Remote/captured login — MC-927 URL-surfacing fallback ───────────────────
+#
+# _launch_terminal_for_binary (above) opens a NEW OS TERMINAL WINDOW on the
+# host — over the tunnel, a remote user taps "log in" and nothing observable
+# happens, because the window opened on a machine they aren't sitting at.
+#
+# Verified 2026-08-31: `claude auth login` prints its OAuth URL and reads the
+# pasted code back over a PLAIN PIPED subprocess, no PTY required at all.
+# Gemini does not — a piped, non-TTY `gemini` produces zero output before
+# hanging, because its account-picker is an interactive TUI that needs
+# raw-mode keyboard input to render in the first place. So this path is
+# opt-in per runtime via `auth_login_argv()` (agent_runtime.py); providers
+# that return None there keep the host-terminal button as their only option
+# until MC-928 (a real PTY for the pop-out) ships.
+_captured_login_lock = threading.Lock()
+_captured_login_sessions: Dict[str, dict] = {}  # provider -> session dict
+
+_LOGIN_URL_RE = re.compile(r'https?://\S+')
+
+
+def _extract_login_url(text: str) -> Optional[str]:
+    m = _LOGIN_URL_RE.search(text)
+    if not m:
+        return None
+    return m.group(0).rstrip('.,)>\'"')
+
+
+def _read_captured_login_stream(provider: str, proc, session: dict) -> None:
+    """Reader thread: raw chunk-reads the login subprocess's merged
+    stdout/stderr into session['output'], flipping status to 'url_ready' as
+    soon as a URL appears.
+
+    Chunk reads (not readline()) because `claude auth login` never terminates
+    "Paste code here if prompted > " with a newline — a line-based reader
+    would block there forever and never see the URL two lines above it.
+    Mirrors terminal_routes._read_terminal_stream's approach for the same
+    reason; kept separate rather than sharing that session store because this
+    flow's semantics (single session per provider, URL extraction, no
+    project/SSE bridging) don't fit the general terminal pop-out.
+    """
+    fd = proc.stdout.fileno()
+    try:
+        while True:
+            with _captured_login_lock:
+                if _captured_login_sessions.get(provider) is not session:
+                    return
+            try:
+                chunk = os.read(fd, 4096)
+            except OSError:
+                break
+            if not chunk:
+                break
+            text = chunk.decode('utf-8', errors='replace')
+            with _captured_login_lock:
+                session['output'] += text
+                if session['status'] == 'waiting_url':
+                    url = _extract_login_url(session['output'])
+                    if url:
+                        session['url'] = url
+                        session['status'] = 'url_ready'
+    except Exception as e:
+        with _captured_login_lock:
+            session['output'] += f'\n[reader error: {e}]'
+    finally:
+        rc = proc.wait()
+        with _captured_login_lock:
+            if _captured_login_sessions.get(provider) is session:
+                session['exit_code'] = rc
+
+
+def _expire_captured_login(provider: str, session: dict) -> None:
+    """Timer callback: kill a login subprocess nobody finished signing in to.
+
+    Only touches PID this server spawned, and only if it's still the CURRENT
+    session for `provider` — a retry that replaced it owns its own timer.
+    """
+    with _captured_login_lock:
+        if _captured_login_sessions.get(provider) is not session:
+            return
+        if session.get('exit_code') is not None:
+            return
+    try:
+        session['proc'].kill()
+    except Exception:
+        pass
+    with _captured_login_lock:
+        if _captured_login_sessions.get(provider) is session:
+            del _captured_login_sessions[provider]
+
+
+def _captured_login_status_payload(session: dict) -> dict:
+    with _captured_login_lock:
+        return {
+            'ok': True,
+            'remote_capable': True,
+            'status': session['status'],
+            'url': session.get('url'),
+            'exit_code': session.get('exit_code'),
+        }
+
+
+@bp.route('/api/agent/<provider>/auth-login-remote', methods=['POST'])
+def agent_auth_login_remote(provider):
+    """Remote-friendly login: capture the OAuth URL from a piped subprocess
+    instead of opening a host terminal window. Returns remote_capable:False
+    (200, not an error) for providers whose CLI needs a real console — see
+    the module comment above and AgentRuntime.auth_login_argv().
+    """
+    try:
+        rt = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return jsonify({'error': f'unknown provider: {provider}'}), 404
+    bin_path = rt.resolve_binary()
+    if not bin_path:
+        return jsonify({'error': f'{provider} CLI is not installed'}), 400
+    argv = rt.auth_login_argv(str(bin_path))
+    if not argv:
+        return jsonify({
+            'ok': False,
+            'remote_capable': False,
+            'error': (f'{provider} needs a real console to sign in — its '
+                      'interactive login can\'t be driven over a plain pipe. '
+                      'Use "Launch terminal login" on the host machine.'),
+        }), 200
+
+    with _captured_login_lock:
+        existing = _captured_login_sessions.get(provider)
+    if existing is not None and existing.get('exit_code') is None:
+        # Already in flight — hand back what we have instead of spawning a
+        # second CLI process to fight the first one for the same stdin.
+        return jsonify(_captured_login_status_payload(existing))
+
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+            cwd=_auth_probe_cwd(),
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+        )
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+    session = {
+        'proc': proc, 'status': 'waiting_url', 'url': None,
+        'output': '', 'exit_code': None, 'started_at': _time.time(),
+    }
+    with _captured_login_lock:
+        _captured_login_sessions[provider] = session
+    threading.Thread(target=_read_captured_login_stream,
+                      args=(provider, proc, session), daemon=True).start()
+    timer = threading.Timer(600, _expire_captured_login, args=(provider, session))
+    timer.daemon = True
+    timer.start()
+
+    # Give the CLI a short window to print its URL before responding —
+    # observed 1-3s for `claude auth login`. The frontend polls the status
+    # route below if we come back empty-handed (cold start / slow machine).
+    deadline = _time.time() + 5
+    while _time.time() < deadline:
+        with _captured_login_lock:
+            if session['status'] != 'waiting_url' or _captured_login_sessions.get(provider) is not session:
+                break
+        _time.sleep(0.15)
+
+    return jsonify(_captured_login_status_payload(session))
+
+
+@bp.route('/api/agent/<provider>/auth-login-remote/status')
+def agent_auth_login_remote_status(provider):
+    with _captured_login_lock:
+        session = _captured_login_sessions.get(provider)
+    if not session:
+        return jsonify({'ok': False, 'remote_capable': True, 'status': 'none'}), 404
+    return jsonify(_captured_login_status_payload(session))
+
+
+@bp.route('/api/agent/<provider>/auth-login-remote/code', methods=['POST'])
+def agent_auth_login_remote_code(provider):
+    """Write a pasted OAuth code back into the waiting login subprocess's
+    stdin. A wrong code leaves the CLI re-prompting rather than exiting
+    (verified 2026-08-31 for claude), so callers may retry against the same
+    session."""
+    data = request.get_json() or {}
+    code = (data.get('code') or '').strip()
+    if not code:
+        return jsonify({'error': 'code required'}), 400
+    with _captured_login_lock:
+        session = _captured_login_sessions.get(provider)
+    if not session:
+        return jsonify({'error': 'no login session in progress'}), 404
+    proc = session['proc']
+    try:
+        proc.stdin.write((code + '\n').encode('utf-8'))
+        proc.stdin.flush()
+    except Exception as e:
+        return jsonify({'error': f'failed to submit code: {e}'}), 500
+    with _captured_login_lock:
+        session['status'] = 'code_submitted'
+        session['output'] = ''  # reset so the tail below reflects THIS attempt
+    # Give the CLI a moment to react (success message, or "Invalid code").
+    _time.sleep(1.5)
+    with _captured_login_lock:
+        out_tail = session['output'][-500:]
+        still_running = session.get('exit_code') is None
+    return jsonify({'ok': True, 'still_running': still_running, 'output_tail': out_tail})
+
+
 # Wire claude auth hooks into AgentRuntime so generic routes share the same
 # in-memory state. Must be at module level after _claude_auth_state and
 # _run_claude_auth_probe are defined, before any request can be served.

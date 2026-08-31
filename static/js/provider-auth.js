@@ -272,6 +272,93 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
   }
 }
 
+// ── Remote sign-in — MC-927 URL-surfacing fallback ─────────────────────────
+// "Launch terminal login" opens a window on the HOST; over the tunnel that's
+// invisible to whoever tapped the button from a phone. This path asks the
+// server to capture the CLI's OAuth URL from a piped subprocess instead (only
+// works where the CLI cooperates — see AgentRuntime.auth_login_argv; the
+// server tells us plainly via remote_capable:false when it doesn't, e.g.
+// gemini today) and renders it as a tappable link + browser-pane button +
+// a box to paste the code back.
+async function settingsRemoteLogin(provider, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Starting...'; }
+  try {
+    let data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote`,
+                                   { method: 'POST' })).json();
+    if (data.remote_capable === false) {
+      showToast(data.error || `Remote sign-in isn't available for ${provider} yet.`, 10000);
+      return;
+    }
+    let tries = 0;
+    while (data.status === 'waiting_url' && tries < 20) {
+      await new Promise(r => setTimeout(r, 750));
+      data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote/status`)).json();
+      tries++;
+    }
+    if (!data.url) {
+      showToast(`${provider} didn't print a sign-in link in time. Try "Launch terminal login" on the host instead.`, 10000);
+      return;
+    }
+    _renderRemoteLoginBox(provider, data.url);
+  } catch (e) {
+    showToast('Remote sign-in failed: ' + e, 8000);
+  } finally {
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Sign in remotely'; }
+  }
+}
+
+function _renderRemoteLoginBox(provider, url) {
+  const hostId = `settings-remote-login-${provider}`;
+  let box = document.getElementById(hostId);
+  if (!box) {
+    const anchor = document.querySelector(`[data-remote-login-anchor="${provider}"]`);
+    if (!anchor) return;
+    box = document.createElement('div');
+    box.id = hostId;
+    box.className = 'settings-hint';
+    box.style.cssText = 'margin-top:8px;padding:8px;border:1px solid var(--border);border-radius:6px';
+    anchor.after(box);
+  }
+  box.innerHTML = `
+    <div>Open this on any device signed into the right account, then paste the code it gives you back here:</div>
+    <div style="margin:6px 0;word-break:break-all"><a href="${esc(url)}" target="_blank" rel="noopener">${esc(url)}</a></div>
+    <button class="btn-add" style="background:var(--surface3);color:var(--text)"
+            onclick="openBrowserPane('${esc(url)}', window.currentProjectId, null, '${esc(provider)}-login')">Open in browser pane</button>
+    <div style="display:flex;gap:6px;margin-top:8px">
+      <input id="settings-remote-code-${esc(provider)}" type="text" class="settings-input"
+             placeholder="Paste code here" style="flex:1" autocomplete="off">
+      <button class="btn-add" onclick="settingsRemoteLoginSubmitCode('${esc(provider)}')">Submit</button>
+    </div>
+    <div id="settings-remote-code-result-${esc(provider)}" style="margin-top:4px;font-size:11px;color:var(--text-faint)"></div>`;
+}
+
+async function settingsRemoteLoginSubmitCode(provider) {
+  const input = document.getElementById(`settings-remote-code-${provider}`);
+  const resultEl = document.getElementById(`settings-remote-code-result-${provider}`);
+  if (!input || !input.value.trim()) return;
+  const code = input.value.trim();
+  input.disabled = true;
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote/code`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ code }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (resultEl) {
+      resultEl.textContent = (data.output_tail || '').trim().slice(-300)
+        || (res.ok ? 'Submitted — checking sign-in status...' : (data.error || 'Failed.'));
+    }
+    // A wrong code leaves the CLI re-prompting; a right one flips auth_status —
+    // reuse the existing check/refresh paths rather than inventing a new one.
+    if (provider === 'claude') { settingsClaudeAuthCheck(); } else { settingsProviderRefresh(provider); }
+  } catch (e) {
+    if (resultEl) resultEl.textContent = 'Submit failed: ' + e;
+  } finally {
+    input.disabled = false;
+    input.value = '';
+  }
+}
+
 async function settingsProviderRefresh(provider) {
   // Force a fresh /api/agent/providers fetch (reset the cached list) and
   // re-render the Settings panel so the new state shows up.
@@ -327,3 +414,5 @@ window.PROVIDER_AUTH_KEYS = PROVIDER_AUTH_KEYS;   // read by inline _renderProvi
 window.settingsProviderSetEnv = settingsProviderSetEnv;           // Provider Settings section onclick
 window.settingsProviderTerminalLogin = settingsProviderTerminalLogin; // Provider Settings section onclick
 window.settingsProviderRefresh = settingsProviderRefresh;         // Provider Settings section onclick
+window.settingsRemoteLogin = settingsRemoteLogin;                 // Provider Settings section onclick
+window.settingsRemoteLoginSubmitCode = settingsRemoteLoginSubmitCode; // remote-login box onclick

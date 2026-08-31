@@ -597,6 +597,22 @@ class AgentRuntime(ABC):
             'error': f'{self.display_name} programmatic logout is not supported.',
         }
 
+    def auth_login_argv(self, bin_str: str) -> Optional[List[str]]:
+        """Argv for a login flow that emits its OAuth URL (and reads a pasted
+        code back) over a PLAIN PIPED subprocess — no PTY required.
+
+        Default: None. Most provider CLIs render their auth flow as an
+        interactive TUI that needs raw-mode keyboard input to draw at all, so
+        a piped, non-TTY invocation produces no output whatsoever — verified
+        for `gemini` 2026-08-31 (silent until killed, with or without a
+        pre-set auth-method env var to skip its account-picker screen).
+        MC-928 tracks giving the terminal pop-out a real PTY, which is the
+        general fix; this is the narrower opt-in for CLIs already confirmed
+        to behave like `claude auth login` — print the URL, then block on
+        stdin for the code — without one.
+        """
+        return None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry
@@ -1546,6 +1562,14 @@ class ClaudeRuntime(AgentRuntime):
         if fn:
             return fn()
         return self.auth_status()
+
+    def auth_login_argv(self, bin_str: str) -> Optional[List[str]]:
+        """`claude auth login` — verified 2026-08-31: prints its OAuth URL and
+        reads the pasted code back over a plain piped subprocess with no TTY
+        at all (unlike the interactive `claude` REPL's `/login`, which does
+        need one). This is what makes the remote-login fallback possible for
+        this provider."""
+        return [bin_str, 'auth', 'login']
 
 
 # ─────────────────────────────────────────────────────────────────────────────

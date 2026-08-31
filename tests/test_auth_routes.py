@@ -308,6 +308,117 @@ class TestAuthRoutes:
         assert 'error' in json.loads(resp.data)
 
 
+# ── Remote/captured login — MC-927 URL-surfacing fallback ────────────────────
+# `_launch_terminal_for_binary` opens a window on the HOST, invisible over the
+# tunnel. `/api/agent/<provider>/auth-login-remote` captures the CLI's OAuth
+# URL from a piped subprocess instead — verified (2026-08-31, real `claude`
+# binary, no mocking) to work for claude; gemini's auth flow is an Ink TUI
+# that produces no output at all without a real TTY, so it correctly reports
+# remote_capable:False here rather than hanging or faking a URL.
+
+import shutil as _shutil
+
+_HAS_CLAUDE_CLI = _shutil.which('claude') is not None
+
+
+class TestRemoteLogin:
+    def _reset_sessions(self):
+        from mc.blueprints import agent_routes as ar
+        with ar._captured_login_lock:
+            ar._captured_login_sessions.clear()
+
+    def test_auth_login_argv_default_is_none(self):
+        """Base AgentRuntime.auth_login_argv is opt-in — default None means
+        'use the host-terminal fallback', not a spawnable command."""
+        assert _ar.GeminiRuntime.auth_login_argv(None, '/fake/gemini') is None  # type: ignore[arg-type]
+
+    def test_claude_auth_login_argv(self):
+        rt = _ar.ClaudeRuntime.__new__(_ar.ClaudeRuntime)
+        assert rt.auth_login_argv('/fake/claude') == ['/fake/claude', 'auth', 'login']
+
+    def test_extract_login_url_strips_trailing_punctuation(self):
+        from mc.blueprints import agent_routes as ar
+        text = 'If the browser did not open, visit: https://claude.com/x?y=1&z=2\nPaste code'
+        assert ar._extract_login_url(text) == 'https://claude.com/x?y=1&z=2'
+        assert ar._extract_login_url('no url here') is None
+
+    def test_remote_login_unknown_provider_404(self):
+        c, _ = _get_flask_client()
+        resp = c.post('/api/agent/nonexistent/auth-login-remote')
+        assert resp.status_code == 404
+
+    def test_remote_login_binary_missing_400(self):
+        c, _ = _get_flask_client()
+        with patch.object(_ar.ClaudeRuntime, 'resolve_binary', return_value=None):
+            resp = c.post('/api/agent/claude/auth-login-remote')
+        assert resp.status_code == 400
+
+    def test_remote_login_not_capable_reports_plainly(self):
+        """Gemini has no auth_login_argv override — the route must say so
+        (200, remote_capable:False) instead of hanging or spawning a CLI that
+        will never emit anything over a pipe."""
+        c, _ = _get_flask_client()
+        with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                           return_value=Path('/fake/gemini')):
+            resp = c.post('/api/agent/gemini/auth-login-remote')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body['ok'] is False
+        assert body['remote_capable'] is False
+        assert 'console' in body['error']
+
+    @pytest.mark.skipif(not _HAS_CLAUDE_CLI, reason='claude CLI not on PATH')
+    def test_remote_login_claude_captures_real_url(self):
+        """End-to-end against the REAL claude binary (no mocking): spawns
+        `claude auth login`, waits for the URL, submits a bogus code, and
+        confirms the CLI is still alive to retry (verified interactively:
+        a wrong code re-prompts rather than exiting)."""
+        from mc.blueprints import agent_routes as ar
+        self._reset_sessions()
+        c, _ = _get_flask_client()
+        try:
+            resp = c.post('/api/agent/claude/auth-login-remote')
+            assert resp.status_code == 200
+            body = json.loads(resp.data)
+            assert body['remote_capable'] is True
+            assert body['status'] == 'url_ready', body
+            assert body['url'].startswith('https://claude.com/')
+
+            # Second call while in-flight must reuse the session, not spawn a
+            # competing process fighting the first for the same stdin.
+            with ar._captured_login_lock:
+                pid_before = ar._captured_login_sessions['claude']['proc'].pid
+            resp2 = c.post('/api/agent/claude/auth-login-remote')
+            assert json.loads(resp2.data)['url'] == body['url']
+            with ar._captured_login_lock:
+                assert ar._captured_login_sessions['claude']['proc'].pid == pid_before
+
+            status_resp = c.get('/api/agent/claude/auth-login-remote/status')
+            assert json.loads(status_resp.data)['status'] == 'url_ready'
+
+            code_resp = c.post('/api/agent/claude/auth-login-remote/code',
+                                json={'code': 'bogus-test-code-not-real'})
+            assert code_resp.status_code == 200
+            code_body = json.loads(code_resp.data)
+            assert code_body['still_running'] is True
+            assert 'invalid' in code_body['output_tail'].lower()
+        finally:
+            # Kill the subprocess THIS TEST spawned — not a by-name sweep.
+            with ar._captured_login_lock:
+                session = ar._captured_login_sessions.pop('claude', None)
+            if session is not None:
+                try:
+                    session['proc'].kill()
+                except Exception:
+                    pass
+
+    def test_remote_login_code_with_no_session_404(self):
+        self._reset_sessions()
+        c, _ = _get_flask_client()
+        resp = c.post('/api/agent/claude/auth-login-remote/code', json={'code': 'x'})
+        assert resp.status_code == 404
+
+
 # ── Mode-B structured-error auth detection (2026-06-22 regression) ────────────
 # A Claude API 401 in Mode B arrives as a structured `result` event that parses
 # as JSON, so the non-JSON-only line scanner never saw it and the cached state
