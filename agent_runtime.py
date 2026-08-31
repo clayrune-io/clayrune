@@ -1640,7 +1640,15 @@ class GeminiRuntime(AgentRuntime):
 
     name = 'gemini'
     display_name = 'Gemini CLI'
+    # Verified 2026-08-31 against the installed `gemini` CLI (v0.20.0) —
+    # @google/gemini-cli-core's own dist/src/config/models.js, which is the
+    # module that actually resolves --model, exports exactly these four
+    # concrete ids as of that version: DEFAULT_GEMINI_MODEL (2.5-pro),
+    # DEFAULT_GEMINI_FLASH_MODEL, DEFAULT_GEMINI_FLASH_LITE_MODEL, and
+    # PREVIEW_GEMINI_MODEL = 'gemini-3-pro-preview' (new since this list was
+    # last written — 2.5-pro/flash/flash-lite were still current, not stale).
     MODEL_CHOICES = [
+        ('gemini-3-pro-preview', 'Gemini 3 Pro (Preview)'),
         ('gemini-2.5-pro', 'Gemini 2.5 Pro'),
         ('gemini-2.5-flash', 'Gemini 2.5 Flash'),
         ('gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite'),
