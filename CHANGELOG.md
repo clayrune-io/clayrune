@@ -6,6 +6,53 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — Codex renders as chat, not as raw JSONL
+
+MC-933. With codex finally spawning (MC-932), the chat pane printed its wire
+protocol: `{"type":"turn.started"}`, then whole `item.completed` envelopes with
+a 5.8 KB file dump spliced inline as `aggregated_output`.
+
+Two independent causes:
+
+- **The item schema changed under us.** `parse_event` was written against codex
+  0.133, which sent `item.type == 'message'` with a `content[]` block array.
+  0.151 sends `agent_message` with a flat `text`, and shell calls as
+  `command_execution` (`command` / `aggregated_output` / `exit_code`). Nothing
+  matched, so every branch fell to `return None`. Both schemas are now handled,
+  plus `reasoning` (-> THINKING) and `item.started`; an item type we have never
+  seen degrades to a named tool line rather than falling through.
+- **`None` from `parse_event` meant "log this line verbatim."** That is why
+  `turn.started` leaked despite already being suppressed deliberately — the
+  suppression worked and the reader printed the line anyway. `_mode_a_reader`
+  now drops an unparsed line only when it is protocol JSON; a non-JSON line
+  (a warning, a traceback) is still kept, which is the case that rule exists
+  for. This is provider-agnostic and closes the same hole for every Mode-A
+  runtime, not just codex.
+
+Command output now rides in the tool block instead of the chat text, so a
+`cat` of a large file no longer dumps into the transcript.
+
+Also wired `TURN_END` usage into the session in `_mode_a_reader`. Only
+`on_process_exit` is registered in `_RUNTIME_CALLBACKS`, so the token counters
+every Mode-A provider reports were parsed and then dropped on the floor — a
+runtime declaring `emits_usage` still showed zero.
+
+### Path highlighter emitted broken markup
+
+`rich-text.js` wrote `[\w.-\]` for the Windows-path character class. Unescaped,
+`.-\` is a RANGE (0x2E-0x5C) covering `<`, `=`, `>`, `/` and `:` — so the
+absolute-path rule matched straight into the `<span>` the file-extension rule
+above had just injected:
+
+```
+C:\Users\...\memory\<span class="hl-path">SKILL.md</span>
+  -> <span class="hl-path">C:\Users\...\memory\<span</span> class="hl-path">SKILL.md</span>
+```
+
+which rendered ` class="hl-path">SKILL.md` as literal text on screen. The dash
+is now escaped. This fires on any path ending in a known code extension, so it
+was never codex-specific.
+
 ## [2026-08-31] — Codex CLI is found where it actually installs
 
 MC-932. Codex was installed, signed in, and working in Ron's shell, while

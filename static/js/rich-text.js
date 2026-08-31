@@ -111,7 +111,13 @@ function formatAgentText(raw) {
     '<span class="hl-path">$1</span>');
 
   // Absolute paths: /path/to/file or C:\path\to\file
-  t = t.replace(/((?:\/[\w.-]+){2,}|(?:[A-Z]:\\[\w.-\\]+))/g, '<span class="hl-path">$1</span>');
+  // The dash MUST stay escaped. Unescaped, `[\w.-\\]` reads `.-\` as a
+  // character RANGE (0x2E-0x5C) covering `<`, `=`, `>`, `/` and `:` — so this
+  // replace ran straight into the `<span>` the file-extension rule above had
+  // just injected, producing `...memory\<span</span> class="hl-path">SKILL.md`
+  // and printing raw markup at the user. Seen live on a Windows path ending
+  // in SKILL.md.
+  t = t.replace(/((?:\/[\w.-]+){2,}|(?:[A-Z]:\\[\w.\-\\]+))/g, '<span class="hl-path">$1</span>');
 
   // Swap image + file + URL tokens back in (kept opaque through the regexes above).
   if (_imgTokens.length) {

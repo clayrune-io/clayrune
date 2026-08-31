@@ -1617,6 +1617,19 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+def _is_protocol_json(line: str) -> bool:
+    """True if the line is a JSON object — i.e. a CLI protocol event, not
+    human-readable stray output. Used to decide whether an unparsed line is
+    safe to drop (protocol noise) or must be kept (a real warning/traceback)."""
+    s = (line or '').strip()
+    if not s.startswith('{'):
+        return False
+    try:
+        return isinstance(json.loads(s), dict)
+    except Exception:
+        return False
+
+
 _NPM_BIN_DIRS_CACHE: Optional[List[Path]] = None
 
 
@@ -2697,8 +2710,16 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 continue
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
-                session['log_lines'].append(line)
-                session['last_output_time'] = _time.time()
+                # None means "this runtime declined to surface it". For a line
+                # that is valid protocol JSON that is a deliberate suppression
+                # (codex's turn.started, or an event type added in a CLI
+                # release we predate) — logging it verbatim put raw JSONL in
+                # the user's chat pane, whole command outputs and all.
+                # A line that is NOT JSON is genuine stray output (a warning,
+                # a stack trace) and must still be kept.
+                if not _is_protocol_json(line):
+                    session['log_lines'].append(line)
+                    session['last_output_time'] = _time.time()
             elif ev.type == EventType.ASSISTANT_TEXT:
                 session['log_lines'].append(ev.payload.get('text', line))
                 session['last_output_time'] = _time.time()
@@ -2714,6 +2735,16 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                                    ev.payload.get('thread_id'))
                 _cb('on_init', ev)
             elif ev.type == EventType.TURN_END:
+                # Capture the token counters the turn reports. Without this a
+                # runtime that declares emits_usage delivers nothing: the only
+                # callback wired is on_process_exit, so the payload was parsed
+                # and dropped, and the chat's token counter stayed at zero.
+                _usage = ev.payload.get('usage')
+                if isinstance(_usage, dict):
+                    session['usage'] = _usage
+                _cost = ev.payload.get('cost_usd')
+                if _cost is not None:
+                    session['cost_usd'] = _cost
                 _cb('on_turn_end', ev)
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
@@ -2921,14 +2952,28 @@ class CodexRuntime(AgentRuntime):
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
         """Parse a JSONL event from `codex exec --json`.
 
-        Observed event types (codex 0.133.0, live-tested on this machine):
+        Observed event types (codex 0.151.0, live-tested on this machine):
           thread.started  → INIT (payload: thread_id)
           turn.started    → None (internal; suppressed)
+          item.started    → TOOL_USE for command_execution, else suppressed
           item.completed  → ASSISTANT_TEXT or TOOL_USE (based on item.type)
-          turn.completed  → TURN_END
+          turn.completed  → TURN_END (carries `usage`)
           thread.completed→ TURN_END
           error           → ERROR
           turn.failed     → ERROR
+
+        The item schema CHANGED between 0.133 and 0.151, and the change is
+        silent: 0.133 sent `item.type == 'message'` with a `content[]` array of
+        blocks; 0.151 sends `item.type == 'agent_message'` with a flat `text`,
+        and shell calls as `command_execution` with `command` /
+        `aggregated_output` / `exit_code`. Every one of those fell through the
+        old branches to `return None`, and the generic Mode-A reader logs an
+        unparsed line VERBATIM — so the chat pane rendered raw JSONL, including
+        whole command outputs dumped inline.
+
+        Both schemas are handled. The catch-all at the bottom is the actual
+        guard: an item type we have never seen must degrade to a readable line,
+        never to raw JSON on the user's screen.
         """
         line = raw_line.rstrip('\n\r') if raw_line else ''
         if not line:
@@ -2958,9 +3003,88 @@ class CodexRuntime(AgentRuntime):
             )
         if etype == 'turn.started':
             return None  # internal; suppress
+        if etype in ('item.started', 'item.updated'):
+            # Only the shell call is worth surfacing early — it is what the
+            # user watches while it runs. Everything else would double up with
+            # the item.completed event.
+            item = msg.get('item') or {}
+            if item.get('type') == 'command_execution':
+                return AgentEvent(
+                    type=EventType.TOOL_USE, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'blocks': [{
+                        'type': 'tool_use', 'name': 'shell',
+                        'input': {'command': item.get('command', '')},
+                        'tool_use_id': item.get('id'),
+                    }]},
+                    raw=msg,
+                )
+            return None
         if etype == 'item.completed':
             item = msg.get('item') or {}
             item_type = item.get('type', '')
+            # ── codex 0.151 schema ──────────────────────────────────────
+            if item_type in ('agent_message', 'assistant_message'):
+                text = (item.get('text') or '').strip()
+                if not text:
+                    return None
+                return AgentEvent(
+                    type=EventType.ASSISTANT_TEXT, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload={'text': text}, raw=msg,
+                )
+            if item_type == 'reasoning':
+                text = (item.get('text') or '').strip()
+                if not text:
+                    return None
+                return AgentEvent(
+                    type=EventType.THINKING, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload={'text': text}, raw=msg,
+                )
+            if item_type == 'command_execution':
+                # The completed shell call. `aggregated_output` is the full
+                # stdout+stderr and can be enormous (a whole file cat'd) — it
+                # belongs in the tool block, not spliced into the chat text.
+                return AgentEvent(
+                    type=EventType.TOOL_USE, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'blocks': [{
+                        'type': 'tool_use', 'name': 'shell',
+                        'input': {'command': item.get('command', ''),
+                                  'exit_code': item.get('exit_code'),
+                                  'status': item.get('status', '')},
+                        'output': item.get('aggregated_output', ''),
+                        'tool_use_id': item.get('id'),
+                    }]},
+                    raw=msg,
+                )
+            if item_type in ('mcp_tool_call', 'web_search', 'file_change',
+                             'patch_apply', 'todo_list'):
+                return AgentEvent(
+                    type=EventType.TOOL_USE, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'blocks': [{
+                        'type': 'tool_use',
+                        'name': item.get('name') or item_type,
+                        'input': {k: v for k, v in item.items()
+                                  if k not in ('id', 'type')},
+                        'tool_use_id': item.get('id'),
+                    }]},
+                    raw=msg,
+                )
+            if item_type == 'error':
+                return AgentEvent(
+                    type=EventType.ERROR, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': item.get('message') or item.get('text') or str(item)},
+                    raw=msg,
+                )
+            # ── codex 0.133 schema (content[] blocks) ───────────────────
             if item_type == 'message':
                 content = item.get('content') or []
                 text_parts = []
@@ -3004,6 +3128,23 @@ class CodexRuntime(AgentRuntime):
                                         'input': (item.get('arguments') or
                                                   item.get('input', {})),
                                         'tool_use_id': item.get('id')}]},
+                    raw=msg,
+                )
+            # An item type this version of MC has never seen. Codex adds these
+            # between releases without warning (that is how the 0.133→0.151
+            # rename got through), and the Mode-A reader logs an unparsed line
+            # verbatim — so falling through to None puts raw JSONL on the
+            # user's screen. Degrade to a readable tool line instead.
+            if item_type:
+                return AgentEvent(
+                    type=EventType.TOOL_USE, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'blocks': [{'type': 'tool_use',
+                                         'name': item_type,
+                                         'input': {k: v for k, v in item.items()
+                                                   if k not in ('id', 'type')},
+                                         'tool_use_id': item.get('id')}]},
                     raw=msg,
                 )
             return None

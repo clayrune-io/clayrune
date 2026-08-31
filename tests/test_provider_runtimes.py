@@ -263,6 +263,63 @@ class TestCodexRuntime:
         assert ev.type == EventType.TURN_END
         assert ev.payload['usage'] == {'input_tokens': 10, 'output_tokens': 5}
 
+    # ── codex 0.151 item schema ────────────────────────────────────────────
+    # 0.133 sent item.type='message' with a content[] array; 0.151 sends
+    # 'agent_message' with a flat text, and shell calls as 'command_execution'.
+    # None of those matched the old branches, so every event returned None and
+    # the Mode-A reader logged the raw JSONL into the chat pane.
+
+    def test_parse_event_agent_message_flat_text(self):
+        line = json.dumps({'type': 'item.completed',
+                           'item': {'id': 'item_0', 'type': 'agent_message',
+                                    'text': 'Hi Ron.'}})
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ASSISTANT_TEXT
+        assert ev.payload['text'] == 'Hi Ron.'
+
+    def test_parse_event_command_execution_keeps_output_out_of_chat(self):
+        """aggregated_output can be a whole file; it belongs in the tool block."""
+        line = json.dumps({'type': 'item.completed',
+                           'item': {'id': 'item_1', 'type': 'command_execution',
+                                    'command': 'powershell -Command ls',
+                                    'aggregated_output': 'X' * 5000,
+                                    'exit_code': 0, 'status': 'completed'}})
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.TOOL_USE
+        block = ev.payload['blocks'][0]
+        assert block['name'] == 'shell'
+        assert block['input']['command'] == 'powershell -Command ls'
+        assert block['input']['exit_code'] == 0
+        assert len(block['output']) == 5000
+        assert 'text' not in ev.payload
+
+    def test_parse_event_item_started_command_is_tool_use(self):
+        line = json.dumps({'type': 'item.started',
+                           'item': {'id': 'item_1', 'type': 'command_execution',
+                                    'command': 'echo hi', 'status': 'in_progress'}})
+        ev = self.rt.parse_event(line)
+        assert ev is not None and ev.type == EventType.TOOL_USE
+
+    def test_parse_event_reasoning_is_thinking(self):
+        line = json.dumps({'type': 'item.completed',
+                           'item': {'id': 'r0', 'type': 'reasoning',
+                                    'text': 'considering options'}})
+        ev = self.rt.parse_event(line)
+        assert ev is not None and ev.type == EventType.THINKING
+
+    def test_parse_event_unknown_item_type_never_returns_none(self):
+        """Codex adds item types between releases; an unknown one must degrade
+        to a readable tool line, not fall through and get logged as raw JSON."""
+        line = json.dumps({'type': 'item.completed',
+                           'item': {'id': 'z', 'type': 'some_future_item',
+                                    'detail': 'x'}})
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.TOOL_USE
+        assert ev.payload['blocks'][0]['name'] == 'some_future_item'
+
     def test_parse_event_item_completed_message(self):
         """item.completed with message → ASSISTANT_TEXT"""
         line = json.dumps({
@@ -962,3 +1019,27 @@ def test_session_model_survives_a_respawn():
         mc_session_id='abc', provider='codex', mode='A',
         project_path='.', project_id='p', session_dict={})
     assert agent_runtime.AgentRuntime.session_model(empty) == ''
+
+
+class TestModeAReaderProtocolNoise:
+    """The Mode-A reader must not print a provider's protocol JSON at the user.
+
+    Regression: `parse_event` returning None meant "log this line verbatim", so
+    every event a runtime deliberately suppressed (codex's `turn.started`) or
+    did not yet know about landed in the chat pane as raw JSONL — including
+    `command_execution` items carrying a whole file's worth of
+    `aggregated_output`.
+    """
+
+    def test_protocol_json_is_recognised(self):
+        assert agent_runtime._is_protocol_json('{"type":"turn.started"}') is True
+        assert agent_runtime._is_protocol_json('  {"a": 1}  ') is True
+
+    def test_non_json_output_is_not_protocol(self):
+        """Stray human-readable output must still reach the log."""
+        assert agent_runtime._is_protocol_json('Reading prompt from stdin...') is False
+        assert agent_runtime._is_protocol_json('Traceback (most recent call last):') is False
+        assert agent_runtime._is_protocol_json('') is False
+        assert agent_runtime._is_protocol_json('{not json}') is False
+        # A JSON array is not an event envelope.
+        assert agent_runtime._is_protocol_json('[1, 2, 3]') is False
