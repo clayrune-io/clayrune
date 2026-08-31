@@ -2168,8 +2168,15 @@ def _write_session_memory(p, session, status, summary_fallback, ts_date):
     task = (session.get('task', '') or '').strip()
     # Scribe model call is the slow (≤180s) part — OUTSIDE the leaf lock.
     scribed, _why = _scribe_extract(p, session)
-    _scribe_stat(project_id, 'scribe_extracted' if scribed
-                 else f'scribe_fell_back:{_why}')
+    if scribed:
+        # 'extracted_from_log' is its OWN counter (MC-922) — folding it into
+        # 'scribe_extracted' would hide how often the fallback is doing the
+        # work, the exact silent-failure-counter-goes-to-zero mistake this
+        # fix is required not to repeat.
+        _scribe_stat(project_id, 'scribe_extracted_from_log' if _why == 'extracted_from_log'
+                     else 'scribe_extracted')
+    else:
+        _scribe_stat(project_id, f'scribe_fell_back:{_why}')
     # Track how often a session actually yields a causal note. If this sits at
     # ~0% the prompt isn't landing; at ~100% the model is inventing them.
     if scribed:
@@ -2648,6 +2655,40 @@ def _scribe_render_transcript(path):
         return _scribe_render_lines(fh)
 
 
+def _render_log_lines_as_transcript(log_lines):
+    """Render `session['log_lines']` — the raw per-turn event log MC keeps for
+    EVERY provider, Claude or not — into the same ACTION/RESULT/ASSISTANT-
+    prefixed shape `_scribe_render_transcript` produces from a Claude .jsonl,
+    so `_scribe_summarize_text` can consume either unchanged.
+
+    Fallback path only (see `_scribe_extract`): a non-Claude provider has no
+    transcript file to begin with (`_session_transcript_path` is Claude-only
+    by design), so this is the only capture MC has. It is necessarily lossier
+    than the real transcript — log_lines records a tool's NAME but not its
+    result body — so bracket-wrapped status noise ('[interrupted]', '[hint] …',
+    exit-code lines) is dropped rather than guessed at.
+    """
+    out = []
+    for line in log_lines or []:
+        if not isinstance(line, str):
+            continue
+        s = line.strip()
+        if not s:
+            continue
+        if s.startswith('> '):
+            out.append(f"USER: {s[2:].strip()}")
+        elif s.startswith('['):
+            # Every MC-synthesized status/system line starts with '[' (tool
+            # markers, [hint]/[error]/[interrupted]/exit-code notices, mcp-sync
+            # results). Keep only the tool marker; drop the rest as noise, not
+            # conversation content.
+            if s.endswith(']') and ' tool: ' in s:
+                out.append(f"ACTION {s[1:-1]}")
+        else:
+            out.append(f"ASSISTANT: {s}")
+    return '\n'.join(out)
+
+
 def _scribe_render_delta(path, byte_offset):
     """Step 6: render ONLY the transcript bytes after `byte_offset`.
 
@@ -2761,6 +2802,15 @@ def _scribe_extract(project, session):
     entry_text is None when the caller must fall back to the legacy
     stdout-tail summary. Never raises. Dispatch-time incognito/housekeeping
     gate is asserted here too so Phase-2 mid-session triggers inherit it.
+
+    Transcript file is the PREFERRED source and is Claude-only
+    (`_session_transcript_path` delegates to ClaudeRuntime; every other
+    provider returns None by design). When none is found — any non-Claude
+    session, or a Claude session whose csid never landed — this falls back to
+    `session['log_lines']` (captured for every provider) rendered into the
+    same shape and fed to the IDENTICAL summarizer (MC-922). A successful
+    log-backed extraction is tagged 'extracted_from_log' so it stays
+    separately countable from a transcript-backed 'extracted'.
     """
     if not state.CONFIG.get('scribe_enabled', True):
         return None, 'disabled'
@@ -2769,23 +2819,30 @@ def _scribe_extract(project, session):
     pid = project.get('id', '')
     pp = project.get('project_path', '')
     csid = session.get('claude_session_id', '')
-    if not csid:
-        return None, 'no_csid'
-    tf = _find_transcript_file(pp, csid)
+    tf = _find_transcript_file(pp, csid) if csid else None
+    from_log = False
+    log_lines = None
     if not tf:
-        return None, 'no_transcript'
+        log_lines = session.get('log_lines') or []
+        if not log_lines:
+            return None, ('no_csid' if not csid else 'no_transcript')
+        from_log = True
     with _scribe_lock:
         if pid in _scribing_projects:
             return None, 'busy'
         _scribing_projects.add(pid)
     try:
         try:
-            transcript = _scribe_render_transcript(tf)
+            transcript = (_render_log_lines_as_transcript(log_lines) if from_log
+                          else _scribe_render_transcript(tf))
         except Exception:
             return None, 'parse_empty'
         model = state.CONFIG.get('scribe_model', '') or 'haiku'
         # want_why: terminal entries only — see _SCRIBE_WHY_SUFFIX.
-        return _scribe_summarize_text(transcript, model, want_why=True)
+        entry, reason = _scribe_summarize_text(transcript, model, want_why=True)
+        if entry is not None and from_log:
+            reason = 'extracted_from_log'
+        return entry, reason
     finally:
         with _scribe_lock:
             _scribing_projects.discard(pid)
