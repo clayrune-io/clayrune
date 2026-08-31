@@ -360,6 +360,18 @@ _EXIT_ERROR_NOISE_PATTERNS = (
     'yolo mode is enabled',  # gemini's YOLO-mode banner
 )
 
+# `_dispatch_via_runtime` (and the equivalent claude-path dispatch) seeds a
+# fresh session's log_lines with "> {user_label}: {task}" so the chat shows
+# the prompt before the process has produced any output. That seed line is
+# NOT CLI output — but a turn that errors before printing anything else
+# leaves it as the last non-bracketed line in the tail, and a plain substring
+# scan mistakes the ECHOED TASK for the CLI's error (MC-931: a hint reading
+# "> Ron: Reply with exactly one short sentence..." instead of the real
+# "The command line is too long."/quota text). Matched as a prefix, not a
+# substring, so a genuine CLI line that happens to contain " > Name: " midway
+# through is not skipped.
+_SEED_LINE_RE = re.compile(r'^>\s+\S[^:\n]{0,40}:\s')
+
 
 def _last_real_error_line(log_tail: str) -> Optional[str]:
     """Return the CLI's own last non-noise output line, or None if there isn't one.
@@ -369,9 +381,9 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
     but a guess that contradicts an error the CLI already printed in plain
     text is worse than no hint at all. This scans from the bottom (the real
     cause is usually the last thing printed before exit) skipping blank
-    lines, MC's own bracketed status markers (`[tool: x]`, `[hint] ...`), and
-    known CLI startup banners, so callers can surface the real line instead
-    of guessing.
+    lines, MC's own bracketed status markers (`[tool: x]`, `[hint] ...`), the
+    dispatcher's own echoed-prompt seed line, and known CLI startup banners,
+    so callers can surface the real line instead of guessing.
     """
     if not log_tail:
         return None
@@ -382,6 +394,8 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
         if stripped.startswith('[') and stripped.endswith(']'):
             continue
         if any(p in stripped.lower() for p in _EXIT_ERROR_NOISE_PATTERNS):
+            continue
+        if _SEED_LINE_RE.match(stripped):
             continue
         return stripped
     return None
@@ -1908,6 +1922,22 @@ class GeminiRuntime(AgentRuntime):
                          'status': msg.get('status') or ''},
                 raw=msg,
             )
+        if mtype == 'result' and msg.get('status') == 'error':
+            # The CLI's own reason for the failure (auth, quota, network) lives
+            # ONLY here — msg.get('error', {}).get('message') — never on stderr
+            # or in a non-JSON line. Before this branch existed the whole
+            # object fell into the generic TURN_END case below (usage/cost
+            # only, no error field read), so a real API error like "You have
+            # exhausted your daily quota on this model" was silently dropped:
+            # explain_exit_error() had nothing to pattern-match against and
+            # fell back to a generic "exited with code N" guess.
+            err = msg.get('error') or {}
+            err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
+            return AgentEvent(
+                type=EventType.ERROR, provider='gemini',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(), payload={'text': str(err_text)}, raw=msg,
+            )
         if mtype in ('result', 'turn_end', 'done'):
             return AgentEvent(
                 type=EventType.TURN_END, provider='gemini',
@@ -2371,6 +2401,15 @@ class GeminiRuntime(AgentRuntime):
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
                     _cb('on_turn_end', ev)
+                elif ev and ev.type == EventType.ERROR:
+                    # The CLI's own reason (quota, auth, network — see
+                    # parse_event's 'result'+status=='error' branch) surfaced
+                    # into the visible transcript AND the tail explain_exit_error
+                    # scans below, instead of being dropped on the floor the way
+                    # a bare TURN_END would (usage/cost only, no error field).
+                    session['log_lines'].append(
+                        f"[gemini error] {ev.payload.get('text', '')}")
+                    session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.INIT:
                     # Capture Gemini's own session id so followups resume THIS
                     # exact session by id (--resume <id>) — never `latest`,

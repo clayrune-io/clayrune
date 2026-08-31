@@ -107,6 +107,26 @@ class TestGeminiRuntime:
         assert ev is not None
         assert ev.type == EventType.TURN_END
 
+    def test_parse_event_result_error_surfaces_message(self):
+        # MC-931: a `result` event with status=="error" carries the CLI's
+        # real reason (quota, auth, ...) in error.message. Before this fix
+        # it matched the generic 'result' branch and returned TURN_END with
+        # only usage/cost — the error text was read by nothing and reached
+        # neither the transcript nor explain_exit_error's tail scan, so a
+        # real API error (e.g. "You have exhausted your daily quota on this
+        # model.") was silently dropped and the user saw a generic
+        # "exited with code 1" instead.
+        line = json.dumps({
+            'type': 'result', 'status': 'error',
+            'error': {'type': 'Error',
+                     'message': '[API Error: You have exhausted your daily quota on this model.]'},
+            'stats': {'total_tokens': 0},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ERROR
+        assert 'exhausted your daily quota' in ev.payload['text']
+
     def test_capabilities_mcp(self):
         assert self.rt.capabilities().supports_mcp is True
 
@@ -166,6 +186,28 @@ class TestLastRealErrorLine:
         assert agent_runtime._last_real_error_line(
             "[STARTUP] a\nYOLO mode is enabled.\n[tool: call]\n"
         ) is None
+
+    def test_skips_dispatcher_seed_line(self):
+        # MC-931: `_dispatch_via_runtime` seeds a fresh session's log_lines
+        # with "> {user_label}: {task}" so the chat shows the prompt before
+        # the process produces any output. A turn that errors before
+        # printing anything else left that echoed task as the last
+        # non-bracketed line — the observed bug: a hint reading
+        # "> Ron: Reply with exactly one short sentence..." instead of the
+        # CLI's real error.
+        tail = (
+            "> Ron: Reply with exactly one short sentence confirming you "
+            "are running. Do not use any tools.\n"
+            "[gemini exited with code 1]"
+        )
+        assert agent_runtime._last_real_error_line(tail) is None
+
+    def test_seed_line_skip_does_not_eat_a_real_error_after_it(self):
+        tail = (
+            "> Ron: Reply with one sentence.\n"
+            "the real error text"
+        )
+        assert agent_runtime._last_real_error_line(tail) == "the real error text"
 
 
 # ─────────────────────────────────────────────────────────────────────────────
