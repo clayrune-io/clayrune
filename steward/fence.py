@@ -213,6 +213,19 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
         low = path.replace('\\', '/').lower()
         if '/.claude/' in low or low.endswith('/.claude'):
             return FenceDecision(True, "editing global ~/.claude config (out of project scope)")
+        # Fence supply chain (MC-914, 2026-08-31): this hook script is re-read
+        # from disk fresh on EVERY tool call (invoked as a fresh subprocess per
+        # PreToolUse event, no caching) — the exact "hot re-read of a mutable
+        # gate" shape MC-914 was opened to close, except the mutable value here
+        # is the enforcement code itself rather than an env var. Without this
+        # check, a steward session could Edit `steward/fence.py` to neuter the
+        # fence and have the very next tool call run the tampered version.
+        _fence_names = ('fence.py', 'core.py', '_config.py', '__init__.py')
+        if (low.startswith('steward/') or '/steward/' in low) and \
+                low.rsplit('/', 1)[-1] in _fence_names:
+            return FenceDecision(True, "editing the steward fence's own "
+                                       "enforcement code (safety-rail supply "
+                                       "chain — human-owned)")
         # Learning-loop supply chain (committee M3, 2026-07-16): proposal
         # frontmatter and the skill-stats signal store are the INPUTS that
         # decide what enters agent loadouts. An unattended agent editing its

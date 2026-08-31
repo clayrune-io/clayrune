@@ -254,3 +254,34 @@ def test_fence_still_allows_ordinary_project_writes():
                  'data/projects/notes.md', 'data/uploads/x.png'):
         d = classify_action('Write', {'file_path': path})
         assert not d.blocked, f"ordinary write false-positive: {path}"
+
+
+# ── Fence supply-chain self-protection (MC-914, 2026-08-31) ───────────────────
+# The hook script is re-read from disk fresh on every tool call — the same
+# "hot re-read of a mutable gate" shape as an unfrozen os.environ check, except
+# the mutable value is the enforcement code itself. A steward session editing
+# its own fence must be blocked, or the very next tool call runs the tampered
+# version.
+
+FENCE_SUPPLY_CHAIN_BLOCK_PATHS = [
+    'steward/fence.py',
+    'steward/core.py',
+    'steward/_config.py',
+    'steward/__init__.py',
+    r'C:\repo\steward\fence.py',
+    '/home/me/project/steward/core.py',
+]
+
+
+@pytest.mark.parametrize('path', FENCE_SUPPLY_CHAIN_BLOCK_PATHS)
+def test_fence_blocks_edits_to_its_own_source(path):
+    for tool in ('Write', 'Edit', 'MultiEdit'):
+        d = classify_action(tool, {'file_path': path})
+        assert d.blocked, f"{tool} to {path} must be fenced (fence supply chain)"
+
+
+def test_fence_does_not_block_unrelated_steward_data_files():
+    # Only the enforcement CODE files are protected here; this is a narrow,
+    # surgical fix — not a blanket ban on the word "steward" in a path.
+    d = classify_action('Write', {'file_path': 'docs/AUTONOMOUS_STEWARD_SCOPE.md'})
+    assert not d.blocked
