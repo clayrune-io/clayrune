@@ -80,6 +80,10 @@ EXPECTED_ROUTES = {
     '/api/project/<project_id>/transcript/<claude_session_id>/reconstruct',
     '/api/project/<project_id>/workflows',
     '/api/search/global',
+    # MC-923: server-side unattended-context lookup for mc.secrets_store —
+    # given a claude_session_id (the Claude Code CLI's own, not caller-typed),
+    # returns the trigger_type MC recorded for it at dispatch time.
+    '/api/session/trigger-type',
 }
 
 
@@ -403,3 +407,60 @@ def test_status_model_field_does_not_borrow_the_claude_default():
                                    'claude-opus-5') == 'gpt-5'
     # No provider recorded (legacy session) = claude, so the fallback applies.
     assert ar._session_model_field({}, 'claude-opus-5') == 'claude-opus-5'
+
+
+# ── MC-923: /api/session/trigger-type ──────────────────────────────────────
+# mc.secrets_store's fail-closed unattended-context detection calls this.
+
+def test_trigger_type_requires_a_session_id(client):
+    resp = client.get('/api/session/trigger-type')
+    assert resp.status_code == 400
+    assert resp.get_json()['found'] is False
+
+
+def test_trigger_type_not_found_when_unknown(client):
+    resp = client.get('/api/session/trigger-type?claude_session_id=nope-nobody')
+    assert resp.status_code == 200
+    assert resp.get_json() == {'found': False}
+
+
+def test_trigger_type_found_in_live_session(client):
+    """The common case: a mid-session with-secret.py call, before the session
+    has completed (and so before the persisted agent_log row would have it)."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['s1'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'live-csid-123',
+        'trigger_type': 'schedule',
+    }
+    try:
+        resp = client.get('/api/session/trigger-type?claude_session_id=live-csid-123')
+        assert resp.get_json() == {'found': True, 'trigger_type': 'schedule'}
+    finally:
+        mc_state.agent_sessions.pop('s1', None)
+
+
+def test_trigger_type_falls_back_to_persisted_agent_log(client):
+    """A session that already completed and dropped out of agent_sessions is
+    still findable in its project's persisted log."""
+    from mc.blueprints import agent_routes as ar
+    (ar.DATA_DIR / 'proj-a_agent_log.json').write_text(json.dumps([
+        {'session_id': 's-old', 'claude_session_id': 'done-csid-999',
+         'trigger_type': 'hivemind_worker'},
+    ]), encoding='utf-8')
+    resp = client.get('/api/session/trigger-type?claude_session_id=done-csid-999')
+    assert resp.get_json() == {'found': True, 'trigger_type': 'hivemind_worker'}
+
+
+def test_trigger_type_missing_field_defaults_to_manual(client):
+    """A row with no trigger_type at all (older entry shape) must not be
+    silently treated as unattended-only-safe — it's the same default
+    `session.get('trigger_type', 'manual')` uses everywhere else it's read."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['s2'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'no-tt-csid',
+    }
+    try:
+        resp = client.get('/api/session/trigger-type?claude_session_id=no-tt-csid')
+        assert resp.get_json() == {'found': True, 'trigger_type': 'manual'}
+    finally:
+        mc_state.agent_sessions.pop('s2', None)

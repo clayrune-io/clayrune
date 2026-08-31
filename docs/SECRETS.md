@@ -92,7 +92,7 @@ Other injection shapes for tools that don't read env vars:
 | `--user VAR=name` | inject the username stored with a secret |
 | `--stdin gh.token` | pipe one secret to the child's stdin (`gh auth login --with-token`) |
 | any arg containing `{{secret:x}}` | resolved in place before exec |
-| `--unattended` | steward/scheduled cycle — enforces the attended-only flag |
+| `--unattended` | explicit opt-in to unattended treatment (see below — omitting it no longer implies attended) |
 | `--raw` | stream child output unmodified (interactive commands only) |
 
 Child output is scrubbed of any dispensed value before it is echoed, so a
@@ -170,6 +170,25 @@ Per secret:
 Per Ron's 2026-08-01 decision, agents may use secrets unattended by default.
 The per-task gate lives in the agent rules; these flags are the backstop for
 credentials that should never be touched by an autonomous cycle.
+
+**`allow_unattended=False` is enforced against detected context, not a
+caller-typed flag (MC-923, fixed 2026-08-31).** `--unattended` used to be the
+*only* signal `with-secret.py` passed — an unattended cycle that simply forgot
+the flag silently dodged the gate. `with-secret.py` now calls
+`mc.secrets_store.detect_effective_unattended()`, which ORs the flag with
+server-side detection: the Claude Code CLI sets `CLAUDE_CODE_SESSION_ID` on
+every tool subprocess it spawns (not something a command line can set), which
+is looked up against the `trigger_type` MC recorded at dispatch time via
+`GET /api/session/trigger-type`. Fails **closed** at every step — no session
+id, server unreachable, or session unknown all mean unattended. `--unattended`
+remains a valid explicit opt-in (steward code still passes it) but can no
+longer be defeated by omission. Detection is NOT wired into
+`get_secret_value()` itself, deliberately: the human-facing Secrets panel
+(`PATCH /api/secrets/<name>`, the TOTP-verify probe) calls it directly from
+inside the Flask server process, where there is no `CLAUDE_CODE_SESSION_ID` —
+auto-detecting there would refuse a real human editing a secret in the
+browser. Any *other* future CLI-spawned consumer should call
+`detect_effective_unattended()` itself, the same way `with-secret.py` does.
 
 ## What this does and does not protect against
 

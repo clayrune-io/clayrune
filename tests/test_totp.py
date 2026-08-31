@@ -179,6 +179,9 @@ def test_suggested_name():
 def vault(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
+    # Hermetic against MC-923's server-side unattended-context detection —
+    # see the matching comment in test_secrets_store.py's vault fixture.
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
     secrets_store._dispensed.clear()
     return secrets_store
