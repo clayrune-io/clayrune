@@ -198,6 +198,12 @@ def _figure_name(s, labels):
     an explicit label beats the persona's self-chosen name, which beats the
     configured default. Anything else and the board would call a session
     something its own system prompt never told it.
+
+    A DELEGATED session (source='agent') with no persona is the exception
+    (MC-925): its own prompt is told "you appear as unnamed", not the
+    project's default name — see `_build_agent_context`'s `_delegated_unnamed`
+    — so falling through to the default here would make the card disagree
+    with the very prompt this docstring says it has to match.
     """
     lab = labels.get(s.get('session_id')) or {}
     if isinstance(lab, dict) and lab.get('name'):
@@ -209,6 +215,8 @@ def _figure_name(s, labels):
         own = (ch.get('agent_name') or '').strip()
         if own:
             return own, 'character'
+    if (s.get('source') or '') == 'agent':
+        return 'unnamed', 'unnamed'
     return _clean_name(state.CONFIG.get('agent_name', '')), 'default'
 
 

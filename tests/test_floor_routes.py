@@ -279,6 +279,35 @@ def test_a_figure_always_has_a_name_even_with_no_persona(floor, monkeypatch):
     assert f['character'] is None, 'the type is still reported as absent'
 
 
+def test_a_delegated_session_with_no_persona_does_not_claim_the_default_name(floor, monkeypatch):
+    """MC-925: a session another agent dispatched programmatically
+    (source='agent') with no persona used to inherit CONFIG['agent_name']
+    here exactly like the human's own chat does — indistinguishable on the
+    board from the one true Vector, which is how a delegated Sonnet worker
+    got reported as Vector for work Vector never did. Its own prompt already
+    says "you appear as unnamed" (_build_agent_context); the card has to
+    agree with that or the two surfaces are lying to each other again."""
+    fr, c, sessions, projects, _ = floor
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character=None, source='agent')
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('unnamed', 'unnamed')
+
+
+def test_a_ui_session_with_no_persona_is_unaffected(floor, monkeypatch):
+    """Only a DELEGATED personaless session loses the default name — the
+    human's own chat (source='ui', or unset/legacy) keeps it."""
+    fr, c, sessions, projects, _ = floor
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character=None, source='ui')
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['name_from']) == ('Vector', 'default')
+
+
 def test_a_personas_own_name_beats_the_configured_default(floor, monkeypatch):
     fr, c, sessions, projects, _ = floor
     from mc import state

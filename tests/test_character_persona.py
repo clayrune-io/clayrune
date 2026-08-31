@@ -412,3 +412,182 @@ class TestDispatchProviderModelPrecedence:
             ar._dispatch_agent_internal('tc', 'do a thing',
                                         provider_override='claude',
                                         model_override='gemini-2.5-flash')
+
+
+# ── MC-925 — an unresolvable character is silent, and a personaless session
+# borrows the default agent's name ───────────────────────────────────────────
+#
+# Sessions dispatched with character='global:claude' (no such file) resolved
+# to nothing and /agent/dispatch still returned ok:true — and the resulting
+# session, having no persona, was told "Your name is Vector" (the project's
+# default agent_name) anyway. A delegated Sonnet worker introduced itself as
+# Vector, and another agent then reported Vector as the author of work Vector
+# never did.
+
+
+class TestResolveCharacterStrict:
+    """`strict=True` (only ever set by the fresh dispatch endpoint) turns an
+    EXPLICITLY named, unresolvable character into a raise. The project-default
+    fallback and an empty ask stay best-effort regardless — see the class
+    docstring on `_resolve_character`."""
+
+    def test_unknown_character_raises_when_strict(self, env):
+        with pytest.raises(ValueError, match='not found'):
+            env['ar']._resolve_character(env['proj_path'], 'global:phantom',
+                                         strict=True)
+
+    def test_unknown_character_still_degrades_when_not_strict(self, env):
+        meta, body = env['ar']._resolve_character(
+            env['proj_path'], 'global:phantom')
+        assert meta is None and body == ''
+
+    def test_malformed_character_raises_when_strict(self, env):
+        with pytest.raises(ValueError):
+            env['ar']._resolve_character(env['proj_path'], 'bogus', strict=True)
+
+    def test_project_default_never_raises_even_when_strict(self, env):
+        """A stale PROJECT DEFAULT is not a fresh ask — nobody typed it this
+        turn, so it must keep degrading quietly even with strict=True."""
+        p = {'default_character': 'project:deleted-one'}
+        meta, body = env['ar']._resolve_character(
+            env['proj_path'], '', project=p, strict=True)
+        assert meta is None and body == ''
+
+    def test_empty_character_never_raises_even_when_strict(self, env):
+        meta, body = env['ar']._resolve_character(
+            env['proj_path'], '', strict=True)
+        assert meta is None and body == ''
+
+    def test_near_match_is_suggested(self, env):
+        with pytest.raises(ValueError, match='docs-writer'):
+            env['ar']._resolve_character(env['proj_path'], 'global:docs-writr',
+                                         strict=True)
+
+
+class TestDispatchRejectsUnresolvableCharacter:
+    """`_dispatch_agent_internal(strict_character=True)` — only the fresh
+    `/agent/dispatch` HTTP endpoint sets this (see its own comment). Scheduler
+    and hivemind dispatch never pass it, so a persona pinned once at write
+    time keeps degrading quietly at every fire, unchanged (test_scheduler_
+    character.py already covers and locks in that behaviour)."""
+
+    def _project(self, env):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude'}
+
+    def test_raises_and_creates_no_session(self, env, monkeypatch):
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project(env))
+        before = set(ar.agent_sessions.keys())
+        with pytest.raises(ValueError, match='phantom'):
+            ar._dispatch_agent_internal(
+                'tc', 'do a thing', character='global:phantom',
+                strict_character=True)
+        assert set(ar.agent_sessions.keys()) == before
+
+    def _project_gemini(self, env):
+        # A non-claude project short-circuits into _dispatch_via_runtime
+        # before any subprocess is spawned — the same trick
+        # TestDispatchProviderModelPrecedence uses above.
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'gemini'}
+
+    def test_no_character_still_dispatches_with_strict_character_on(self, env, monkeypatch):
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project_gemini(env))
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', lambda *a, **kw: 'sidZ')
+        sid = ar._dispatch_agent_internal(
+            'tc', 'do a thing', character='', strict_character=True)
+        assert sid == 'sidZ'
+
+    def test_no_character_still_dispatches_by_default(self, env, monkeypatch):
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project_gemini(env))
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', lambda *a, **kw: 'sidW')
+        sid = ar._dispatch_agent_internal('tc', 'do a thing')
+        assert sid == 'sidW'
+
+    def test_a_resumed_chat_stays_best_effort_even_with_strict_character(self, env, monkeypatch):
+        """A resume recovers its OWN prior persona (`_prior_character`), never
+        the caller's `character` argument — strict_character must not turn a
+        deleted persona on an existing conversation into a hard failure."""
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project_gemini(env))
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', lambda *a, **kw: 'sidR')
+        monkeypatch.setattr(ar, '_prior_character', lambda pid, rid: 'global:phantom')
+        sid = ar._dispatch_agent_internal(
+            'tc', 'do a thing', resume_id='csid1', strict_character=True)
+        assert sid == 'sidR'
+
+
+class TestDispatchEndpointRejectsUnresolvableCharacter:
+    """The HTTP contract: what Ron actually saw (ok:true for a character that
+    does not exist) is now a 4xx that names what was not found."""
+
+    def _project(self, env):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude'}
+
+    def test_dispatch_returns_4xx_and_creates_no_session(self, env, monkeypatch):
+        import server
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project(env))
+        before = set(ar.agent_sessions.keys())
+        server.app.config['TESTING'] = True
+        c = server.app.test_client()
+        r = c.post('/api/project/tc/agent/dispatch',
+                  json={'task': 'hi', 'character': 'global:phantom'})
+        assert 400 <= r.status_code < 500, r.get_json()
+        assert 'phantom' in r.get_json()['error']
+        assert set(ar.agent_sessions.keys()) == before
+
+
+class TestDelegatedPersonalessIdentity:
+    """MC-925 defect 2. `source='agent'` marks a session another agent
+    dispatched programmatically. One of those with no persona used to inherit
+    CONFIG['agent_name'] anyway, indistinguishable from the project's own
+    human-facing chat."""
+
+    def _project(self, env):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude'}
+
+    def test_delegated_no_persona_does_not_claim_the_default_name(self, env, monkeypatch):
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(self._project(env), source='agent')
+        assert 'Your name is Vector.' not in ctx
+        assert 'no persona assigned' in ctx
+
+    def test_delegated_no_persona_floor_name_is_unnamed(self, env, monkeypatch):
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(
+            self._project(env), source='agent', session_id='s1')
+        assert 'figure named unnamed' in ctx
+
+    def test_delegated_with_a_persona_still_gets_its_own_name(self, env, monkeypatch):
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(
+            self._project(env), source='agent', character_body='x',
+            character_name='Quill')
+        assert 'Your name is Quill.' in ctx
+        assert 'Vector' not in ctx
+
+    def test_ui_no_persona_keeps_the_default_name(self, env, monkeypatch):
+        """Only a DELEGATED (source='agent') personaless session loses the
+        default name — the project's own main chat is unaffected."""
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(self._project(env), source='ui')
+        assert 'Your name is Vector.' in ctx
+
+    def test_unspecified_source_keeps_the_default_name(self, env, monkeypatch):
+        """The default `source=''` (legacy / unknown caller) is unaffected —
+        this parameter is additive, not a behaviour change for anyone who
+        doesn't pass it."""
+        from mc import state
+        monkeypatch.setitem(state.CONFIG, 'agent_name', 'Vector')
+        ctx = env['ar']._build_agent_context(self._project(env))
+        assert 'Your name is Vector.' in ctx

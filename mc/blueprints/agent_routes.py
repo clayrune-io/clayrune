@@ -675,7 +675,7 @@ def _fresh_context_for(project, session, task=''):
         project, incognito=bool((session or {}).get('incognito')), task=task,
         character_body=body, character_name=name,
         session_id=(session or {}).get('session_id', ''),
-        character_skills=sk)
+        character_skills=sk, source=(session or {}).get('source', ''))
 
 
 def _respawn_sysprompt_args(session, project, task=''):
@@ -2270,7 +2270,8 @@ def _roster_block(project, port):
 
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
-                         character_name='', session_id='', character_skills=None):
+                         character_name='', session_id='', character_skills=None,
+                         source=''):
     """Build system prompt context for the agent.
 
     character_body, when set, is the markdown body of a per-chat "character"
@@ -2293,6 +2294,13 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     The global incognito pseudo-project (`_is_incognito_project`) doesn't
     have meaningful "what's been done" context anyway, so this still works
     naturally — the lack of activity/recent-conversations is just the truth.
+
+    source='agent' marks a session another agent dispatched programmatically
+    (MC-925) rather than the human's own chat. One of those with no persona
+    used to inherit the project's default agent_name anyway — a delegated
+    Sonnet worker introduced itself as "Vector" and the human-facing session
+    that spawned it then reported Vector as the author of work Vector never
+    did. A personaless delegated session gets no name here instead.
     """
     parts = []
     # Non-Claude agents (Gemini etc.) get a slimmer context. Claude treats a
@@ -2305,7 +2313,15 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # A persona that named itself outranks the global assistant name: for this
     # chat, that IS who is speaking. Emitting both would tell the agent it has
     # two names, and it would pick one at random per turn.
-    agent_name = character_name or state.CONFIG.get('agent_name', '')
+    #
+    # A DELEGATED session (source='agent' — dispatched by another agent, not
+    # the human's own chat) with no persona does NOT inherit the global
+    # assistant name (MC-925): "Vector" is this project's one human-facing
+    # identity, and a personaless worker claiming it is how a delegated
+    # Sonnet run got attributed to Vector for work Vector never did.
+    _delegated_unnamed = bool(source == 'agent' and not character_name)
+    agent_name = character_name or ('' if _delegated_unnamed
+                                    else state.CONFIG.get('agent_name', ''))
     user_name = state.CONFIG.get('user_name', '')
     if agent_name and character_name:
         parts.append(
@@ -2314,6 +2330,13 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             f"of your role.")
     elif agent_name:
         parts.append(f"Your name is {agent_name}.")
+    elif _delegated_unnamed:
+        parts.append(
+            "You were dispatched programmatically with no persona assigned. "
+            "You are not the project's default agent and have no name of your "
+            "own for this session — if asked who you are, say you are an "
+            "unnamed worker session and name the model you are running on, "
+            "do not answer with the default agent's name.")
     # Naming your own figure. The Floor shows a figure per live session and a
     # name is how Ron tells two of them apart at a glance; the default one is
     # inherited, not chosen, so an agent doing something distinct should say so.
@@ -4572,7 +4595,21 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     return session_id
 
 
-def _resolve_character(pp, character, project=None):
+def _character_near_matches(pp, name, limit=3):
+    """Cheap close-name suggestions for an unresolvable character, across both
+    scopes. Best-effort — an empty list just means the error carries no hint.
+    """
+    try:
+        import difflib
+        from mc import characters as _characters
+        names = sorted({r['name'] for r in
+                        _characters.list_characters(project_path=pp, include_body=False)})
+        return difflib.get_close_matches(name, names, n=limit, cutoff=0.4)
+    except Exception:
+        return []
+
+
+def _resolve_character(pp, character, project=None, strict=False):
     """Resolve a chat's character to (meta, body).
 
     `character` is a "scope:name" string from the new-chat picker
@@ -4581,10 +4618,19 @@ def _resolve_character(pp, character, project=None):
     layer (docs/AGENT_TYPES_DESIGN.md §4), and the thing that stops a persona
     being something the user has to remember to switch on every single time.
 
-    Best-effort throughout: an unknown or stale value yields (None, '') so a
+    Best-effort by default: an unknown or stale value yields (None, '') so a
     deleted character never blocks dispatch. A stale PROJECT DEFAULT matters
     more than a stale pick — nobody typed it, so nobody is watching for it to
     break — hence the miss is logged rather than swallowed.
+
+    strict=True (MC-925) flips that for an EXPLICITLY requested character only
+    (source stays 'picked' below) — a misspelled or deleted persona someone
+    actually typed raises ValueError naming what was not found, instead of
+    silently dispatching personaless. Never raises for the 'project' (default)
+    source, and never for an empty `character` — both stay best-effort, since
+    those are not a fresh, explicit ask. Callers that recover a PRIOR run's
+    persona (resume, revive) must pass strict=False (the default) for the same
+    reason — a deleted character there must degrade, not block.
 
     meta = {'name','scope','display_name','source','engine'} for the session
     record and the header pill. `source` is 'picked' | 'project'; the pill has
@@ -4601,6 +4647,10 @@ def _resolve_character(pp, character, project=None):
     scope = (scope or '').strip().lower()
     name = (name or '').strip()
     if scope not in ('project', 'global') or not name:
+        if strict and source == 'picked':
+            raise ValueError(
+                f"character {character!r} is not a valid 'project:<name>' or "
+                f"'global:<name>' reference")
         return None, ''
     try:
         from mc import characters as _characters
@@ -4609,11 +4659,18 @@ def _resolve_character(pp, character, project=None):
             include_body=True)
     except Exception as e:
         _log(f"[dispatch] character resolve failed for {character!r}: {e}")
+        if strict and source == 'picked':
+            raise ValueError(f"character {character!r} could not be resolved: {e}")
         return None, ''
     if not rec:
         if source == 'project':
             _log(f"[dispatch] project default character {character!r} not found "
                  f"— dispatching with no persona", level='warn')
+            return None, ''
+        if strict:
+            near = _character_near_matches(pp, name)
+            hint = f" — did you mean: {', '.join(near)}?" if near else ''
+            raise ValueError(f"character '{character}' not found{hint}")
         return None, ''
     meta = {'name': rec.get('name') or name, 'scope': scope,
             'display_name': rec.get('display_name') or rec.get('name') or name,
@@ -4712,7 +4769,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
-                             model_override=''):
+                             model_override='', strict_character=False):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -4732,6 +4789,18 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     conversation — reusing the prior run's session_id keeps it on one agent_log
     row / one UI tab / one resolvable transcript instead of orphaning a new
     csid-less row per fire.
+
+    strict_character (MC-925, default False): reject dispatch with a ValueError
+    when `character` is a non-empty value that fails to resolve, instead of
+    silently continuing personaless. Opt-in and OFF by default on purpose — a
+    schedule or hivemind row pins a persona once, at WRITE time (already
+    validated there; see test_scheduler_character.py), and every FIRE after
+    that is a replay of an already-accepted decision, not a fresh ask; a
+    persona deleted after the fact must still degrade quietly, the same as it
+    always has. Only the interactive `/agent/dispatch` endpoint sets this,
+    for the one case that IS a fresh, explicit ask: a caller (human or agent)
+    naming a character THIS turn. Do not set it from scheduler/hivemind/revival
+    call sites.
     """
     p = load_project(project_id)
     if not p:
@@ -4755,6 +4824,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # On a RESUME the picker is hidden, so `character` arrives empty and the
     # project default would take over mid-conversation. Recover what this
     # conversation was actually running instead — see `_prior_character`.
+    #
+    # strict_character (MC-925) only ever applies to what the CALLER passed
+    # in directly, never to a `_prior_character` recovery — a resume must stay
+    # best-effort even when the caller opted in, since a deleted persona there
+    # is the SAME "coming back is more important than coming back right" case
+    # `_resolve_character`'s docstring already covers, not a fresh ask.
+    _strict_this_call = strict_character and bool(character)
     _prior = _prior_character(project_id, resume_id) if resume_id else None
     if _prior is not None and not character:
         character = _prior
@@ -4763,7 +4839,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # default just because a resume passed through here.
         character_meta, character_body = None, ''
     else:
-        character_meta, character_body = _resolve_character(pp, character, project=p)
+        character_meta, character_body = _resolve_character(
+            pp, character, project=p, strict=_strict_this_call)
 
     # ── Multi-provider routing ──────────────────────────────────────────────
     # If the conversation selects a non-claude provider, dispatch through the
@@ -4901,7 +4978,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
-                    session_id=_planned_sid, character_skills=_char_skills),
+                    session_id=_planned_sid, character_skills=_char_skills,
+                    source=source),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
@@ -4918,7 +4996,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                        character_body=character_body,
                                        character_name=_char_agent_name,
                                        session_id=_planned_sid,
-                                       character_skills=_char_skills)
+                                       character_skills=_char_skills,
+                                       source=source)
         _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
@@ -4927,7 +5006,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 context_builder=lambda: _build_agent_context(
                     p, incognito=incognito, task=task,
                     character_body=character_body, character_name=_char_agent_name,
-                    session_id=_planned_sid, character_skills=_char_skills),
+                    session_id=_planned_sid, character_skills=_char_skills,
+                    source=source),
                 streaming=use_streaming, effort_override=_char_effort))
         _sp_args, _sp_path = _sysprompt_file_args(context)
     # Per-dispatch telemetry — best-effort; never raises. requested = the
@@ -5212,7 +5292,18 @@ def agent_dispatch(project_id):
                                               provider_override=provider_override,
                                               display_task=task, character=character,
                                               source=source,
-                                              model_override=model_override)
+                                              model_override=model_override,
+                                              # A fresh, explicit ask this turn
+                                              # (character is '' on a resume,
+                                              # above) — the one call site
+                                              # where an unresolvable pick
+                                              # should refuse rather than
+                                              # silently run personaless
+                                              # (MC-925). Scheduler/hivemind
+                                              # replay a persona pinned once
+                                              # at write time and must stay
+                                              # best-effort; they don't set this.
+                                              strict_character=True)
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
