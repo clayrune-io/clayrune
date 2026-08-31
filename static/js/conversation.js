@@ -188,6 +188,9 @@ window._ensureCharacters = _ensureCharacters;
 // The persona editor needs the provider list to build its Engine picker.
 // A getter, not a snapshot — the list is fetched lazily after module eval.
 window._agentProvidersList = () => _agentProviders || [];
+// Same reason: the persona editor's model picker must show the SAME
+// per-provider catalog as the composer's, not a second copy of it.
+window._providerModelChoices = _providerModelChoices;
 window.characterCacheFor = (pid) => characterCache[pid] || [];
 
 // Provider is bound per-conversation. The new-chat composer picks it; the

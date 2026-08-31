@@ -970,10 +970,16 @@ function _peOpts(pairs, cur) {
   ).join('');
 }
 
-function _peModelOptions(cur) {
-  // MC_MODEL_CHOICES already leads with ['', 'Default (global)'] and is the
-  // single source of truth for model ids/labels — don't restate them here.
-  const choices = (window.MC_MODEL_CHOICES || [['', 'Default']]).slice();
+// Provider-aware, unlike the old hardcoded-to-Claude version — reuses
+// conversation.js:244 _providerModelChoices (the composer's single source of
+// truth for per-provider catalogs), bridged onto window since ES modules
+// don't share top-level bindings. An empty/unpinned provider still needs a
+// sensible catalog to show, so it resolves to 'claude' — the same fallback
+// every other provider-less code path in this app already uses.
+function _peModelOptions(cur, provider) {
+  const fn = window._providerModelChoices;
+  const provChoices = fn ? fn(provider || 'claude') : [];
+  const choices = [['', 'Default']].concat(provChoices);
   // A model pinned by hand that we no longer offer must still round-trip;
   // dropping it from the list would silently clear the pin on the next save.
   if (cur && !choices.some(c => c[0] === cur)) choices.push([cur, cur + ' (pinned)']);
@@ -1070,7 +1076,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <label>Engine <span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
       <div class="persona-engine-row">
         <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
-        <select id="pe-model">${_peModelOptions((rec.engine || {}).model)}</select>
+        <select id="pe-model">${_peModelOptions((rec.engine || {}).model, (rec.engine || {}).provider)}</select>
         <select id="pe-effort">${_peEffortOptions((rec.engine || {}).effort)}</select>
       </div>
       <label>Belongs to <span class="claydo-save-hint">(a global persona works in every project; a project one only works in its own)</span></label>
@@ -1110,6 +1116,27 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
   };
   bodyEl.addEventListener('input', paintSize);
   paintSize();
+
+  // Model ids don't cross runtimes — a Claude id pinned before switching the
+  // Provider to Gemini would dispatch verbatim and fail at launch. Neither
+  // silently keep it nor silently drop it: if the pinned value isn't in the
+  // new provider's catalog, reset the picker to Default and say so, so the
+  // user sees the pin was cleared instead of finding out at dispatch time.
+  const providerSel = panel.querySelector('#pe-provider');
+  const modelSel = panel.querySelector('#pe-model');
+  providerSel.addEventListener('change', () => {
+    const newProvider = providerSel.value;
+    const curModel = modelSel.value;
+    const fn = window._providerModelChoices;
+    const liveChoices = fn ? fn(newProvider || 'claude') : [];
+    const stillValid = !curModel || liveChoices.some((c) => c[0] === curModel);
+    const nextModel = stillValid ? curModel : '';
+    modelSel.innerHTML = _peModelOptions(nextModel, newProvider);
+    if (!stillValid) {
+      const provLabel = providerSel.options[providerSel.selectedIndex]?.textContent || newProvider;
+      showErr(`Model reset to Default — "${curModel}" isn't offered by ${provLabel}.`);
+    }
+  });
 
   // Typing an emoji on a desktop keyboard is the entire reason a field like
   // this stays empty forever. One click, or type your own.
