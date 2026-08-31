@@ -4800,6 +4800,25 @@ def _model_provider_mismatch(provider_name, model):
             continue
         if any(m == model for m, _ in other.model_choices()):
             return other.name
+    # Catalog lookup alone is not enough, and this bit is load-bearing: on
+    # 2026-08-31 every gemini-2.5-* id was retired from the Gemini catalog
+    # (the API 404s them), and the MC-924 repro — a gemini id handed to the
+    # claude runtime — stopped being flagged the moment those ids left the
+    # list. A guard that forgets an id as soon as it is deprecated is exactly
+    # backwards: a RETIRED id is MORE likely to show up in a stale pin, not
+    # less. So fall back to the id's family prefix, which does not churn.
+    #
+    # Still conservative in the way the docstring promises: an id matching no
+    # known family is not flagged, because it may simply be newer than us.
+    _FAMILY_PREFIXES = (('gemini-', 'gemini'), ('claude-', 'claude'))
+    for prefix, owner in _FAMILY_PREFIXES:
+        if not model.startswith(prefix) or owner == provider_name:
+            continue
+        # Only flag if the RESOLVED provider does not claim the id itself —
+        # a runtime that routes another vendor's models (openrouter-style
+        # 'google/gemini-...') legitimately accepts them, and model_supported
+        # above already gave it the chance to say so.
+        return owner
     return ''
 
 
