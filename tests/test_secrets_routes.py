@@ -20,6 +20,12 @@ SECRET = 'PLAINTEXT-VALUE-SHOULD-NEVER-APPEAR'
 def client(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
+    # Hermetic: whoever runs this suite might genuinely be a Claude Code
+    # session (this one included), which would otherwise leak a real
+    # CLAUDE_CODE_SESSION_ID in and make mc.secrets_store's MC-923
+    # unattended-context detection hit the *real* local server. Tests that
+    # want to exercise detection mock it explicitly instead.
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
     from mc.blueprints import secrets_routes
     secrets_store._dispensed.clear()

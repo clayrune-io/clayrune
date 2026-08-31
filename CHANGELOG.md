@@ -55,6 +55,35 @@ tests before it shipped: `/api/processes` (the Process Manager tab) assumed
 every tracked "proc" was `subprocess.Popen`-shaped (`.poll()`); a tracked PTY
 session 500'd it. Fixed by giving both PTY backends `.poll()`/`.kill()`
 matching that contract.
+## [2026-08-31] — `with-secret.py --unattended` was self-reported, so omitting it was the bypass
+
+MC-923. `allow_unattended=False` was documented (CLAUDE.md, `docs/SECRETS.md`)
+as "blocks steward and scheduled cycles" — but `mc.secrets_store.get_secret_value`
+trusted whatever `unattended=` value a caller passed, and the only real caller,
+`tools/with-secret.py --unattended`, was set by the calling agent itself.
+Nothing detected the session's actual type; simply not passing the flag was
+indistinguishable from an honestly-attended call. Found during the MC-914
+audit (Wren), deliberately left open pending a real fix.
+
+`with-secret.py` now calls `mc.secrets_store.detect_effective_unattended()`,
+which ORs the CLI flag with server-side detection: `CLAUDE_CODE_SESSION_ID` is
+set by the Claude Code CLI on every tool subprocess it spawns (not something a
+command line controls), looked up against the `trigger_type` MC recorded at
+dispatch time via a new `GET /api/session/trigger-type`. Fails **closed** at
+every step — no session id, server unreachable, or session unknown are all
+treated as unattended, never the reverse. Same class of fix as
+`steward/fence.py`'s `STEWARD_MARKER` technique (reused, not reinvented): trust
+something the agent doesn't control instead of something it types.
+
+The check is deliberately confined to `with-secret.py` rather than baked into
+`get_secret_value()` itself. `mc.blueprints.secrets_routes` also calls
+`get_secret_value`/`generate_totp_code` directly, from inside the Flask server
+process, for the human-facing Secrets panel (metadata edit, TOTP-verify probe)
+— that path has no `CLAUDE_CODE_SESSION_ID` at all, so auto-detecting there
+would have fixed the CLI gap by refusing a real human editing a secret in the
+browser. Confirmed by running the affected tests before wiring the fix in:
+`test_patch_metadata_preserves_the_value` would have started failing had
+detection been applied universally.
 
 ## [2026-08-31] — The Scribe was Claude-only, so every other runtime forgot
 

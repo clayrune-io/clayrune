@@ -23,6 +23,12 @@ def vault(tmp_path, monkeypatch):
     touches (or prompts) the real OS keyring."""
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
+    # Hermetic: whoever runs this suite might genuinely be a Claude Code
+    # session (this one included), which would otherwise leak a real
+    # CLAUDE_CODE_SESSION_ID in and make the MC-923 unattended-context
+    # detection hit the *real* local server. Tests that want to exercise
+    # detection mock it explicitly instead (see the MC-923 section below).
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
     # Module-level caches that must not bleed between tests.
     secrets_store._dispensed.clear()
@@ -113,6 +119,140 @@ def test_attended_only_blocks_unattended_cycles(vault):
     # …but an attended session may still use it.
     assert vault.get_secret_value('bank.password', consumer='chat',
                                   unattended=False) == 'value-danger'
+
+
+# ── Server-side unattended detection (MC-923) ───────────────────────────────
+# `tools/with-secret.py --unattended` used to be trusted purely as whatever
+# the caller passed, so an unattended cycle that simply omitted the flag
+# silently dodged `allow_unattended=False`. `detect_unattended_context` /
+# `detect_effective_unattended` give a CLI-spawned caller a way to derive that
+# flag from something it doesn't control instead — server-side ground truth
+# (trigger_type MC recorded at dispatch, looked up via the session id the
+# Claude Code CLI itself sets), fail-CLOSED whenever it can't be determined.
+#
+# These are deliberately NOT wired into `get_secret_value` itself — see the
+# module comment in mc/secrets_store.py above `detect_unattended_context` for
+# why (mc.blueprints.secrets_routes calls it directly from inside the Flask
+# server process for the human-facing Secrets panel, where there is no
+# CLAUDE_CODE_SESSION_ID at all, and auto-detecting there would refuse a real
+# human clicking in the browser).
+
+def test_omitting_the_flag_no_longer_grants_attended_treatment(vault, monkeypatch):
+    """The exact MC-923 bug: an unattended-context caller that forgets
+    --unattended must still be DETECTED as unattended."""
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda sid: 'schedule')
+    effective, reason = vault.detect_effective_unattended(False)  # flag NOT passed
+    assert effective is True
+    assert 'schedule' in reason
+
+
+def test_no_session_id_fails_closed_to_unattended(vault, monkeypatch):
+    """Undetermined context (no CLAUDE_CODE_SESSION_ID at all) must be
+    detected as unattended, never as a free pass."""
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: '')
+    is_unattended, reason = vault.detect_unattended_context()
+    assert is_unattended is True
+    assert 'fail-closed' in reason
+
+
+def test_session_unknown_to_server_fails_closed_to_unattended(vault, monkeypatch):
+    """The session id is real but MC's server can't be reached or has never
+    heard of it — still undetermined, still fails closed."""
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda sid: None)
+    is_unattended, reason = vault.detect_unattended_context()
+    assert is_unattended is True
+    assert 'fail-closed' in reason
+
+
+def test_manual_trigger_type_is_detected_as_attended(vault, monkeypatch):
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda sid: 'manual')
+    is_unattended, reason = vault.detect_unattended_context()
+    assert is_unattended is False
+    assert reason == 'trigger_type=manual'
+
+
+def test_explicit_flag_still_forces_unattended_even_if_detection_says_manual(vault, monkeypatch):
+    """The flag can only ADD strictness, never remove what detection found —
+    but it must still work as an explicit opt-in even when detection alone
+    would have said attended (e.g. a human deliberately running a task as if
+    it were a steward cycle, to test the gate)."""
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda sid: 'manual')
+    effective, reason = vault.detect_effective_unattended(True)
+    assert effective is True
+    assert reason == 'flag'
+    # Detection is never even consulted once the flag alone settles it.
+
+
+def test_end_to_end_with_secret_cli_blocks_an_omitted_flag(vault, monkeypatch):
+    """Exercises the actual with-secret.py entrypoint (not just the vault
+    helpers it calls) for the exact MC-923 scenario: an unattended-context
+    caller that forgets --unattended must still be refused the secret."""
+    import importlib.util
+    import sys as _sys
+
+    vault.set_secret('bank.password', 'value-danger', allow_unattended=False)
+    monkeypatch.setattr(vault, '_session_id_from_env', lambda: 'fake-sid')
+    monkeypatch.setattr(vault, '_lookup_trigger_type', lambda sid: 'schedule')
+
+    spec = importlib.util.spec_from_file_location(
+        'with_secret_mc923', Path(__file__).resolve().parent.parent / 'tools' / 'with-secret.py')
+    assert spec is not None and spec.loader is not None
+    with_secret = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(with_secret)
+    monkeypatch.setattr(with_secret, 'vault', vault)
+
+    rc = with_secret.main([
+        '--env', 'X=bank.password', '--',
+        _sys.executable, '-c', 'print("SHOULD NOT RUN")',
+    ])
+    assert rc == 2
+
+
+def test_lookup_trigger_type_over_a_real_http_call(vault, monkeypatch):
+    """Exercises `_lookup_trigger_type` itself (not a mock of it) against a
+    real HTTP server on loopback, so the urllib call + JSON parsing that
+    `_detect_unattended_context` depends on is actually proven, not assumed."""
+    import json as _json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+
+    seen = {}
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            seen['path'] = self.path
+            body = _json.dumps({'found': True, 'trigger_type': 'schedule'}).encode()
+            self.send_response(200)
+            self.send_header('Content-Type', 'application/json')
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *a):
+            pass  # keep test output quiet
+
+    server = HTTPServer(('127.0.0.1', 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        monkeypatch.setattr(vault, '_TRIGGER_TYPE_URL',
+                            f'http://127.0.0.1:{server.server_port}/api/session/trigger-type')
+        assert vault._lookup_trigger_type('some-real-sid') == 'schedule'
+        assert seen['path'] == '/api/session/trigger-type?claude_session_id=some-real-sid'
+    finally:
+        server.shutdown()
+        thread.join(timeout=2)
+
+
+def test_lookup_trigger_type_returns_none_when_server_unreachable(vault, monkeypatch):
+    """A closed port (nothing listening) must fail closed via None, not raise
+    out of `get_secret_value` — an unreachable MC server must never itself
+    become the reason a legitimate credential use crashes instead of denies."""
+    monkeypatch.setattr(vault, '_TRIGGER_TYPE_URL', 'http://127.0.0.1:1/nope')
+    assert vault._lookup_trigger_type('any-sid') is None
 
 
 def test_scoped_secret_hidden_from_other_projects_listing(vault):

@@ -55,6 +55,8 @@ import json
 import os
 import re
 import threading
+import urllib.parse
+import urllib.request
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -544,6 +546,94 @@ def delete_secret(name: str) -> bool:
     return True
 
 
+# ── Unattended-context auto-detection (MC-923) ──────────────────────────────
+#
+# tools/with-secret.py's `--unattended` flag used to be the ONLY signal
+# `get_secret_value` ever saw — the calling AGENT decided whether its own
+# cycle counted as unattended, and simply omitting the flag silently dodged
+# `allow_unattended=False`, indistinguishable from an honestly-attended call.
+#
+# This section gives CLI-spawned consumers (with-secret.py today) a way to
+# derive that flag from something the calling agent does not control, instead
+# of trusting what it typed. `get_secret_value` itself is deliberately left
+# alone: it keeps trusting whatever `unattended` value a caller passes, the
+# way it always has, because not every caller runs as a Claude Code CLI
+# subprocess — mc.blueprints.secrets_routes calls it directly from inside the
+# Flask server process for the human-facing Secrets panel (metadata edits,
+# TOTP verification), where there is no CLAUDE_CODE_SESSION_ID to find and
+# auto-detecting "no session id -> unattended" would wrongly refuse a human
+# clicking in the browser. Baking detection into `get_secret_value` itself
+# would have fixed with-secret.py's gap by breaking that one instead.
+#
+# Fix shape (per steward/fence.py's STEWARD_MARKER precedent, reused rather
+# than reinvented): derive unattended-ness from something the calling agent
+# does not control. `CLAUDE_CODE_SESSION_ID` is set by the Claude Code CLI
+# itself in every tool subprocess it spawns (confirmed empirically — distinct
+# from anything a typed command line can set), the same class of "the harness
+# told us, the agent didn't" signal fence.py gets from its hook payload's
+# `transcript_path`. That session id is looked up against `trigger_type`,
+# which MC recorded server-side at dispatch time (mc.blueprints.agent_routes:
+# GET /api/session/trigger-type) — ground truth the agent process cannot
+# rewrite.
+#
+# Fails CLOSED at every step (no session id, server unreachable, session
+# unknown) — an inability to prove "this is attended" is treated as
+# unattended, never the reverse. `detect_effective_unattended` ORs this with
+# the caller-supplied flag, so the flag can only ADD strictness (an explicit
+# opt-in, which steward code should still pass on purpose) and can never
+# remove strictness that detection found on its own.
+
+_TRIGGER_TYPE_URL = 'http://127.0.0.1:5199/api/session/trigger-type'
+
+
+def _session_id_from_env() -> str:
+    return (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
+
+
+def _lookup_trigger_type(claude_session_id: str) -> str | None:
+    """The trigger_type MC recorded for this session, or None if the running
+    server can't be reached or doesn't know the session.
+
+    Split out from `detect_unattended_context` so tests can monkeypatch this
+    one function instead of standing up a live server.
+    """
+    try:
+        url = f'{_TRIGGER_TYPE_URL}?claude_session_id={urllib.parse.quote(claude_session_id)}'
+        with urllib.request.urlopen(url, timeout=3) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        _log(f"[secrets] unattended-context lookup failed: {e}")
+        return None
+    if not data.get('found'):
+        return None
+    return str(data.get('trigger_type') or 'manual')
+
+
+def detect_unattended_context() -> tuple[bool, str]:
+    """(is_unattended, reason) purely from server-side signals — no caller
+    input. See module comment above for the fail-closed rationale. Public:
+    meant to be called by CLI-spawned consumers (with-secret.py) to compute
+    what they should pass as `unattended=`, not by `get_secret_value` itself."""
+    sid = _session_id_from_env()
+    if not sid:
+        return True, 'no CLAUDE_CODE_SESSION_ID (fail-closed)'
+    trigger_type = _lookup_trigger_type(sid)
+    if trigger_type is None:
+        return True, 'session unknown to MC (fail-closed)'
+    if trigger_type == 'manual':
+        return False, 'trigger_type=manual'
+    return True, f'trigger_type={trigger_type}'
+
+
+def detect_effective_unattended(unattended: bool) -> tuple[bool, str]:
+    """OR a caller-supplied flag with auto-detection. The flag can only ADD
+    strictness (a caller opting into unattended treatment on purpose); it can
+    never remove strictness that detection found on its own."""
+    if unattended:
+        return True, 'flag'
+    return detect_unattended_context()
+
+
 def get_secret_value(name: str,
                      *,
                      consumer: str,
@@ -554,7 +644,10 @@ def get_secret_value(name: str,
     ``consumer`` is a short free-text label for the audit trail
     (``'browser-login'``, ``'with-secret'``, ``'send_mail'``). ``unattended``
     must be True for steward / scheduled cycles so ``allow_unattended`` can be
-    enforced.
+    enforced. This function trusts the value it's given as-is — CLI-spawned
+    callers should compute it via `detect_effective_unattended` first (see the
+    MC-923 module comment above for why that OR-with-detection step happens
+    at the call site instead of in here).
     """
     with _lock:
         store = _load_store()

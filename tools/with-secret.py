@@ -93,7 +93,11 @@ def main(argv: list[str] | None = None) -> int:
                     help='project id, for project-scoped secrets')
     ap.add_argument('--unattended', action='store_true',
                     help='this is a steward/scheduled cycle — enforces the '
-                         'per-secret attended-only flag')
+                         'per-secret attended-only flag. Belt-and-suspenders: '
+                         'this script also auto-detects unattended context '
+                         'server-side (MC-923), so omitting this does NOT '
+                         'bypass the gate — pass it to be explicit, not to '
+                         'be safe.')
     ap.add_argument('--raw', action='store_true',
                     help='stream child output unmodified (no redaction); use '
                          'for interactive commands')
@@ -108,7 +112,14 @@ def main(argv: list[str] | None = None) -> int:
         ap.error('no command given (use: --env VAR=name -- your command here)')
 
     project: str | None = args.project
-    unattended = bool(args.unattended)
+    # MC-923: the --unattended flag used to be the only signal, so an
+    # unattended cycle that simply forgot to pass it silently got treated as
+    # attended. OR it with server-side detection (trigger_type, keyed off the
+    # CLAUDE_CODE_SESSION_ID the CLI itself sets — not anything this command
+    # line controls) so omitting the flag can no longer defeat
+    # allow_unattended=False. The flag still forces the stricter treatment on
+    # its own; it just can't opt back OUT of what detection found.
+    unattended, _reason = vault.detect_effective_unattended(bool(args.unattended))
 
     try:
         env = dict(os.environ)

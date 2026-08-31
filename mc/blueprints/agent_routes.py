@@ -3522,6 +3522,44 @@ def _load_agent_log(project_id):
         return []
 
 
+@bp.route('/api/session/trigger-type')
+def get_session_trigger_type():
+    """Look up the trigger_type MC recorded for a Claude session at dispatch
+    time, given its claude_session_id.
+
+    This is what `mc.secrets_store` calls to auto-detect unattended context
+    (MC-923) instead of trusting a `--unattended` flag the calling agent typed
+    itself — trigger_type is set server-side when MC dispatches the session and
+    the agent process cannot rewrite it, so a claude_session_id it can prove it
+    holds (via the CLI-set `CLAUDE_CODE_SESSION_ID` env var, not anything the
+    agent's own command line controls) is a trustworthy lookup key.
+
+    Checked in two places because `claude_session_id` lands on the persisted
+    agent_log row late (`_note_claude_sid` only backfills it early for non-
+    manual triggers; a manual row's csid stays '' until the session completes)
+    — the live `agent_sessions` dict has it as soon as Claude assigns it, which
+    is exactly the in-progress case a mid-session `with-secret.py` call needs.
+    Falls back to every project's persisted log for sessions that already
+    exited. No auth (matches this project's existing localhost-trust posture,
+    e.g. /api/config — see MC-914).
+    """
+    csid = (request.args.get('claude_session_id') or '').strip()
+    if not csid:
+        return jsonify({'found': False, 'error': 'claude_session_id required'}), 400
+    for s in agent_sessions.values():
+        if s.get('claude_session_id') == csid:
+            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual'})
+    for log_file in DATA_DIR.glob('*_agent_log.json'):
+        try:
+            entries = json.loads(log_file.read_text(encoding='utf-8'))
+        except Exception:
+            continue
+        for e in entries:
+            if e.get('claude_session_id') == csid:
+                return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual'})
+    return jsonify({'found': False})
+
+
 def _save_agent_log(project_id, log):
     """Persist the agent log, trimming to the most recent N entries.
 
