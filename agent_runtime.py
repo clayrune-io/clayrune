@@ -1617,6 +1617,43 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
 
 
+_NPM_BIN_DIRS_CACHE: Optional[List[Path]] = None
+
+
+def _npm_global_bin_dirs() -> List[Path]:
+    """Directories where `npm install -g` puts executables on this machine.
+
+    `npm config get prefix` is the only reliable source — the operator may have
+    set a custom prefix (`~/.npm-global` is common on Windows to dodge the
+    Program Files ACL), and the layout differs by platform: Windows drops the
+    shims in the prefix ROOT, POSIX in `<prefix>/bin`. Probing these directly
+    is what lets a runtime find its CLI when the server's inherited PATH is
+    stale relative to the operator's shell.
+
+    Cached — this shells out to npm, and it is called from resolve_binary().
+    """
+    global _NPM_BIN_DIRS_CACHE
+    if _NPM_BIN_DIRS_CACHE is not None:
+        return _NPM_BIN_DIRS_CACHE
+    dirs: List[Path] = []
+    npm = shutil.which('npm') or shutil.which('npm.cmd')
+    if npm:
+        try:
+            r = subprocess.run([npm, 'config', 'get', 'prefix'],
+                               capture_output=True, text=True, timeout=15,
+                               creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+            prefix = (r.stdout or '').strip().splitlines()
+            if prefix and prefix[0] and prefix[0] != 'undefined':
+                root = Path(prefix[0].strip())
+                dirs.append(root if sys.platform == 'win32' else root / 'bin')
+                # Belt and braces: some Windows setups still use a bin/ subdir.
+                dirs.append(root / 'bin' if sys.platform == 'win32' else root)
+        except Exception as e:
+            print(f"[runtime] npm config get prefix failed: {e}", flush=True)
+    _NPM_BIN_DIRS_CACHE = [d for d in dirs if d.parts]
+    return _NPM_BIN_DIRS_CACHE
+
+
 def _pid_is_alive(pid: int) -> bool:
     if sys.platform == 'win32':
         import ctypes
@@ -2764,6 +2801,7 @@ class CodexRuntime(AgentRuntime):
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
+    _npx_path: str = ''
 
     def resolve_binary(self) -> Optional[Path]:
         if self._bin_cache is not None:
@@ -2777,20 +2815,38 @@ class CodexRuntime(AgentRuntime):
             self._npx_fallback = False
             return Path(found)
 
+        # Codex ships TWO ways and only one of them is npm. The native OpenAI
+        # installer drops codex.exe under %LOCALAPPDATA%\Programs\OpenAI\Codex\bin
+        # and appends that dir to the *registry* user PATH — which a
+        # long-running server process started before the install never sees.
+        # So `shutil.which` fails inside MC while `codex` works fine in the
+        # operator's shell. Probe the install locations directly.
         if sys.platform == 'win32':
+            local = Path(os.environ.get('LOCALAPPDATA', ''))
             candidates = [
+                local / 'Programs' / 'OpenAI' / 'Codex' / 'bin' / 'codex.exe',
                 Path(os.environ.get('APPDATA', '')) / 'npm' / 'codex.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'codex.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'bin' / 'codex.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / 'AppData' / 'Roaming' / 'npm' / 'codex.cmd',
             ]
         else:
             home = Path.home()
             candidates = [
+                home / '.local' / 'share' / 'openai' / 'codex' / 'bin' / 'codex',
+                Path('/Applications/Codex.app/Contents/MacOS/codex'),
                 home / '.npm-global' / 'bin' / 'codex',
                 home / '.local' / 'bin' / 'codex',
                 Path('/usr/local/bin/codex'),
                 Path('/opt/homebrew/bin/codex'),
             ]
+        # Whatever `npm config get prefix` says, in whichever layout npm uses
+        # on this platform (Windows puts binaries in the prefix root; POSIX in
+        # <prefix>/bin). Cheap and covers custom prefixes we can't enumerate.
+        for pref in _npm_global_bin_dirs():
+            candidates.append(pref / ('codex.cmd' if sys.platform == 'win32' else 'codex'))
+            if sys.platform == 'win32':
+                candidates.append(pref / 'codex.exe')
         for c in candidates:
             try:
                 if c.exists():
@@ -2800,9 +2856,22 @@ class CodexRuntime(AgentRuntime):
             except Exception:
                 pass
 
-        # Fall back to npx if npm is available
-        if shutil.which('npx'):
+        # Fall back to npx if npm is available. Store the ABSOLUTE path: on
+        # Windows npx is `npx.cmd`, and CreateProcess cannot launch a bare
+        # `npx` (or a .cmd by name) without a shell — the spawn dies with
+        # WinError 2, which the caller can only see as "not found".
+        npx = shutil.which('npx') or shutil.which('npx.cmd')
+        if not npx:
+            for d in _npm_global_bin_dirs():
+                for cand in (d / 'npx.cmd', d / 'npx'):
+                    if cand.exists():
+                        npx = str(cand)
+                        break
+                if npx:
+                    break
+        if npx:
             self._bin_cache = '__npx__'
+            self._npx_path = npx
             self._npx_fallback = True
             return None
 
@@ -2816,7 +2885,7 @@ class CodexRuntime(AgentRuntime):
         if p:
             return [str(p)]
         if self._npx_fallback:
-            return ['npx', '--yes', '@openai/codex']
+            return [self._npx_path or 'npx', '--yes', '@openai/codex']
         return ['codex']  # will FileNotFoundError on spawn
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -2975,6 +3044,37 @@ class CodexRuntime(AgentRuntime):
             pass
         return None
 
+    def _codex_auth_state(self) -> Tuple[str, Optional[str]]:
+        """Where codex actually keeps its credentials.
+
+        The common path is `codex login` (ChatGPT sign-in), which writes OAuth
+        tokens to ~/.codex/auth.json — NOT an env var. Checking only
+        CODEX_API_KEY/OPENAI_API_KEY reported a fully signed-in install as
+        'unknown', which the settings UI renders as needing authentication.
+
+        Returns (status, method) with status 'ok' | 'not_logged_in'.
+        """
+        if os.environ.get('CODEX_API_KEY'):
+            return ('ok', 'env:CODEX_API_KEY')
+        if os.environ.get('OPENAI_API_KEY'):
+            return ('ok', 'env:OPENAI_API_KEY')
+        try:
+            home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                    or str(Path.home()))
+            auth = Path(home) / '.codex' / 'auth.json'
+            if auth.is_file():
+                data = json.loads(auth.read_text(encoding='utf-8'))
+                if isinstance(data, dict):
+                    if data.get('OPENAI_API_KEY'):
+                        return ('ok', 'api key (auth.json)')
+                    tok = data.get('tokens') or {}
+                    if isinstance(tok, dict) and (tok.get('refresh_token')
+                                                  or tok.get('access_token')):
+                        return ('ok', 'chatgpt oauth')
+        except Exception as e:
+            print(f"[codex] reading auth.json failed: {e}", flush=True)
+        return ('not_logged_in', None)
+
     def health_check(self) -> HealthStatus:
         p = self.resolve_binary()
         is_npx = self._npx_fallback
@@ -2999,12 +3099,8 @@ class CodexRuntime(AgentRuntime):
                 diagnostic=str(e),
                 install_hint='npm install -g @openai/codex',
             )
-        has_key = bool(os.environ.get('CODEX_API_KEY') or os.environ.get('OPENAI_API_KEY'))
-        auth_method = None
-        if os.environ.get('CODEX_API_KEY'):
-            auth_method = 'env:CODEX_API_KEY'
-        elif os.environ.get('OPENAI_API_KEY'):
-            auth_method = 'env:OPENAI_API_KEY'
+        auth_status, auth_method = self._codex_auth_state()
+        has_key = auth_status == 'ok'
         return HealthStatus(
             installed=True,
             binary_path=p,

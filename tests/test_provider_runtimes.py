@@ -297,15 +297,91 @@ class TestCodexRuntime:
         assert caps.context_file_name == 'AGENTS.md'
 
     def test_health_check_not_installed(self, monkeypatch):
-        """When neither binary nor npx is found, installed=False."""
+        """When neither binary nor npx is found, installed=False.
+
+        resolve_binary() probes real install dirs as well as PATH (the native
+        OpenAI installer puts codex.exe somewhere `which` can't see when the
+        server's PATH is stale), so a "nothing installed" box must stub the
+        filesystem probe too — patching shutil.which alone no longer expresses it.
+        """
         import shutil
+        from pathlib import Path
         monkeypatch.setattr(shutil, 'which', lambda _: None)
+        monkeypatch.setattr(Path, 'exists', lambda self: False)
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
         self.rt._bin_cache = None
         self.rt._npx_fallback = False
         hs = self.rt.health_check()
         assert hs.installed is False
         assert hs.auth_state.status == 'not_installed'
         assert 'npm install' in hs.install_hint
+
+    def test_resolve_binary_finds_native_windows_install(self, monkeypatch, tmp_path):
+        """The native OpenAI installer path is found even when PATH is stale.
+
+        Regression: codex installs to %LOCALAPPDATA%\\Programs\\OpenAI\\Codex\\bin
+        and appends that dir to the registry user PATH. A server process started
+        before the install never inherits it, so shutil.which('codex') fails and
+        MC reported a working codex as not installed.
+        """
+        import shutil
+        if sys.platform != 'win32':
+            pytest.skip('windows-only install layout')
+        native = tmp_path / 'Programs' / 'OpenAI' / 'Codex' / 'bin'
+        native.mkdir(parents=True)
+        (native / 'codex.exe').write_text('')
+        monkeypatch.setattr(shutil, 'which', lambda _: None)
+        monkeypatch.setenv('LOCALAPPDATA', str(tmp_path))
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
+        self.rt._bin_cache = None
+        self.rt._npx_fallback = False
+        assert self.rt.resolve_binary() == native / 'codex.exe'
+        assert self.rt._npx_fallback is False
+
+    def test_auth_state_reads_chatgpt_oauth(self, monkeypatch, tmp_path):
+        """`codex login` writes OAuth tokens to ~/.codex/auth.json, not an env var.
+
+        Regression: checking only CODEX_API_KEY/OPENAI_API_KEY reported a fully
+        signed-in install as 'unknown', which the settings UI shows as needing auth.
+        """
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
+        monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+        cdir = tmp_path / '.codex'
+        cdir.mkdir()
+        (cdir / 'auth.json').write_text(json.dumps({
+            'OPENAI_API_KEY': None,
+            'tokens': {'access_token': 'a', 'refresh_token': 'r'},
+        }), encoding='utf-8')
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        assert self.rt._codex_auth_state() == ('ok', 'chatgpt oauth')
+
+    def test_auth_state_not_logged_in_without_credentials(self, monkeypatch, tmp_path):
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
+        monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        assert self.rt._codex_auth_state() == ('not_logged_in', None)
+
+    def test_npx_fallback_uses_absolute_path(self, monkeypatch):
+        """npx is npx.cmd on Windows; CreateProcess can't launch it by bare name.
+
+        Regression: the bare 'npx' fallback died with WinError 2, which surfaced
+        as a bogus "CLI not found" instead of running the package.
+        """
+        import shutil
+        from pathlib import Path
+        monkeypatch.setattr(Path, 'exists', lambda self: False)
+        monkeypatch.setattr(agent_runtime, '_npm_global_bin_dirs', lambda: [])
+        monkeypatch.setattr(
+            shutil, 'which',
+            lambda n: r'C:\npm\npx.cmd' if n.startswith('npx') else None)
+        self.rt._bin_cache = None
+        self.rt._npx_fallback = False
+        self.rt._npx_path = ''
+        assert self.rt.resolve_binary() is None
+        assert self.rt._npx_fallback is True
+        assert self.rt._cmd_prefix() == [r'C:\npm\npx.cmd', '--yes', '@openai/codex']
 
     def test_transcript_path_missing_session(self):
         assert self.rt.transcript_path('/some/path', '') is None

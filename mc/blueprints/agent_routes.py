@@ -1183,6 +1183,31 @@ def _scan_result_event_for_auth(msg):
 # ── Multi-provider agent runtime — discovery endpoint ───────────────────────
 
 
+def _cli_missing_message(provider: str = '') -> str:
+    """Spawn-failure text for the runtime that ACTUALLY failed.
+
+    A FileNotFoundError out of dispatch used to be reported as "Claude CLI not
+    found. Install it with: npm install -g @anthropic-ai/claude-code" no matter
+    which provider was picked — so a codex or gemini spawn failure sent the
+    operator off installing the wrong CLI. Ask the runtime for its own hint.
+    """
+    name = (provider or '').strip().lower() or _agent_runtime.default_runtime_name()
+    try:
+        rt = _agent_runtime.get_runtime(name)
+        label = rt.display_name or name
+        hint = ''
+        try:
+            hint = rt.health_check().install_hint or ''
+        except Exception:
+            pass
+    except Exception:
+        label, hint = name, ''
+    msg = f'{label} not found on this server (spawn failed).'
+    if hint:
+        msg += f' Install it with: {hint}'
+    return msg
+
+
 @bp.route('/api/agent/providers')
 def agent_providers():
     """List all registered agent runtimes (claude + alternatives) with their
@@ -5453,7 +5478,7 @@ def agent_dispatch(project_id):
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
     except FileNotFoundError:
-        return jsonify({'error': 'Claude CLI not found. Install it with: npm install -g @anthropic-ai/claude-code'}), 500
+        return jsonify({'error': _cli_missing_message(provider_override)}), 500
     except Exception as e:
         return jsonify({'error': f'dispatch failed: {e}'}), 500
     return jsonify({'ok': True, 'session_id': session_id})
@@ -5640,7 +5665,8 @@ def agent_send(project_id):
             code = 404 if 'not found' in str(e) else 400
             return jsonify({'error': str(e)}), code
         except FileNotFoundError:
-            return jsonify({'error': 'Claude CLI not found.'}), 500
+            return jsonify({'error': _cli_missing_message(
+                (data.get('provider') or '').strip().lower())}), 500
         except Exception as e:
             return jsonify({'error': f'dispatch failed: {e}'}), 500
         return jsonify({'ok': True, 'session_id': new_session_id,

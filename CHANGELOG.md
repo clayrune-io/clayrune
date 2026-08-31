@@ -6,6 +6,49 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — Codex CLI is found where it actually installs
+
+MC-932. Codex was installed, signed in, and working in Ron's shell, while
+Clayrune reported "not installed" in provider settings and answered a codex
+dispatch with "Claude CLI not found. Install it with:
+`npm install -g @anthropic-ai/claude-code`" — the wrong CLI entirely.
+
+Four separate defects, each one enough on its own:
+
+- **The native installer was never probed.** `codex` ships two ways and only
+  one is npm. The OpenAI installer drops `codex.exe` under
+  `%LOCALAPPDATA%\Programs\OpenAI\Codex\bin` and appends that dir to the
+  *registry* user PATH. A server process started before the install never
+  inherits it, so `shutil.which('codex')` returns None inside MC while a fresh
+  shell finds it fine. `resolve_binary()` now probes the native install dirs
+  (Windows, macOS app bundle, XDG) directly.
+- **npm's prefix was assumed, not asked.** The Windows candidates hardcoded
+  `AppData\Roaming
+pm` and a `<prefix>/bin` layout that npm does not use on
+  Windows (shims go in the prefix ROOT). New `_npm_global_bin_dirs()` reads
+  `npm config get prefix` once, cached, and covers both layouts.
+- **The npx fallback could not spawn.** It emitted a bare `npx`, but npx is
+  `npx.cmd` on Windows and CreateProcess cannot launch a `.cmd` by name
+  without a shell. It died with WinError 2, which the operator could only read
+  as "not found". The absolute path is now stored and used.
+- **Auth looked in the wrong place.** `codex login` (ChatGPT sign-in) writes
+  OAuth tokens to `~/.codex/auth.json`; health_check only read
+  `CODEX_API_KEY`/`OPENAI_API_KEY`, so a fully signed-in install reported
+  `unknown` — rendered by the settings UI as needing authentication. New
+  `_codex_auth_state()` mirrors the Gemini one and reads the token file.
+
+Separately, both dispatch paths in `agent_routes.py` hardcoded the Claude
+install hint on `FileNotFoundError` regardless of which provider was picked,
+so *any* runtime's spawn failure sent the operator off installing
+claude-code. `_cli_missing_message(provider)` now asks the failing runtime for
+its own display name and install hint.
+
+Verified on this box: codex resolves to the native `codex.exe`, reports
+`codex-cli 0.151.0`, and auth reads `ok / chatgpt oauth`. Flags in
+`build_command` re-checked against 0.151 (`--json`,
+`--dangerously-bypass-approvals-and-sandbox`, `--skip-git-repo-check`,
+`exec resume --last` all still current).
+
 ## [2026-08-31] — Session completion is now a runtime-agnostic event
 
 MC-930. `_log_agent_completion` — the ONE writer of the agent log, and the
