@@ -6,6 +6,77 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — The Scribe was Claude-only, so every other runtime forgot
+
+MC-922. `_session_transcript_path()` hardcoded `get_runtime('claude')` and its
+own docstring admitted the consequence: "non-claude providers automatically
+return None". `_scribe_extract` then bailed and the caller degraded to the
+legacy stdout-tail summary. So a Gemini or Codex session ran, finished, and was
+remembered by a truncated tail instead of a model summary — no `_why:_` causal
+note, nothing the read-floor could usefully surface later.
+
+It read as harmless because the counters looked fine: `scribe_extracted=538`
+against `scribe_fell_back:no_transcript=13` on this project. That ratio only
+held because we almost always run Claude. For a Gemini-backed persona it is
+100% of runs, and the first one we pointed at a nightly research job was an
+agent whose entire value is accumulating what it found.
+
+**The data was already there.** MC streams every event into `session['log_lines']`
+for every provider, and `_scribe_summarize_text(text, model, want_why)` takes
+*text*, not a file — it was already shared between `_scribe_extract` and the
+Step-6 checkpoint worker. So the fix renders `log_lines` into the same shape
+`_scribe_render_transcript` produces and feeds the identical summarizer. No new
+model path, no new prompt.
+
+A non-Claude session also never populates `claude_session_id`, so the original
+code actually bailed a line earlier still, at `'no_csid'`. Both exits now route
+to the same fallback. The transcript file remains preferred and the Claude path
+is provably untouched: a test poisons the fallback renderer and asserts it is
+never reached when a transcript exists.
+
+**The new counter is the point, not an extra.** `scribe_extracted_from_log` is
+kept separate from `scribe_extracted` rather than letting `no_transcript` quietly
+fall to zero. A failure counter that stops firing because the failure was renamed
+is how a subsystem loses the ability to report on itself.
+
+**Known limit, stated rather than papered over:** Step-6 mid-session checkpointing
+carries the same Claude-only assumption and is *not* fixed here. It is a byte-offset
+delta against a stable on-disk file, and `log_lines` is an in-memory list MC
+truncates 2000 → 1500 mid-session, so the same mechanism cannot be reused safely.
+Non-Claude sessions get an end-of-session summary; they do not get checkpoints.
+
+## [2026-08-31] — The steward fence did not protect itself
+
+MC-914. The PreToolUse hook is re-executed fresh from disk on every single tool
+call, with no caching. Its supply-chain block already covered `~/.claude/` and
+`data/skills/` — the inputs that decide what enters an agent's loadout — but not
+`steward/fence.py` itself. An unattended steward session could therefore `Edit`
+the fence to neuter it and have the tampered copy enforce the very next tool
+call. Write/Edit/MultiEdit/NotebookEdit to `steward/{fence,core,_config,__init__}.py`
+are now refused.
+
+This came out of an audit prompted by Nous Research's Hermes Agent, which freezes
+its YOLO flag at import with the note that reading `os.environ` per call "would
+allow any skill running inside the process to set this variable and instantly
+bypass all approval checks". **The audit's main finding was that the pattern does
+not apply to us**, and that is worth recording as clearly as the fix: every
+MC-spawned agent runs with `--dangerously-skip-permissions` hardcoded
+unconditionally at `agent_runtime.py:847`, so `agent_permission_mode` cannot relax
+anything whatever its value; the Distiller's authority guard performs zero
+`os.environ` reads and is deterministic; `distiller_mode: auto` remains dead code.
+
+One real instance of the same *shape* existed, and it is the one above: a gate
+re-read hot from a mutable source. The mutable thing was the enforcement code
+rather than an env var.
+
+**Left open deliberately, now MC-923:** `tools/with-secret.py --unattended` is
+self-reported by the caller. `CLAUDE.md` presents `allow_unattended` as the
+backstop that blocks steward and scheduled cycles from a secret, but nothing on
+that path auto-detects unattended context — an agent that simply omits the flag
+is indistinguishable from an attended one. That needs the transcript-marker
+detection `fence.py` already uses, and it needs to fail closed. It is a redesign,
+not a freeze, so it was reported rather than bolted on.
+
 ## [2026-08-31] — The agent proposes a scheduled job; you decide
 
 MC-915. Clayrune's binding learning rail says a human must be on at least one
