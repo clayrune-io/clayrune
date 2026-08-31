@@ -3107,6 +3107,13 @@
   /* The name leads the sub-line so a scan down the column reads as a list of
      WHO, with the timing behind it. */
   .conv-who { font-weight: 600; color: var(--text-dim); margin-right: 6px; }
+  /* MC-929: flags a past non-Claude chat whose provider keeps no transcript —
+     tapping it opens read-only history, never a silent-fresh-start Resume. */
+  .conv-readonly-tag {
+    font-size: 10px; font-weight: 700; letter-spacing: .3px; text-transform: uppercase;
+    color: var(--text-faint); border: 1px solid var(--border2); border-radius: 999px;
+    padding: 1px 6px; margin-right: 6px;
+  }
   .conv-row:hover { background: var(--surface3); }
   .conv-av {
     position: relative; width: 42px; height: 42px; flex-shrink: 0;
