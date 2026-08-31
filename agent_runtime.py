@@ -1699,18 +1699,23 @@ class GeminiRuntime(AgentRuntime):
 
     name = 'gemini'
     display_name = 'Gemini CLI'
-    # Verified 2026-08-31 against the installed `gemini` CLI (v0.20.0) —
-    # @google/gemini-cli-core's own dist/src/config/models.js, which is the
-    # module that actually resolves --model, exports exactly these four
-    # concrete ids as of that version: DEFAULT_GEMINI_MODEL (2.5-pro),
-    # DEFAULT_GEMINI_FLASH_MODEL, DEFAULT_GEMINI_FLASH_LITE_MODEL, and
-    # PREVIEW_GEMINI_MODEL = 'gemini-3-pro-preview' (new since this list was
-    # last written — 2.5-pro/flash/flash-lite were still current, not stale).
+    # Verified 2026-08-31 against the LIVE API (ListModels + a real generateContent
+    # call per id), NOT against the CLI's own constants. That distinction is the
+    # whole lesson here: @google/gemini-cli-core's models.js still names
+    # gemini-2.5-pro/flash/flash-lite and gemini-3-pro-preview, and the API now
+    # 404s every one of them ("no longer available to new users"). The CLI's
+    # defaults are what it falls back to, not what the API accepts.
+    # The `-latest` aliases lead deliberately: they are the only ids that cannot
+    # go stale the way this list just did.
     MODEL_CHOICES = [
-        ('gemini-3-pro-preview', 'Gemini 3 Pro (Preview)'),
-        ('gemini-2.5-pro', 'Gemini 2.5 Pro'),
-        ('gemini-2.5-flash', 'Gemini 2.5 Flash'),
-        ('gemini-2.5-flash-lite', 'Gemini 2.5 Flash-Lite'),
+        ('gemini-flash-latest', 'Gemini Flash (latest)'),
+        ('gemini-pro-latest', 'Gemini Pro (latest)'),
+        ('gemini-flash-lite-latest', 'Gemini Flash-Lite (latest)'),
+        ('gemini-3.6-flash', 'Gemini 3.6 Flash'),
+        ('gemini-3.7-flash', 'Gemini 3.7 Flash'),
+        ('gemini-3.5-flash', 'Gemini 3.5 Flash'),
+        ('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (Preview)'),
+        ('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'),
     ]
 
     _bin_cache: Optional[str] = None

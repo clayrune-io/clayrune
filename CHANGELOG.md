@@ -85,6 +85,33 @@ browser. Confirmed by running the affected tests before wiring the fix in:
 `test_patch_metadata_preserves_the_value` would have started failing had
 detection been applied universally.
 
+## [2026-08-31] — Every Gemini model id we shipped was dead
+
+The Gemini catalog listed gemini-2.5-pro / -flash / -flash-lite and
+gemini-3-pro-preview. The live API 404s all four: "no longer available to new
+users." A dispatch against any of them failed at the first call.
+
+**The verification was wrong in an instructive way.** The ids had been checked
+earlier the same day against `@google/gemini-cli-core`'s own
+`dist/src/config/models.js` — the module that resolves `--model`. That felt
+authoritative and was not: those constants are what the CLI *falls back to*, not
+what the API *accepts*. The only source of truth is the API, so the list is now
+verified two ways: `ListModels`, plus a real `generateContent` call per id.
+
+Replaced with ids confirmed live, and the `-latest` aliases lead deliberately —
+`gemini-flash-latest` / `gemini-pro-latest` are the only ids that cannot go
+stale the way this list just did.
+
+Found while chasing something else entirely: the account could not sign in via
+OAuth at all (Google classifies it as needing a Code Assist licence it does not
+have, on every project tried), so the API-key path was the only way in — and the
+model 404 was hiding behind the auth failure the whole time.
+
+Not touched: the `google/gemini-2.5-pro` and `gemini/gemini-2.5-pro` entries in
+the OpenCode, Goose and Codex catalogs. Those route through other providers that
+may still serve the older ids, and none of those CLIs are installed here to
+verify against. Unverified is recorded as unverified.
+
 ## [2026-08-31] — The Scribe was Claude-only, so every other runtime forgot
 
 MC-922. `_session_transcript_path()` hardcoded `get_runtime('claude')` and its
