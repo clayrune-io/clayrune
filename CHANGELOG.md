@@ -6,6 +6,35 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-08-31] — The default agent gets a face that outlives the session
+
+A hired persona carries its face in its own character file, so it keeps it
+forever. The **default** agent had no such slot: the only way to give it one was
+a Floor label, and those are keyed on the session id. It survived a server
+restart (the label file is on disk, and a revive reuses the same session id) but
+died the moment a new chat started — you re-picked the face every morning.
+
+- **New setting `agent_avatar`** — the default agent's face, same one-field
+  shape as a persona's: an emoji, or `fig:<name>` naming a figure in
+  `assets/avatars/`. Settings → Agent → Identity, under Agent Name, with a
+  figure strip fetched from `/api/avatars` (never hardcoded — dropping a file
+  into that directory stays the whole install step). Clicking saves
+  immediately; clicking the face you already wear takes it off.
+- **`_figure_avatar` now resolves in lockstep with `_figure_name`:** label,
+  then the type's own, then the configured default. They had drifted — a
+  character with no face fell straight through to nothing while its name fell
+  through to the default, so a card could read "Vector" beside an empty slot.
+- **Still no invented default.** A delegated session with no persona
+  (`source='agent'`) stays faceless, because MC-925 tells its own prompt it
+  appears unnamed; an install that has configured no face still gets the
+  neutral placeholder. Absence remains a finding.
+- The value is cleaned on write (`characters.clean_avatar`), not only where it
+  is drawn — the cap is the only thing keeping a face field from becoming a
+  second name field, and `config.json` has more than one reader.
+
+Covered by six `test_floor_routes.py` cases, a `test_settings_routes.py`
+cleaning test, and a new `boot-smoke.mjs` agent-face guard.
+
 ## [2026-08-31] — Codex model picker catches up to the installed CLI
 
 The Codex composer still offered `gpt-5-codex`, `gpt-5`, `gpt-5-mini`, and

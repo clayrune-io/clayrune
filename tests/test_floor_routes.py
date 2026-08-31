@@ -397,12 +397,73 @@ def test_a_type_brings_its_own_face(floor):
 
 
 def test_a_figure_with_no_face_gets_no_face_not_a_random_one(floor):
-    """Absence is a finding on this board. Server-side defaulting would paper
-    over the same gap "no type" exists to show."""
+    """Absence is a finding on this board. An INVENTED default would paper over
+    the same gap "no type" exists to show — a face the install has actually
+    configured is a different thing, and is covered below."""
     fr, c, sessions, projects, _ = floor
     projects.append({'id': 'a', 'name': 'Alpha'})
     sessions['1'] = _session('a', '1')
     assert _get(c)['rooms'][0]['figures'][0]['avatar'] == ''
+
+
+def test_the_default_agent_wears_the_configured_face(floor, monkeypatch):
+    """The face has to outlive the session. A hired type keeps its own in its
+    file; the default agent's only slot used to be a Floor label keyed on the
+    session id, so it died with the chat — you re-picked it every morning."""
+    from mc import state
+    fr, c, sessions, projects, _ = floor
+    monkeypatch.setitem(state.CONFIG, 'agent_avatar', 'fig:navigator')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:navigator'
+
+
+def test_a_types_own_face_beats_the_configured_default(floor, monkeypatch):
+    """Otherwise every hired persona would come to work wearing Vector's face."""
+    from mc import state
+    fr, c, sessions, projects, _ = floor
+    monkeypatch.setitem(state.CONFIG, 'agent_avatar', 'fig:navigator')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'quill',
+                                                  'agent_name': 'Quill',
+                                                  'avatar': '🔍'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == '🔍'
+
+
+def test_a_label_beats_the_configured_default(floor, monkeypatch, tmp_path):
+    from mc import state
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    monkeypatch.setitem(state.CONFIG, 'agent_avatar', 'fig:navigator')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1')
+    c.post('/api/floor/figure/1/name', json={'avatar': '🦉'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == '🦉'
+
+
+def test_a_delegated_session_with_no_persona_stays_faceless(floor, monkeypatch):
+    """MC-925's rule, applied to the face: its own prompt is told it appears
+    unnamed, so handing it the default agent's face would make the card claim
+    an identity the session was explicitly denied. Name and face resolve in
+    lockstep or the card contradicts itself."""
+    from mc import state
+    fr, c, sessions, projects, _ = floor
+    monkeypatch.setitem(state.CONFIG, 'agent_avatar', 'fig:navigator')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', source='agent')
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert (f['name'], f['avatar']) == ('unnamed', '')
+
+
+def test_a_faceless_type_falls_through_to_the_default(floor, monkeypatch):
+    """A character with no avatar already falls through to the default NAME.
+    The face must follow it, or the card reads "Vector" beside an empty slot."""
+    from mc import state
+    fr, c, sessions, projects, _ = floor
+    monkeypatch.setitem(state.CONFIG, 'agent_avatar', 'fig:navigator')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'quill'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:navigator'
 
 
 def test_setting_a_face_does_not_wipe_the_name(floor, tmp_path):

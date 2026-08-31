@@ -2095,6 +2095,120 @@ async function runFloorGuard(browser) {
 }
 
 
+// ── The default agent's face (Settings > Agent > Identity) ───────────────────
+// A hired type keeps its face in its own file forever; the DEFAULT agent had no
+// such slot, so the only way to give it one was a Floor label keyed on the
+// session id — which dies with the chat. This guards the durable slot: the row
+// renders, the strip is built from /api/avatars rather than a hardcoded list,
+// and a click actually PUTs. The strip is hydrated after innerHTML by
+// refreshAgentFaceSection(), the exact ordering that left the push section
+// stuck on its placeholder when it was fired too early.
+async function runAgentFaceGuard(browser) {
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  const puts = [];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (path === '/api/config') {
+      if (req.method() === 'PUT') {
+        puts.push(JSON.parse(req.postData() || '{}'));
+        return json({ ok: true, updated: ['agent_avatar'] });
+      }
+      return json({ agent_name: 'Vector', agent_avatar: 'fig:navigator' });
+    }
+    if (path === '/api/avatars')
+      return json({ figures: ['navigator', 'wizard', 'warden'], prefix: 'fig:' });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({
+      status: 200, contentType: 'image/png',
+      body: Buffer.from(PNG.split(',')[1], 'base64') });
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (err) => pageErrors.push(err.message || String(err)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  try {
+    await page.waitForSelector('#projects-col .card', { timeout: BOOT_TIMEOUT_MS });
+  } catch {
+    console.error('❌ agent-face guard: grid never rendered.');
+    await ctx.close();
+    return false;
+  }
+
+  const out = await page.evaluate(async () => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    try {
+      sidebarNav('settings');
+      await settle(700);
+      const input = document.getElementById('agent-face-input');
+      const row = document.getElementById('agent-face-figs');
+      if (!input) throw new Error('the Agent Face field never rendered');
+      r.value = input.value;
+      r.chips = row ? row.querySelectorAll('.settings-fig').length : 0;
+      r.faces = row ? Array.from(row.querySelectorAll('.settings-fig'))
+        .map((b) => b.dataset.face) : [];
+      // The saved face is the selected chip, and the preview shows it.
+      r.selected = row ? Array.from(row.querySelectorAll('.settings-fig.sel'))
+        .map((b) => b.dataset.face) : [];
+      const prev = document.getElementById('agent-face-preview');
+      r.previewSrc = prev && prev.querySelector('img')
+        ? prev.querySelector('img').getAttribute('src') : '';
+      // Picking a different one saves immediately — no Save button to forget.
+      const wizard = row.querySelector('[data-face="fig:wizard"]');
+      wizard.click();
+      await settle(250);
+      r.afterPick = input.value;
+      r.selectedAfter = Array.from(row.querySelectorAll('.settings-fig.sel'))
+        .map((b) => b.dataset.face);
+      // Clicking the one you already wear takes it off, so the strip is not a
+      // one-way door for someone who never guesses the field can be emptied.
+      wizard.click();
+      await settle(250);
+      r.afterUnpick = input.value;
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  });
+
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push(`threw — ${out.err}`);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push(`uncaught: ${e}`));
+  if (out.value !== 'fig:navigator')
+    fails.push(`the saved face did not reach the field: ${JSON.stringify(out.value)}`);
+  if (out.chips !== 3)
+    fails.push(`the strip is not built from /api/avatars (${out.chips} chips, expected 3)`);
+  if (JSON.stringify(out.selected || []) !== JSON.stringify(['fig:navigator']))
+    fails.push('the saved face is not the selected chip: ' + JSON.stringify(out.selected));
+  if (!/\/api\/avatars\/navigator$/.test(out.previewSrc || ''))
+    fails.push(`the preview does not show the saved face: ${out.previewSrc}`);
+  if (out.afterPick !== 'fig:wizard')
+    fails.push(`picking a figure did not set the field: ${JSON.stringify(out.afterPick)}`);
+  if (JSON.stringify(out.selectedAfter || []) !== JSON.stringify(['fig:wizard']))
+    fails.push('two chips read as selected at once: ' + JSON.stringify(out.selectedAfter));
+  if (out.afterUnpick !== '')
+    fails.push(`clicking the worn face did not take it off: ${JSON.stringify(out.afterUnpick)}`);
+  const saved = puts.filter((p) => 'agent_avatar' in p).map((p) => p.agent_avatar);
+  if (JSON.stringify(saved) !== JSON.stringify(['fig:wizard', '']))
+    fails.push('the picks did not reach the server: ' + JSON.stringify(saved));
+
+  if (fails.length) {
+    console.error('❌ agent-face guard:');
+    fails.forEach((f) => console.error(`       • ${f}`));
+    return false;
+  }
+  console.log('✅ agent face: the default agent has a durable face — the strip comes from '
+    + '/api/avatars, the saved one is preselected, and a pick saves without a Save button.');
+  return true;
+}
+
+
 let browser, allOk = false;
 try {
   browser = await chromium.launch();
@@ -2112,9 +2226,10 @@ try {
   results.push(await runSchedulerLayoutGuard(browser));
   results.push(await runQuestionRepaintGuard(browser));
   results.push(await runFloorGuard(browser));
+  results.push(await runAgentFaceGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint & floor guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);

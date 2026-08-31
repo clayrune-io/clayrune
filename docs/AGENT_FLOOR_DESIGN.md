@@ -354,6 +354,27 @@ stray `*.json` under `data/projects/` becomes a malformed project and 500s both
 restart endpoints. Keyed by session id so a name survives the revival that
 rebuilds sessions from the agent log.
 
+**The face resolves in lockstep with the name** (added 2026-08-31), and it has
+to: they had drifted, so a character with no avatar fell straight through to
+nothing while its name fell through to the default, and the card read "Vector"
+beside an empty slot — one field claiming an identity the one next to it denied.
+
+    explicit label  >  the persona's own avatar  >  the configured default
+
+The last term is the setting `agent_avatar` (Settings → Agent → Identity), and
+it exists because of a gap the name never had. A hired type carries its face in
+its character file and keeps it forever; the default agent's only slot was a
+Floor label, which is keyed on the session id and therefore dies with the chat.
+It survived a server restart — the label file is on disk, and a revive reuses
+the same session id — but not a new conversation, so the face had to be re-picked
+every morning.
+
+Two cases still resolve to no face, and both are deliberate. A delegated session
+with no persona (`source='agent'`) gets nothing, because MC-925 tells its own
+prompt it appears unnamed and a card that dressed it up would contradict the
+prompt. And an install that has configured no face gets the neutral placeholder
+rather than an invented one — the board's rule is that absence is a finding.
+
 **Self-naming needed one piece of plumbing.** The session id was minted *after*
 the system prompt was built, so the prompt could not say "you are this figure".
 `_planned_sid` already computed exactly the id the session would get — it exists

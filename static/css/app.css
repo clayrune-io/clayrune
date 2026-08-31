@@ -1702,6 +1702,25 @@
   }
   .settings-input:focus { border-color: var(--accent); }
   .settings-input[type="number"] { width: 80px; }
+  /* The Agent Face row. A settings-row is a label on the left and one control
+     on the right; this one has a strip that needs the full width, so it stacks
+     instead of squeezing 26 figures into a 220px gutter. */
+  .settings-row-stack {
+    flex-direction: column; align-items: stretch; gap: 8px;
+  }
+  .settings-face-wrap { display: flex; align-items: center; gap: 8px; }
+  .settings-face-wrap .settings-input { flex: 1 1 auto; width: auto; text-align: left; }
+  .settings-face-now { line-height: 0; flex-shrink: 0; }
+  .settings-fig-row { display: flex; flex-wrap: wrap; gap: 5px; }
+  .settings-fig {
+    padding: 3px; line-height: 0; cursor: pointer; background: none;
+    border: 1px solid var(--border); border-radius: 7px;
+  }
+  .settings-fig:hover { border-color: var(--accent); }
+  .settings-fig.sel {
+    border-color: var(--accent);
+    background: color-mix(in srgb, var(--accent) 12%, transparent);
+  }
   .settings-select {
     background: var(--bg); border: 1px solid var(--border); color: var(--text);
     font-family: 'Inter', sans-serif; font-size: 12px; padding: 5px 10px;

@@ -51,6 +51,7 @@ import json
 from flask import Blueprint, jsonify, request
 
 from mc import state
+from mc.characters import clean_avatar
 from mc.core import _log
 from mc.state import agent_sessions
 
@@ -100,7 +101,8 @@ def _save_settings(settings):
 # ── Global config endpoints ────────────────────────────────────────────────
 
 _CONFIG_EDITABLE_KEYS = {
-    'user_name', 'agent_name', 'agent_model', 'agent_effort', 'agent_max_turns',
+    'user_name', 'agent_name', 'agent_avatar', 'agent_model', 'agent_effort',
+    'agent_max_turns',
     'agent_permission_mode', 'agent_channels', 'agent_remote_control',
     'use_streaming_agent', 'condense_enabled', 'condense_threshold_kb',
     'condense_model', 'condense_mode', 'index_line_budget',
@@ -193,6 +195,12 @@ def update_config():
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:
+            # The one key with a shape. Cleaned HERE rather than only where it
+            # is drawn, because config.json is read by other surfaces and a
+            # sentence stored in a face field is a second name field — the cap
+            # is the only thing stopping that (mc.characters.clean_avatar).
+            if k == 'agent_avatar':
+                v = clean_avatar(v)
             state.CONFIG[k] = v
             updated[k] = v
     if updated:

@@ -90,6 +90,12 @@ def _load_config():
         'desktop_mode': False,
         'user_name': '',
         'agent_name': '',
+        # The default agent's FACE, same shape as a persona's: an emoji or
+        # `fig:<name>`. A hired type carries its face in its own file, which
+        # survives everything; the default agent had no such slot at all, so the
+        # only way to give it one was a per-session Floor label — keyed on the
+        # session id, and therefore gone the moment a new chat starts.
+        'agent_avatar': '',
         # Persistent agent process (Mode B). Default ON (2026-06-04) — streaming
         # is the standard runtime: one long-lived `claude` per chat, follow-ups
         # written to stdin. A fresh install gets Mode B. Existing config.json

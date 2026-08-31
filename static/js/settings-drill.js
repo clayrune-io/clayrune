@@ -393,6 +393,14 @@ async function _renderSettings() {
         <div><div class="settings-label">Agent Name</div><div class="settings-hint">Display name for agents</div></div>
         ${textInput('agent_name', cfg.agent_name)}
       </div>
+      <div class="settings-row settings-row-stack">
+        <div><div class="settings-label">Agent Face</div><div class="settings-hint">Shown on the Floor. A hired persona keeps its own face; this is the default agent's.</div></div>
+        <div class="settings-face-wrap">
+          <span class="settings-face-now" id="agent-face-preview">${window.avatarHTML(cfg.agent_avatar, 34)}</span>
+          ${textInput('agent_avatar', cfg.agent_avatar, 'maxlength="40" spellcheck="false" placeholder="\u{1F642} or fig:navigator" id="agent-face-input"')}
+        </div>
+        <div class="settings-fig-row" id="agent-face-figs"></div>
+      </div>
     </div>
 
     <div class="settings-section">
@@ -735,10 +743,53 @@ async function _renderSettings() {
   // isn't found, so the placeholder used to get stuck.
   try { refreshPushSection(); } catch (_) {}
   try { refreshMobilePairingSection(); } catch (_) {}
+  try { refreshAgentFaceSection(); } catch (_) {}
 
   // Restore the master/detail/search view (persisted across re-renders so that
   // setTone/setAccent/etc. don't bounce you back to the list mid-edit).
   _applySettingsView();
+}
+
+
+// ── Agent Face: the figure strip ────────────────────────────────────────────
+// Fetched, never hardcoded, for the reason the persona editor's picker gives:
+// dropping a file into assets/avatars/ is meant to be the whole install step,
+// and a hardcoded list disagrees with the directory the first time anyone adds
+// one. Clicking saves immediately — this is a one-field screen, not a form, so
+// there is no Save button to be the thing you forgot to press.
+async function refreshAgentFaceSection() {
+  const row = document.getElementById('agent-face-figs');
+  const input = document.getElementById('agent-face-input');
+  if (!row || !input) return;
+  let figs = [];
+  try {
+    const r = await fetch(API_BASE + '/api/avatars');
+    figs = (await r.json()).figures || [];
+  } catch (_) { return; }   // typing an emoji still works; the strip stays empty
+  const paint = (cur) => {
+    row.querySelectorAll('.settings-fig').forEach(
+      (b) => b.classList.toggle('sel', b.dataset.face === cur));
+    const prev = document.getElementById('agent-face-preview');
+    if (prev) prev.innerHTML = window.avatarHTML(cur, 34);
+  };
+  row.innerHTML = figs.map((n) => {
+    const v = 'fig:' + n;
+    return `<button type="button" class="settings-fig" data-face="${esc(v)}"
+      title="${esc(n)}">${window.avatarHTML(v, 34)}</button>`;
+  }).join('');
+  row.querySelectorAll('.settings-fig').forEach((b) => {
+    b.onclick = () => {
+      // Clicking the face you already have takes it off, so the strip is not a
+      // one-way door — with no Clear button, the only other way back to no face
+      // is knowing you can empty the text field.
+      const next = (input.value.trim() === b.dataset.face) ? '' : b.dataset.face;
+      input.value = next;
+      saveSetting('agent_avatar', next);
+      paint(next);
+    };
+  });
+  input.addEventListener('change', () => paint(input.value.trim()));
+  paint((input.value || '').trim());
 }
 
 

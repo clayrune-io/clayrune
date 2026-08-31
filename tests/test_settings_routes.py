@@ -148,6 +148,24 @@ def test_update_config_happy_persists(ctx):
     assert saved['agent_name'] == 'Vector'
 
 
+def test_update_config_cleans_the_agent_face(ctx):
+    """`agent_avatar` is the one editable key with a SHAPE, and the cap is the
+    only thing stopping a face field becoming a second name field. Cleaned on
+    write, not just where it is drawn — config.json is read by more than one
+    surface, and a sentence stored there is a sentence every reader has to
+    defend against."""
+    resp = ctx.client.put('/api/config',
+                          json={'agent_avatar': '  the code reviewer, at length  '})
+    assert resp.status_code == 200
+    from mc.characters import MAX_EMOJI_LEN
+    assert len(ctx.state.CONFIG['agent_avatar']) == MAX_EMOJI_LEN
+
+    # A figure reference is a filename and needs the longer cap, or `fig:navigator`
+    # arrives as `fig:navi` and resolves to nothing.
+    ctx.client.put('/api/config', json={'agent_avatar': 'fig:navigator'})
+    assert ctx.state.CONFIG['agent_avatar'] == 'fig:navigator'
+
+
 def test_update_config_ignores_non_editable_key(ctx):
     resp = ctx.client.put('/api/config', json={'totally_made_up_key': 1})
     assert resp.status_code == 200

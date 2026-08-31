@@ -221,11 +221,20 @@ def _figure_name(s, labels):
 
 
 def _figure_avatar(s, labels):
-    """The face, resolved like the name: explicit override, then the type's own.
+    """The face, resolved in lockstep with `_figure_name`: explicit override,
+    then the type's own, then the configured default agent's.
 
-    No default. A figure with no face gets a neutral placeholder in the UI
-    rather than a random one here — the board's discipline is that absence is a
-    finding, so it must not be papered over server-side.
+    The fall-through order MUST match the name's, or a card shows the default
+    NAME beside a placeholder face — one field claiming this is Vector and the
+    one next to it saying nobody is home. The default (`agent_avatar`) exists
+    for the same reason `agent_name` does: a hired type carries its face in its
+    own file and keeps it forever, while the default agent had no such slot, so
+    the only way to give it one was a Floor label keyed on the session id —
+    which dies with the session.
+
+    Still no INVENTED default. A delegated session with no persona gets nothing
+    (MC-925: its own prompt is told it appears unnamed), and an install that has
+    set no face gets the neutral placeholder — absence stays a finding.
     """
     lab = labels.get(s.get('session_id')) or {}
     if isinstance(lab, dict) and lab.get('avatar'):
@@ -234,8 +243,12 @@ def _figure_avatar(s, labels):
         return _clean_avatar(s['floor_avatar'])
     ch = s.get('character')
     if isinstance(ch, dict):
-        return _clean_avatar(ch.get('avatar'))
-    return ''
+        own = _clean_avatar(ch.get('avatar'))
+        if own:
+            return own
+    if (s.get('source') or '') == 'agent':
+        return ''
+    return _clean_avatar(state.CONFIG.get('agent_avatar', ''))
 
 
 def _figure_model(s, proj_default):
