@@ -4456,6 +4456,31 @@ def _character_engine(character_meta, key):
     return v.strip() if isinstance(v, str) else ''
 
 
+def _model_provider_mismatch(provider_name, model):
+    """Name of the OTHER provider `model` belongs to, or '' if there's no
+    detectable conflict with `provider_name`.
+
+    Deliberately conservative: only flags a model id that is a KNOWN entry in
+    some other runtime's own catalog (MODEL_CHOICES) and is NOT accepted by
+    the resolved provider's runtime. An id absent from every catalog is not
+    flagged — it may simply be newer than ours (the composer's "Custom..."
+    box exists for exactly that case), and guessing wrong there would block a
+    legitimate dispatch instead of a genuinely incoherent one.
+    """
+    try:
+        runtime = _agent_runtime.get_runtime(provider_name)
+    except KeyError:
+        return ''  # unknown provider — let dispatch's own error handling catch it
+    if runtime.model_supported(model):
+        return ''
+    for other in _agent_runtime.available_runtimes():
+        if other.name == provider_name:
+            continue
+        if any(m == model for m, _ in other.model_choices()):
+            return other.name
+    return ''
+
+
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
@@ -4526,6 +4551,27 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                      or _character_engine(character_meta, 'provider')
                      or p.get('provider')
                      or state.CONFIG.get('default_provider') or 'claude').lower()
+    # A character's pinned model must be resolved BEFORE the provider branch
+    # below, not after it — the non-claude return happens right here, and a
+    # merge placed after it (as this used to be) never reaches a non-claude
+    # dispatch at all, silently dropping the character's model pin. Same
+    # precedence as provider: explicit per-chat pick > character's own pin.
+    _char_model = _character_engine(character_meta, 'model')
+    if not model_override and _char_model:
+        model_override = _char_model
+    # Refuse an incoherent provider/model pair instead of handing a foreign
+    # model id to a CLI that will reject it (e.g. a claude-code process
+    # launched with a gemini-* model id). Only fires when we can positively
+    # identify the model as belonging to a DIFFERENT provider's own catalog —
+    # an id we don't recognize at all (newer than our catalog, or a
+    # provider-specific alias) is passed through, since the composer's
+    # "Custom..." box exists precisely for that case.
+    if model_override:
+        _mismatch = _model_provider_mismatch(provider_name, model_override)
+        if _mismatch:
+            raise ValueError(
+                f"model '{model_override}' belongs to provider '{_mismatch}', "
+                f"not '{provider_name}' — pick a matching model or provider")
     if provider_name != 'claude':
         try:
             return _dispatch_via_runtime(p, task, provider_name=provider_name,
@@ -4615,13 +4661,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # A character's pinned model is an explicit choice by whoever authored the
     # type ("Fable writes PRDs"), so it outranks the complexity classifier for
     # the same reason the composer's Model picker does — but NOT the picker
-    # itself, which is the user speaking about this one turn.
-    _char_model = _character_engine(character_meta, 'model')
+    # itself, which is the user speaking about this one turn. (`_char_model`
+    # itself, and its merge into `model_override`, happen earlier — before the
+    # non-claude provider branch above, which returns before reaching here.)
     _char_effort = _character_engine(character_meta, 'effort') or None
     _char_agent_name = (character_meta or {}).get('agent_name') or ''
     _char_skills = (character_meta or {}).get('skills') or []
-    if not model_override and _char_model:
-        model_override = _char_model
     if resume_id:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
             _dispatch_with_routing_parallel(
