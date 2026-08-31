@@ -352,6 +352,41 @@ def register_mc_tool_hooks(*, sync_todos: Optional[Callable] = None) -> None:
         _MC_TOOL_HOOKS['sync_todos'] = sync_todos
 
 
+# Startup chatter that some CLIs (gemini) print around their real error and
+# that would otherwise bury it — not errors themselves, just noise to skip
+# when looking for the CLI's own last word on why it exited.
+_EXIT_ERROR_NOISE_PATTERNS = (
+    'startup]',              # gemini's "[STARTUP] ..." profiler dump
+    'yolo mode is enabled',  # gemini's YOLO-mode banner
+)
+
+
+def _last_real_error_line(log_tail: str) -> Optional[str]:
+    """Return the CLI's own last non-noise output line, or None if there isn't one.
+
+    `explain_exit_error()` implementations fall back to a guessed diagnosis
+    ("Common causes: ...") when no specific known pattern matches the tail —
+    but a guess that contradicts an error the CLI already printed in plain
+    text is worse than no hint at all. This scans from the bottom (the real
+    cause is usually the last thing printed before exit) skipping blank
+    lines, MC's own bracketed status markers (`[tool: x]`, `[hint] ...`), and
+    known CLI startup banners, so callers can surface the real line instead
+    of guessing.
+    """
+    if not log_tail:
+        return None
+    for line in reversed(log_tail.splitlines()):
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith('[') and stripped.endswith(']'):
+            continue
+        if any(p in stripped.lower() for p in _EXIT_ERROR_NOISE_PATTERNS):
+            continue
+        return stripped
+    return None
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AgentRuntime ABC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -2172,6 +2207,9 @@ class GeminiRuntime(AgentRuntime):
             return ("Gemini was denied access to a file in the project "
                     "folder. Check the folder's permissions.")
         if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Gemini error: {real_line}"
             return ("Gemini exited with code {0}. Common causes: not logged "
                     "in, network blocked, prompt too big. Scroll up for the "
                     "raw error text.".format(rc))
@@ -3120,6 +3158,9 @@ class CodexRuntime(AgentRuntime):
         if any(p in s for p in ('quota', 'rate limit', '429', 'too many requests')):
             return "Codex rate limit hit. Wait a minute and try again."
         if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Codex error: {real_line}"
             return f"Codex exited with code {rc}. Check auth and model name."
         return None
 
@@ -3799,6 +3840,9 @@ class GooseRuntime(AgentRuntime):
             return ("Goose needs a provider configured. Run: goose configure  "
                     "or set OPENAI_API_KEY / ANTHROPIC_API_KEY in Settings → Agent Providers.")
         if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Goose error: {real_line}"
             return f"Goose exited with code {rc}. Run 'goose configure' to check provider setup."
         return None
 
@@ -4084,6 +4128,9 @@ class AiderRuntime(AgentRuntime):
         if any(p in s for p in ('no module named', 'importerror')):
             return "Aider dependency missing. Try: pip install --upgrade aider-chat"
         if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Aider error: {real_line}"
             return f"Aider exited with code {rc}. Check the API key and model name."
         return None
 
@@ -4376,6 +4423,9 @@ class KiroRuntime(AgentRuntime):
             return ("Kiro requires a paid subscription for headless use. "
                     "Set KIRO_API_KEY in Settings → Agent Providers.")
         if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Kiro error: {real_line}"
             return f"Kiro exited with code {rc}. Verify KIRO_API_KEY is set."
         return None
 

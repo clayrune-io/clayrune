@@ -110,6 +110,63 @@ class TestGeminiRuntime:
     def test_capabilities_mcp(self):
         assert self.rt.capabilities().supports_mcp is True
 
+    def test_explain_exit_error_surfaces_real_line_over_guesses(self):
+        # Reproduces MC-926: real CLI output has startup noise (profiler
+        # dump + YOLO banner) around the actual cause. The surfaced hint
+        # must contain that real line and NOT the generic "not logged in /
+        # network blocked / prompt too big" guesses.
+        tail = (
+            "[STARTUP] profiler dump line one\n"
+            "[STARTUP] profiler dump line two\n"
+            "YOLO mode is enabled. All tool calls will be automatically approved.\n"
+            "Loaded cached credentials.\n"
+            "This account requires setting the GOOGLE_CLOUD_PROJECT or "
+            "GOOGLE_CLOUD_PROJECT_ID env var (goo.gle/gemini-cli-auth-docs#workspace-gca)"
+        )
+        hint = self.rt.explain_exit_error(41, tail)
+        assert hint is not None
+        assert "GOOGLE_CLOUD_PROJECT" in hint
+        assert "Common causes" not in hint
+        assert "not logged in" not in hint
+
+    def test_explain_exit_error_falls_back_to_guesses_when_no_real_line(self):
+        # No usable output at all (or only noise/markers) — the generic
+        # guess is the only thing left to say, so it must still appear.
+        tail = "[STARTUP] profiler dump\nYOLO mode is enabled.\n[tool: call]\n"
+        hint = self.rt.explain_exit_error(41, tail)
+        assert hint is not None
+        assert "Common causes" in hint
+
+    def test_explain_exit_error_no_tail_falls_back_to_guesses(self):
+        hint = self.rt.explain_exit_error(41, "")
+        assert hint is not None
+        assert "Common causes" in hint
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# _last_real_error_line — shared helper used by every provider's fallback
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestLastRealErrorLine:
+    def test_skips_noise_and_returns_real_line(self):
+        tail = (
+            "[STARTUP] boot\n"
+            "YOLO mode is enabled. All tool calls will be automatically approved.\n"
+            "the real error text"
+        )
+        assert agent_runtime._last_real_error_line(tail) == "the real error text"
+
+    def test_skips_bracketed_status_markers(self):
+        tail = "the real error text\n[tool: call]\n[tool: call result]\n"
+        assert agent_runtime._last_real_error_line(tail) == "the real error text"
+
+    def test_empty_or_all_noise_returns_none(self):
+        assert agent_runtime._last_real_error_line("") is None
+        assert agent_runtime._last_real_error_line(
+            "[STARTUP] a\nYOLO mode is enabled.\n[tool: call]\n"
+        ) is None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CodexRuntime
