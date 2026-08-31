@@ -1469,10 +1469,17 @@ function _hiddenMatchCount(projectId, q) {
   const hidden = _hiddenConvSet(projectId);
   if (!hidden.size) return 0;
   return _userInitiatedConvos(projectId, true)
-    .filter(c => hidden.has(c.claude_session_id || ''))
+    .filter(c => hidden.has(_convHideKey(c)))
     .filter(c => !q || _convSearchText(c).includes(q))
     .length;
 }
+
+// Identity key for the "hide this chat" toggle. claude_session_id when there
+// is one (the historical key, still what's persisted for every existing
+// hidden entry); mc_session_id otherwise — a non-Claude row (MC-929) has no
+// claude_session_id at all, and every such row sharing the empty string would
+// mean hiding ONE Gemini chat hid ALL of them.
+function _convHideKey(c) { return (c && (c.claude_session_id || c.mc_session_id)) || ''; }
 
 function _syncHiddenToggle(projectId, q, scope) {
   // Scope to the project's modal — a global query set EVERY open project's
@@ -1592,7 +1599,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
   const _keep = (c) => {
     // Stewards are the one automated-trigger exception — always surfaced (unless
     // the user explicitly hid this one).
-    if (_isStewardConvo(c)) return showHidden || !hidden.has(c.claude_session_id || '');
+    if (_isStewardConvo(c)) return showHidden || !hidden.has(_convHideKey(c));
     if (AGENT_TRIGGERS.has(c.trigger_type || '')) return false;
     if (AGENT_SOURCES.has(c.source || '')) return false;
     const src = c.source || '';
@@ -1604,7 +1611,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
     if (!src && _AGENT_LABEL_RE.test(label)) return false;         // legacy agent/system chat
     if (!src && _NOISE_RESUME_RE.test(label)) return false;         // empty-task "Continue where we left off."
     if (!src && (c.turns || 0) <= 1 && _TRIVIAL_ACK_RE.test(label)) return false;  // trivial 1-turn ack
-    if (!showHidden && hidden.has(c.claude_session_id || '')) return false;
+    if (!showHidden && hidden.has(_convHideKey(c))) return false;
     return true;
   };
   const out = (conversationsCache[projectId] || []).filter(_keep);
@@ -1761,7 +1768,8 @@ function mobileUserConversationsHTML(p, convos) {
   const rows = ordered.map(c => {
     const csid = c.claude_session_id || '';
     const mcsid = c.mc_session_id || '';
-    const isHidden = hidden.has(csid);
+    const hideKey = _convHideKey(c);
+    const isHidden = hidden.has(hideKey);
     // Steward threads carry the raw "[Steward cycle] …" task as their label — ugly
     // and unrecognisable. Render a clean, identifiable name instead.
     const label = _isStewardConvo(c)
@@ -1787,6 +1795,13 @@ function mobileUserConversationsHTML(p, convos) {
     const incIcon = _convIsIncognito(c)
       ? '<span class="conv-inc-icon" title="Incognito — not saved to project memory or agent log">&#x1F576;&#xFE0F;</span>'
       : '';
+    // MC-929: non-Claude providers (Gemini, etc.) keep no transcript, so past
+    // turns of a dead session can only be shown read-only, and replying always
+    // starts a brand-new session rather than truly resuming. Say so on the row
+    // itself — a silent Resume-shaped control here would be a lie.
+    const readonlyTag = (c.resume_mode === 'readonly' && !c.live)
+      ? `<span class="conv-readonly-tag" title="${esc(c.provider || 'this provider')} keeps no transcript — history is read-only; replying starts a new session">read-only</span>`
+      : '';
     // Who the chat was with. These rows are transcript-derived and had no
     // persona at all until /conversations started emitting one, so every chat
     // in the list looked identical — you had to open one to find out whether
@@ -1799,8 +1814,8 @@ function mobileUserConversationsHTML(p, convos) {
           window.avatarHTML(_cChar.avatar, 28)}</span>`
       : '';
     const hideBtn = isHidden
-      ? `<button class="conv-hide" onclick="unhideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
-      : `<button class="conv-hide" onclick="hideConversation(event,'${esc(p.id)}','${esc(csid)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
+      ? `<button class="conv-hide" onclick="unhideConversation(event,'${esc(p.id)}','${esc(hideKey)}')" title="Move back to the list" aria-label="Unhide">&#8617;</button>`
+      : `<button class="conv-hide" onclick="hideConversation(event,'${esc(p.id)}','${esc(hideKey)}')" title="Hide from this list" aria-label="Hide">&#10005;</button>`;
     // A RESUMED session reuses ONE mc_session_id across several claude
     // transcripts, so multiple rail rows can carry the same mcsid. Matching on
     // mcsid alone then lit up every sibling row white at once. When we know the
@@ -1824,7 +1839,7 @@ function mobileUserConversationsHTML(p, convos) {
           <span class="conv-time">${badge || esc(c.ts_relative || '')}</span>
         </div>
         <div class="conv-bot"><span class="conv-sub">${
-          _cWho ? `<span class="conv-who">${esc(_cWho)}</span>` : ''}${esc(meta)}</span></div>
+          _cWho ? `<span class="conv-who">${esc(_cWho)}</span>` : ''}${readonlyTag}${esc(meta)}</span></div>
       </div>
       ${splitBtn}${hideBtn}
     </div>`;

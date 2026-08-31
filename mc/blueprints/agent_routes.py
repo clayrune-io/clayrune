@@ -3928,6 +3928,45 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     _log(f"[revive] {project_id}: Mode A revived session {session_id} via -r {claude_sid[:12]}")
     return session
 
+
+def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
+    """Start a BRAND-NEW session for a dead non-Claude conversation (MC-929).
+
+    Unlike `_revive_from_agent_log`, this is not a resume — Mode A providers
+    (Gemini, ...) keep no transcript and the CLI has no `-r` equivalent, so
+    there is nothing to reattach to. It adopts the same MC session_id so the
+    UI tab and agent-log stay addressed to one conversation, but the process
+    starts cold, with no prior turns as context.
+    This exists so the honest trailing line `reconstruct_dead_session` writes
+    for a read-only non-Claude history ("sending a message starts a
+    brand-new session") is actually true, instead of the reply just 404ing.
+
+    Returns the session_id on success, None if not revivable (no matching log
+    entry, entry belongs to the Claude path, unknown provider, or dispatch
+    failure).
+    """
+    entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
+    if not entries:
+        return None
+    entries.sort(key=lambda e: e.get('ts', ''))
+    entry = entries[-1]
+    if entry.get('claude_session_id'):
+        return None  # the Claude -r path owns this one
+    provider = (entry.get('provider') or '').lower()
+    if not provider or provider == 'claude':
+        return None
+    character_name = ((entry.get('character') or {}).get('name')) or ''
+    try:
+        _dispatch_agent_internal(project_id, message, incognito=False,
+                                 reuse_session_id=session_id,
+                                 provider_override=provider,
+                                 character=character_name)
+    except Exception as e:
+        _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
+        return None
+    return session_id
+
+
 def _accumulate_session_usage(session, turn_usage):
     """Merge a single turn's usage dict into the running session total.
 
@@ -5768,6 +5807,14 @@ def agent_followup(project_id):
         if revived:
             _log_agent_activity(project_id, f"Agent revived from log: {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id, 'revived': True})
+        # Not a Claude conversation (no claude_session_id) — no `-r` to revive
+        # with, so start fresh instead of 404ing. This is what makes the
+        # read-only reconstruct's "sending a message starts a brand-new
+        # session" line (MC-929) true rather than a lie.
+        fresh_sid = _revive_non_claude_from_agent_log(project_id, session_id, message, p)
+        if fresh_sid:
+            _log_agent_activity(project_id, f"Agent follow-up started a new session (no transcript to resume): {message[:100]}")
+            return jsonify({'ok': True, 'session_id': fresh_sid, 'revived': False, 'fresh': True})
         # No revivable entry — fall through to original 404 below.
 
     with get_manager(project_id).lock:
@@ -7100,26 +7147,66 @@ def reconstruct_dead_session(project_id, session_id):
     # A live session should go through /agent/status, not here.
     if session_id in agent_sessions:
         return jsonify({'error': 'session is live'}), 409
-    entry = next((e for e in _load_agent_log(project_id)
-                  if e.get('session_id') == session_id), None)
-    if not entry:
+    entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
+    if not entries:
         return jsonify({'error': 'session not in agent log'}), 404
+    entries.sort(key=lambda e: e.get('ts', ''))
+    entry = entries[-1]
     claude_sid = entry.get('claude_session_id')
-    if not claude_sid:
+    if claude_sid:
+        user_label = state.CONFIG.get('user_name') or 'User'
+        lines = _transcript_buffer_lines(p.get('project_path', ''), claude_sid,
+                                         user_label, max_messages=300)
+        if not lines:
+            return jsonify({'error': 'transcript not found or empty'}), 404
+        lines.append('[— read-only history; send a message to resume this session —]')
+        return jsonify({
+            'session_id': session_id,
+            'claude_session_id': claude_sid,
+            'task': entry.get('task', ''),
+            'started_at': entry.get('timestamp', '') or entry.get('started_at', ''),
+            'log_lines': lines,
+            'read_only': True,
+            'resumable': True,
+        })
+    # No claude_session_id — this provider (Gemini, etc.) keeps no transcript
+    # store (MC-929). Mode A respawns a process per turn, so the agent log has
+    # one row per turn for this session_id; each row's `summary` is that turn's
+    # real output. That is genuinely everything left on disk once the session
+    # has aged out of `agent_sessions` — the live per-turn `log_lines` buffer a
+    # running session builds is in-memory only and does not survive a purge.
+    # BE HONEST: this is not a transcript and there is no native resume, so
+    # render what we have and say plainly that a reply starts a NEW session
+    # rather than offering a Resume control that would silently do that anyway.
+    provider = (entry.get('provider') or 'claude').lower()
+    if provider == 'claude':
+        # A Claude row with no csid at all (e.g. interrupted before Claude
+        # assigned one) — there is genuinely nothing to render, Claude or
+        # otherwise. Same contract as before this fix: no resolvable transcript.
         return jsonify({'error': 'no claude_session_id to resume from'}), 404
+    if not entries[0].get('task') and not any(e.get('summary') for e in entries):
+        return jsonify({'error': 'no history to reconstruct'}), 404
     user_label = state.CONFIG.get('user_name') or 'User'
-    lines = _transcript_buffer_lines(p.get('project_path', ''), claude_sid,
-                                     user_label, max_messages=300)
-    if not lines:
-        return jsonify({'error': 'transcript not found or empty'}), 404
-    lines.append('[— read-only history; send a message to resume this session —]')
+    lines = []
+    first_task = ' '.join(str(entries[0].get('task') or '').split())
+    if first_task:
+        lines.append(f"\n> {user_label}: {first_task}\n")
+    for e in entries:
+        summary = ' '.join(str(e.get('summary') or '').split())
+        if summary:
+            lines.append(summary)
+    lines.append(f'[— read-only history from the run log; {provider} keeps no full '
+                 f'transcript and cannot be resumed, so only each turn\'s final output '
+                 f'is shown here. Sending a message starts a brand-new session —]')
     return jsonify({
         'session_id': session_id,
-        'claude_session_id': claude_sid,
-        'task': entry.get('task', ''),
-        'started_at': entry.get('timestamp', '') or entry.get('started_at', ''),
+        'claude_session_id': '',
+        'task': entries[0].get('task', ''),
+        'started_at': entries[0].get('started_at', '') or entries[0].get('ts', ''),
         'log_lines': lines,
         'read_only': True,
+        'resumable': False,
+        'provider': provider,
     })
 
 
@@ -7496,13 +7583,96 @@ def _conversation_character_display(log_entry, project):
     }
 
 
+def _non_claude_conversation_rows(project_id, p, limit):
+    """Agent-log rows for providers that leave no Claude transcript (MC-929).
+
+    `GeminiRuntime.transcript_path()` (and every other non-Claude runtime)
+    returns None by design — no transcript store — and a non-Claude turn never
+    populates `claude_session_id` (MC-922). So those chats have no membership
+    in `_recent_claude_transcripts()` at all, no matter how many of them run.
+    The agent log is the only record of them, keyed on MC's OWN session_id.
+
+    Mode A (every non-Claude runtime today) respawns one process per turn, and
+    `_log_agent_completion` writes one agent-log row per process exit — so a
+    multi-turn chat leaves several rows sharing one `session_id`, each row's
+    `summary` being that turn's real output. Grouped and sorted by `ts`, that
+    is the most complete history actually on disk; there is no fuller
+    transcript to fall back to; the per-session `log_lines` buffer that WOULD
+    have the verbatim exchange lives only in memory and is gone once the
+    session leaves `agent_sessions` (restart / 24h purge). Callers must not
+    claim more fidelity than this — see `reconstruct_dead_session`.
+    """
+    groups = {}
+    for e in _load_agent_log(project_id):
+        if e.get('claude_session_id'):
+            continue  # has a real transcript — the Claude path already owns it
+        provider = (e.get('provider') or 'claude').lower()
+        if provider == 'claude':
+            continue  # e.g. an in-progress row before Claude assigned a csid
+        sid = e.get('session_id', '')
+        if not sid or e.get('hivemind_ws_id'):
+            continue  # hivemind worker turns aren't a chat the rail shows
+        groups.setdefault(sid, []).append(e)
+
+    from datetime import datetime
+    rows = []
+    for sid, entries in groups.items():
+        entries.sort(key=lambda e: e.get('ts', ''))
+        latest, first = entries[-1], entries[0]
+        live = agent_sessions.get(sid)
+        if live and live.get('project_id') != project_id:
+            live = None
+        status = live.get('status', 'unknown') if live else latest.get('status', 'completed')
+        last_user = ' '.join(str(latest.get('summary') or latest.get('task') or '').split())
+        first_user = ' '.join(str(first.get('task') or '').split())
+        ts = latest.get('ts', '')
+        try:
+            mtime = datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+        except Exception:
+            mtime = 0
+        rows.append({
+            'claude_session_id': '',
+            'mc_session_id': sid,
+            'status': status,
+            'label': last_user or first_user or '(empty)',
+            'first_user': first_user,
+            'last_user': last_user,
+            'turns': len(entries),
+            'size': 0,
+            'mtime': mtime,
+            'ts': ts,
+            'ts_relative': time_ago(ts) if ts else '',
+            'live': bool(live),
+            'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
+            'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
+            'trigger_type': latest.get('trigger_type') or '',
+            'source': latest.get('source') or '',
+            'steward': False,
+            'steward_objective': '',
+            'character': _conversation_character_display(latest, p),
+            # Provider + resumability, so the UI never offers a Resume control
+            # that silently starts a fresh session. Mode A has no native `-r`;
+            # the best honest offer is a read-only history (see
+            # reconstruct_dead_session), not a resume.
+            'provider': provider,
+            'resumable': False,
+            'resume_mode': 'readonly',
+        })
+    rows.sort(key=lambda r: r['mtime'], reverse=True)
+    return rows[:limit]
+
+
 @bp.route('/api/project/<project_id>/conversations')
 def get_project_conversations(project_id):
-    """Return recent Claude Code conversations for a project, read from .jsonl transcripts.
+    """Return recent conversations for a project — Claude transcripts UNION
+    agent-log rows for every other provider (MC-929).
 
-    Survives server reboots, captures interrupted / mid-flight sessions that never
-    landed in the agent completion log. Enriched with live status + completion-log
-    status, and label defaults to the user's LAST message.
+    Claude transcripts (`_recent_claude_transcripts`) stay the primary source:
+    they survive server reboots and capture interrupted / mid-flight sessions
+    that never reached the completion log. Non-Claude runtimes leave no
+    transcript at all (see `_non_claude_conversation_rows`), so without a
+    second source those chats could never be listed, let alone reopened.
+    Label defaults to the user's LAST message.
     """
     try:
         limit = int(request.args.get('limit', 10))
@@ -7606,8 +7776,22 @@ def get_project_conversations(project_id):
             # Layer 2, reconstructed past chats) had no way to draw a face and
             # fell back to a generic bubble on every row.
             'character': _conversation_character_display(log_entry, p),
+            # Claude transcripts are Claude by construction; the CLI's own `-r`
+            # is a real resume. Kept alongside the non-Claude rows' provider/
+            # resumable/resume_mode fields below (union, not two shapes).
+            'provider': 'claude',
+            'resumable': True,
+            'resume_mode': 'live',
         })
-    return jsonify(out)
+
+    # UNION: agent-log rows for every provider that leaves no transcript.
+    # Dedup is structural, not a post-hoc filter — _non_claude_conversation_rows
+    # only emits rows whose entries have NO claude_session_id, and every Claude
+    # row above always carries one (its `sid` IS the transcript's csid), so the
+    # two sets can't overlap on the same conversation.
+    out.extend(_non_claude_conversation_rows(project_id, p, limit))
+    out.sort(key=lambda r: r['mtime'], reverse=True)
+    return jsonify(out[:limit])
 
 
 # ── PLAN tab load cache ───────────────────────────────────────────────────────
