@@ -324,3 +324,91 @@ class TestResumeKeepsItsPersona:
             raise OSError('log is gone')
         monkeypatch.setattr(env['ar'], '_load_agent_log', boom)
         assert env['ar']._prior_character('p', 'abc') is None
+
+
+# ── MC-924 — provider/model precedence must agree ─────────────────────────
+#
+# A character's PROVIDER pin used to lose to the composer (which always sent
+# a resolved, never-empty value) while its MODEL pin won (only applied when
+# the picker was untouched) — so a gemini persona could dispatch carrying
+# provider=claude + model=gemini-2.5-flash and die at CLI launch.
+
+
+class TestModelProviderMismatch:
+    """Pure unit tests for `_model_provider_mismatch` — no dispatch, no I/O."""
+
+    def test_matching_model_is_not_flagged(self, env):
+        assert env['ar']._model_provider_mismatch('gemini', 'gemini-2.5-flash') == ''
+
+    def test_model_from_another_known_catalog_is_flagged(self, env):
+        # The exact MC-924 repro: a gemini model id handed to the claude runtime.
+        assert env['ar']._model_provider_mismatch('claude', 'gemini-2.5-flash') == 'gemini'
+
+    def test_unrecognized_model_is_not_flagged(self, env):
+        # Newer than our catalog, or a provider-specific alias — the composer's
+        # "Custom..." box exists for exactly this case; don't block it.
+        assert env['ar']._model_provider_mismatch('claude', 'totally-novel-id-2099') == ''
+
+    def test_unknown_provider_is_not_flagged(self, env):
+        # Dispatch's own provider-resolution error handling catches this instead.
+        assert env['ar']._model_provider_mismatch('not-a-real-provider', 'gemini-2.5-flash') == ''
+
+
+class TestDispatchProviderModelPrecedence:
+    def _write_pinned(self, env, name, **engine):
+        from mc import characters as ch
+        ch.write_character('project', name, 'desc', 'body',
+                           project_path=env['proj_path'], overwrite=True,
+                           engine=engine)
+
+    def _project(self, env):
+        return {'id': 'tc', 'name': 'TC', 'project_path': env['proj_path'],
+                'provider': 'claude'}
+
+    def test_character_provider_and_model_pin_wins_when_nothing_picked(self, env, monkeypatch):
+        ar = env['ar']
+        self._write_pinned(env, 'halloway', provider='gemini', model='gemini-2.5-flash')
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project(env))
+        captured = {}
+
+        def _fake_runtime_dispatch(p, task, *, provider_name, model_override, **kw):
+            captured['provider_name'] = provider_name
+            captured['model_override'] = model_override
+            return 'sid123'
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', _fake_runtime_dispatch)
+
+        sid = ar._dispatch_agent_internal('tc', 'do a thing', character='project:halloway')
+        assert sid == 'sid123'
+        assert captured['provider_name'] == 'gemini'
+        assert captured['model_override'] == 'gemini-2.5-flash'
+
+    def test_explicit_composer_provider_pick_beats_character_pin(self, env, monkeypatch):
+        ar = env['ar']
+        # No model pin here — an explicit provider override paired with the
+        # character's still-pinned gemini model would itself be an incoherent
+        # combination (a separate, correctly-refused case below).
+        self._write_pinned(env, 'halloway2', provider='gemini')
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project(env))
+        captured = {}
+
+        def _fake_runtime_dispatch(p, task, *, provider_name, model_override, **kw):
+            captured['provider_name'] = provider_name
+            captured['model_override'] = model_override
+            return 'sid456'
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', _fake_runtime_dispatch)
+
+        sid = ar._dispatch_agent_internal('tc', 'do a thing', character='project:halloway2',
+                                          provider_override='codex')
+        assert sid == 'sid456'
+        assert captured['provider_name'] == 'codex'
+
+    def test_incoherent_provider_model_combination_is_refused(self, env, monkeypatch):
+        ar = env['ar']
+        monkeypatch.setattr(ar, 'load_project', lambda pid: self._project(env))
+        # Reproduces the pre-fix bug directly: an explicit claude provider pick
+        # paired with a gemini-only model id (what the composer used to send
+        # unconditionally while the model came from elsewhere).
+        with pytest.raises(ValueError, match='gemini'):
+            ar._dispatch_agent_internal('tc', 'do a thing',
+                                        provider_override='claude',
+                                        model_override='gemini-2.5-flash')

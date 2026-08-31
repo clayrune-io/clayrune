@@ -4055,6 +4055,12 @@ window.getPendingDispatchModel = (projectId) => {
   const p = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === projectId);
   return pendingDispatchModel[_modelKey(projectId, _composerProvider(p))] || '';
 };
+// The provider the user actually PICKED this turn in the composer, distinct
+// from _composerProvider's resolved value (which falls back to project/global
+// default and is therefore never empty). Dispatch needs the picked value so an
+// unset picker doesn't override a character's pinned provider — see
+// getPendingDispatchModel above, which already has this shape for model.
+window.getPendingDispatchProvider = (projectId) => pendingDispatchProvider[projectId] || '';
 window.showHmWorkerPopover = showHmWorkerPopover;
 window.submitQuestionAnswer = submitQuestionAnswer;
 window.submitQuestionChip = submitQuestionChip;

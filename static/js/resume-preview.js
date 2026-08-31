@@ -310,6 +310,18 @@ async function dispatchAgent(projectId) {
   // badge shows instantly, before the first /agent/status round-trip.
   const _chosenCharacter = resumeId ? '' : getPendingCharacter(projectId);
   const _chosenCharMeta = _chosenCharacter ? resolveCharacterMeta(projectId, _chosenCharacter) : null;
+  // What the user actually PICKED this turn in the composer — '' if they left
+  // it on default. Distinct from _chosenProvider (always resolved, never
+  // empty); dispatch sends this so an untouched picker doesn't override a
+  // character's pinned provider (mirrors _chosenModel below for model).
+  const _pickedProvider = (typeof window.getPendingDispatchProvider === 'function')
+    ? window.getPendingDispatchProvider(projectId) : '';
+  // Optimistic-pill provider: prefer what was picked, then the character's own
+  // pin, then the resolved default — so the badge doesn't flash the wrong
+  // runtime before the first /agent/status round-trip.
+  const _pillProvider = _pickedProvider
+    || (_chosenCharMeta && _chosenCharMeta.engine && _chosenCharMeta.engine.provider)
+    || _chosenProvider;
   // Match the server's seeded log_lines format so the SSE/reconcile delivery
   // of the same line dedupes against this optimistic insert. The server
   // writes `> {user_label}: {task}` to log_lines on fresh dispatch (see
@@ -331,8 +343,8 @@ async function dispatchAgent(projectId) {
   // matching the format alone isn't enough — every replay would still push
   // a second copy.
   agentServerLines[tempSessionId] = 1;
-  agentStatusCache[tempSessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _chosenProvider, character: _chosenCharMeta };
-  agentHistory.unshift({ projectId, sessionId: tempSessionId, projectName: pName, task: displayTask, status: 'running', startedAt: new Date().toISOString(), resumedFrom: resumeId || null, incognito: incognitoFlag, provider: _chosenProvider, character: _chosenCharMeta });
+  agentStatusCache[tempSessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
+  agentHistory.unshift({ projectId, sessionId: tempSessionId, projectName: pName, task: displayTask, status: 'running', startedAt: new Date().toISOString(), resumedFrom: resumeId || null, incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta });
   activeAgentTab[projectId] = tempSessionId;
   delete agentConvNew[projectId];  // dispatched → drill into the new convo
   clearPendingCharacter(projectId);  // next new chat defaults to None (opt-in per chat)
@@ -348,9 +360,12 @@ async function dispatchAgent(projectId) {
   const body = { task: fullTask, source: 'ui' };  // dispatched from the app UI (vs agent/API)
   if (resumeId) body.resume_conversation_id = resumeId;
   if (incognitoFlag) body.incognito = true;
-  // Per-conversation provider — the composer dropdown is authoritative. The
-  // project's `provider` field is only the default seed for this picker.
-  body.provider = _chosenProvider;
+  // Per-conversation provider — only send it when the user actually picked one
+  // this turn. An unconditional send always wins server-side over a character's
+  // pinned provider (agent_routes.py: provider_override or character_provider
+  // or project or global), so an untouched picker must stay empty here — mirrors
+  // _chosenModel below, which already has this shape.
+  if (_pickedProvider) body.provider = _pickedProvider;
   // Per-chat model from the composer's Model picker (fresh chats only; ''
   // means project/global default or the auto-router). Sticky per project.
   const _chosenModel = (!resumeId && typeof getPendingDispatchModel === 'function')
@@ -393,7 +408,7 @@ async function dispatchAgent(projectId) {
 
     agentOutputBuffers[sessionId] = savedBuf;
     agentServerLines[sessionId] = 1;
-    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _chosenProvider };
+    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider };
 
     // Zero-gap: if resuming a known prior conversation, patch its last_user now.
     // For a fresh session, we don't know the claude_session_id yet; it will be
