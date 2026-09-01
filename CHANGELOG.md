@@ -6,6 +6,43 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-01] — The port guard proves it trips, and says who holds the port
+
+MC-908's fix shipped in `64d0510` (connect-probe alongside the bind test) with
+no tests. That is the wrong thing to leave untested: the bug was a **silent
+OK** — a second Clayrune booted beside a live one, announced itself on 5199,
+and its startup reaper killed the older instance's four live agent trees. A
+test asserting the guard "returns" would have passed against the broken code.
+
+- **Eleven tests (`tests/test_port_conflict.py`), each asserting the guard is
+  FATAL or explicitly is not.** Ten of them fail against the pre-fix bind-only
+  probe; the eleventh (a genuinely free port stays clean) passes either way,
+  which is the point of including it.
+- **The headline test reproduces the hole on every platform, not just
+  Windows.** An IPv6-only listener owns `[::1]:port` and leaves the whole IPv4
+  space free, so `bind('0.0.0.0', port)` succeeds while something is plainly
+  serving — the same lie `SO_REUSEADDR` told the old probe. The test asserts
+  that bind-says-free precondition first, so it can only pass by way of the
+  connect probe.
+- **The restart re-exec window is covered without burning 15s of wall clock**
+  — a fake `_time` advances the fake clock, so "waits for a dying parent, then
+  proceeds", "still dies if the parent never leaves", and "no grace period
+  without `MC_RESTART_FROM_PID`" are all deterministic. Ditto the documented
+  `MC_ALLOW_PORT_CONFLICT=1` bypass, which must remain exactly `1`.
+- **The banner now names the holder.** A connect() hit alone cannot tell
+  another Clayrune from a stranger, and the two need opposite advice; the old
+  message assumed the first and sent anyone whose port was taken by an
+  unrelated service hunting a second MC that did not exist. The guard now GETs
+  `/api/system/heartbeat` on whatever answered: ours if the reply carries
+  `started_at` + `pid` ("use the running instance, or stop it"), otherwise a
+  stranger ("move Clayrune — set `MC_PORT`"). Neither path can raise; a
+  timeout, a 404, or non-JSON all read as "not Clayrune".
+
+One test-only trap worth recording: a listener that never `accept()`s stops
+answering once its backlog fills, so the restart-window tests (~50 probes) saw
+the port go "free" halfway through. The fixture drains its accept queue, like a
+real server does.
+
 ## [2026-09-01b] — Nine specialists that sounded like one, and delegation priced blind
 
 Ron, on the Floor: *"All agents behave and converse at almost the exact same
