@@ -160,6 +160,51 @@ rollback + a fold-still-fits regression guard in `test_condense_structured.py`
 style, and 413 + file-untouched + under-cap-still-works coverage for both API
 routes.
 
+## [2026-09-01] — MC-931: gemini's real errors stop getting dropped; the other four non-Claude runtimes stop risking Windows' argv limit
+
+MC-931's original diagnosis (gemini blows Windows' 8191-char command-line
+limit) didn't match the code — gemini already piped its prompt over stdin.
+The real defect was in error surfacing, and checking the other Mode-A
+runtimes for the *actual* inline-payload pattern turned up four genuine
+instances of it.
+
+- **Gemini surfaces the real API error instead of dropping it.**
+  `GeminiRuntime.parse_event`'s catch-all `result`/`turn_end`/`done` branch
+  matched a `result` event carrying `status=="error"` before the error-specific
+  branch could — so a quota/auth/network failure reached the chat as a bare
+  "turn ended" with no message. It now emits `EventType.ERROR` when
+  `status=="error"`, and its `error.message` reaches `explain_exit_error`'s
+  quota/auth/network hints. `_last_real_error_line` (the shared fallback every
+  provider's `explain_exit_error` uses) also no longer picks the dispatcher's
+  seeded `"> {user}: {task}"` log line as the "real" output on a turn that
+  errored before printing anything else.
+- **OpenCode and Goose's task text now goes over stdin, not argv** — both
+  CLIs support it (`opencode run` falls back to stdin when no positional
+  message is given; `goose run --instructions -` reads stdin), the same fix
+  already shipped for gemini/codex. Goose's `run` turned out to have no bare
+  positional prompt argument at all in the real CLI (verified against
+  `block/goose`'s `cli.rs`) — the previous `cmd.append(task)` was already
+  broken independent of the length question.
+- **Aider's task text now goes over `--message-file` (a temp file), not
+  `--message` (argv)** — mirrors the `--read` temp-file pattern it already
+  used for the system prompt.
+- **Goose's `--system` flag has no stdin/file form** (confirmed against the
+  CLI's own arg definitions) and **Kiro's headless prompt is positional-only**
+  with no stdin/file alternative at all — both get a new hard pre-flight
+  guard (`_guard_win_argv_length`, Windows-only) that raises a clear,
+  diagnosable error naming the limit instead of letting Windows mangle the
+  command line into an opaque "command line is too long".
+- Investigated the ticket's open question (a 4000-char `-p` prompt to gemini
+  returning rc=1 after 3 stdout lines, under the 8191 limit): not
+  reproducible today against the live CLI — a 4000-char prompt through MC's
+  actual stdin+stream-json invocation completed cleanly (rc=0). The described
+  shape (a few JSON lines then a non-zero exit) matches exactly the
+  `result`/`status=="error"` defect above, not a separate bug.
+
+Covered by 14 new `TestWinArgvLengthGuard`/`Test{OpenCode,Goose,Aider,Kiro}ArgvSafety`
+cases in `tests/test_provider_runtimes.py` (each verified to fail against the
+pre-fix code) plus the 2 gemini cases from the original diagnosis.
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it

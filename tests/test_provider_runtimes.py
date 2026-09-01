@@ -1098,3 +1098,243 @@ class TestModeAReaderProtocolNoise:
         assert agent_runtime._is_protocol_json('{not json}') is False
         # A JSON array is not an event envelope.
         assert agent_runtime._is_protocol_json('[1, 2, 3]') is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# MC-931 follow-up: opencode/goose/aider/kiro built the whole persona+task
+# payload into argv (prompt_via_stdin=False) — the same 8191-char Windows
+# command-line hazard the gemini fix (this file's TestGeminiRuntime) already
+# addressed. opencode and goose have a documented stdin form for the task
+# text; aider has a --message-file form; kiro has neither and gets a hard
+# pre-flight guard instead of a mangled command line.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+BIG_PROMPT = 'x' * 9000  # over Windows' ~8191-char cmd.exe limit
+
+
+class TestWinArgvLengthGuard:
+    def test_noop_under_limit(self):
+        agent_runtime._guard_win_argv_length(['prog', '--flag', 'short'], 'test')
+
+    def test_raises_over_limit_on_windows(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        with pytest.raises(RuntimeError, match='over Windows'):
+            agent_runtime._guard_win_argv_length(['prog', BIG_PROMPT], 'the thing')
+
+    def test_noop_off_windows_even_over_limit(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'linux')
+        agent_runtime._guard_win_argv_length(['prog', BIG_PROMPT], 'the thing')
+
+
+class TestOpenCodeArgvSafety:
+    def setup_method(self):
+        self.rt = OpenCodeRuntime()
+        self.rt._bin_cache = 'opencode'
+
+    def test_dispatch_big_task_goes_via_stdin_not_argv(self, monkeypatch):
+        captured = {}
+
+        def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
+            captured['cmd'] = cmd
+            captured['full_prompt'] = full_prompt
+            captured['prompt_via_stdin'] = kwargs.get('prompt_via_stdin')
+            return object()
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        self.rt.dispatch(project_path='.', task=BIG_PROMPT, system_prompt='persona',
+                         mc_session_id='t1', project_id='p1')
+        assert captured['prompt_via_stdin'] is True
+        assert not any(BIG_PROMPT in part for part in captured['cmd'])
+        assert BIG_PROMPT in captured['full_prompt']
+
+    def test_oneshot_big_prompt_uses_input_not_argv(self, monkeypatch):
+        import subprocess as sp
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            captured['input'] = kwargs.get('input')
+            class R:
+                stdout = ''
+            return R()
+
+        monkeypatch.setattr(sp, 'run', fake_run)
+        self.rt.oneshot(prompt=BIG_PROMPT)
+        assert not any(BIG_PROMPT in part for part in captured['cmd'])
+        assert captured['input'] == BIG_PROMPT
+
+
+class TestGooseArgvSafety:
+    def setup_method(self):
+        self.rt = GooseRuntime()
+        self.rt._bin_cache = 'goose'
+
+    def test_dispatch_big_task_goes_via_stdin_not_argv(self, monkeypatch):
+        captured = {}
+
+        def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
+            captured['cmd'] = cmd
+            captured['prompt_via_stdin'] = kwargs.get('prompt_via_stdin')
+            return object()
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        self.rt.dispatch(project_path='.', task=BIG_PROMPT, system_prompt='short persona',
+                         mc_session_id='t1', project_id='p1')
+        assert captured['prompt_via_stdin'] is True
+        assert '--instructions' in captured['cmd']
+        idx = captured['cmd'].index('--instructions')
+        assert captured['cmd'][idx + 1] == '-'
+        assert not any(BIG_PROMPT in part for part in captured['cmd'])
+
+    def test_dispatch_raises_when_system_prompt_alone_is_too_big(self, monkeypatch):
+        """--system has no stdin/file form in the real goose CLI (verified against
+        block/goose's cli.rs InputOptions/Run struct) — a huge persona there must
+        fail loudly, not get silently mangled by Windows."""
+        monkeypatch.setattr(sys, 'platform', 'win32')
+
+        def fake_mode_a_dispatch(*args, **kwargs):
+            pytest.fail('should never reach _mode_a_dispatch — guard must raise first')
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        with pytest.raises(RuntimeError, match='over Windows'):
+            self.rt.dispatch(project_path='.', task='short task',
+                             system_prompt=BIG_PROMPT,
+                             mc_session_id='t1', project_id='p1')
+
+    def test_oneshot_big_task_uses_input_not_argv(self, monkeypatch):
+        import subprocess as sp
+
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            captured['input'] = kwargs.get('input')
+            class R:
+                stdout = ''
+            return R()
+
+        monkeypatch.setattr(sp, 'run', fake_run)
+        self.rt.oneshot(prompt=BIG_PROMPT)
+        assert '--instructions' in captured['cmd']
+        assert not any(BIG_PROMPT in part for part in captured['cmd'])
+        assert captured['input'] == BIG_PROMPT
+
+
+class TestAiderArgvSafety:
+    def setup_method(self):
+        self.rt = AiderRuntime()
+        self.rt._bin_cache = 'aider'
+
+    def test_dispatch_big_task_goes_via_message_file_not_argv(self, monkeypatch, tmp_path):
+        captured = {}
+
+        def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
+            captured['cmd'] = cmd
+            return object()
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        self.rt.dispatch(project_path='.', task=BIG_PROMPT,
+                         mc_session_id='t1', project_id='p1')
+        cmd = captured['cmd']
+        assert '--message' not in cmd
+        assert '--message-file' in cmd
+        msg_file = cmd[cmd.index('--message-file') + 1]
+        assert not any(BIG_PROMPT in part for part in cmd)
+        assert Path(msg_file).read_text(encoding='utf-8') == BIG_PROMPT
+
+    def test_write_followup_big_message_goes_via_message_file(self, monkeypatch):
+        import subprocess as sp
+
+        captured = {}
+
+        def fake_popen(cmd, **kwargs):
+            captured['cmd'] = cmd
+            class P:
+                def poll(self):
+                    return 0
+            return P()
+
+        monkeypatch.setattr(sp, 'Popen', fake_popen)
+        monkeypatch.setattr(agent_runtime.threading, 'Thread',
+                            lambda *a, **k: type('T', (), {'start': lambda self: None})())
+
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='t1', provider='aider', mode='A',
+            project_path='.', project_id='p1',
+            session_dict={'log_lines': [], '_system_prompt': ''},
+        )
+        self.rt.write_followup(handle, BIG_PROMPT)
+        cmd = captured['cmd']
+        assert '--message' not in cmd
+        assert '--message-file' in cmd
+        msg_file = cmd[cmd.index('--message-file') + 1]
+        assert BIG_PROMPT in Path(msg_file).read_text(encoding='utf-8')
+
+    def test_oneshot_big_prompt_goes_via_message_file(self, monkeypatch):
+        captured = {}
+
+        def fake_run(cmd, **kwargs):
+            captured['cmd'] = cmd
+            class R:
+                stdout = ''
+            return R()
+
+        import subprocess as sp
+        monkeypatch.setattr(sp, 'run', fake_run)
+        self.rt.oneshot(prompt=BIG_PROMPT)
+        cmd = captured['cmd']
+        assert '--message-file' in cmd
+        assert not any(BIG_PROMPT in part for part in cmd)
+
+
+class TestKiroArgvSafety:
+    """kiro-cli's headless prompt is positional-only — no --prompt-file, no
+    stdin form (piped stdin is documented as extra context, not a prompt
+    replacement). There is no fix but a hard guard; verify it actually fires
+    instead of silently building an oversized command line."""
+
+    def setup_method(self):
+        self.rt = KiroRuntime()
+        self.rt._bin_cache = 'kiro-cli'
+
+    def test_dispatch_raises_on_oversized_prompt(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'win32')
+
+        def fake_mode_a_dispatch(*args, **kwargs):
+            pytest.fail('should never reach _mode_a_dispatch — guard must raise first')
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        with pytest.raises(RuntimeError, match='over Windows'):
+            self.rt.dispatch(project_path='.', task=BIG_PROMPT,
+                             mc_session_id='t1', project_id='p1')
+
+    def test_write_followup_raises_on_oversized_prompt(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='t1', provider='kiro', mode='A',
+            project_path='.', project_id='p1',
+            session_dict={'log_lines': [], '_system_prompt': BIG_PROMPT},
+        )
+        with pytest.raises(RuntimeError, match='over Windows'):
+            self.rt.write_followup(handle, 'a short followup message')
+
+    def test_oneshot_raises_on_oversized_prompt(self, monkeypatch):
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        with pytest.raises(RuntimeError, match='over Windows'):
+            self.rt.oneshot(prompt=BIG_PROMPT)
+
+    def test_small_prompt_is_unaffected(self, monkeypatch):
+        """The guard must not false-positive on the common case."""
+        monkeypatch.setattr(sys, 'platform', 'win32')
+        captured = {}
+
+        def fake_mode_a_dispatch(runtime, cmd, full_prompt, *args, **kwargs):
+            captured['cmd'] = cmd
+            return object()
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', fake_mode_a_dispatch)
+        self.rt.dispatch(project_path='.', task='say hi',
+                         mc_session_id='t1', project_id='p1')
+        assert 'say hi' in ' '.join(captured['cmd'])
