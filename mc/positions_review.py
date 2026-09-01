@@ -31,8 +31,11 @@ THREE PROPERTIES THIS MODULE EXISTS TO GUARANTEE, all of them learned:
 """
 from __future__ import annotations
 
+import contextlib
 import hashlib
 import json
+import os
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
@@ -46,6 +49,11 @@ REVIEW_STATE_FILE = 'position_review.json'
 # that names a slow condition ("if the link layer rots") is pure cost — the
 # nightly run picks up whatever has come due rather than re-testing everything.
 DEFAULT_INTERVAL_DAYS = 7
+
+# Two schedules can fire the same review cycle at once (MC-909). This module
+# must be safe on its own rather than depend on that bug staying fixed.
+_LOCK_TIMEOUT_S = 10
+_LOCK_POLL_S = 0.05
 
 
 def _now():
@@ -82,10 +90,9 @@ def _state_path(project) -> Path:
     return Path(base).parent / REVIEW_STATE_FILE
 
 
-def read_state(project):
-    """Review bookkeeping, keyed by position filename. Never raises."""
+def _read_state_file(p: Path):
+    """Load the sidecar at `p` directly. Never raises."""
     try:
-        p = _state_path(project)
         if not p.is_file():
             return {}
         d = json.loads(p.read_text(encoding='utf-8'))
@@ -95,10 +102,54 @@ def read_state(project):
         return {}
 
 
-def _write_state(project, state):
+def read_state(project):
+    """Review bookkeeping, keyed by position filename. Never raises."""
+    return _read_state_file(_state_path(project))
+
+
+@contextlib.contextmanager
+def _locked_state(project):
+    """Exclusive hold on the sidecar for a read-modify-write, yielding the
+    freshly-read state dict to mutate in place before returning.
+
+    Plain `os.O_CREAT | os.O_EXCL` rather than fcntl/msvcrt so the same code
+    path works on every OS this project ships to, matching `_atomic_write_text`
+    next door. A stale lock (a reviewer killed mid-write) is broken after
+    `_LOCK_TIMEOUT_S` rather than wedging every future review forever — that
+    failure mode is worse than the tiny window it reopens.
+    """
     p = _state_path(project)
     p.parent.mkdir(parents=True, exist_ok=True)
-    _atomic_write_text(p, json.dumps(state, indent=2, sort_keys=True) + '\n')
+    lock_path = p.parent / f'{p.name}.lock'
+    deadline = time.monotonic() + _LOCK_TIMEOUT_S
+    fd = None
+    while fd is None:
+        try:
+            fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        except FileExistsError:
+            if time.monotonic() > deadline:
+                try:
+                    stale = (time.time() - lock_path.stat().st_mtime) > _LOCK_TIMEOUT_S
+                except OSError:
+                    stale = True
+                if stale:
+                    try:
+                        lock_path.unlink()
+                    except OSError:
+                        pass
+                    continue
+                raise TimeoutError(f'positions_review sidecar lock busy: {lock_path}')
+            time.sleep(_LOCK_POLL_S)
+    try:
+        os.close(fd)
+        state = _read_state_file(p)
+        yield state
+        _atomic_write_text(p, json.dumps(state, indent=2, sort_keys=True) + '\n')
+    finally:
+        try:
+            lock_path.unlink()
+        except OSError:
+            pass
 
 
 def positions_due(project, interval_days=DEFAULT_INTERVAL_DAYS, now=None):
@@ -126,16 +177,22 @@ def positions_due(project, interval_days=DEFAULT_INTERVAL_DAYS, now=None):
     return out
 
 
-def should_flag(project, rec, tripped):
+def should_flag(project, rec, tripped, state=None):
     """Whether this trip is NEW. Silence on a repeat is the feature.
 
     A position that tripped last week and still trips today is not news; the
     email about it was already sent and the answer is already in Ron's court.
     Re-raising it every night is exactly how a channel stops being read.
+
+    `state` lets a caller that is already holding the sidecar (`record_review`,
+    inside its lock) pass the freshly-read dict instead of triggering a second,
+    unlocked read — the second read is what let a concurrent writer's update
+    go unseen.
     """
     if not tripped:
         return False
-    st = (read_state(project).get(rec.get('file') or '') or {})
+    st = ((state if state is not None else read_state(project))
+          .get(rec.get('file') or '') or {})
     if not st.get('flagged'):
         return True
     # Already flagged — only speak again if the position itself has changed,
@@ -149,29 +206,51 @@ def record_review(project, rec, tripped=False, finding='', now=None):
     Returns the entry as stored, including `newly_flagged` — the caller uses
     that to decide whether Ron hears about it, so the decision to interrupt a
     human lives in one place rather than at every call site.
+
+    A flag raised for a human is cleared only by a human — by editing or
+    forgetting the position, both of which change `position_hash` and are the
+    one channel `should_flag` already treats as "the old flag no longer
+    applies". An agent's own `tripped=False` on the SAME text is a disagreement,
+    not a resolution: it cannot make the flag vanish, only record that the
+    latest review contests it (`contested`). Without this, a flag Ron has
+    already been emailed about goes silently missing from the report the next
+    time anyone reviews it (MC-910) — and restoring it naively would then
+    re-email him for a trip that was never actually news.
     """
     now = now or _now()
     fn = rec.get('file') or ''
     if not fn:
         raise ValueError('position has no file')
-    new_flag = should_flag(project, rec, tripped)
     h = position_hash(rec)
-    state = read_state(project)
-    prev = state.get(fn) or {}
-    entry = {
-        'hash': h,
-        'last_reviewed': now.isoformat(),
-        'tripped': bool(tripped),
-        'finding': str(finding or '')[:2000],
-        # `flagged` is sticky across a still-tripping condition; it clears the
-        # moment a review finds the condition no longer holds, so a re-trip
-        # later is news again.
-        'flagged': bool(tripped) and (new_flag or bool(prev.get('flagged'))),
-        'flagged_hash': h if new_flag else prev.get('flagged_hash', ''),
-        'flagged_at': now.isoformat() if new_flag else prev.get('flagged_at', ''),
-    }
-    state[fn] = entry
-    _write_state(project, state)
+    with _locked_state(project) as state:
+        prev = state.get(fn) or {}
+        hash_changed = bool(prev.get('hash')) and prev.get('hash') != h
+        prev_flagged = bool(prev.get('flagged'))
+        new_flag = should_flag(project, rec, tripped, state=state)
+        if tripped:
+            flagged = True
+        elif hash_changed:
+            # A human edited (or Ron's own re-decision superseded) the
+            # position since the last review — that IS the human response
+            # a pending flag was waiting on. A fresh judgment on new text is
+            # not this module erasing anything.
+            flagged = False
+        else:
+            # Same text, agent says the condition no longer looks true. The
+            # flag stays open for the human to close; contest it instead.
+            flagged = prev_flagged
+        contested = (not tripped) and (not hash_changed) and prev_flagged
+        entry = {
+            'hash': h,
+            'last_reviewed': now.isoformat(),
+            'tripped': bool(tripped),
+            'finding': str(finding or '')[:2000],
+            'flagged': flagged,
+            'contested': contested,
+            'flagged_hash': h if new_flag else prev.get('flagged_hash', ''),
+            'flagged_at': now.isoformat() if new_flag else prev.get('flagged_at', ''),
+        }
+        state[fn] = entry
     return dict(entry, newly_flagged=new_flag)
 
 
@@ -212,5 +291,9 @@ def render_brief(project, interval_days=DEFAULT_INTERVAL_DAYS, now=None):
         prev = (r.get('_review') or {}).get('finding')
         if prev:
             lines.append(f'- last finding: {prev}')
+        if (r.get('_review') or {}).get('contested'):
+            lines.append('- NOTE: the last review found the tripped condition no '
+                         'longer holds, but the flag stays open — only a human '
+                         'closes it (edit or forget the position)')
         lines.append('')
     return '\n'.join(lines)

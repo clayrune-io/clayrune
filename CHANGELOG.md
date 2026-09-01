@@ -6,6 +6,37 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-01] — Position-review sidecar: a flag for Ron can no longer erase itself
+
+`mc/positions_review.py` (MC-910), fixing two bugs hit for real on 2026-08-30:
+a flag Ron had already been emailed about vanished from the flags report
+between two review sessions, an hour apart, with no human action in between.
+
+- **A flag raised for a human is now cleared only by a human.** The reviewer
+  used to compute `flagged = tripped and (new_flag or prev.flagged)` — any
+  later review that judged the tripped condition no longer held silently
+  cleared it. It now clears only when the position's *content hash* changed
+  since it was flagged, i.e. a human edited or superseded the ruling (the same
+  signal `should_flag` already uses for "the old flag no longer applies"). An
+  agent's own disagreement on unchanged text sets a new `contested: true` on
+  the sidecar entry instead — the flag stays open, and a later re-trip on that
+  same text correctly does **not** re-fire the email.
+- **The sidecar is now safe under concurrent writers.** `_write_state`
+  rewrote the whole file with no read-modify-write guard, so two reviewers
+  racing (MC-909's double-dispatch bug produces exactly this) could each read
+  a stale copy and the second write would drop the first reviewer's entry.
+  `record_review` now holds a plain-file lock (`position_review.json.lock`,
+  `os.O_CREAT|O_EXCL`, no fcntl/msvcrt) for the whole read-modify-write, with a
+  10s stale-lock break so a killed reviewer can't wedge every future review.
+  Deliberately independent of MC-909 staying fixed.
+
+`contested` is surfaced in the reviewing agent's worksheet (`render_brief`)
+and `tools/position-review.py flags`. Covered by
+`test_an_agents_own_tripped_false_does_not_clear_a_human_pending_flag`,
+`test_a_human_editing_the_position_is_what_actually_clears_a_flag`, and
+`test_concurrent_reviewers_do_not_lose_each_others_state` (6 threads, injected
+write delay to force the lost-update window) in `tests/test_positions_review.py`.
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it

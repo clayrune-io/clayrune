@@ -97,14 +97,17 @@ def cmd_flags(args):
                          'subject': r.get('subject'), 'verdict': r.get('verdict'),
                          'expires_when': r.get('expires_when'),
                          'finding': (r.get('_review') or {}).get('finding'),
-                         'flagged_at': (r.get('_review') or {}).get('flagged_at')})
+                         'flagged_at': (r.get('_review') or {}).get('flagged_at'),
+                         'contested': bool((r.get('_review') or {}).get('contested'))})
     if args.json:
         print(json.dumps(rows, indent=2))
     elif not rows:
         print('No open flags. Every reviewed position still holds.')
     else:
         for r in rows:
-            print(f"[{r['project']}] {r['subject']}")
+            print(f"[{r['project']}] {r['subject']}"
+                 + ('  (CONTESTED — latest review says it no longer holds)'
+                    if r['contested'] else ''))
             print(f"    trigger : {r['expires_when'] or '(none recorded)'}")
             print(f"    finding : {r['finding']}")
             print(f"    since   : {(r['flagged_at'] or '')[:10]}   ({r['file']})")
