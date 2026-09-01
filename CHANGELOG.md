@@ -6,6 +6,57 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-01b] — Nine specialists that sounded like one, and delegation priced blind
+
+Ron, on the Floor: *"All agents behave and converse at almost the exact same
+tone… none of them has its own real persona"* and *"the agents do not really
+understand their responsibility in overall token management and delegation."*
+Both traced to the same shape — the persona file was the only per-agent lever,
+and it only ever described **method**.
+
+- **Voice and conduct are now separately owned.** The character block sat after
+  the rules with a comment saying the rules retain primacy *"over a chosen
+  persona's voice"*. Measured: the shared context is ~46 KB and a persona body
+  is 1.8–4.3 KB, so **over 90% of every agent's prompt was byte-identical** —
+  and the identical part is the part that legislates tone ("always condense",
+  "bullet points always wins", "never narrate your own diligence"). Nine
+  characters collapsed into one bulleted telegram. Ordering is unchanged
+  (conduct really does outrank persona); the block now states that the rules
+  own conduct and content while the character owns voice, and that **brevity is
+  a rule, not a voice** — the shortest version of an agent should still be
+  recognisably that agent.
+- **Every global character gained a `## Voice` section** of concrete, checkable
+  speech habits rather than adjectives: Bram opens with a measurement and has
+  no "probably" register; Fenn writes `file:line —` first and will send "this is
+  fine" alone; Wren leads with who reaches what; Tilda uses present tense for
+  the screen and past tense for the fix; Marlow writes in specification
+  register; Dave names people and asks one question. Halloway and Posy already
+  had real voices and were left alone — they are the two that were written as
+  *people* rather than as method checklists, which is the pattern the other
+  nine now follow. (These live in `~/.claude/agents/`, operator config, not the
+  repo.)
+- **The roster now shows each type's engine.** `_roster_block` listed the
+  specialists and hid their price, so a dispatcher ranked them by name-fit
+  alone. Each line now carries `[Opus 5 · effort max]` or `[project default]`,
+  resolved through the provider runtime's own `MODEL_CHOICES` so it never
+  drifts from the picker (`_model_label` / `_engine_label`).
+- **New `WHAT A DELEGATION COSTS` block**, and the number is *measured*, not
+  asserted: it is emitted late in `_build_agent_context`, so `len(parts)` is
+  exactly the floor a fresh sibling would re-pay (~51 KB / ~13k tokens on this
+  project). A hardcoded figure would be wrong on every other project and stale
+  here the first time a rules file grew. The rule it derives: the cost is flat,
+  so it dominates small asks and vanishes into large ones — do the grep
+  yourself, delegate a genuine unit of work, do not spend a max-effort
+  specialist on a lookup, and remember fan-out multiplies the floor.
+- **The Floor stops printing raw model ids.** It was the one surface showing
+  `claude · claude-opus-5` where the chat header and persona picker both say
+  `Opus 5`; it now resolves through the live provider catalog
+  (`_providerModelChoices`, so gemini figures resolve too). Figures also carry
+  `model_from` — `own` vs `project` — and an inherited engine renders as
+  `Opus 5 (project default)`. A figure on Opus because its persona pins Opus
+  and one on Opus because nobody chose anything are different facts, and the
+  board rendered them identically.
+
 ## [2026-09-01] — Position-review sidecar: a flag for Ron can no longer erase itself
 
 `mc/positions_review.py` (MC-910), fixing two bugs hit for real on 2026-08-30:

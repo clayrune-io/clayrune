@@ -260,14 +260,23 @@ def _figure_model(s, proj_default):
     for the same session. The fallback is claude-ONLY: a project's `agent_model`
     is always a claude id, and applying it to a codex/gemini run would make the
     card claim "codex · claude-opus-5" for a spawn that received no --model.
+    Returns (model_id, source) where source is 'own' when the session was
+    dispatched with this model and 'project' when it is only inheriting the
+    project default. The Floor needs the difference: a figure showing Opus
+    because its persona pins Opus and a figure showing Opus because nobody
+    chose anything are two different facts, and the board rendered them
+    identically (Ron, 2026-09-01).
     """
     own = s.get('model') or s.get('agent_model') or ''
     if own:
-        return own
-    return proj_default if (s.get('provider') or 'claude') == 'claude' else ''
+        return own, 'own'
+    if (s.get('provider') or 'claude') == 'claude' and proj_default:
+        return proj_default, 'project'
+    return '', ''
 
 
 def _figure(s, proj_default='', labels=None):
+    _fig_model, _fig_model_from = _figure_model(s, proj_default)
     st, reason = _figure_state(s)
     ch = _character_of(s)
     name, name_from = _figure_name(s, labels or {})
@@ -288,7 +297,10 @@ def _figure(s, proj_default='', labels=None):
         'name_from': name_from,
         'avatar': _figure_avatar(s, labels or {}),
         'provider': s.get('provider') or 'claude',
-        'model': _figure_model(s, proj_default),
+        # 'own' (dispatched with it) vs 'project' (merely inheriting the
+        # default) — see _figure_model.
+        'model': _fig_model,
+        'model_from': _fig_model_from,
         'started_at': s.get('started_at', ''),
         # The corner age. A forgotten twenty-hour session is invisible today
         # unless you open its modal; this is the whole reason it is on the card.
