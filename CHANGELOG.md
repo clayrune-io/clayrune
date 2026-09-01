@@ -37,6 +37,41 @@ and `tools/position-review.py flags`. Covered by
 `test_concurrent_reviewers_do_not_lose_each_others_state` (6 threads, injected
 write delay to force the lost-update window) in `tests/test_positions_review.py`.
 
+## [2026-09-01] — MEMORY.md write refuses over the index budget instead of drifting past it
+
+`index_byte_budget` (24KB) was a target nothing enforced. The watermark-GC leak
+(37.8KB of stale markers) blew it for real with no error anywhere, just a log
+line — and the two API routes that let a human or an agent replace/append to
+MEMORY.md directly (`PUT`/`POST .../memory/append`) had **zero** budget
+awareness at all: no lock, no size check, straight `write_text`.
+
+- **One enforcement point** (`mc/memory.py`): `_index_overflow(text)` is the
+  single computation of "does this fit the budget"; `_enforce_index_cap(text)`
+  raises `MemoryCapExceeded(current_bytes, budget_bytes, overflow_bytes)` on
+  top of it for callers that can act on the error.
+- **Hard refusal on the attended paths.** `PUT /api/project/<id>/memory` and
+  `POST /api/project/<id>/memory/append` now return **413** with the numbers
+  plus a consolidation instruction, and leave the on-disk file untouched — a
+  human in the Settings UI or an agent calling the API can trim/merge curated
+  pointer lines (or move detail to a topic file) and retry in the same turn.
+- **Machine-managed writers stay non-raising, deliberately.** `_commit_managed_entry`
+  is a documented "Never raises" background writer (Scribe/checkpoint/
+  teardown) with no request/response caller to hand an error to — it keeps its
+  existing soft floor-eviction. `_condense_apply`'s fold step is the one
+  in-process writer that can still grow curated (the "insert-only pump, no
+  drain" gap); it now rolls back its own pointer inserts (most recent first)
+  if the result would still be over budget after evicting everything
+  evictable — the fact is never lost (already archived verbatim either way),
+  just downgraded to the same outcome as an ambiguous/vanished fold heading.
+- The 24KB budget itself is unchanged — this is enforcement, not Hermes's
+  3,575-char cap; memory depth stays a differentiator (see
+  `discovery-index-byte-cap-curated-bloat`).
+
+Six new tests: `_index_overflow`/`_enforce_index_cap` unit coverage, a fold
+rollback + a fold-still-fits regression guard in `test_condense_structured.py`
+style, and 413 + file-untouched + under-cap-still-works coverage for both API
+routes.
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it

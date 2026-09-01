@@ -1678,6 +1678,27 @@ def save_shared_rules():
 # file at _get_memory_path. The locked managed-region writers
 # (_commit_managed_entry / _condense_apply / _get_mem_write_lock) are NOT
 # touched and stay in server.py — see CLAUDE.md memory-system rules.
+#
+# PUT and POST are the only two write paths into MEMORY.md with NO byte-cap
+# awareness at all (MC-917): they write straight to disk with no lock and no
+# size check, unlike every other writer in mc/memory.py. That makes them the
+# right (and only necessary) place for a HARD refusal — a human editing via
+# the Settings UI or an agent calling /memory/append gets a synchronous
+# response it can act on in the same turn. See mc.memory._enforce_index_cap.
+
+def _index_cap_error(ex):
+    """MemoryCapExceeded -> the 413 JSON body: the numbers plus a
+    consolidation path the caller can actually take before retrying."""
+    return {
+        'error': 'index budget exceeded',
+        'current_bytes': ex.current_bytes,
+        'budget_bytes': ex.budget_bytes,
+        'overflow_bytes': ex.overflow_bytes,
+        'consolidate': (
+            'Trim or merge curated pointer lines, or move detail into a '
+            'topic file in the memory dir and leave a one-line pointer here '
+            '(the existing MEMORY.md convention), then retry.'),
+    }
 
 @bp.route('/api/project/<project_id>/memory')
 def get_memory(project_id):
@@ -1699,6 +1720,11 @@ def save_memory(project_id):
     content = data.get('content')
     if content is None:
         return jsonify({'error': 'content required'}), 400
+    from mc import memory as _mem
+    try:
+        _mem._enforce_index_cap(content)
+    except _mem.MemoryCapExceeded as ex:
+        return jsonify(_index_cap_error(ex)), 413
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
     mem_path.write_text(content, encoding='utf-8')
@@ -1722,6 +1748,11 @@ def append_memory(project_id):
         combined = existing + '\n\n' + content
     else:
         combined = content
+    from mc import memory as _mem
+    try:
+        _mem._enforce_index_cap(combined)
+    except _mem.MemoryCapExceeded as ex:
+        return jsonify(_index_cap_error(ex)), 413
     mem_path.write_text(combined, encoding='utf-8')
     return jsonify({'ok': True})
 

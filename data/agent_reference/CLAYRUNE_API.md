@@ -30,6 +30,12 @@ It is curated + machine-managed; do NOT hand-edit the managed region.
 | GET | `/api/project/<project_id>/memory` | Read the full MEMORY.md as text. |
 | PUT | `/api/project/<project_id>/memory` | Replace MEMORY.md (rare; UI uses this). |
 | POST | `/api/project/<project_id>/memory/append` | Append a session-log entry programmatically. |
+
+Both PUT and POST refuse a write that would push MEMORY.md over the project's
+`index_byte_budget` (default 24KB): **413**, body
+`{error, current_bytes, budget_bytes, overflow_bytes, consolidate}`. The file
+is left untouched. Trim/merge curated pointer lines (or move detail into a
+topic file and leave a one-line pointer) and retry in the same turn.
 | GET | `/api/project/<project_id>/memory/search?q=…&k=N` | Ranked memory search (topic files + archive + log). Prefer the `mc-memory-search` skill. |
 | GET / PUT | `/api/project/<project_id>/memory/continuity` | Working state — what the project is part-way through and what was promised. Fixed slots, replaced whole; PUT omits nothing you want kept. Rendered into every prompt, so you rarely need to GET it. |
 | GET / POST | `/api/project/<project_id>/memory/positions` | Standing positions. **POST one whenever a question gets settled** — you recommended against something, or the user declined something you proposed. `{subject, position, reason, expires_when?, triggers?}`; `reason` is required. Posting the same subject SUPERSEDES rather than adding a second ruling. |
