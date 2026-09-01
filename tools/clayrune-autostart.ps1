@@ -51,6 +51,7 @@ param(
 
 $ErrorActionPreference = 'Continue'
 $TaskName = 'ClayruneAutostart'
+$WindowTaskName = 'ClayruneAutostartWindow'
 
 # Derive the install dir from this script's own location (tools/ -> repo root)
 # rather than hardcoding one machine's path — same rule as tools/_mc_restart.ps1.
@@ -135,6 +136,27 @@ if ($Install) {
     $principal = New-ScheduledTaskPrincipal -UserId $id.Name -LogonType S4U -RunLevel Limited
     $desc = 'Start Clayrune at boot (before login) if it is not already running.'
     $when = 'at system startup, before login, 30s delay'
+
+    # The boot task above starts the server BEFORE anyone logs in — S4U has no
+    # desktop to show a window on. So the visible app window (the same
+    # standalone Chrome/Edge --app= window the Desktop shortcut opens) has to
+    # come from a second task that fires AT ACTUAL LOGON, once a desktop
+    # exists. It runs start-hidden.vbs directly (not -Launch): that script
+    # already does its own "server already up? just open the window" check
+    # (installer\start.bat), so there's no port-race with the boot task.
+    $winAction = New-ScheduledTaskAction -Execute 'wscript.exe' `
+      -Argument ('"{0}"' -f (Join-Path $dir 'installer\start-hidden.vbs'))
+    $winTrigger = New-ScheduledTaskTrigger -AtLogOn -User $id.Name
+    $winTrigger.Delay = 'PT10S'
+    $winSettings = New-ScheduledTaskSettingsSet -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -MultipleInstances IgnoreNew
+    try {
+      Register-ScheduledTask -TaskName $WindowTaskName -Action $winAction -Trigger $winTrigger `
+        -Settings $winSettings -Description 'Open the Clayrune app window at logon.' -Force -ErrorAction Stop | Out-Null
+      Log "installed task $WindowTaskName (at logon, 10s delay) -> $(Join-Path $dir 'installer\start-hidden.vbs')"
+    } catch {
+      Write-Output "FAILED to register window task: $_"
+      Log "window task install failed: $_"
+    }
   } else {
     $trigger = New-ScheduledTaskTrigger -AtLogOn -User $env:USERNAME
     $trigger.Delay = 'PT45S'
@@ -169,6 +191,11 @@ if ($Uninstall) {
   } catch {
     Write-Output "Task '$TaskName' was not registered (nothing to remove)."
   }
+  try {
+    Unregister-ScheduledTask -TaskName $WindowTaskName -Confirm:$false -ErrorAction Stop
+    Log "uninstalled task $WindowTaskName"
+    Write-Output "Removed scheduled task '$WindowTaskName'."
+  } catch {}
   exit 0
 }
 
