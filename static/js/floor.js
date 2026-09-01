@@ -149,13 +149,39 @@ async function floorSetAvatar(sessionId, current) {
   }
 }
 
+// Engine label for a card. Reuses the model picker's friendly names
+// (the live provider catalog) so the Floor stops being the one
+// surface that prints raw ids — "claude · claude-opus-5" where the chat header
+// and the persona picker both say "Opus 5" (Ron, 2026-09-01).
+//
+// `from` is the server's model_from: 'own' when the session was dispatched
+// with this model, 'project' when it is only inheriting the project default.
+// Those are different facts and the board used to render them identically.
+function _floorEngine(provider, model, effort, from) {
+  // _providerModelChoices covers every provider (it reads the live provider
+  // catalog), where _engShortLabel only knows the Claude list — a gemini
+  // figure would otherwise still print its raw id here.
+  let label = model;
+  if (model && typeof window._providerModelChoices === 'function') {
+    const hit = (window._providerModelChoices(provider || 'claude') || [])
+      .find((x) => x[0] === model);
+    if (hit) label = hit[1];
+  }
+  const bits = [];
+  if (provider) bits.push(provider);
+  if (label) bits.push(label);
+  if (effort) bits.push('effort ' + effort);
+  if (!bits.length) return '';
+  return bits.join(' · ') + (from === 'project' ? ' (project default)' : '');
+}
+
 function _floorFigure(pid, f) {
   // NAME and TYPE are two facts, not one. The card used to print "no type"
   // where the name goes, which put the board at odds with that session's own
   // prompt — it says "Your name is Vector" to a figure the board called
   // untyped. The role still shows as "no type"; it just stops standing in for
   // a name it never was.
-  const engine = [f.provider, f.model].filter(Boolean).join(' · ');
+  const engine = _floorEngine(f.provider, f.model, '', f.model_from);
   const chosen = f.name_from === 'user' || f.name_from === 'self';
   const nameCls = 'fl-who' + (chosen ? ' fl-named' : '');
   // The pencil rides with the TYPE, wherever the type appears. It used to live
@@ -262,7 +288,7 @@ function _floorBench(bench, rooms, quiet) {
   const cards = bench.map(b => {
     const key = (b.scope || 'global') + ':' + (b.project_id || '') + ':' + b.name;
     const open = floorPickerFor === key;
-    const eng = [b.provider, b.model, b.effort].filter(Boolean).join(' · ');
+    const eng = _floorEngine(b.provider, b.model, b.effort, '');
     const hue = _floorHue(b.name || b.display || '');
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>

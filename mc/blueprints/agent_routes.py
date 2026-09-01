@@ -2250,14 +2250,60 @@ def _render_position(project, h):
     return " — ".join(bits) + f"  [{h.get('file')}]"
 
 
+def _model_label(provider, model):
+    """Friendly name for a model id ('claude-opus-5' → 'Opus 5').
+
+    Reuses the provider runtime's own MODEL_CHOICES so this never drifts from
+    the picker the user sees. Falls back to the raw id — an unknown model is
+    still worth naming, and a blank would read as "no engine pinned", which is
+    a different fact entirely.
+    """
+    m = (model or '').strip()
+    if not m:
+        return ''
+    try:
+        rt = _agent_runtime.get_runtime((provider or 'claude').strip().lower())
+        for mid, label in (getattr(rt, 'MODEL_CHOICES', None) or []):
+            if mid == m:
+                return label
+    except Exception:
+        pass
+    return m
+
+
+def _engine_label(rec):
+    """The engine a character type runs on, as a short scannable string.
+
+    '' means the type pins nothing and inherits the project default — the
+    CALLER decides how to say that, because "no engine" and "inherits" read
+    very differently on the Floor versus in a roster line.
+    """
+    eng = (rec or {}).get('engine') or {}
+    bits = []
+    lbl = _model_label(eng.get('provider'), eng.get('model'))
+    if lbl:
+        bits.append(lbl)
+    elif eng.get('provider'):
+        # No model pinned but a provider is — that is still a real constraint.
+        bits.append(str(eng['provider']).strip().title())
+    if eng.get('effort'):
+        bits.append(f"effort {eng['effort']}")
+    return ' · '.join(bits)
+
+
 def _roster_block(project, port):
-    """Who the hired types are, and which of the two ways to call them shows up.
+    """Who the hired types are, which engine each one runs on, and which of the
+    two ways to call them shows up.
 
     NOT "these types exist" — the harness already lists them as agent types,
     because a character IS a Claude Code subagent file in ~/.claude/agents/.
     What it does not say is who they are (Ron says "Fenn", the list says
-    `code-reviewer`) or that the two ways of calling one differ in whether the
-    work is visible.
+    `code-reviewer`), that the two ways of calling one differ in whether the
+    work is visible, or — the part that made delegation guesswork — what
+    ENGINE each one is about to spend. A dispatcher choosing between Quill
+    (Opus at max effort) and Tobin (Sonnet) was choosing blind: the roster
+    named the specialists and hid their price, so "who fits the words in this
+    task" was the only signal available to rank them by (Ron, 2026-09-01).
     """
     try:
         from mc import characters as _chars
@@ -2273,16 +2319,23 @@ def _roster_block(project, port):
     lines = []
     for r in sorted(named, key=lambda r: (r.get('agent_name') or '').lower()):
         face = (r.get('avatar') or '').strip()
+        eng = _engine_label(r) or 'project default'
         lines.append(
             f"  • {face + ' ' if face else ''}{r['agent_name']} — `{r['name']}`"
-            f" ({r.get('scope', 'global')}) — {(r.get('description') or '').strip()[:100]}")
+            f" ({r.get('scope', 'global')}) [{eng}] —"
+            f" {(r.get('description') or '').strip()[:100]}")
     pid = (project or {}).get('id') or ''
     return (
-        "--- THE ROSTER (hired agent types, and what Ron calls them) ---\n"
+        "--- THE ROSTER (hired agent types, what Ron calls them, and what "
+        "engine each one spends) ---\n"
         + "\n".join(lines)
         + "\n  The backticked name is the agent type; the other is what the type "
-          "calls itself, and it is the one Ron will say. Two ways to call one, "
-          "and they differ in something that matters:\n"
+          "calls itself, and it is the one Ron will say. The bracket is the "
+          "ENGINE that type runs on — a pinned model, and its effort level "
+          "where one is set. `project default` means the type pins nothing and "
+          "inherits whatever this project is configured to use, so it costs "
+          "whatever you cost.\n"
+          "  Two ways to call one, and they differ in something that matters:\n"
           "  • The Task tool runs it IN THIS PROCESS. Fast, and invisible — it "
           "never becomes a session, so it never appears on the Floor and Ron "
           "cannot open it. Right for a quick helper whose answer you fold into "
@@ -2379,10 +2432,12 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "doing when it distinguishes you from the other figures — a board "
             "where every session renamed itself would be as unreadable as one "
             "where none did.")
+    _has_roster = False
     if session_id and not incognito:
         _ros = _roster_block(project, state.CONFIG.get('port', 5199))
         if _ros:
             parts.append(_ros)
+            _has_roster = True
     # A declared toolkit. NOT a restriction — the harness decides which skills
     # exist, and nothing here narrows that. It says which of them are YOURS,
     # because a list of sixty says nothing about who you are and three named
@@ -2428,10 +2483,30 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     if SHARED_RULES_PATH.exists():
         parts.append(f"--- SHARED_RULES.md ---\n{SHARED_RULES_PATH.read_text(encoding='utf-8')}")
 
-    # Per-chat character/persona (Prompt Builder Phase 2). After the rules so
-    # project/shared rules retain primacy over a chosen persona's voice.
+    # Per-chat character/persona (Prompt Builder Phase 2). Still AFTER the
+    # rules — but the old comment here said the rules retain primacy "over a
+    # chosen persona's voice", and that was the bug Ron reported on 2026-09-01:
+    # every agent sounded identical. The rules block is ~90% of a persona's
+    # prompt and it legislates tone ("always condense", "bullet points always
+    # wins", "never narrate your own diligence"), so subordinating voice to it
+    # collapsed nine characters into one bulleted telegram. Ordering is kept —
+    # conduct really does outrank persona — and the ownership is now split
+    # explicitly instead of being decided by position alone.
     if character_body:
-        parts.append(f"--- CHARACTER (active persona for this chat) ---\n{character_body.strip()}")
+        parts.append(
+            "--- CHARACTER (active persona for this chat) ---\n"
+            + character_body.strip()
+            + "\n\n  This character owns your VOICE: your register, your rhythm,"
+              " what you lead with, what you never say. The rules above own your"
+              " CONDUCT and the CONTENT of your answers — what you may do, what"
+              " you must verify, what you must not claim. Where the two meet,"
+              " follow the rules and say it in your own voice; they constrain"
+              " what is true, not how you sound.\n"
+              "  Brevity is a rule, not a voice. Short does not mean"
+              " interchangeable — the shortest version of you should still be"
+              " recognisably you. If your reply could have been written by any"
+              " other agent on the roster, you have dropped the character, not"
+              " obeyed the rules.")
 
     # NOTE: Project memory (MEMORY.md) is NOT injected here — the Claude CLI
     # already reads ~/.claude/projects/<path>/memory/MEMORY.md natively.
@@ -2687,6 +2762,46 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 sid_part = f" | claude -r {csid}" if csid else ''
                 sess_lines.append(f"  - [{e.get('status','')}] {e.get('task','')[:60]}{sid_part}")
             parts.append("Recent agent sessions (use 'claude -r <id>' to resume a prior conversation):\n" + "\n".join(sess_lines))
+
+    # What a delegation actually costs (Ron, 2026-09-01: "the agents do not
+    # really understand their responsibility in overall token management and
+    # delegation"). The roster told an agent WHO exists and, as of the same
+    # day, which engine each one spends — but nothing anywhere told it that
+    # spawning one re-pays this entire context first. So delegation got chosen
+    # on name-fit ("this smells like research, call Quill") with no sense that
+    # the lookup it wanted cost more to hand off than to do.
+    #
+    # The number is MEASURED, not asserted: everything above is already in
+    # `parts`, so the floor a fresh sibling re-pays is exactly what has been
+    # assembled here. A hardcoded figure would be wrong on every other project
+    # and stale on this one the first time the rules file grew.
+    if _has_roster:
+        _floor = len("\n\n".join(parts))
+        parts.append(
+            "--- WHAT A DELEGATION COSTS (read before you spawn one) ---\n"
+            "  Every dispatched session re-pays the full project context — "
+            "rules, roster, memory read-floor, the API reference, continuity — "
+            f"BEFORE it reads its task. Right now that floor is ~{_floor // 1024} KB "
+            f"(~{_floor // 4000}k tokens), and it is paid again per agent, per "
+            "dispatch. A Task-tool helper pays it too; it just does not show up "
+            "on the Floor.\n"
+            "  That cost is flat, so it dominates small asks and vanishes into "
+            "large ones. Which gives the rule:\n"
+            "  • Do it yourself when the answer is a grep, a file read, or one "
+            "command. Spawning an agent to look something up costs more than "
+            "looking it up, every time.\n"
+            "  • Delegate a genuine UNIT OF WORK — something with its own "
+            "investigation, its own verification, and a report worth reading on "
+            "its own.\n"
+            "  • Match the engine to the question, not the job title. A "
+            "max-effort Opus specialist is the wrong tool for a lookup that "
+            "happens to fall in their subject.\n"
+            "  • Fan-out multiplies the floor. Five parallel agents is five full "
+            "contexts before any of them does anything — parallelise work that "
+            "is genuinely independent, not work you could hand one agent as "
+            "three steps.\n"
+            "  • You own what you hand out. Do not dispatch work you will not "
+            "read, and do not leave a spawned session unreported.")
 
     ct = project.get('current_task', '')
     if ct:
