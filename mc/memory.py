@@ -1878,6 +1878,73 @@ def _index_byte_cap():
 def _index_byte_floor():
     return max(1024, _index_byte_cap() - 1024)
 
+
+class MemoryCapExceeded(Exception):
+    """A candidate MEMORY.md write would push the file over index_byte_budget.
+
+    Raised only by `_enforce_index_cap` (MC-917) — the hard gate for the
+    ATTENDED write paths (the /memory PUT + /memory/append API routes), where
+    a request/response caller can read the numbers and consolidate in the
+    same turn. Background writers (`_commit_managed_entry`, the structured
+    condense fold-into-curated step) are documented never-raise and call
+    `_index_overflow()` directly instead — see that function's docstring for
+    why a hard raise is wrong there.
+    """
+
+    def __init__(self, current_bytes, budget_bytes, overflow_bytes):
+        self.current_bytes = current_bytes
+        self.budget_bytes = budget_bytes
+        self.overflow_bytes = overflow_bytes
+        super().__init__(
+            f'MEMORY.md write refused: {current_bytes}B would exceed the '
+            f'{budget_bytes}B index budget by {overflow_bytes}B.')
+
+
+def _index_overflow(candidate_text):
+    """Single source of truth for 'does this MEMORY.md content fit the
+    budget' (MC-917). Every write path that can grow the file's on-disk
+    bytes checks here — directly (non-raising callers) or through
+    `_enforce_index_cap` (raising callers) — so the cap is defined once.
+
+    Returns None if candidate_text fits within index_byte_budget, else the
+    3-tuple (current_bytes, budget_bytes, overflow_bytes).
+    """
+    n = len(candidate_text.encode('utf-8'))
+    cap = _index_byte_cap()
+    if n <= cap:
+        return None
+    return n, cap, n - cap
+
+
+def _enforce_index_cap(candidate_text):
+    """Hard gate: raise MemoryCapExceeded if candidate_text would push
+    MEMORY.md over index_byte_budget, so the caller never persists it.
+
+    A refused write leaves the on-disk file byte-for-byte untouched — the
+    caller (project_routes.save_memory / append_memory) catches the
+    exception before any write happens and returns the numbers to the
+    requester, who can shrink the content (trim/merge curated pointer lines,
+    or move detail into a topic file and leave a one-line pointer — the
+    existing project convention) and retry in the SAME turn. That is the
+    forcing function MC-917 asks for, modeled on Hermes's hard-refuse cap
+    (docs/research/HERMES_AGENT_COMPETITIVE_READ.md) — same mechanism, our
+    24KB budget kept (Hermes's 3,575-char total is not ours to copy; memory
+    depth is a differentiator here, see
+    discovery-index-byte-cap-curated-bloat).
+
+    Only the attended API routes call this. `_commit_managed_entry` is
+    documented "Never raises" (background Scribe/checkpoint/teardown writer
+    with no request/response caller to hand an error to — see its
+    docstring); it already has its own non-raising overflow response, the
+    mechanical line+byte floor that evicts managed entries to the archive.
+    Calling this here would either break that contract or be silently
+    swallowed, neither of which is the forcing function this exists for.
+    """
+    ov = _index_overflow(candidate_text)
+    if ov is not None:
+        raise MemoryCapExceeded(*ov)
+
+
 # Projects already warned (once per server run) that their curated region
 # alone exceeds the harness cap and machinery cannot shrink it.
 _curated_cap_warned: set = set()
@@ -3222,6 +3289,11 @@ def _condense_apply(project, payload):
         cur_norm = {ln.strip() for ln in cur_lines}
         present_ids = set()
         new_entries, overflow = [], []
+        # Pointer lines this run inserted into curated, in insertion order —
+        # fold is the only way _condense_apply grows curated, and the
+        # MC-917 cap backstop below pops these LIFO if eviction alone can't
+        # bring the file back under budget.
+        folded_pointers = []
         for e in entries:
             eid = _sha8(e)
             present_ids.add(eid)
@@ -3252,6 +3324,7 @@ def _condense_apply(project, payload):
                 if pl and pl not in cur_norm:
                     cur_lines.insert(hits[0] + 1, pl)
                     cur_norm.add(pl)
+                    folded_pointers.append(pl)
                 overflow.append(e)        # fact preserved verbatim in archive
                 st['folded'] += 1
             else:
@@ -3266,6 +3339,33 @@ def _condense_apply(project, payload):
         while new_entries and _over_floor(
                 _mem_compose(curated2, new_entries, wm), hard_floor):
             overflow.append(new_entries.pop(0))
+        # MC-917: fold is the only way this function grows curated, and
+        # curated has no mechanical drain — evicting every evictable managed
+        # entry above can't free a single curated byte. If the composed
+        # result is STILL over the hard index_byte_budget, undo fold
+        # pointer inserts, most-recently-inserted first, until it fits or
+        # none remain. No fact is lost either way: every folded entry
+        # already went to `overflow` (the archive) above regardless of
+        # outcome, so a rolled-back insert just lands on the same
+        # `fold_downgraded` outcome as an ambiguous/vanished heading.
+        rolled_back = 0
+        while folded_pointers and _index_overflow(
+                _mem_compose('\n'.join(cur_lines), new_entries, wm)) is not None:
+            pl = folded_pointers.pop()
+            for _k in range(len(cur_lines) - 1, -1, -1):
+                if cur_lines[_k] == pl:
+                    del cur_lines[_k]
+                    break
+            rolled_back += 1
+        if rolled_back:
+            curated2 = '\n'.join(cur_lines)
+            st['folded'] -= rolled_back
+            st['fold_downgraded'] += rolled_back
+            _log(f"[condense] {pid}: {rolled_back} fold pointer(s) rolled "
+                 f"back — MEMORY.md still over the "
+                 f"{_index_byte_cap() // 1024}KB index budget after "
+                 f"evicting managed entries; fact stays in the archive, "
+                 f"curated insert skipped")
         # Post-apply curated size — a gauge (not additive) so soak can watch
         # the model-authored curated index for monotonic low-value drift
         # (additive-only fold has no mechanical eviction path until v2).

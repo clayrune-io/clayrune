@@ -193,6 +193,101 @@ def test_gc_stale_watermarks_noop_when_all_live(tmp_data_dir):
     assert mp.read_text(encoding="utf-8") == before
 
 
+# ── MC-917: index-cap hard refusal (_index_overflow / _enforce_index_cap) ────
+# A budget nothing enforces silently drifts — the watermark-GC leak (67
+# markers, 37.8KB) blew the ~24KB index_byte_budget with no error anywhere.
+# These lock in the ONE enforcement point every write path routes through.
+
+def test_index_overflow_none_under_budget(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 100
+    assert m._index_overflow("x" * 50) is None
+    assert m._index_overflow("x" * 100) is None  # exactly at cap fits
+
+
+def test_index_overflow_reports_exact_numbers(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 100
+    got = m._index_overflow("x" * 130)
+    assert got == (130, 100, 30)
+
+
+def test_enforce_index_cap_raises_with_numbers(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 100
+    try:
+        m._enforce_index_cap("x" * 150)
+        assert False, "expected MemoryCapExceeded"
+    except m.MemoryCapExceeded as ex:
+        assert (ex.current_bytes, ex.budget_bytes, ex.overflow_bytes) == (
+            150, 100, 50)
+
+
+def test_enforce_index_cap_noop_under_budget(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 100
+    m._enforce_index_cap("x" * 90)  # must not raise
+
+
+def test_condense_apply_fold_rolls_back_when_over_cap(tmp_data_dir):
+    """Fold is the only way _condense_apply grows curated, and curated has no
+    mechanical drain. If the pointer insert would push MEMORY.md over the
+    hard budget even after evicting every evictable managed entry, the
+    insert must be rolled back (not silently left over-budget) — the fact
+    stays safe in the archive either way, so this must never raise."""
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 200
+    curated = "# Index\n\n## Topic\n- existing pointer"
+    e = "- [2026-08-31] **fact** — server.py:4902 matters"
+    p = {"id": "capproj"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    pointer = "- [insight](insight.md) — " + ("x" * 200)  # alone blows the cap
+    mp.write_text(m._mem_compose(curated, [e], []), encoding="utf-8")
+
+    payload = {"entry_decisions": [
+        {"id": m._sha8(e), "action": "fold", "fold_into": "## Topic",
+         "pointer_line": pointer},
+    ], "curated_rewrite": None}
+    st = m._condense_apply(p, payload)
+
+    # Downgraded, not folded — the pointer insert was rolled back.
+    assert st["folded"] == 0 and st["fold_downgraded"] == 1
+    cur, ents, _wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    assert pointer not in cur              # never left in curated
+    assert "- existing pointer" in cur     # prior curated content untouched
+    assert ents == []                      # raw entry demoted, not kept
+    # The fact is NOT lost: it's in the archive, verbatim.
+    assert e in m._get_archive_path(p).read_text(encoding="utf-8")
+    # File on disk is back under budget (roll back actually helped).
+    final = mp.read_text(encoding="utf-8")
+    assert len(final.encode("utf-8")) <= 200
+
+
+def test_condense_apply_fold_keeps_pointer_under_budget(tmp_data_dir):
+    """Regression guard: a fold that fits the budget is unaffected by the
+    MC-917 rollback path."""
+    m = _mem(tmp_data_dir)
+    m.state.CONFIG["index_byte_budget"] = 24 * 1024  # default-sized budget
+    curated = "# Index\n\n## Topic\n- existing pointer"
+    e = "- [2026-08-31] **fact** — server.py:4902 matters"
+    p = {"id": "capproj2"}
+    mp = m._get_memory_path(p)
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text(m._mem_compose(curated, [e], []), encoding="utf-8")
+    pointer = "- [insight](insight.md) — server.py:4902 matters"
+
+    payload = {"entry_decisions": [
+        {"id": m._sha8(e), "action": "fold", "fold_into": "## Topic",
+         "pointer_line": pointer},
+    ], "curated_rewrite": None}
+    st = m._condense_apply(p, payload)
+
+    assert st["folded"] == 1 and st["fold_downgraded"] == 0
+    cur, _ents, _wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    assert pointer in cur
+
+
 # ── Scribe "why" leg (causal diagnosis alongside the event) ──────────────────
 # docs/RESEARCH_HYPERAGENTS.md — the scribe records WHAT; this records the CAUSE.
 

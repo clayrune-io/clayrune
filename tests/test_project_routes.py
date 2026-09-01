@@ -682,6 +682,58 @@ def test_memory_get_put_append(client):
         '/api/project/tproj/memory').get_json()['content'] == 'line 1\n\nline 2'
 
 
+def test_memory_put_refuses_over_index_cap(client, monkeypatch):
+    """MC-917: a write that would exceed index_byte_budget is refused (413,
+    numbers + a consolidation instruction), not silently written. The file
+    on disk must stay exactly as it was before the refused write."""
+    _seed(client)
+    from mc import state as mc_state
+    monkeypatch.setitem(mc_state.CONFIG, 'index_byte_budget', 100)
+    mp = client.mem_dir / 'tproj.md'
+    mp.write_text('unchanged', encoding='utf-8')
+
+    r = client.put('/api/project/tproj/memory',
+                   json={'content': 'x' * 150})
+    assert r.status_code == 413
+    body = r.get_json()
+    assert body['current_bytes'] == 150
+    assert body['budget_bytes'] == 100
+    assert body['overflow_bytes'] == 50
+    assert 'consolidate' in body
+    assert mp.read_text(encoding='utf-8') == 'unchanged'  # refused, not written
+
+
+def test_memory_append_refuses_over_index_cap(client, monkeypatch):
+    """Same gate on the append path — combined (existing + new) is what's
+    checked, and a refusal must not touch the existing content either."""
+    _seed(client)
+    from mc import state as mc_state
+    monkeypatch.setitem(mc_state.CONFIG, 'index_byte_budget', 20)
+    mp = client.mem_dir / 'tproj.md'
+    mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text('seed content', encoding='utf-8')
+
+    r = client.post('/api/project/tproj/memory/append',
+                    json={'content': 'more content that overflows'})
+    assert r.status_code == 413
+    body = r.get_json()
+    assert body['overflow_bytes'] > 0
+    assert mp.read_text(encoding='utf-8') == 'seed content'  # untouched
+
+
+def test_memory_put_append_still_work_under_cap(client, monkeypatch):
+    """Regression guard: normal-sized writes are unaffected by the gate."""
+    _seed(client)
+    from mc import state as mc_state
+    monkeypatch.setitem(mc_state.CONFIG, 'index_byte_budget', 24 * 1024)
+    assert client.put('/api/project/tproj/memory',
+                      json={'content': 'line 1'}).status_code == 200
+    assert client.post('/api/project/tproj/memory/append',
+                       json={'content': 'line 2'}).status_code == 200
+    assert (client.mem_dir / 'tproj.md').read_text(
+        encoding='utf-8') == 'line 1\n\nline 2'
+
+
 def test_memory_malformed_and_404(client):
     _seed(client)
     assert client.put('/api/project/tproj/memory', json={}).status_code == 400
