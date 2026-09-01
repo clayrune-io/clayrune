@@ -1802,7 +1802,7 @@ def _check_port_conflict():
             except Exception: pass
             return False
 
-    def _someone_answers():
+    def _who_answers():
         # Windows: the bind() probe above PASSES when the live listener is the
         # dual-stack AF_INET6 socket _serve_dual_stack() opens with SO_REUSEADDR
         # (on Windows SO_REUSEADDR means "another socket may bind this port too").
@@ -1811,21 +1811,40 @@ def _check_port_conflict():
         # traffic, the newer one's startup reaper killed the older one's agents,
         # and an agent "cleaned up the duplicate" by taskkilling a server.
         # A connect() probe cannot be fooled: if anything accepts, the port is taken.
+        # Returns the loopback address that answered, or None.
         for fam, addr in ((socket.AF_INET, '127.0.0.1'), (socket.AF_INET6, '::1')):
             s = socket.socket(fam, socket.SOCK_STREAM)
             s.settimeout(0.5)
             try:
                 s.connect((addr, PORT))
-                return True
+                return addr
             except OSError:
                 pass
             finally:
                 try: s.close()
                 except Exception: pass
-        return False
+        return None
+
+    def _is_clayrune(addr):
+        """Is the thing holding our port another Clayrune, or a stranger?
+
+        A connect() hit alone can't tell them apart, and the two need opposite
+        advice: stop the other MC, versus move Clayrune off a port something
+        else owns. /api/system/heartbeat is the cheapest positive ID we have —
+        it needs no auth on loopback and answers started_at + pid.
+        """
+        import urllib.request
+        host = f'[{addr}]' if ':' in addr else addr
+        try:
+            with urllib.request.urlopen(
+                    f'http://{host}:{PORT}/api/system/heartbeat', timeout=1.0) as r:
+                data = json.loads(r.read().decode('utf-8'))
+            return 'started_at' in data and 'pid' in data
+        except Exception:
+            return False  # No answer / not JSON / not our shape => not Clayrune.
 
     def _port_free():
-        return _try_bind() and not _someone_answers()
+        return _try_bind() and _who_answers() is None
 
     if _port_free():
         return  # Clean — port is free.
@@ -1896,21 +1915,51 @@ def _check_port_conflict():
             msg_lines.append(f"  Held by PID(s): {', '.join(described)}")
         else:
             msg_lines.append(f"  Held by PID(s): {', '.join(other_pids)}")
-    msg_lines += [
-        "",
-        "  Another MC is likely already running (e.g. via Tauri).",
-        "  Running two MCs at once causes traffic to split between them,",
-        "  duplicates agent sessions, and produces 'unrecoverable error'",
-        "  conditions when one instance shuts down.",
-        "",
-        "  To fix:",
-        "    1. Stop the other MC first, or",
-        "    2. Use the already-running instance directly, or",
-        "    3. Set MC_ALLOW_PORT_CONFLICT=1 if you really need both",
-        "       (rare; only meaningful for protocol-level testing).",
-        "=" * 72,
-        "",
-    ]
+    # Name the holder. "Another Clayrune" and "a stranger on our port" need
+    # opposite fixes, and the old message assumed the first — sending anyone
+    # whose port was taken by an unrelated service off to hunt a second MC
+    # that does not exist.
+    answering = _who_answers()
+    if answering is not None and _is_clayrune(answering):
+        msg_lines += [
+            "",
+            "  Another Clayrune is already running on this port — it answered",
+            "  /api/system/heartbeat. Running two at once causes traffic to",
+            "  split between them, duplicates agent sessions, and produces",
+            "  'unrecoverable error' conditions when one instance shuts down.",
+            "",
+            "  To fix:",
+            "    1. Use the already-running instance (it is serving now), or",
+            "    2. Stop it first, then start this one, or",
+            "    3. Set MC_ALLOW_PORT_CONFLICT=1 if you really need both",
+            "       (rare; only meaningful for protocol-level testing).",
+        ]
+    elif answering is not None:
+        msg_lines += [
+            "",
+            "  The holder is NOT Clayrune — something answered on this port but",
+            "  not /api/system/heartbeat. Some other service owns it.",
+            "",
+            "  To fix:",
+            "    1. Move Clayrune to a free port: set MC_PORT, or change",
+            f"       \"port\" in config.json (currently {PORT}), or",
+            "    2. Stop whatever else is using the port.",
+        ]
+    else:
+        # Bind refused but nothing accepts: a socket in TIME_WAIT, a bind
+        # without listen(), or a firewall eating loopback connects.
+        msg_lines += [
+            "",
+            "  Something holds the port but does not answer connections —",
+            "  a socket still closing (TIME_WAIT) or a process that bound",
+            "  without listening. Retrying in a few seconds usually clears it.",
+            "",
+            "  To fix:",
+            "    1. Wait a few seconds and start again, or",
+            "    2. Set MC_ALLOW_PORT_CONFLICT=1 to start anyway",
+            "       (rare; only meaningful for protocol-level testing).",
+        ]
+    msg_lines += ["=" * 72, ""]
     _log('\n'.join(msg_lines), flush=True)
 
     # Forensic log
