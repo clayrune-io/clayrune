@@ -205,6 +205,43 @@ Covered by 14 new `TestWinArgvLengthGuard`/`Test{OpenCode,Goose,Aider,Kiro}ArgvS
 cases in `tests/test_provider_runtimes.py` (each verified to fail against the
 pre-fix code) plus the 2 gemini cases from the original diagnosis.
 
+## [2026-09-01] — Cold session search: FTS5 underneath the curated memory index
+
+MC-918. The curated memory corpus (topic files, archive, managed region) is a
+small hand-tended set; a project's actual session transcripts — everything it
+has ever really said — were not searchable at all. Hermes Agent's
+`session_search` (`docs/research/HERMES_AGENT_COMPETITIVE_READ.md` §6.7) does
+exactly this with SQLite FTS5 over its session store; the corresponding gap
+here is now closed the same way.
+
+- **New `mc/memory_fts.py`** — an incremental SQLite FTS5 index over Claude
+  Code transcripts + the agent log, one db per project living beside
+  `MEMORY.md` (never under `DATA_DIR` — CLAUDE.md's pollution rule). Each
+  transcript is fingerprinted by `(mtime, size)`; an unchanged file costs one
+  `stat()` on the next pass, so a warm boot re-indexes nothing. Runs
+  incrementally at startup (`_backfill_session_fts_index`, off the app.run()
+  path) and is never part of the auto-injected read floor — only the explicit
+  `/memory/search` route reaches it.
+- **`/api/project/<id>/memory/search` gets a cold tier**, appended after the
+  curated hits and self-labelled (`tier: 'cold'`, `session_id`, `timestamp`) —
+  existing hits and callers are untouched, so this is backward compatible.
+  New `cold_k` query param (default `session_fts_cold_k`, 5); `cold_k=0` opts
+  out. Rollback lever: `session_fts_enabled: false` (both the tier and the
+  startup indexer).
+- **Measured, not assumed** (`tools/memory-eval/fts_recall_probe.py`, 253 real
+  pinned tasks against 345 real transcripts / 11,648 indexed messages): the
+  curated corpus already returns ≥1 hit for every task (0% zero-result, no
+  change there — this project's BM25 tuning is already saturated). The gap
+  the cold tier closes is a different one: **94.5% of real historical tasks
+  (239/253) have relevant transcript content the curated corpus can never
+  surface**, reaching **142 distinct real sessions** invisible to memory
+  search before this shipped. The Step-7 semantic-search deferral
+  (`decision-step7-semantic-search-deferral`) is about re-ranking the
+  *curated* corpus and is untouched by this finding — it still stands.
+
+Ships with `tests/test_memory_fts.py` (indexing, incrementality, agent-log
+indexing, route-level backward compatibility).
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it
