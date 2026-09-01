@@ -4,18 +4,24 @@
 **Excluded by instruction** (already with builders or another agent):
 MC-908, MC-909, MC-910, MC-911, MC-912, MC-913, MC-917, MC-918, MC-930, MC-931.
 
-**Result:** 4 items closed with proof, 24 still valid, 3 need a decision from Ron.
+**Result:** 5 items closed, 25 still valid, 1 question still open with Ron.
+
+**Updated 2026-09-01, after Ron answered.** MC-873 retired (`wontdo`) - Posy's
+clayrune_website schedules are the charter. MC-892's route picked: machine
+eviction of the 44-line variant plus a per-line delivery gate; the human cut was
+declined, and that is recorded as a standing position. MC-871 still open - Ron
+asked for more detail before deciding.
 This is a read-only triage — no feature code was written.
 
 ---
 
-## Decisions Ron owes (3)
+## Decisions (2 of 3 answered 2026-09-01)
 
 | # | Item | The question |
 |---|---|---|
-| 1 | **MC-873** — steward / marketing charter | Both of this charter's runners have been **off since 2026-08-10** (schedules `278d1cf5` steward, `486c367c` campaign tracker, `enabled: false`, last ran 2026-08-10), while the promotion work is now actually being done by Posy's two *enabled* daily `clayrune_website` schedules (`0566ec5b`, `2b9d5c60`). **Re-enable the two mission_control charter schedules, or retire MC-873 and let Posy's clayrune_website schedules be the charter?** |
-| 2 | **MC-892** — memory index remover | You already ruled (2026-08-15) that this does not get worked inline. The route has to be picked before anyone starts: **(a)** machine eviction of the smaller 44-line variant *plus* a per-line delivery gate, or **(b)** a human-executed cut, which is the only remover with a track record here. Pick one. (Independent of that: the condense byte-deadband is still broken — see the row below — and that *is* a safe standalone fix.) |
-| 3 | **MC-871** — visual workflow builder | The *viewer* half shipped (Workflows tab, `67a160a`), and Claude Code has since shipped its own `Workflow` tool with named phases plus saved scripts in `.claude/workflows/`. **Is a visual workflow AUTHORING surface still wanted, or is "use a workflow to …" plus the read-only Workflows tab enough?** |
+| 1 ✅ ANSWERED - **retire**. MC-873 is now `wontdo`; the two disabled mission_control schedules were left in place, not deleted. | **MC-873** — steward / marketing charter | Both of this charter's runners have been **off since 2026-08-10** (schedules `278d1cf5` steward, `486c367c` campaign tracker, `enabled: false`, last ran 2026-08-10), while the promotion work is now actually being done by Posy's two *enabled* daily `clayrune_website` schedules (`0566ec5b`, `2b9d5c60`). **Re-enable the two mission_control charter schedules, or retire MC-873 and let Posy's clayrune_website schedules be the charter?** |
+| 2 ✅ ANSWERED - **machine eviction, 44-line variant + per-line delivery gate**. Human cut declined. Recorded as a standing position. The dedicated-exploration ruling still binds. | **MC-892** — memory index remover | You already ruled (2026-08-15) that this does not get worked inline. The route has to be picked before anyone starts: **(a)** machine eviction of the smaller 44-line variant *plus* a per-line delivery gate, or **(b)** a human-executed cut, which is the only remover with a track record here. Pick one. (Independent of that: the condense byte-deadband is still broken — see the row below — and that *is* a safe standalone fix.) |
+| 3 ⏳ OPEN - Ron asked for more information before deciding. | **MC-871** — visual workflow builder | The *viewer* half shipped (Workflows tab, `67a160a`), and Claude Code has since shipped its own `Workflow` tool with named phases plus saved scripts in `.claude/workflows/`. **Is a visual workflow AUTHORING surface still wanted, or is "use a workflow to …" plus the read-only Workflows tab enough?** |
 
 ---
 
