@@ -60,6 +60,242 @@ documented gap closed rather than inherited.
   config-mod, and a benign negative control), covered by
   `tests/test_skill_import_guard.py`.
 
+## [2026-09-01] — The port guard proves it trips, and says who holds the port
+
+MC-908's fix shipped in `64d0510` (connect-probe alongside the bind test) with
+no tests. That is the wrong thing to leave untested: the bug was a **silent
+OK** — a second Clayrune booted beside a live one, announced itself on 5199,
+and its startup reaper killed the older instance's four live agent trees. A
+test asserting the guard "returns" would have passed against the broken code.
+
+- **Eleven tests (`tests/test_port_conflict.py`), each asserting the guard is
+  FATAL or explicitly is not.** Ten of them fail against the pre-fix bind-only
+  probe; the eleventh (a genuinely free port stays clean) passes either way,
+  which is the point of including it.
+- **The headline test reproduces the hole on every platform, not just
+  Windows.** An IPv6-only listener owns `[::1]:port` and leaves the whole IPv4
+  space free, so `bind('0.0.0.0', port)` succeeds while something is plainly
+  serving — the same lie `SO_REUSEADDR` told the old probe. The test asserts
+  that bind-says-free precondition first, so it can only pass by way of the
+  connect probe.
+- **The restart re-exec window is covered without burning 15s of wall clock**
+  — a fake `_time` advances the fake clock, so "waits for a dying parent, then
+  proceeds", "still dies if the parent never leaves", and "no grace period
+  without `MC_RESTART_FROM_PID`" are all deterministic. Ditto the documented
+  `MC_ALLOW_PORT_CONFLICT=1` bypass, which must remain exactly `1`.
+- **The banner now names the holder.** A connect() hit alone cannot tell
+  another Clayrune from a stranger, and the two need opposite advice; the old
+  message assumed the first and sent anyone whose port was taken by an
+  unrelated service hunting a second MC that did not exist. The guard now GETs
+  `/api/system/heartbeat` on whatever answered: ours if the reply carries
+  `started_at` + `pid` ("use the running instance, or stop it"), otherwise a
+  stranger ("move Clayrune — set `MC_PORT`"). Neither path can raise; a
+  timeout, a 404, or non-JSON all read as "not Clayrune".
+
+One test-only trap worth recording: a listener that never `accept()`s stops
+answering once its backlog fills, so the restart-window tests (~50 probes) saw
+the port go "free" halfway through. The fixture drains its accept queue, like a
+real server does.
+
+## [2026-09-01b] — Nine specialists that sounded like one, and delegation priced blind
+
+Ron, on the Floor: *"All agents behave and converse at almost the exact same
+tone… none of them has its own real persona"* and *"the agents do not really
+understand their responsibility in overall token management and delegation."*
+Both traced to the same shape — the persona file was the only per-agent lever,
+and it only ever described **method**.
+
+- **Voice and conduct are now separately owned.** The character block sat after
+  the rules with a comment saying the rules retain primacy *"over a chosen
+  persona's voice"*. Measured: the shared context is ~46 KB and a persona body
+  is 1.8–4.3 KB, so **over 90% of every agent's prompt was byte-identical** —
+  and the identical part is the part that legislates tone ("always condense",
+  "bullet points always wins", "never narrate your own diligence"). Nine
+  characters collapsed into one bulleted telegram. Ordering is unchanged
+  (conduct really does outrank persona); the block now states that the rules
+  own conduct and content while the character owns voice, and that **brevity is
+  a rule, not a voice** — the shortest version of an agent should still be
+  recognisably that agent.
+- **Every global character gained a `## Voice` section** of concrete, checkable
+  speech habits rather than adjectives: Bram opens with a measurement and has
+  no "probably" register; Fenn writes `file:line —` first and will send "this is
+  fine" alone; Wren leads with who reaches what; Tilda uses present tense for
+  the screen and past tense for the fix; Marlow writes in specification
+  register; Dave names people and asks one question. Halloway and Posy already
+  had real voices and were left alone — they are the two that were written as
+  *people* rather than as method checklists, which is the pattern the other
+  nine now follow. (These live in `~/.claude/agents/`, operator config, not the
+  repo.)
+- **The roster now shows each type's engine.** `_roster_block` listed the
+  specialists and hid their price, so a dispatcher ranked them by name-fit
+  alone. Each line now carries `[Opus 5 · effort max]` or `[project default]`,
+  resolved through the provider runtime's own `MODEL_CHOICES` so it never
+  drifts from the picker (`_model_label` / `_engine_label`).
+- **New `WHAT A DELEGATION COSTS` block**, and the number is *measured*, not
+  asserted: it is emitted late in `_build_agent_context`, so `len(parts)` is
+  exactly the floor a fresh sibling would re-pay (~51 KB / ~13k tokens on this
+  project). A hardcoded figure would be wrong on every other project and stale
+  here the first time a rules file grew. The rule it derives: the cost is flat,
+  so it dominates small asks and vanishes into large ones — do the grep
+  yourself, delegate a genuine unit of work, do not spend a max-effort
+  specialist on a lookup, and remember fan-out multiplies the floor.
+- **The Floor stops printing raw model ids.** It was the one surface showing
+  `claude · claude-opus-5` where the chat header and persona picker both say
+  `Opus 5`; it now resolves through the live provider catalog
+  (`_providerModelChoices`, so gemini figures resolve too). Figures also carry
+  `model_from` — `own` vs `project` — and an inherited engine renders as
+  `Opus 5 (project default)`. A figure on Opus because its persona pins Opus
+  and one on Opus because nobody chose anything are different facts, and the
+  board rendered them identically.
+
+## [2026-09-01] — Position-review sidecar: a flag for Ron can no longer erase itself
+
+`mc/positions_review.py` (MC-910), fixing two bugs hit for real on 2026-08-30:
+a flag Ron had already been emailed about vanished from the flags report
+between two review sessions, an hour apart, with no human action in between.
+
+- **A flag raised for a human is now cleared only by a human.** The reviewer
+  used to compute `flagged = tripped and (new_flag or prev.flagged)` — any
+  later review that judged the tripped condition no longer held silently
+  cleared it. It now clears only when the position's *content hash* changed
+  since it was flagged, i.e. a human edited or superseded the ruling (the same
+  signal `should_flag` already uses for "the old flag no longer applies"). An
+  agent's own disagreement on unchanged text sets a new `contested: true` on
+  the sidecar entry instead — the flag stays open, and a later re-trip on that
+  same text correctly does **not** re-fire the email.
+- **The sidecar is now safe under concurrent writers.** `_write_state`
+  rewrote the whole file with no read-modify-write guard, so two reviewers
+  racing (MC-909's double-dispatch bug produces exactly this) could each read
+  a stale copy and the second write would drop the first reviewer's entry.
+  `record_review` now holds a plain-file lock (`position_review.json.lock`,
+  `os.O_CREAT|O_EXCL`, no fcntl/msvcrt) for the whole read-modify-write, with a
+  10s stale-lock break so a killed reviewer can't wedge every future review.
+  Deliberately independent of MC-909 staying fixed.
+
+`contested` is surfaced in the reviewing agent's worksheet (`render_brief`)
+and `tools/position-review.py flags`. Covered by
+`test_an_agents_own_tripped_false_does_not_clear_a_human_pending_flag`,
+`test_a_human_editing_the_position_is_what_actually_clears_a_flag`, and
+`test_concurrent_reviewers_do_not_lose_each_others_state` (6 threads, injected
+write delay to force the lost-update window) in `tests/test_positions_review.py`.
+
+## [2026-09-01] — MEMORY.md write refuses over the index budget instead of drifting past it
+
+`index_byte_budget` (24KB) was a target nothing enforced. The watermark-GC leak
+(37.8KB of stale markers) blew it for real with no error anywhere, just a log
+line — and the two API routes that let a human or an agent replace/append to
+MEMORY.md directly (`PUT`/`POST .../memory/append`) had **zero** budget
+awareness at all: no lock, no size check, straight `write_text`.
+
+- **One enforcement point** (`mc/memory.py`): `_index_overflow(text)` is the
+  single computation of "does this fit the budget"; `_enforce_index_cap(text)`
+  raises `MemoryCapExceeded(current_bytes, budget_bytes, overflow_bytes)` on
+  top of it for callers that can act on the error.
+- **Hard refusal on the attended paths.** `PUT /api/project/<id>/memory` and
+  `POST /api/project/<id>/memory/append` now return **413** with the numbers
+  plus a consolidation instruction, and leave the on-disk file untouched — a
+  human in the Settings UI or an agent calling the API can trim/merge curated
+  pointer lines (or move detail to a topic file) and retry in the same turn.
+- **Machine-managed writers stay non-raising, deliberately.** `_commit_managed_entry`
+  is a documented "Never raises" background writer (Scribe/checkpoint/
+  teardown) with no request/response caller to hand an error to — it keeps its
+  existing soft floor-eviction. `_condense_apply`'s fold step is the one
+  in-process writer that can still grow curated (the "insert-only pump, no
+  drain" gap); it now rolls back its own pointer inserts (most recent first)
+  if the result would still be over budget after evicting everything
+  evictable — the fact is never lost (already archived verbatim either way),
+  just downgraded to the same outcome as an ambiguous/vanished fold heading.
+- The 24KB budget itself is unchanged — this is enforcement, not Hermes's
+  3,575-char cap; memory depth stays a differentiator (see
+  `discovery-index-byte-cap-curated-bloat`).
+
+Six new tests: `_index_overflow`/`_enforce_index_cap` unit coverage, a fold
+rollback + a fold-still-fits regression guard in `test_condense_structured.py`
+style, and 413 + file-untouched + under-cap-still-works coverage for both API
+routes.
+
+## [2026-09-01] — MC-931: gemini's real errors stop getting dropped; the other four non-Claude runtimes stop risking Windows' argv limit
+
+MC-931's original diagnosis (gemini blows Windows' 8191-char command-line
+limit) didn't match the code — gemini already piped its prompt over stdin.
+The real defect was in error surfacing, and checking the other Mode-A
+runtimes for the *actual* inline-payload pattern turned up four genuine
+instances of it.
+
+- **Gemini surfaces the real API error instead of dropping it.**
+  `GeminiRuntime.parse_event`'s catch-all `result`/`turn_end`/`done` branch
+  matched a `result` event carrying `status=="error"` before the error-specific
+  branch could — so a quota/auth/network failure reached the chat as a bare
+  "turn ended" with no message. It now emits `EventType.ERROR` when
+  `status=="error"`, and its `error.message` reaches `explain_exit_error`'s
+  quota/auth/network hints. `_last_real_error_line` (the shared fallback every
+  provider's `explain_exit_error` uses) also no longer picks the dispatcher's
+  seeded `"> {user}: {task}"` log line as the "real" output on a turn that
+  errored before printing anything else.
+- **OpenCode and Goose's task text now goes over stdin, not argv** — both
+  CLIs support it (`opencode run` falls back to stdin when no positional
+  message is given; `goose run --instructions -` reads stdin), the same fix
+  already shipped for gemini/codex. Goose's `run` turned out to have no bare
+  positional prompt argument at all in the real CLI (verified against
+  `block/goose`'s `cli.rs`) — the previous `cmd.append(task)` was already
+  broken independent of the length question.
+- **Aider's task text now goes over `--message-file` (a temp file), not
+  `--message` (argv)** — mirrors the `--read` temp-file pattern it already
+  used for the system prompt.
+- **Goose's `--system` flag has no stdin/file form** (confirmed against the
+  CLI's own arg definitions) and **Kiro's headless prompt is positional-only**
+  with no stdin/file alternative at all — both get a new hard pre-flight
+  guard (`_guard_win_argv_length`, Windows-only) that raises a clear,
+  diagnosable error naming the limit instead of letting Windows mangle the
+  command line into an opaque "command line is too long".
+- Investigated the ticket's open question (a 4000-char `-p` prompt to gemini
+  returning rc=1 after 3 stdout lines, under the 8191 limit): not
+  reproducible today against the live CLI — a 4000-char prompt through MC's
+  actual stdin+stream-json invocation completed cleanly (rc=0). The described
+  shape (a few JSON lines then a non-zero exit) matches exactly the
+  `result`/`status=="error"` defect above, not a separate bug.
+
+Covered by 14 new `TestWinArgvLengthGuard`/`Test{OpenCode,Goose,Aider,Kiro}ArgvSafety`
+cases in `tests/test_provider_runtimes.py` (each verified to fail against the
+pre-fix code) plus the 2 gemini cases from the original diagnosis.
+
+## [2026-09-01] — Cold session search: FTS5 underneath the curated memory index
+
+MC-918. The curated memory corpus (topic files, archive, managed region) is a
+small hand-tended set; a project's actual session transcripts — everything it
+has ever really said — were not searchable at all. Hermes Agent's
+`session_search` (`docs/research/HERMES_AGENT_COMPETITIVE_READ.md` §6.7) does
+exactly this with SQLite FTS5 over its session store; the corresponding gap
+here is now closed the same way.
+
+- **New `mc/memory_fts.py`** — an incremental SQLite FTS5 index over Claude
+  Code transcripts + the agent log, one db per project living beside
+  `MEMORY.md` (never under `DATA_DIR` — CLAUDE.md's pollution rule). Each
+  transcript is fingerprinted by `(mtime, size)`; an unchanged file costs one
+  `stat()` on the next pass, so a warm boot re-indexes nothing. Runs
+  incrementally at startup (`_backfill_session_fts_index`, off the app.run()
+  path) and is never part of the auto-injected read floor — only the explicit
+  `/memory/search` route reaches it.
+- **`/api/project/<id>/memory/search` gets a cold tier**, appended after the
+  curated hits and self-labelled (`tier: 'cold'`, `session_id`, `timestamp`) —
+  existing hits and callers are untouched, so this is backward compatible.
+  New `cold_k` query param (default `session_fts_cold_k`, 5); `cold_k=0` opts
+  out. Rollback lever: `session_fts_enabled: false` (both the tier and the
+  startup indexer).
+- **Measured, not assumed** (`tools/memory-eval/fts_recall_probe.py`, 253 real
+  pinned tasks against 345 real transcripts / 11,648 indexed messages): the
+  curated corpus already returns ≥1 hit for every task (0% zero-result, no
+  change there — this project's BM25 tuning is already saturated). The gap
+  the cold tier closes is a different one: **94.5% of real historical tasks
+  (239/253) have relevant transcript content the curated corpus can never
+  surface**, reaching **142 distinct real sessions** invisible to memory
+  search before this shipped. The Step-7 semantic-search deferral
+  (`decision-step7-semantic-search-deferral`) is about re-ranking the
+  *curated* corpus and is untouched by this finding — it still stands.
+
+Ships with `tests/test_memory_fts.py` (indexing, incrementality, agent-log
+indexing, route-level backward compatibility).
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it

@@ -35,8 +35,9 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 import skills as _skills
+from mc import memory_fts as _mem_fts
 from mc import state
-from mc.core import now_iso
+from mc.core import now_iso, _log
 
 bp = Blueprint('guide_routes', __name__)
 
@@ -665,9 +666,19 @@ def delete_position_route(project_id, filename):
 
 @bp.route('/api/project/<project_id>/memory/search', methods=['GET'])
 def memory_search(project_id):
-    """Ranked-grep over the project memory corpus (SPEC §3 Leg B). The
+    """Ranked-grep over the project memory corpus (SPEC §3 Leg B), PLUS a cold
+    tier underneath (MC-918): SQLite FTS5 over Claude Code transcripts + the
+    agent log, real message excerpts rather than curated notes. The
     mc-memory-search skill wraps this; the deterministic read floor calls
-    _memory_search directly at dispatch."""
+    _memory_search directly at dispatch and never sees the cold tier — see
+    mc/memory_fts.py's module docstring for why.
+
+    Response stays a bare JSON array for backward compatibility (existing
+    hits are passed through unmodified). Cold hits are simply APPENDED after
+    the curated ones and self-identify via `tier: 'cold'` plus `session_id`/
+    `timestamp` — "clearly labelled" per the brief, without changing the
+    shape callers already parse.
+    """
     p = load_project(project_id)
     if p is None:
         return jsonify({'error': 'not found'}), 404
@@ -685,7 +696,17 @@ def memory_search(project_id):
         expand = int(request.args.get('expand', 0))
     except (TypeError, ValueError):
         expand = 0
-    return jsonify(_memory_search(p, q, k, expand=expand))
+    hits = _memory_search(p, q, k, expand=expand)
+    try:
+        cold_k = int(request.args.get('cold_k', _mem_fts._cold_k_default()))
+    except (TypeError, ValueError):
+        cold_k = _mem_fts._cold_k_default()
+    if cold_k > 0:
+        try:
+            hits = hits + _mem_fts.cold_search(p, q, limit=cold_k)
+        except Exception as e:
+            _log(f'[memory_fts] cold tier skipped: {e}')
+    return jsonify(hits)
 
 
 # ── Walkthrough onboarding project ────────────────────────────────────────────

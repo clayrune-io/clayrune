@@ -11,6 +11,8 @@ The reviewer's value is entirely in two properties, and both fail SILENTLY:
     night that mattered.
 """
 import sys
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
 
@@ -114,13 +116,43 @@ def test_a_human_edit_re_arms_the_flag(env):
     assert again['newly_flagged'] is True
 
 
-def test_a_condition_that_stops_holding_clears_the_flag(env):
+def test_an_agents_own_tripped_false_does_not_clear_a_human_pending_flag(env):
+    """MC-910 bug 1. A flag raised for Ron is not this module's to clear —
+    only a human closing the question (by editing or forgetting the position,
+    which changes its hash) does that. An agent judging on the SAME text that
+    the condition no longer holds must record the disagreement, not erase the
+    flag Ron may already have been emailed about."""
     mem, pr, _ = env
     fn = _one(mem)
     pr.record_review(P, _rec(mem, fn), tripped=True, finding='they shipped it')
     assert len(pr.open_flags(P)) == 1
-    cleared = pr.record_review(P, _rec(mem, fn), tripped=False, finding='they pulled it')
+    contested = pr.record_review(P, _rec(mem, fn), tripped=False,
+                                 finding='looks pulled now')
+    assert contested['flagged'] is True, 'flag must stay open — a human has not acted'
+    assert contested['contested'] is True
+    assert len(pr.open_flags(P)) == 1
+
+    # Re-confirming the trip is not news: the flag was never cleared, so the
+    # original email already covers it. A naive "restore the flag" fix would
+    # instead treat this as newly_flagged again and duplicate the email.
+    reconfirmed = pr.record_review(P, _rec(mem, fn), tripped=True, finding='back')
+    assert reconfirmed['newly_flagged'] is False
+    assert reconfirmed['contested'] is False
+
+
+def test_a_human_editing_the_position_is_what_actually_clears_a_flag(env):
+    """Editing the reason changes `position_hash`, which is the one channel
+    `should_flag` already treats as the human having acted — so a fresh
+    tripped=False review of the NEW text is a real clear, not an erasure."""
+    mem, pr, _ = env
+    fn = _one(mem)
+    pr.record_review(P, _rec(mem, fn), tripped=True, finding='they shipped it')
+    assert len(pr.open_flags(P)) == 1
+    _one(mem, reason='reconsidered after Ron looked at it: keeping ours because X')
+    cleared = pr.record_review(P, _rec(mem, fn), tripped=False,
+                               finding='confirmed no longer applies on the new text')
     assert cleared['flagged'] is False
+    assert cleared['contested'] is False
     assert pr.open_flags(P) == []
     # ...and a later re-trip is news again.
     assert pr.record_review(P, _rec(mem, fn), tripped=True,
@@ -158,6 +190,45 @@ def test_the_sidecar_is_json_and_stays_out_of_the_corpus(env):
     assert pr.REVIEW_STATE_FILE.endswith('.json')
     hits = mem._memory_search(P, 'Obsidian checked review', 6)
     assert not any(pr.REVIEW_STATE_FILE in (h.get('file') or '') for h in hits)
+
+
+def test_concurrent_reviewers_do_not_lose_each_others_state(env, monkeypatch):
+    """MC-910 bug 2. `_write_state` used to rewrite the whole sidecar with no
+    read-modify-write guard, so two reviewers racing (the exact MC-909
+    double-dispatch scenario) could each read the file before either wrote,
+    and the second write would silently drop the first reviewer's entry —
+    this file has to be safe on its own rather than depend on MC-909 staying
+    fixed. A sleep is injected inside the write step to force the window a
+    real race would only sometimes hit; without the lock this reliably loses
+    entries, with it every writer's update survives."""
+    mem, pr, tmp = env
+    files = [mem.write_position(P, subject=f'Subject {i}', verdict='declined',
+                                reason=f'reason {i}', expires_when=f'trigger {i}')
+             for i in range(6)]
+
+    orig_write = pr._atomic_write_text
+
+    def slow_write(path, text, **kw):
+        time.sleep(0.02)
+        return orig_write(path, text, **kw)
+
+    monkeypatch.setattr(pr, '_atomic_write_text', slow_write)
+
+    def go(fn):
+        pr.record_review(P, _rec(mem, fn), tripped=True, finding=f'found for {fn}')
+
+    threads = [threading.Thread(target=go, args=(fn,)) for fn in files]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(timeout=10)
+
+    state = pr.read_state(P)
+    for fn in files:
+        assert fn in state, f'{fn} missing from sidecar — lost update under concurrency'
+        assert state[fn]['finding'] == f'found for {fn}'
+    assert len(state) == len(files)
+    assert not (tmp / f'{pr.REVIEW_STATE_FILE}.lock').exists(), 'lock left held after use'
 
 
 def test_corrupt_state_degrades_to_empty_rather_than_raising(env):

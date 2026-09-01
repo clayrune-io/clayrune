@@ -117,6 +117,9 @@ _CONFIG_EDITABLE_KEYS = {
     'bm25_b',
     'bm25_title_boost',
     'read_floor_archive_quota',
+    # Cold session search (MC-918) — mc/memory_fts.py. Rollback lever +
+    # default cold-hit count for the /memory/search cold tier.
+    'session_fts_enabled', 'session_fts_cold_k',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle

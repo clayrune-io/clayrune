@@ -360,6 +360,18 @@ _EXIT_ERROR_NOISE_PATTERNS = (
     'yolo mode is enabled',  # gemini's YOLO-mode banner
 )
 
+# `_dispatch_via_runtime` (and the equivalent claude-path dispatch) seeds a
+# fresh session's log_lines with "> {user_label}: {task}" so the chat shows
+# the prompt before the process has produced any output. That seed line is
+# NOT CLI output — but a turn that errors before printing anything else
+# leaves it as the last non-bracketed line in the tail, and a plain substring
+# scan mistakes the ECHOED TASK for the CLI's error (MC-931: a hint reading
+# "> Ron: Reply with exactly one short sentence..." instead of the real
+# "The command line is too long."/quota text). Matched as a prefix, not a
+# substring, so a genuine CLI line that happens to contain " > Name: " midway
+# through is not skipped.
+_SEED_LINE_RE = re.compile(r'^>\s+\S[^:\n]{0,40}:\s')
+
 
 def _last_real_error_line(log_tail: str) -> Optional[str]:
     """Return the CLI's own last non-noise output line, or None if there isn't one.
@@ -369,9 +381,9 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
     but a guess that contradicts an error the CLI already printed in plain
     text is worse than no hint at all. This scans from the bottom (the real
     cause is usually the last thing printed before exit) skipping blank
-    lines, MC's own bracketed status markers (`[tool: x]`, `[hint] ...`), and
-    known CLI startup banners, so callers can surface the real line instead
-    of guessing.
+    lines, MC's own bracketed status markers (`[tool: x]`, `[hint] ...`), the
+    dispatcher's own echoed-prompt seed line, and known CLI startup banners,
+    so callers can surface the real line instead of guessing.
     """
     if not log_tail:
         return None
@@ -382,6 +394,8 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
         if stripped.startswith('[') and stripped.endswith(']'):
             continue
         if any(p in stripped.lower() for p in _EXIT_ERROR_NOISE_PATTERNS):
+            continue
+        if _SEED_LINE_RE.match(stripped):
             continue
         return stripped
     return None
@@ -1908,6 +1922,22 @@ class GeminiRuntime(AgentRuntime):
                          'status': msg.get('status') or ''},
                 raw=msg,
             )
+        if mtype == 'result' and msg.get('status') == 'error':
+            # The CLI's own reason for the failure (auth, quota, network) lives
+            # ONLY here — msg.get('error', {}).get('message') — never on stderr
+            # or in a non-JSON line. Before this branch existed the whole
+            # object fell into the generic TURN_END case below (usage/cost
+            # only, no error field read), so a real API error like "You have
+            # exhausted your daily quota on this model" was silently dropped:
+            # explain_exit_error() had nothing to pattern-match against and
+            # fell back to a generic "exited with code N" guess.
+            err = msg.get('error') or {}
+            err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
+            return AgentEvent(
+                type=EventType.ERROR, provider='gemini',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(), payload={'text': str(err_text)}, raw=msg,
+            )
         if mtype in ('result', 'turn_end', 'done'):
             return AgentEvent(
                 type=EventType.TURN_END, provider='gemini',
@@ -2371,6 +2401,15 @@ class GeminiRuntime(AgentRuntime):
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
                     _cb('on_turn_end', ev)
+                elif ev and ev.type == EventType.ERROR:
+                    # The CLI's own reason (quota, auth, network — see
+                    # parse_event's 'result'+status=='error' branch) surfaced
+                    # into the visible transcript AND the tail explain_exit_error
+                    # scans below, instead of being dropped on the floor the way
+                    # a bare TURN_END would (usage/cost only, no error field).
+                    session['log_lines'].append(
+                        f"[gemini error] {ev.payload.get('text', '')}")
+                    session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.INIT:
                     # Capture Gemini's own session id so followups resume THIS
                     # exact session by id (--resume <id>) — never `latest`,
@@ -2560,6 +2599,34 @@ class GeminiRuntime(AgentRuntime):
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Mode-A dispatch helper (reused by Codex, OpenCode, Goose, Aider, Kiro)
 # ─────────────────────────────────────────────────────────────────────────────
+
+
+# Windows' real ceiling ranges from cmd.exe's ~8191 chars (hit whenever the
+# resolved binary is an npm .cmd shim, since Windows launches those through
+# cmd.exe even without shell=True) up to CreateProcess's ~32767 for a native
+# .exe — but a persona + MEMORY + AGENT_RULES payload routinely runs tens of
+# KB, past either ceiling. A CLI with no stdin/file alternative for a piece
+# of the prompt must fail loudly here with a diagnosable message, not let the
+# OS truncate the command line into an opaque "command line is too long".
+_WIN_ARGV_SAFE_CHARS = 8000
+
+
+def _guard_win_argv_length(cmd: List[str], what: str) -> None:
+    """Raise a clear error if `cmd` would blow Windows' command-line limit.
+
+    No-op off Windows, where ARG_MAX is large enough that this class of
+    failure doesn't happen in practice.
+    """
+    if sys.platform != 'win32':
+        return
+    total = len(subprocess.list2cmdline(cmd))
+    if total > _WIN_ARGV_SAFE_CHARS:
+        raise RuntimeError(
+            f"{what} is {total} chars, over Windows' ~{_WIN_ARGV_SAFE_CHARS}-char "
+            "command-line safety limit, and this CLI has no stdin or prompt-file "
+            "option for it. Shorten the persona/system-prompt context for this "
+            "character, or switch it to a provider that supports piping the "
+            "prompt (Claude, Gemini, Codex, OpenCode, Goose's task text).")
 
 
 def _compose_respawn_prompt(session: Dict[str, Any], message: str, *,
@@ -3678,11 +3745,14 @@ class OpenCodeRuntime(AgentRuntime):
         full_prompt = task
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
-        cmd = self.build_command(model=model, resume_id=resume_id or '') + [full_prompt]
+        # `opencode run` reads the whole prompt from stdin when no positional
+        # message is given (resolveRunInput falls back to piped stdin) — no
+        # argv path needed, matching gemini/codex's fix for MC-931.
+        cmd = self.build_command(model=model, resume_id=resume_id or '')
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=False,
+            register_process, prompt_via_stdin=True,
             system_prompt=system_prompt,
         )
 
@@ -3695,15 +3765,29 @@ class OpenCodeRuntime(AgentRuntime):
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Mode A respawns the CLI per turn — --model must be re-stated
-        # or the chat reverts to the CLI default after turn 1.
-        cmd = self.build_command(model=self.session_model(handle)) + [full_prompt]
+        # or the chat reverts to the CLI default after turn 1. The prompt
+        # (which re-embeds the full dispatch-time system context every turn,
+        # see _compose_respawn_prompt) goes over stdin, not argv — same
+        # reasoning as dispatch().
+        cmd = self.build_command(model=self.session_model(handle))
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
+
+        def _send() -> None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(full_prompt)
+                    proc.stdin.close()
+            except Exception:
+                pass
+        threading.Thread(target=_send, daemon=True,
+                         name=f'opencode-stdin-{mc_sid[:8]}').start()
+
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -3731,10 +3815,10 @@ class OpenCodeRuntime(AgentRuntime):
         cmd = [str(bin_path), 'run', '--format', 'json']
         if model:
             cmd.extend(['--model', model])
-        cmd.append(full)
+        # No positional message → opencode reads `full` from stdin instead.
         try:
             r = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                cmd, input=full, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd=cwd or str(Path.home()),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
@@ -4008,11 +4092,18 @@ class GooseRuntime(AgentRuntime):
                 "download/stable/download_cli.sh | CONFIGURE=false bash")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model, system_prompt=system_prompt)
-        cmd.append(task)
+        # goose's `run` has no bare positional prompt arg at all — instructions
+        # come from -t/--text, --recipe, or -i/--instructions (which docs
+        # `-i -` for stdin). Use the stdin form so the task text never sits on
+        # argv. `--system` has no such alternative (see the guard below): it
+        # is the one part of goose's invocation that a large persona payload
+        # can still blow past Windows' command-line limit on.
+        cmd.extend(['--instructions', '-'])
+        _guard_win_argv_length(cmd, "Goose's --system system prompt")
         return _mode_a_dispatch(
             self, cmd, task, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
-            register_process, prompt_via_stdin=False,
+            register_process, prompt_via_stdin=True,
             system_prompt=system_prompt,
         )
 
@@ -4025,15 +4116,30 @@ class GooseRuntime(AgentRuntime):
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         # Mode A respawns the CLI per turn — --model must be re-stated
-        # or the chat reverts to the CLI default after turn 1.
-        cmd = self.build_command(model=self.session_model(handle)) + [full_prompt]
+        # or the chat reverts to the CLI default after turn 1. full_prompt
+        # re-embeds the dispatch-time system context every turn (see
+        # _compose_respawn_prompt) so it goes over stdin via `-i -`, same as
+        # dispatch() — no --system here, so no argv-length guard needed.
+        cmd = self.build_command(model=self.session_model(handle))
+        cmd.extend(['--instructions', '-'])
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
-            cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+            cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT, cwd=handle.project_path,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
+
+        def _send() -> None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(full_prompt)
+                    proc.stdin.close()
+            except Exception:
+                pass
+        threading.Thread(target=_send, daemon=True,
+                         name=f'goose-stdin-{mc_sid[:8]}').start()
+
         session['proc'] = proc
         session['status'] = 'running'
         session['process_alive'] = True
@@ -4063,10 +4169,11 @@ class GooseRuntime(AgentRuntime):
             cmd.extend(['--system', system_prompt])
         if model:
             cmd.extend(['--model', model])
-        cmd.append(full)
+        cmd.extend(['--instructions', '-'])
+        _guard_win_argv_length(cmd, "Goose's --system system prompt")
         try:
             r = subprocess.run(
-                cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                cmd, input=full, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
                 cwd=cwd or str(Path.home()),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
@@ -4274,15 +4381,23 @@ class AiderRuntime(AgentRuntime):
             raise RuntimeError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model)
+        import tempfile
         if system_prompt:
-            import tempfile
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
                                               prefix='mc_aider_ctx_',
                                               delete=False, encoding='utf-8')
             tmp.write(system_prompt)
             tmp.close()
             cmd.extend(['--read', tmp.name])
-        cmd.extend(['--message', task])
+        # aider has no stdin form for the message, but does have a file form
+        # (`--message-file`/`-f`) — use that instead of `--message TEXT` so a
+        # long task never sits on argv, same reasoning as --read above.
+        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
+                                              prefix='mc_aider_msg_',
+                                              delete=False, encoding='utf-8')
+        msg_tmp.write(task)
+        msg_tmp.close()
+        cmd.extend(['--message-file', msg_tmp.name])
         return _mode_a_dispatch(
             self, cmd, task, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -4302,9 +4417,9 @@ class AiderRuntime(AgentRuntime):
         # Re-inject the dispatch-time system context via --read (aider keeps
         # --read files in context). The dispatch temp file isn't reused across
         # turns, so write a fresh one from the stashed _system_prompt.
+        import tempfile
         sys_prompt = (session.get('_system_prompt') or '').strip()
         if sys_prompt:
-            import tempfile
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
                                               prefix='mc_aider_ctx_',
                                               delete=False, encoding='utf-8')
@@ -4315,7 +4430,14 @@ class AiderRuntime(AgentRuntime):
         tail = '\n'.join(log_lines[-20:])[-3000:].strip()
         msg = (f"[Prior turn excerpt for context only — do not re-execute]\n"
                f"{tail}\n\n---\n\n{message}") if tail else message
-        cmd.extend(['--message', msg])
+        # --message-file, not --message: msg can carry a full turn's tail plus
+        # the new message, same argv-length risk as dispatch()'s task.
+        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
+                                              prefix='mc_aider_msg_',
+                                              delete=False, encoding='utf-8')
+        msg_tmp.write(msg)
+        msg_tmp.close()
+        cmd.extend(['--message-file', msg_tmp.name])
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4345,8 +4467,8 @@ class AiderRuntime(AgentRuntime):
         if not bin_path:
             return None
         cmd = self.build_command(model=model)
+        import tempfile
         if system_prompt:
-            import tempfile
             tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
                                               prefix='mc_aider_ctx_',
                                               delete=False, encoding='utf-8')
@@ -4355,7 +4477,12 @@ class AiderRuntime(AgentRuntime):
                 tmp.write(f"\n\n---\n\n{stdin_text}")
             tmp.close()
             cmd.extend(['--read', tmp.name])
-        cmd.extend(['--message', prompt])
+        msg_tmp = tempfile.NamedTemporaryFile(mode='w', suffix='.md',
+                                              prefix='mc_aider_msg_',
+                                              delete=False, encoding='utf-8')
+        msg_tmp.write(prompt)
+        msg_tmp.close()
+        cmd.extend(['--message-file', msg_tmp.name])
         try:
             r = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
@@ -4599,6 +4726,11 @@ class KiroRuntime(AgentRuntime):
         if system_prompt:
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
         cmd.append(full_prompt)
+        # kiro-cli's headless prompt is positional-only — no --prompt-file,
+        # no stdin form (piped stdin is documented as extra *context*, not a
+        # prompt replacement), and ACP mode (JSON-RPC over stdio) isn't wired
+        # up here yet. Fail loudly rather than let Windows mangle the argv.
+        _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env_extra, callbacks,
@@ -4615,6 +4747,10 @@ class KiroRuntime(AgentRuntime):
         full_prompt = _compose_respawn_prompt(session, message,
                                               tail_lines=20, tail_chars=3000)
         cmd = self.build_command() + [full_prompt]
+        # Every followup re-embeds the full dispatch-time system context
+        # (see _compose_respawn_prompt) with no stdin/file escape for kiro —
+        # same guard as dispatch().
+        _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         mc_sid = handle.mc_session_id
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4647,6 +4783,10 @@ class KiroRuntime(AgentRuntime):
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
         cmd = self.build_command() + [full]
+        # Raised outside the try/except below so a too-long prompt surfaces
+        # as a clear error instead of being swallowed into a bare None
+        # return indistinguishable from "binary not found".
+        _guard_win_argv_length(cmd, "Kiro's prompt (persona + task)")
         try:
             r = subprocess.run(
                 cmd, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
