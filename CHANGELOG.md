@@ -6,6 +6,60 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Skill import security scanner (MC-912)
+
+Clayrune imported skills from paste, folder, git and plugin sources with no
+scanning at all. The Distiller's authority guard (`distiller._authority_violation`)
+only covers what the agent itself writes into the learning loop; nothing
+covered what a human pastes in — and a skill is executable prompt injection
+loaded into the system prompt of an agent holding vault credentials,
+live-cookie browser profiles, and git push rights. Design ported from Nous
+Research's Hermes Agent (`tools/skills_guard.py`, per
+`docs/research/HERMES_AGENT_COMPETITIVE_READ.md` §6.2), with their own
+documented gap closed rather than inherited.
+
+- **New `skill_import_guard.py`** — static scanner across five categories
+  (exfiltration, prompt injection, destructive commands, persistence,
+  agent-config modification), reusing `distiller._AUTHORITY_RE` verbatim for
+  the authority-expansion vocabulary rather than a second copy.
+  `agent_config_mod` detects BOTH shell redirection (`>>`) and language-level
+  write APIs (`open(...,'w')`, `pathlib.write_text`, `fs.writeFileSync`,
+  PowerShell `Set-Content`/`Out-File`) aimed at a config-like target
+  (`CLAUDE.md`, `AGENTS.md`, `settings.json`, `.mcp.json`, `.env`, `.claude/`)
+  in a proximity window — the exact bypass Hermes's own scanner docstring
+  admits missing.
+- **Three trust tiers.** `builtin` (ships with Clayrune) is never scanned.
+  `trusted` — a short git-remote allowlist
+  (`skill_import_guard.TRUSTED_GIT_ALLOWLIST`) — passes on `caution`-level
+  findings, blocks on `warning`/`critical`. `community` (paste, local folder,
+  any other git URL, plugin installs — the default) is blocked on ANY
+  finding unless the human passes `force: true`. A git clone's tier is
+  derived server-side from the actual `clone_url` and bound to the staging
+  dir via a `.mc_trust_tier` sidecar — a request body cannot claim `trusted`.
+- **Fail-closed.** A scanner crash is itself a synthetic critical finding and
+  quarantines the skill; `force` can override a *known* finding but never an
+  *unknown* scan failure.
+- **Quarantine, not deletion.** A blocked import's content is copied to
+  `~/.claude/skills.quarantine/<id>/` with its verdict (offending lines
+  quoted) — `GET /api/skills/quarantine`, `GET .../<id>`,
+  `DELETE .../<id>`. Recovery is re-submitting the *original* import request
+  with `force: true` (the same content/path/staging_id), not a separate
+  replay endpoint — quarantine storage is for visibility/audit.
+- **Wired into all four import paths**: `import_from_paste`,
+  `import_from_folder` → `_install_skill_dir`, `install_from_staging` (git),
+  and `install_full_plugin` (scanned as one unit, including hook scripts that
+  are never installed, since a human may enable them later via CC's
+  `/plugin`). `write_skill`'s direct-create/update path (not an import) is
+  untouched — this scans at import time, not on every write.
+  `install_builtins()` is untouched — `builtin` tier by construction.
+  Surfaced in the Skills import UI (paste/folder/git/plugin flows) as a
+  findings list with a "force install anyway" retry, not a silent backend
+  refusal.
+- Real malicious sample skills under `tests/fixtures/malicious_skills/`
+  (exfiltration, prompt injection, destructive command, persistence,
+  config-mod, and a benign negative control), covered by
+  `tests/test_skill_import_guard.py`.
+
 ## [2026-08-31] — The default agent gets a face that outlives the session
 
 A hired persona carries its face in its own character file, so it keeps it

@@ -19,6 +19,7 @@ from mc import state
 from mc.core import _log
 
 import mcp as _mcp
+import skill_import_guard as _guard
 import skills as _skills
 
 bp = Blueprint('skills', __name__)
@@ -261,7 +262,11 @@ def skill_usage_route():
 def import_skill_paste_route():
     """Import a skill from a pasted SKILL.md string.
 
-    Body: {content, scope, project_id?, name?, overwrite?}
+    Body: {content, scope, project_id?, name?, overwrite?, force?}
+
+    force=true re-submits the SAME content past a prior scan block (MC-912) —
+    there is no separate "release" endpoint; the client just resends with the
+    flag set once the human has reviewed the findings.
     """
     data = request.get_json() or {}
     content = data.get('content') or ''
@@ -269,6 +274,7 @@ def import_skill_paste_route():
     project_id = data.get('project_id')
     name_override = (data.get('name') or '').strip() or None
     overwrite = bool(data.get('overwrite'))
+    force = bool(data.get('force'))
 
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global or project'}), 400
@@ -285,8 +291,11 @@ def import_skill_paste_route():
             project_id=project_id,
             name_override=name_override,
             overwrite=overwrite,
+            force=force,
         )
         return jsonify(rec), 201
+    except _guard.SkillQuarantined as e:
+        return jsonify({'quarantined': True, **e.verdict}), 422
     except FileExistsError as e:
         return jsonify({'error': str(e)}), 409
     except ValueError as e:
@@ -297,9 +306,10 @@ def import_skill_paste_route():
 def import_skill_folder_route():
     """Import a skill from a local folder containing SKILL.md.
 
-    Body: {path, scope, project_id?, name?, selected_rel_dir?, overwrite?}
+    Body: {path, scope, project_id?, name?, selected_rel_dir?, overwrite?, force?}
     If multiple SKILL.md found, returns {multiple: true, candidates: [...]} —
-    caller re-invokes with selected_rel_dir.
+    caller re-invokes with selected_rel_dir. force=true re-submits past a
+    prior scan block (MC-912) — see import_skill_paste_route's docstring.
     """
     data = request.get_json() or {}
     path = (data.get('path') or '').strip()
@@ -308,6 +318,7 @@ def import_skill_folder_route():
     name_override = (data.get('name') or '').strip() or None
     selected_rel_dir = data.get('selected_rel_dir')
     overwrite = bool(data.get('overwrite'))
+    force = bool(data.get('force'))
 
     if not path:
         return jsonify({'error': 'path is required'}), 400
@@ -327,11 +338,14 @@ def import_skill_folder_route():
             name_override=name_override,
             selected_rel_dir=selected_rel_dir,
             overwrite=overwrite,
+            force=force,
         )
         # Multi-skill case: re-prompt the user
         if isinstance(result, dict) and result.get('multiple'):
             return jsonify(result), 200
         return jsonify(result), 201
+    except _guard.SkillQuarantined as e:
+        return jsonify({'quarantined': True, **e.verdict}), 422
     except FileNotFoundError as e:
         return jsonify({'error': str(e)}), 404
     except FileExistsError as e:
@@ -344,10 +358,14 @@ def import_skill_folder_route():
 def import_skill_git_route():
     """Clone a Git repo into staging and return SKILL.md candidates.
 
-    Body: {url, ref?, scope, project_id?, name?, overwrite?, auto_install?}
+    Body: {url, ref?, scope, project_id?, name?, overwrite?, auto_install?, force?}
     auto_install (default true): if exactly one SKILL.md found, install it
     immediately and clean up staging. If multiple, return {staging_id, candidates}
     and require a follow-up call to /api/skills/import/git/install.
+
+    force=true re-submits past a prior scan block (MC-912). The trust tier is
+    derived server-side from the clone URL (skill_import_guard.classify_git_trust)
+    and bound to the staging dir — a request body cannot claim 'trusted'.
     """
     data = request.get_json() or {}
     url = (data.get('url') or '').strip()
@@ -357,6 +375,7 @@ def import_skill_git_route():
     name_override = (data.get('name') or '').strip() or None
     overwrite = bool(data.get('overwrite'))
     auto_install = data.get('auto_install', True)
+    force = bool(data.get('force'))
 
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global or project'}), 400
@@ -387,15 +406,18 @@ def import_skill_git_route():
                 name_override=name_override or candidates[0]['name'],
                 overwrite=overwrite,
                 cleanup=True,
+                force=force,
             )
             return jsonify({'installed': rec, 'candidates': candidates}), 201
+        except _guard.SkillQuarantined as e:
+            return jsonify({'quarantined': True, 'staging_id': staging_id, 'candidates': candidates, **e.verdict}), 422
         except FileExistsError as e:
             return jsonify({'error': str(e), 'staging_id': staging_id, 'candidates': candidates}), 409
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
 
     # Multi-skill, plugin, or auto_install=false: return list for picker
-    response = {'staging_id': staging_id, 'candidates': candidates}
+    response = {'staging_id': staging_id, 'candidates': candidates, 'trust_tier': clone.get('trust_tier')}
     if plugin_info:
         response['plugin'] = plugin_info
     return jsonify(response), 200
@@ -405,7 +427,7 @@ def import_skill_git_route():
 def import_full_plugin_route():
     """Install all skill + command + agent components of a plugin.
 
-    Body: {staging_id?, path?, overwrite?}
+    Body: {staging_id?, path?, overwrite?, force?}
 
     Either staging_id (from a prior /api/skills/import/git call) or path (a
     local folder) is required. Hooks are deliberately not installed — see
@@ -413,11 +435,17 @@ def import_full_plugin_route():
 
     All components install to GLOBAL scope. Project-scoped full-plugin
     install is not supported in v1.
+
+    Trust tier: staging_id sources read the `.mc_trust_tier` sidecar bound at
+    clone time (MC-912); a bare local `path` has no publisher provenance and
+    is always 'community'. force=true re-submits past a prior scan block —
+    see import_skill_paste_route's docstring.
     """
     data = request.get_json() or {}
     staging_id = (data.get('staging_id') or '').strip()
     path = (data.get('path') or '').strip()
     overwrite = bool(data.get('overwrite'))
+    force = bool(data.get('force'))
 
     if not staging_id and not path:
         return jsonify({'error': 'staging_id or path required'}), 400
@@ -429,18 +457,24 @@ def import_full_plugin_route():
             return jsonify({'error': str(e)}), 400
         if not plugin_root.exists():
             return jsonify({'error': 'staging dir not found'}), 404
+        trust_tier = _skills.staging_trust_tier(plugin_root)
     else:
         plugin_root = Path(path).expanduser()
         if not plugin_root.exists():
             return jsonify({'error': 'path does not exist'}), 404
+        trust_tier = 'community'
 
     try:
-        result = _skills.install_full_plugin(plugin_root, overwrite=overwrite)
+        result = _skills.install_full_plugin(plugin_root, overwrite=overwrite, trust_tier=trust_tier, force=force)
+    except _guard.SkillQuarantined as e:
+        return jsonify({'quarantined': True, 'staging_id': staging_id or None, **e.verdict}), 422
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
 
     # Clean up staging if we came from a git import. plugin_root is the
     # already-validated staging dir — do not re-derive it from staging_id.
+    # Only reached on success — a quarantine block returns above, leaving
+    # staging intact for a force=True retry.
     if staging_id:
         try:
             shutil.rmtree(plugin_root, ignore_errors=True)
@@ -454,7 +488,9 @@ def import_full_plugin_route():
 def import_skill_git_install_route():
     """Install one specific skill from a previously-staged Git clone.
 
-    Body: {staging_id, rel_dir, scope, project_id?, name?, overwrite?, cleanup?}
+    Body: {staging_id, rel_dir, scope, project_id?, name?, overwrite?, cleanup?, force?}
+    force=true re-submits past a prior scan block (MC-912) — see
+    import_skill_paste_route's docstring.
     """
     data = request.get_json() or {}
     staging_id = (data.get('staging_id') or '').strip()
@@ -464,6 +500,7 @@ def import_skill_git_install_route():
     name_override = (data.get('name') or '').strip() or None
     overwrite = bool(data.get('overwrite'))
     cleanup = bool(data.get('cleanup', True))
+    force = bool(data.get('force'))
 
     if not staging_id:
         return jsonify({'error': 'staging_id required'}), 400
@@ -484,8 +521,11 @@ def import_skill_git_install_route():
             name_override=name_override,
             overwrite=overwrite,
             cleanup=cleanup,
+            force=force,
         )
         return jsonify(rec), 201
+    except _guard.SkillQuarantined as e:
+        return jsonify({'quarantined': True, 'staging_id': staging_id, **e.verdict}), 422
     except FileNotFoundError as e:
         return jsonify({'error': str(e)}), 404
     except FileExistsError as e:
@@ -510,6 +550,43 @@ def import_skill_git_cancel_route():
             shutil.rmtree(target, ignore_errors=True)
     except Exception as e:
         _log(f"[skills] staging cancel failed for {staging_id}: {e}", flush=True)
+    return jsonify({'ok': True})
+
+
+# ── Import security scanner — quarantine (MC-912) ───────────────────────────
+#
+# A blocked import is copied to skills.quarantine/<id>/ with its verdict
+# rather than deleted, so a human can see WHY (offending lines quoted) before
+# deciding. There is no "release" endpoint: recovery is re-submitting the
+# ORIGINAL import request with force=true (see each import route's
+# docstring) — the quarantine copy is for visibility/audit, not the only way
+# back. DELETE here just purges that copy; it does not affect the ability to
+# force-retry from the original source.
+
+@bp.route('/api/skills/quarantine')
+def list_skill_quarantine_route():
+    return jsonify(_guard.list_quarantine())
+
+
+@bp.route('/api/skills/quarantine/<qid>')
+def read_skill_quarantine_route(qid):
+    try:
+        rec = _guard.read_quarantine(qid)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not rec:
+        return jsonify({'error': 'quarantine entry not found'}), 404
+    return jsonify(rec)
+
+
+@bp.route('/api/skills/quarantine/<qid>', methods=['DELETE'])
+def discard_skill_quarantine_route(qid):
+    try:
+        ok = _guard.discard_quarantine(qid)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    if not ok:
+        return jsonify({'error': 'quarantine entry not found'}), 404
     return jsonify({'ok': True})
 
 
