@@ -2604,10 +2604,37 @@ def _boot_phase(label, fn):
         _log(f"[boot] {label}: {dt:.2f}s")
 
 
-if __name__ == '__main__':
+# Set by boot(); read by the ready-to-serve log line and _boot_phase.
+_BOOT_T0 = 0.0
+
+
+def boot(check_port=True):
+    """Run every startup subsystem, then return. Does NOT serve.
+
+    Extracted from the `__main__` block (2026-09-02) because there are TWO
+    entry points and only one of them was running any of this. `app.py` (the
+    desktop/pywebview launcher, and the thing build-macos.spec freezes) did
+    `from server import app, _start_scheduler` — a name that has never existed
+    at server.py's top level, since the scheduler moved into
+    mc/blueprints/scheduler_routes.py. That ImportError killed app.py's Flask
+    thread outright, so the frozen desktop app served nothing; and even had the
+    import worked, app.py would still have started ONLY the scheduler — no
+    guardian, no worktree gc, no stray reaping, no builtin skills/MCPs, no
+    auth probe.
+
+    Anything added here is automatically shared by both entry points. Keep it
+    that way: do not add startup work directly to `__main__`.
+
+    check_port: app.py binds the port itself via app.run/_serve_dual_stack in
+    its own thread, and does its own single-instance handling before it gets
+    here, so it opts out of the connect-probe guard (MC-908) rather than
+    racing itself for its own port.
+    """
+    global _BOOT_T0
     _BOOT_T0 = _time.time()
     _register_claude_runtime_hooks()
-    _boot_phase('port-conflict wait', _check_port_conflict)
+    if check_port:
+        _boot_phase('port-conflict wait', _check_port_conflict)
     # Reap child process trees orphaned by a prior MC instance that exited
     # (restart/crash) without killing them. Reads the PID ledger the prior
     # instance persisted; identity-guarded so it can't friendly-fire. Must run
@@ -2701,5 +2728,9 @@ if __name__ == '__main__':
         except Exception as e:
             _log(f"[question-channel] poller not started: {e}")
     _log(f"[boot] ready to serve after {_time.time() - _BOOT_T0:.2f}s")
+
+
+if __name__ == '__main__':
+    boot()
     _log(f"Clayrune running at http://localhost:{PORT}")
     _serve_dual_stack(PORT)
