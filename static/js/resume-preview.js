@@ -477,6 +477,7 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
       if (sess.num_turns !== undefined) cached.num_turns = sess.num_turns;
       updateHistoryStatus(sessionId, serverStatus);
       updateAgentStatusUI(sessionId, serverStatus);
+      window.updateRailRowStatus?.(sessionId);  // MC-940: rail row too, in place
     }
     // Question-form reconciliation. A `type: question` SSE event can be
     // silently dropped the same way — agent ends up waiting with no form
@@ -741,6 +742,7 @@ function connectAgentStream(projectId, sessionId) {
         delete _answeredQuestionIds[sessionId];  // new turn → answered-set is moot
         updateHistoryStatus(sessionId, 'running');
         updateAgentStatusUI(sessionId, 'running');
+        window.updateRailRowStatus?.(sessionId);  // MC-940: rail row too, in place
         // §4: turn_start is the reliable hot-path show point (it skips
         // refreshModal, so the declarative cold-render won't fire here).
         hideTypingIndicator(sessionId);  // clear any stale node first
@@ -795,6 +797,7 @@ function connectAgentStream(projectId, sessionId) {
         }
         updateHistoryStatus(sessionId, 'idle');
         updateAgentStatusUI(sessionId, 'idle');
+        window.updateRailRowStatus?.(sessionId);  // MC-940: clears a stale Working…
         es.close();
         delete agentEventSources[sessionId];
         delete sseRetryCount[sessionId];

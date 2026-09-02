@@ -1700,6 +1700,56 @@ function _convLiveState(live, c) {
   return null;
 }
 
+// MC-940 — repaint ONE rail row's live status in place.
+//
+// The Working…/Waiting-for-you pill lived only inside the full modal rebuild,
+// and turn_start/turn_complete deliberately skip that rebuild (it recreates the
+// chat textarea every turn — the measured cause of the mobile IME death,
+// ~205ms/keystroke; see resume-preview.js). Nothing else repainted a rail row,
+// so a row you were sitting on never showed that its agent had started, and —
+// worse — never cleared once the turn finished. This is the rail's counterpart
+// to updateAgentStatusUI(): touch only the nodes that carry status.
+//
+// Deliberately does NOT:
+//   • re-sort the rail (see _rank) — reordering rows under the cursor mid-turn
+//     is worse than a stale pill; ordering waits for the next real rebuild.
+//   • write row.style.display — that belongs to _applyRailFilter, which matches
+//     on data-search (the badge is not in it), so an in-place swap is filter-safe.
+function updateRailRowStatus(sessionId) {
+  const s = agentStatusCache[sessionId];
+  if (!s) return;
+  const waiting = !!(s.waitingForQuestion || s.waitingForPlanApproval);
+  const state = waiting ? 'waiting' : (s.status === 'running' ? 'working' : null);
+  // Same keying rule as _liveConvStates: once a session has resolved to a
+  // transcript id, pin to THAT csid. A resumed/auto-compacted session shares one
+  // mc_session_id with its stale forks, so an mcsid match would light them all.
+  const q = v => String(v || '').replace(/["\\]/g, '');
+  const sel = s.claudeSessionId
+    ? `.conv-row[data-csid="${q(s.claudeSessionId)}"]`
+    : `.conv-row[data-mcsid="${q(sessionId)}"]`;
+  document.querySelectorAll(sel).forEach(row => {
+    row.classList.toggle('conv-live-working', state === 'working');
+    row.classList.toggle('conv-live-waiting', state === 'waiting');
+    const rest = row.dataset.restStatus || 'completed';
+    const dot = row.querySelector('.conv-name .agent-status-dot');
+    if (dot) {
+      const cls = state === 'waiting' ? 'needs-attention' : state === 'working' ? 'running' : rest;
+      dot.className = `agent-status-dot ${cls}`;
+      dot.title = state === 'waiting' ? 'Waiting for your reply'
+                : state === 'working' ? 'Working…' : rest;
+    }
+    const time = row.querySelector('.conv-time');
+    if (time) {
+      if (state === 'waiting') time.innerHTML = '<span class="conv-live-badge waiting">Waiting for you</span>';
+      else if (state === 'working') time.innerHTML = '<span class="conv-live-badge working">Working…</span>';
+      else time.textContent = row.dataset.tsRelative || '';
+    }
+  });
+}
+// static/js/*.js are ES modules — a top-level function is NOT global. The SSE
+// handlers live in resume-preview.js and reach this through window.
+window.updateRailRowStatus = updateRailRowStatus;
+
 // Layer-2 list rows for the user's conversations. Tapping opens it in chat mode
 // (openConversation): live → its thread; past → reconstructed thread ready to
 // continue.
@@ -1793,6 +1843,10 @@ function mobileUserConversationsHTML(p, convos) {
       ? esc('🧭 Steward' + (c.steward_objective ? ' — ' + String(c.steward_objective).split('\n')[0].slice(0, 60) : ''))
       : esc((_convTitle(c) || '(empty conversation)').substring(0, 90));
     const liveSt = _convLiveState(live, c);
+    // The RESTING status — what the dot shows when the row is not live. Hoisted
+    // out of the else branch because updateRailRowStatus() has to restore it
+    // when a turn ends, and it is not recoverable from the DOM by then.
+    const stt = c.live ? (c.status || 'running') : (c.status || 'completed');
     let dot, badge = '';
     if (liveSt === 'waiting') {
       dot = `<span class="agent-status-dot needs-attention" title="Waiting for your reply"></span>`;
@@ -1801,7 +1855,6 @@ function mobileUserConversationsHTML(p, convos) {
       dot = `<span class="agent-status-dot running" title="Working…"></span>`;
       badge = `<span class="conv-live-badge working">Working…</span>`;
     } else {
-      const stt = c.live ? (c.status || 'running') : (c.status || 'completed');
       dot = `<span class="agent-status-dot ${esc(stt)}" title="${esc(stt)}"></span>`;
     }
     // Title now carries the subject, so the sub-line carries the latest turn —
@@ -1848,7 +1901,7 @@ function mobileUserConversationsHTML(p, convos) {
     const splitBtn = _canSplit
       ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
       : '';
-    return `<div class="conv-row ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
+    return `<div class="conv-row ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" data-mcsid="${esc(mcsid || '')}" data-ts-relative="${esc(c.ts_relative || '')}" data-rest-status="${esc(stt)}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
       ${face}
       <div class="conv-main">
         <div class="conv-top">
