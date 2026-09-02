@@ -572,6 +572,12 @@ function _repaintAgentOutput(sessionId) {
   if (qpid && window._rerenderPendingQuestions) {
     try { window._rerenderPendingQuestions(qpid, sessionId); } catch (_) {}
   }
+  // Nested subagent cards (MC-937 Phase 4) aren't buffered log lines either —
+  // same gap as the question form above, same fix: restore from the cached
+  // agentStatusCache[sessionId].activeSubagents right after the replay.
+  if (window._renderSubagentCards) {
+    try { window._renderSubagentCards(sessionId); } catch (_) {}
+  }
   // In-chat search (chat-search.js) highlights by wrapping rendered text nodes
   // in <mark>; the clear-and-rebuild above just wiped every one of those without
   // going through a template re-render (chatSearchBarHTML never ran), so its own

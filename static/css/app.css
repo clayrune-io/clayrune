@@ -3172,6 +3172,15 @@
   .conv-live-badge.waiting { background: color-mix(in srgb, #f97316 20%, transparent); color: #f97316; }
   .conv-row.conv-live-waiting { background: color-mix(in srgb, #f97316 7%, transparent); }
   .conv-row.conv-live-waiting:hover { background: color-mix(in srgb, #f97316 12%, transparent); }
+  /* "Has helpers out" — a roster row's owner has one or more running nested
+     subagents (MC-937 Phase 4). Sits between the name and the timestamp/
+     shimmer slot; a count is all the row anatomy has room for (§7 — a
+     subagent isn't addressable, so it never gets a row of its own). */
+  .conv-helpers {
+    flex-shrink: 0; font-size: 10px; font-weight: 700; letter-spacing: .2px;
+    padding: 1px 7px; border-radius: 999px; white-space: nowrap;
+    background: color-mix(in srgb, var(--accent) 16%, transparent); color: var(--accent);
+  }
   .conv-bot {
     display: flex; align-items: center; gap: 8px; margin-top: 2px; min-width: 0;
   }
@@ -4123,6 +4132,34 @@
   @media (prefers-reduced-motion: reduce) {
     .typing-indicator .act-word span { animation-duration: 2.6s; }
   }
+
+  /* Nested subagent card (MC-937 Phase 4, channel spec §7): "a collapsed card
+     inside the message of whoever spawned it" — indented under the narration
+     bubble it belongs to (never a top-level bubble, no avatar — a subagent's
+     transcript never records its type). Plain text content throughout so the
+     chat-search TreeWalker can find and wrap it like any other bubble. */
+  .subagent-cards {
+    align-self: flex-start; max-width: 84%;
+    display: flex; flex-direction: column; gap: 6px;
+    margin: 2px 0 2px 26px;
+  }
+  .subagent-card {
+    background: var(--surface2); border: 1px solid var(--border2);
+    border-radius: 10px; padding: 6px 11px;
+  }
+  .subagent-card-head { display: flex; align-items: center; gap: 7px; min-width: 0; }
+  .subagent-card-dot {
+    flex: 0 0 6px; width: 6px; height: 6px; border-radius: 50%;
+    background: var(--accent); animation: typing-pulse 1.2s infinite ease-in-out;
+  }
+  .subagent-card-check { flex: 0 0 auto; color: var(--green); font-weight: 700; font-size: 12px; }
+  .subagent-card-label {
+    flex: 1; min-width: 0; font-size: 12.5px; font-weight: 600; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .subagent-card-meta { flex: 0 0 auto; font-size: 11px; color: var(--text-faint); white-space: nowrap; }
+  .subagent-card-done { background: var(--surface); }
+  .subagent-card-done .subagent-card-label { color: var(--text-dim); }
 
   /* NOTE (#1, 2026-07-06): the desktop 720px thread cap was REMOVED — it left
      large empty gutters on a wide modal ("trimmed to part of the screen"). The

@@ -1335,7 +1335,7 @@ function agentPanelHTML(p) {
       </div>
       <div class="agent-chat">
         ${(typeof chatSearchBarHTML === 'function') ? chatSearchBarHTML(p.id, activeSessionId) : ''}
-        <div class="agent-output" id="agent-output-${esc(activeSessionId)}">${outputLines}${typingHTML}</div>
+        <div class="agent-output" id="agent-output-${esc(activeSessionId)}">${outputLines}${_subagentCardsHTML(activeSessionId)}${typingHTML}</div>
         ${chatInput ? `<div class="agent-chat-separator"></div>${chatInput}` : ''}
       </div>`;
   }
@@ -1826,13 +1826,31 @@ function updateRailRowStatus(sessionId) {
   if (charKey) {
     document.querySelectorAll(`.channel-row[data-char-key="${q(charKey)}"]`).forEach(row => {
       const time = row.querySelector('.conv-time');
-      if (!time) return;
-      if (state === 'waiting') time.innerHTML = '<span class="conv-live-badge waiting">Waiting for you</span>';
-      else if (state === 'working') {
-        const kind = (agentActivityState[sessionId] === 'thinking') ? 'thinking' : 'tool';
-        time.innerHTML = _actIndicatorInner(kind);
-      } else {
-        time.textContent = row.dataset.tsRelative || '';
+      if (time) {
+        if (state === 'waiting') time.innerHTML = '<span class="conv-live-badge waiting">Waiting for you</span>';
+        else if (state === 'working') {
+          const kind = (agentActivityState[sessionId] === 'thinking') ? 'thinking' : 'tool';
+          time.innerHTML = _actIndicatorInner(kind);
+        } else {
+          time.textContent = row.dataset.tsRelative || '';
+        }
+      }
+      // MC-937 Phase 4: "has helpers out" badge, same restraint as the rest of
+      // this function — content-only patch, never a re-sort, never display.
+      const helperCount = (s.activeSubagents || []).filter(r => r.running).length;
+      let helpers = row.querySelector('.conv-helpers');
+      if (helperCount > 0) {
+        if (!helpers) {
+          helpers = document.createElement('span');
+          helpers.className = 'conv-helpers';
+          const top = row.querySelector('.conv-top');
+          if (top && time) top.insertBefore(helpers, time);
+          else if (top) top.appendChild(helpers);
+        }
+        helpers.textContent = `+${helperCount}`;
+        helpers.title = `${helperCount} helper${helperCount !== 1 ? 's' : ''} working`;
+      } else if (helpers) {
+        helpers.remove();
       }
     });
   }
@@ -2066,12 +2084,18 @@ function _channelRoster(projectId) {
     const mtime = c.mtime || 0;
     if (mtime >= g.mtime) { g.mtime = mtime; g.tsRelative = c.ts_relative || ''; g.char = c.character; }
   }
-  const liveState = {};  // key -> {state:'working'|'waiting', sessionId}
+  const liveState = {};    // key -> {state:'working'|'waiting', sessionId}
+  const helperCount = {};  // key -> count of currently-RUNNING nested subagents (MC-937 Phase 4)
   for (const sid in agentStatusCache) {
     const s = agentStatusCache[sid];
     if (!s || s.projectId !== projectId) continue;
     const key = _convCharKey({ character: s.character });
     if (!key) continue;
+    // A session's helpers count regardless of the waiting/working branch below
+    // (defensive — in practice a subagent only exists while its parent turn is
+    // actively running, but the roster row is what a human checks first).
+    const running = (s.activeSubagents || []).filter(r => r.running).length;
+    if (running) helperCount[key] = (helperCount[key] || 0) + running;
     const waiting = !!(s.waitingForPlanApproval || s.waitingForQuestion);
     const working = s.status === 'running' && !waiting;
     if (!waiting && !working) continue;
@@ -2085,7 +2109,7 @@ function _channelRoster(projectId) {
   for (const key in groups) {
     const g = groups[key];
     const ls = liveState[key] || null;
-    const row = { key: g.key, char: g.char, tsRelative: g.tsRelative, mtime: g.mtime, liveState: ls };
+    const row = { key: g.key, char: g.char, tsRelative: g.tsRelative, mtime: g.mtime, liveState: ls, helperCount: helperCount[key] || 0 };
     (ls && ls.state === 'working' ? inRoom : bench).push(row);
   }
   const byRecency = (a, b) => (b.mtime || 0) - (a.mtime || 0);
@@ -2118,12 +2142,20 @@ function _channelRowHTML(p, r, inRoom) {
     right = esc(r.tsRelative || '');
   }
   const search = `${name} ${role}`.toLowerCase();
+  // "Has helpers out" — a count suffices (§7: subagents aren't addressable,
+  // so they get no roster row of their own; this is the only trace of them
+  // on the roster). updateRailRowStatus patches this same badge in place from
+  // the live poll; kept here too so a fresh render (mode switch, reopen)
+  // shows it without waiting on the next poll tick.
+  const helpers = r.helperCount > 0
+    ? `<span class="conv-helpers" title="${r.helperCount} helper${r.helperCount !== 1 ? 's' : ''} working">+${r.helperCount}</span>` : '';
   return `<div class="conv-row channel-row" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
       onclick="openChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
     <div class="conv-main">
       <div class="conv-top">
         <span class="conv-name">${name}</span>
+        ${helpers}
         <span class="conv-time">${right}</span>
       </div>
       <div class="conv-bot"><span class="conv-sub">${role}</span></div>
@@ -3383,6 +3415,139 @@ function showTypingIndicator(sessionId) {
   if (wasPinned) _scheduleAgentPinScroll(sessionId, el, false);
 }
 
+// ── Nested subagent cards (MC-937 Phase 4, channel spec §7) ─────────────────
+// "A throwaway subagent — no persistent identity, cannot be addressed after
+// it exits — therefore does NOT get a roster row. Its output renders as a
+// collapsed card inside the message of whoever spawned it." The server
+// (agent_routes.py's _active_subagents_for_session) is the ONLY liveness
+// authority — `running` on a row is trusted as-is, never re-derived here.
+//
+// Seconds → "12s" / "3m 05s". No existing formatter in the codebase to reuse.
+function _fmtElapsed(seconds) {
+  const s = Math.max(0, Math.floor(seconds || 0));
+  if (s < 60) return `${s}s`;
+  const m = Math.floor(s / 60), r = s % 60;
+  return `${m}m ${String(r).padStart(2, '0')}s`;
+}
+function _subagentToolWord(n) { return (n === 1) ? 'tool call' : 'tool calls'; }
+// One card's meta line (elapsed+calls while running; a settled summary once
+// done) — shared text so the cold string-render and the warm DOM patch can
+// never drift apart.
+function _subagentCardMeta(row) {
+  const calls = row.tool_calls || 0;
+  return row.running
+    ? `${_fmtElapsed(row.elapsed_seconds || 0)} · ${calls} ${_subagentToolWord(calls)}`
+    : `finished · ${calls} ${_subagentToolWord(calls)}`;
+}
+// Full card markup for ONE subagent row. No avatar by design (§7 note in the
+// brief: a subagent's transcript never records its type, and resolving one
+// would mean scanning a multi-MB parent transcript per poll) — the label
+// string is the only identity. Plain text content throughout so chat-search's
+// TreeWalker highlight pass can find and wrap it like any other bubble text.
+function _subagentCardRowHTML(sessionId, row) {
+  const label = esc(row.label || 'Subagent');
+  const meta = esc(_subagentCardMeta(row));
+  const icon = row.running
+    ? `<span class="subagent-card-dot" aria-hidden="true"></span>`
+    : `<span class="subagent-card-check" aria-hidden="true">&#10003;</span>`;
+  return `<div class="subagent-card${row.running ? '' : ' subagent-card-done'}" id="subagent-card-${esc(sessionId)}-${esc(row.agent_id)}" data-running="${row.running ? 'true' : 'false'}">
+    <div class="subagent-card-head">${icon}<span class="subagent-card-label">${label}</span><span class="subagent-card-meta">${meta}</span></div>
+  </div>`;
+}
+// Cold-render string builder (agentPanelHTML's outputLines path) — reads the
+// SAME agentStatusCache field the warm path below patches, so a tab switch /
+// modal reopen renders byte-identical cards to what was already on screen.
+// Empty list → empty string: no container, no chrome, nothing to find.
+function _subagentCardsHTML(sessionId) {
+  const rows = ((agentStatusCache[sessionId] || {}).activeSubagents) || [];
+  if (!rows.length) return '';
+  return `<div class="subagent-cards" id="subagent-cards-${esc(sessionId)}">${
+    rows.map(r => _subagentCardRowHTML(sessionId, r)).join('')}</div>`;
+}
+// Warm DOM patch — called after every /agent/status poll that refreshed
+// agentStatusCache[sessionId].activeSubagents (fetchAgentStatus,
+// _reconcileAgentBuffer) and after _repaintAgentOutput restores a wiped
+// #agent-output-<sid> (subagent cards aren't part of agentOutputBuffers, so a
+// buffer replay alone can't bring them back).
+//
+// Deliberately does NOT remove a card once it exists in the DOM, even if the
+// row later drops out of activeSubagents (the server's own 600s visibility
+// window, or a full page reload finding nothing to seed from) — "on finish it
+// settles into a completed summary rather than vanishing." A row that's still
+// listed just gets its running/finished state and meta text updated in place;
+// this never touches _msgAttrPending, so it can't desync speaker attribution.
+function _renderSubagentCards(sessionId) {
+  const el = document.getElementById(`agent-output-${sessionId}`);
+  if (!el) return;
+  const rows = ((agentStatusCache[sessionId] || {}).activeSubagents) || [];
+  if (!rows.length) return;  // nothing new to paint; existing cards (if any) stay as-is
+  const wasPinned = _isAgentOutputPinned(el, sessionId);
+  let container = document.getElementById(`subagent-cards-${sessionId}`);
+  if (!container) {
+    container = document.createElement('div');
+    container.className = 'subagent-cards';
+    container.id = `subagent-cards-${sessionId}`;
+    // Sits just above the live typing indicator (the tail of the stream), not
+    // spliced in wherever the Task tool call happened to occur — there's no
+    // per-message boundary in this line-stream renderer to nest into.
+    const typing = document.getElementById(`typing-${sessionId}`);
+    if (typing) el.insertBefore(container, typing); else el.appendChild(container);
+  }
+  for (const row of rows) {
+    const cardId = `subagent-card-${sessionId}-${row.agent_id}`;
+    let card = document.getElementById(cardId);
+    if (!card) {
+      const host = document.createElement('div');
+      host.innerHTML = _subagentCardRowHTML(sessionId, row);
+      container.appendChild(host.firstElementChild);
+    } else {
+      card.dataset.running = row.running ? 'true' : 'false';
+      card.classList.toggle('subagent-card-done', !row.running);
+      const iconHost = card.querySelector('.subagent-card-head');
+      const oldIcon = card.querySelector('.subagent-card-dot, .subagent-card-check');
+      if (oldIcon && !!oldIcon.classList.contains('subagent-card-dot') === !row.running) {
+        // Running state flipped — swap the icon node (dot ↔ check).
+        const span = document.createElement('span');
+        span.className = row.running ? 'subagent-card-dot' : 'subagent-card-check';
+        span.setAttribute('aria-hidden', 'true');
+        if (!row.running) span.innerHTML = '&#10003;';
+        oldIcon.replaceWith(span);
+      }
+      const meta = card.querySelector('.subagent-card-meta');
+      if (meta) meta.textContent = _subagentCardMeta(row);
+    }
+  }
+  if (wasPinned) _scheduleAgentPinScroll(sessionId, el, false);
+}
+window._renderSubagentCards = _renderSubagentCards;
+
+// Self-canceling poll (mirrors agent-console.js's _wfStartPolling for the
+// Workflows tab): active_subagents' elapsed_seconds/tool_calls are a
+// point-in-time snapshot from whatever poll produced them, so a card that's
+// still `running` needs its OWN re-poll cadence or it freezes the instant the
+// panel opens — the incidental fetchAgentStatus calls triggered by user
+// actions (tab switch, dispatch, resume) are nowhere near frequent enough.
+// Keyed per PROJECT (the endpoint's own granularity), started/stopped once
+// per fetchAgentStatus tick from the ACTUAL running+visible state, not from
+// intent — so it can never outlive the thing it's polling for.
+const _subagentPollTimers = {};
+function _subagentPollStop(projectId) {
+  if (_subagentPollTimers[projectId]) {
+    clearInterval(_subagentPollTimers[projectId]);
+    delete _subagentPollTimers[projectId];
+  }
+}
+function _subagentAnyRunningVisible(sessions) {
+  return sessions.some(s => (s.active_subagents || []).some(r => r.running)
+    && document.getElementById(`agent-output-${s.session_id}`));
+}
+function _subagentPollStart(projectId) {
+  if (_subagentPollTimers[projectId]) return;
+  _subagentPollTimers[projectId] = setInterval(() => {
+    fetchAgentStatus(projectId).catch(() => {});
+  }, 4000);
+}
+
 function appendAgentLine(sessionId, text) {
   const el = document.getElementById(`agent-output-${sessionId}`);
   if (!el) return;
@@ -4207,7 +4372,14 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, pinned: !!s.pinned };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [] };
+      // MC-937 Phase 4 (frontend): patch this session's nested subagent
+      // card(s) + its rail helper-count badge in place from server truth —
+      // same discipline as the pendingQuestions reconciliation below (touch
+      // the live DOM directly rather than waiting on a refreshModal that may
+      // not come, per the turn_start/turn_complete "no rebuild" rule).
+      _renderSubagentCards(sid);
+      window.updateRailRowStatus?.(sid);
       // A FRESH conversation has no claude_session_id at dispatch time, so the
       // zero-gap upsert in startAgent() (resume-preview.js) is skipped for it —
       // `if (resumeId && task)` is false. Nothing else inserted it, so the new
@@ -4377,6 +4549,12 @@ async function fetchAgentStatus(projectId) {
       refreshModal();
       renderAgentConsole();
     }
+    // Keep subagent cards ticking while at least one is running AND its panel
+    // is actually on screen; self-cancel the instant that stops being true
+    // (session finished, panel closed/switched away) rather than polling
+    // forever in the background.
+    if (_subagentAnyRunningVisible(sessions)) _subagentPollStart(projectId);
+    else _subagentPollStop(projectId);
   } catch(e) {}
 }
 
