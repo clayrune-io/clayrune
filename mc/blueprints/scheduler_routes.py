@@ -36,7 +36,9 @@ stays in server.py.
 from datetime import datetime, timedelta, timezone
 from typing import Any, Callable, Optional
 from pathlib import Path
+import hashlib
 import json
+import os
 import threading
 import time as _time
 import uuid
@@ -120,6 +122,85 @@ def _load_schedules():
 def _save_schedules(schedules):
     SCHEDULES_PATH.parent.mkdir(parents=True, exist_ok=True)
     SCHEDULES_PATH.write_text(json.dumps(schedules, indent=2, ensure_ascii=False), encoding='utf-8')
+
+
+# ── One-fire-per-slot claim (MC-909) ─────────────────────────────────────────
+# _load_schedules/_save_schedules above are an unlocked read-modify-write on a
+# single JSON file. That is safe with one scheduler and silently wrong with
+# two: both read the same due `next_run`, both dispatch, and the last writer
+# wins on the roll-forward. MEASURED 2026-08-30 — schedule 99f1ae73 fired once
+# at 11:00:22Z and produced two full [Position review] sweeps 112ms apart
+# (sessions 39c29aaf0ba0 and a9c1f5f6f634); they raced on the position sidecar
+# and cleared a flag that was waiting on Ron (MC-910).
+#
+# The second scheduler existed because the port guard let a second Clayrune
+# boot beside a live one (MC-908, fixed 2026-09-01 in 64d0510). This is the
+# defence-in-depth layer under that fix: even if two instances are somehow
+# live, a given (schedule, slot) can be dispatched exactly once.
+#
+# O_CREAT|O_EXCL is the primitive — a single atomic syscall on both NTFS and
+# POSIX, so it needs no lock file, no lease, and no cleanup on crash to stay
+# correct. Losing the race is not an error; it means someone else has this
+# slot, which is precisely the outcome we want.
+# Resolved lazily: SCHEDULES_PATH is injected by wire() and is still None at
+# import time, so this cannot be a module-level constant.
+CLAIMS_DIR = None
+
+
+def _claims_dir():
+    return CLAIMS_DIR or (SCHEDULES_PATH.parent / '.schedule_claims')
+
+
+def _claim_slot(sched_id, slot):
+    """True if THIS process may dispatch (sched_id, slot); False if taken.
+
+    Fails OPEN: if the claim directory can't be written (read-only volume,
+    permissions), we return True and dispatch. A missed run is a worse failure
+    than the rare duplicate this guards against, and the duplicate needs two
+    live instances to happen at all.
+    """
+    if not sched_id or not slot:
+        return True
+    # Preparing the directory is a SEPARATE try: mkdir(parents=True) raises
+    # FileExistsError when a path component is a file, and that must fail open
+    # rather than being mistaken for "another instance holds this slot".
+    try:
+        cdir = _claims_dir()
+        cdir.mkdir(parents=True, exist_ok=True)
+    except Exception as e:
+        _log(f'[scheduler] slot claim unavailable ({e}); dispatching anyway')
+        return True
+    try:
+        key = hashlib.sha1(f'{sched_id}@{slot}'.encode()).hexdigest()[:16]
+        fd = os.open(str(cdir / f'{key}.claim'),
+                     os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        with os.fdopen(fd, 'w') as fh:
+            fh.write(f'{sched_id} {slot} pid={os.getpid()} at={now_iso()}\n')
+        return True
+    except FileExistsError:
+        _log(f'[scheduler] slot already claimed for {sched_id} @ {slot} — '
+             f'skipping duplicate dispatch (another instance owns it)')
+        return False
+    except Exception as e:
+        _log(f'[scheduler] slot claim unavailable ({e}); dispatching anyway')
+        return True
+
+
+def _prune_claims(keep_days=7):
+    """Drop claim markers older than keep_days. Best-effort; never raises."""
+    try:
+        cdir = _claims_dir()
+        if not cdir.exists():
+            return
+        cutoff = _time.time() - keep_days * 86400
+        for f in cdir.glob('*.claim'):
+            try:
+                if f.stat().st_mtime < cutoff:
+                    f.unlink()
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 # ── Scheduled Tasks ──────────────────────────────────────────────────────────
@@ -520,7 +601,14 @@ def _scheduler_loop():
                     changed = True
                     continue
                 if now >= nr_dt:
-                    # Time to dispatch
+                    # Time to dispatch — but claim this exact slot first, so a
+                    # second scheduler (another live instance) can't dispatch it
+                    # too. See _claim_slot: atomic, fails open. MC-909.
+                    if not _claim_slot(sched.get('id', ''), next_run):
+                        sched['last_run'] = now_iso()
+                        sched['next_run'] = _compute_next_run(sched)
+                        changed = True
+                        continue
                     pid = sched.get('project_id', '')
                     task = sched.get('task', '')
                     steward_respawn = False
@@ -713,6 +801,10 @@ def _scheduler_loop():
                     _log(f"[scheduler] Cleaned {len(dead_pids)} dead process(es) from tracker")
         except Exception as e:
             _log(f"[scheduler] Process tracker sweep error: {e}")
+
+        # Slot-claim markers (MC-909) are tiny and only need to outlive the
+        # window in which a duplicate could fire; a week is generous.
+        _prune_claims()
 
         _scheduler_stop.wait(30)
 
