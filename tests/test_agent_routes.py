@@ -401,7 +401,7 @@ def test_resolve_runtime_model_blocks_the_claude_id_leak():
     """A project pinned to Opus must not push that id into a codex spawn; an
     explicit per-chat pick must pass through untouched."""
     from mc.blueprints import agent_routes as ar
-    import agent_runtime
+    from mc import agent_runtime
 
     codex = agent_runtime.get_runtime('codex')
     proj = {'agent_model': 'claude-opus-5'}

@@ -53,7 +53,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import distiller as _distiller
+import mc.distiller as _distiller
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 

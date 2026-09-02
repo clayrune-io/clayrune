@@ -10,7 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 def _make_artifact(skills_root: Path, scope_dir: str, slug: str, kind='skill',
@@ -139,7 +139,7 @@ def test_degenerate_frontmatter_description_falls_through(tmp_path, monkeypatch)
     to ever trigger must fall through to the body's first substantial line
     — which for preference bodies is the plain TITLE line, not the '## Why'
     heading _first_heading would land on."""
-    import distiller
+    from mc import distiller
     monkeypatch.setattr(distiller, '_skills_root', tmp_path / 'skills')
     d = tmp_path / 'skills' / '_proposed' / 'proj_x' / '2026-07-09T00-00-00-abcd-preference-abcd'
     d.mkdir(parents=True)

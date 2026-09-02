@@ -288,9 +288,9 @@ data/secrets*
 *.secrets.json
 
 # Designated scratch dir — throwaway repro/debug/exploration artifacts. Agents:
-# put scratch HERE so it never reaches a commit candidate. Local-only.
-/_scratch/*
-!/_scratch/.gitkeep
+# put scratch HERE so it never reaches a commit candidate. Local-only. Not
+# tracked at all (no root entry) — mkdir it on first use.
+/_scratch/
 
 # Loose scratch under tools/ — the `_`-prefix (and repro-) = scratch convention.
 # tools/_mc_restart.ps1 is a real tracked helper, so keep it.

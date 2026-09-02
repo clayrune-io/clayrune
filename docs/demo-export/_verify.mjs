@@ -1,11 +1,11 @@
-/* Headless verification for the Clayrune public demo (run from demo-export/).
+/* Headless verification for the Clayrune public demo (run from docs/demo-export/).
    Asserts: no console errors, ZERO outbound network beyond the 3 local files,
    and that the full scripted run + settings + responsive layout work.
    Not shipped to the website — a dev-only check.  Run: node _verify.mjs        */
 import { createRequire } from 'module';
 import { pathToFileURL } from 'url';
 import { resolve } from 'path';
-const require = createRequire(resolve('../tools/smoke/package.json'));
+const require = createRequire(resolve('../../tools/smoke/package.json'));
 const { chromium } = require('playwright');
 
 const url = pathToFileURL(resolve('demo-app.html')).href;

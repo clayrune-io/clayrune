@@ -2,18 +2,17 @@
 
 Extracted verbatim from server.py — IMPROVEMENT_PLAN_V2.md P1-1 /
 docs/SERVER_SPLIT_PLAN.md Tier 1 (step a). Behavior unchanged: same
-routes, same logic, same `Path(__file__).parent` resolution (this
-module lives in the repo root next to server.py, and is co-bundled at
-the same PyInstaller _MEIPASS root when frozen, so the marketing/ dir
-resolves identically).
+routes, same logic. This module lives in mc/, so the docs/marketing/
+dir is resolved via `Path(__file__).resolve().parent.parent`
+(repo root) rather than a same-directory sibling.
 
-Lets you iterate on marketing/index.html etc. by hitting
+Lets you iterate on docs/marketing/index.html etc. by hitting
 http://localhost:5199/marketing/ in a browser instead of spinning up a
 separate http server. Also reachable through the Cloudflare tunnel
 (clayrune.io/marketing/) once remote access is enabled, which is how
 this preview is useful from a phone before the real website goes live.
 Not a production hosting path — when the site ships it'll be served by
-Cloudflare Pages directly off the marketing/ folder, not by Flask.
+Cloudflare Pages directly off the docs/marketing/ folder, not by Flask.
 
 Rollback: revert the extraction commit (re-inlines the route in
 server.py). No state/schema involved.
@@ -28,7 +27,7 @@ bp = Blueprint('marketing_preview', __name__)
 @bp.route('/marketing/')
 @bp.route('/marketing/<path:filename>')
 def serve_marketing(filename='index.html'):
-    marketing_dir = Path(__file__).parent / 'marketing'
+    marketing_dir = Path(__file__).resolve().parent.parent / 'docs' / 'marketing'
     # Directory-style URLs (e.g. /marketing/v2/) — Flask hands us the path
     # as 'v2/' but send_from_directory expects a file. Map to index.html.
     target = (marketing_dir / filename)

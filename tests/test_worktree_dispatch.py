@@ -29,8 +29,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-import project_sync  # noqa: E402
-import agent_worktree as _awt  # noqa: E402
+from mc import project_sync  # noqa: E402
+import mc.agent_worktree as _awt  # noqa: E402
 from mc import state  # noqa: E402
 from mc.blueprints import agent_routes as ar  # noqa: E402
 

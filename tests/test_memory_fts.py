@@ -10,7 +10,7 @@ mirroring how server.py wires both from one real path in production.
 import importlib
 import json
 
-import agent_runtime
+from mc import agent_runtime
 
 
 def _mem(tmp_data_dir):

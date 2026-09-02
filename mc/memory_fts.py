@@ -44,7 +44,7 @@ from typing import Any, Optional
 from mc import state
 from mc.core import _log
 
-import agent_runtime as _agent_runtime
+import mc.agent_runtime as _agent_runtime
 
 DB_FILE = 'session_search.db'
 

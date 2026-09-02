@@ -52,7 +52,7 @@ def _write_subagent_transcript(path, lines):
 @pytest.fixture()
 def env(tmp_path, monkeypatch):
     import server  # noqa: F401
-    import agent_runtime as art
+    import mc.agent_runtime as art
     from mc import state as mc_state
     from mc.blueprints import agent_routes as ar
     from mc.blueprints import local_auth as la

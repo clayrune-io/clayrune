@@ -21,8 +21,8 @@ from flask import Blueprint, Response, jsonify, request
 from mc import state
 from mc.core import _log, now_iso
 
-import mcp as _mcp
-import mcp_installer as _mcpinst
+import mc.mcp as _mcp
+import mc.mcp_installer as _mcpinst
 
 # Shared request helper — lives with the skills blueprint until a better home.
 from mc.blueprints.skills_routes import _resolve_project_path_or_400

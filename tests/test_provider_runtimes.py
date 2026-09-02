@@ -21,8 +21,8 @@ import pytest
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-import agent_runtime
-from agent_runtime import (
+from mc import agent_runtime
+from mc.agent_runtime import (
     EventType,
     CodexRuntime,
     OpenCodeRuntime,

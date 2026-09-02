@@ -62,7 +62,7 @@ jobs:
 
       - name: Build .app
         run: |
-          pyinstaller build-macos.spec --noconfirm
+          pyinstaller installer/build-macos.spec --noconfirm
           ls -la dist/
 
       - name: Smoke-test bundle structure

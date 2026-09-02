@@ -18,9 +18,9 @@ from flask import Blueprint, jsonify, request
 from mc import state
 from mc.core import _log
 
-import mcp as _mcp
-import skill_import_guard as _guard
-import skills as _skills
+import mc.mcp as _mcp
+import mc.skills as _skills
+import mc.skill_import_guard as _guard
 
 bp = Blueprint('skills', __name__)
 

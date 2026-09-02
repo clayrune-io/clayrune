@@ -16,7 +16,7 @@ the real Settings panel — with **no backend, no network, and no real data**.
 > `_verify.mjs` is a **dev-only** Playwright harness (not part of the bundle —
 > do not ship it). It drives the full run headless and asserts zero console
 > errors and **zero network requests**. It expects Playwright at
-> `../tools/smoke/node_modules`; run with `node _verify.mjs` from this folder.
+> `../../tools/smoke/node_modules`; run with `node _verify.mjs` from this folder.
 
 ## How to embed
 

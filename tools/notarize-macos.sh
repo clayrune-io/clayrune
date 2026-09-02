@@ -5,7 +5,7 @@
 # Turns the ten-command Apple signing dance into one command. Run it on a Mac
 # after building the app:
 #
-#     pyinstaller build-macos.spec --noconfirm     # produces dist/Clayrune.app
+#     pyinstaller installer/build-macos.spec --noconfirm     # produces dist/Clayrune.app
 #     tools/notarize-macos.sh                        # -> Clayrune-macOS.zip
 #
 # The output Clayrune-macOS.zip is the notarized, Gatekeeper-clean
@@ -64,7 +64,7 @@ die() { printf '\n\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
 
 # ── Preflight ───────────────────────────────────────────────────────────────
 [ -d "$APP" ] || die "App not found: $APP
-Build it first:  pyinstaller build-macos.spec --noconfirm"
+Build it first:  pyinstaller installer/build-macos.spec --noconfirm"
 
 command -v xcrun >/dev/null 2>&1 || die "Xcode Command Line Tools missing. Run: xcode-select --install"
 

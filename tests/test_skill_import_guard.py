@@ -13,8 +13,8 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import skill_import_guard as guard  # noqa: E402
-import skills  # noqa: E402
+import mc.skill_import_guard as guard  # noqa: E402
+from mc import skills  # noqa: E402
 
 FIXTURES = PROJECT_ROOT / 'tests' / 'fixtures' / 'malicious_skills'
 

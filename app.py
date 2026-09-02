@@ -11,7 +11,7 @@ Flask runs in a daemon thread so it dies when the main thread exits.
 # Python-version preflight — MUST be the first import, before anything that uses
 # PEP 604 `X | Y` unions or other 3.10+ syntax. Fails fast with a clear message
 # on a stale-Python venv instead of a cryptic TypeError deep in the import chain.
-import preflight  # noqa: F401
+from mc import preflight  # noqa: F401
 
 import os
 import sys

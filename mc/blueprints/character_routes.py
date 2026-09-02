@@ -13,7 +13,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
-import agent_runtime as _agent_runtime
+import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars
 from mc import state
 from mc.core import _log

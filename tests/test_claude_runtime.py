@@ -25,7 +25,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 def test_import_agent_runtime():
     """agent_runtime.py must import cleanly with no server.py or Flask deps."""
-    import agent_runtime
+    from mc import agent_runtime
     assert hasattr(agent_runtime, 'AgentRuntime')
     assert hasattr(agent_runtime, 'ClaudeRuntime')
     assert hasattr(agent_runtime, 'GeminiRuntime')
@@ -42,7 +42,7 @@ def test_import_agent_runtime():
 
 def test_capability_flags_alias():
     """CapabilityFlags must be the same class as ProviderCapabilities."""
-    from agent_runtime import CapabilityFlags, ProviderCapabilities
+    from mc.agent_runtime import CapabilityFlags, ProviderCapabilities
     assert CapabilityFlags is ProviderCapabilities
 
 
@@ -50,42 +50,42 @@ def test_capability_flags_alias():
 
 
 def test_registry_contains_claude():
-    import agent_runtime
+    from mc import agent_runtime
     names = {r.name for r in agent_runtime.available_runtimes()}
     assert 'claude' in names
 
 
 def test_registry_contains_gemini():
-    import agent_runtime
+    from mc import agent_runtime
     names = {r.name for r in agent_runtime.available_runtimes()}
     assert 'gemini' in names
 
 
 def test_get_runtime_claude():
-    import agent_runtime
+    from mc import agent_runtime
     rt = agent_runtime.get_runtime('claude')
     assert isinstance(rt, agent_runtime.ClaudeRuntime)
 
 
 def test_get_runtime_unknown_raises():
-    import agent_runtime
+    from mc import agent_runtime
     with pytest.raises(KeyError):
         agent_runtime.get_runtime('does_not_exist')
 
 
 def test_default_runtime_name():
-    import agent_runtime
+    from mc import agent_runtime
     assert agent_runtime.default_runtime_name() == 'claude'
 
 
 def test_runtime_for_project_defaults_to_claude():
-    import agent_runtime
+    from mc import agent_runtime
     rt = agent_runtime.runtime_for_project({})
     assert rt.name == 'claude'
 
 
 def test_runtime_for_project_unknown_falls_back():
-    import agent_runtime
+    from mc import agent_runtime
     rt = agent_runtime.runtime_for_project({'provider': 'nonexistent_provider_xyz'})
     assert rt.name == 'claude'
 
@@ -94,7 +94,7 @@ def test_runtime_for_project_unknown_falls_back():
 
 
 def test_resolve_binary_returns_path():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt.resolve_binary()
     assert result is not None
@@ -102,7 +102,7 @@ def test_resolve_binary_returns_path():
 
 
 def test_resolve_binary_str_is_string():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt.resolve_binary_str()
     assert isinstance(result, str)
@@ -113,7 +113,7 @@ def test_resolve_binary_windows_exe_orphan(monkeypatch, tmp_path):
     """On Windows: if shutil.which returns a .exe with a sibling .cmd, prefer .cmd."""
     if sys.platform != 'win32':
         pytest.skip("Windows-only test")
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
 
     # Create a fake claude.exe with a sibling claude.cmd
     exe = tmp_path / 'claude.exe'
@@ -131,7 +131,7 @@ def test_resolve_binary_windows_exe_orphan(monkeypatch, tmp_path):
 
 def test_resolve_binary_falls_back_to_candidate(monkeypatch, tmp_path):
     """When shutil.which returns None, check fallback paths."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
 
     # Pretend claude is not on PATH
     monkeypatch.setattr('shutil.which', lambda name: None)
@@ -158,7 +158,7 @@ def test_resolve_binary_falls_back_to_candidate(monkeypatch, tmp_path):
 
 def test_resolve_binary_last_resort_when_nothing_found(monkeypatch):
     """When nothing is found, return Path('claude') as last resort."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
 
     monkeypatch.setattr('shutil.which', lambda name: None)
 
@@ -188,7 +188,7 @@ def test_build_command_bare_matches_legacy_flags():
       ['--print', '--verbose', '--output-format', 'stream-json',
        '--dangerously-skip-permissions']
     """
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command()
     flags = cmd[1:]  # skip binary
@@ -204,7 +204,7 @@ def test_build_command_bare_matches_legacy_flags():
 
 def test_build_command_streaming_adds_input_format():
     """streaming=True must add --input-format stream-json (Mode B flag)."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(streaming=True)
     flags = cmd[1:]
@@ -214,7 +214,7 @@ def test_build_command_streaming_adds_input_format():
 
 
 def test_build_command_model():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(model='claude-sonnet-5')
     flags = cmd[1:]
@@ -223,14 +223,14 @@ def test_build_command_model():
 
 
 def test_build_command_model_empty_omitted():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(model='')
     assert '--model' not in cmd[1:]
 
 
 def test_build_command_max_turns():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(max_turns=14)
     flags = cmd[1:]
@@ -239,7 +239,7 @@ def test_build_command_max_turns():
 
 
 def test_build_command_max_turns_zero_omitted():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     for mt in (0, -1):
         cmd = rt.build_command(max_turns=mt)
@@ -247,7 +247,7 @@ def test_build_command_max_turns_zero_omitted():
 
 
 def test_build_command_perm_mode():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(perm_mode='acceptEdits')
     flags = cmd[1:]
@@ -256,14 +256,14 @@ def test_build_command_perm_mode():
 
 
 def test_build_command_perm_mode_empty_omitted():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(perm_mode='')
     assert '--permission-mode' not in cmd[1:]
 
 
 def test_build_command_channels():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(channels='plugin:foo@bar')
     flags = cmd[1:]
@@ -272,21 +272,21 @@ def test_build_command_channels():
 
 
 def test_build_command_channels_empty_omitted():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(channels='')
     assert '--channels' not in cmd[1:]
 
 
 def test_build_command_remote_control():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(remote_control=True)
     assert '--remote-control' in cmd[1:]
 
 
 def test_build_command_remote_control_false_omitted():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(remote_control=False)
     assert '--remote-control' not in cmd[1:]
@@ -294,7 +294,7 @@ def test_build_command_remote_control_false_omitted():
 
 def test_build_command_all_options():
     """All options together produce the expected flag list."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     cmd = rt.build_command(
         model='claude-opus-4-7',
@@ -325,7 +325,7 @@ def test_build_command_all_options():
 
 
 def test_encode_project_path_windows_style():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     # Simulate Windows path encoding
     # Note: Path.resolve() will make this absolute — on Windows: C--Users-foo-bar
@@ -338,7 +338,7 @@ def test_encode_project_path_windows_style():
 
 
 def test_encode_project_path_unix_style(tmp_path):
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt._encode_project_path(str(tmp_path))
     assert result is not None
@@ -348,7 +348,7 @@ def test_encode_project_path_unix_style(tmp_path):
 
 
 def test_encode_project_path_empty():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt._encode_project_path('') is None
     assert rt._encode_project_path(None) is None
@@ -358,21 +358,21 @@ def test_encode_project_path_empty():
 
 
 def test_transcript_path_none_for_empty_session():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt.transcript_path('/some/project', '') is None
     assert rt.transcript_path('/some/project', None) is None
 
 
 def test_transcript_path_none_for_empty_project():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt.transcript_path('', 'abc123') is None
 
 
 def test_transcript_path_none_when_file_absent(tmp_path):
     """transcript_path() returns None when the .jsonl file doesn't exist."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt.transcript_path(str(tmp_path), 'nonexistent-session-id-xyz')
     assert result is None
@@ -382,8 +382,8 @@ def test_transcript_path_finds_existing_file(tmp_path, monkeypatch):
     """transcript_path() returns the correct Path when the .jsonl file exists.
     Mirrors _find_transcript_file() in server.py exactly.
     """
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
 
@@ -416,8 +416,8 @@ def test_transcript_path_checks_dot_dash_variant(tmp_path, monkeypatch):
     looked for `…-.clayrune-agents-…` and missed. The chat wouldn't open
     (/reconstruct 404'd), and Scribe/resume were blind to the session too.
     """
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -455,8 +455,8 @@ def test_transcript_path_finds_worktree_chat_after_worktree_is_gone(tmp_path, mo
     The project dir itself is never created here: the ONLY thing on disk is the
     transcript under the CLI's worktree-encoded dir.
     """
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -486,7 +486,7 @@ def test_transcript_path_finds_worktree_chat_after_worktree_is_gone(tmp_path, mo
 
 def test_encoded_dir_candidates_covers_both_substitutions(tmp_path):
     """Candidate list covers _→-, .→-, and both together, deduped and ordered."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
 
     # Contains BOTH an underscore and a dot, so all four variants are distinct
@@ -504,8 +504,8 @@ def test_encoded_dir_candidates_covers_both_substitutions(tmp_path):
 
 def test_transcript_path_checks_underscore_dash_variant(tmp_path, monkeypatch):
     """transcript_path() also checks the encoded path with _ replaced by - (Claude variant)."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
 
@@ -538,7 +538,7 @@ def test_transcript_path_checks_underscore_dash_variant(tmp_path, monkeypatch):
 
 
 def test_parse_event_empty_line():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt.parse_event('') is None
     assert rt.parse_event('\n') is None
@@ -546,7 +546,7 @@ def test_parse_event_empty_line():
 
 
 def test_parse_event_non_json_plain_text():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     ev = rt.parse_event('Hello from the model')
     assert ev is not None
@@ -557,7 +557,7 @@ def test_parse_event_non_json_plain_text():
 
 
 def test_parse_event_auth_not_logged_in():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     ev = rt.parse_event('Please run /login to authenticate with Claude')
     assert ev is not None
@@ -566,7 +566,7 @@ def test_parse_event_auth_not_logged_in():
 
 
 def test_parse_event_auth_not_logged_in_variant():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     ev = rt.parse_event('Error: not logged in')
     assert ev is not None
@@ -575,7 +575,7 @@ def test_parse_event_auth_not_logged_in_variant():
 
 
 def test_parse_event_auth_invalid_key():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     ev = rt.parse_event('Error: Invalid API key provided')
     assert ev is not None
@@ -585,7 +585,7 @@ def test_parse_event_auth_invalid_key():
 
 def test_parse_event_auth_error_in_json_not_triggered():
     """Auth sentinel scan must NOT trigger on JSON assistant text about auth."""
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     # This is a valid JSON assistant message — auth scan only applies to non-JSON lines
     line = json.dumps({
@@ -598,7 +598,7 @@ def test_parse_event_auth_error_in_json_not_triggered():
 
 
 def test_parse_event_assistant_text():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'assistant',
@@ -619,7 +619,7 @@ def test_parse_event_assistant_text():
 
 
 def test_parse_event_assistant_thinking():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'assistant',
@@ -634,7 +634,7 @@ def test_parse_event_assistant_thinking():
 
 
 def test_parse_event_tool_use():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'assistant',
@@ -660,7 +660,7 @@ def test_parse_event_tool_use():
 
 def test_parse_event_mixed_content_primary_is_first():
     """When an assistant message has both thinking and text blocks, primary type = first block."""
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'assistant',
@@ -677,7 +677,7 @@ def test_parse_event_mixed_content_primary_is_first():
 
 
 def test_parse_event_result_turn_end():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'result',
@@ -699,7 +699,7 @@ def test_parse_event_result_turn_end():
 
 
 def test_parse_event_system_init():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'system',
@@ -728,7 +728,7 @@ def test_parse_event_system_init():
 
 def test_parse_event_system_non_init_returns_none():
     """system messages with subtype != 'init' return None (not handled)."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     line = json.dumps({'type': 'system', 'subtype': 'something_else'})
     ev = rt.parse_event(line)
@@ -736,7 +736,7 @@ def test_parse_event_system_non_init_returns_none():
 
 
 def test_parse_event_rate_limit():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'rate_limit_event',
@@ -759,7 +759,7 @@ def test_parse_event_rate_limit():
 
 
 def test_parse_event_user_message():
-    from agent_runtime import ClaudeRuntime, EventType
+    from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'user',
@@ -773,7 +773,7 @@ def test_parse_event_user_message():
 
 
 def test_parse_event_unknown_type_returns_none():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     line = json.dumps({'type': 'something_totally_unknown', 'data': 42})
     ev = rt.parse_event(line)
@@ -782,7 +782,7 @@ def test_parse_event_unknown_type_returns_none():
 
 def test_parse_event_raw_preserved():
     """event.raw must equal the full original parsed JSON object."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     original = {
         'type': 'result',
@@ -801,7 +801,7 @@ def test_parse_event_raw_preserved():
 
 
 def test_capabilities_claude_all_fields():
-    from agent_runtime import ClaudeRuntime, CapabilityFlags
+    from mc.agent_runtime import ClaudeRuntime, CapabilityFlags
     rt = ClaudeRuntime()
     caps = rt.capabilities()
     assert isinstance(caps, CapabilityFlags)
@@ -829,7 +829,7 @@ def test_capabilities_claude_all_fields():
 
 
 def test_capabilities_gemini():
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     caps = rt.capabilities()
     assert caps.name == 'gemini'
@@ -849,7 +849,7 @@ def test_capabilities_gemini():
 def test_with_attachment_hint():
     """The shared attachment hint is prepended only when the text carries
     [Screenshot:/Attachment:] markers, and is inherited by every runtime."""
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     # No markers → unchanged (zero prompt overhead on ordinary turns).
     plain = "Refactor the auth module."
@@ -869,7 +869,7 @@ def test_with_attachment_hint():
 def test_attachment_hint_inherited_by_all_runtimes():
     """with_attachment_hint lives on the AgentRuntime base — every provider
     inherits it, so attachment parity generalises without per-runtime code."""
-    from agent_runtime import available_runtimes
+    from mc.agent_runtime import available_runtimes
     marked = "do it [Screenshot: /uploads/x.png]"
     for rt in available_runtimes():
         assert rt.with_attachment_hint(marked).startswith(rt.ATTACHMENT_INSTRUCTION)
@@ -880,7 +880,7 @@ def test_attachment_hint_inherited_by_all_runtimes():
 
 
 def test_parse_and_strip_mc_tool_blocks():
-    from agent_runtime import parse_mc_tool_blocks, strip_mc_tool_blocks
+    from mc.agent_runtime import parse_mc_tool_blocks, strip_mc_tool_blocks
     text = (
         'Sure, let me ask.\n\n'
         '```mc:question\n'
@@ -901,7 +901,7 @@ def test_parse_and_strip_mc_tool_blocks():
 
 
 def test_with_mc_tool_protocol_idempotent():
-    from agent_runtime import GeminiRuntime, MC_TOOL_PROTOCOL_PROMPT
+    from mc.agent_runtime import GeminiRuntime, MC_TOOL_PROTOCOL_PROMPT
     rt = GeminiRuntime()
     assert rt.with_mc_tool_protocol('') == MC_TOOL_PROTOCOL_PROMPT
     out = rt.with_mc_tool_protocol('SYSTEM CONTEXT')
@@ -914,7 +914,7 @@ def test_with_mc_tool_protocol_idempotent():
 def test_apply_mc_tool_blocks_question():
     """An mc:question block populates pending_questions exactly like Claude's
     native AskUserQuestion tool, and pauses the turn."""
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     session = {'log_lines': []}
     turn = (
@@ -936,7 +936,7 @@ def test_apply_mc_tool_blocks_question_tolerates_control_chars():
     """A question block whose JSON body carries a raw newline inside a string
     value (a streaming/model artefact) still parses — json.loads strict=False.
     Regression for the Gemini delta-join corruption seen 2026-05-22."""
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     session = {'log_lines': []}
     turn = ('```mc:question\n'
@@ -951,7 +951,7 @@ def test_apply_mc_tool_blocks_question_tolerates_control_chars():
 
 def test_apply_mc_tool_blocks_malformed_is_safe():
     """A malformed block is logged and skipped — never raised, never pauses."""
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     session = {'log_lines': []}
     res = rt.apply_mc_tool_blocks(session, '```mc:question\n{not json\n```')
@@ -962,7 +962,7 @@ def test_apply_mc_tool_blocks_malformed_is_safe():
 
 
 def test_apply_mc_tool_blocks_no_blocks():
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     session = {'log_lines': []}
     res = rt.apply_mc_tool_blocks(session, 'Just a normal answer, no tools.')
@@ -973,7 +973,7 @@ def test_apply_mc_tool_blocks_no_blocks():
 def test_apply_mc_tool_blocks_todo():
     """An mc:todo block routes through the registered sync hook (the same one
     Claude's native TodoWrite uses) and does not pause the turn."""
-    from agent_runtime import GeminiRuntime, register_mc_tool_hooks, _MC_TOOL_HOOKS
+    from mc.agent_runtime import GeminiRuntime, register_mc_tool_hooks, _MC_TOOL_HOOKS
     rt = GeminiRuntime()
     calls = []
     register_mc_tool_hooks(
@@ -997,7 +997,7 @@ def test_apply_mc_tool_blocks_todo():
 
 def test_capability_flags_new_fields_exist():
     """All CapabilityFlags fields required by the brief must exist on every runtime."""
-    from agent_runtime import available_runtimes
+    from mc.agent_runtime import available_runtimes
     required = ('emits_cost', 'emits_num_turns', 'image_input', 'context_window')
     for rt in available_runtimes():
         caps = rt.capabilities()
@@ -1011,19 +1011,19 @@ def test_capability_flags_new_fields_exist():
 
 
 def test_gemini_transcript_path_always_none():
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     assert rt.transcript_path('/some/project', 'some-session') is None
 
 
 def test_gemini_parse_event_empty():
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     assert rt.parse_event('') is None
 
 
 def test_gemini_parse_event_plain_text():
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     ev = rt.parse_event('Hello from Gemini')
     assert ev is not None
@@ -1032,7 +1032,7 @@ def test_gemini_parse_event_plain_text():
 
 
 def test_gemini_parse_event_turn_end():
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     ev = rt.parse_event(json.dumps({'type': 'result', 'session_id': 's1'}))
     assert ev is not None
@@ -1044,7 +1044,7 @@ def test_gemini_parse_event_tool_use_canonical_fields():
     (NOT `name` / `input` — those were guessed from claude's shape and never
     populated, hence MC's blank `[tool: call]` for every gemini tool call).
     """
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     raw = json.dumps({
         'type': 'tool_use',
@@ -1065,7 +1065,7 @@ def test_gemini_parse_event_tool_result_correlates_via_tool_id():
     passes tool_id through; _read_stream does the name lookup via a per-
     session tool_id→tool_name map populated by the prior tool_use event.
     """
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     raw = json.dumps({
         'type': 'tool_result',
@@ -1084,14 +1084,14 @@ def test_gemini_parse_event_tool_result_correlates_via_tool_id():
 
 def test_abc_abstract_methods_cannot_instantiate():
     """AgentRuntime ABC must be non-instantiable (abstract)."""
-    from agent_runtime import AgentRuntime
+    from mc.agent_runtime import AgentRuntime
     with pytest.raises(TypeError):
         AgentRuntime()
 
 
 def test_abc_has_all_required_methods():
     """All methods called by the brief must exist on the ABC."""
-    from agent_runtime import AgentRuntime
+    from mc.agent_runtime import AgentRuntime
     for method in ('resolve_binary', 'health_check', 'capabilities',
                    'build_command', 'parse_event', 'transcript_path',
                    'dispatch', 'write_followup', 'interrupt', 'stop', 'oneshot'):
@@ -1100,7 +1100,7 @@ def test_abc_has_all_required_methods():
 
 def test_claude_runtime_implements_all_abc_methods():
     """ClaudeRuntime must implement every method in the AgentRuntime ABC."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     for method in ('resolve_binary', 'health_check', 'capabilities',
                    'build_command', 'parse_event', 'transcript_path',
@@ -1113,7 +1113,7 @@ def test_claude_runtime_implements_all_abc_methods():
 
 def test_build_transcript_path_returns_path_without_existence_check(tmp_path):
     """_build_transcript_path() returns a Path even when the file does not exist."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt._build_transcript_path(str(tmp_path), 'nonexistent-session-id')
     assert result is not None
@@ -1124,14 +1124,14 @@ def test_build_transcript_path_returns_path_without_existence_check(tmp_path):
 
 
 def test_build_transcript_path_none_for_empty_session():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt._build_transcript_path('/some/project', '') is None
     assert rt._build_transcript_path('/some/project', None) is None
 
 
 def test_build_transcript_path_none_for_empty_project():
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     assert rt._build_transcript_path('', 'some-session') is None
 
@@ -1182,7 +1182,7 @@ def _write_fixture(tmp_path, lines=None):
 
 def test_parse_transcript_file_empty_file(tmp_path):
     """Empty transcript returns empty list."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = tmp_path / 'empty.jsonl'
     f.write_text('', encoding='utf-8')
@@ -1192,7 +1192,7 @@ def test_parse_transcript_file_empty_file(tmp_path):
 
 def test_parse_transcript_file_user_message(tmp_path):
     """User message is extracted with correct role and text."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     msgs = rt.parse_transcript_file(f)
@@ -1204,7 +1204,7 @@ def test_parse_transcript_file_user_message(tmp_path):
 
 def test_parse_transcript_file_assistant_text(tmp_path):
     """Assistant text blocks produce role=assistant entries."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     msgs = rt.parse_transcript_file(f)
@@ -1216,7 +1216,7 @@ def test_parse_transcript_file_assistant_text(tmp_path):
 
 def test_parse_transcript_file_tool_call(tmp_path):
     """tool_use blocks produce role=tool_call entries with the tool name."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     msgs = rt.parse_transcript_file(f)
@@ -1227,7 +1227,7 @@ def test_parse_transcript_file_tool_call(tmp_path):
 
 def test_parse_transcript_file_result_not_in_output(tmp_path):
     """result lines produce no display entries."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     msgs = rt.parse_transcript_file(f)
@@ -1245,7 +1245,7 @@ def test_parse_transcript_file_max_messages_truncates(tmp_path):
     user → assistant → tool_call → assistant. With max_messages=1 we keep
     the last assistant message, not the user opener.
     """
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     truncated = rt.parse_transcript_file(f, max_messages=1)
@@ -1261,7 +1261,7 @@ def test_parse_transcript_file_max_messages_truncates(tmp_path):
 
 def test_parse_transcript_file_nonexistent_returns_error():
     """Non-existent file returns [{'role': 'error', ...}]."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     result = rt.parse_transcript_file(Path('/nonexistent/path/file.jsonl'))
     assert len(result) == 1
@@ -1271,7 +1271,7 @@ def test_parse_transcript_file_nonexistent_returns_error():
 
 def test_parse_transcript_file_skips_thinking_blocks(tmp_path):
     """Thinking blocks do not produce any display entry."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     lines = [
         json.dumps({'type': 'assistant', 'session_id': 's', 'timestamp': 'ts',
@@ -1291,7 +1291,7 @@ def test_parse_transcript_file_skips_thinking_blocks(tmp_path):
 
 def test_parse_transcript_file_user_list_content(tmp_path):
     """User messages with list content (mixed text + tool_result) extract only text."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     line = json.dumps({
         'type': 'user',
@@ -1312,7 +1312,7 @@ def test_parse_transcript_file_user_list_content(tmp_path):
 def test_parse_transcript_file_matches_legacy_format(tmp_path):
     """parse_transcript_file() produces the same [{role, text, timestamp}] shape
     as the legacy _parse_transcript_messages() in server.py."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     f = _write_fixture(tmp_path)
     msgs = rt.parse_transcript_file(f)
@@ -1330,8 +1330,8 @@ def test_parse_transcript_file_matches_legacy_format(tmp_path):
 
 def test_list_sessions_empty_for_nonexistent_dir(tmp_path):
     """list_sessions() returns [] when the project has no transcript directory."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
     rt = ClaudeRuntime()
     # Point CLAUDE_HOME somewhere that has no matching dir
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1346,8 +1346,8 @@ def test_list_sessions_empty_for_nonexistent_dir(tmp_path):
 
 def test_list_sessions_extracts_user_text(tmp_path, monkeypatch):
     """list_sessions() extracts first_user and last_user from JSONL files."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1385,8 +1385,8 @@ def test_list_sessions_caches_rows_and_invalidates_on_append(tmp_path, monkeypat
     (mtime, size) pins content exactly; this test is the guard on both halves:
     a hit must avoid the re-parse, and an append must NOT return a stale row.
     """
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1431,8 +1431,8 @@ def test_list_sessions_caches_rows_and_invalidates_on_append(tmp_path, monkeypat
 
 def test_list_sessions_deduplicates_across_variants(tmp_path, monkeypatch):
     """list_sessions() deduplicates files when both _ and - encoded dirs exist."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1465,8 +1465,8 @@ def test_list_sessions_deduplicates_across_variants(tmp_path, monkeypatch):
 
 def test_list_sessions_respects_limit(tmp_path, monkeypatch):
     """list_sessions() returns at most `limit` entries."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1492,7 +1492,7 @@ def test_list_sessions_respects_limit(tmp_path, monkeypatch):
 
 def test_gemini_parse_event_usage_in_turn_end():
     """GeminiRuntime.parse_event() preserves usage fields in TURN_END events."""
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     line = json.dumps({
         'type': 'result',
@@ -1511,7 +1511,7 @@ def test_gemini_parse_event_usage_in_turn_end():
 
 def test_gemini_parse_event_no_raise_on_synthetic_transcript():
     """GeminiRuntime.parse_event() does not raise on any line of a synthetic transcript."""
-    from agent_runtime import GeminiRuntime
+    from mc.agent_runtime import GeminiRuntime
     rt = GeminiRuntime()
     synthetic_lines = [
         '{"type": "content", "text": "Hello from Gemini", "session_id": "g1"}',
@@ -1532,7 +1532,7 @@ def test_gemini_parse_event_no_raise_on_synthetic_transcript():
 
 def test_gemini_parse_event_no_lose_usage_on_turn_end_variants():
     """GeminiRuntime.parse_event() preserves usage for all turn_end type variants."""
-    from agent_runtime import GeminiRuntime, EventType
+    from mc.agent_runtime import GeminiRuntime, EventType
     rt = GeminiRuntime()
     usage_payload = {'input_tokens': 100, 'output_tokens': 50}
     for end_type in ('result', 'turn_end', 'done'):
@@ -1550,7 +1550,7 @@ def test_gemini_parse_event_no_lose_usage_on_turn_end_variants():
 
 def test_claude_runtime_has_new_transcript_methods():
     """ClaudeRuntime must expose _build_transcript_path, list_sessions, parse_transcript_file."""
-    from agent_runtime import ClaudeRuntime
+    from mc.agent_runtime import ClaudeRuntime
     rt = ClaudeRuntime()
     for method in ('_build_transcript_path', 'list_sessions', 'parse_transcript_file'):
         assert callable(getattr(rt, method, None)), (
@@ -1569,8 +1569,8 @@ def test_list_sessions_includes_agent_worktree_transcripts(tmp_path, monkeypatch
     be opened yet belong to no topic, and they never reached the Topics digest
     at all because `_gather_signals` reads this function.
     """
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'
@@ -1599,8 +1599,8 @@ def test_list_sessions_includes_agent_worktree_transcripts(tmp_path, monkeypatch
 def test_list_sessions_worktree_scan_stays_within_the_project(tmp_path, monkeypatch):
     """The worktree glob is prefixed with this project's own encoding, so a
     sibling project's agent worktrees must never be pulled in."""
-    from agent_runtime import ClaudeRuntime
-    import agent_runtime
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
 
     rt = ClaudeRuntime()
     fake_home = tmp_path / '.claude' / 'projects'

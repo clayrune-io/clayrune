@@ -86,10 +86,10 @@ from mc.state import (
     tracked_processes,
 )
 
-import agent_runtime as _agent_runtime  # Multi-provider abstraction
-import distiller as _distiller          # exploration read-floor (registered by server.py)
-import skills as _skills                # _skills_catalog_block
-import agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
+import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
+import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
+import mc.skills as _skills                # _skills_catalog_block
+import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -625,7 +625,7 @@ def _context_fingerprint(project):
     except Exception:
         pass
     try:
-        import skills as _sk
+        import mc.skills as _sk
         from mc import characters as _ch
         listing(str(_sk.GLOBAL_SKILLS_DIR))
         listing(str(_ch.GLOBAL_AGENTS_DIR))

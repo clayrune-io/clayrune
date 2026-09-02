@@ -57,9 +57,9 @@ from mc.state import (
 
 # Top-level sync modules (no Flask dep, no import side effects — verified);
 # their register() wiring stays in server.py. Same module object via sys.modules.
-import github_sync as _gh_sync
-import project_sync as _proj_sync
-import distiller as _distiller           # exploration read-floor (steward cycle refresh)
+import mc.github_sync as _gh_sync
+import mc.project_sync as _proj_sync
+import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does

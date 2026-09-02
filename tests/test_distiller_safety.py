@@ -25,7 +25,7 @@ steward mode shipped:
 """
 import pytest
 
-import distiller as d
+import mc.distiller as d
 
 
 # ── 1. Authority guard ───────────────────────────────────────────────────────

@@ -24,7 +24,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
-import agent_runtime as _agent_runtime
+import mc.agent_runtime as _agent_runtime
 from mc import obs, state
 from mc import slash_commands as slash_cmds
 from mc.core import _atomic_write_text, _log, now_iso, time_ago

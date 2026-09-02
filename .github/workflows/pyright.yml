@@ -1,7 +1,7 @@
 name: Pyright
 
 # Type-check gate for the mc/ package + extracted backend modules
-# (MODERNIZATION_PLAN.md Phase 4). Scope is pyrightconfig.json — server.py
+# (MODERNIZATION_PLAN.md Phase 4). Scope is pyproject.toml [tool.pyright] — server.py
 # joins the include list only after Phase 1 shrinks it.
 #
 # NON-BLOCKING for now (`|| true`): flip to blocking once the baseline is

@@ -30,8 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-import agent_runtime as _agent_runtime
-import skill_import_guard as _guard
+import mc.agent_runtime as _agent_runtime
+import mc.skill_import_guard as _guard
 
 
 # ── Paths ────────────────────────────────────────────────────────────────────

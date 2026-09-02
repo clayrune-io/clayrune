@@ -2,7 +2,7 @@
 # Python-version preflight — keep FIRST. server.py is a direct entry point
 # (python server.py) and is also imported by app.py's Flask thread; either path
 # rejects a too-old interpreter before the 3.10+ import chain loads.
-import preflight  # noqa: F401
+from mc import preflight  # noqa: F401
 
 import hashlib
 import json
@@ -20,11 +20,11 @@ from datetime import datetime, timezone, timedelta
 from flask import Flask, jsonify, send_from_directory, request, send_file, abort, Response, redirect
 import secrets
 
-import skills as _skills
-import mcp as _mcp
-import mcp_installer as _mcpinst
-import marketing_preview as _marketing_preview  # P1-1 Tier 1a (blueprint)
-import agent_runtime as _agent_runtime  # Multi-provider abstraction
+import mc.skills as _skills
+import mc.mcp as _mcp
+import mc.mcp_installer as _mcpinst
+import mc.marketing_preview as _marketing_preview  # P1-1 Tier 1a (blueprint)
+import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 
 def _resolve_dirs():
@@ -852,20 +852,20 @@ def _log_github_sync_activity(project_id, msg):
 
 
 # ── GitHub sync module ───────────────────────────────────────────────────────
-import github_sync as _gh_sync
+import mc.github_sync as _gh_sync
 _gh_sync.register(_POPEN_FLAGS, _STARTUPINFO,
                    _log_github_sync_activity, load_project, save_project, now_iso)
 
 
 # ── Project (code) sync module — spike: read-only fetch + status ────────────
-import project_sync as _proj_sync
+import mc.project_sync as _proj_sync
 _proj_sync.register(_POPEN_FLAGS, _STARTUPINFO,
                     _log_agent_activity, load_project, save_project, now_iso,
                     _DATA_ROOT)
 
 # ── Per-agent worktree isolation (b264200a) ─────────────────────────────────
 # Builds on project_sync's git plumbing, so it registers right after it.
-import agent_worktree as _agent_worktree
+import mc.agent_worktree as _agent_worktree
 _agent_worktree.register(_log_agent_activity, load_project, _log)
 
 
@@ -1301,7 +1301,7 @@ def _reconcile_pending_agent_log_entries():
 # here, sourcing the scribe/checkpoint primitives from mc/memory.py (the engine
 # now lives there). memory.wire() ran above, so memory.* is fully usable.
 # Best-effort; failure to register doesn't break the rest of server startup.
-import distiller as _distiller
+import mc.distiller as _distiller
 try:
     _SKILLS_ROOT = Path(__file__).parent / 'data' / 'skills'
     _distiller.register(
@@ -2373,7 +2373,7 @@ _kill_browser_session = _bp_browser._kill_browser_session
 
 def _claude_health_check_hook():
     """Bridge: ClaudeRuntime.health_check() → server.py auth state."""
-    from agent_runtime import HealthStatus, AuthState
+    from mc.agent_runtime import HealthStatus, AuthState
     import time as _t
     with _claude_auth_lock:
         state = dict(_claude_auth_state)

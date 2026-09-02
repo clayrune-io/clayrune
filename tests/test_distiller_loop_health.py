@@ -12,7 +12,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 def _stats(projects_dir: Path, pid: str, counters: dict):

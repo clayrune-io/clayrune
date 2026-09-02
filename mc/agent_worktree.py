@@ -45,7 +45,7 @@ import subprocess
 import threading
 from pathlib import Path
 
-import project_sync as _sync
+import mc.project_sync as _sync
 
 # ── Injected helpers (set by register()) ────────────────────────────────────
 

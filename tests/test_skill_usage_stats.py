@@ -11,7 +11,7 @@ for the Documents tab (tests/test_documents_tab.py), same fix
 import json
 from pathlib import Path
 
-import skills
+from mc import skills
 
 
 def _skill_call_line(skill_name, ts='2026-09-01T00:00:00Z'):

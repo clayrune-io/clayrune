@@ -1,0 +1,34 @@
+[tool.pytest.ini_options]
+# Main-app test suite (separate from control_plane/tests which has its own
+# fixtures). Scaffolding added by IMPROVEMENT_PLAN_V2.md P1-5 — a safety net
+# for the github_sync P0 fixes and the planned server.py split, NOT full
+# coverage. See tests/README.md.
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-ra -q"
+filterwarnings = [
+    "ignore::DeprecationWarning",
+]
+
+[tool.pyright]
+include = ["mc"]
+# These 5 modules moved into mc/ from the repo root (root-entry-count
+# restructure) and were already in scope there — unchanged. The other 6
+# modules that moved alongside them (project_sync, github_sync,
+# agent_worktree, mcp_installer, preflight, marketing_preview) were NEVER
+# in the old root-level include list, so excluding them here keeps pyright's
+# checked surface identical to before the move instead of silently pulling
+# newly-adjacent, never-vetted files into the baseline.
+exclude = [
+    "mc/project_sync.py",
+    "mc/github_sync.py",
+    "mc/agent_worktree.py",
+    "mc/mcp_installer.py",
+    "mc/preflight.py",
+    "mc/marketing_preview.py",
+]
+typeCheckingMode = "basic"
+reportMissingImports = false
+pythonVersion = "3.10"
