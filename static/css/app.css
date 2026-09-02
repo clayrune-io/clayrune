@@ -3771,6 +3771,42 @@
     background: var(--border); transition: background 0.15s;
   }
   .agent-chat-separator:hover::after { background: var(--accent); }
+
+  /* In-chat search bar (chat-search.js) — a normal flex child ahead of
+     .agent-output, sized by content (flex: 0 0 auto). .agent-output is
+     `flex: 1 1 auto; min-height: 0`, so it shrinks to make room for this
+     automatically; no sizeAgentChat height math to update (that function
+     already bails out for .agent-3pane and lets flex do the sizing). */
+  .mc-chat-search-bar {
+    display: flex; flex-wrap: wrap; align-items: center; gap: 8px;
+    flex: 0 0 auto; padding: 6px 10px; margin: 0 0 8px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+  }
+  .mc-chat-search-input {
+    flex: 1 1 auto; min-width: 60px; border: none; background: transparent;
+    outline: none; font-size: 13px; color: var(--text);
+  }
+  .mc-chat-search-count {
+    font-size: 12px; white-space: nowrap; color: var(--text-faint); min-width: 64px; text-align: right;
+  }
+  .mc-chat-search-nav, .mc-chat-search-close {
+    background: none; border: none; cursor: pointer; color: var(--text-faint);
+    font-size: 11px; padding: 4px 7px; border-radius: 4px; line-height: 1;
+  }
+  .mc-chat-search-nav:hover:not(:disabled), .mc-chat-search-close:hover {
+    background: var(--hover, rgba(0,0,0,.06)); color: var(--text);
+  }
+  .mc-chat-search-nav:disabled { opacity: .35; cursor: default; }
+  .mc-chat-search-partial {
+    flex-basis: 100%; font-size: 11px; color: var(--text-faint);
+    padding-top: 4px; margin-top: 2px; border-top: 1px dashed var(--border);
+  }
+  mark.mc-chat-search-hit {
+    background: rgba(250, 204, 21, .45); color: inherit; border-radius: 2px; padding: 0 1px;
+  }
+  mark.mc-chat-search-hit.mc-chat-search-current {
+    background: rgba(249, 115, 22, .8);
+  }
   /* Chat-bubble mode is the DEFAULT at all widths (promoted 2026-07-05, §3
      conversation redesign, out of the former ≤960px-only block). .agent-output
      is a flex column so prompts align right (align-self:flex-end) and agent

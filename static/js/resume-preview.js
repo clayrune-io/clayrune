@@ -572,6 +572,11 @@ function _repaintAgentOutput(sessionId) {
   if (qpid && window._rerenderPendingQuestions) {
     try { window._rerenderPendingQuestions(qpid, sessionId); } catch (_) {}
   }
+  // In-chat search (chat-search.js) highlights by wrapping rendered text nodes
+  // in <mark>; the clear-and-rebuild above just wiped every one of those without
+  // going through a template re-render (chatSearchBarHTML never ran), so its own
+  // self-healing setTimeout hook wouldn't fire. Softly reapply if a search is open.
+  window._csOnRepaint?.(sessionId);
   return true;
 }
 

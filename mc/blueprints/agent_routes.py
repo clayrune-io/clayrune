@@ -6988,6 +6988,98 @@ def _session_model_field(s, proj_default_model):
     return proj_default_model if (s.get('provider') or 'claude') == 'claude' else ''
 
 
+# ── Live subagent visibility (MC-937 Phase 4) ───────────────────────────────
+# Ron, twice: "no way of telling something is in works right now" / "I see no
+# one on the panes" — a dispatched Task-tool subagent runs entirely inside its
+# parent's CLI process (test_floor_routes.py: "run in-process and never
+# become sessions") and writes only to its own nested transcript, so nothing
+# on the Floor or in the rail ever showed one existed.
+#
+# THE LIVENESS RULE — a subagent row is 'running' iff BOTH hold:
+#   1. its parent session is itself 'running' right now. A Task-tool subagent
+#      cannot outlive the parent process it runs inside, so once the parent
+#      stops, nothing under it can still be alive no matter how fresh its
+#      transcript file looks (a killed process leaves its last-written line
+#      exactly where it was — that timestamp freezes, it does not vanish).
+#   2. its own transcript's last recorded line is within
+#      _SUBAGENT_RUNNING_WINDOW_S seconds of now.
+# A row is dropped from the list entirely once its last line is older than
+# _SUBAGENT_VISIBLE_WINDOW_S — without that cutoff a long-lived session would
+# accumulate every subagent it had EVER dispatched and this endpoint would
+# report all of them, forever.
+#
+# FALSE POSITIVE (the direction that matters — showing a dead thing as
+# alive): bounded to _SUBAGENT_RUNNING_WINDOW_S. A subagent that actually
+# finished T seconds ago still reads 'running' until T exceeds the window —
+# up to ~2 minutes of showing "running" past the real finish, and NEVER
+# beyond that, and never once the parent session itself stops (whichever
+# gate fails first). A subagent that finished 3 days ago cannot render as
+# running: both gates have long since failed.
+# FALSE NEGATIVE (showing an alive thing as not-running): a subagent that
+# goes quiet for longer than the window without writing a new transcript
+# line (e.g. mid one very long Bash call) reads as 'finished' / drops off
+# the list until its next line lands, then flips back to 'running'. 2
+# minutes is chosen generous enough to absorb ordinary tool-call latency.
+_SUBAGENT_RUNNING_WINDOW_S = 120
+_SUBAGENT_VISIBLE_WINDOW_S = 600
+
+
+def _parse_transcript_ts(ts: str) -> float:
+    """Epoch seconds for a transcript line's ISO-8601 `timestamp` field
+    (e.g. '2026-07-11T17:22:20.261Z'). Returns 0.0 on any parse failure so a
+    bad/missing timestamp reads as maximally stale rather than crashing the
+    liveness check (0.0 age-from-now is always > any window)."""
+    if not ts:
+        return 0.0
+    try:
+        return datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
+    except Exception:
+        return 0.0
+
+
+def _active_subagents_for_session(s, project_path):
+    """Currently-visible Task-tool/Workflow-fanout subagents dispatched from
+    one session, per the liveness rule documented above `_SUBAGENT_RUNNING_
+    WINDOW_S`. Scoped to sessions already 'running' — an idle/completed/
+    error session never pays a transcript scan here, which is what keeps
+    this endpoint's cost bounded on a project with a long agent_log (most
+    sessions at any moment are not running). Never raises — a scan failure
+    yields [] (cosmetic; must not take the whole /agent/status payload
+    down)."""
+    if s.get('status') != 'running':
+        return []
+    csid = s.get('claude_session_id') or ''
+    if not csid or not project_path:
+        return []
+    try:
+        rows = _agent_runtime.get_runtime('claude').list_running_subagents(  # pyright: ignore[reportAttributeAccessIssue]
+            project_path, csid)
+    except Exception as e:
+        _log(f"[subagents] scan failed for {csid}: {e}")
+        return []
+    now = _time.time()
+    out = []
+    for r in rows:
+        last_epoch = _parse_transcript_ts(r.get('last_ts', ''))
+        age = (now - last_epoch) if last_epoch else float('inf')
+        if age > _SUBAGENT_VISIBLE_WINDOW_S:
+            continue
+        running = age <= _SUBAGENT_RUNNING_WINDOW_S
+        first_epoch = _parse_transcript_ts(r.get('first_ts', '')) or last_epoch
+        elapsed = ((now if running else last_epoch) - first_epoch) if first_epoch else 0.0
+        out.append({
+            'agent_id': r.get('agent_id', ''),
+            'parent_claude_session_id': csid,
+            'label': r.get('label', ''),
+            'started_at': r.get('first_ts', ''),
+            'elapsed_seconds': max(0.0, round(elapsed, 1)),
+            'tool_calls': r.get('tool_count', 0),
+            'running': running,
+        })
+    out.sort(key=lambda x: x['started_at'], reverse=True)
+    return out
+
+
 @bp.route('/api/project/<project_id>/agent/status')
 def agent_status(project_id):
     sessions = []
@@ -7062,6 +7154,12 @@ def agent_status(project_id):
                 # Chat-level pin marker — server-authoritative (see _pinned_csids).
                 'pinned': bool(s.get('claude_session_id')
                                and s.get('claude_session_id') in _pinned_csids),
+                # MC-937 Phase 4: currently-visible Task-tool/Workflow-fanout
+                # subagents dispatched from this session (see the liveness
+                # rule at _SUBAGENT_RUNNING_WINDOW_S above). [] for every
+                # session that isn't 'running' — computed without a scan.
+                'active_subagents': _active_subagents_for_session(
+                    s, _proj.get('project_path', '')),
             })
     # Sort: running first, then newest first (ISO timestamps sort lexically)
     sessions.sort(key=lambda s: (
@@ -7188,7 +7286,13 @@ def _wf_agent_label(wf_dir, agent_id, maxlen=90):
     """Best-effort one-line label for a workflow subagent, from the first user
     message of its agent-<id>.jsonl. Prefers a distinguishing 'KEY: value' clause
     over the shared mission preamble. Returns '' on any failure (label is
-    cosmetic — never let it break the scan)."""
+    cosmetic — never let it break the scan).
+
+    The extraction heuristic itself lives in agent_runtime.label_from_user_text()
+    — shared with ClaudeRuntime.list_running_subagents() (MC-937 Phase 4) so a
+    direct Task-tool dispatch's label and a CC-Workflow fan-out agent's label
+    are derived the same way instead of two copies silently drifting apart.
+    """
     f = wf_dir / f'agent-{agent_id}.jsonl'
     try:
         with open(f, encoding='utf-8') as fh:
@@ -7203,16 +7307,7 @@ def _wf_agent_label(wf_dir, agent_id, maxlen=90):
                 c = m.get('content')
                 if isinstance(c, list):
                     c = ' '.join(x.get('text', '') for x in c if isinstance(x, dict))
-                c = ' '.join(str(c).split())
-                if not c:
-                    return ''
-                up = c.upper()
-                for kw in ('ANGLE', 'METHOD', 'FAMILY', 'YOUR TASK', 'MANDATE',
-                           'ASSIGNMENT', 'LENS'):
-                    idx = up.find(kw + ':')
-                    if idx != -1:
-                        return c[idx + len(kw) + 1:].strip()[:maxlen]
-                return c[:maxlen]
+                return _agent_runtime.label_from_user_text(c, maxlen)
     except Exception:
         return ''
     return ''
@@ -7451,6 +7546,41 @@ def reconstruct_from_transcript(project_id, claude_session_id):
         'log_lines': lines,
         'read_only': True,
     })
+
+
+@bp.route('/api/project/<project_id>/transcript/<claude_session_id>/full-buffer')
+def get_transcript_full_buffer(project_id, claude_session_id):
+    """Complete, uncapped chat-buffer lines for in-chat search.
+
+    The two client-side sources conversation.js normally renders from are both
+    capped: MAX_RENDER_LINES=500 only shows the tail of agentOutputBuffers[sid]
+    (solvable client-side via expandedOutputSessions), but agentOutputBuffers
+    itself is capped too — resume-preview.js's live SSE append path trims it to
+    the last 1500 lines once a session passes 2000. Once that trim has fired,
+    the older lines are gone from the client's memory; no client-side "expand"
+    can bring them back. In-chat search needs the true complete history to
+    search, so this reads it straight from the on-disk transcript every call.
+
+    Deliberately does NOT 409 on a live session the way .../reconstruct does —
+    those refuse a live session because they're offering to *resume* it and a
+    live session doesn't need resuming; here we're only reading, and search
+    must work on a conversation that's still running, not just a finished one.
+    Same _transcript_buffer_lines() line format the live buffer already uses
+    (see _revive_history_lines / reconstruct_dead_session), so the result can
+    be dropped straight into agentOutputBuffers[sid] and renders identically —
+    no separate line-index mapping needed between "what the server found" and
+    "what's on screen". 100000-message cap matches the "no meaningful cap"
+    convention used elsewhere in this file (_buffer_truncation_notice).
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    user_label = state.CONFIG.get('user_name') or 'User'
+    lines = _transcript_buffer_lines(p.get('project_path', ''), claude_session_id,
+                                     user_label, max_messages=100000)
+    if not lines:
+        return jsonify({'error': 'transcript not found or empty'}), 404
+    return jsonify({'claude_session_id': claude_session_id, 'log_lines': lines})
 
 
 @bp.route('/api/project/<project_id>/conversation/<claude_session_id>', methods=['DELETE'])

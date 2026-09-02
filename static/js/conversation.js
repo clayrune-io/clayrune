@@ -1328,11 +1328,13 @@ function agentPanelHTML(p) {
         ${_pcaps.emits_usage ? `<span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>` : ''}
         <span class="agent-activity" id="agent-activity-${esc(activeSessionId)}"></span>
         ${_pcaps.supports_plan_mode ? `<span id="plan-file-btn-${esc(activeSessionId)}">${planFileBtn}</span>` : ''}
+        <button class="btn-popout" onclick="openChatSearch('${esc(p.id)}','${esc(activeSessionId)}')" title="Find in this conversation (Ctrl/Cmd+F)">&#128269; Find</button>
         <button class="btn-popout" onclick="openPlanViewer('${esc(activeSessionId)}')" title="Open output in viewer window">Pop Out &#8599;</button>
         <button class="btn-popout btn-browser" onclick="browserButtonClick('${esc(p.id)}')" title="Open a live browser pane">&#127760; Browser<span id="bp-badge" style="display:none;margin-left:5px;background:#4caf50;color:#000;font-size:10px;font-weight:700;border-radius:8px;padding:0 5px;line-height:15px;vertical-align:middle"></span></button>
         ${orchHmId ? `<button class="btn-hm-dash" onclick="openHivemindDashboard('${esc(orchHmId)}')">Dashboard &#8599;</button>` : ''}
       </div>
       <div class="agent-chat">
+        ${(typeof chatSearchBarHTML === 'function') ? chatSearchBarHTML(p.id, activeSessionId) : ''}
         <div class="agent-output" id="agent-output-${esc(activeSessionId)}">${outputLines}${typingHTML}</div>
         ${chatInput ? `<div class="agent-chat-separator"></div>${chatInput}` : ''}
       </div>`;

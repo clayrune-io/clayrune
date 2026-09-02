@@ -85,6 +85,12 @@ EXPECTED_ROUTES = {
     '/api/project/<project_id>/session/<session_id>/reconstruct',
     '/api/project/<project_id>/transcript/<claude_session_id>',
     '/api/project/<project_id>/transcript/<claude_session_id>/reconstruct',
+    # In-chat search: the complete, uncapped transcript buffer for the
+    # currently-open conversation, so a client-side find can reach matches
+    # older than what's rendered/buffered client-side. Deliberately not
+    # 409-gated on a live session like .../reconstruct — search must work on a
+    # conversation that's still running.
+    '/api/project/<project_id>/transcript/<claude_session_id>/full-buffer',
     '/api/project/<project_id>/workflows',
     '/api/search/global',
     # MC-923: server-side unattended-context lookup for mc.secrets_store —
