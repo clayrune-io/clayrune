@@ -96,6 +96,7 @@ import agent_worktree as _agent_worktree  # per-agent worktree isolation (b26420
 # wired every blueprint):
 from mc.blueprints.project_routes import (
     _incoming_file_size,
+    _is_secret_file,
     _log_agent_activity,
     _upload_limit,
 )
@@ -8094,6 +8095,209 @@ def get_project_plans(project_id):
     except Exception:
         log = _load_agent_log(project_id)
     return jsonify(_build(log))
+
+
+# ── DOCUMENTS tab (MC-939) ───────────────────────────────────────────────────
+# The tab used to be PLANS-only, scoped to the one directory _is_plan_path
+# checks (~/.claude/plans/). That meant a spec an agent wrote to docs/ under
+# the project itself — a real, committed deliverable — could never appear.
+#
+# "Document" = derived, not declared: no API for an agent to register a
+# deliverable, no new instruction for it to follow (that discipline rots
+# within a week — see the brief). Instead this merges two sources that already
+# exist:
+#   - plans:       ~/.claude/plans/*.md            (unchanged, _is_plan_path)
+#   - agent docs:  Write/Edit tool calls on *.md targets scraped from this
+#                   project's own Claude transcripts, via
+#                   ClaudeRuntime.list_written_markdown() — cached per
+#                   transcript file by (mtime, size), so a tab open only pays
+#                   for transcripts that changed since the last call.
+#
+# 'doc' rows are read-only (no delete) — see _document_allowed_roots for why
+# the read path is scoped this way, and the docstring on get_project_documents
+# for why delete is plan-only.
+
+_DOC_EXTS = {'.md', '.markdown'}
+
+
+def _document_allowed_roots(project_path: str = '') -> list:
+    """Allowlist for the Documents tab's read route.
+
+    Same realpath + prefix-containment pattern as /api/serve-image and
+    /api/serve-file (CLAUDE.md: broaden the guard the way the project already
+    broadens file access safely, don't just loosen it). Unlike serve-file's
+    cross-project reach, this is scoped to the ONE project asking (its own
+    working dir), plus data/uploads/ and the plans dir every project shares.
+    A drive-root project (C:\\, /, C:\\Users) is excluded, same guard as
+    serve-image/serve-file, so this can't become a whole-disk read.
+    """
+    roots = [str(UPLOADS_DIR), str(_PLANS_DIR)]
+    if project_path:
+        try:
+            real_pp = os.path.realpath(project_path)
+            if len(Path(real_pp).parts) >= 3:
+                roots.append(real_pp)
+        except Exception:
+            pass
+    return roots
+
+
+@bp.route('/api/document-file')
+def read_document_file():
+    """Read a Documents-tab file by path — a plan OR an agent-written doc.
+
+    Broadens /api/plan-file's plans-only gate: resolves under the requesting
+    project's own root, data/uploads/, or ~/.claude/plans/ instead of only the
+    latter. A path outside all of those, a non-markdown extension, or a
+    secret-looking file (mirrors /api/serve-file's denylist) is refused.
+    """
+    raw = (request.args.get('path') or '').strip()
+    if not raw:
+        return jsonify({'error': 'path required'}), 400
+    try:
+        real = os.path.realpath(raw)
+    except Exception:
+        return jsonify({'error': 'invalid path'}), 400
+    if os.path.splitext(real)[1].lower() not in _DOC_EXTS:
+        return jsonify({'error': 'unsupported file type'}), 415
+    if _is_secret_file(real):
+        return jsonify({'error': 'access denied'}), 403
+    project_path = ''
+    project_id = (request.args.get('project_id') or '').strip()
+    if project_id:
+        proj = load_project(project_id)
+        if proj:
+            project_path = proj.get('project_path', '')
+    rn = os.path.normcase(real)
+    ok = False
+    for a in _document_allowed_roots(project_path):
+        try:
+            ar = os.path.normcase(os.path.realpath(a))
+        except Exception:
+            continue
+        if rn == ar or rn.startswith(ar + os.sep):
+            ok = True
+            break
+    if not ok:
+        return jsonify({'error': 'access denied'}), 403
+    p = Path(real)
+    if not p.is_file():
+        return jsonify({'error': 'file not found'}), 404
+    try:
+        content = p.read_text(encoding='utf-8')
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+    return jsonify({'path': str(p), 'filename': p.name, 'content': content})
+
+
+@bp.route('/api/project/<project_id>/documents')
+def get_project_documents(project_id):
+    """Unified Documents tab: plans merged with markdown this project's agents
+    actually wrote, per session (see the module docstring above).
+
+    kind: 'plan' | 'doc'. Every row carries 'deletable': plans may be deleted
+    (same semantics as /api/plans/delete — they're MC/CLI-scratch, never a
+    tracked repo file); 'doc' rows never are. A doc row is, by construction,
+    a file the transcript scan found inside the project's own working tree —
+    exactly the files a project may have under git — and MC has no cheap way
+    to tell "untracked scratch markdown under docs/" apart from "the spec you
+    just committed" without shelling out to git per row per request. Rather
+    than get that wrong in the destructive direction, delete is off for the
+    whole kind. (Reading, unlike deleting, is safe either way.)
+    """
+    p = load_project(project_id)
+    if not p:
+        return jsonify({'error': 'project not found'}), 404
+    project_path = p.get('project_path', '')
+
+    docs = []
+    seen_paths = set()
+
+    try:
+        log = _plans_cached_log(project_id)
+    except Exception:
+        log = _load_agent_log(project_id)
+
+    def _add_plan(pf, task, ts, session_id):
+        if not pf or pf in seen_paths:
+            return
+        path = Path(pf)
+        if not path.is_file():
+            return
+        seen_paths.add(pf)
+        docs.append({
+            'path': pf,
+            'filename': path.name,
+            'title': _plan_title_for(path),
+            'kind': 'plan',
+            'location': 'plans',
+            'task': task or '',
+            'ts': ts or '',
+            'ts_relative': time_ago(ts),
+            'session_id': session_id or '',
+            'deletable': True,
+        })
+
+    for sid, s in agent_sessions.items():
+        if s.get('project_id') != project_id:
+            continue
+        for pf in _session_plan_files(s):
+            _add_plan(pf, s.get('task', ''), s.get('started_at', ''),
+                      s.get('session_id', ''))
+    for entry in log:
+        for pf in _session_plan_files(entry):
+            _add_plan(pf, entry.get('task', ''), entry.get('ts', ''),
+                      entry.get('session_id', ''))
+
+    if project_path:
+        try:
+            hits = _agent_runtime.get_runtime('claude').list_written_markdown(project_path)  # pyright: ignore[reportAttributeAccessIssue]
+        except Exception:
+            hits = []
+        proot = ''
+        try:
+            _proot = os.path.realpath(project_path)
+            if len(Path(_proot).parts) >= 3:  # drive-root guard, matches serve-image
+                proot = _proot
+        except Exception:
+            proot = ''
+        if proot:
+            ar = os.path.normcase(proot)
+            for h in hits:
+                fp = h.get('path') or ''
+                if not fp or fp in seen_paths or _is_plan_path(fp):
+                    continue  # plans already covered above
+                try:
+                    real = os.path.realpath(fp)
+                except Exception:
+                    continue
+                rn = os.path.normcase(real)
+                if not (rn == ar or rn.startswith(ar + os.sep)):
+                    continue  # outside this project's own tree
+                p_obj = Path(real)
+                if not p_obj.is_file():
+                    continue  # written then deleted/moved — nothing to show
+                seen_paths.add(fp)
+                try:
+                    rel = str(p_obj.relative_to(proot))
+                except Exception:
+                    rel = p_obj.name
+                ts = h.get('ts', '')
+                docs.append({
+                    'path': real,
+                    'filename': p_obj.name,
+                    'title': _plan_title_for(p_obj),
+                    'kind': 'doc',
+                    'location': rel,
+                    'task': '',
+                    'ts': ts,
+                    'ts_relative': time_ago(ts),
+                    'session_id': h.get('session_id', ''),
+                    'deletable': False,
+                })
+
+    docs.sort(key=lambda d: d.get('ts') or '', reverse=True)
+    return jsonify(docs)
 
 
 # ── Usage / token tracking ──────────────────────────────────────────────────

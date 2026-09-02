@@ -57,6 +57,9 @@ EXPECTED_ROUTES = {
     '/api/claude/login-launch',
     '/api/plan-file',
     '/api/plans/delete',
+    # Documents tab (MC-939): broadens the plans-only read gate to also
+    # cover markdown an agent wrote for the project (not just ~/.claude/plans/).
+    '/api/document-file',
     '/api/recent-runs',
     '/api/router/stats',
     '/api/usage',
@@ -77,6 +80,7 @@ EXPECTED_ROUTES = {
     # preview, transcript repair, and cross-project chat search.
     '/api/project/<project_id>/conversation/<claude_session_id>',
     '/api/project/<project_id>/plans',
+    '/api/project/<project_id>/documents',
     '/api/project/<project_id>/search-chats',
     '/api/project/<project_id>/session/<session_id>/reconstruct',
     '/api/project/<project_id>/transcript/<claude_session_id>',

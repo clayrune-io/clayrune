@@ -630,7 +630,7 @@ function _agentSurfacesHTML(p) {
   // mean a second copy of it to keep in sync.
   const cards = [
     { tab: 'backlog',   ic: '&#9776;',   name: 'Backlog',   sub: bl.open ? `${bl.open} open` : 'empty', body: topItems },
-    { tab: 'plans',     ic: '&#128203;', name: 'Plans',     sub: 'plan viewer', body: '<div class="surface-line surface-empty">Open to view plans</div>' },
+    { tab: 'documents', ic: '&#128203;', name: 'Documents', sub: 'plans & docs', body: '<div class="surface-line surface-empty">Open to view documents</div>' },
     { tab: 'workflows', ic: '&#9939;',   name: 'Workflows', sub: 'runs',        body: '<div class="surface-line surface-empty">Open to view workflows</div>' },
     { tab: 'activity',  ic: '&#9201;',   name: 'Activity',  sub: 'timeline',    body: '<div class="surface-line surface-empty">Open to view activity</div>' },
     { tab: 'agent-log', ic: '&#128220;', name: 'Agent Log', sub: 'history',     body: '<div class="surface-line surface-empty">Open to view the log</div>' },

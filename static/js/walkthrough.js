@@ -66,7 +66,7 @@ const WT_STEPS = [
   {
     id: 'tabs',
     title: 'Tabs',
-    body: 'A project modal has five tabs: <strong>Agent</strong> (the conversation + dispatch), <strong>Backlog</strong> (tasks for this project), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Plans</strong>, and <strong>Activity</strong>. They live at the top of the <strong>three-dot menu</strong> so the chat gets the full window.',
+    body: 'A project modal has five tabs: <strong>Agent</strong> (the conversation + dispatch), <strong>Backlog</strong> (tasks for this project), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Documents</strong> (plans + markdown an agent wrote for this project), and <strong>Activity</strong>. They live at the top of the <strong>three-dot menu</strong> so the chat gets the full window.',
     target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.wt-menu-tabs',
   },
   {
@@ -301,7 +301,7 @@ function wtDemoModalHTML(activeTab) {
 // display:none on both desktop and mobile). `wtTabsSectionHTML` is spotlighted
 // by the "Tabs" step and reused as the top of the menu step.
 function wtTabsSectionHTML(activeTab) {
-  const tabs = ['Agent','Backlog','Agent Log','Plans','Activity'];
+  const tabs = ['Agent','Backlog','Agent Log','Documents','Activity'];
   return `<div class="mc-tabs-in-menu wt-menu-tabs">` + tabs.map(t => {
     const key = t.toLowerCase().replace(' ', '-');
     return `<button class="modal-menu-item${key === activeTab ? ' active' : ''}" style="pointer-events:none">${t}</button>`;

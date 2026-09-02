@@ -6025,6 +6025,18 @@
     font-size: 14px; padding: 2px 4px; border-radius: 4px; opacity: 0.5; transition: opacity 0.15s, color 0.15s;
   }
   .plan-card-delete:hover { opacity: 1; color: #e55; }
+  .plan-card-delete-disabled { cursor: default; opacity: 0.25; }
+  .plan-card-delete-disabled:hover { opacity: 0.25; color: var(--text-faint); }
+  /* Documents tab (MC-939): kind pill distinguishing a plan row (source:
+     ~/.claude/plans/) from a doc row (source: markdown an agent wrote
+     somewhere in the project's own tree — derived from its transcripts). */
+  .doc-kind-badge {
+    display: inline-block; font-size: 9px; font-weight: 700; letter-spacing: 0.03em;
+    padding: 1px 5px; border-radius: 3px; margin-right: 5px; vertical-align: middle;
+    border: 1px solid var(--border);
+  }
+  .doc-kind-plan { color: var(--accent); border-color: var(--accent); }
+  .doc-kind-doc { color: var(--text-muted); }
   .plans-toolbar {
     display: flex; align-items: center; gap: 10px; margin-bottom: 10px; padding: 6px 0;
     border-bottom: 1px solid var(--border); flex-wrap: wrap;

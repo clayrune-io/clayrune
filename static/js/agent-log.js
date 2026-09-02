@@ -201,51 +201,62 @@ function _lastUserFromBuffer(sessionId) {
   return '';
 }
 
-// ── Plans tab ─────────────────────────────────────────────────────────────────
+// ── Documents tab (MC-939) ───────────────────────────────────────────────────
+// Was PLANS-only (~/.claude/plans/*.md). Now a merge of that same source
+// ('kind':'plan', from GET .../documents) with markdown this project's agents
+// actually wrote elsewhere in the repo ('kind':'doc', derived from their
+// transcripts server-side — see get_project_documents). Delete stays plan-only:
+// a 'doc' row is, by construction, something living inside the project's own
+// working tree — exactly what git tracks — so the server marks it
+// deletable:false and this UI never offers to remove it.
 
-let planSelections = {};  // projectId → Set of plan_file paths
+let docSelections = {};  // projectId → Set of paths (mixed plan + doc)
 
-async function loadProjectPlans(projectId) {
+async function loadProjectDocuments(projectId) {
   try {
-    const res = await fetch(API_BASE + `/api/project/${projectId}/plans`);
-    plansCache[projectId] = await res.json();
+    const res = await fetch(API_BASE + `/api/project/${projectId}/documents`);
+    documentsCache[projectId] = await res.json();
   } catch(e) {
-    plansCache[projectId] = [];
+    documentsCache[projectId] = [];
   }
   refreshModal();
-  renderPlansTab(projectId);
+  renderDocumentsTab(projectId);
 }
 
-function renderPlansTab(projectId) {
-  const container = document.getElementById(`plans-list-${projectId}`);
-  const toolbar = document.getElementById(`plans-toolbar-${projectId}`);
+function renderDocumentsTab(projectId) {
+  const container = document.getElementById(`documents-list-${projectId}`);
+  const toolbar = document.getElementById(`documents-toolbar-${projectId}`);
   if (!container) return;
-  const plans = plansCache[projectId] || [];
-  if (!planSelections[projectId]) planSelections[projectId] = new Set();
-  const sel = planSelections[projectId];
+  const docs = documentsCache[projectId] || [];
+  if (!docSelections[projectId]) docSelections[projectId] = new Set();
+  const sel = docSelections[projectId];
 
-  if (!plans.length) {
+  if (!docs.length) {
     if (toolbar) toolbar.style.display = 'none';
-    // The old copy blamed EnterPlanMode / ExitPlanMode, which agents are
-    // explicitly told NOT to use (it hangs without a TTY). A plan is any
-    // markdown file written into ~/.claude/plans/ — say that, or the empty
-    // state sends the reader looking for a mode that never fires.
+    // A plan is any markdown file an agent writes into ~/.claude/plans/; a doc
+    // is any markdown file an agent writes anywhere in the project itself
+    // (docs/, a spec, a report) — both are derived, never declared by the
+    // agent, so this empty state can't blame a mode the agent never used.
     container.innerHTML = '<div style="color:var(--text-faint);font-style:italic">'
-      + 'No plans yet. A plan is any markdown file an agent writes into '
-      + '<code>~/.claude/plans/</code>.</div>';
+      + 'No documents yet. A plan is any markdown file an agent writes into '
+      + '<code>~/.claude/plans/</code>; a doc is any markdown file it writes '
+      + 'into this project.</div>';
     return;
   }
 
-  // Toolbar
+  // Toolbar. "Delete Selected" only counts rows the server marked deletable —
+  // a doc row can be selected (for Export) without ever offering to delete it.
   if (toolbar) {
     const selCount = sel.size;
-    const allChecked = selCount === plans.length && plans.length > 0;
+    const deletablePaths = new Set(docs.filter(d => d.deletable).map(d => d.path));
+    const delSelCount = Array.from(sel).filter(p => deletablePaths.has(p)).length;
+    const allChecked = selCount === docs.length && docs.length > 0;
     toolbar.style.display = 'flex';
     toolbar.className = 'plans-toolbar';
     toolbar.innerHTML = `
-      <label><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleAllPlans('${esc(projectId)}', this.checked)"> Select All</label>
-      ${selCount > 0 ? `<button class="btn-plans-action btn-plans-delete" onclick="deleteSelectedPlans('${esc(projectId)}')">Delete Selected (${selCount})</button>` : ''}
-      ${selCount > 0 ? `<button class="btn-plans-action" onclick="exportSelectedPlans('${esc(projectId)}')">Export (${selCount})</button>` : ''}
+      <label><input type="checkbox" ${allChecked ? 'checked' : ''} onchange="toggleAllDocs('${esc(projectId)}', this.checked)"> Select All</label>
+      ${delSelCount > 0 ? `<button class="btn-plans-action btn-plans-delete" onclick="deleteSelectedDocs('${esc(projectId)}')">Delete Selected (${delSelCount})</button>` : ''}
+      ${selCount > 0 ? `<button class="btn-plans-action" onclick="exportSelectedDocs('${esc(projectId)}')">Export (${selCount})</button>` : ''}
     `;
   }
 
@@ -255,44 +266,54 @@ function renderPlansTab(projectId) {
   // alone is a bug — the browser decodes &#39; back to ' before JS runs, so a
   // title like `Desktop's "…"` broke the onclick and the card wouldn't open.
   const jsAttr = s => esc(String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'"));
-  container.innerHTML = plans.map(p => {
-    const pathEsc = jsAttr(p.plan_file);
-    const titleEsc = jsAttr(p.title);
-    const checked = sel.has(p.plan_file) ? 'checked' : '';
+  container.innerHTML = docs.map(d => {
+    const pathEsc = jsAttr(d.path);
+    const titleEsc = jsAttr(d.title);
+    const checked = sel.has(d.path) ? 'checked' : '';
+    const isDoc = d.kind === 'doc';
+    const kindBadge = isDoc
+      ? '<span class="doc-kind-badge doc-kind-doc" title="Written into the project by an agent">DOC</span>'
+      : '<span class="doc-kind-badge doc-kind-plan" title="Written into ~/.claude/plans/">PLAN</span>';
+    const metaRight = isDoc
+      ? `<span class="plan-history-task" title="${esc(d.location || '')}">${esc(d.location || '')}</span>`
+      : `<span class="plan-history-task">${esc((d.task || '').length > 80 ? d.task.slice(0,77) + '...' : (d.task || ''))}</span>`;
+    const deleteBtn = d.deletable
+      ? `<button class="plan-card-delete" onclick="event.stopPropagation();deleteSingleDoc('${esc(projectId)}','${pathEsc}','${titleEsc}')" title="Delete plan">&times;</button>`
+      : `<span class="plan-card-delete plan-card-delete-disabled" title="Lives in the project's own working tree — not deleted from here">&times;</span>`;
     return `
     <div class="plan-history-card">
-      <input type="checkbox" class="plan-cb" ${checked} onchange="togglePlanSelection('${esc(projectId)}','${pathEsc}',this.checked)" onclick="event.stopPropagation()">
-      <div class="plan-card-body" onclick="openPlanFromHistory('${pathEsc}','${titleEsc}')">
-        <div class="plan-history-title">${esc(p.title)}</div>
+      <input type="checkbox" class="plan-cb" ${checked} onchange="toggleDocSelection('${esc(projectId)}','${pathEsc}',this.checked)" onclick="event.stopPropagation()">
+      <div class="plan-card-body" onclick="openDocFromHistory('${pathEsc}','${titleEsc}','${esc(projectId)}')">
+        <div class="plan-history-title">${kindBadge} ${esc(d.title)}</div>
         <div class="plan-history-meta">
-          <span>${esc(p.ts_relative || '')}</span>
-          <span class="plan-history-task">${esc((p.task || '').length > 80 ? p.task.slice(0,77) + '...' : (p.task || ''))}</span>
+          <span>${esc(d.ts_relative || '')}</span>
+          ${metaRight}
         </div>
-        <div class="plan-history-filename">${esc(p.filename || '')}</div>
+        <div class="plan-history-filename">${esc(d.filename || '')}</div>
       </div>
-      <button class="plan-card-delete" onclick="event.stopPropagation();deleteSinglePlan('${esc(projectId)}','${pathEsc}','${titleEsc}')" title="Delete plan">&times;</button>
+      ${deleteBtn}
     </div>`;
   }).join('');
 }
 
-function togglePlanSelection(projectId, planPath, checked) {
-  if (!planSelections[projectId]) planSelections[projectId] = new Set();
-  const decoded = planPath.replace(/\\\\/g, '\\');
-  if (checked) planSelections[projectId].add(decoded);
-  else planSelections[projectId].delete(decoded);
-  renderPlansTab(projectId);
+function toggleDocSelection(projectId, docPath, checked) {
+  if (!docSelections[projectId]) docSelections[projectId] = new Set();
+  const decoded = docPath.replace(/\\\\/g, '\\');
+  if (checked) docSelections[projectId].add(decoded);
+  else docSelections[projectId].delete(decoded);
+  renderDocumentsTab(projectId);
 }
 
-function toggleAllPlans(projectId, checked) {
-  const plans = plansCache[projectId] || [];
-  if (!planSelections[projectId]) planSelections[projectId] = new Set();
-  if (checked) plans.forEach(p => planSelections[projectId].add(p.plan_file));
-  else planSelections[projectId].clear();
-  renderPlansTab(projectId);
+function toggleAllDocs(projectId, checked) {
+  const docs = documentsCache[projectId] || [];
+  if (!docSelections[projectId]) docSelections[projectId] = new Set();
+  if (checked) docs.forEach(d => docSelections[projectId].add(d.path));
+  else docSelections[projectId].clear();
+  renderDocumentsTab(projectId);
 }
 
-async function deleteSinglePlan(projectId, planPath, title) {
-  const decoded = planPath.replace(/\\\\/g, '\\');
+async function deleteSingleDoc(projectId, docPath, title) {
+  const decoded = docPath.replace(/\\\\/g, '\\');
   if (!confirm(`Delete plan "${title}"? This cannot be undone.`)) return;
   try {
     await fetch(API_BASE + '/api/plans/delete', {
@@ -300,54 +321,58 @@ async function deleteSinglePlan(projectId, planPath, title) {
       body: JSON.stringify({paths: [decoded]})
     });
   } catch(e) {}
-  if (planSelections[projectId]) planSelections[projectId].delete(decoded);
-  loadProjectPlans(projectId);
+  if (docSelections[projectId]) docSelections[projectId].delete(decoded);
+  loadProjectDocuments(projectId);
 }
 
-async function deleteSelectedPlans(projectId) {
-  const sel = planSelections[projectId];
-  if (!sel || !sel.size) return;
-  if (!confirm(`Delete ${sel.size} plan(s)? This cannot be undone.`)) return;
+async function deleteSelectedDocs(projectId) {
+  const docs = documentsCache[projectId] || [];
+  const deletablePaths = new Set(docs.filter(d => d.deletable).map(d => d.path));
+  const sel = docSelections[projectId];
+  const toDelete = sel ? Array.from(sel).filter(p => deletablePaths.has(p)) : [];
+  if (!toDelete.length) return;
+  if (!confirm(`Delete ${toDelete.length} plan(s)? This cannot be undone.`)) return;
   try {
     await fetch(API_BASE + '/api/plans/delete', {
       method: 'POST', headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({paths: Array.from(sel)})
+      body: JSON.stringify({paths: toDelete})
     });
   } catch(e) {}
-  planSelections[projectId] = new Set();
-  loadProjectPlans(projectId);
+  toDelete.forEach(p => sel.delete(p));
+  loadProjectDocuments(projectId);
 }
 
-async function exportSelectedPlans(projectId) {
-  const sel = planSelections[projectId];
+async function exportSelectedDocs(projectId) {
+  const sel = docSelections[projectId];
   if (!sel || !sel.size) return;
-  for (const planPath of sel) {
+  for (const docPath of sel) {
     try {
-      const res = await fetch(API_BASE + `/api/plan-file?path=${encodeURIComponent(planPath)}`);
+      const res = await fetch(API_BASE + `/api/document-file?path=${encodeURIComponent(docPath)}&project_id=${encodeURIComponent(projectId)}`);
       if (!res.ok) continue;
       const data = await res.json();
       const blob = new Blob([data.content || ''], {type: 'text/markdown'});
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
-      a.href = url; a.download = data.filename || 'plan.md';
+      a.href = url; a.download = data.filename || 'document.md';
       document.body.appendChild(a); a.click(); document.body.removeChild(a);
       URL.revokeObjectURL(url);
     } catch(e) {}
   }
 }
 
-async function openPlanFromHistory(planPath, title) {
-  const modalId = '__planhistory_' + planPath.replace(/[^a-zA-Z0-9]/g, '_').slice(-30);
+async function openDocFromHistory(docPath, title, projectId) {
+  const modalId = '__planhistory_' + docPath.replace(/[^a-zA-Z0-9]/g, '_').slice(-30);
   if (openModals.has(modalId)) { focusModal(modalId); return; }
 
   let content;
   try {
-    const res = await fetch(API_BASE + `/api/plan-file?path=${encodeURIComponent(planPath)}`);
+    const qs = `path=${encodeURIComponent(docPath)}` + (projectId ? `&project_id=${encodeURIComponent(projectId)}` : '');
+    const res = await fetch(API_BASE + `/api/document-file?${qs}`);
     if (!res.ok) throw new Error('Failed to load');
     const data = await res.json();
     content = data.content || '';
   } catch(e) {
-    content = 'Failed to load plan file.';
+    content = 'Failed to load document.';
   }
 
   // Render with rich formatting (same as openPlanFileViewer)
@@ -535,19 +560,19 @@ window.loadAgentLog = loadAgentLog;
 window.loadConversations = loadConversations;
 window.upsertConversationCache = upsertConversationCache;
 window._lastUserFromBuffer = _lastUserFromBuffer;
-window.loadProjectPlans = loadProjectPlans;
-window.renderPlansTab = renderPlansTab;
+window.loadProjectDocuments = loadProjectDocuments;
+window.renderDocumentsTab = renderDocumentsTab;
 window.handleAgentPaste = handleAgentPaste;
 window.handleAgentDragOver = handleAgentDragOver;
 window.handleAgentDragLeave = handleAgentDragLeave;
 window.handleAgentDrop = handleAgentDrop;
 window.triggerAgentAttach = triggerAgentAttach;
-window.deleteSelectedPlans = deleteSelectedPlans;
-window.deleteSinglePlan = deleteSinglePlan;
+window.deleteSelectedDocs = deleteSelectedDocs;
+window.deleteSingleDoc = deleteSingleDoc;
 window.dispatchContinue = dispatchContinue;
 window.showMoreAgentLog = showMoreAgentLog;
-window.exportSelectedPlans = exportSelectedPlans;
-window.openPlanFromHistory = openPlanFromHistory;
-window.toggleAllPlans = toggleAllPlans;
+window.exportSelectedDocs = exportSelectedDocs;
+window.openDocFromHistory = openDocFromHistory;
+window.toggleAllDocs = toggleAllDocs;
 window.toggleContinueInput = toggleContinueInput;
-window.togglePlanSelection = togglePlanSelection;
+window.toggleDocSelection = toggleDocSelection;

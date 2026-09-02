@@ -758,6 +758,11 @@ _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 _SESSION_ROW_CACHE: Dict[str, Any] = {}
 _SESSION_ROW_CACHE_MAX = 512
 
+# Same shape and rationale, for list_written_markdown() (MC-939 Documents tab):
+# path → (mtime, size, [{'path','ts','tool','session_id'}, ...]).
+_DOC_WRITE_CACHE: Dict[str, Any] = {}
+_DOC_WRITE_CACHE_MAX = 512
+
 # Auth error sentinels emitted by claude CLI stderr.
 # Mirrors _AUTH_ERROR_PATTERNS in server.py — keep in sync.
 _CLAUDE_AUTH_PATTERNS: List[tuple] = [
@@ -1315,6 +1320,105 @@ class ClaudeRuntime(AgentRuntime):
             _SESSION_ROW_CACHE[ckey] = (mtime, fsize, row)
             results.append(dict(row))
         return results
+
+    def list_written_markdown(self, project_path: str) -> List[Dict[str, Any]]:
+        """Every .md file this project's Claude sessions ever WROTE (Write/Edit
+        tool_use), scraped from the transcripts — not declared by an API, so an
+        agent doing nothing differently still shows up (MC-939 Documents tab).
+
+        Same directory scan as list_sessions() (all encoded-path variants +
+        worktree dirs), but UNBOUNDED — a doc from session #40 is still a doc.
+        Per-transcript results are cached by (mtime, size), mirroring
+        _SESSION_ROW_CACHE: a transcript is append-only, so an unchanged file
+        is never re-opened. This is what keeps a Documents-tab open from
+        re-scanning the whole project history every time — only transcripts
+        that changed (or are new) since the last call get parsed.
+
+        Returns one row per unique target path (last write wins for ts/tool):
+        [{'path': abs str, 'ts': iso str, 'tool': 'Write'|'Edit',
+          'session_id': csid}]. Existence is NOT checked here — the file may
+        have been written then deleted; the caller filters live files.
+
+        ALSO scans subagent transcripts — `<encoded>/<parent_csid>/subagents/
+        agent-<id>.jsonl` (a Task-tool dispatch) and `.../subagents/workflows/
+        <wf_id>/agent-<id>.jsonl` (a Workflow fan-out agent, same shape
+        `_scan_project_workflows` reads). A doc `prd-writer` subagent's Write
+        call lives ONLY in its own nested file, never inlined into the parent's
+        `<csid>.jsonl` — the parent transcript carries just the `Agent` tool's
+        prompt/result. Without this, a spec written by a dispatched subagent
+        (MC-939's own acceptance case, docs/CHANNEL_MODEL_SPEC.md) is invisible
+        even though the top-level scan runs against the right project.
+        """
+        candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
+        if not candidates:
+            return []
+        for e in list(self._encoded_dir_candidates(project_path)):
+            try:
+                candidates.extend(sorted(_CLAUDE_HOME.glob(f'{e}--clayrune-agents-*')))
+            except OSError:
+                continue
+
+        seen_names: set = set()
+        files: List[Path] = []
+        for d in candidates:
+            try:
+                if not d.exists():
+                    continue
+                for f in d.glob('*.jsonl'):
+                    if f.name in seen_names:
+                        continue
+                    seen_names.add(f.name)
+                    files.append(f)
+                for f in d.glob('*/subagents/**/*.jsonl'):
+                    if f.name in seen_names:
+                        continue
+                    seen_names.add(f.name)
+                    files.append(f)
+            except OSError:
+                continue
+
+        by_path: Dict[str, Dict[str, Any]] = {}
+        for f in files:
+            try:
+                st = f.stat()
+                mtime, fsize = st.st_mtime, st.st_size
+            except OSError:
+                continue
+            ckey = str(f)
+            cached = _DOC_WRITE_CACHE.get(ckey)
+            if cached and cached[0] == mtime and cached[1] == fsize:
+                hits = cached[2]
+            else:
+                hits = []
+                try:
+                    with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+                        for raw_line in fh:
+                            ev = self.parse_event(raw_line)
+                            if ev is None or ev.type != EventType.TOOL_USE:
+                                continue
+                            ts = (ev.raw or {}).get('timestamp', '')
+                            for block in ev.payload.get('blocks', []):
+                                if block.get('type') != 'tool_use':
+                                    continue
+                                name = block.get('name', '')
+                                if name not in ('Write', 'Edit'):
+                                    continue
+                                inp = block.get('input') or {}
+                                fp = str(inp.get('file_path') or '')
+                                if fp.lower().endswith('.md'):
+                                    hits.append({'path': fp, 'ts': ts, 'tool': name,
+                                                'session_id': f.stem})
+                except Exception:
+                    hits = []
+                if len(_DOC_WRITE_CACHE) >= _DOC_WRITE_CACHE_MAX:
+                    for k in list(_DOC_WRITE_CACHE)[:_DOC_WRITE_CACHE_MAX // 4]:
+                        _DOC_WRITE_CACHE.pop(k, None)
+                _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
+            for h in hits:
+                prev = by_path.get(h['path'])
+                if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
+                    by_path[h['path']] = h
+        return list(by_path.values())
 
     def parse_transcript_file(self, path: Path,
                               max_messages: int = 2000) -> List[Dict[str, Any]]:

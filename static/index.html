@@ -1002,7 +1002,7 @@ const _answeredQuestionIds = {};
 let agentLogCache = {};  // project_id → entries[]
 let conversationsCache = {};  // project_id → [{claude_session_id, status, label, last_user, first_user, turns, ts_relative, ...}]
 let agentLogOpen = {};   // project_id → bool
-let plansCache = {};
+let documentsCache = {};
 let rulesLoaded = {}; // project_id → {agent_rules, shared_rules}
 const hivemindCache = {};  // projectId -> { hiveminds: [...], loaded: true }
 let hivemindSSE = {};  // hivemindId -> EventSource
@@ -2055,8 +2055,8 @@ function refreshModalById(modalId) {
     applyTabFilter(entry.projectId);
   }
   // Re-render data-driven tabs after DOM rebuild
-  if (curTab === 'plans' && plansCache[entry.projectId]) {
-    renderPlansTab(entry.projectId);
+  if (curTab === 'documents' && documentsCache[entry.projectId]) {
+    renderDocumentsTab(entry.projectId);
   }
 }
 

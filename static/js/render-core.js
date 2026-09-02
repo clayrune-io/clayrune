@@ -399,7 +399,7 @@ function modalContentHTML(p) {
 
   // Migrate stale tab selections (memory/rules moved to three-dot menu;
   // hivemind moved to global sidebar Hivemind view)
-  const validTabs = ['agent','backlog','agent-log','plans','activity','workflows'];
+  const validTabs = ['agent','backlog','agent-log','documents','activity','workflows'];
   let activeTab = modalActiveTab[p.id] || 'agent';
   if (!validTabs.includes(activeTab)) { activeTab = 'agent'; modalActiveTab[p.id] = 'agent'; }
 
@@ -589,8 +589,8 @@ function modalContentHTML(p) {
             <button class="modal-menu-item${activeTab==='agent-log'?' active':''}" data-tab-name="agent-log" onclick="_mcMenuSwitchTab('${esc(p.id)}','agent-log')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-log"/></svg></span> Agent Log
             </button>
-            <button class="modal-menu-item${activeTab==='plans'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','plans')">
-              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-plan"/></svg></span> Plans
+            <button class="modal-menu-item${activeTab==='documents'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','documents')">
+              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-plan"/></svg></span> Documents
             </button>
             <button class="modal-menu-item${activeTab==='activity'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','activity')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-activity"/></svg></span> Activity
@@ -791,7 +791,7 @@ function modalContentHTML(p) {
       <div class="modal-tab ${activeTab==='agent'?'active':''}" onclick="switchModalTab('${esc(p.id)}','agent')">Agent</div>
       <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${esc(p.id)}','backlog')">Backlog${bl.open ? `<span class="tab-badge">${bl.open}</span>` : ''}</div>
       <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
-      <div class="modal-tab ${activeTab==='plans'?'active':''}" onclick="switchModalTab('${esc(p.id)}','plans')">Plans</div>
+      <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
       <div class="modal-tab ${activeTab==='workflows'?'active':''}" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
       ${activeTab !== 'agent' ? `<div class="modal-tab-search">
@@ -844,12 +844,12 @@ function modalContentHTML(p) {
       <div class="modal-tab-content ${activeTab==='agent-log'?'active':''}" data-tab="agent-log">
         ${!tabOn('agent-log') ? '' : agentLogPanelHTML(p)}
       </div>
-      <div class="modal-tab-content ${activeTab==='plans'?'active':''}" data-tab="plans">
-        ${!tabOn('plans') ? '' : `
+      <div class="modal-tab-content ${activeTab==='documents'?'active':''}" data-tab="documents">
+        ${!tabOn('documents') ? '' : `
         <div class="card-section">
-          <div class="section-title">Plans</div>
-          <div id="plans-toolbar-${esc(p.id)}" style="display:none"></div>
-          <div id="plans-list-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
+          <div class="section-title">Documents</div>
+          <div id="documents-toolbar-${esc(p.id)}" style="display:none"></div>
+          <div id="documents-list-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
         </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='activity'?'active':''}" data-tab="activity">

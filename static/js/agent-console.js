@@ -506,8 +506,8 @@ function switchModalTab(projectId, tab) {
     loadAgentLog(projectId);
     return;
   }
-  if (tab === 'plans') {
-    loadProjectPlans(projectId);
+  if (tab === 'documents') {
+    loadProjectDocuments(projectId);
     return;
   }
   if (tab === 'workflows') {
