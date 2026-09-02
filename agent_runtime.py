@@ -751,6 +751,49 @@ def register_claude_hooks(*,
 # Claude Code's native transcript store lives here.
 _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 
+
+def iter_transcript_files_in_dir(dir_path: Path, seen_names: Optional[set] = None) -> List[Path]:
+    """Every transcript `.jsonl` directly under `dir_path`, PLUS nested subagent
+    transcripts: `*/subagents/**/*.jsonl` (a Task-tool dispatch) and
+    `*/subagents/workflows/*/*.jsonl` (a CC Workflow fan-out agent — same
+    shape, covered by the same `**`).
+
+    A Task-tool subagent's Write/Edit/Skill tool_use calls live ONLY in its
+    own nested `<parent_csid>/subagents/agent-<id>.jsonl`, never inlined into
+    the parent session's `<csid>.jsonl` (MC-939/MC-941) — a flat `*.jsonl`
+    glob at the top of a project's transcript dir silently misses everything
+    a dispatched subagent did. Originally proven in
+    `ClaudeRuntime.list_written_markdown()`; factored out here once a third
+    caller (skill usage stats, cold session-search index) needed the same
+    two-glob shape, so all three widen the same way rather than drifting.
+
+    `seen_names` dedupes by filename — pass one shared set across multiple
+    candidate directories (e.g. both encoded-path spellings for one project)
+    to avoid double-counting the same transcript reached two ways; omit it to
+    dedupe only within this one directory. Returns [] (not raising) on any
+    OSError, matching every other transcript scan in this module.
+    """
+    if seen_names is None:
+        seen_names = set()
+    out: List[Path] = []
+    try:
+        if not dir_path.exists():
+            return out
+        for f in dir_path.glob('*.jsonl'):
+            if f.name in seen_names:
+                continue
+            seen_names.add(f.name)
+            out.append(f)
+        for f in dir_path.glob('*/subagents/**/*.jsonl'):
+            if f.name in seen_names:
+                continue
+            seen_names.add(f.name)
+            out.append(f)
+    except OSError:
+        pass
+    return out
+
+
 # Read-through cache for ClaudeRuntime.list_sessions() rows, keyed by transcript
 # path → (mtime, size, row). Transcripts are append-only, so (mtime, size) pins
 # the content: a hit is exact, not heuristic. Derived data only — losing it
@@ -1339,15 +1382,16 @@ class ClaudeRuntime(AgentRuntime):
           'session_id': csid}]. Existence is NOT checked here — the file may
         have been written then deleted; the caller filters live files.
 
-        ALSO scans subagent transcripts — `<encoded>/<parent_csid>/subagents/
-        agent-<id>.jsonl` (a Task-tool dispatch) and `.../subagents/workflows/
-        <wf_id>/agent-<id>.jsonl` (a Workflow fan-out agent, same shape
-        `_scan_project_workflows` reads). A doc `prd-writer` subagent's Write
-        call lives ONLY in its own nested file, never inlined into the parent's
-        `<csid>.jsonl` — the parent transcript carries just the `Agent` tool's
-        prompt/result. Without this, a spec written by a dispatched subagent
-        (MC-939's own acceptance case, docs/CHANNEL_MODEL_SPEC.md) is invisible
-        even though the top-level scan runs against the right project.
+        ALSO scans subagent transcripts, via iter_transcript_files_in_dir() —
+        `<encoded>/<parent_csid>/subagents/agent-<id>.jsonl` (a Task-tool
+        dispatch) and `.../subagents/workflows/<wf_id>/agent-<id>.jsonl` (a
+        Workflow fan-out agent, same shape `_scan_project_workflows` reads).
+        A doc `prd-writer` subagent's Write call lives ONLY in its own nested
+        file, never inlined into the parent's `<csid>.jsonl` — the parent
+        transcript carries just the `Agent` tool's prompt/result. Without
+        this, a spec written by a dispatched subagent (MC-939's own
+        acceptance case, docs/CHANNEL_MODEL_SPEC.md) is invisible even though
+        the top-level scan runs against the right project.
         """
         candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
         if not candidates:
@@ -1361,21 +1405,7 @@ class ClaudeRuntime(AgentRuntime):
         seen_names: set = set()
         files: List[Path] = []
         for d in candidates:
-            try:
-                if not d.exists():
-                    continue
-                for f in d.glob('*.jsonl'):
-                    if f.name in seen_names:
-                        continue
-                    seen_names.add(f.name)
-                    files.append(f)
-                for f in d.glob('*/subagents/**/*.jsonl'):
-                    if f.name in seen_names:
-                        continue
-                    seen_names.add(f.name)
-                    files.append(f)
-            except OSError:
-                continue
+            files.extend(iter_transcript_files_in_dir(d, seen_names))
 
         by_path: Dict[str, Dict[str, Any]] = {}
         for f in files:

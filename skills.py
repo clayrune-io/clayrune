@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import agent_runtime as _agent_runtime
 import skill_import_guard as _guard
 
 
@@ -1233,6 +1234,13 @@ def skill_usage_stats(days: int = 30) -> dict[str, dict[str, Any]]:
 
     Looks for assistant messages with tool_use blocks where `name == "Skill"`
     and extracts the `skill` input parameter.
+
+    Includes nested subagent transcripts (a Task-tool dispatch invoking the
+    Skill tool lives only in its own `.../subagents/agent-<id>.jsonl`, never
+    inlined into the parent's transcript — see
+    agent_runtime.iter_transcript_files_in_dir()), so a skill used only by a
+    dispatched subagent still counts. `proj_dir.name` is unaffected: nested
+    files stay attributed to the top-level project dir they were found under.
     """
     root = _claude_projects_root()
     if not root.exists():
@@ -1244,7 +1252,7 @@ def skill_usage_stats(days: int = 30) -> dict[str, dict[str, Any]]:
     for proj_dir in root.iterdir():
         if not proj_dir.is_dir():
             continue
-        for transcript in proj_dir.glob('*.jsonl'):
+        for transcript in _agent_runtime.iter_transcript_files_in_dir(proj_dir):
             if transcript.stat().st_mtime < cutoff_ts:
                 continue
             try:

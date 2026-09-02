@@ -76,6 +76,39 @@ def test_build_index_indexes_user_and_assistant_text(tmp_data_dir, tmp_path, mon
     assert 'falcon' in hit['snippet'].lower()
 
 
+def test_build_index_indexes_a_dispatched_subagents_own_transcript(tmp_data_dir, tmp_path, monkeypatch):
+    """MC-941: a Task-tool subagent's messages live ONLY in its own nested
+    transcript (`<encoded>/<parent_csid>/subagents/agent-<id>.jsonl`), never
+    inlined into the parent session's `<csid>.jsonl`. This module's whole
+    premise (module docstring: "everything a project has ever actually said
+    lives in its session transcripts") is broken if that nested file is
+    invisible to the index — a `prd-writer` subagent's findings would be
+    unsearchable even though the top-level scan ran against the right
+    project. Mirrors test_documents_tab.py's
+    test_finds_a_write_from_a_dispatched_subagents_own_transcript.
+    """
+    m = _mem(tmp_data_dir)
+    fake_home = _wire_claude_home(monkeypatch, m, tmp_path)
+    import mc.memory_fts as fts
+    p = _project(tmp_path)
+    parent_dir = fake_home / agent_runtime.ClaudeRuntime._encode_project_path(p['project_path'])
+    parent_dir.mkdir(parents=True)
+    _write_transcript(parent_dir, 'parent-csid', [('user', 'dispatch a spec writer')])
+    sub_dir = parent_dir / 'parent-csid' / 'subagents'
+    sub_dir.mkdir(parents=True)
+    _write_transcript(sub_dir, 'agent-abc123', [
+        ('assistant', 'the kestrel widget compiles via the falcon pipeline'),
+    ])
+
+    stats = fts.build_index(p)
+    assert stats['files_seen'] == 2
+    assert stats['files_indexed'] == 2
+
+    hits = fts.cold_search(p, 'falcon')
+    assert len(hits) == 1
+    assert hits[0]['session_id'] == 'agent-abc123'
+
+
 def test_build_index_skips_tool_calls_and_short_text(tmp_data_dir, tmp_path, monkeypatch):
     m = _mem(tmp_data_dir)
     fake_home = _wire_claude_home(monkeypatch, m, tmp_path)

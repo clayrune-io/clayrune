@@ -117,6 +117,14 @@ def _iter_transcript_files(project_path: str):
     dir spelling AND per-agent worktree dirs. Mirrors ClaudeRuntime.list_sessions
     (mc/memory.py:_find_transcript_file's worktree fallback), but unbounded —
     the eval surface needs every session, not the most-recent N.
+
+    ALSO includes nested subagent transcripts (a Task-tool dispatch or CC
+    Workflow fan-out agent), via iter_transcript_files_in_dir() — see that
+    helper's docstring. This module's whole premise is "everything a project
+    has ever actually said lives in its session transcripts" (module
+    docstring); a subagent's messages are as real as its parent's, so
+    excluding its nested file would silently under-index this cold-search
+    tier the same way it under-reported the Documents tab pre-MC-939.
     """
     rt = _agent_runtime.get_runtime('claude')
     home = _agent_runtime._CLAUDE_HOME
@@ -126,18 +134,10 @@ def _iter_transcript_files(project_path: str):
             candidates.extend(sorted(home.glob(f'{e}--clayrune-agents-*')))
         except OSError:
             continue
-    seen = set()
+    seen: set = set()
     for d in candidates:
-        try:
-            if not d.is_dir():
-                continue
-            for f in sorted(d.glob('*.jsonl')):
-                if f.name in seen:
-                    continue
-                seen.add(f.name)
-                yield f
-        except OSError:
-            continue
+        for f in sorted(_agent_runtime.iter_transcript_files_in_dir(d, seen)):
+            yield f
 
 
 # ── incremental indexing ─────────────────────────────────────────────────────
