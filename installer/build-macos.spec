@@ -14,7 +14,24 @@
 #
 # Output: dist/Clayrune.app  →  zip into MissionControl-macOS.zip for release.
 
+import os
+
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
+
+# This spec lives in installer/, one level below the repo root, but every path
+# below names a repo-root-relative file. PyInstaller resolves a spec's relative
+# paths against the SPEC'S OWN directory, NOT the invoking shell's CWD — so
+# after the spec moved out of the root, `['app.py']` resolved to
+# installer/app.py and the build died with "script not found" (caught on a real
+# Mac build 2026-09-02, after a source reading wrongly concluded CWD applied).
+# SPECPATH is PyInstaller's own injected variable for exactly this; R() makes
+# every path absolute so the build is CWD-independent.
+REPO_ROOT = os.path.dirname(SPECPATH)  # noqa: F821 — injected by PyInstaller
+
+
+def R(*parts):
+    return os.path.join(REPO_ROOT, *parts)
+
 
 block_cipher = None
 
@@ -33,17 +50,17 @@ hidden += collect_submodules('google')
 # Bundle templates / static / data scaffolding next to app.py so the frozen
 # binary sees the same layout as `python app.py`.
 datas = [
-    ('static', 'static'),
+    (R('static'), 'static'),
     # Claydo mascot webp/icons live in assets/ and are served by the
     # /assets/<file> Flask route. Bundle them or the UI shows broken images
     # (the FAB + the agent avatar) in the frozen app.
-    ('assets', 'assets'),
-    ('installer/clayrune.png', 'installer'),
+    (R('assets'), 'assets'),
+    (R('installer', 'clayrune.png'), 'installer'),
     # Injected into every agent's system prompt by _clayrune_api_reference().
     # Unlike SHARED_RULES.md below this is NOT user data — it's the curated,
     # operator-neutral Clayrune API doc. Leave it out and the frozen app's
     # agents curl-probe endpoints every session.
-    ('data/agent_reference', 'data/agent_reference'),
+    (R('data', 'agent_reference'), 'data/agent_reference'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim
@@ -56,20 +73,20 @@ datas = [
 # Claydo reads these from _SERVER_DIR at runtime: USER_GUIDE + CHANGELOG feed
 # ask-mode context; docs/claydo/ holds the builder-mode briefs
 # (PROMPT_BUILDER_DESIGN.md §5). Without them the frozen app's Claydo 500s.
-if os.path.exists('docs/USER_GUIDE.md'):
-    datas.append(('docs/USER_GUIDE.md', 'docs'))
-if os.path.exists('CHANGELOG.md'):
-    datas.append(('CHANGELOG.md', '.'))
-if os.path.isdir('docs/claydo'):
-    datas.append(('docs/claydo', 'docs/claydo'))
+if os.path.exists(R('docs', 'USER_GUIDE.md')):
+    datas.append((R('docs', 'USER_GUIDE.md'), 'docs'))
+if os.path.exists(R('CHANGELOG.md')):
+    datas.append((R('CHANGELOG.md'), '.'))
+if os.path.isdir(R('docs', 'claydo')):
+    datas.append((R('docs', 'claydo'), 'docs/claydo'))
 
 # Include any extra Python modules the app loads from the repo root.
 # server.py is implicitly bundled because app.py imports it.
 datas += collect_data_files('webview')
 
 a = Analysis(
-    ['app.py'],
-    pathex=['.'],
+    [R('app.py')],
+    pathex=[REPO_ROOT],
     binaries=[],
     datas=datas,
     hiddenimports=hidden,
@@ -106,7 +123,7 @@ exe = EXE(
     target_arch=None,  # let host arch decide (CI runners are arm64)
     codesign_identity=None,  # unsigned per project policy
     entitlements_file=None,
-    icon='installer/clayrune.png',
+    icon=R('installer', 'clayrune.png'),
 )
 
 coll = COLLECT(
@@ -123,7 +140,7 @@ coll = COLLECT(
 app = BUNDLE(
     coll,
     name='Clayrune.app',
-    icon='installer/clayrune.png',
+    icon=R('installer', 'clayrune.png'),
     bundle_identifier='io.clayrune.app',
     info_plist={
         'CFBundleName': 'Clayrune',
