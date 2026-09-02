@@ -60,11 +60,18 @@ def assert_no_server():
             "A memory probe must never import server; see this file's docstring.")
 
 
-def wire(corpus_snapshot=None):
+def wire(corpus_snapshot=None, project_path=None):
     """Initialise `mc.memory` without importing `server`. Returns (module, project).
 
     corpus_snapshot: a directory written by tools/memory-snapshot.py. When given,
     the memory corpus is read from a frozen copy instead of the live dir.
+
+    project_path: overrides the project's `project_path` (default: this repo's
+    own root). Needed when a probe runs from an isolated worktree checkout
+    (`.clayrune/agents/<sid>/`) but must read the CANONICAL project's memory
+    corpus and transcript history — `repo_root()` would otherwise resolve to
+    the worktree's own (empty) encoded CLAUDE_HOME slot, silently measuring
+    nothing. See fts_recall_probe.py (MC-918).
     """
     root = repo_root()
     if str(root) not in sys.path:
@@ -78,7 +85,7 @@ def wire(corpus_snapshot=None):
     import mc.memory as m
 
     claude_home = Path.home() / '.claude' / 'projects'
-    project = {'id': 'mission_control', 'project_path': str(root)}
+    project = {'id': 'mission_control', 'project_path': project_path or str(root)}
 
     def noop(*a, **k):
         return None

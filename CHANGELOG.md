@@ -6,6 +6,60 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Skill import security scanner (MC-912)
+
+Clayrune imported skills from paste, folder, git and plugin sources with no
+scanning at all. The Distiller's authority guard (`distiller._authority_violation`)
+only covers what the agent itself writes into the learning loop; nothing
+covered what a human pastes in — and a skill is executable prompt injection
+loaded into the system prompt of an agent holding vault credentials,
+live-cookie browser profiles, and git push rights. Design ported from Nous
+Research's Hermes Agent (`tools/skills_guard.py`, per
+`docs/research/HERMES_AGENT_COMPETITIVE_READ.md` §6.2), with their own
+documented gap closed rather than inherited.
+
+- **New `skill_import_guard.py`** — static scanner across five categories
+  (exfiltration, prompt injection, destructive commands, persistence,
+  agent-config modification), reusing `distiller._AUTHORITY_RE` verbatim for
+  the authority-expansion vocabulary rather than a second copy.
+  `agent_config_mod` detects BOTH shell redirection (`>>`) and language-level
+  write APIs (`open(...,'w')`, `pathlib.write_text`, `fs.writeFileSync`,
+  PowerShell `Set-Content`/`Out-File`) aimed at a config-like target
+  (`CLAUDE.md`, `AGENTS.md`, `settings.json`, `.mcp.json`, `.env`, `.claude/`)
+  in a proximity window — the exact bypass Hermes's own scanner docstring
+  admits missing.
+- **Three trust tiers.** `builtin` (ships with Clayrune) is never scanned.
+  `trusted` — a short git-remote allowlist
+  (`skill_import_guard.TRUSTED_GIT_ALLOWLIST`) — passes on `caution`-level
+  findings, blocks on `warning`/`critical`. `community` (paste, local folder,
+  any other git URL, plugin installs — the default) is blocked on ANY
+  finding unless the human passes `force: true`. A git clone's tier is
+  derived server-side from the actual `clone_url` and bound to the staging
+  dir via a `.mc_trust_tier` sidecar — a request body cannot claim `trusted`.
+- **Fail-closed.** A scanner crash is itself a synthetic critical finding and
+  quarantines the skill; `force` can override a *known* finding but never an
+  *unknown* scan failure.
+- **Quarantine, not deletion.** A blocked import's content is copied to
+  `~/.claude/skills.quarantine/<id>/` with its verdict (offending lines
+  quoted) — `GET /api/skills/quarantine`, `GET .../<id>`,
+  `DELETE .../<id>`. Recovery is re-submitting the *original* import request
+  with `force: true` (the same content/path/staging_id), not a separate
+  replay endpoint — quarantine storage is for visibility/audit.
+- **Wired into all four import paths**: `import_from_paste`,
+  `import_from_folder` → `_install_skill_dir`, `install_from_staging` (git),
+  and `install_full_plugin` (scanned as one unit, including hook scripts that
+  are never installed, since a human may enable them later via CC's
+  `/plugin`). `write_skill`'s direct-create/update path (not an import) is
+  untouched — this scans at import time, not on every write.
+  `install_builtins()` is untouched — `builtin` tier by construction.
+  Surfaced in the Skills import UI (paste/folder/git/plugin flows) as a
+  findings list with a "force install anyway" retry, not a silent backend
+  refusal.
+- Real malicious sample skills under `tests/fixtures/malicious_skills/`
+  (exfiltration, prompt injection, destructive command, persistence,
+  config-mod, and a benign negative control), covered by
+  `tests/test_skill_import_guard.py`.
+
 ## [2026-09-01] — The port guard proves it trips, and says who holds the port
 
 MC-908's fix shipped in `64d0510` (connect-probe alongside the bind test) with
@@ -159,6 +213,88 @@ Six new tests: `_index_overflow`/`_enforce_index_cap` unit coverage, a fold
 rollback + a fold-still-fits regression guard in `test_condense_structured.py`
 style, and 413 + file-untouched + under-cap-still-works coverage for both API
 routes.
+
+## [2026-09-01] — MC-931: gemini's real errors stop getting dropped; the other four non-Claude runtimes stop risking Windows' argv limit
+
+MC-931's original diagnosis (gemini blows Windows' 8191-char command-line
+limit) didn't match the code — gemini already piped its prompt over stdin.
+The real defect was in error surfacing, and checking the other Mode-A
+runtimes for the *actual* inline-payload pattern turned up four genuine
+instances of it.
+
+- **Gemini surfaces the real API error instead of dropping it.**
+  `GeminiRuntime.parse_event`'s catch-all `result`/`turn_end`/`done` branch
+  matched a `result` event carrying `status=="error"` before the error-specific
+  branch could — so a quota/auth/network failure reached the chat as a bare
+  "turn ended" with no message. It now emits `EventType.ERROR` when
+  `status=="error"`, and its `error.message` reaches `explain_exit_error`'s
+  quota/auth/network hints. `_last_real_error_line` (the shared fallback every
+  provider's `explain_exit_error` uses) also no longer picks the dispatcher's
+  seeded `"> {user}: {task}"` log line as the "real" output on a turn that
+  errored before printing anything else.
+- **OpenCode and Goose's task text now goes over stdin, not argv** — both
+  CLIs support it (`opencode run` falls back to stdin when no positional
+  message is given; `goose run --instructions -` reads stdin), the same fix
+  already shipped for gemini/codex. Goose's `run` turned out to have no bare
+  positional prompt argument at all in the real CLI (verified against
+  `block/goose`'s `cli.rs`) — the previous `cmd.append(task)` was already
+  broken independent of the length question.
+- **Aider's task text now goes over `--message-file` (a temp file), not
+  `--message` (argv)** — mirrors the `--read` temp-file pattern it already
+  used for the system prompt.
+- **Goose's `--system` flag has no stdin/file form** (confirmed against the
+  CLI's own arg definitions) and **Kiro's headless prompt is positional-only**
+  with no stdin/file alternative at all — both get a new hard pre-flight
+  guard (`_guard_win_argv_length`, Windows-only) that raises a clear,
+  diagnosable error naming the limit instead of letting Windows mangle the
+  command line into an opaque "command line is too long".
+- Investigated the ticket's open question (a 4000-char `-p` prompt to gemini
+  returning rc=1 after 3 stdout lines, under the 8191 limit): not
+  reproducible today against the live CLI — a 4000-char prompt through MC's
+  actual stdin+stream-json invocation completed cleanly (rc=0). The described
+  shape (a few JSON lines then a non-zero exit) matches exactly the
+  `result`/`status=="error"` defect above, not a separate bug.
+
+Covered by 14 new `TestWinArgvLengthGuard`/`Test{OpenCode,Goose,Aider,Kiro}ArgvSafety`
+cases in `tests/test_provider_runtimes.py` (each verified to fail against the
+pre-fix code) plus the 2 gemini cases from the original diagnosis.
+
+## [2026-09-01] — Cold session search: FTS5 underneath the curated memory index
+
+MC-918. The curated memory corpus (topic files, archive, managed region) is a
+small hand-tended set; a project's actual session transcripts — everything it
+has ever really said — were not searchable at all. Hermes Agent's
+`session_search` (`docs/research/HERMES_AGENT_COMPETITIVE_READ.md` §6.7) does
+exactly this with SQLite FTS5 over its session store; the corresponding gap
+here is now closed the same way.
+
+- **New `mc/memory_fts.py`** — an incremental SQLite FTS5 index over Claude
+  Code transcripts + the agent log, one db per project living beside
+  `MEMORY.md` (never under `DATA_DIR` — CLAUDE.md's pollution rule). Each
+  transcript is fingerprinted by `(mtime, size)`; an unchanged file costs one
+  `stat()` on the next pass, so a warm boot re-indexes nothing. Runs
+  incrementally at startup (`_backfill_session_fts_index`, off the app.run()
+  path) and is never part of the auto-injected read floor — only the explicit
+  `/memory/search` route reaches it.
+- **`/api/project/<id>/memory/search` gets a cold tier**, appended after the
+  curated hits and self-labelled (`tier: 'cold'`, `session_id`, `timestamp`) —
+  existing hits and callers are untouched, so this is backward compatible.
+  New `cold_k` query param (default `session_fts_cold_k`, 5); `cold_k=0` opts
+  out. Rollback lever: `session_fts_enabled: false` (both the tier and the
+  startup indexer).
+- **Measured, not assumed** (`tools/memory-eval/fts_recall_probe.py`, 253 real
+  pinned tasks against 345 real transcripts / 11,648 indexed messages): the
+  curated corpus already returns ≥1 hit for every task (0% zero-result, no
+  change there — this project's BM25 tuning is already saturated). The gap
+  the cold tier closes is a different one: **94.5% of real historical tasks
+  (239/253) have relevant transcript content the curated corpus can never
+  surface**, reaching **142 distinct real sessions** invisible to memory
+  search before this shipped. The Step-7 semantic-search deferral
+  (`decision-step7-semantic-search-deferral`) is about re-ranking the
+  *curated* corpus and is untouched by this finding — it still stands.
+
+Ships with `tests/test_memory_fts.py` (indexing, incrementality, agent-log
+indexing, route-level backward compatibility).
 
 ## [2026-08-31] — The default agent gets a face that outlives the session
 

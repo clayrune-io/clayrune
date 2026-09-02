@@ -979,20 +979,70 @@ function _renderFullPluginButton(modalId) {
   </button>`;
 }
 
-async function _doSkillImportFullPlugin(modalId) {
+// ── Import security scanner — quarantine banner (MC-912) ───────────────────
+//
+// A blocked import returns {quarantined: true, tier, findings, quarantine_id,
+// message, scan_crashed} instead of installing. This is NOT a silent backend
+// refusal: findings render with the offending file/line/snippet, and (unless
+// the scan itself crashed — fail-closed, not forceable) a "force install
+// anyway" button re-submits the SAME request with force:true.
+
+function _severityColor(sev) {
+  if (sev === 'critical') return 'var(--red)';
+  if (sev === 'warning') return 'var(--amber)';
+  return 'var(--text-faint)';
+}
+
+function _quarantineBannerHTML(verdict, retryOnclick) {
+  const findings = verdict.findings || [];
+  const rows = findings.map(f => `
+    <div style="padding:6px 8px;border-left:3px solid ${_severityColor(f.severity)};margin-bottom:4px;background:var(--surface2)">
+      <div style="font-size:11px;font-weight:600;color:var(--text)">${esc(f.category)}
+        <span style="font-weight:400;color:var(--text-faint)">(${esc(f.severity)}) — ${esc(f.file)}:${f.line}</span></div>
+      <div style="font-size:11px;color:var(--text-mute);margin-top:2px">${esc(f.detail)}</div>
+      ${f.snippet ? `<div style="font-family:var(--mono);font-size:11px;color:var(--text-faint);margin-top:2px;white-space:pre-wrap">${esc(f.snippet)}</div>` : ''}
+    </div>`).join('');
+  const crashNote = verdict.scan_crashed
+    ? `<div style="font-size:11px;color:var(--red);margin-top:6px">Scanner crashed during this scan — quarantined regardless of trust tier. This cannot be forced past; the scan itself failed, not just a finding.</div>`
+    : '';
+  const forceBtn = verdict.scan_crashed ? '' : `<button class="btn-secondary" style="margin-top:8px" onclick="${retryOnclick}">Force install anyway</button>`;
+  return `<div id="si-quarantine-banner" style="padding:10px 12px;border:1px solid var(--red);background:var(--surface2);border-radius:6px;margin-bottom:10px">
+    <div style="font-size:12px;font-weight:600;color:var(--red)">&#x26D4; Import blocked by security scan (trust tier: ${esc(verdict.tier || 'community')})</div>
+    <div style="font-size:11px;color:var(--text-faint);margin-top:4px">Quarantined at skills.quarantine/${esc(verdict.quarantine_id || '')} — content preserved, nothing was installed.</div>
+    <div style="margin-top:8px">${rows}</div>
+    ${crashNote}
+    ${forceBtn}
+  </div>`;
+}
+
+function _siShowQuarantine(modalId, verdict, retryOnclick) {
+  const win = openModals.get(modalId)?.element;
+  if (!win) return;
+  const old = win.querySelector('#si-quarantine-banner');
+  if (old) old.remove();
+  const wrapper = win.querySelector(`#si-status-${modalId}`)?.closest('div[style*="flex-direction:column"]');
+  if (wrapper) wrapper.insertAdjacentHTML('afterbegin', _quarantineBannerHTML(verdict, retryOnclick));
+}
+
+async function _doSkillImportFullPlugin(modalId, force) {
   const src = win_importPluginSource[modalId];
   if (!src) { _siStatus(modalId, 'no plugin source for this modal', 'var(--red)'); return; }
-  _siStatus(modalId, 'Installing full plugin...');
+  _siStatus(modalId, force ? 'Forcing install...' : 'Installing full plugin...');
   try {
     const body = src.source === 'git'
-      ? { staging_id: src.staging_id }
-      : { path: src.path };
+      ? { staging_id: src.staging_id, force: !!force }
+      : { path: src.path, force: !!force };
     const res = await fetch(API_BASE + '/api/skills/import/plugin', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
     const data = await res.json();
+    if (data.quarantined) {
+      _siShowQuarantine(modalId, data, `_doSkillImportFullPlugin('${modalId}', true)`);
+      _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
+      return;
+    }
     if (!res.ok || data.error) { _siStatus(modalId, data.error || 'HTTP ' + res.status, 'var(--red)'); return; }
     _siStatus(modalId, data.message || 'Installed', 'var(--green)');
     showToast(data.message || ('Installed ' + (data.plugin_name || 'plugin')), 6000);
@@ -1143,21 +1193,26 @@ function openSkillImportPaste() {
   _siModalShell(modalId, 'Paste SKILL.md', body, footer);
 }
 
-async function _doSkillImportPaste(modalId) {
+async function _doSkillImportPaste(modalId, force) {
   const ctx = _siReadContext(modalId);
   if (!ctx || ctx.error) { _siStatus(modalId, ctx?.error || 'invalid context', 'var(--red)'); return; }
   const win = openModals.get(modalId).element;
   const content = win.querySelector('#sip-content')?.value || '';
   const name = (win.querySelector('#sip-name')?.value || '').trim();
   if (!content.trim()) { _siStatus(modalId, 'paste content is empty', 'var(--red)'); return; }
-  _siStatus(modalId, 'Importing...');
+  _siStatus(modalId, force ? 'Forcing install...' : 'Importing...');
   try {
     const res = await fetch(API_BASE + '/api/skills/import/paste', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ content, scope: ctx.scope, project_id: ctx.projectId, name: name || undefined }),
+      body: JSON.stringify({ content, scope: ctx.scope, project_id: ctx.projectId, name: name || undefined, force: !!force }),
     });
     const data = await res.json();
+    if (data.quarantined) {
+      _siShowQuarantine(modalId, data, `_doSkillImportPaste('${modalId}', true)`);
+      _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
+      return;
+    }
     if (!res.ok || data.error) { _siStatus(modalId, data.error || 'HTTP ' + res.status, 'var(--red)'); return; }
     _siStatus(modalId, 'Imported', 'var(--green)');
     _allSkillsCache.loaded = false;
@@ -1195,24 +1250,29 @@ function openSkillImportFolder() {
   _siModalShell(modalId, 'Import from folder', body, footer);
 }
 
-async function _doSkillImportFolder(modalId, selectedRelDir) {
+async function _doSkillImportFolder(modalId, selectedRelDir, force) {
   const ctx = _siReadContext(modalId);
   if (!ctx || ctx.error) { _siStatus(modalId, ctx?.error || 'invalid context', 'var(--red)'); return; }
   const win = openModals.get(modalId).element;
   const path = (win.querySelector('#sif-path')?.value || '').trim();
   const name = (win.querySelector('#sif-name')?.value || '').trim();
   if (!path) { _siStatus(modalId, 'path is required', 'var(--red)'); return; }
-  _siStatus(modalId, 'Importing...');
+  _siStatus(modalId, force ? 'Forcing install...' : 'Importing...');
   try {
     const res = await fetch(API_BASE + '/api/skills/import/folder', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         path, scope: ctx.scope, project_id: ctx.projectId,
-        name: name || undefined, selected_rel_dir: selectedRelDir,
+        name: name || undefined, selected_rel_dir: selectedRelDir, force: !!force,
       }),
     });
     const data = await res.json();
+    if (data.quarantined) {
+      _siShowQuarantine(modalId, data, `_doSkillImportFolder('${modalId}', ${JSON.stringify(selectedRelDir || null)}, true)`);
+      _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
+      return;
+    }
     if (!res.ok || data.error) { _siStatus(modalId, data.error || 'HTTP ' + res.status, 'var(--red)'); return; }
     if (data.multiple) {
       // Show candidate picker (+ optional plugin banner)
@@ -1304,6 +1364,16 @@ async function _doSkillImportGit(modalId) {
       }),
     });
     const data = await res.json();
+    if (data.quarantined) {
+      // Auto-install path found exactly one candidate before it was blocked —
+      // retry it directly (install-one against the preserved staging dir)
+      // rather than re-cloning the whole repo.
+      const candidate = (data.candidates || [])[0];
+      win_gitStaging[modalId] = data.staging_id || null;
+      _siShowQuarantine(modalId, data, `_doSkillImportGitInstallOne('${modalId}', ${JSON.stringify(candidate?.rel_dir || '')}, ${JSON.stringify(candidate?.name || '')}, true)`);
+      _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
+      return;
+    }
     if (!res.ok && !data.candidates) {
       _siStatus(modalId, data.error || 'HTTP ' + res.status, 'var(--red)');
       return;
@@ -1347,12 +1417,12 @@ async function _doSkillImportGit(modalId) {
   }
 }
 
-async function _doSkillImportGitInstallOne(modalId, relDir, defaultName) {
+async function _doSkillImportGitInstallOne(modalId, relDir, defaultName, force) {
   const ctx = _siReadContext(modalId);
   if (!ctx || ctx.error) { _siStatus(modalId, ctx?.error || 'invalid context', 'var(--red)'); return; }
   const stagingId = win_gitStaging[modalId];
   if (!stagingId) { _siStatus(modalId, 'staging session expired — re-clone', 'var(--red)'); return; }
-  _siStatus(modalId, 'Installing...');
+  _siStatus(modalId, force ? 'Forcing install...' : 'Installing...');
   try {
     const res = await fetch(API_BASE + '/api/skills/import/git/install', {
       method: 'POST',
@@ -1361,10 +1431,15 @@ async function _doSkillImportGitInstallOne(modalId, relDir, defaultName) {
         staging_id: stagingId,
         rel_dir: relDir,
         scope: ctx.scope, project_id: ctx.projectId,
-        cleanup: true,
+        cleanup: true, force: !!force,
       }),
     });
     const data = await res.json();
+    if (data.quarantined) {
+      _siShowQuarantine(modalId, data, `_doSkillImportGitInstallOne('${modalId}', ${JSON.stringify(relDir)}, ${JSON.stringify(defaultName)}, true)`);
+      _siStatus(modalId, data.message || 'Blocked by security scan', 'var(--red)');
+      return;
+    }
     if (!res.ok || data.error) { _siStatus(modalId, data.error || 'HTTP ' + res.status, 'var(--red)'); return; }
     _siStatus(modalId, 'Imported ' + (data.name || defaultName), 'var(--green)');
     win_gitStaging[modalId] = null;

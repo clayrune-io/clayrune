@@ -30,6 +30,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+import skill_import_guard as _guard
+
 
 # ── Paths ────────────────────────────────────────────────────────────────────
 
@@ -40,6 +42,24 @@ def _home() -> Path:
 GLOBAL_SKILLS_DIR = _home() / '.claude' / 'skills'
 ARCHIVE_SKILLS_DIR = _home() / '.claude' / 'skills.archive'
 STAGING_SKILLS_DIR = _home() / '.claude' / 'skills.staging'  # transient — git imports wait here for picker selection
+
+# MC-912: git_clone_to_staging() drops the derived trust tier next to the
+# clone so install_from_staging()/install_full_plugin() read the tier the
+# SERVER computed from the actual clone_url, not one a client could claim in
+# a request body.
+_TRUST_TIER_SIDECAR = '.mc_trust_tier'
+
+
+def staging_trust_tier(staging_path: Path) -> str:
+    sidecar = staging_path / _TRUST_TIER_SIDECAR
+    if sidecar.exists():
+        try:
+            tier = sidecar.read_text(encoding='utf-8').strip()
+            if tier in ('builtin', 'trusted', 'community'):
+                return tier
+        except Exception:
+            pass
+    return 'community'
 
 # A staging id is minted below as `uuid.uuid4().hex[:12]`, so it is always bare
 # hex. Anything else came from a caller, not from us.
@@ -590,8 +610,14 @@ def import_from_paste(
     project_id: str | None = None,
     name_override: str | None = None,
     overwrite: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Import a skill from a pasted SKILL.md string."""
+    """Import a skill from a pasted SKILL.md string.
+
+    A paste has no publisher provenance at all — always scanned at the
+    'community' trust tier (MC-912). Raises skill_import_guard.SkillQuarantined
+    if the scan blocks it.
+    """
     if not content or not content.strip():
         raise ValueError('content is empty')
     meta, body = parse_skill_md(content)
@@ -604,6 +630,9 @@ def import_from_paste(
     description = (meta.get('description') or '').strip()
     if not description:
         raise ValueError('description missing — required in frontmatter')
+    _guard.scan_and_gate_text(
+        'SKILL.md', content, tier='community', force=force, source_label='paste',
+    )
     return write_skill(
         name=name,
         description=description,
@@ -624,6 +653,7 @@ def import_from_folder(
     name_override: str | None = None,
     selected_rel_dir: str | None = None,
     overwrite: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
     """Import a skill from an on-disk folder.
 
@@ -677,6 +707,9 @@ def import_from_folder(
         project_path=project_path,
         project_id=project_id,
         overwrite=overwrite,
+        trust_tier='community',  # local folders carry no publisher provenance
+        force=force,
+        source_label=f'folder:{src}',
     )
 
 
@@ -687,8 +720,17 @@ def _install_skill_dir(
     project_path: str | None,
     project_id: str | None,
     overwrite: bool,
+    trust_tier: str = 'community',
+    force: bool = False,
+    source_label: str = '',
 ) -> dict[str, Any]:
-    """Copy a skill folder (containing SKILL.md + any extras) into the target scope."""
+    """Copy a skill folder (containing SKILL.md + any extras) into the target scope.
+
+    Security-scanned before the copy (MC-912) unless trust_tier='builtin'.
+    Raises skill_import_guard.SkillQuarantined if the scan blocks the import —
+    the caller (a route) is expected to translate that into a 4xx response
+    carrying the verdict rather than letting it propagate as a 500.
+    """
     err = validate_name(name_override)
     if err:
         raise ValueError(err)
@@ -701,6 +743,11 @@ def _install_skill_dir(
     description = (meta.get('description') or '').strip()
     if not description:
         raise ValueError('description missing in SKILL.md frontmatter')
+
+    _guard.scan_and_gate(
+        src_dir, tier=trust_tier, force=force,
+        source_label=source_label or f'{scope}:{name_override}',
+    )
 
     target_dir = _skill_dir(scope, name_override, project_path)
     if target_dir.exists() and not overwrite:
@@ -857,10 +904,21 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
             msg = f'no SKILL.md found under "{subpath}" (searched 3 levels deep). The folder you pointed at doesn\'t look like a skill.'
         raise ValueError(msg)
 
+    trust_tier = _guard.classify_git_trust(clone_url)
+    # Bind the tier to the staged clone itself (not just the API response) so
+    # a later install call can't be handed a client-forged 'trusted' — the
+    # sidecar reflects what was ACTUALLY cloned, derived server-side from the
+    # clone_url. install_from_staging / install_full_plugin read this back.
+    (staging_path / _TRUST_TIER_SIDECAR).write_text(trust_tier, encoding='utf-8')
+
     out = {
         'staging_id': staging_id,
         'candidates': candidates,
         'normalized': {'clone_url': clone_url, 'ref': effective_ref, 'subpath': subpath},
+        # MC-912: which trust tier this remote gets scanned at. A short
+        # publisher allowlist (skill_import_guard.TRUSTED_GIT_ALLOWLIST); every
+        # other git source is 'community' — blocked on any scan finding.
+        'trust_tier': trust_tier,
     }
     if plugin_info:
         out['plugin'] = _plugin_summary_for_response(plugin_info)
@@ -890,11 +948,21 @@ def install_from_staging(
     name_override: str | None = None,
     overwrite: bool = False,
     cleanup: bool = False,
+    force: bool = False,
 ) -> dict[str, Any]:
-    """Install a specific skill from a previously-staged git clone."""
+    """Install a specific skill from a previously-staged git clone.
+
+    Trust tier is read from the staging dir's `.mc_trust_tier` sidecar
+    (written by git_clone_to_staging from the actual clone_url) — a client
+    cannot claim a 'trusted' tier through the request body. If the scan
+    blocks the install, SkillQuarantined propagates BEFORE `cleanup` runs, so
+    the staging dir survives for a force=True retry against the same
+    staging_id.
+    """
     staging_path = staging_dir(staging_id)
     if not staging_path.exists() or not staging_path.is_dir():
         raise FileNotFoundError(f'staging dir not found: {staging_id}')
+    trust_tier = staging_trust_tier(staging_path)
     # Defensive path check — rel_dir must stay inside staging_path
     src_dir = (staging_path / rel_dir).resolve() if rel_dir else staging_path.resolve()
     try:
@@ -920,6 +988,9 @@ def install_from_staging(
         project_path=project_path,
         project_id=project_id,
         overwrite=overwrite,
+        trust_tier=trust_tier,
+        force=force,
+        source_label=f'git-staging:{staging_id}',
     )
 
     if cleanup:
@@ -1027,6 +1098,8 @@ def detect_plugin_at(root: Path | str) -> dict[str, Any] | None:
 def install_full_plugin(
     plugin_root: Path | str,
     overwrite: bool = False,
+    trust_tier: str = 'community',
+    force: bool = False,
 ) -> dict[str, Any]:
     """Install all skill + command + agent components of a plugin folder.
 
@@ -1037,6 +1110,13 @@ def install_full_plugin(
 
     All components install to GLOBAL scope (~/.claude/{skills,commands,agents}).
     Project-scope full-plugin install is not supported in v1.
+
+    Security-scanned as ONE unit (MC-912) before anything is copied — hook
+    scripts are included in the scan even though they're never installed,
+    since a human may enable them later via CC's /plugin command and should
+    see findings before that, not after. Raises
+    skill_import_guard.SkillQuarantined if blocked; the caller then leaves
+    the staging dir intact for a force=True retry.
 
     Returns: {
       plugin_name,
@@ -1049,6 +1129,10 @@ def install_full_plugin(
     info = detect_plugin_at(root)
     if not info:
         raise ValueError(f'not a plugin folder (no {PLUGIN_MANIFEST_DIRNAME}/): {root}')
+
+    _guard.scan_and_gate(
+        root, tier=trust_tier, force=force, source_label=f"plugin:{info['name']}",
+    )
 
     GLOBAL_SKILLS_DIR.mkdir(parents=True, exist_ok=True)
     GLOBAL_COMMANDS_DIR.mkdir(parents=True, exist_ok=True)

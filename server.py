@@ -247,6 +247,15 @@ def _load_config():
         'agent_log_backfill_enabled': True,
         'agent_log_backfill_max_per_project': 200,
         'agent_log_backfill_max_age_days': 60,
+        # Cold session search (MC-918): SQLite FTS5 over Claude Code
+        # transcripts + the agent log, underneath the curated memory index.
+        # `session_fts_enabled` is the rollback lever for the whole feature —
+        # false turns off both the startup indexer and the /memory/search
+        # cold tier. `session_fts_cold_k` is how many cold hits the search
+        # route appends by default (a caller can override with ?cold_k=).
+        # See mc/memory_fts.py.
+        'session_fts_enabled': True,
+        'session_fts_cold_k': 5,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,
@@ -580,6 +589,7 @@ from mc import process_ledger  # noqa: E402
 # Path/config roots stay home in server.py; the 6 dispatch-family fns live in
 # agent_routes/project_routes. CONFIG is read live via state.CONFIG (not wired).
 from mc import memory  # noqa: E402
+from mc import memory_fts  # noqa: E402 — leaf module, no wire() (see its docstring)
 
 memory.wire(
     data_dir=DATA_DIR,
@@ -1176,6 +1186,38 @@ def _backfill_token_telemetry():
     return updated
 
 
+def _backfill_session_fts_index():
+    """Refresh every project's cold session-search index (MC-918) at startup.
+
+    Incremental by construction (mc.memory_fts.build_index fingerprints each
+    transcript file by mtime+size and skips anything unchanged), so a warm
+    boot costs one stat() per known file, not a re-parse of the whole
+    history. Roll back: set CONFIG['session_fts_enabled'] = False.
+    """
+    if not CONFIG.get('session_fts_enabled', True):
+        return
+    try:
+        projects = load_projects()
+    except Exception as e:
+        _log(f"[memory_fts] load_projects failed: {e}")
+        return
+    total_files = total_rows = 0
+    for p in projects:
+        pid = p.get('id')
+        if not pid or p.get('_is_incognito_project') or pid == INCOGNITO_PROJECT_ID:
+            continue
+        try:
+            stats = memory_fts.build_index(p, data_dir=DATA_DIR)
+        except Exception as e:
+            _log(f"[memory_fts] {pid}: {e}")
+            continue
+        total_files += stats.get('files_indexed', 0)
+        total_rows += stats.get('rows_written', 0)
+    if total_files or total_rows:
+        _log(f"[memory_fts] indexed {total_files} new/changed transcript "
+             f"file(s), {total_rows} row(s), across {len(projects)} project(s)")
+
+
 def _startup_memory_maintenance():
     """Background startup chain: backfill agent_log from transcripts, THEN
     reconcile unscribed sessions (order matters — reconcile needs the
@@ -1196,6 +1238,10 @@ def _startup_memory_maintenance():
         _backfill_token_telemetry()
     except Exception as e:
         _log(f"[telemetry-backfill] failed: {e}")
+    try:
+        _backfill_session_fts_index()
+    except Exception as e:
+        _log(f"[memory_fts] startup index failed: {e}")
     try:
         # AFTER reconcile: reconcile's own writes remove the markers of the
         # orphans it scribes, so sweeping last keeps the pruned count honest.

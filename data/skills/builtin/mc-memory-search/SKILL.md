@@ -29,11 +29,15 @@ curl -s "http://localhost:5199/api/project/<PROJECT_ID>/memory/search?q=<QUERY>&
   decision topic. Terms shorter than 3 chars are ignored.
 - `k` — max results (default 3; use 5–8 when exploring).
 
-Returns a JSON array, ranked best-first:
+Returns a JSON array, ranked best-first — curated corpus hits, THEN a cold
+tier of real session-transcript excerpts appended underneath:
 
 ```json
 [{"file": "arch_sse_slot_management.md", "score": 7,
-  "snippet": "Chromium caps 6 connections per origin; close SSE on …"}]
+  "snippet": "Chromium caps 6 connections per origin; close SSE on …"},
+ {"tier": "cold", "file": "session:c4215ce4-…", "session_id": "c4215ce4-…",
+  "role": "assistant", "timestamp": "2026-08-31T23:22:04Z",
+  "snippet": "…the actual conversation text…", "score": -3.21}]
 ```
 
 ## How to use the results
@@ -44,9 +48,17 @@ Returns a JSON array, ranked best-first:
    - `MEMORY.md#managed` → a session-log entry inside MEMORY.md's managed
      region (you already have MEMORY.md loaded — re-read that section).
    - `MEMORY_ARCHIVE.md` → an archived older entry — Read that file.
+   - `tier: "cold"` → a real message from a past session, NOT a curated note
+     — a search over transcripts you already have, no promotion step. Use
+     `session_id` to look the conversation up (e.g.
+     `claude -r <session_id>`, or `/api/project/<id>/transcript/<session_id>`)
+     if you need the surrounding context, not just the excerpt.
 2. Treat hits as breadcrumbs: confirm in the file before acting on a snippet.
 3. No results (empty array) means the corpus has nothing on those terms — try
    different keywords once, then proceed; don't loop.
+4. Cold hits are unreviewed — they are whatever was actually said, not
+   something a human curated. Weight them as "this came up before," not as an
+   endorsed decision the way a topic file or position is.
 
 ## When NOT to use
 
