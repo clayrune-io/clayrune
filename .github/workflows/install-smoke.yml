@@ -122,24 +122,81 @@ jobs:
           claude --version
 
   macos-no-python:
-    # Same as `macos` but with Python and Homebrew hidden from PATH so the
-    # uv-fallback branch in Step 2/5 is actually exercised. macos-latest
-    # ships with Python 3.13+ preinstalled, which short-circuits the
-    # auto-install path entirely — without this scenario, a uv-path
-    # regression would sail through CI and only break in production
-    # (caught Keegan's MBP only because brew was also missing).
+    # Same as `macos` but with every modern Python and Homebrew taken away, so
+    # the uv-fallback branch in Step 2/5 is actually exercised. macos-latest
+    # ships preinstalled Pythons, which short-circuit the auto-install path
+    # entirely — without this scenario a uv-path regression would sail through
+    # CI and only break in production (caught Keegan's MBP only because brew
+    # was also missing).
+    #
+    # 2026-09-02: this job was red from ~2026-06-09 and was parked
+    # non-blocking, blamed on uv drifting its install location. That was
+    # wrong — uv is fine, and the job never reached it. The old version hid
+    # Python by STRIPPING PATH entries, but install.sh's
+    # _refresh_claude_path() unconditionally re-prepends /usr/local/bin (plus
+    # ~/.local/bin, ~/.claude/bin, ~/.npm-global/bin and
+    # `npm config get prefix`/bin) so a just-installed `claude` is reachable
+    # without opening a new shell. The runner keeps a python3.12 in
+    # /usr/local/bin, so the installer handed that dir straight back, Step 2/5
+    # logged "Using: python3.12 (Python 3.12.10)", the uv branch never ran, and
+    # the assertion three steps later failed on a missing ~/.local/bin/uv —
+    # which reads like a uv bug and is not one.
+    #
+    # So: hide the interpreters ON DISK. PATH is not ours to control once
+    # install.sh is running. And assert the uv branch actually executed, so a
+    # future leak fails with that sentence instead of a misleading one.
     runs-on: macos-latest
     timeout-minutes: 20
-    # KNOWN-BROKEN since ~2026-06-09: the uv-fallback ('~/.local/bin/uv' missing)
-    # has been red for weeks and NOT caused by installer changes — uv (Astral)
-    # appears to have drifted its install path, so this scenario + install.sh's
-    # Mac-no-Homebrew branch need a real fix validated on macOS. Until then this
-    # job stays VISIBLE but non-blocking so it stops emailing on every install.sh
-    # push. Tracked in the backlog ("macOS no-Homebrew uv path"). Remove this line
-    # once the uv-path fix lands and this goes genuinely green.
-    continue-on-error: true
     steps:
-      - name: Run install.sh with brew hidden + modern python hidden
+      - name: Take every modern Python and Homebrew away from the runner
+        shell: zsh -l {0}
+        run: |
+          set -e
+          # Keep the system dirs intact: /usr/bin holds curl, git and sed, and
+          # Apple's python3 — which is 3.9, too old for install.sh's 3.11+
+          # check. That stub staying reachable IS the state we simulate. Every
+          # other PATH dir gets its python/brew binaries moved aside, where no
+          # amount of PATH rebuilding inside install.sh can reach them.
+          hidden="$RUNNER_TEMP/hidden-toolchain"
+          mkdir -p "$hidden"
+          echo "$PATH" | tr ':' '\n' | while IFS= read -r d; do
+            [ -n "$d" ] || continue
+            case "$d" in
+              /usr/bin|/bin|/usr/sbin|/sbin|/System/*|/Library/Apple/*|/var/run/com.apple.*) continue ;;
+            esac
+            # Enumerate by name rather than globbing: this step runs under
+            # zsh, where an unmatched glob is a fatal error, not a literal.
+            ls -1 "$d" 2>/dev/null | grep -E '^(python|python3|python3\.[0-9]+|brew)$' | while IFS= read -r n; do
+              sudo mv "$d/$n" "$hidden/$(echo "$d/$n" | tr '/.' '__')" && echo "  hid $d/$n"
+            done
+          done
+          hash -r 2>/dev/null || true
+
+          echo "--- toolchain visible to the installer:"
+          echo "curl:  $(command -v curl || echo '(MISSING — bad)')"
+          echo "brew:  $(command -v brew || echo '(missing — good)')"
+          echo "python3: $(command -v python3 || echo '(none)')"
+
+          # Assert the simulation actually holds, HERE, where the message is
+          # about the simulation. Anything install.sh's _find_python() would
+          # accept must now live only in /usr/bin or /bin.
+          for c in python3.12 python3.11 python3 python; do
+            p=$(command -v "$c" 2>/dev/null) || continue
+            case "$p" in
+              /usr/bin/*|/bin/*) ;;
+              *) echo "FAIL: $c is still reachable at $p — simulation leaked"; exit 1 ;;
+            esac
+          done
+          # ...and the system stub must stay too old to satisfy the 3.11+
+          # check, or this job silently stops testing the uv path.
+          sysver=$(/usr/bin/python3 --version 2>&1 || echo none)
+          echo "system python3: $sysver"
+          case "$sysver" in
+            *' 3.9.'*|*' 3.10.'*) ;;
+            *) echo "FAIL: /usr/bin/python3 is '$sysver' — new enough for install.sh, so the uv branch can never run. Rework this job."; exit 1 ;;
+          esac
+
+      - name: Run install.sh with no usable Python and no Homebrew
         env:
           CLAYRUNE_NO_CONFIRM: '1'
           # Skip the OAuth gate so the test reaches Step 2/5 (Python/uv).
@@ -148,49 +205,31 @@ jobs:
         shell: zsh -l {0}
         run: |
           set +e
-          # Strip only NON-SYSTEM dirs containing a python3 binary or brew.
-          # We MUST keep /usr/bin and /bin on PATH — they hold curl, git,
-          # sed, basename and the macOS-bundled python3 (which is 3.9, too
-          # old for our 3.11+ check). Apple's old python3 stub being on PATH
-          # is what makes _find_python return empty and trigger the
-          # uv-fallback we want to test.
-          stripped=$(echo "$PATH" | tr ':' '\n' | while read d; do
-            [ -z "$d" ] && continue
-            case "$d" in
-              /usr/bin|/bin|/usr/sbin|/sbin|/System/*|/Library/Apple/*) echo "$d"; continue ;;
-            esac
-            [ -x "$d/python3" ] && continue
-            [ -x "$d/python3.11" ] && continue
-            [ -x "$d/python3.12" ] && continue
-            [ -x "$d/python3.13" ] && continue
-            [ -x "$d/brew" ] && continue
-            echo "$d"
-          done | paste -sd: -)
-          export PATH="$stripped"
-          hash -r 2>/dev/null || true
-          echo "Stripped PATH: $PATH"
-          echo "curl:" $(command -v curl || echo "(MISSING — bad)")
-          echo "python3:" $(command -v python3 || echo "(missing)") "version:" $(python3 --version 2>&1 || echo "(none)")
-          echo "brew:" $(command -v brew || echo "(missing — good)")
-          # Run the live installer
-          curl -sSL https://clayrune.io/install.sh | sh
-          ec=$?
-          # With CLAYRUNE_SKIP_AUTH_CHECK we expect install.sh to run
-          # ALL the way through (clone, venv, launcher, server start).
-          # Server-start may fail in CI (no display) but the venv setup
-          # (Step 2/5 — the uv path we're actually testing) must complete
-          # before that point.
-          if [ "$ec" -ne 0 ] && [ "$ec" -ne 1 ] && [ "$ec" -ne 2 ]; then
+          log="$RUNNER_TEMP/install.log"
+          { curl -sSL https://clayrune.io/install.sh | sh; echo "__INSTALL_EC__=$?"; } 2>&1 | tee "$log"
+          ec=$(grep -o '__INSTALL_EC__=[0-9]*' "$log" | tail -1 | cut -d= -f2)
+          # With CLAYRUNE_SKIP_AUTH_CHECK we expect install.sh to run ALL the
+          # way through (clone, venv, launcher, server start). Server-start may
+          # fail in CI (no display) but the venv setup — Step 2/5, the uv path
+          # we are actually testing — must complete before that point.
+          if [ "$ec" != "0" ] && [ "$ec" != "1" ] && [ "$ec" != "2" ]; then
             echo "install.sh exited $ec — unexpected"
-            exit "$ec"
+            exit "${ec:-1}"
           fi
-          echo "install.sh exit $ec — checking artifacts"
+          # The point of this job is the uv branch. Prove it RAN. Without this
+          # line a leaky simulation surfaces later as "uv binary missing",
+          # which sent us chasing uv for three months.
+          grep -q 'installing Python via uv' "$log" || {
+            echo "FAIL: install.sh did NOT take the uv fallback — it found a Python or a brew we thought we had hidden."
+            grep -nE 'Using:|Homebrew|STEP 2/5' "$log" || true
+            exit 1
+          }
+          echo "install.sh exit $ec — uv fallback confirmed, checking artifacts"
 
-      - name: Verify uv installed a Python and venv works
+      - name: Verify uv installed a Python and the venv is built on it
         shell: zsh -l {0}
         run: |
-          # uv installs to ~/.local/share/uv/python/. Confirm a python lives
-          # there and venv setup left a working interpreter behind.
+          # uv installs its interpreters into ~/.local/share/uv/python/.
           ls -la ~/.local/bin/uv 2>&1 || { echo "FAIL: uv binary missing"; exit 1; }
           ~/.local/bin/uv python list --only-installed 2>&1 | head -5
           test -x "$HOME/Clayrune/.venv/bin/python" || {
@@ -199,3 +238,11 @@ jobs:
             exit 1
           }
           "$HOME/Clayrune/.venv/bin/python" --version
+          # The venv must be built ON uv's interpreter. A venv alone only
+          # proves Step 2 finished, not that it finished via uv.
+          venv_home=$(grep -E '^home' "$HOME/Clayrune/.venv/pyvenv.cfg" 2>/dev/null || echo '')
+          echo "pyvenv.cfg $venv_home"
+          case "$venv_home" in
+            *.local/share/uv/python*) ;;
+            *) echo "FAIL: venv was not built on uv's Python"; exit 1 ;;
+          esac

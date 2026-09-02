@@ -66,6 +66,11 @@ trap _clayrune_exit_footer EXIT
 # Refresh PATH so a freshly-installed `claude` is discoverable without forcing
 # the user to start a new shell. Covers the common destinations Anthropic's
 # curl-installer and npm-global use.
+#
+# NOTE for test harnesses: this PREPENDS dirs to PATH, so any test that fakes
+# a "no Python" machine by removing entries from PATH will have them handed
+# straight back here. The install-smoke `macos-no-python` job was red for
+# three months for exactly that reason. Hide interpreters on disk instead.
 _refresh_claude_path() {
   for d in "$HOME/.local/bin" "$HOME/.claude/bin" "$HOME/.npm-global/bin" "/usr/local/bin"; do
     case ":$PATH:" in
@@ -551,8 +556,10 @@ if [ -z "$PYTHON_CMD" ]; then
           uv python install 3.12 >/dev/null 2>&1 || \
             uv python install 3.11 >/dev/null 2>&1 || true
           # uv python find prints the absolute path of the installed
-          # interpreter — use that directly as PYTHON_CMD instead of
-          # relying on PATH discovery (uv doesn't add a python3.12 shim).
+          # interpreter — use that directly as PYTHON_CMD rather than
+          # re-running PATH discovery, which would depend on whether this
+          # uv version happens to drop a shim in ~/.local/bin (0.12.x does;
+          # older ones did not).
           PYTHON_CMD=$(uv python find 3.12 2>/dev/null || \
                        uv python find 3.11 2>/dev/null || \
                        echo "")
