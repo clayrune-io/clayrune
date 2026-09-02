@@ -412,7 +412,7 @@ async function openDocFromHistory(docPath, title, projectId) {
     </div>
     <div class="plan-viewer-header modal-header">
       <h3 style="color:#c4b5fd;margin:0;font-size:15px">&#128196; ${esc(title)}</h3>
-      <div style="color:var(--text-faint);font-size:12px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(planPath.split(/[/\\]/).pop())}</div>
+      <div style="color:var(--text-faint);font-size:12px;margin-top:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(docPath.split(/[/\\]/).pop())}</div>
     </div>
     <div class="plan-viewer-body">${bodyHTML}</div>`;
   win.appendChild(contentEl);
