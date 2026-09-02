@@ -806,6 +806,41 @@ _SESSION_ROW_CACHE_MAX = 512
 _DOC_WRITE_CACHE: Dict[str, Any] = {}
 _DOC_WRITE_CACHE_MAX = 512
 
+# Same shape and rationale again, for ClaudeRuntime.list_running_subagents()
+# (MC-937 Phase 4 — live subagent visibility): path → (mtime, size, row).
+# A subagent still working keeps appending to its own transcript, so its
+# (mtime, size) changes every poll and this cache buys nothing for it — the
+# win is for a FINISHED subagent, whose file stops changing forever but
+# whose parent session may keep polling (or dispatch more subagents) for a
+# long time afterwards.
+_SUBAGENT_SCAN_CACHE: Dict[str, Any] = {}
+_SUBAGENT_SCAN_CACHE_MAX = 512
+
+
+def label_from_user_text(text: Any, maxlen: int = 90) -> str:
+    """Best-effort one-line label for a subagent, from the first thing its
+    dispatcher told it to do. Prefers a distinguishing 'KEY: value' clause
+    (a dispatch prompt convention used across this codebase — see
+    Agent-tool prompts in docs/) over the shared mission preamble that
+    precedes it. Returns '' for empty input; never raises.
+
+    Factored out of what was a private copy inside
+    mc/blueprints/agent_routes.py's _wf_agent_label() so the CC-Workflow
+    fan-out label and the direct Task-tool subagent label (this module's
+    list_running_subagents()) derive a name the same way instead of two
+    heuristics silently drifting apart.
+    """
+    s = ' '.join(str(text).split())
+    if not s:
+        return ''
+    up = s.upper()
+    for kw in ('ANGLE', 'METHOD', 'FAMILY', 'YOUR TASK', 'MANDATE',
+               'ASSIGNMENT', 'LENS'):
+        idx = up.find(kw + ':')
+        if idx != -1:
+            return s[idx + len(kw) + 1:].strip()[:maxlen]
+    return s[:maxlen]
+
 # Auth error sentinels emitted by claude CLI stderr.
 # Mirrors _AUTH_ERROR_PATTERNS in server.py — keep in sync.
 _CLAUDE_AUTH_PATTERNS: List[tuple] = [
@@ -1449,6 +1484,115 @@ class ClaudeRuntime(AgentRuntime):
                 if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
                     by_path[h['path']] = h
         return list(by_path.values())
+
+    def list_running_subagents(self, project_path: str,
+                                claude_session_id: str) -> List[Dict[str, Any]]:
+        """Per-file signal for every Task-tool / CC-Workflow-fanout subagent
+        dispatched from ONE parent Claude session (MC-937 Phase 4 — live
+        subagent visibility).
+
+        A Task-tool subagent runs IN-PROCESS inside its parent's CLI process
+        and never becomes its own MC session (confirmed in
+        tests/test_floor_routes.py) — it writes its OWN nested transcript,
+        never inlined into the parent's `<csid>.jsonl`:
+            <encoded>/<claude_session_id>/subagents/agent-<id>.jsonl
+            <encoded>/<claude_session_id>/subagents/workflows/<wf>/agent-<id>.jsonl
+        (same nesting iter_transcript_files_in_dir widens for across a whole
+        project; this is the same shape scoped to one parent session, since a
+        subagent can only be alive while that ONE parent process is alive —
+        callers only need this for sessions they already know are 'running').
+
+        This method does NOT decide running vs. finished — it has no
+        visibility into agent_sessions (that would be a circular import; see
+        this module's docstring). It hands back raw per-file signal and lets
+        the caller (agent_routes.agent_status()) apply its own liveness rule
+        on top of `last_ts`.
+
+        Returns unsorted [{'agent_id', 'first_ts', 'last_ts', 'tool_count',
+        'label', 'path'}, ...]; [] if the parent transcript or its subagents
+        dir doesn't exist, or on any OSError. Cached per-file by (mtime,
+        size) in _SUBAGENT_SCAN_CACHE, exactly like _DOC_WRITE_CACHE — a
+        subagent still writing gets re-parsed next poll (that IS the live
+        signal); a finished one, whose file stops changing, never does.
+        """
+        if not claude_session_id:
+            return []
+        # transcript_path() checks every encoded-dir variant AND the
+        # per-agent-worktree fallback (b264200a) — reusing it means a
+        # worktree-isolated session's subagents resolve correctly here too,
+        # without re-deriving that encoding logic.
+        parent_file = self.transcript_path(project_path, claude_session_id)
+        if parent_file is None:
+            return []
+        subagents_dir = parent_file.parent / claude_session_id / 'subagents'
+        out: List[Dict[str, Any]] = []
+        try:
+            if not subagents_dir.exists():
+                return out
+            files = [x for x in subagents_dir.glob('**/*.jsonl')
+                     if x.name.startswith('agent-')]
+        except OSError:
+            return out
+
+        for sf in files:
+            try:
+                st = sf.stat()
+                mtime, fsize = st.st_mtime, st.st_size
+            except OSError:
+                continue
+            ckey = str(sf)
+            cached = _SUBAGENT_SCAN_CACHE.get(ckey)
+            if cached and cached[0] == mtime and cached[1] == fsize:
+                out.append(dict(cached[2]))
+                continue
+
+            agent_id = sf.stem[len('agent-'):] if sf.stem.startswith('agent-') else sf.stem
+            first_ts = ''
+            last_ts = ''
+            tool_count = 0
+            label = ''
+            try:
+                with open(sf, 'r', encoding='utf-8', errors='replace') as fh:
+                    for raw_line in fh:
+                        if not raw_line.strip():
+                            continue
+                        ev = self.parse_event(raw_line)
+                        if ev is None:
+                            continue
+                        ts = (ev.raw or {}).get('timestamp', '')
+                        if ts:
+                            if not first_ts:
+                                first_ts = ts
+                            last_ts = ts
+                        if ev.type == EventType.TOOL_USE:
+                            tool_count += sum(
+                                1 for b in ev.payload.get('blocks', [])
+                                if b.get('type') == 'tool_use')
+                        elif (not label and ev.type == EventType.USER_MESSAGE
+                              and ev.payload.get('role') == 'user'):
+                            c = ev.payload.get('content', '')
+                            if isinstance(c, list):
+                                c = ' '.join(
+                                    str(x.get('text', '')) for x in c
+                                    if isinstance(x, dict))
+                            label = label_from_user_text(c)
+            except Exception:
+                pass
+
+            row = {
+                'agent_id': agent_id,
+                'first_ts': first_ts,
+                'last_ts': last_ts,
+                'tool_count': tool_count,
+                'label': label,
+                'path': str(sf),
+            }
+            if len(_SUBAGENT_SCAN_CACHE) >= _SUBAGENT_SCAN_CACHE_MAX:
+                for k in list(_SUBAGENT_SCAN_CACHE)[:_SUBAGENT_SCAN_CACHE_MAX // 4]:
+                    _SUBAGENT_SCAN_CACHE.pop(k, None)
+            _SUBAGENT_SCAN_CACHE[ckey] = (mtime, fsize, row)
+            out.append(dict(row))
+        return out
 
     def parse_transcript_file(self, path: Path,
                               max_messages: int = 2000) -> List[Dict[str, Any]]:
