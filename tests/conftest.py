@@ -131,7 +131,7 @@ class FakeGh:
 
 @pytest.fixture
 def fake_gh(monkeypatch):
-    import github_sync
+    from mc import github_sync
     fg = FakeGh()
     monkeypatch.setattr(github_sync.subprocess, "run", fg.run)
     return fg
@@ -149,7 +149,7 @@ def gs(fake_gh, project_store, monkeypatch):
     Rate limit + per-project lock state are module globals; clear them so
     tests don't interfere with each other.
     """
-    import github_sync
+    from mc import github_sync
     importlib.reload(github_sync)
     # fake_gh patched the pre-reload module; re-patch the fresh one.
     fg = fake_gh

@@ -128,7 +128,7 @@ class TestAgentLogMigration:
 
 def _build_mock_runtime(name, emits_usage=True, emits_cost=True, emits_num_turns=True):
     """Build a minimal mock AgentRuntime for the given provider name."""
-    import agent_runtime
+    from mc import agent_runtime
     caps = agent_runtime.ProviderCapabilities(
         name=name,
         display_name=name.capitalize(),
@@ -214,7 +214,7 @@ class TestApiUsageContract:
         self._write_log(data_dir, 'proj2', gemini_entries)
 
         # Mock gemini runtime to report emits_cost=False
-        import agent_runtime as ar
+        import mc.agent_runtime as ar
         orig_get_runtime = ar.get_runtime
 
         def _mock_get_runtime(name):
@@ -290,7 +290,7 @@ class TestSessionUsagePayload:
         if 'server' in sys.modules:
             del sys.modules['server']
         import server
-        import agent_runtime as ar
+        import mc.agent_runtime as ar
 
         orig = ar.get_runtime
 
@@ -322,7 +322,7 @@ class TestSessionUsagePayload:
         if 'server' in sys.modules:
             del sys.modules['server']
         import server
-        import agent_runtime as ar
+        import mc.agent_runtime as ar
 
         orig = ar.get_runtime
 
@@ -380,7 +380,7 @@ class TestSsePayloadStructure:
         if 'server' in sys.modules:
             del sys.modules['server']
         import server
-        import agent_runtime as ar
+        import mc.agent_runtime as ar
 
         orig = ar.get_runtime
 

@@ -8,7 +8,7 @@ first observation. Topics (->skill) stay gated at 3 (a separate content fix).
 """
 from __future__ import annotations
 
-import distiller
+from mc import distiller
 
 
 def _eval(kind, *, exact_count, coarse_count, pref_min_rec=1, min_rec=3,

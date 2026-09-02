@@ -28,8 +28,8 @@ import pytest
 REPO_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(REPO_ROOT))
 
-import project_sync  # noqa: E402
-import agent_worktree as w  # noqa: E402
+from mc import project_sync  # noqa: E402
+import mc.agent_worktree as w  # noqa: E402
 
 
 def _git(cwd, *args, check=True):

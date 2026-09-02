@@ -15,7 +15,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 def _make_exploration(skills_root: Path, scope_dir: str, slug: str,

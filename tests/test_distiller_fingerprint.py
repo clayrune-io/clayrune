@@ -19,7 +19,7 @@ Layered tests:
 from __future__ import annotations
 
 
-import distiller
+from mc import distiller
 
 
 # ── Vocabulary closure ───────────────────────────────────────────────────────

@@ -19,8 +19,8 @@ from flask import Blueprint, jsonify, request
 from mc import state
 from mc.core import _log
 
-import distiller as _distiller
-import skills as _skills
+import mc.distiller as _distiller
+import mc.skills as _skills
 
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
 

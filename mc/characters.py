@@ -18,7 +18,7 @@ import os
 from pathlib import Path
 from typing import Any
 
-import skills as _skills
+import mc.skills as _skills
 
 GLOBAL_AGENTS_DIR = _skills.GLOBAL_AGENTS_DIR
 

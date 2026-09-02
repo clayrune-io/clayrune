@@ -126,7 +126,7 @@ def generate_brief(project: dict) -> dict:
         return _fallback(project)
     raw = None
     try:
-        import agent_runtime as _agent_runtime  # lazy: keep beacon import light
+        import mc.agent_runtime as _agent_runtime  # lazy: keep beacon import light
         result = _agent_runtime.get_runtime('claude').oneshot(
             prompt=_BRIEF_PROMPT,
             model='haiku',

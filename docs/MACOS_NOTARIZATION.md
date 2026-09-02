@@ -16,7 +16,7 @@ only** — the closed-source Rust `mc-tunnel` moat is unaffected.
 ## TL;DR (per release)
 
 ```bash
-pyinstaller build-macos.spec --noconfirm     # builds dist/Clayrune.app
+pyinstaller installer/build-macos.spec --noconfirm     # builds dist/Clayrune.app
 tools/notarize-macos.sh                        # -> Clayrune-macOS.zip (signed + notarized)
 ```
 

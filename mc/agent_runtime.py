@@ -1723,7 +1723,7 @@ def _sync_mcp_to_gemini_safe(project_path: str) -> Optional[Dict[str, Any]]:
     via the caller's session log. Never blocks dispatch.
     """
     try:
-        import mcp as _mcp_mod  # local import — avoids tight coupling
+        import mc.mcp as _mcp_mod  # local import — avoids tight coupling
         return _mcp_mod.sync_to_gemini(project_path or None)
     except Exception as e:
         return {'error': str(e)}

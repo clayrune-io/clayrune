@@ -136,7 +136,7 @@ secrets unattended by default; the per-task gate lives in the agent rules.
 
 Steward mode put an autonomous agent on the consuming end of the same artifact
 stream the Distiller produces. Three rules now hold the loop together
-(`distiller.py`, tests in `tests/test_distiller_safety.py`). **Do not weaken any
+(`mc/distiller.py`, tests in `tests/test_distiller_safety.py`). **Do not weaken any
 of them without a committee review** — each pins a violation that actually
 happened on this machine, not a hypothetical.
 
@@ -209,7 +209,7 @@ except Exception as e:
 
 (keep swallowing — just make it observable.) Do **not** do a bulk sweep — apply
 only when already editing the function. There are ~178 such blocks (104 in
-`server.py`, 24 in `agent_runtime.py`); a mass rewrite is out of scope.
+`server.py`, 24 in `mc/agent_runtime.py`); a mass rewrite is out of scope.
 
 **Resumability anchors** (updated 2026-05-27):
 - `docs/SKILLS_CURATION_PHASE4_SPEC_V2.md` — CURRENT authoritative spec
@@ -279,8 +279,9 @@ gotchas: memory `reference-show-image-in-chat`.
 ## Type checking (added 2026-06-10)
 
 New/moved modules under `mc/` must pass `pyright` basic (scope:
-`pyrightconfig.json`; CI: `.github/workflows/pyright.yml`, non-blocking until
-the 23-error baseline in `distiller.py`/`agent_runtime.py` is cleared).
+`pyproject.toml` `[tool.pyright]`; CI: `.github/workflows/pyright.yml`,
+non-blocking until the 23-error baseline in
+`mc/distiller.py`/`mc/agent_runtime.py` is cleared).
 
 ## Hosted SaaS lives elsewhere now (added 2026-07-11)
 
@@ -323,7 +324,7 @@ Same rule for any new sidecar: `data/projects/<id>_topics.json`,
 ## Build, release + platform notes — pointers
 
 - **macOS signing/notarization:** the `.app` is signed + notarized + stapled.
-  Per release: `pyinstaller build-macos.spec --noconfirm` then
+  Per release: `pyinstaller installer/build-macos.spec --noconfirm` then
   `tools/notarize-macos.sh`, and **replace** the unsigned zip CI attaches to the
   release or users still hit Gatekeeper. Identity lives in `tools/signing.env`
   (gitignored), never the repo. Playbook + gotchas: `docs/MACOS_NOTARIZATION.md`.
@@ -331,7 +332,7 @@ Same rule for any new sidecar: `data/projects/<id>_topics.json`,
   `tools/extract-frames.sh <path>` and read the PNGs it writes next to the file.
 - **Skills surface:** built-ins live in `data/skills/builtin/<name>/SKILL.md` and
   install on startup with checksum-based update preservation (user edits are
-  kept). Backend `skills.py`; architecture in CHANGELOG `[2026-05-10]`.
+  kept). Backend `mc/skills.py`; architecture in CHANGELOG `[2026-05-10]`.
 - **Live test VMs:** a clean Windows 11 Home VM and Ubuntu 22.04 VM exist for
   end-to-end install testing. Re-test on a fresh snapshot after any
   `installer/` change.

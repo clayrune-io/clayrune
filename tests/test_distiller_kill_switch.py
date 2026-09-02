@@ -12,7 +12,7 @@ Without this test, kill-switch coverage rot is silent.
 """
 from __future__ import annotations
 
-import distiller
+from mc import distiller
 
 
 def test_entry_points_constant_exists():

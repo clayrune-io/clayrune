@@ -12,7 +12,7 @@ import pytest
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(_REPO_ROOT))
 
-import db as dbmod  # noqa: E402
+import mc.db as dbmod  # noqa: E402
 
 
 @pytest.fixture

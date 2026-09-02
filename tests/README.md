@@ -11,7 +11,7 @@ pytest                      # this suite (./tests)
 pytest control_plane/tests  # separate, pre-existing control-plane suite
 ```
 
-`pytest` with no args uses `pytest.ini` → `testpaths = tests`.
+`pytest` with no args uses `pyproject.toml` `[tool.pytest.ini_options]` → `testpaths = tests`.
 
 ## What's here
 

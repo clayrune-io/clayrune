@@ -257,7 +257,7 @@ You can also set the port via environment variable: `MC_PORT=8080 python server.
 mission-control/
   app.py                 Desktop entry point (pywebview + Flask)
   server.py              Flask backend (API + static serving)
-  github_sync.py         GitHub Issues sync module
+  mc/github_sync.py      GitHub Issues sync module
   static/
     index.html           Single-page app (HTML + CSS + JS, no build step)
   data/
@@ -287,7 +287,7 @@ Contributions are welcome! Here's how to get started:
 
 - The entire frontend is in a single `static/index.html` file — no build step needed
 - The server is a single `server.py` file with Flask
-- GitHub sync logic is in `github_sync.py` (imported by server.py)
+- GitHub sync logic is in `mc/github_sync.py` (imported by server.py)
 - Data is stored as JSON files in `data/projects/`
 - Agent sessions use Server-Sent Events (SSE) for real-time streaming
 - The `claude` CLI is invoked via `subprocess.Popen` with `--output-format stream-json`
@@ -299,7 +299,7 @@ directories:
 
 | Path | License |
 |------|---------|
-| Everything else (core: `server.py`, `static/`, `github_sync.py`, `mc_remote_iface/`, …) | MIT |
+| Everything else (core: `server.py`, `static/`, `mc/github_sync.py`, `mc_remote_iface/`, …) | MIT |
 | `mc_remote/` | Proprietary — see [`mc_remote/PROPRIETARY.md`](mc_remote/PROPRIETARY.md) |
 | `mc_tunnel/` | Proprietary — see [`mc_tunnel/PROPRIETARY.md`](mc_tunnel/PROPRIETARY.md) |
 

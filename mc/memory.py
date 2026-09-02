@@ -35,9 +35,9 @@ import threading
 import time as _time
 import uuid
 
-import agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
-import skills as _skills                # frontmatter parse for position notes
-import distiller as _distiller          # Phase 4 learning observer (best-effort)
+import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
+import mc.skills as _skills                # frontmatter parse for position notes
+import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso

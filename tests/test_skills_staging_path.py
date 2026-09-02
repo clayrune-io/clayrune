@@ -22,7 +22,7 @@ PROJECT_ROOT = Path(__file__).parent.parent
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-import skills  # noqa: E402
+from mc import skills  # noqa: E402
 
 
 def test_valid_staging_id_resolves_under_the_staging_root():

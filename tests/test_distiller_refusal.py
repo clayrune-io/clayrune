@@ -12,7 +12,7 @@ wrapping. This test pins that behavior so the leak can't silently return.
 """
 from __future__ import annotations
 
-import distiller
+from mc import distiller
 
 
 def test_is_refusal_exact_sentinel():

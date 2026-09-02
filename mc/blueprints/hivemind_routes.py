@@ -44,7 +44,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
-import agent_runtime as _agent_runtime  # Multi-provider abstraction
+import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 from mc import obs, state
 from mc.core import _log, now_iso, time_ago

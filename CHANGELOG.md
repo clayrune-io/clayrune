@@ -6,6 +6,61 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-01] — Root-entry cut: 45 → 28, so the README's hero GIF is reachable without scrolling past the file tree
+
+GitHub always renders the file tree above the README on github.com, with no
+setting to change that — the only lever is fewer root entries. Purely
+mechanical restructure, no behavior change.
+
+- **11 modules moved into `mc/`**: `distiller.py`, `agent_runtime.py`,
+  `skills.py`, `project_sync.py`, `github_sync.py`, `mcp.py`,
+  `agent_worktree.py`, `mcp_installer.py`, `preflight.py`, `db.py`,
+  `marketing_preview.py`. `server.py` and `app.py` stay at root — they're the
+  installer's entry points (`installer/start.bat`/`start.sh` run
+  `python server.py`; `build-macos.spec` freezes `app.py`). Every import site
+  (61 lines across ~30 files, including ones nested inside functions that a
+  naive top-of-file grep misses) now reads `from mc import X` / `import mc.X`.
+  `marketing_preview.py`'s `Path(__file__).parent` lookup — previously valid
+  because the module sat next to the `marketing/` dir it served — is now
+  `Path(__file__).resolve().parent.parent`, since it moved one directory
+  deeper.
+- **`_scratch/` untracked entirely** (was a `.gitkeep`-only placeholder kept
+  alive by a gitignore carve-out); `demo-export/` and `marketing/` relocated
+  under `docs/`. `docs/demo-export/_verify.mjs`'s `../tools/smoke/` lookup
+  became `../../tools/smoke/` for the same one-level-deeper reason.
+- **`package.json` deleted** — nothing consumed it (the CI `npm install` runs
+  against `tools/smoke/package.json`, a different file); it declared `ISC` in
+  an MIT repo, which was its own small bug.
+- **`pytest.ini` + `pyrightconfig.json` folded into `pyproject.toml`**
+  (`[tool.pytest.ini_options]` + `[tool.pyright]`), verified by running both
+  tools, not by assuming — pytest still collects the same 1879 tests, pyright
+  still reports the pre-existing 45-error/1-warning/47-file baseline
+  (confirmed only when invoked as `pyright --project .`; a bare `pyright`
+  inside a nested `.clayrune/agents/<id>/` worktree silently resolves against
+  the wrong checkout — a local quirk, not a CI one). The old `pyrightconfig.json`
+  additionally listed 5 of the 11 moved modules by root filename to bring them
+  into scope; now that they live inside `mc/`, the existing `include = ["mc"]`
+  already covers them, so `pyproject.toml` explicitly **excludes** the other 6
+  moved modules that were never in the old include list — otherwise the type
+  gate would silently start grading files it had never graded before.
+- **`build-macos.spec` moved into `installer/`**; `.github/workflows/build-macos.yml`,
+  `tools/notarize-macos.sh`, and `docs/MACOS_NOTARIZATION.md` updated to
+  `pyinstaller installer/build-macos.spec --noconfirm`. PyInstaller resolves
+  the spec's relative `datas` paths (`static`, `assets`, …) against the
+  invoking shell's CWD, not the spec file's own directory, so this is safe as
+  long as CI keeps invoking from repo root — confirmed by reading
+  `PyInstaller/building/build_main.py`, not by shipping a macOS build (no Mac
+  available in this environment; flagged for a real build-workflow run).
+- **Not moved**: nothing — every proposed move landed. Full suite (1879
+  tests) passes; `python server.py` starts clean. `python app.py` starts and
+  does not crash, but its background Flask thread hits a pre-existing
+  `ImportError: cannot import name '_start_scheduler' from 'server'`
+  (`app.py:477`) — confirmed present in `git show HEAD:server.py` before this
+  session touched anything, so unrelated to this restructure. Left as found,
+  out of scope for a mechanical move; worth its own ticket.
+
+45 → 28 root entries (`git ls-tree --name-only HEAD | wc -l`).
+
 ## [2026-09-01] — The port guard proves it trips, and says who holds the port
 
 MC-908's fix shipped in `64d0510` (connect-probe alongside the bind test) with

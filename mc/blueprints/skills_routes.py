@@ -18,8 +18,8 @@ from flask import Blueprint, jsonify, request
 from mc import state
 from mc.core import _log
 
-import mcp as _mcp
-import skills as _skills
+import mc.mcp as _mcp
+import mc.skills as _skills
 
 bp = Blueprint('skills', __name__)
 

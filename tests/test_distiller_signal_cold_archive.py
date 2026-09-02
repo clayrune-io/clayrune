@@ -20,7 +20,7 @@ import json
 import time
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 def _iso(epoch: float) -> str:

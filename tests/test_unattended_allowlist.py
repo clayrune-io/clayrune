@@ -6,7 +6,7 @@ else to interactive — failing OPEN for transcript-backfilled sessions
 interactive ONLY when trigger_type == 'manual' AND no unattended text
 marker; anything missing or unknown stamps unattended.
 """
-import distiller
+from mc import distiller
 
 
 def test_manual_trigger_plain_task_is_interactive():

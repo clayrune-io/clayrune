@@ -128,7 +128,7 @@ def test_engram_spec_matches_plugin_manifest(srv):
 
 @pytest.fixture
 def claude_rt(monkeypatch):
-    import agent_runtime
+    from mc import agent_runtime
     rt = agent_runtime.ClaudeRuntime()
     # Pin the binary so the test doesn't depend on a resolvable claude install.
     monkeypatch.setattr(rt, 'resolve_binary_str', lambda: 'claude')

@@ -16,7 +16,7 @@ import time
 
 import pytest
 
-import agent_runtime
+from mc import agent_runtime
 from mc import question_channel as qc
 
 

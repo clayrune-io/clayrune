@@ -51,8 +51,8 @@ from mc.state import (
     terminal_sessions,
 )
 
-import github_sync as _gh_sync
-import project_sync as _proj_sync
+import mc.github_sync as _gh_sync
+import mc.project_sync as _proj_sync
 
 # Cross-blueprint import (the 1.4/1.5 _resolve_project_path_or_400 precedent):
 # delete_project kills this project's terminal sessions via the terminal

@@ -18,7 +18,7 @@ Explorations are exempt (never installed as themselves).
 """
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 FP = 'aabb112233445566'

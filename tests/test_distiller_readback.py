@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-import distiller
+from mc import distiller
 
 
 def _write_expl(root: Path, scope_dir: str, slug: str, title: str, body: str):

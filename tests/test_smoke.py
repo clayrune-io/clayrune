@@ -8,16 +8,16 @@ needing to start Flask.
 
 
 def test_import_github_sync():
-    import github_sync
+    from mc import github_sync
     assert callable(github_sync.sync_project)
     assert callable(github_sync.sanitize)
     assert callable(github_sync.gh_run)
 
 
 def test_import_side_modules():
-    import skills
-    import mcp
-    import mcp_installer
+    from mc import skills
+    from mc import mcp
+    from mc import mcp_installer
     assert skills and mcp and mcp_installer
 
 

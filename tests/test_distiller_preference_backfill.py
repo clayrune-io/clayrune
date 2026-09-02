@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 from datetime import datetime, timezone
 
-import distiller
+from mc import distiller
 
 
 def _recent_iso() -> str:

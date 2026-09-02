@@ -34,7 +34,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
-import skills as _skills
+import mc.skills as _skills
 from mc import state
 from mc.core import now_iso
 
