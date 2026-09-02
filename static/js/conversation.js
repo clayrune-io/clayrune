@@ -1601,7 +1601,15 @@ function _userInitiatedConvos(projectId, includeHidden) {
     // the user explicitly hid this one).
     if (_isStewardConvo(c)) return showHidden || !hidden.has(_convHideKey(c));
     if (AGENT_TRIGGERS.has(c.trigger_type || '')) return false;
-    if (AGENT_SOURCES.has(c.source || '')) return false;
+    // MC-938 Phase 0: a persona dispatched without a browser Origin gets
+    // auto-tagged source:agent (agent_routes.py:5567-5574) purely so it routes
+    // to the side flow — that heuristic can't tell "curl/scheduler fired this"
+    // from "a human picked Fenn from the composer and hit send". A `character`
+    // on the row is proof a human chose an agent to talk to, so it overrides
+    // the programmatic-source drop here. Genuinely automated triggers (the
+    // AGENT_TRIGGERS check above) are unaffected — this only rescues rows that
+    // already passed that gate.
+    if (AGENT_SOURCES.has(c.source || '') && !c.character) return false;
     const src = c.source || '';
     // Test the label with agent-facing preambles (resume/continue + the per-turn
     // brevity directive) stripped, so a genuine user chat whose message merely
@@ -1628,6 +1636,10 @@ function _userInitiatedConvos(projectId, includeHidden) {
       status: e.status || 'completed', turns: e.num_turns || 0,
       ts_relative: e.ts_relative || e.ts || '', trigger_type: e.trigger_type || '',
       source: e.source || '', live: false,
+      // MC-938: without this, an aged-out persona chat merged in from the agent
+      // log (rather than /conversations) would fail the character-carries-a-
+      // human-pick override above and be dropped all over again.
+      character: e.character || null,
     };
     if (!_keep(c)) continue;
     out.push(c);
@@ -1635,6 +1647,11 @@ function _userInitiatedConvos(projectId, includeHidden) {
   }
   return out;
 }
+// Bridged for the same reason as _isStewardConvo above: a headless regression
+// harness (tools/smoke/conversation-persona-filter.mjs) needs to drive the
+// filter directly against synthetic cache rows, and this module's top-level
+// bindings aren't reachable from outside the ES module without one.
+window._userInitiatedConvos = _userInitiatedConvos;
 
 // Cross-reference the durable conversation rows against LIVE agent state so a
 // chat that's currently working or awaiting the user shows it in the list.

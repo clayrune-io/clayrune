@@ -22,6 +22,18 @@ moving while you're away from the keyboard.
 - **Your Claude subscription, not the API** — Clayrune drives the Claude Code CLI you already run, so agent work costs exactly what it does today. No extra token bills, nothing metered, nothing routed through us.
 - **It's yours** — local-first, bring your own key, all of it open. The cloud is optional.
 
+### What it actually looks like
+
+| | |
+|---|---|
+| ![The Floor — every live agent, grouped by project](docs/assets/shot-floor.png) | ![An agent mid-run, with the conversation rail and the interrupt box](docs/assets/shot-chat.png) |
+| **The Floor.** Every live agent, grouped by the project it's working in, with a face, a name and the model it's pinned to. The ones marked `NEEDS YOU` are waiting on an answer. | **Inside a run.** Watch it work, read what it decided, and interrupt mid-task without killing the session. |
+
+![The dashboard — five projects, with every running session listed underneath](docs/assets/shot-board.png)
+
+The board, with the session list open: what every agent is doing, across every project,
+in one place.
+
 Clayrune runs on *your* machine. If the machine sleeps, so does your agent — and Clayrune
 tells you it did. There's a setting to keep it awake while an agent is working.
 
