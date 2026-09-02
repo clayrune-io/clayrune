@@ -3976,6 +3976,26 @@
     display: block; overflow-x: auto;
   }
 
+  /* ── Speaker attribution (MC-937 Phase 2a — channel model spec §4) ──────
+     One header per run of consecutive messages from the same persona: fig
+     avatar + name + role, shown once above the first narration bubble and
+     suppressed until the next user message (see _msgAttrPending in
+     conversation.js). Reuses the rail's face/name/role tokens (.conv-face /
+     .conv-name / .conv-sub) at a smaller scale so it reads as the same
+     vocabulary as the roster row, not a new chrome element. A session with
+     no persona never gets this div at all — nothing to hide, nothing to
+     override. */
+  .msg-attr {
+    align-self: flex-start; max-width: 84%;
+    display: flex; align-items: center; gap: 6px;
+    margin: 4px 0 -2px; padding: 0 2px;
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+  }
+  .msg-attr .av { flex: 0 0 20px; width: 20px; height: 20px; }
+  .msg-attr .av-fig { border-radius: 50%; background: var(--surface3); }
+  .msg-attr-name { font-size: 12.5px; font-weight: 700; color: var(--text); }
+  .msg-attr-role { font-size: 11px; color: var(--text-faint); }
+
   /* ── Flow mode (Settings → Appearance → Interface → "Agent replies") ────
      The agent streams one .agent-line per paragraph, so a multi-paragraph
      reply renders as a stack of separate bubbles. In flow mode the plain

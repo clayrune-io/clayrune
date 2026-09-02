@@ -551,6 +551,10 @@ function _repaintAgentOutput(sessionId) {
   const buf = agentOutputBuffers[sessionId] || [];
   el.innerHTML = '';
   delete el.dataset.scrollInitialized;
+  // Full replay from scratch — re-arm speaker attribution (MC-937 Phase 2a) so
+  // the header lands on the first narration bubble again, same as a cold open.
+  // See the _msgAttrPending state-machine comment in conversation.js.
+  if (window._msgAttrResetPending) window._msgAttrResetPending(sessionId);
   for (const line of buf) appendAgentLine(sessionId, line);
   // An unanswered mc:question form is a DOM element, not a buffered log line, so
   // the clear above destroys it and the append loop cannot bring it back — the

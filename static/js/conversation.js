@@ -16,6 +16,41 @@ let pendingDispatchCharacter = {}; // project_id → "scope:name" persona chosen
 let characterCache = {};           // project_id → array of available characters (lazy-loaded for the composer picker)
 let characterCacheLoading = {};    // project_id → true while a fetch is in flight (dedupe)
 
+// ── Speaker attribution (MC-937 Phase 2a — channel model spec §4) ───────────
+// One persona per session today (multi-speaker sessions are the rest of
+// Phase 2, not this slice), so "collapse consecutive messages from the same
+// speaker" reduces to: show the persona header once, then suppress it until
+// the user sends the next message. `_msgAttrPending[sid]` is the single
+// source of truth for that state, shared between the COLD full render
+// (agentPanelHTML's outputLines string-builder — runs on tab switch/reopen)
+// and the WARM DOM path (appendAgentLine below, plus _repaintAgentOutput /
+// the "reset" SSE handler in resume-preview.js, which all replay the buffer
+// line-by-line). Both paths reset it to `true` before a full replay and let
+// it carry forward across incremental SSE appends, so a header never repeats
+// mid-run regardless of which path rendered which line.
+let _msgAttrPending = {};   // session_id → true if the NEXT narration bubble should carry the header
+function _msgAttrIsPending(sid) { return _msgAttrPending[sid] !== false; }
+function _msgAttrClearPending(sid) { _msgAttrPending[sid] = false; }
+function _msgAttrResetPending(sid) { _msgAttrPending[sid] = true; }
+
+// Attribution header for the first message of a speaker run — fig avatar +
+// name + role, per the approved mockup (_scratch/channel-mockup/channel-
+// unified.png) and §4 of docs/CHANNEL_MODEL_SPEC.md. `ch` is the same
+// {agent_name, display_name, name, avatar, ...} shape the conversation rail
+// and the persona pill already consume (see _cChar in the row renderer,
+// _channelRowHTML's name/role derivation). No character → caller never
+// invokes this, so a session with none renders byte-identical to before.
+function _msgAttrHeaderHTML(ch) {
+  const name = esc(ch.agent_name || ch.display_name || ch.name || '');
+  const role = esc(ch.display_name || ch.name || '');
+  const face = window.avatarHTML(ch.avatar || '', 20);
+  return `<div class="msg-attr">${face}<span class="msg-attr-name">${name}</span>${
+    role ? `<span class="msg-attr-role">${role}</span>` : ''}</div>`;
+}
+function _msgAttrCharValid(ch) {
+  return !!(ch && (ch.agent_name || ch.display_name || ch.name));
+}
+
 // Lazy-load a project's characters (project pool + globals) for the new-chat
 // composer picker. Re-renders once when the list arrives. Best-effort: a
 // failure just leaves the picker absent (no persona = today's behavior).
@@ -962,6 +997,11 @@ function agentPanelHTML(p) {
   if (activeSession && activeSessionId) {
     const MAX_RENDER_LINES = 500;
     const outputLines = _skipAgentOutputSids.has(activeSessionId) ? '' : (() => {
+      // Full replay from the buffer (see the state-machine comment at
+      // _msgAttrPending above) — reset so the header lands on the first
+      // narration bubble of the visible buffer, same as a fresh open.
+      _msgAttrResetPending(activeSessionId);
+      const _attrChar = activeSession && activeSession.character;
       const fullBuf = (agentOutputBuffers[activeSessionId] || []).flatMap(l => l.trimStart().startsWith('> ') ? [l] : l.split('\n'));
       const forceAll = expandedOutputSessions.has(activeSessionId);
       const truncated = !forceAll && fullBuf.length > MAX_RENDER_LINES;
@@ -1049,7 +1089,20 @@ function agentPanelHTML(p) {
           if (cls.includes('agent-line-tool') || cls.includes('agent-line-prompt')) {
             result += planBlock + div;
             planBlock = ''; planRawLines = [];
+            // A user message re-arms the header for whatever the agent says
+            // next (§4: "a message after the user speaks DOES re-show it").
+            // Tool chips don't — they're the agent's own activity, not a new
+            // speaker, so a header wouldn't repeat around them either way.
+            if (cls.includes('agent-line-prompt')) _msgAttrResetPending(activeSessionId);
           } else {
+            // Bare narration bubble: the first one since the header was last
+            // shown (start of buffer, or since the last user message) gets
+            // the attribution; every other line here — status/error/queued —
+            // passes through untouched.
+            if (cls === 'agent-line' && _msgAttrIsPending(activeSessionId) && _msgAttrCharValid(_attrChar)) {
+              planBlock += _msgAttrHeaderHTML(_attrChar);
+            }
+            if (cls === 'agent-line') _msgAttrClearPending(activeSessionId);
             planBlock += div;
             planRawLines.push(line);
           }
@@ -3399,6 +3452,22 @@ function appendAgentLine(sessionId, text) {
   if (cls.includes('agent-line-tool') && !text.includes('ExitPlanMode') && !text.includes('EnterPlanMode')) {
     exitPlanModeCount[sessionId] = 0;
   }
+  // Speaker attribution (see the _msgAttrPending state-machine comment near
+  // its declaration). A bare narration bubble is the only thing that can
+  // carry the header; a user prompt re-arms it for whatever comes next.
+  if (cls === 'agent-line') {
+    if (_msgAttrIsPending(sessionId)) {
+      const _attrChar = (agentStatusCache[sessionId] || {}).character;
+      if (_msgAttrCharValid(_attrChar)) {
+        const hdrHost = document.createElement('div');
+        hdrHost.innerHTML = _msgAttrHeaderHTML(_attrChar);
+        el.appendChild(hdrHost.firstElementChild);
+      }
+    }
+    _msgAttrClearPending(sessionId);
+  } else if (cls.includes('agent-line-prompt')) {
+    _msgAttrResetPending(sessionId);
+  }
   // Use rich formatting for regular text lines. Prompts get the image-aware
   // escaper so an attached image path renders as a thumbnail. Other special
   // lines (tool / error / status / queued) stay on plain textContent.
@@ -4329,6 +4398,7 @@ window.showTypingIndicator = showTypingIndicator;
 window.hideTypingIndicator = hideTypingIndicator;
 window.setAgentActivity = setAgentActivity;   // interop: resume-preview.js SSE handler
 window._isGenerating = _isGenerating;         // interop: resume-preview.js SSE handler
+window._msgAttrResetPending = _msgAttrResetPending;  // interop: resume-preview.js _repaintAgentOutput
 window._cachePendingQuestion = _cachePendingQuestion;
 window._rerenderPendingQuestions = _rerenderPendingQuestions;
 window.renderAgentQuestion = renderAgentQuestion;
