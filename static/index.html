@@ -1703,6 +1703,17 @@ function sizeAgentChat(win, sessionId) {
   const chatInputEl = chat.querySelector('.agent-chat-input');
   const chatInputRowEl = chat.querySelector('.agent-chat-input-row');
   const sepH = sep ? sep.offsetHeight : 0;
+  // In-chat search bar (chat-search.js): a sibling ahead of .agent-output that
+  // this function predates. On the .agent-3pane layout flexbox handles it for
+  // free (see the bail-out above); on THIS explicit-height layout — still the
+  // one mobile uses — desiredOutH below must subtract it too, or opening
+  // search overflows .agent-output past the bottom of .agent-chat by exactly
+  // the bar's height (measured: ~40px on a 390-wide viewport). offsetHeight
+  // excludes margin, so marginBottom is added explicitly.
+  const searchBar = chat.querySelector('.mc-chat-search-bar');
+  const searchBarH = searchBar
+    ? searchBar.offsetHeight + (parseFloat(getComputedStyle(searchBar).marginBottom) || 0)
+    : 0;
   // Measure chat-input's NATURAL height using content signals that don't
   // require removing out's explicit height first. scrollHeight and
   // rowH+padV are immune to out squashing chatInputEl; offsetHeight is
@@ -1719,7 +1730,7 @@ function sizeAgentChat(win, sessionId) {
     inputH = Math.max(offset, scroll, rowH + padV, 80);
   }
   if (out) {
-    const desiredOutH = Math.max(40, chatHeight - sepH - inputH);
+    const desiredOutH = Math.max(40, chatHeight - sepH - inputH - searchBarH);
     // Guard: skip the write (and the forced layout it triggers) when the
     // computed height hasn't changed. The ResizeObserver fires on every
     // DOM write even if the value is identical, so unnecessary writes

@@ -2109,6 +2109,11 @@
     /* …except Browser: an agent can open a browser session at any time, and
        hiding this left mobile with no way to reach the pane at all. */
     .btn-popout.btn-browser { display: inline-block !important; margin-left: auto !important; }
+    /* …and Find: same reasoning — finding text said earlier in a long mobile
+       chat is not a desktop-only convenience like the Pop-Out viewer window,
+       it's the whole feature. Without this it silently inherited the blanket
+       .btn-popout hide and had no way to open on mobile at all. */
+    .btn-popout.btn-chat-search { display: inline-block !important; }
     .btn-hm-dash { display: none !important; }
     /* Hide desktop-only chrome: chat resize handle, modal corner-resize grip */
     .agent-chat-separator { display: none !important; }
