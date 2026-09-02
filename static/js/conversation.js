@@ -715,8 +715,11 @@ function agentPanelHTML(p) {
   // In topics mode the list stands on the digest, so an empty conversation list
   // must not collapse the view — otherwise switching to Topics on a project
   // with no user chats drops you into the composer with no way back to the list.
+  // Channel mode (MC-937 Phase 1) is the same: its list is a roster, not
+  // _mobileUserConvos, so an empty roster must still land on the list (the
+  // empty state), not fall through to the composer.
   const _mobileListMode = mobileMode && !activeSession && !wantNew && !_resumeArmed
-    && (_mobileUserConvos.length > 0 || _mode === 'topics');
+    && (_mobileUserConvos.length > 0 || _mode === 'topics' || _mode === 'channel');
 
   // View chrome: mobile = drill-down list + back bar; desktop = tab strip.
   let convListHTML = '', convBackBar = '', tabBar = '';
@@ -731,14 +734,18 @@ function agentPanelHTML(p) {
             onclick="setRailMode('${esc(p.id)}','chats')">Chats</button>
           <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
             onclick="setRailMode('${esc(p.id)}','topics')">Topics</button>
+          <button class="rail-mode-btn${_mode === 'channel' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','channel')"
+            title="Everyone who's worked in this project">Channel</button>
         </div>
         <div class="mconv-search-wrap">
           <svg class="mconv-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : 'Search conversations&hellip;'}"
+          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? (_channelPersonFilter[p.id] ? 'Search conversations&hellip;' : 'Search people&hellip;') : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
-        <div class="conv-list-scroll${_mode === 'topics' ? ' mconv-topics' : ''}">${
+        <div class="conv-list-scroll${_mode === 'topics' ? ' mconv-topics' : ''}${_mode === 'channel' ? ' mconv-channel' : ''}">${
           _mode === 'topics' ? _railTopicsHTML(p)
+          : _mode === 'channel' ? _railChannelHTML(p)
                              : mobileUserConversationsHTML(p, _mobileUserConvos)}</div>
         <div class="conv-newbtn-bar">
           <button class="conv-newbtn" onclick="newAgentTab('${esc(p.id)}')">&#43; New conversation</button>
@@ -1295,6 +1302,8 @@ function agentPanelHTML(p) {
       ? _userInitiatedConvos(p.id) : [];
     const railRows = _mode === 'topics'
       ? _railTopicsHTML(p)
+      : _mode === 'channel'
+      ? _railChannelHTML(p)
       : (_railConvos.length
           ? mobileUserConversationsHTML(p, _railConvos)
           : '<div class="agent-rail-empty">No conversations yet.</div>');
@@ -1319,12 +1328,15 @@ function agentPanelHTML(p) {
           <button class="rail-mode-btn${_mode === 'topics' ? ' on' : ''}" role="tab"
             onclick="setRailMode('${esc(p.id)}','topics')"
             title="Subjects across this project's chats, deduplicated">Topics</button>
+          <button class="rail-mode-btn${_mode === 'channel' ? ' on' : ''}" role="tab"
+            onclick="setRailMode('${esc(p.id)}','channel')"
+            title="Everyone who's worked in this project">Channel</button>
           ${_mode === 'topics' ? `<button class="rail-mode-board" title="Open the full topic board"
             onclick="openThreadsBoard('${esc(p.id)}')">&#9638;</button>` : ''}
         </div>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : 'Search conversations&hellip;'}"
+          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? (_channelPersonFilter[p.id] ? 'Search conversations&hellip;' : 'Search people&hellip;') : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
         <div class="agent-rail-list">${railRows}</div>
@@ -1745,6 +1757,30 @@ function updateRailRowStatus(sessionId) {
       else time.textContent = row.dataset.tsRelative || '';
     }
   });
+  // Channel-mode roster row (MC-937 Phase 1): one row per PERSONA, not per
+  // session, so it can't be matched by csid/mcsid like the block above —
+  // match on the character it represents instead. Only the right-slot
+  // content is touched, same restraint as the block above: which SECTION
+  // (In the room / Bench) the row sits in is NOT updated here — reordering/
+  // re-bucketing the roster mid-turn is exactly the "worse than a stale pill"
+  // case the comment on this function already rules out. The next full rail
+  // rebuild (mode switch, project reopen, poll-driven refreshModalById)
+  // reconciles bucketing.
+  const charKey = (s.character && s.character.name)
+    ? (s.character.scope || 'global') + ':' + s.character.name : '';
+  if (charKey) {
+    document.querySelectorAll(`.channel-row[data-char-key="${q(charKey)}"]`).forEach(row => {
+      const time = row.querySelector('.conv-time');
+      if (!time) return;
+      if (state === 'waiting') time.innerHTML = '<span class="conv-live-badge waiting">Waiting for you</span>';
+      else if (state === 'working') {
+        const kind = (agentActivityState[sessionId] === 'thinking') ? 'thinking' : 'tool';
+        time.innerHTML = _actIndicatorInner(kind);
+      } else {
+        time.textContent = row.dataset.tsRelative || '';
+      }
+    });
+  }
 }
 // static/js/*.js are ES modules — a top-level function is NOT global. The SSE
 // handlers live in resume-preview.js and reach this through window.
@@ -1931,6 +1967,179 @@ function mobileUserConversationsHTML(p, convos) {
     ${toggle}`;
 }
 
+// ── Channel mode (MC-937 Phase 1 — docs/CHANNEL_MODEL_SPEC.md) ─────────────
+// Channel mode lists PEOPLE, not chats: "In the room" (a live, actively
+// generating run) and "Bench" (everyone who has ever participated here,
+// idle). Membership is DERIVED, never persisted — a conversation with a
+// `character` is channel material (spec §10); there is no new storage and no
+// retroactive attribution of the un-attributed rows Chats mode still owns.
+//
+// Sourced from conversationsCache (the server's own union of Claude
+// transcripts + non-Claude agent-log rows, `/api/project/<id>/conversations`)
+// rather than the fuller _userInitiatedConvos merge — that merge's extra
+// agent-log rows only cover chats that aged out of the /conversations 20-row
+// display cap, which spec §11 Phase 2 addresses head-on ("lift the 20-row
+// cap for the channel view"). A persona whose only history is older than the
+// cached 20 will surface on the Bench again once Phase 2 lands.
+function _convCharKey(c) {
+  const ch = c && c.character;
+  if (!ch || !ch.name) return '';
+  return (ch.scope || 'global') + ':' + ch.name;
+}
+
+// projectId -> "scope:name" of the roster row currently narrowing the rail to
+// one person's conversations, or absent for the full roster (spec §3/§10;
+// the real filtered STREAM is Phase 2 — see openChannelPerson below).
+let _channelPersonFilter = {};
+
+// Group this project's attributed conversations into {inRoom, bench}.
+//   inRoom — persona has a session actively generating right now (status
+//            'running' and NOT parked on the user) — the shimmer belongs to
+//            an agent working, not one waiting on a reply.
+//   bench  — everyone else who's ever participated, including a persona
+//            that's idle-but-waiting-for-you (badge takes the timestamp
+//            slot instead of moving it off the bench — spec §3 row anatomy).
+// Live/waiting state reads agentStatusCache (mirrors _liveConvStates) rather
+// than the conversation rows, so a session dispatched moments ago — before
+// its first /conversations poll — still shows up live.
+function _channelRoster(projectId) {
+  const groups = {};
+  for (const c of (conversationsCache[projectId] || [])) {
+    const key = _convCharKey(c);
+    if (!key) continue;
+    const g = groups[key] || (groups[key] = { key, char: c.character, mtime: -1, tsRelative: '' });
+    const mtime = c.mtime || 0;
+    if (mtime >= g.mtime) { g.mtime = mtime; g.tsRelative = c.ts_relative || ''; g.char = c.character; }
+  }
+  const liveState = {};  // key -> {state:'working'|'waiting', sessionId}
+  for (const sid in agentStatusCache) {
+    const s = agentStatusCache[sid];
+    if (!s || s.projectId !== projectId) continue;
+    const key = _convCharKey({ character: s.character });
+    if (!key) continue;
+    const waiting = !!(s.waitingForPlanApproval || s.waitingForQuestion);
+    const working = s.status === 'running' && !waiting;
+    if (!waiting && !working) continue;
+    // A session in progress but not yet reflected in conversationsCache still
+    // belongs on the roster — seed a bare group so it isn't dropped.
+    if (!groups[key]) groups[key] = { key, char: s.character, mtime: 0, tsRelative: '' };
+    if (working) liveState[key] = { state: 'working', sessionId: sid };
+    else if (!liveState[key] || liveState[key].state !== 'working') liveState[key] = { state: 'waiting', sessionId: sid };
+  }
+  const inRoom = [], bench = [];
+  for (const key in groups) {
+    const g = groups[key];
+    const ls = liveState[key] || null;
+    const row = { key: g.key, char: g.char, tsRelative: g.tsRelative, mtime: g.mtime, liveState: ls };
+    (ls && ls.state === 'working' ? inRoom : bench).push(row);
+  }
+  const byRecency = (a, b) => (b.mtime || 0) - (a.mtime || 0);
+  inRoom.sort(byRecency);
+  bench.sort(byRecency);
+  return { inRoom, bench };
+}
+
+// One roster row. `inRoom` picks the right-slot content: the shimmer
+// Thinking/Working word (reusing the typing indicator's _actIndicatorInner,
+// styled for the .conv-time slot — see .conv-time .act-word in app.css) for
+// a live row, else the "Waiting for you" badge or the last-spoke relative
+// time — same slot, never both (spec §3).
+// data-char-key + data-ts-relative let updateRailRowStatus (MC-940) patch
+// this row's right slot in place from the SAME three SSE call sites it
+// already touches, without a second repaint path — see the extension there.
+function _channelRowHTML(p, r, inRoom) {
+  const ch = r.char || {};
+  const name = esc(ch.agent_name || ch.display_name || ch.name || '');
+  const role = esc(ch.display_name || ch.name || '');
+  const face = window.avatarHTML(ch.avatar || '', 32);
+  let right;
+  if (inRoom) {
+    const sid = r.liveState && r.liveState.sessionId;
+    const kind = (sid && agentActivityState[sid] === 'thinking') ? 'thinking' : 'tool';
+    right = _actIndicatorInner(kind);
+  } else if (r.liveState && r.liveState.state === 'waiting') {
+    right = `<span class="conv-live-badge waiting">Waiting for you</span>`;
+  } else {
+    right = esc(r.tsRelative || '');
+  }
+  const search = `${name} ${role}`.toLowerCase();
+  return `<div class="conv-row channel-row" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
+      onclick="openChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
+    <span class="conv-face">${face}</span>
+    <div class="conv-main">
+      <div class="conv-top">
+        <span class="conv-name">${name}</span>
+        <span class="conv-time">${right}</span>
+      </div>
+      <div class="conv-bot"><span class="conv-sub">${role}</span></div>
+    </div>
+  </div>`;
+}
+
+// Roster view, or — when a person is selected — that person's conversations
+// and nothing else (reuses mobileUserConversationsHTML's own row renderer, so
+// a filtered row is a real chat row: live status, hide/split buttons, and
+// MC-940's in-place repaint all keep working unmodified).
+function _railChannelHTML(p) {
+  const filterKey = _channelPersonFilter[p.id] || null;
+  if (filterKey) {
+    const roster = _channelRoster(p.id);
+    const person = roster.inRoom.concat(roster.bench).find(r => r.key === filterKey);
+    const who = person ? esc(person.char.agent_name || person.char.display_name || person.char.name) : 'this agent';
+    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === filterKey);
+    const list = convos.length
+      ? mobileUserConversationsHTML(p, convos)
+      : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
+    return `<button class="channel-back" onclick="clearChannelPersonFilter('${esc(p.id)}')">&larr; All people</button>${list}`;
+  }
+  const { inRoom, bench } = _channelRoster(p.id);
+  if (!inRoom.length && !bench.length) {
+    // Vanilla install (spec §8): default_character is null everywhere until
+    // Claydo seeding ships (Phase 5, deliberately not part of this phase) —
+    // an empty roster is the honest, correct state, not a bug to paper over
+    // with a fake row.
+    return `<div class="channel-empty">
+      <div class="channel-empty-title">No one's on this channel yet</div>
+      <div class="channel-empty-sub">Pick a Persona in the &#43; New conversation composer to hire someone — every conversation with a named persona joins the roster here.</div>
+    </div>`;
+  }
+  const roomHTML = inRoom.length
+    ? `<div class="channel-section-header">In the room<span class="channel-section-count">${inRoom.length}</span></div>
+       ${inRoom.map(r => _channelRowHTML(p, r, true)).join('')}`
+    : '';
+  const benchHTML = bench.length
+    ? `<div class="channel-section-header">Bench<span class="channel-section-count">${bench.length}</span></div>
+       ${bench.map(r => _channelRowHTML(p, r, false)).join('')}`
+    : '';
+  return roomHTML + benchHTML;
+}
+
+// Clicking a roster row (spec §3/§4). Phase 2 makes this a real filtered
+// STREAM; for Phase 1 "shows that person's conversations and nothing else"
+// means: narrow the rail to their chats and open the most recent one, same
+// as clicking any other chat row would.
+function openChannelPerson(projectId, key) {
+  _channelPersonFilter[projectId] = key;
+  const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key);
+  convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+  if (convos.length) {
+    const c = convos[0];
+    openConversation(projectId, c.claude_session_id || '', c.mc_session_id || '', !!c.live);
+  } else if (typeof refreshModalById === 'function') {
+    refreshModalById(projectId);
+  } else {
+    refreshModal();
+  }
+}
+window.openChannelPerson = openChannelPerson;
+
+function clearChannelPersonFilter(projectId) {
+  delete _channelPersonFilter[projectId];
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else refreshModal();
+}
+window.clearChannelPersonFilter = clearChannelPersonFilter;
+
 // ── Open Threads board (project-level) ──────────────────────────────────────
 // A full-width overlay that groups a project's OPEN conversations into three
 // buckets — Waiting on you / Running / Stalled — so interrupted work stops being
@@ -2049,13 +2258,15 @@ let _topicsShowArchived = {};
 // property of a project.
 function railMode(pid) {
   if (_railModeOverride[pid]) return _railModeOverride[pid];
-  try { return localStorage.getItem('mc_rail_mode') === 'topics' ? 'topics' : 'chats'; }
-  catch (e) { return 'chats'; }
+  try {
+    const v = localStorage.getItem('mc_rail_mode');
+    return (v === 'topics' || v === 'channel') ? v : 'chats';
+  } catch (e) { return 'chats'; }
 }
 const _railModeOverride = {};
 
 function setRailMode(pid, mode) {
-  _railModeOverride[pid] = (mode === 'topics') ? 'topics' : 'chats';
+  _railModeOverride[pid] = (mode === 'topics' || mode === 'channel') ? mode : 'chats';
   try { localStorage.setItem('mc_rail_mode', _railModeOverride[pid]); } catch (e) {}
   // Pull the cached digest on first switch — cheap (a JSON read), and without
   // it the rail would show "no digest" for a project that has one.

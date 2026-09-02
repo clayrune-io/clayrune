@@ -3199,6 +3199,39 @@
   .conv-row:hover .conv-row-close { opacity: 1; }
   .conv-row-close:hover { color: var(--red); }
 
+  /* ── Channel mode (MC-937 Phase 1) ───────────────────────────────────────
+     Roster rows reuse .conv-row/.conv-face/.conv-main/.conv-top/.conv-name/
+     .conv-time/.conv-bot/.conv-sub wholesale (same padding, hover, active
+     treatment as a chat row) — only the section chrome, empty state, and the
+     "back to roster" bar below are new. */
+  .channel-section-header {
+    display: flex; align-items: center; gap: 6px; margin: 12px 4px 4px;
+    font-size: 10.5px; font-weight: 700; text-transform: uppercase; letter-spacing: .5px;
+    color: var(--text-faint);
+  }
+  .channel-section-header:first-child { margin-top: 2px; }
+  .channel-section-count {
+    background: var(--surface2); color: var(--text-faint); border-radius: 8px;
+    padding: 1px 6px; font-size: 10px; font-weight: 700;
+  }
+  .channel-empty { padding: 30px 18px; text-align: center; }
+  .channel-empty-title { font-size: 13px; font-weight: 600; color: var(--text); margin-bottom: 6px; }
+  .channel-empty-sub { font-size: 12px; color: var(--text-faint); line-height: 1.5; }
+  .channel-back {
+    display: block; width: 100%; text-align: left; background: transparent; border: none;
+    color: var(--text-faint); font-size: 12px; font-weight: 600; cursor: pointer;
+    padding: 8px 10px; margin-bottom: 2px; font-family: inherit;
+  }
+  .channel-back:hover { color: var(--accent); }
+  /* The "In the room" shimmer word, reusing the .act-word letters/animation
+     built for the chat typing indicator (data-act="tool"/"thinking" in
+     app.css above) but sized for the .conv-time slot instead of a bubble. */
+  .conv-time .act-word {
+    display: inline-flex; white-space: nowrap;
+    font-size: 11px; font-weight: 600; letter-spacing: .2px; color: var(--accent);
+  }
+  .conv-time .act-word span { animation: act-wave 1.3s ease-in-out infinite; }
+
   .incognito-toggle {
     display: inline-flex; align-items: center; gap: 6px;
     padding: 4px 10px; margin: 4px 0 8px;
