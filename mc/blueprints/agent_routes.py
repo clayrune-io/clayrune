@@ -7901,6 +7901,9 @@ def get_project_conversations(project_id):
                 'task': s.get('task', ''),
                 'waiting_for_question': bool(s.get('waiting_for_question')),
                 'waiting_for_plan_approval': bool(s.get('waiting_for_plan_approval')),
+                # The live session knows its persona even when the agent-log row
+                # does not (see the fallback at the emit site below).
+                'character': s.get('character'),
             }
 
     log_by_csid = {}
@@ -7978,7 +7981,16 @@ def get_project_conversations(project_id):
             # nothing emitted it, so the transcript-derived lists (mobile
             # Layer 2, reconstructed past chats) had no way to draw a face and
             # fell back to a generic bubble on every row.
-            'character': _conversation_character_display(log_entry, p),
+            # A LIVE session knows its persona even when the agent-log row does
+            # not — that row is written from the dispatch payload, so a session
+            # that inherited a project default (or had its persona resolved
+            # after spawn) carries no character there. Without this fallback the
+            # running chat renders faceless in the rail AND the Channel roster
+            # says "No conversations with <agent> yet" about an agent you can
+            # see mid-turn on the right of the same screen.
+            'character': _conversation_character_display(log_entry, p) or (
+                _conversation_character_display({'character': live.get('character')}, p)
+                if live else None),
             # Claude transcripts are Claude by construction; the CLI's own `-r`
             # is a real resume. Kept alongside the non-Claude rows' provider/
             # resumable/resume_mode fields below (union, not two shapes).
