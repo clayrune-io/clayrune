@@ -20,48 +20,41 @@ It runs on your machine against your own Claude CLI.
 
 ## What it does
 
-**Running agents**
+### Main features
 
-- One dashboard for every project and every running agent session.
-- `NEEDS YOU` flag on any agent that has stopped and is waiting on an answer.
-- Named agents with their own persona and a pinned model, so a reviewer and a
-  builder are separate agents rather than the same one re-prompted.
-- Claude Code first-class, plus Gemini, Codex, Aider, OpenCode and Goose.
-- Read an agent's output as it streams, and interrupt mid-task without killing
-  the session.
-- Multiple concurrent sessions per project.
-- Optional git worktree isolation when two agents must share one repo.
+- Runs on your machine against the Claude CLI you are already signed into. No account, no telemetry, MIT.
+- Connect from anywhere in the world using the dedicated mobile app, running over a secure tunnel.
+- One dashboard, as many projects as you want. Multi-agent conversations inside each project, with as many running in parallel as you need.
+- Agents run autonomously until they absolutely **need you**, then clearly signal they are waiting for an answer.
+- Converse with individual agents, each with their own persona, voice and face.
+- Hire new agents as you need them through Floor management, where you see everything happening right now.
+- Multi-vendor and multi-model at the same time: Claude Code first-class, plus Gemini, Codex, Aider, OpenCode and Goose.
+- Read output as it streams; interrupt mid-task without killing the session.
+- Agents working on the same project are protected by git worktree isolation when you choose it.
 
-**Working without you**
+### Working without you
 
 - Scheduler: once, daily, interval or cron.
-- Steward: hand an agent a standing brief and it sets its own next task.
-- A hard block list of 21 irreversible commands — `git push`, `DROP TABLE`,
-  `npm publish`, `terraform destroy`, `rm -rf` outside scratch, cloud spend
-  verbs — enforced even with permissions skipped. Agents cannot edit the list.
-- Blocked commands and open questions are emailed to you; your reply resumes
-  the same run.
-- Starts with the machine, so a reboot at 3am does not take it offline.
+- Standing briefs — hand an agent a charter and it sets its own next task.
+- A hard-coded trust mechanism keeps agents from going rogue: 21 irreversible commands (`git push`, `DROP TABLE`, `npm publish`, `terraform destroy`, cloud spend verbs) stay blocked even when permissions are skipped.
+- Blocked commands and open questions are emailed to you; your reply resumes the same run.
+- Starts with the machine, so a 3am reboot doesn't take it offline.
 
-**Memory**
+### Memory
 
-- Per-project memory that agents read before starting, instead of beginning
-  every task cold.
-- Standing positions: decisions you have already made, so nobody re-proposes
-  them.
-- Measurement scripts in [`tools/memory-eval/`](tools/memory-eval/) that score
-  how much of your own memory is actually reachable.
+- Long-term memory that adapts and keeps learning.
+- Agents learn not only from what worked, but from what did not — lessons learned.
+- Per-project memory agents read before starting, instead of beginning cold.
+- Standing positions, so settled decisions don't get re-proposed.
+- Continuous inspection scripts that score how effective your memory files and index actually are.
 
-**Everything else**
+### Everything else
 
-- Phone access over the clayrune.io tunnel, installable as an app, with push.
-- Backlog per project, with priorities, attachments and two-way GitHub Issues
-  sync.
+- Backlogs with priorities, attachments and two-way GitHub Issues sync.
 - Skills and MCP servers managed per project or globally.
 - Token and cost tracking across sessions.
 - Multi-window layouts that survive a refresh and a reboot.
-- Runs on your machine against the Claude CLI you already signed into. No
-  account, no telemetry, MIT.
+- Hivemind mode for fanning out tasks and explorations.
 
 ## Screens
 
