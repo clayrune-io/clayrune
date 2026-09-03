@@ -8,10 +8,9 @@ Run many agents, across every project, and keep working while they do.
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square)](https://clayrune.io/download.html)
 [![Live demo](https://img.shields.io/badge/live%20demo-clayrune.io-8250df?style=flat-square)](https://clayrune.io/demo)
 
-I kept four Claude Code terminals open and could never tell which one had
-stopped and was waiting on me. So I built a board that sits over the sessions
-instead of replacing them. Every project's on it, every agent has a name, and
-you can see at a glance which one is stuck.
+Clayrune is a dashboard over the Claude Code sessions you already run. Every
+project on one board, every agent named, and the ones waiting on you flagged.
+It runs on your machine against your own Claude CLI.
 
 ![Clayrune — the board, one project flagged as waiting on you, and thirty agent sessions running underneath](docs/assets/demo.gif)
 
@@ -19,46 +18,52 @@ you can see at a glance which one is stuck.
 
 ---
 
-## The parts I'd actually show you
+## What it does
 
-### Agents that work while I'm asleep
+**Running agents**
 
-For an agent to get anything done overnight it has to run with permissions
-off — one that stops to ask about every file is just waiting for you in a more
-expensive way. So I put the guardrail in code instead.
-[`steward/fence.py`](steward/fence.py) holds a list of **21 things it can never
-do**: `git push`, `DROP TABLE`, `npm publish`, `terraform destroy`,
-`gh pr create`, `rm -rf` outside scratch, the cloud spend verbs. It can't edit
-that list — the first thing I worried about — and if it can't tell which
-session it's in, it stops anyway. 20 tests on it.
+- One dashboard for every project and every running agent session.
+- `NEEDS YOU` flag on any agent that has stopped and is waiting on an answer.
+- Named agents with their own persona and a pinned model, so a reviewer and a
+  builder are separate agents rather than the same one re-prompted.
+- Claude Code first-class, plus Gemini, Codex, Aider, OpenCode and Goose.
+- Read an agent's output as it streams, and interrupt mid-task without killing
+  the session.
+- Multiple concurrent sessions per project.
+- Optional git worktree isolation when two agents must share one repo.
 
-The part I'm most pleased with: **whatever it refused to run lands in your
-inbox**, and it carries on with the same job the moment you answer.
+**Working without you**
 
-Worth saying plainly, because the claim's useless without it: this covers
-agents running on their own. Your own interactive sessions aren't fenced.
+- Scheduler: once, daily, interval or cron.
+- Steward: hand an agent a standing brief and it sets its own next task.
+- A hard block list of 21 irreversible commands — `git push`, `DROP TABLE`,
+  `npm publish`, `terraform destroy`, `rm -rf` outside scratch, cloud spend
+  verbs — enforced even with permissions skipped. Agents cannot edit the list.
+- Blocked commands and open questions are emailed to you; your reply resumes
+  the same run.
+- Starts with the machine, so a reboot at 3am does not take it offline.
 
-### Memory that I actually measured
+**Memory**
 
-Everyone says their agents remember things. I went and checked mine: across
-**374 real sessions** they opened a memory file in **5%** of them, and 91 of my
-104 notes had never been read once. Turns out giving an agent a folder and
-hoping it looks doesn't work. Pushing the notes at it instead took reachable
-ones from **47/104 to 97/104**.
+- Per-project memory that agents read before starting, instead of beginning
+  every task cold.
+- Standing positions: decisions you have already made, so nobody re-proposes
+  them.
+- Measurement scripts in [`tools/memory-eval/`](tools/memory-eval/) that score
+  how much of your own memory is actually reachable.
 
-The scripts are in [`tools/memory-eval/`](tools/memory-eval/) and take about a
-minute to run against your own notes.
+**Everything else**
 
-### Lots of agents, not one
+- Phone access over the clayrune.io tunnel, installable as an app, with push.
+- Backlog per project, with priorities, attachments and two-way GitHub Issues
+  sync.
+- Skills and MCP servers managed per project or globally.
+- Token and cost tracking across sessions.
+- Multi-window layouts that survive a refresh and a reboot.
+- Runs on your machine against the Claude CLI you already signed into. No
+  account, no telemetry, MIT.
 
-Every project sits on one board, and each agent gets its own persona, its own
-pinned model and its own session. My reviewer and my builder really are
-different agents, not the same one with a different opening line. You can put
-them on a schedule, or hand one a standing brief and leave it to work.
-
----
-
-## What you'd see
+## Screens
 
 | | |
 |---|---|
@@ -109,7 +114,7 @@ Full configuration reference: [`docs/reference-config-and-features.md`](docs/ref
 
 ---
 
-## Two questions I get every time
+## Common questions
 
 <details>
 <summary><b>"Isn't this just Claude Code?"</b></summary>
