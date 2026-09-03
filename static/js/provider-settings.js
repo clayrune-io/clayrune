@@ -22,16 +22,29 @@ function _renderProviderSettings(cfg) {
     const authOk    = p.auth_status === 'ok';
     const authNone  = p.auth_status === 'not_logged_in';
     const authBad   = p.auth_status === 'invalid_api_key';
+    // MC-934: a key that EXISTS but has no quota left (or never did) must
+    // read distinctly from both "signed in" and "credentials invalid" — it
+    // is neither. Folded into health_check() server-side from a prior
+    // explicit probe (mc/agent_runtime.py GeminiRuntime.health_check), so
+    // this pill stays accurate across a reload, not just for one render.
+    const authQuota = p.auth_status === 'quota_exceeded';
     const pillColor = !installed ? 'var(--text-faint)'
                     : authOk     ? 'var(--green)'
+                    : authQuota  ? 'var(--red)'
                     : authBad    ? 'var(--red)'
                     : 'var(--amber)';
     const pillText  = !installed ? 'not installed'
                     : authOk     ? 'signed in'
                     : authNone   ? 'not signed in'
+                    : authQuota  ? 'quota exceeded'
                     : authBad    ? 'credentials invalid'
                     : 'status unknown';
     const version   = p.version ? ` · v${esc(p.version)}` : '';
+    // Providers whose auth_probe() spends a real metered API call (MC-934:
+    // Gemini's free tier is 20 calls/day) get a distinct action + cost
+    // disclosure instead of silently being lumped in with the cheap
+    // local-only "Refresh" every other provider gets.
+    const probeCostsQuota = !!(p.capabilities && p.capabilities.auth_probe_spends_quota);
 
     // Install help: show install command for uninstalled providers
     const installHint = !installed && p.install_hint
@@ -68,9 +81,20 @@ function _renderProviderSettings(cfg) {
                                onclick="settingsProviderTerminalLogin('${esc(p.name)}',this)">Launch terminal login</button>`;
       const remoteLoginBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px;margin-right:6px"
                                onclick="settingsRemoteLogin('${esc(p.name)}',this)">Sign in remotely</button>`;
-      const refreshBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
-                                  onclick="settingsProviderRefresh('${esc(p.name)}')">Refresh</button>`;
-      authControls = keyInput + `<div data-remote-login-anchor="${esc(p.name)}">${loginBtn}${remoteLoginBtn}${refreshBtn}</div>`;
+      // Cheap providers keep the old silent "Refresh" (local evidence only,
+      // safe to click freely). A provider whose probe spends real quota gets
+      // a labeled action instead, so clicking it is an informed choice, not
+      // a surprise line-item on tomorrow's "why did my key stop working".
+      const refreshBtn = probeCostsQuota
+        ? `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
+                   title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."
+                   onclick="settingsProviderAuthProbe('${esc(p.name)}',this)">Test key (uses quota)</button>`
+        : `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
+                  onclick="settingsProviderRefresh('${esc(p.name)}')">Refresh</button>`;
+      const statusLine = probeCostsQuota
+        ? `<div class="settings-hint" id="prov-auth-status-line-${esc(p.name)}" style="margin-top:6px"></div>`
+        : '';
+      authControls = keyInput + `<div data-remote-login-anchor="${esc(p.name)}">${loginBtn}${remoteLoginBtn}${refreshBtn}</div>${statusLine}`;
     }
 
     return `
@@ -79,8 +103,8 @@ function _renderProviderSettings(cfg) {
           <div style="flex:1;min-width:0">
             <div class="settings-label" style="display:flex;align-items:center;gap:8px">
               ${esc(p.display_name)}
-              <span style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;background:var(--surface3);color:${pillColor}">
-                ${pillText}${version}
+              <span id="prov-auth-pill-${esc(p.name)}" style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;background:var(--surface3);color:${pillColor}">
+                <span id="prov-auth-pill-text-${esc(p.name)}">${pillText}</span>${version}
               </span>
             </div>
             ${installHint}

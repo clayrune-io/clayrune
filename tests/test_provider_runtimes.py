@@ -164,6 +164,112 @@ class TestGeminiRuntime:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# GeminiRuntime._probe_live_quota — MC-934: the live generateContent call
+# auth_probe() spends to tell "key exists" apart from "key can serve a run".
+# All network I/O is mocked (urllib.request.urlopen) — no real API call, no
+# real key needed for these tests.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestGeminiProbeLiveQuota:
+    def setup_method(self):
+        self.rt = GeminiRuntime()
+
+    def test_success_reports_ok_and_unknown_tier(self):
+        """A 200 tells us the call went through — Google sends no rate-limit
+        headers on success, so tier stays honestly 'unknown' rather than
+        inventing a number nobody sent."""
+        from unittest.mock import patch
+
+        class _Resp:
+            def read(self):
+                return b'{}'
+            def __enter__(self):
+                return self
+            def __exit__(self, *a):
+                return False
+
+        with patch('mc.agent_runtime.urllib.request.urlopen', return_value=_Resp()):
+            result = self.rt._probe_live_quota('fake-key')
+        assert result['reachable'] is True
+        assert result['ok'] is True
+        assert result['quota_status'] == 'ok'
+        assert result['tier'] == 'unknown'
+        assert result['invalid_key'] is False
+
+    def test_429_quota_failure_parses_quotaid_and_tier(self):
+        """The exact schema MC-932 read manually off a 429 — quotaId/quotaValue
+        inside a QuotaFailure detail. A FreeTier-suffixed quotaId is the only
+        reliable tier signal this API exposes."""
+        import io
+        import urllib.error
+        from unittest.mock import patch
+
+        body = json.dumps({
+            'error': {
+                'code': 429, 'status': 'RESOURCE_EXHAUSTED',
+                'message': 'You exceeded your current quota.',
+                'details': [{
+                    '@type': 'type.googleapis.com/google.rpc.QuotaFailure',
+                    'violations': [{
+                        'quotaId': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+                        'quotaValue': '20',
+                    }],
+                }],
+            },
+        }).encode('utf-8')
+
+        class _FakeHTTPError(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__('url', 429, 'quota', {}, io.BytesIO(body))
+            def read(self):
+                return body
+
+        with patch('mc.agent_runtime.urllib.request.urlopen', side_effect=_FakeHTTPError()):
+            result = self.rt._probe_live_quota('fake-key')
+        assert result['reachable'] is True
+        assert result['ok'] is False
+        assert result['quota_status'] == 'exceeded'
+        assert result['tier'] == 'free'
+        assert result['quota_id'] == 'GenerateRequestsPerDayPerProjectPerModel-FreeTier'
+        assert result['quota_value'] == '20'
+        assert result['invalid_key'] is False
+
+    def test_invalid_key_reported_distinctly_from_quota(self):
+        import io
+        import urllib.error
+        from unittest.mock import patch
+
+        body = json.dumps({
+            'error': {'code': 400, 'status': 'INVALID_ARGUMENT',
+                     'message': 'API key not valid. Please pass a valid API key.'},
+        }).encode('utf-8')
+
+        class _FakeHTTPError(urllib.error.HTTPError):
+            def __init__(self):
+                super().__init__('url', 400, 'bad key', {}, io.BytesIO(body))
+            def read(self):
+                return body
+
+        with patch('mc.agent_runtime.urllib.request.urlopen', side_effect=_FakeHTTPError()):
+            result = self.rt._probe_live_quota('fake-key')
+        assert result['invalid_key'] is True
+        assert result['quota_status'] == 'unknown'
+
+    def test_network_failure_is_unreachable_not_invalid(self):
+        """A DNS/timeout failure must not be reported as an invalid key — that
+        would tell the user to redo something that was never the problem."""
+        from unittest.mock import patch
+
+        with patch('mc.agent_runtime.urllib.request.urlopen',
+                   side_effect=OSError('getaddrinfo failed')):
+            result = self.rt._probe_live_quota('fake-key')
+        assert result['reachable'] is False
+        assert result['invalid_key'] is False
+        assert result['ok'] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # _last_real_error_line — shared helper used by every provider's fallback
 # ─────────────────────────────────────────────────────────────────────────────
 

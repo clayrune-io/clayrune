@@ -1263,6 +1263,15 @@ def agent_providers():
                       for mid, label in rt.model_choices()]
         except Exception:
             models = []
+        # MC-934: recent quota/rate-limit failures per model, read from
+        # clayrune.log (MC-935's [runtime-error] lines) — the composer's
+        # Model picker uses this to warn on a model that has already choked,
+        # instead of the user finding out after a doomed dispatch. A pure
+        # local file read, not a probe — safe on every list load.
+        try:
+            quota_warnings = _recent_quota_failures(rt.name)
+        except Exception:
+            quota_warnings = {}
         out.append({
             'name': rt.name,
             'display_name': rt.display_name,
@@ -1272,7 +1281,9 @@ def agent_providers():
             'version': h.version,
             'install_hint': h.install_hint,
             'auth_status': h.auth_state.status if h.auth_state else 'unknown',
+            'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
+            'quota_warnings': quota_warnings,
             'default': (rt.name == default_name),
         })
     return jsonify({'providers': out, 'default': default_name})
@@ -4435,8 +4446,15 @@ def _runtime_log_completion(ev, session):
                 tail = '\n'.join(session.get('log_lines') or [])
                 detail = (_agent_runtime._last_real_error_line(tail)
                           or 'no error text captured on the session tail')
+                # model= and ts= (MC-934): added so _recent_quota_failures()
+                # can tell WHICH model choked and WHEN, without a second
+                # bookkeeping file — this line is already the one place every
+                # non-claude failure reaches disk (MC-935). Keep the field
+                # order stable; _RUNTIME_ERROR_LINE_RE parses it positionally.
                 _log(f"[runtime-error] provider={session.get('provider', '')} "
-                     f"session={session.get('session_id', '')}: {detail}")
+                     f"model={session.get('model', '')} "
+                     f"session={session.get('session_id', '')} "
+                     f"ts={now_iso()}: {detail}")
             _log_agent_completion(session)
     except Exception as e:
         _log(f"[runtime-completion] agent-log write failed: {e}")
@@ -5110,6 +5128,104 @@ def _model_provider_mismatch(provider_name, model):
     return ''
 
 
+# MC-934: parses the `[runtime-error]` line _runtime_log_completion writes to
+# clayrune.log (MC-935). Field order is fixed by that f-string — keep them in
+# sync. `(.*)$` for detail is deliberate: the CLI's own error text (e.g.
+# "API Error: 500 quota exceeded") can contain colons of its own, so this
+# only splits on the FIRST "ts=<val>: " boundary, never on a colon inside it.
+_RUNTIME_ERROR_LINE_RE = re.compile(
+    r'^\[runtime-error\] provider=(\S*) model=(\S*) session=(\S*) ts=(\S*): (.*)$')
+
+_QUOTA_ERROR_HINTS = ('quota', 'rate limit', 'resource_exhausted', '429')
+
+
+def _recent_quota_failures(provider: str, tail_bytes: int = 512_000) -> Dict[str, dict]:
+    """Most recent quota/rate-limit `[runtime-error]` per model for `provider`,
+    read straight from clayrune.log — no new bookkeeping file (per the MC-934
+    brief: MC-935 already put this on disk).
+
+    Reads at most `tail_bytes` from the END of the file. This log accumulates
+    for the life of the install (over 1M lines seen in production) and this
+    function runs on provider-list loads, so a full scan is not an option —
+    a failure that has scrolled out of the tail window silently stops being
+    reported, the same trade any `tail -c` makes.
+
+    Returns {model_id: {'ts': iso_str, 'detail': str}}, last occurrence wins
+    (lines are in file order, so scanning forward and overwriting lands on
+    the most recent one without needing to reverse the chunk).
+    """
+    try:
+        path = Path(DATA_DIR).parent / 'logs' / 'clayrune.log'
+        if not path.exists():
+            return {}
+        size = path.stat().st_size
+        with open(path, 'rb') as f:
+            f.seek(max(0, size - tail_bytes))
+            chunk = f.read()
+    except Exception:
+        return {}
+    out: Dict[str, dict] = {}
+    for line in chunk.decode('utf-8', errors='replace').splitlines():
+        m = _RUNTIME_ERROR_LINE_RE.match(line)
+        if not m:
+            continue
+        prov, model, _sid, ts, detail = m.groups()
+        if prov != provider or not model:
+            continue
+        if not any(h in detail.lower() for h in _QUOTA_ERROR_HINTS):
+            continue
+        out[model] = {'ts': ts, 'detail': detail[:300]}
+    return out
+
+
+# How long a same-model quota failure keeps blocking a fresh dispatch of that
+# exact model. Google documents the reset as "daily" without publishing the
+# wall-clock boundary from here, so 20h (not 24h) is deliberate slack: erring
+# toward unblocking a little early costs nothing (worst case, one more
+# doomed run that _recent_quota_failures will log and re-block on); erring
+# toward blocking into the next day's window would wrongly refuse a run that
+# could have succeeded. See _model_quota_blocked.
+_QUOTA_BLOCK_WINDOW_HOURS = 20
+
+
+def _model_quota_blocked(provider_name: str, model: str) -> str:
+    """Explanation string if `model` on `provider_name` has an on-record
+    quota failure within `_QUOTA_BLOCK_WINDOW_HOURS`, else ''.
+
+    This is the (c) answer for MC-934: block dispatch outright, but ONLY on
+    evidence MC already observed for this exact provider+model pair — never
+    a blanket ban on a model merely believed to be quota-limited. A model
+    catalog entry MC hasn't seen fail is left alone (warn-only, via the
+    composer's quota_warnings badge); a model that failed on quota within the
+    window is refused, because retrying it is not a gamble, it is a certainty
+    — the daily cap does not reset mid-window, so the next attempt fails the
+    same way and only costs the user a run's worth of wall-clock time to
+    learn what MC already knows. Mirrors _model_provider_mismatch immediately
+    above: same call site, same raise-ValueError contract.
+    """
+    if not model:
+        return ''
+    try:
+        failures = _recent_quota_failures(provider_name)
+    except Exception:
+        return ''
+    hit = failures.get(model)
+    if not hit or not hit.get('ts'):
+        return ''
+    try:
+        when = datetime.fromisoformat(hit['ts'].replace('Z', '+00:00'))
+        if when.tzinfo is None:
+            when = when.replace(tzinfo=timezone.utc)
+        age_hours = (datetime.now(timezone.utc) - when).total_seconds() / 3600
+    except Exception:
+        return ''
+    if age_hours < 0 or age_hours > _QUOTA_BLOCK_WINDOW_HOURS:
+        return ''
+    return (f"model '{model}' hit its quota on {provider_name} "
+            f"{age_hours:.1f}h ago ({hit.get('detail') or 'quota exceeded'}) "
+            f"— it will fail again until the quota resets; pick a different model")
+
+
 def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
@@ -5221,6 +5337,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             raise ValueError(
                 f"model '{model_override}' belongs to provider '{_mismatch}', "
                 f"not '{provider_name}' — pick a matching model or provider")
+        # MC-934(c): refuse a model MC has already watched fail on quota
+        # within the same window — see _model_quota_blocked for why this is
+        # a hard block rather than a warning.
+        _quota_block = _model_quota_blocked(provider_name, model_override)
+        if _quota_block:
+            raise ValueError(_quota_block)
     if provider_name != 'claude':
         try:
             return _dispatch_via_runtime(p, task, provider_name=provider_name,

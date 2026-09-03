@@ -309,13 +309,36 @@ function _composerModelPicker(p, resumeId) {
   // typed it). Keep it selected rather than silently reverting to Default.
   const isCustom = !!pendingModelCustom[_modelKey(p.id, prov)]
                    || (!!cur && !choices.some(([v]) => v === cur));
+  // MC-934(b): models this provider has recently watched fail on quota,
+  // read from clayrune.log server-side (mc/blueprints/agent_routes.py
+  // _recent_quota_failures) and carried on the same /api/agent/providers
+  // record this picker already reads — no extra round trip. A model with no
+  // history here isn't necessarily fine; it's simply one MC hasn't seen fail.
+  const provRec = (_agentProviders || []).find(x => x.name === prov);
+  const quotaWarnings = (provRec && provRec.quota_warnings) || {};
   const opts = choices
-    .map(([v, l]) => `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}>${esc(l)}</option>`).join('');
+    .map(([v, l]) => {
+      const warn = quotaWarnings[v];
+      const label = warn ? `⚠ ${l}` : l;
+      const titleAttr = warn
+        ? ` title="${esc('Recently hit a quota/rate-limit error on this model: ' + (warn.detail || 'quota exceeded') + '. It may fail again until the quota resets.')}"`
+        : '';
+      return `<option value="${esc(v)}" ${v === cur ? 'selected' : ''}${titleAttr}>${esc(label)}</option>`;
+    }).join('');
   const customInput = isCustom
     ? `<input class="composer-model-custom" type="text" value="${esc(cur)}"
         placeholder="model id" title="Passed to ${esc(prov)} verbatim — for a model newer than this list"
         onchange="setComposerModel('${esc(p.id)}',this.value)">`
     : '';
+  // Surface the warning as text too, not just an <option title=> — a native
+  // <select>'s own tooltip only shows once the dropdown is open, so the
+  // CURRENTLY selected model's warning (the one about to be dispatched)
+  // needs to be visible without the user opening the list at all.
+  const curWarn = cur ? quotaWarnings[cur] : null;
+  const warnLine = curWarn
+    ? `<div class="settings-hint" style="color:var(--red);margin-top:2px">
+        &#x26A0; This model hit its quota recently and may fail again: ${esc(curWarn.detail || 'quota exceeded')}
+      </div>` : '';
   return `<div class="composer-provider-row composer-model-row">
     <span class="composer-provider-label">Model</span>
     <select class="composer-provider-select" onchange="setComposerModel('${esc(p.id)}',this.value)">
@@ -323,7 +346,8 @@ function _composerModelPicker(p, resumeId) {
       <option value="__custom__" ${isCustom ? 'selected' : ''}>Custom&hellip;</option>
     </select>
     ${customInput}
-  </div>`;
+  </div>
+  ${warnLine}`;
 }
 
 // `__custom__` arms an empty text box (its own map, so armed-but-empty is never

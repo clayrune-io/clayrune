@@ -385,6 +385,53 @@ async function settingsProviderRefresh(provider) {
   }
 }
 
+// Explicit, cost-labeled probe for a provider whose auth_probe() spends real
+// quota (MC-934 — today, Gemini only, via capabilities.auth_probe_spends_quota
+// in provider-settings.js). Deliberately does NOT call settingsProviderRefresh
+// / force a full Settings rebuild the way that cheap function does — same
+// reason settingsClaudeAuthCheck (above) patches its own status line in place
+// instead: a rebuild would wipe the very message this just wrote. The pill
+// itself is patched directly by id so it doesn't silently drift back to
+// "signed in" for the rest of this Settings view.
+async function settingsProviderAuthProbe(provider, btnEl) {
+  const line = document.getElementById(`prov-auth-status-line-${provider}`);
+  const pillText = document.getElementById(`prov-auth-pill-text-${provider}`);
+  const pill = document.getElementById(`prov-auth-pill-${provider}`);
+  if (line) line.innerHTML = '<span style="color:var(--text-faint)">Checking (spends live quota)&hellip;</span>';
+  if (btnEl) btnEl.disabled = true;
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${provider}/auth-probe`, { method: 'POST' });
+    const state = await res.json().catch(() => ({}));
+    const tierNote = state.tier === 'free'
+      ? ` (free tier${state.quota_value ? `, ${state.quota_value}/day` : ''})` : '';
+    const PILL_MAP = {
+      ok: ['var(--green)', 'signed in'],
+      quota_exceeded: ['var(--red)', 'quota exceeded'],
+      invalid_api_key: ['var(--red)', 'credentials invalid'],
+      not_logged_in: ['var(--amber)', 'not signed in'],
+      not_installed: ['var(--text-faint)', 'not installed'],
+    };
+    const [color, text] = PILL_MAP[state.status] || ['var(--amber)', 'status unknown'];
+    if (pill) pill.style.color = color;
+    if (pillText) pillText.textContent = text;
+    if (line) {
+      if (state.status === 'quota_exceeded') {
+        line.innerHTML = `<span style="color:var(--red)">Quota exceeded${esc(tierNote)} — ${esc(state.error_text || 'this model will keep failing until it resets.')}</span>`;
+      } else if (state.status === 'invalid_api_key') {
+        line.innerHTML = `<span style="color:var(--red)">${esc(state.error_text || 'Key rejected.')}</span>`;
+      } else if (state.ok) {
+        line.innerHTML = `<span style="color:var(--green)">Verified &mdash; live call succeeded${esc(tierNote)}.</span>`;
+      } else {
+        line.innerHTML = `<span style="color:var(--amber)">${esc(state.error_text || ('Probe returned: ' + (state.status || 'unknown')))}</span>`;
+      }
+    }
+  } catch (e) {
+    if (line) line.innerHTML = '<span style="color:#ef4444">Probe failed to reach the server.</span>';
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
 function _renderClaudeAuthStatusLine(state) {
   const line = document.getElementById('claude-auth-status-line');
   if (!line) return;
@@ -424,5 +471,6 @@ window.PROVIDER_AUTH_KEYS = PROVIDER_AUTH_KEYS;   // read by inline _renderProvi
 window.settingsProviderSetEnv = settingsProviderSetEnv;           // Provider Settings section onclick
 window.settingsProviderTerminalLogin = settingsProviderTerminalLogin; // Provider Settings section onclick
 window.settingsProviderRefresh = settingsProviderRefresh;         // Provider Settings section onclick
+window.settingsProviderAuthProbe = settingsProviderAuthProbe;     // Provider Settings section onclick (MC-934)
 window.settingsRemoteLogin = settingsRemoteLogin;                 // Provider Settings section onclick
 window.settingsRemoteLoginSubmitCode = settingsRemoteLoginSubmitCode; // remote-login box onclick

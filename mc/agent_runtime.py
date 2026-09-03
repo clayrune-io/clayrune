@@ -26,6 +26,8 @@ import subprocess
 import sys
 import threading
 import time as _time
+import urllib.error
+import urllib.request
 import uuid
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
@@ -109,6 +111,11 @@ class ProviderCapabilities:
     context_injection: Literal['flag', 'file', 'prepend', 'read-file'] = 'prepend'
     context_file_name: Optional[str] = None
     oneshot_supported: bool = False
+    # MC-934: true when auth_probe() spends a real, metered call against the
+    # provider's own API (as opposed to only checking local evidence like an
+    # env var or a cached OAuth token). The Settings UI uses this to label
+    # the probe action with its cost instead of firing it silently on a poll.
+    auth_probe_spends_quota: bool = False
 
 
 # Alias so caller code from the brief can use the name CapabilityFlags.
@@ -117,7 +124,8 @@ CapabilityFlags = ProviderCapabilities
 
 @dataclass
 class AuthState:
-    status: Literal['ok', 'not_logged_in', 'invalid_api_key', 'unknown', 'not_installed']
+    status: Literal['ok', 'not_logged_in', 'invalid_api_key', 'unknown',
+                    'not_installed', 'quota_exceeded']
     method: Optional[str] = None
     last_checked: str = ''
     error_text: Optional[str] = None
@@ -2307,13 +2315,26 @@ class GeminiRuntime(AgentRuntime):
             return HealthStatus(installed=True, binary_path=bin_path, version=None,
                                 auth_state=AuthState(status='unknown', last_checked=_now_iso()),
                                 install_hint='', diagnostic=str(e))
-        auth_status, auth_method, _err = self._gemini_auth_state()
+        auth_status, auth_method, auth_err = self._gemini_auth_state()
+        # A prior explicit auth_probe() may have spent a live API call and
+        # discovered a problem _gemini_auth_state()'s local-only evidence
+        # cannot see — a key can be PRESENT in the env and still be dead
+        # (quota exhausted, or simply invalid). Read-only: this never makes
+        # a network call itself, so folding it in here is free and safe to
+        # do on every page load / poll. Without this, the Settings pill would
+        # drift back to "signed in" green on the very next refresh after a
+        # probe just proved the key can't serve a request (MC-934).
+        with self._auth_lock:
+            _cached = dict(self._auth_cache)
+        if auth_status == 'ok' and _cached.get('status') in ('quota_exceeded', 'invalid_api_key'):
+            auth_status = _cached['status']
+            auth_err = _cached.get('error_text')
         return HealthStatus(
             installed=True,
             binary_path=bin_path,
             version=version,
             auth_state=AuthState(status=auth_status, method=auth_method,
-                                 last_checked=_now_iso()),
+                                 error_text=auth_err, last_checked=_now_iso()),
             install_hint='',
         )
 
@@ -2352,6 +2373,9 @@ class GeminiRuntime(AgentRuntime):
             context_injection='prepend',
             context_file_name='GEMINI.md',
             oneshot_supported=True,
+            # auth_probe() spends one live generateContent call when a key is
+            # present — see auth_probe()'s docstring for the exact cost.
+            auth_probe_spends_quota=True,
         )
 
     # ── Auth ──────────────────────────────────────────────────────────────────
@@ -2361,12 +2385,115 @@ class GeminiRuntime(AgentRuntime):
         with self._auth_lock:
             return dict(self._auth_cache)
 
-    def auth_probe(self) -> dict:
-        """Check Gemini auth without an API call.
+    # Model used for the live probe: the cheapest catalog entry, chosen so a
+    # probe costs the smallest possible slice of whatever per-day quota the
+    # key carries. COST, stated plainly: exactly one generateContent call
+    # with `maxOutputTokens: 1`, counted by Google against the SAME
+    # GenerateRequestsPerDayPerProjectPerModel-* quota bucket a real agent
+    # step spends (MC-932: 20/day on the free tier for a flash model) — this
+    # is real, metered spend, not a free health check.
+    _PROBE_MODEL = 'gemini-flash-lite-latest'
+    _PROBE_URL_TMPL = (
+        'https://generativelanguage.googleapis.com/v1beta/models/{model}:generateContent')
 
-        Gemini CLI authenticates via GEMINI_API_KEY or a cached Google OAuth
-        login (~/.gemini/oauth_creds.json). Both are detected — see
-        `_gemini_auth_state`.
+    def _probe_live_quota(self, api_key: str, model: str = '',
+                          timeout: float = 15.0) -> dict:
+        """Spend exactly one generateContent call to find out whether this key
+        can actually serve a request — not just whether it exists.
+
+        Returns a dict, never raises:
+          {'reachable': bool,          # the API answered at all (vs. network failure)
+           'ok': bool,                 # the call itself succeeded (200)
+           'quota_status': 'ok'|'exceeded'|'unknown',
+           'tier': 'free'|'unknown',   # only knowable from a 429's quotaId
+           'quota_id': str|None, 'quota_value': str|None,
+           'invalid_key': bool, 'error_text': str|None}
+
+        On success Google's API returns no rate-limit headers, so there is no
+        way to learn "N calls remaining" from a 200 — quota_status is 'ok'
+        (the call went through) and tier stays 'unknown' unless a previous
+        429 already surfaced it. Only a 429 response's QuotaFailure detail
+        exposes the tier, via the violation's quotaId (e.g. the free tier's
+        "...-FreeTier" suffix) — that's what MC-932 read manually; this reads
+        it programmatically instead of trusting a hand-maintained model list.
+        Say 'unknown' rather than invent a number Google didn't send — a
+        confident-looking wrong number is worse than an honest blank.
+        """
+        model = model or self._PROBE_MODEL
+        url = self._PROBE_URL_TMPL.format(model=model)
+        body = json.dumps({
+            'contents': [{'parts': [{'text': 'hi'}]}],
+            'generationConfig': {'maxOutputTokens': 1},
+        }).encode('utf-8')
+        req = urllib.request.Request(
+            url, data=body, method='POST',
+            headers={'Content-Type': 'application/json', 'x-goog-api-key': api_key})
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                r.read()  # discard body — only the status/shape of the response matters
+            return {'reachable': True, 'ok': True, 'quota_status': 'ok', 'tier': 'unknown',
+                    'quota_id': None, 'quota_value': None, 'invalid_key': False,
+                    'error_text': None}
+        except urllib.error.HTTPError as e:
+            raw = b''
+            try:
+                raw = e.read()
+            except Exception:
+                pass
+            try:
+                parsed = json.loads(raw.decode('utf-8', 'replace')) if raw else {}
+            except Exception:
+                parsed = {}
+            err = (parsed.get('error') or {}) if isinstance(parsed, dict) else {}
+            status = err.get('status') or ''
+            message = err.get('message') or f'HTTP {e.code}'
+            if e.code == 429 or status == 'RESOURCE_EXHAUSTED':
+                quota_id = quota_value = None
+                for d in (err.get('details') or []):
+                    if isinstance(d, dict) and str(d.get('@type', '')).endswith('QuotaFailure'):
+                        viol = (d.get('violations') or [{}])[0]
+                        quota_id = viol.get('quotaId')
+                        quota_value = viol.get('quotaValue')
+                        break
+                tier = 'free' if quota_id and 'freetier' in quota_id.lower() else 'unknown'
+                return {'reachable': True, 'ok': False, 'quota_status': 'exceeded', 'tier': tier,
+                        'quota_id': quota_id, 'quota_value': quota_value,
+                        'invalid_key': False, 'error_text': message}
+            if e.code in (400, 401, 403) and any(
+                    p in message.lower() for p in
+                    ('api key not valid', 'api_key_invalid', 'permission denied')):
+                return {'reachable': True, 'ok': False, 'quota_status': 'unknown', 'tier': 'unknown',
+                        'quota_id': None, 'quota_value': None, 'invalid_key': True,
+                        'error_text': message}
+            return {'reachable': True, 'ok': False, 'quota_status': 'unknown', 'tier': 'unknown',
+                    'quota_id': None, 'quota_value': None, 'invalid_key': False,
+                    'error_text': message}
+        except Exception as e:
+            return {'reachable': False, 'ok': False, 'quota_status': 'unknown', 'tier': 'unknown',
+                    'quota_id': None, 'quota_value': None, 'invalid_key': False,
+                    'error_text': str(e)}
+
+    def auth_probe(self) -> dict:
+        """Verify Gemini auth can actually serve a request — not just that a
+        credential is present.
+
+        Local evidence (`_gemini_auth_state`: an env var, or a cached OAuth
+        token) only proves a credential EXISTS; it says nothing about whether
+        the key is valid or has quota left (MC-932: a free-tier key allows
+        20 generateContent calls/day, so a key that "exists" can still be
+        guaranteed to fail every agent run). When local evidence finds an
+        API-key credential, this spends exactly ONE live call via
+        `_probe_live_quota` to find out — see that method for the exact cost.
+        That call counts against the same daily quota a real agent step
+        spends, so it is made ONLY here, from an explicit user action —
+        never from auth_status() (cached/local, safe to poll) and never from
+        a page load.
+
+        An OAuth-authenticated session (no GEMINI_API_KEY) is NOT probed
+        live: verifying it would mean spawning the `gemini` CLI itself (a
+        subprocess, not a single cheap call) rather than one HTTP request,
+        which is out of scope here — local evidence is the best signal
+        available for that path and is reported honestly as such.
         """
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -2375,11 +2502,67 @@ class GeminiRuntime(AgentRuntime):
                 'error_text': 'gemini CLI not installed — run: npm install -g @google/gemini-cli',
                 'last_checked': _now_iso(),
             }
-        else:
-            status, method, error_text = self._gemini_auth_state()
+            with self._auth_lock:
+                self._auth_cache.update(state)
+            return state
+
+        status, method, error_text = self._gemini_auth_state()
+        if status != 'ok':
             state = {
-                'ok': status == 'ok', 'status': status, 'method': method,
+                'ok': False, 'status': status, 'method': method,
                 'error_text': error_text, 'last_checked': _now_iso(),
+            }
+            with self._auth_lock:
+                self._auth_cache.update(state)
+            return state
+
+        api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key:
+            # OAuth path — see docstring. Report what local evidence shows,
+            # honestly labeled 'unknown' rather than upgraded to a verified 'ok'.
+            state = {
+                'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                'quota_status': 'unknown', 'tier': 'unknown',
+                'last_checked': _now_iso(),
+            }
+            with self._auth_lock:
+                self._auth_cache.update(state)
+            return state
+
+        probe = self._probe_live_quota(api_key)
+        if probe['invalid_key']:
+            state = {
+                'ok': False, 'status': 'invalid_api_key', 'method': method,
+                'error_text': probe['error_text'], 'quota_status': 'unknown',
+                'tier': 'unknown', 'last_checked': _now_iso(),
+            }
+        elif probe['quota_status'] == 'exceeded':
+            state = {
+                'ok': False, 'status': 'quota_exceeded', 'method': method,
+                'error_text': probe['error_text'], 'quota_status': 'exceeded',
+                'tier': probe['tier'], 'quota_id': probe['quota_id'],
+                'quota_value': probe['quota_value'], 'last_checked': _now_iso(),
+            }
+        elif not probe['reachable']:
+            # Network problem reaching Google — don't downgrade a possibly-
+            # valid key to "invalid"; say what actually happened.
+            state = {
+                'ok': False, 'status': 'unknown', 'method': method,
+                'error_text': f'Could not reach Gemini API: {probe["error_text"]}',
+                'quota_status': 'unknown', 'tier': 'unknown',
+                'last_checked': _now_iso(),
+            }
+        elif not probe['ok']:
+            state = {
+                'ok': False, 'status': 'unknown', 'method': method,
+                'error_text': probe['error_text'], 'quota_status': 'unknown',
+                'tier': 'unknown', 'last_checked': _now_iso(),
+            }
+        else:
+            state = {
+                'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                'quota_status': probe['quota_status'], 'tier': probe['tier'],
+                'last_checked': _now_iso(),
             }
         with self._auth_lock:
             self._auth_cache.update(state)

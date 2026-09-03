@@ -112,14 +112,64 @@ class TestAgentRuntimeABC:
         assert 'GEMINI_API_KEY' in result['error_text']
 
     def test_gemini_auth_probe_with_key(self):
-        """GeminiRuntime.auth_probe() returns ok when GEMINI_API_KEY is set."""
+        """GeminiRuntime.auth_probe() returns ok when GEMINI_API_KEY is set AND
+        the live generateContent probe call succeeds (MC-934: existing the key
+        is no longer enough — auth_probe now spends one real call to verify
+        it can actually serve a request)."""
         rt = _ar.GeminiRuntime()
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'fake-key-123'}):
             with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
-                result = rt.auth_probe()
+                with patch.object(rt, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': True, 'quota_status': 'ok',
+                        'tier': 'unknown', 'quota_id': None, 'quota_value': None,
+                        'invalid_key': False, 'error_text': None}):
+                    result = rt.auth_probe()
         assert result['ok'] is True
         assert result['status'] == 'ok'
         assert result['method'] == 'env:GEMINI_API_KEY'
+
+    def test_gemini_auth_probe_key_present_but_quota_exceeded(self):
+        """MC-934: a key that EXISTS but has no quota left must not read as ok.
+        This is the exact free-tier-death-trap case MC-932 measured — the
+        auth probe must catch it, not just confirm the key is present."""
+        rt = _ar.GeminiRuntime()
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'fake-key-123'}):
+            with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
+                with patch.object(rt, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': False, 'quota_status': 'exceeded',
+                        'tier': 'free', 'quota_id': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+                        'quota_value': '20', 'invalid_key': False,
+                        'error_text': 'You exceeded your current quota.'}):
+                    result = rt.auth_probe()
+        assert result['ok'] is False
+        assert result['status'] == 'quota_exceeded'
+        assert result['tier'] == 'free'
+        assert result['quota_value'] == '20'
+
+    def test_gemini_auth_probe_key_present_but_invalid(self):
+        """A key that exists but Google rejects must not read as ok either."""
+        rt = _ar.GeminiRuntime()
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'bad-key'}):
+            with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
+                with patch.object(rt, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': False, 'quota_status': 'unknown',
+                        'tier': 'unknown', 'quota_id': None, 'quota_value': None,
+                        'invalid_key': True, 'error_text': 'API key not valid.'}):
+                    result = rt.auth_probe()
+        assert result['ok'] is False
+        assert result['status'] == 'invalid_api_key'
+
+    def test_gemini_auth_probe_never_spends_a_call_with_no_key(self):
+        """No credential at all → auth_probe must return not_logged_in WITHOUT
+        ever invoking the live probe (nothing to spend a call against, and
+        spending one would just be a guaranteed-401 waste)."""
+        rt = _ar.GeminiRuntime()
+        with patch.dict('os.environ', {}, clear=True):
+            with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
+                with patch.object(rt, '_probe_live_quota') as probe:
+                    result = rt.auth_probe()
+        probe.assert_not_called()
+        assert result['status'] == 'not_logged_in'
 
     def test_gemini_auth_probe_not_installed(self):
         """GeminiRuntime.auth_probe() returns not_installed when binary missing."""
@@ -134,9 +184,33 @@ class TestAgentRuntimeABC:
         rt = _ar.GeminiRuntime()
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'k'}):
             with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
-                rt.auth_probe()
+                with patch.object(rt, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': True, 'quota_status': 'ok',
+                        'tier': 'unknown', 'quota_id': None, 'quota_value': None,
+                        'invalid_key': False, 'error_text': None}):
+                    rt.auth_probe()
         assert rt._auth_cache['status'] == 'ok'
         assert rt.auth_status()['status'] == 'ok'
+
+    def test_gemini_health_check_reflects_a_prior_quota_exceeded_probe(self):
+        """MC-934: once an explicit probe finds the key quota-exceeded, health_check()
+        (the cheap, cached path the Settings pill/poll actually reads) must keep
+        reporting that — not drift back to 'ok' just because the env var is still
+        set. This is what makes 'must not read as green' durable across a page
+        reload instead of a one-frame status line."""
+        rt = _ar.GeminiRuntime()
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'k'}):
+            with patch.object(rt, 'resolve_binary', return_value=Path('/fake/gemini')):
+                with patch.object(rt, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': False, 'quota_status': 'exceeded',
+                        'tier': 'free', 'quota_id': 'x-FreeTier', 'quota_value': '20',
+                        'invalid_key': False, 'error_text': 'exhausted'}):
+                    rt.auth_probe()
+                with patch('mc.agent_runtime.subprocess.run') as mock_run:
+                    mock_run.return_value.stdout = 'gemini 1.2.3'
+                    mock_run.return_value.stderr = ''
+                    health = rt.health_check()
+        assert health.auth_state.status == 'quota_exceeded'
 
     def test_abc_auth_logout_default(self):
         """ABC default auth_logout returns ok=False for providers that override nothing."""
@@ -255,17 +329,43 @@ class TestAuthRoutes:
         assert body['status'] == 'not_installed'
 
     def test_gemini_auth_probe_with_key_well_formed(self):
-        """Gemini auth-probe with GEMINI_API_KEY set returns ok=True."""
+        """Gemini auth-probe with GEMINI_API_KEY set + a live call that succeeds
+        returns ok=True. (MC-934: the route now depends on a real API call, so
+        the underlying live-probe method is mocked here — no real network.)"""
         c, _ = _get_flask_client()
         with patch.dict('os.environ', {'GEMINI_API_KEY': 'test-key-abc'}):
             with patch.object(_ar.GeminiRuntime, 'resolve_binary',
                                return_value=Path('/fake/gemini')):
-                resp = c.post('/api/agent/gemini/auth-probe')
+                with patch.object(_ar.GeminiRuntime, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': True, 'quota_status': 'ok',
+                        'tier': 'unknown', 'quota_id': None, 'quota_value': None,
+                        'invalid_key': False, 'error_text': None}):
+                    resp = c.post('/api/agent/gemini/auth-probe')
         assert resp.status_code == 200
         body = json.loads(resp.data)
         assert body['ok'] is True
         assert body['status'] == 'ok'
         assert body['method'] == 'env:GEMINI_API_KEY'
+
+    def test_gemini_auth_probe_quota_exceeded_well_formed(self):
+        """MC-934: quota-exceeded must round-trip through the route as ok=False,
+        status='quota_exceeded' — this is the exact case Settings must NOT
+        render green."""
+        c, _ = _get_flask_client()
+        with patch.dict('os.environ', {'GEMINI_API_KEY': 'test-key-abc'}):
+            with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                               return_value=Path('/fake/gemini')):
+                with patch.object(_ar.GeminiRuntime, '_probe_live_quota', return_value={
+                        'reachable': True, 'ok': False, 'quota_status': 'exceeded',
+                        'tier': 'free', 'quota_id': 'GenerateRequestsPerDayPerProjectPerModel-FreeTier',
+                        'quota_value': '20', 'invalid_key': False,
+                        'error_text': 'You exceeded your current quota.'}):
+                    resp = c.post('/api/agent/gemini/auth-probe')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body['ok'] is False
+        assert body['status'] == 'quota_exceeded'
+        assert body['tier'] == 'free'
 
     def test_claude_auth_logout_not_supported(self):
         """POST /api/agent/claude/auth-logout returns ok=False (no programmatic logout)."""
@@ -531,3 +631,142 @@ class TestStructuredAuthDetection:
         # failure surfaces the reason
         st._claude_auth_state.update(ok=False, reason='invalid_api_key')
         assert server._claude_health_check_hook().auth_state.status == 'invalid_api_key'
+
+
+# ── MC-934(b)(c) — quota-warning signal read from clayrune.log ────────────────
+# _recent_quota_failures parses the `[runtime-error] provider=... model=...
+# session=... ts=...: detail` lines _runtime_log_completion writes (MC-935),
+# and _model_quota_blocked uses that to refuse re-dispatching a model that is
+# guaranteed to fail again within the same quota window. Both are pure
+# file-read / string functions — DATA_DIR is repointed at tmp_path so no test
+# ever touches the real clayrune.log.
+
+
+class TestRecentQuotaFailures:
+    @pytest.fixture()
+    def logenv(self, tmp_path, monkeypatch):
+        from mc.blueprints import agent_routes as ar
+        data_dir = tmp_path / 'data' / 'projects'
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
+        log_dir = tmp_path / 'data' / 'logs'
+        log_dir.mkdir(parents=True)
+        log_path = log_dir / 'clayrune.log'
+        return {'ar': ar, 'log_path': log_path}
+
+    def _write(self, logenv, lines):
+        logenv['log_path'].write_text('\n'.join(lines) + '\n', encoding='utf-8')
+
+    def test_no_log_file_returns_empty(self, logenv):
+        assert logenv['ar']._recent_quota_failures('gemini') == {}
+
+    def test_parses_a_quota_line_for_the_right_provider_and_model(self, logenv):
+        self._write(logenv, [
+            "[runtime-error] provider=gemini model=gemini-3.6-flash "
+            "session=s1 ts=2026-09-02T10:00:00Z: [API Error: 429 quota exceeded]",
+        ])
+        out = logenv['ar']._recent_quota_failures('gemini')
+        assert 'gemini-3.6-flash' in out
+        assert out['gemini-3.6-flash']['ts'] == '2026-09-02T10:00:00Z'
+        assert 'quota' in out['gemini-3.6-flash']['detail'].lower()
+
+    def test_ignores_a_different_provider(self, logenv):
+        self._write(logenv, [
+            "[runtime-error] provider=codex model=gpt-5.4 "
+            "session=s1 ts=2026-09-02T10:00:00Z: quota exceeded",
+        ])
+        assert logenv['ar']._recent_quota_failures('gemini') == {}
+
+    def test_ignores_a_non_quota_failure(self, logenv):
+        """A network blip or auth error is not a quota signal — must not warn
+        the model picker about a class of failure a retry could fix."""
+        self._write(logenv, [
+            "[runtime-error] provider=gemini model=gemini-3.6-flash "
+            "session=s1 ts=2026-09-02T10:00:00Z: network timeout",
+        ])
+        assert logenv['ar']._recent_quota_failures('gemini') == {}
+
+    def test_last_occurrence_wins(self, logenv):
+        self._write(logenv, [
+            "[runtime-error] provider=gemini model=gemini-3.6-flash "
+            "session=s1 ts=2026-09-02T09:00:00Z: quota exceeded (first)",
+            "[runtime-error] provider=gemini model=gemini-3.6-flash "
+            "session=s2 ts=2026-09-02T11:00:00Z: quota exceeded (second)",
+        ])
+        out = logenv['ar']._recent_quota_failures('gemini')
+        assert out['gemini-3.6-flash']['ts'] == '2026-09-02T11:00:00Z'
+        assert 'second' in out['gemini-3.6-flash']['detail']
+
+    def test_unrelated_log_noise_is_skipped(self, logenv):
+        self._write(logenv, [
+            "some boot banner line",
+            "[dispatch] provider=gemini model=gemini-3.6-flash session=s1",
+            "[runtime-error] provider=gemini model=gemini-3.6-flash "
+            "session=s1 ts=2026-09-02T10:00:00Z: quota exceeded",
+        ])
+        out = logenv['ar']._recent_quota_failures('gemini')
+        assert list(out.keys()) == ['gemini-3.6-flash']
+
+
+class TestModelQuotaBlocked:
+    @pytest.fixture()
+    def logenv(self, tmp_path, monkeypatch):
+        from mc.blueprints import agent_routes as ar
+        data_dir = tmp_path / 'data' / 'projects'
+        data_dir.mkdir(parents=True)
+        monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
+        log_dir = tmp_path / 'data' / 'logs'
+        log_dir.mkdir(parents=True)
+        return {'ar': ar, 'log_path': log_dir / 'clayrune.log'}
+
+    def _write_failure(self, logenv, ts, model='gemini-3.6-flash', provider='gemini'):
+        logenv['log_path'].write_text(
+            f"[runtime-error] provider={provider} model={model} "
+            f"session=s1 ts={ts}: [API Error: 429 quota exceeded]\n",
+            encoding='utf-8')
+
+    def test_no_history_is_not_blocked(self, logenv):
+        assert logenv['ar']._model_quota_blocked('gemini', 'gemini-3.6-flash') == ''
+
+    def test_recent_failure_blocks_with_an_explanation(self, logenv):
+        from datetime import datetime, timezone
+        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        self._write_failure(logenv, recent)
+        msg = logenv['ar']._model_quota_blocked('gemini', 'gemini-3.6-flash')
+        assert msg
+        assert 'gemini-3.6-flash' in msg
+        assert 'quota' in msg.lower()
+
+    def test_old_failure_outside_the_window_does_not_block(self, logenv):
+        from datetime import datetime, timezone, timedelta
+        old = (datetime.now(timezone.utc) - timedelta(hours=48)).isoformat().replace('+00:00', 'Z')
+        self._write_failure(logenv, old)
+        assert logenv['ar']._model_quota_blocked('gemini', 'gemini-3.6-flash') == ''
+
+    def test_failure_on_a_different_model_does_not_block_this_one(self, logenv):
+        from datetime import datetime, timezone
+        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        self._write_failure(logenv, recent, model='gemini-3.6-flash')
+        assert logenv['ar']._model_quota_blocked('gemini', 'gemini-flash-lite-latest') == ''
+
+    def test_dispatch_refuses_a_model_with_a_fresh_quota_failure(self, logenv, monkeypatch):
+        """End-to-end: _dispatch_agent_internal must raise before ever reaching
+        _dispatch_via_runtime for a model MC just watched fail on quota."""
+        from datetime import datetime, timezone
+        ar = logenv['ar']
+        recent = datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
+        self._write_failure(logenv, recent)
+        monkeypatch.setattr(ar, 'load_project',
+                            lambda pid: {'id': 'tc', 'name': 'TC',
+                                        'project_path': str(logenv['log_path'].parent),
+                                        'provider': 'claude'})
+        called = {'hit': False}
+
+        def _fake_runtime_dispatch(*a, **kw):
+            called['hit'] = True
+            return 'sid'
+        monkeypatch.setattr(ar, '_dispatch_via_runtime', _fake_runtime_dispatch)
+        with pytest.raises(ValueError, match='quota'):
+            ar._dispatch_agent_internal('tc', 'do a thing', provider_override='gemini',
+                                        model_override='gemini-3.6-flash')
+        assert called['hit'] is False
