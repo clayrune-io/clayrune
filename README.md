@@ -160,6 +160,18 @@ Detail: [`docs/reference-config-and-features.md`](docs/reference-config-and-feat
 
 ---
 
+## Incidents
+
+Failures we hit building this, written up for people who do not use it. Each one
+reported success while doing nothing, which is the only reason they are worth
+reading: no error, no red build, nothing in a log.
+
+- [Your agent's commits may not be on the branch it told you](docs/incidents/agent-commits-wrong-branch.md)
+- [A CI job that passed for three months without testing anything](docs/incidents/ci-job-that-tested-nothing.md)
+- [The tests covered the endpoint, so nobody clicked the button](docs/incidents/tests-that-never-clicked.md)
+
+All of them in [`docs/incidents`](docs/incidents/).
+
 ## How it's built
 
 Flask on the back, plain JS on the front with no build step, JSON files on disk
