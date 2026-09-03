@@ -307,7 +307,32 @@ def _figure(s, proj_default='', labels=None):
         'age': time_ago(s.get('started_at')) if s.get('started_at') else '',
         'trigger_type': s.get('trigger_type', 'manual'),
         'hivemind_id': s.get('hivemind_id', ''),
+        # Helpers this figure has out right now. The Floor is the "who is doing
+        # what" view, and a dispatched subagent was invisible on it entirely —
+        # Ron asked "is anyone working?" six times while three of them ran.
+        # Same source and liveness rule as /agent/status (MC-937 Phase 4); the
+        # figure carries the count, the card can expand it.
+        'subagents': _figure_subagents(s),
     }
+
+
+def _figure_subagents(s):
+    """Running subagents for this session, or [] — never raises.
+
+    Reuses agent_routes' single source of truth so the Floor cannot drift into
+    a second liveness heuristic. Only a 'running' session is scanned, which is
+    the same gate /agent/status applies, so an idle figure costs nothing.
+    """
+    if s.get('status') != 'running':
+        return []
+    try:
+        from mc.blueprints.agent_routes import _active_subagents_for_session
+        pid = s.get('project_id') or ''
+        proj = next((p for p in (load_projects() or []) if p.get('id') == pid), {})
+        return _active_subagents_for_session(s, proj.get('project_path') or '') or []
+    except Exception as e:
+        _log(f"[floor] subagent lookup failed for {s.get('session_id')}: {e}")
+        return []
 
 
 def _live_sessions(defaults=None, labels=None):
