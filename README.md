@@ -8,9 +8,10 @@ Run many agents, across every project, and keep working while they do.
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square)](https://clayrune.io/download.html)
 [![Live demo](https://img.shields.io/badge/live%20demo-clayrune.io-8250df?style=flat-square)](https://clayrune.io/demo)
 
-Four terminals open and you cannot tell which one stopped and is waiting on you.
-Clayrune is a board over the Claude Code sessions you already run: every project
-on it, every agent named, and the ones that need you say so.
+I kept four Claude Code terminals open and could never tell which one had
+stopped and was waiting on me. So I built a board that sits over the sessions
+instead of replacing them. Every project's on it, every agent has a name, and
+you can see at a glance which one is stuck.
 
 ![Clayrune — the board, one project flagged as waiting on you, and thirty agent sessions running underneath](docs/assets/demo.gif)
 
@@ -18,49 +19,52 @@ on it, every agent named, and the ones that need you say so.
 
 ---
 
-## Three things it does that are hard to copy
+## The parts I'd actually show you
 
-### It runs unattended with permissions skipped, and still won't `git push`
+### It runs overnight with permissions off, and still can't `git push`
 
-An unattended agent runs with `--dangerously-skip-permissions`, because stopping
-to ask defeats the point. So the constraint lives in code instead:
-[`steward/fence.py`](steward/fence.py) is a PreToolUse hook that hard-blocks **21
-irreversible command shapes** — `DROP TABLE`, `rm -rf` outside scratch,
-`git push`, `npm publish`, `terraform destroy`, `gh pr create`, cloud spend
-verbs. It fails closed on an unknown session, and it blocks edits to its own
-source, so an agent cannot quietly widen its own fence. 20 tests cover it.
+An agent working alone overnight runs with `--dangerously-skip-permissions`,
+because stopping to ask defeats the whole point. So I put the limit in code
+instead. [`steward/fence.py`](steward/fence.py) is a hook that blocks **21
+command shapes** it can never take back — `DROP TABLE`, `rm -rf` outside
+scratch, `git push`, `npm publish`, `terraform destroy`, `gh pr create`, the
+cloud spend verbs. If it can't work out which session it's in, it blocks
+anyway. And it won't let an agent edit the fence itself, which was the first
+thing I worried about. 20 tests on it.
 
-Then it does the part nobody else does: **it emails you the command it stopped**,
-waits, and feeds your reply back into the same run.
+Then the bit I'm most pleased with: **it emails you whatever it just refused
+to run**, waits for you, and picks the same run back up when you reply.
 
-*Scope, because it matters:* the fence governs unattended steward cycles. Your
-own interactive sessions are not fenced.
+One caveat worth stating plainly, since the claim's useless without it: this
+covers agents running on their own. Your own interactive sessions aren't
+fenced.
 
-### Agents that remember, measurably
+### Memory that I actually measured
 
-Cross-session memory is a common claim. We instrumented ours across **374 real
-sessions** and found agents opened a memory file in **5%** of them — 91 of 104
-notes were never read once. A retrieval layer that does not wait to be asked took
-reachable notes from **47/104 to 97/104**.
+Everyone says their agents remember things. I went and checked mine: across
+**374 real sessions** they opened a memory file in **5%** of them, and 91 of my
+104 notes had never been read once. Turns out giving an agent a folder and
+hoping it looks doesn't work. Pushing the notes at it instead took reachable
+ones from **47/104 to 97/104**.
 
-Both harnesses live in [`tools/memory-eval/`](tools/memory-eval/) and re-run in
-about a minute, against your own corpus.
+The scripts are in [`tools/memory-eval/`](tools/memory-eval/) and take about a
+minute to run against your own notes.
 
-### A fleet, not one agent
+### Lots of agents, not one
 
-Every project on one board, each agent with its own persona, its own pinned
-model, and its own session. A reviewer and a builder are genuinely different
-agents rather than the same one re-prompted. Schedule them, or hand one a
-standing charter and let it work overnight.
+Every project sits on one board, and each agent gets its own persona, its own
+pinned model and its own session. My reviewer and my builder really are
+different agents, not the same one with a different opening line. You can put
+them on a schedule, or hand one a standing brief and leave it to work.
 
 ---
 
-## What it looks like
+## What you'd see
 
 | | |
 |---|---|
 | ![The Floor — every live agent, grouped by project](docs/assets/shot-floor.png) | ![An agent mid-run, with the conversation rail and the interrupt box](docs/assets/shot-chat.png) |
-| **The Floor.** Every live agent, grouped by the project it is working in, with a face, a name and the model it is pinned to. The ones marked `NEEDS YOU` are waiting on an answer. | **Inside a run.** Watch it work, read what it decided, and interrupt mid-task without killing the session. |
+| **The Floor.** Every agent currently running, grouped by project, with a face, a name and whichever model it's pinned to. Anything marked `NEEDS YOU` is stuck waiting on an answer. | **Inside a run.** You can read what it decided as it goes, and cut in mid-task without killing the session. |
 
 ![The dashboard — five projects, with every running session listed underneath](docs/assets/shot-board.png)
 
@@ -80,10 +84,10 @@ iwr https://clayrune.io/install.ps1 -useb | iex
 curl -fsSL https://clayrune.io/install.sh | sh
 ```
 
-Installs the Claude CLI, clones Clayrune, and opens the dashboard at
-`http://localhost:5199`. Prefer a double-click? There is a
-[zip on clayrune.io](https://clayrune.io/download.html) — unsigned, so Windows
-shows an "unrecognized app" notice once.
+That installs the Claude CLI, clones the repo and opens the dashboard on
+`http://localhost:5199`. If you'd rather double-click something, there's a
+[zip on clayrune.io](https://clayrune.io/download.html) — it's unsigned, so
+Windows will grumble about an "unrecognized app" the first time.
 
 <details>
 <summary><b>Running from source</b></summary>
@@ -98,21 +102,22 @@ python app.py        # native desktop window
 # or: python server.py   → http://localhost:5199
 ```
 
-First run walks you through port, project directory and model in Settings.
+On first run Settings walks you through the port, your projects directory and
+which model to use.
 Full configuration reference: [`docs/reference-config-and-features.md`](docs/reference-config-and-features.md).
 
 </details>
 
 ---
 
-## Honest answers to the two questions everyone asks
+## Two questions I get every time
 
 <details>
 <summary><b>"Isn't this just Claude Code?"</b></summary>
 
-Clayrune doesn't replace Claude Code — it *runs* it. Claude Code is the engine;
-Clayrune is the cockpit. You reach for it the moment you have more than one
-project, more than one agent, or work you'd rather not sit and watch.
+It doesn't replace Claude Code, it runs it. Claude Code is the engine and this
+is the cockpit. You'd reach for it once you've got more than one project on the
+go, more than one agent, or work you'd rather not sit and babysit.
 
 | Bare Claude Code | Clayrune |
 |---|---|
@@ -126,23 +131,24 @@ project, more than one agent, or work you'd rather not sit and watch.
 <details>
 <summary><b>"What happens when two agents touch the same repo?"</b></summary>
 
-Mostly they don't. Parallelism here is across projects: each project's agent gets
-its own working directory and its own session.
+Mostly they don't — the parallelism is across projects, and each project's
+agent gets its own directory and its own session.
 
-For the case where two genuinely must share a repo, turn on **Worktree
-isolation** in Settings (off by default). The second and any later concurrent
-agent is dropped into its own git worktree on its own branch. Committed work
-merges back at session end; if it does not apply cleanly, Clayrune keeps the
-branch, does not auto-resolve, and says it needs a hand.
+If two really do need the same repo, switch on **Worktree isolation** in
+Settings (it's off by default). The second agent and any after it get dropped
+into their own git worktree on their own branch. Committed work merges back
+when the session ends, and if it won't apply cleanly the branch is kept and
+you get told, rather than something clever happening behind your back.
 
-What that does *not* solve is two agents reasoning about the same file at once.
-Worktrees stop them clobbering bytes. They do not stop the second agent building
-on an assumption the first just invalidated. That part is unsolved.
+What that doesn't fix is two agents thinking about the same file at the same
+time. Worktrees stop them overwriting each other's bytes. They don't stop the
+second one building on something the first just made untrue. I haven't solved
+that.
 
 </details>
 
 <details>
-<summary><b>Everything else it does</b></summary>
+<summary><b>Everything else in there</b></summary>
 
 Multi-provider agents (Claude Code first-class, plus Gemini, Codex, Aider,
 OpenCode, Goose) · Hivemind multi-agent orchestration · Scheduler (once / daily /
@@ -157,13 +163,13 @@ Detail: [`docs/reference-config-and-features.md`](docs/reference-config-and-feat
 
 ---
 
-## Architecture, briefly
+## How it's built
 
-Python Flask backend, vanilla JS single-page frontend with no build step, JSON
-files on disk with no database, and the `claude` CLI spawned as a subprocess with
-streaming JSON output. One Python process, one HTML file, zero databases.
+Flask on the back, plain JS on the front with no build step, JSON files on disk
+instead of a database, and the `claude` CLI spawned as a subprocess. One Python
+process, one HTML file, no database.
 
-Contributions welcome — fork, branch, `python server.py`, verify, PR.
+Contributions welcome — fork, branch, run `python server.py`, check it, open a PR.
 Notes in [`docs/reference-config-and-features.md`](docs/reference-config-and-features.md).
 
 ## License
