@@ -1,0 +1,322 @@
+# Clayrune
+
+**Mission control for your [Claude Code](https://docs.anthropic.com/en/docs/claude-code) agents.**
+Run, schedule, and babysit many agents across every project — from one console, or from your phone.
+
+[![License: MIT](https://img.shields.io/badge/license-MIT-1f6feb?style=flat-square)](LICENSE)
+[![Last commit](https://img.shields.io/github/last-commit/ronle/clayrune?style=flat-square&color=1f883d&label=last%20commit)](https://github.com/ronle/clayrune/commits)
+[![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square)](https://clayrune.io/download.html)
+[![Live demo](https://img.shields.io/badge/live%20demo-clayrune.io-8250df?style=flat-square)](https://clayrune.io/demo)
+
+![Clayrune — three agents working across three projects, and the same session live on a phone](docs/assets/demo.gif)
+
+Claude Code is a brilliant agent — but it's one agent, in one terminal, on one repo,
+and everything it knew is gone when the session ends. Clayrune is the layer on top: a
+dashboard where every project is a tile, every agent is running, and the work keeps
+moving while you're away from the keyboard.
+
+- **A fleet, not one agent** — every project on one grid, agents dispatched and monitored side by side.
+- **Control it from your phone** — dispatch a task, watch it stream, restart the server, from anywhere.
+- **It runs without you** — schedule agents, or hand one a standing charter and let it work unattended.
+- **It remembers** — cross-session memory, so your agents don't start every task cold.
+- **Your Claude subscription, not the API** — Clayrune drives the Claude Code CLI you already run, so agent work costs exactly what it does today. No extra token bills, nothing metered, nothing routed through us.
+- **It's yours** — local-first, bring your own key, all of it open. The cloud is optional.
+
+### What it actually looks like
+
+| | |
+|---|---|
+| ![The Floor — every live agent, grouped by project](docs/assets/shot-floor.png) | ![An agent mid-run, with the conversation rail and the interrupt box](docs/assets/shot-chat.png) |
+| **The Floor.** Every live agent, grouped by the project it's working in, with a face, a name and the model it's pinned to. The ones marked `NEEDS YOU` are waiting on an answer. | **Inside a run.** Watch it work, read what it decided, and interrupt mid-task without killing the session. |
+
+![The dashboard — five projects, with every running session listed underneath](docs/assets/shot-board.png)
+
+The board, with the session list open: what every agent is doing, across every project,
+in one place.
+
+Clayrune runs on *your* machine. If the machine sleeps, so does your agent — and Clayrune
+tells you it did. There's a setting to keep it awake while an agent is working.
+
+**[▶ Try the live demo — no install](https://clayrune.io/demo)** &nbsp;·&nbsp; or **[⬇ Download for Windows](https://clayrune.io)** — macOS + Linux + [from source](#running-from-source) below.
+
+---
+
+### "Isn't this just Claude Code?"
+
+Clayrune doesn't replace Claude Code — it *runs* it. Claude Code is the engine; Clayrune
+is the cockpit. You reach for it the moment you have more than one project, more than one
+agent, or work you'd rather not sit and watch.
+
+| Bare Claude Code | Clayrune |
+|---|---|
+| One repo, one terminal | Every project, one dashboard |
+| You're at the keyboard | Scheduled + autonomous agents |
+| Session ends, context dies | Cross-session memory |
+| Desk-bound | Full control from your phone |
+
+### "What happens when two agents touch the same repo?"
+
+Mostly they don't. Parallelism here is across projects: each project's agent gets
+its own working directory and its own session, so there is no shared context to
+corrupt and no shared checkout to fight over.
+
+For the case where two agents genuinely have to work the same repo, turn on
+**Worktree isolation** in Settings (off by default). The second and any later
+concurrent agent on that project is then dropped into its own git worktree on its
+own branch, so it never writes to your checkout. Committed work is merged back
+when the session ends; if the merge does not apply cleanly, Clayrune keeps the
+branch, does not auto-resolve, and tells you it needs a hand. A companion
+**coordination** setting lets concurrent agents see what the others are doing
+instead of finding out in a conflict.
+
+What none of that solves is two agents reasoning about the same file at the same
+time. Worktrees stop them clobbering the bytes. They do not stop the second agent
+building on an assumption the first one just invalidated. That part is unsolved.
+
+## Everything It Does
+
+- **Manage multiple projects** with status tracking, descriptions, and domains
+- **Dispatch agents** across any project — Claude Code first-class, plus Gemini, Codex, Aider, OpenCode, and Goose
+- **Reuse previous chat sessions** within the same project to reduce overall token usage
+- **Monitor agent activity in real-time** via streaming output, with live "thinking vs. writing" activity states
+- **Answer agents' questions inline** — an agent can ask you to choose between options, and if nobody's watching it reaches you over your configured channel
+- **Cross-session memory** — agents carry context forward instead of starting each task cold
+- **Run agents unattended** — a Scheduler (once / daily / interval / cron) and an autonomous **Steward** you hand a standing charter
+- **Orchestrate multiple agents** on one goal with **Hivemind**, and watch live Claude Code **Workflow** progress
+- **Manage Skills and MCP servers** (Anthropic-format skills, stdio/HTTP/SSE MCP) from dedicated surfaces
+- **Maintain project backlogs** with priorities, drag-and-drop ordering, and file attachments
+- **Inbox / "Waiting on you"** surfaces the runs that actually need a decision
+- **Schedule automated tasks** with once, daily, or interval-based triggers
+- **Sync backlogs with GitHub Issues** — bidirectional sync via `gh` CLI
+- **Track token usage and costs** across all sessions with time-range filtering
+- **Open multiple project windows** simultaneously (multi-modal windowing system) — open conversations and their layouts persist across page refresh and reboot
+- **Manage from any device** via the clayrune.io tunnel — installable as a phone app with push, plus a one-click server restart from your phone after deploying changes
+- **View agent plans** in a dedicated wide-format viewer
+- **Try it first** — an interactive, fully-simulated demo at [clayrune.io/demo](https://clayrune.io/demo)
+- **Share baseline rules** across all projects (SHARED_RULES.md)
+- **Arrange project tiles** freely on a grid (Android home screen style)
+- **First-run walkthrough tour** guides new users through the interface
+
+## Quick Start (Windows)
+
+Open **PowerShell** (Start → type `PowerShell` → Enter), paste one line, press Enter:
+
+```powershell
+iwr https://clayrune.io/install.ps1 -useb | iex
+```
+
+It installs the Claude CLI, clones Clayrune, installs dependencies, and drops a
+Desktop/Start Menu shortcut. First launch opens the dashboard at
+`http://localhost:5199`.
+
+Prefer a double-click? There's an installer `.exe` on [clayrune.io](https://clayrune.io) —
+it's unsigned, so Windows shows an "unrecognized app" notice once (**More info →
+Run anyway**). Same install, just the one-time prompt.
+
+Prefer running from source instead? See [Running from Source](#running-from-source) below.
+
+## Prerequisites (from source only)
+
+If you prefer running from source instead of the prebuilt exe:
+
+- **Python 3.9+** — [Download](https://www.python.org/downloads/)
+- **Claude CLI** — [Installation guide](https://docs.anthropic.com/en/docs/claude-code/getting-started)
+
+## Running from Source
+
+### Option A: Desktop Window
+
+```bash
+git clone https://github.com/ronle/clayrune.git
+cd mission-control
+pip install -r requirements.txt
+python app.py
+```
+
+Opens a native window with the dashboard. Flask server runs in the background.
+
+### Option B: Browser Only
+
+```bash
+git clone https://github.com/ronle/clayrune.git
+cd mission-control
+pip install flask
+python server.py
+# Open http://localhost:5199 in your browser
+```
+
+First run: the in-app Settings panel walks you through the port, project
+directory, agent model, and other settings — no setup script needed.
+
+> Prefer a guided, no-clone install? Use the one-command installer at
+> [clayrune.io](https://clayrune.io) (PowerShell on Windows, one line on macOS /
+> Linux), which drives the whole setup for you.
+
+## Configuration
+
+On first run, a `config.json` file is created with defaults:
+
+```json
+{
+  "port": 5199,
+  "shared_rules_path": "data/SHARED_RULES.md",
+  "projects_base": "/home/you",
+  "agent_model": "",
+  "agent_max_turns": 0,
+  "use_streaming_agent": false,
+  "user_name": "",
+  "agent_name": ""
+}
+```
+
+| Setting | Description | Default |
+|---------|-------------|---------|
+| `port` | Server port | `5199` |
+| `shared_rules_path` | Path to shared rules file (injected into all agent prompts) | `data/SHARED_RULES.md` |
+| `projects_base` | Base directory for project path validation | User home directory |
+| `agent_model` | Default Claude model for all projects | `""` (CLI default) |
+| `agent_max_turns` | Max agent turns per session (0 = unlimited) | `0` |
+| `use_streaming_agent` | Enable Mode B persistent agent process | `false` |
+| `user_name` | Your name (shown in agent context) | `""` |
+| `agent_name` | Agent display name | `""` |
+
+You can also set the port via environment variable: `MC_PORT=8080 python server.py`
+
+## Features
+
+### Project Dashboard
+- Tile-based overview of all projects with status indicators (Active, Waiting, Blocked, Parked)
+- Snap-to-grid tile arrangement — drag tiles to any position, leave gaps, swap tiles
+- Domain categorization with customizable colors
+- Per-project accent color theming
+- Activity stream across all projects
+- Filter by status or domain
+- Compact button to remove grid gaps
+
+### Agent Management
+- Dispatch tasks to Claude Code agents with one click
+- Real-time streaming output with syntax highlighting
+- Send follow-up messages to running or idle agents
+- Multiple concurrent agent sessions per project
+- Stop/resume agent sessions
+- Paste screenshots directly into agent prompts
+- Per-project model selection (Sonnet 4.5, Opus 4.6, Haiku 4.5)
+- Interactive question forms when agents call AskUserQuestion
+- Plan approval button for agents stuck in ExitPlanMode
+- Token usage and cost tracking per session
+- Live elapsed timer for running sessions
+
+### Agent Modes
+- **Mode A** (default): Spawns a new `claude` process per turn. Follow-ups queue and auto-dispatch.
+- **Mode B** (`use_streaming_agent: true`): Persistent process with `--input-format stream-json`. Follow-ups write directly to stdin for faster responses. Process stays alive between turns.
+
+### Scheduler
+- Automate agent dispatch on a schedule
+- Three schedule types: Once (specific datetime), Daily (time + day-of-week), Interval (every N minutes)
+- Enable/disable individual schedules
+- Upcoming jobs banner shows next 5 scheduled tasks
+
+### Backlog
+- Per-project task backlog with priorities (low/normal/high/critical)
+- Drag-and-drop reordering
+- File attachments with drag-and-drop upload
+- Mark items done/reopen
+- Dispatch backlog items directly to an agent session
+- GitHub Issues sync (bidirectional)
+
+### GitHub Issues Sync
+- Connect any project to a GitHub repository (`owner/repo`)
+- Backlog items sync with GitHub Issues in both directions
+- Priority labels mapped automatically (high/medium/low)
+- Open/closed status synchronized
+- Manual sync button or automatic sync every 5 minutes
+- Requires `gh` CLI for authentication
+
+### Plan Viewer
+- Agent plans open in a dedicated wider window for easier reading
+- Auto-detection of plan mode output
+- Plans History tab shows all historical plans per project
+- Pop-out button for viewing any agent output in a larger window
+- Ctrl+scroll zoom support
+
+### Memory
+- Per-project persistent memory using Claude Code's native `MEMORY.md`
+- Memory content injected into agent context automatically
+- Auto-memory: session summaries appended on completion
+- Shared between Clayrune and direct Claude CLI usage
+
+### Multi-Window System
+- Open multiple project modals simultaneously
+- Drag, resize, minimize, and restore windows
+- Keyboard navigation (Escape to close)
+- Minimized tray at bottom of screen
+- Touch support: drag, resize, and pinch-to-zoom on mobile devices
+
+### Token Tracking
+- Global token counter in header (input/output tokens + USD cost)
+- Click to filter by time range: All Time, Today, This Week, This Month
+- Per-session token badge after completion
+
+### Walkthrough Tour
+- 18-step guided tour for new users
+- Auto-triggers on first run (zero projects)
+- Re-triggerable via "Tour" button in header
+- Virtual demo tile and modal shown during tour
+
+## Architecture
+
+```
+mission-control/
+  app.py                 Desktop entry point (pywebview + Flask)
+  server.py              Flask backend (API + static serving)
+  mc/github_sync.py      GitHub Issues sync module
+  static/
+    index.html           Single-page app (HTML + CSS + JS, no build step)
+  data/
+    projects/            Project JSON files (auto-created)
+    uploads/             File attachments
+  config.json            User configuration (auto-created, gitignored)
+  installer/             Hosted one-command installer (clayrune.io)
+```
+
+- **Backend**: Python Flask server on configurable port (default 5199)
+- **Frontend**: Vanilla HTML/CSS/JS single-page app (no framework, no build step)
+- **Data**: JSON files on disk (no database required)
+- **Agent**: Spawns `claude` CLI as subprocess with streaming JSON output
+- **Desktop**: Native window via pywebview (WebView2); run `python app.py` from source
+
+## Contributing
+
+Contributions are welcome! Here's how to get started:
+
+1. Fork the repository
+2. Create a feature branch: `git checkout -b feature/my-feature`
+3. Make your changes
+4. Test locally: `python server.py` and verify in browser
+5. Submit a pull request
+
+### Development Notes
+
+- The entire frontend is in a single `static/index.html` file — no build step needed
+- The server is a single `server.py` file with Flask
+- GitHub sync logic is in `mc/github_sync.py` (imported by server.py)
+- Data is stored as JSON files in `data/projects/`
+- Agent sessions use Server-Sent Events (SSE) for real-time streaming
+- The `claude` CLI is invoked via `subprocess.Popen` with `--output-format stream-json`
+
+## License
+
+[MIT](LICENSE) — **except** two source-available-but-proprietary
+directories:
+
+| Path | License |
+|------|---------|
+| Everything else (core: `server.py`, `static/`, `mc/github_sync.py`, `mc_remote_iface/`, …) | MIT |
+| `mc_remote/` | Proprietary — see [`mc_remote/PROPRIETARY.md`](mc_remote/PROPRIETARY.md) |
+| `mc_tunnel/` | Proprietary — see [`mc_tunnel/PROPRIETARY.md`](mc_tunnel/PROPRIETARY.md) |
+
+`mc_remote` + `mc_tunnel` are the closed platform-binding moat for
+clayrune.io; they live in this repo for build convenience but are **not**
+MIT. The open-core seam is `mc_remote_iface/` (MIT) — implement that
+contract to plug in your own remote-access provider without touching the
+proprietary modules. Rationale: [`docs/remote-access/07-licensing.md`](docs/remote-access/07-licensing.md).
