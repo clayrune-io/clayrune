@@ -21,23 +21,22 @@ you can see at a glance which one is stuck.
 
 ## The parts I'd actually show you
 
-### It runs overnight with permissions off, and still can't `git push`
+### Agents that work while I'm asleep
 
-An agent working alone overnight runs with `--dangerously-skip-permissions`,
-because stopping to ask defeats the whole point. So I put the limit in code
-instead. [`steward/fence.py`](steward/fence.py) is a hook that blocks **21
-command shapes** it can never take back — `DROP TABLE`, `rm -rf` outside
-scratch, `git push`, `npm publish`, `terraform destroy`, `gh pr create`, the
-cloud spend verbs. If it can't work out which session it's in, it blocks
-anyway. And it won't let an agent edit the fence itself, which was the first
-thing I worried about. 20 tests on it.
+For an agent to get anything done overnight it has to run with permissions
+off — one that stops to ask about every file is just waiting for you in a more
+expensive way. So I put the guardrail in code instead.
+[`steward/fence.py`](steward/fence.py) holds a list of **21 things it can never
+do**: `git push`, `DROP TABLE`, `npm publish`, `terraform destroy`,
+`gh pr create`, `rm -rf` outside scratch, the cloud spend verbs. It can't edit
+that list — the first thing I worried about — and if it can't tell which
+session it's in, it stops anyway. 20 tests on it.
 
-Then the bit I'm most pleased with: **it emails you whatever it just refused
-to run**, waits for you, and picks the same run back up when you reply.
+The part I'm most pleased with: **whatever it refused to run lands in your
+inbox**, and it carries on with the same job the moment you answer.
 
-One caveat worth stating plainly, since the claim's useless without it: this
-covers agents running on their own. Your own interactive sessions aren't
-fenced.
+Worth saying plainly, because the claim's useless without it: this covers
+agents running on their own. Your own interactive sessions aren't fenced.
 
 ### Memory that I actually measured
 
