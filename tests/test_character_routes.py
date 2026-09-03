@@ -342,6 +342,90 @@ def test_naming_an_unknown_character_404s(client):
                        json={'project_id': 'tchar'}).status_code == 404
 
 
+class TestVoiceGeneration:
+    """MC-943: the hire flow generates `## Voice` from the role in progress,
+    before the character exists on disk — so this route takes description +
+    body directly rather than a scope/name pair like self-naming does."""
+
+    def test_generates_and_returns_a_voice_section(self, client):
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: (
+            "## Voice\n\nYou open with the defect, not the context.\n\n"
+            "- **Location first.** \"file.py:12 - this drops the write.\"\n"
+            "- You never say \"just\" about a fix you have not run.\n")
+        r = client.post('/api/characters/voice',
+                        json={'description': 'strict code reviewer',
+                              'body': 'You are a strict senior code reviewer.'})
+        assert r.status_code == 200
+        voice = r.get_json()['voice']
+        assert voice.startswith('## Voice')
+        assert 'Location first' in voice
+
+    def test_missing_heading_is_supplied_rather_than_refused(self, client):
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: '- **Terse.** Says the number first.'
+        r = client.post('/api/characters/voice',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 200
+        assert r.get_json()['voice'].startswith('## Voice\n\n- **Terse.**')
+
+    def test_a_fenced_wrapper_is_stripped(self, client):
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: '```markdown\n## Voice\n\n- **Terse.** x\n```'
+        r = client.post('/api/characters/voice',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 200
+        voice = r.get_json()['voice']
+        assert voice == '## Voice\n\n- **Terse.** x'
+
+    def test_blank_model_output_is_a_clear_502_not_a_generic_block(self, client):
+        """Fail gracefully: an honest error, never a silent generic voice."""
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: '   '
+        r = client.post('/api/characters/voice',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 502
+        assert 'usable voice' in r.get_json()['error']
+
+    def test_model_call_failure_is_a_clear_502(self, client):
+        from mc.blueprints import character_routes as cr
+
+        def _boom(*a, **k):
+            raise RuntimeError('scribe claude call failed (timeout)')
+        cr._scribe_call = _boom
+        r = client.post('/api/characters/voice',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 502
+        assert 'could not reach the model' in r.get_json()['error']
+
+    def test_no_description_and_no_body_is_a_400(self, client):
+        r = client.post('/api/characters/voice', json={})
+        assert r.status_code == 400
+
+    def test_runs_on_an_explicitly_passed_engine_model(self, client):
+        from mc.blueprints import character_routes as cr
+        seen = {}
+
+        def _fake(model, instruction, body):
+            seen['model'] = model
+            return '## Voice\n\n- **Terse.** x'
+        cr._scribe_call = _fake
+        client.post('/api/characters/voice',
+                    json={'description': 'a reviewer', 'body': 'x',
+                          'engine': {'model': 'claude-fable-5'}})
+        assert seen['model'] == 'claude-fable-5'
+
+    def test_never_persists_anything(self, client):
+        """Generation is a preview for the save panel — no file should exist
+        afterward, unlike /name and /avatar which write immediately."""
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: '## Voice\n\n- **Terse.** x'
+        client.post('/api/characters/voice',
+                    json={'description': 'a reviewer', 'body': 'x'})
+        written = list(client.global_dir.glob('*.md')) if client.global_dir.exists() else []
+        assert written == []
+
+
 class TestMove:
     """A persona's home was decided once, at creation, and could never change:
     Ron wrote a marketing persona into one project with no way to promote it to

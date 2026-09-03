@@ -141,6 +141,107 @@ def create_character_route():
     return jsonify(rec), 201
 
 
+# ── Voice generation (MC-943) ────────────────────────────────────────────────
+# 2026-09-01 split shared rules (conduct/content, ~46KB, byte-identical across
+# every agent) from the character file (voice, 1.8-4.3KB) — because that shared
+# floor legislates TONE ("always condense", "never narrate your own diligence")
+# and nine hand-written characters had collapsed into one indistinguishable
+# telegram until each got a concrete `## Voice` section. That section was
+# authored by hand for the nine that exist; hiring a tenth through the UI
+# produced a name, a role and a face, and then the same flattened voice this
+# split was supposed to have killed. This generates the section AS PART OF the
+# hire (docs/PROMPT_BUILDER_DESIGN.md's Claydo save-panel flow), so a
+# newly-hired character is never voiceless-by-default again.
+#
+# No scope/name here, unlike self-naming/self-facing below: this runs while
+# the character is still a DRAFT in the save panel, before the file exists —
+# the whole point is showing the voice before the first write, not generating
+# it after the fact on a manual click.
+_VOICE_PROMPT = (
+    "You are about to start work under the role definition below. Write the "
+    "\"## Voice\" section of your OWN system prompt: the concrete speech "
+    "habits that make you sound like nobody else on the roster.\n\n"
+    "Every agent on this roster already shares one long system prompt that "
+    "legislates tone in general — be concise, use bullet points, never "
+    "narrate your own diligence. Your job here is everything ABOVE that "
+    "floor: what you lead with, your rhythm, the phrasings you reach for, "
+    "and the thing you flatly never say. A generic block like 'be concise "
+    "and professional' is a FAILURE — if it could paste unchanged into a "
+    "different role, it is wrong.\n\n"
+    "Output format, exactly:\n"
+    "## Voice\n\n"
+    "<one sentence naming the single thing that opens every reply from "
+    "you>\n\n"
+    "- **<a named habit, bolded>.** <one or two sentences, including an "
+    "invented example phrase in quotes, in this role's own words>\n"
+    "(3 to 5 bullets shaped like that one)\n"
+    "- A last bullet naming something you flatly never say or never do.\n\n"
+    "Rules:\n"
+    "- Output ONLY the section: start with '## Voice', nothing before it, "
+    "nothing after the last bullet. No preamble, no fences.\n"
+    "- Every bullet has to be something a reader could catch you breaking. "
+    "'Be clear' is not checkable; 'location first, every time' is.\n"
+    "- At least one bullet must include an invented example sentence in "
+    "quotes, written the way THIS role would actually say it.\n"
+    "- Ground it in this role's temperament and what it exists to catch — "
+    "not in generic professionalism that would fit any role.\n"
+    "- 120-220 words total."
+)
+
+
+def _clean_voice_section(raw):
+    """Turn a model's answer into a bare `## Voice` section, or '' if unusable.
+
+    Strips a fenced wrapper if the model added one despite the "no fences"
+    rule, and supplies the heading if the model dropped it but the body is
+    otherwise usable — a missing heading line is not worth refusing an
+    otherwise-good section over.
+    """
+    text = (raw or '').strip()
+    m = re.match(r'^```(?:[\w-]*)\n([\s\S]*?)\n?```$', text)
+    if m:
+        text = m.group(1).strip()
+    if not text:
+        return ''
+    if not re.match(r'^##\s*Voice\b', text, re.IGNORECASE):
+        text = '## Voice\n\n' + text
+    return text
+
+
+@bp.route('/api/characters/voice', methods=['POST'])
+def generate_voice_route():
+    """Generate a `## Voice` section for a character still being hired.
+
+    Takes the draft's description + body directly (not scope/name — the
+    character does not exist on disk yet at this point in the save-panel
+    flow). Never persists anything; the caller folds the result into `body`
+    and saves it through the normal create/update path, so this endpoint
+    itself has no write-side effects to test beyond "returns text or a
+    clear error."
+    """
+    data = request.get_json(silent=True) or {}
+    description = (data.get('description') or '').strip()
+    body = (data.get('body') or '').strip()
+    if not description and not body:
+        return jsonify({'error': 'need a description or body to write a voice from'}), 400
+
+    engine_raw = data.get('engine')
+    engine = engine_raw if isinstance(engine_raw, dict) else {}
+    model = (engine.get('model') or '').strip() or state.CONFIG.get('agent_model') or 'sonnet'
+    payload = (f"Role: {description}\n\n{body}")[:6000]
+    try:
+        raw = _scribe_call(model, _VOICE_PROMPT, payload)
+    except Exception as e:
+        _log(f"[characters] voice generation failed: {e}")
+        return jsonify({'error': f'could not reach the model to write a voice: {e}'}), 502
+
+    voice = _clean_voice_section(raw)
+    if not voice:
+        return jsonify({'error': 'the model did not return a usable voice section — '
+                                 'edit one by hand, or try again'}), 502
+    return jsonify({'voice': voice})
+
+
 @bp.route('/api/characters/<scope>/<name>')
 def read_character_route(scope, name):
     if scope not in ('global', 'project'):

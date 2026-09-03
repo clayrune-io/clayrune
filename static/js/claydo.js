@@ -829,18 +829,46 @@ function _claydoBotNote(html) {
 // Inputs numbered top-down, single accent action button (the multi-input
 // modal convention).
 
+// A "## Voice" section, own heading through the next top-level "## "
+// heading or end of string. Shared by the extractor (pull one already in the
+// draft, so a regenerate replaces rather than duplicates) and the merger
+// (fold the generated/edited section back into body before Save).
+const _CLAYDO_VOICE_RE = /\n?##\s*Voice\b[\s\S]*?(?=\n##\s|$)/i;
+
+function _claydoExtractVoiceSection(body) {
+  const src = (body || '').replace(/\r\n/g, '\n');
+  const m = src.match(_CLAYDO_VOICE_RE);
+  if (!m) return {rest: src, voice: ''};
+  const voice = m[0].replace(/^\n/, '').trim();
+  const rest = (src.slice(0, m.index) + src.slice(m.index + m[0].length)).replace(/\s+$/, '');
+  return {rest, voice};
+}
+
+function _claydoMergeVoiceSection(restBody, voiceText) {
+  const rest = (restBody || '').replace(/\s+$/, '');
+  const voice = (voiceText || '').trim();
+  if (!voice) return rest;
+  return (rest ? rest + '\n\n' : '') + voice + '\n';
+}
+
 function _claydoOpenSavePanel(artifact, suggestedName) {
   // Prefill from the artifact's frontmatter; the body is what's below it.
-  let name = suggestedName || '', description = '', body = artifact;
+  let name = suggestedName || '', description = '', rawBody = artifact;
   const fm = artifact.match(/^---\r?\n([\s\S]*?)\r?\n---\r?\n?/);
   if (fm) {
-    body = artifact.slice(fm[0].length).trim();
+    rawBody = artifact.slice(fm[0].length).trim();
     const nm = fm[1].match(/^name:\s*(.+)$/m);
     const dm = fm[1].match(/^description:\s*([\s\S]*?)(?=\r?\n[a-zA-Z_-]+\s*:|$)/);
     if (nm) name = nm[1].trim().replace(/^["']|["']$/g, '');
     if (dm) description = dm[1].replace(/\s*\r?\n\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
   }
   if (!name) name = 'my-character';
+
+  // MC-943: the hire flow generates the character's `## Voice` section here,
+  // in the same save step as name/description — not as a later manual edit.
+  // Pull any Voice section the draft already carries out of the base body so
+  // a regenerate replaces it instead of stacking a second one underneath.
+  const {rest: baseBody, voice: existingVoice} = _claydoExtractVoiceSection(rawBody);
 
   const content = document.querySelector(`[data-modal-id="__claydo"] .modal-content`)
     || document.getElementById('claydo-history')?.parentElement;
@@ -856,6 +884,7 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   panel.innerHTML = `
     <div class="claydo-save-inner">
       <div class="claydo-save-title">Save character</div>
+      <div class="claydo-save-scroll">
       <label>1. Name</label>
       <input id="claydo-save-name" type="text" spellcheck="false" value="${esc(name)}">
       <label>2. Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
@@ -864,10 +893,19 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       <select id="claydo-save-scope">
         <option value="global">All my projects (global)</option>
       </select>
+      <label>4. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
+      <div class="claydo-save-voice-status" id="claydo-save-voice-status">Writing a voice for this role&hellip;</div>
+      <textarea id="claydo-save-voice" class="claydo-save-voice" spellcheck="true" rows="7"
+        placeholder="## Voice&#10;&#10;Concrete speech habits go here once generated — or write your own."
+      >${esc(existingVoice)}</textarea>
+      <div class="claydo-save-voice-actions">
+        <button type="button" class="claydo-ready-btn" id="claydo-save-voice-regen">&#x1F504; Regenerate</button>
+      </div>
+      </div>
       <div class="claydo-save-err" id="claydo-save-err" style="display:none"></div>
       <div class="claydo-save-actions">
         <button class="claydo-ready-btn" id="claydo-save-cancel">Cancel</button>
-        <button class="claydo-ready-btn accent" id="claydo-save-go">Save character</button>
+        <button class="claydo-ready-btn accent" id="claydo-save-go" disabled>Save character</button>
       </div>
     </div>`;
   content.appendChild(panel);
@@ -899,6 +937,49 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   })();
 
   const goBtn = panel.querySelector('#claydo-save-go');
+
+  // ── Voice generation (MC-943) ─────────────────────────────────────────
+  // Runs automatically on open — "in singular flow" means the user is never
+  // required to click a separate button to get one, unlike the post-hoc
+  // self-naming/self-facing pickers in the persona editor. Save stays
+  // disabled until the first attempt settles (success OR failure) so a fast
+  // click can't save an empty voice nobody saw generate.
+  const voiceStatusEl = panel.querySelector('#claydo-save-voice-status');
+  const voiceTa = panel.querySelector('#claydo-save-voice');
+  const regenBtn = panel.querySelector('#claydo-save-voice-regen');
+  const setVoiceStatus = (msg, isErr) => {
+    voiceStatusEl.textContent = msg;
+    voiceStatusEl.classList.toggle('err', !!isErr);
+  };
+  const runVoiceGen = async () => {
+    regenBtn.disabled = true;
+    goBtn.disabled = true;
+    setVoiceStatus('Writing a voice for this role…', false);
+    const descNow = panel.querySelector('#claydo-save-desc').value.trim() || description;
+    try {
+      const res = await fetch(API_BASE + '/api/characters/voice', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({description: descNow, body: baseBody}),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `voice generation failed (${res.status})`);
+      voiceTa.value = data.voice || '';
+      setVoiceStatus('Generated — edit freely before saving.', false);
+    } catch (e) {
+      // Fail gracefully: an honest message, an empty/editable field, and a
+      // hire that still completes — never a silent generic block, never a
+      // blocked Save.
+      setVoiceStatus('Could not auto-generate a voice (' + (e.message || e)
+        + '). Write one by hand, or try Regenerate again.', true);
+    } finally {
+      regenBtn.disabled = false;
+      goBtn.disabled = false;
+    }
+  };
+  regenBtn.onclick = runVoiceGen;
+  runVoiceGen();
+
   let overwrite = false;
   goBtn.onclick = async () => {
     const nameVal = panel.querySelector('#claydo-save-name').value.trim().toLowerCase();
@@ -910,6 +991,7 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       return showErr('Name must be kebab-case: letters, digits, hyphens.');
     }
     if (!descVal) return showErr('Description is required — it tells the agent when to use this character.');
+    const body = _claydoMergeVoiceSection(baseBody, voiceTa.value);
     goBtn.disabled = true;
     try {
       const res = await fetch(API_BASE + '/api/characters', {

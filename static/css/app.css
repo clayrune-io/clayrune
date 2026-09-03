@@ -7167,11 +7167,24 @@
   }
   .claydo-save-inner {
     background: var(--surface); border: 1px solid var(--border);
-    border-radius: 8px; padding: 18px 20px; width: min(380px, 90%);
+    border-radius: 8px; padding: 18px 20px;
+    /* Wider than the old 380px: the Voice field (MC-943) carries quoted
+       example phrasing that wraps unreadably at the old width. */
+    width: min(440px, 92%);
+    max-height: 92%;
     display: flex; flex-direction: column; gap: 6px;
     box-shadow: 0 8px 28px rgba(0,0,0,0.45);
   }
   .claydo-save-title { font-size: 14px; font-weight: 700; margin-bottom: 6px; }
+  /* Fields scroll; the title and the action bar do not — same fix as the
+     persona editor's .pe-scroll (MC-943 added a multi-line Voice field, tall
+     enough on a 600px-high Claydo modal to push Save off the bottom, which
+     reads as a discarded edit rather than a panel that needs scrolling). */
+  .claydo-save-scroll {
+    flex: 1 1 auto; min-height: 0; overflow-y: auto; overflow-x: hidden;
+    display: flex; flex-direction: column; gap: 2px;
+    padding-right: 2px;
+  }
   .claydo-save-inner label {
     font-size: 11px; color: var(--text-faint); font-weight: 600;
     margin-top: 6px;
@@ -7185,6 +7198,21 @@
   .claydo-save-inner input:focus, .claydo-save-inner select:focus {
     border-color: var(--accent);
   }
+  .claydo-save-voice {
+    background: var(--bg); border: 1px solid var(--border);
+    color: var(--text); font-family: var(--mono, ui-monospace, monospace);
+    font-size: 12px; line-height: 1.5;
+    padding: 7px 10px; border-radius: 5px; outline: none;
+    resize: vertical; min-height: 130px;
+  }
+  .claydo-save-voice:focus { border-color: var(--accent); }
+  .claydo-save-voice-status {
+    font-size: 11px; color: var(--text-faint); margin: 2px 0 4px;
+  }
+  .claydo-save-voice-status.err { color: #fca5a5; }
+  .claydo-save-voice-actions {
+    display: flex; justify-content: flex-end; margin-top: 4px;
+  }
   .claydo-save-err {
     font-size: 12px; color: #fca5a5; background: #ef444420;
     border: 1px solid #ef444460; border-radius: 5px; padding: 6px 10px;
@@ -7192,7 +7220,7 @@
   }
   .claydo-save-actions {
     display: flex; justify-content: flex-end; gap: 8px; margin-top: 12px;
-    flex-wrap: wrap;
+    flex-wrap: wrap; flex: 0 0 auto;
   }
 
   /* ── Persona editor ────────────────────────────────────────────────────
