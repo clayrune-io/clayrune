@@ -4260,16 +4260,44 @@ def _log_agent_completion(session):
     # Skip memory append and condense for housekeeping sessions (prevents circular triggers)
     is_housekeeping = session.get('housekeeping', False)
 
-    # Take the last non-empty text block as the summary
+    # Take the last non-empty text block as the summary. Must never fall back
+    # to the dispatcher's own seed line ("> {user}: {task}") or an MC status
+    # marker — a turn that errors before printing anything real otherwise
+    # leaves that seed line as the "last non-bracketed" text, and the summary
+    # reads as the USER'S OWN PROMPT echoed back as if it were the result
+    # (MC-935: two failed market-scout runs wrote summary="> Ron: [Competitor
+    # watch] ..." with zero lines on disk, and the Scribe then read that back
+    # as "no execution data" — a silent failure that made it into durable
+    # memory looking like an ordinary completion).
     lines = session.get('log_lines', [])
-    # Find the last substantial text (skip tool/status markers)
+    # Find the last substantial text (skip tool/status markers and the seed).
     summary = ''
     for line in reversed(lines):
-        if line and not line.startswith('[') and not line.startswith('\n---'):
-            summary = line
-            break
-    if not summary and lines:
-        summary = lines[-1]
+        if not line or line.startswith('\n---'):
+            continue
+        stripped = line.strip()
+        if stripped.startswith('['):
+            continue
+        if _agent_runtime._SEED_LINE_RE.match(stripped):
+            continue
+        summary = line
+        break
+    if not summary:
+        # No real assistant text survived the turn. Say so explicitly rather
+        # than substituting the last thing in log_lines — for exactly this
+        # case that is the seeded prompt echo or a bracketed status marker,
+        # neither of which is a result. Prefer the CLI's own error line when
+        # one is on the tail (reuses the MC-935 `_last_real_error_line` fix
+        # so a `[provider error] [detail]` shaped line is recognized as real
+        # error text instead of being skipped as a marker).
+        tail = '\n'.join(lines)
+        real_error = _agent_runtime._last_real_error_line(tail)
+        if real_error:
+            summary = f'[no assistant output — {real_error}]'
+        elif session.get('status') == 'error':
+            summary = '[no assistant output — run failed with no captured error text]'
+        else:
+            summary = '[no assistant output captured]'
 
     # Extract token telemetry from the transcript before building the entry.
     # Best-effort: failures silently produce empty telemetry.
@@ -4394,6 +4422,21 @@ def _runtime_log_completion(ev, session):
         if not project_id:
             return
         with get_manager(project_id).lock:
+            # MC-935: this hook is the ONE place every non-claude provider's
+            # process exit funnels through (Gemini's own `_read_stream` and
+            # the shared `_mode_a_reader` used by codex/opencode/goose/aider/
+            # kiro both call back here) — and until now nothing on this path
+            # ever called `_log`, so a failed run left nothing on disk to
+            # debug: not the argv, not the error. Write the CLI's own last
+            # real line (skipping MC's markers and the seeded prompt echo —
+            # the same scan `_last_real_error_line` does) so a future silent
+            # failure has SOMETHING in clayrune.log besides the seed line.
+            if session.get('status') == 'error':
+                tail = '\n'.join(session.get('log_lines') or [])
+                detail = (_agent_runtime._last_real_error_line(tail)
+                          or 'no error text captured on the session tail')
+                _log(f"[runtime-error] provider={session.get('provider', '')} "
+                     f"session={session.get('session_id', '')}: {detail}")
             _log_agent_completion(session)
     except Exception as e:
         _log(f"[runtime-completion] agent-log write failed: {e}")
@@ -4826,6 +4869,22 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                                                  character_skills=(character_meta or {}).get('skills') or [])
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
+
+    # MC-935: the claude path logs its argv (`[dispatch] cmd: ...`) before
+    # spawning; nothing on this path — the ONE dispatch entry point shared by
+    # every non-claude provider — ever wrote a byte to disk. Two failed
+    # market-scout (gemini) runs left ZERO lines in clayrune.log because of
+    # exactly that gap: whatever happened between spawn and exit was
+    # reconstructable only from the in-memory session, which itself got
+    # discarded. `build_command` is pure (no subprocess) so logging it costs
+    # nothing on the success path and is best-effort on the failure path —
+    # a run must still be attempted even if this line can't be built.
+    try:
+        _log(f"[dispatch] provider={provider_name} cmd: "
+             f"{' '.join(runtime.build_command(model=model))}")
+    except Exception as e:
+        _log(f"[dispatch] provider={provider_name} model={model!r} "
+             f"(cmd unavailable: {e})")
 
     try:
         handle = runtime.dispatch(

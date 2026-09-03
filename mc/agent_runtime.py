@@ -372,6 +372,22 @@ _EXIT_ERROR_NOISE_PATTERNS = (
 # through is not skipped.
 _SEED_LINE_RE = re.compile(r'^>\s+\S[^:\n]{0,40}:\s')
 
+# MC's own bracketed status markers (`[tool: x]`, `[gemini exited with code 1]`,
+# `[interrupted]`, ...) are exactly ONE bracket pair wrapping the whole line —
+# nothing before the opening `[`, nothing after the matching `]`. That is what
+# `_last_real_error_line` is meant to skip past.
+#
+# MC-935: a CLI's own error line can ALSO start with one of MC's marker
+# prefixes and still end in `]` — `[gemini error] [API Error: quota exceeded]`
+# is `[gemini error]` (the marker `_read_stream` prepends) followed by the
+# real error text, which Gemini itself wraps in brackets. The old check
+# (`startswith('[') and endswith(']')`) matched that whole line and skipped
+# it — the ONE line with the actual cause on it — leaving nothing behind but
+# the echoed prompt or nothing at all. `[^\[\]]*` refuses to cross a second
+# bracket, so a marker-plus-payload line like that no longer matches: only a
+# line that IS a single bracket pair, start to finish, is skipped.
+_MARKER_ONLY_RE = re.compile(r'^\[[^\[\]]*\]$')
+
 
 def _last_real_error_line(log_tail: str) -> Optional[str]:
     """Return the CLI's own last non-noise output line, or None if there isn't one.
@@ -391,7 +407,7 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
         stripped = line.strip()
         if not stripped:
             continue
-        if stripped.startswith('[') and stripped.endswith(']'):
+        if _MARKER_ONLY_RE.match(stripped):
             continue
         if any(p in stripped.lower() for p in _EXIT_ERROR_NOISE_PATTERNS):
             continue
