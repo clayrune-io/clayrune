@@ -20,27 +20,27 @@ It runs on your machine against your own Claude CLI.
 
 ## What it does
 
-### Main features
+### 🎛️ Main features
 
-- Runs on your machine against the Claude CLI you are already signed into. No account, no telemetry, MIT.
-- Connect from anywhere in the world using the dedicated mobile app, running over a secure tunnel.
+- 🔒 Runs on your machine against the Claude CLI you are already signed into. No account, no telemetry, MIT.
+- 📱 Connect from anywhere in the world using the dedicated mobile app, running over a secure tunnel.
 - One dashboard, as many projects as you want. Multi-agent conversations inside each project, with as many running in parallel as you need.
-- Agents run autonomously until they absolutely **need you**, then clearly signal they are waiting for an answer.
+- 🔔 Agents run autonomously until they absolutely **need you**, then clearly signal they are waiting for an answer.
 - Converse with individual agents, each with their own persona, voice and face.
 - Hire new agents as you need them through Floor management, where you see everything happening right now.
-- Multi-vendor and multi-model at the same time: Claude Code first-class, plus Gemini, Codex, Aider, OpenCode and Goose.
+- 🔀 Multi-vendor and multi-model at the same time: Claude Code first-class, plus Gemini, Codex, Aider, OpenCode and Goose.
 - Read output as it streams; interrupt mid-task without killing the session.
 - Agents working on the same project are protected by git worktree isolation when you choose it.
 
-### Working without you
+### 🌙 Working without you
 
-- Scheduler: once, daily, interval or cron.
+- ⏰ Scheduler: once, daily, interval or cron.
 - Standing briefs — hand an agent a charter and it sets its own next task.
-- A hard-coded trust mechanism keeps agents from going rogue: 21 irreversible commands (`git push`, `DROP TABLE`, `npm publish`, `terraform destroy`, cloud spend verbs) stay blocked even when permissions are skipped.
+- 🛡️ A hard-coded trust mechanism keeps agents from going rogue: 21 irreversible commands (`git push`, `DROP TABLE`, `npm publish`, `terraform destroy`, cloud spend verbs) stay blocked even when permissions are skipped.
 - Blocked commands and open questions are emailed to you; your reply resumes the same run.
 - Starts with the machine, so a 3am reboot doesn't take it offline.
 
-### Memory
+### 🧠 Memory
 
 - Long-term memory that adapts and keeps learning.
 - Agents learn not only from what worked, but from what did not — lessons learned.
@@ -48,13 +48,13 @@ It runs on your machine against your own Claude CLI.
 - Standing positions, so settled decisions don't get re-proposed.
 - Continuous inspection scripts that score how effective your memory files and index actually are.
 
-### Everything else
+### 🧰 Everything else
 
 - Backlogs with priorities, attachments and two-way GitHub Issues sync.
 - Skills and MCP servers managed per project or globally.
 - Token and cost tracking across sessions.
 - Multi-window layouts that survive a refresh and a reboot.
-- Hivemind mode for fanning out tasks and explorations.
+- 🐝 Hivemind mode for fanning out tasks and explorations.
 
 ## Screens
 
