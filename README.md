@@ -8,11 +8,11 @@ Run many agents, across every project, and keep working while they do.
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square)](https://clayrune.io/download.html)
 [![Live demo](https://img.shields.io/badge/live%20demo-clayrune.io-8250df?style=flat-square)](https://clayrune.io/demo)
 
-![Clayrune — three agents working across three projects, and the same session live on a phone](docs/assets/demo.gif)
-
 Four terminals open and you cannot tell which one stopped and is waiting on you.
-Clayrune is a board over the sessions you already run: every project on it, every
-agent named, and the ones that need you say so.
+Clayrune is a board over the Claude Code sessions you already run: every project
+on it, every agent named, and the ones that need you say so.
+
+![Clayrune — the board, one project flagged as waiting on you, and thirty agent sessions running underneath](docs/assets/demo.gif)
 
 **[▶ Try the live demo — nothing to install](https://clayrune.io/demo)** &nbsp;·&nbsp; **[⬇ Download](https://clayrune.io/download.html)** — Windows, macOS, Linux
 
