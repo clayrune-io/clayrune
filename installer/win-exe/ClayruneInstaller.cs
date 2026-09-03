@@ -26,7 +26,7 @@ using System.Threading;
 internal static class ClayruneInstaller
 {
     private const string DefaultPs1Url =
-        "https://raw.githubusercontent.com/ronle/clayrune/master/installer/install.ps1";
+        "https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.ps1";
 
     // Exit codes returned by installer/install.ps1. This is a CONTRACT — see
     // the "EXIT CODES" block at the top of that file. Keep them in sync.
@@ -104,7 +104,7 @@ internal static class ClayruneInstaller
         Console.WriteLine("Disk space: about 500 MB.");
         Console.WriteLine();
         Console.WriteLine("You can audit what runs by reading:");
-        Console.WriteLine("  https://raw.githubusercontent.com/ronle/clayrune/master/installer/install-prompt.md");
+        Console.WriteLine("  https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md");
         Console.WriteLine();
         Pause("Press Enter to begin (or close this window to cancel) . . .");
 

@@ -630,8 +630,8 @@ if (-not (Test-ClaudeAuth)) {
     Write-Host '         When you see "' -NoNewline; Write-Host 'Logged in' -ForegroundColor Cyan -NoNewline; Write-Host '", type ' -NoNewline; Write-Host 'exit' -ForegroundColor Cyan -NoNewline; Write-Host ' to leave the Claude REPL.'
     Write-Host ''
     Write-Host 'Step 2.' -ForegroundColor White -NoNewline; Write-Host ' Re-run this installer in a NEW PowerShell window:'
-    Write-Host '         $env:CLAYRUNE_PROMPT_URL = ''https://raw.githubusercontent.com/ronle/clayrune/master/installer/install-prompt.md''' -ForegroundColor Cyan
-    Write-Host '         iwr https://raw.githubusercontent.com/ronle/clayrune/master/installer/install.ps1 -useb | iex' -ForegroundColor Cyan
+    Write-Host '         $env:CLAYRUNE_PROMPT_URL = ''https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install-prompt.md''' -ForegroundColor Cyan
+    Write-Host '         iwr https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.ps1 -useb | iex' -ForegroundColor Cyan
     Write-Host ''
     # Exit code 3 = "not authenticated", specifically. See the EXIT CODES
     # contract at the top of this file: ClayruneInstaller.exe keys its
@@ -659,7 +659,7 @@ Write-Host ''
 # (that's the product), but installing Clayrune doesn't.
 
 $installDir = if ($env:CLAYRUNE_HOME) { $env:CLAYRUNE_HOME } else { "$env:USERPROFILE\Clayrune" }
-$repoUrl = 'https://github.com/ronle/clayrune.git'
+$repoUrl = 'https://github.com/clayrune-io/clayrune.git'
 
 Write-Host '--------------------------------------' -ForegroundColor Yellow
 Write-Host 'About to install Clayrune to:' -ForegroundColor White

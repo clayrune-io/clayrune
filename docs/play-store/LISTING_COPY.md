@@ -68,7 +68,7 @@ REQUIREMENTS
 OPEN SOURCE
 
 The Mission Control backend is open source:
-https://github.com/ronle/clayrune
+https://github.com/clayrune-io/clayrune
 ```
 
 ## What's new (release notes — for v1.3 / versionCode 4)

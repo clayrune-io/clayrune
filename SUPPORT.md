@@ -5,13 +5,13 @@ real human reading everything below, and a reply is the normal outcome.
 
 ## Something is broken
 
-[Open an issue](https://github.com/ronle/clayrune/issues/new/choose). If the
+[Open an issue](https://github.com/clayrune-io/clayrune/issues/new/choose). If the
 installer stopped part-way, paste the last line it printed. That one line
 usually identifies the problem on its own.
 
 ## It is not a bug
 
-[The same place](https://github.com/ronle/clayrune/issues/new/choose), under
+[The same place](https://github.com/clayrune-io/clayrune/issues/new/choose), under
 "Feedback, a question, or an idea". Questions about whether Clayrune does a
 particular thing are welcome and are usually a sign the docs are missing
 something.

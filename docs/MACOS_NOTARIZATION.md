@@ -28,7 +28,7 @@ gh release upload vX.Y.Z Clayrune-macOS.zip --clobber
 ```
 
 The website's macOS button is a fixed URL,
-`https://github.com/ronle/clayrune/releases/latest/download/Clayrune-macOS.zip`,
+`https://github.com/clayrune-io/clayrune/releases/latest/download/Clayrune-macOS.zip`,
 which GitHub resolves against whatever release is *latest*. **Publish a release
 without that asset and the download button 404s for every Mac visitor**, with
 nothing on our side reporting a problem. That is what v2.0.1 and v2.0.2 did

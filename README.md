@@ -4,7 +4,7 @@
 Run many agents, across every project, and keep working while they do.
 
 [![License: MIT](https://img.shields.io/badge/license-MIT-1f6feb?style=flat-square)](LICENSE)
-[![Last commit](https://img.shields.io/github/last-commit/ronle/clayrune?style=flat-square&color=1f883d&label=last%20commit)](https://github.com/ronle/clayrune/commits)
+[![Last commit](https://img.shields.io/github/last-commit/clayrune-io/clayrune?style=flat-square&color=1f883d&label=last%20commit)](https://github.com/clayrune-io/clayrune/commits)
 [![Platforms](https://img.shields.io/badge/platform-macOS%20%7C%20Linux%20%7C%20Windows-6e7781?style=flat-square)](https://clayrune.io/download.html)
 [![Live demo](https://img.shields.io/badge/live%20demo-clayrune.io-8250df?style=flat-square)](https://clayrune.io/demo)
 
@@ -94,7 +94,7 @@ Windows will grumble about an "unrecognized app" the first time.
 Requires Python 3.9+ and the [Claude CLI](https://docs.anthropic.com/en/docs/claude-code/getting-started).
 
 ```bash
-git clone https://github.com/ronle/clayrune.git
+git clone https://github.com/clayrune-io/clayrune.git
 cd mission-control
 pip install -r requirements.txt
 python app.py        # native desktop window
