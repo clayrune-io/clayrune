@@ -336,6 +336,23 @@ let _IV_Z = 10000;
 const _IV_STACK = [];
 const _ivMobile = () => window.matchMedia('(max-width: 960px)').matches;
 
+// The toolbar's own width requirement, measured from its children rather than
+// hardcoded — a narrow image (~330px in the report that motivated this) used
+// to leave the viewer window sized to the PICTURE while the toolbar (fixed
+// content: 7-8 buttons) needed ~400px, so buttons past "save" rendered outside
+// the window with no wrap/scroll/overflow-menu to reach them. Call this BEFORE
+// anything has constrained the toolbar's width (i.e. right after the overlay
+// is appended, while the content box still has its roomy CSS default) so each
+// button reports its true unclamped size instead of an already-shrunk one.
+function _ivToolbarMinWidth(toolbar) {
+  const cs = getComputedStyle(toolbar);
+  const gap = parseFloat(cs.columnGap || cs.gap) || 0;
+  const kids = [...toolbar.children];
+  const sum = kids.reduce((s, el) => s + el.getBoundingClientRect().width, 0);
+  const pad = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+  return Math.ceil(sum + gap * Math.max(0, kids.length - 1) + pad);
+}
+
 function _ivWindowify(overlay, content, toolbar) {
   _IV_STACK.push(overlay);
   const raise = () => {
@@ -419,14 +436,24 @@ function _ivWindowify(overlay, content, toolbar) {
 // WHOLE thing fits inside a fraction of the viewport, never enlarge past 1:1.
 // The old code clamped width and height independently at 95vw/92vh, which for
 // anything bigger than the screen — i.e. every screenshot — meant "maximised".
-function _ivFitBox(nw, nh) {
+//
+// `toolbarMinW` (from _ivToolbarMinWidth) raises the width floor past the
+// generic 320px so the window is never narrower than its OWN toolbar needs —
+// a floor, not a fixed size: it only bites when the picture is narrower than
+// its controls. Skipped on mobile on purpose: forcing width past a 390px
+// viewport would push the fixed-position window past the screen edge and
+// scroll the whole page horizontally. Mobile instead lets the toolbar wrap
+// (see .mermaid-viewer-toolbar CSS) and keeps the plain 320px floor.
+function _ivFitBox(nw, nh, toolbarMinW) {
   const CHROME_H = 45 + 48;                     // toolbar + 24px canvas padding x2
   const CHROME_W = 48;
-  const f = _ivMobile() ? 0.95 : 0.8;
+  const mobile = _ivMobile();
+  const f = mobile ? 0.95 : 0.8;
   const k = Math.min(1, (window.innerWidth * f - CHROME_W) / nw,
                         (window.innerHeight * f - CHROME_H) / nh);
+  const wFloor = mobile ? 320 : Math.max(320, (toolbarMinW || 0) + 2);
   return {
-    w: Math.max(320, Math.round(nw * k) + CHROME_W),
+    w: Math.max(wFloor, Math.round(nw * k) + CHROME_W),
     h: Math.max(220, Math.round(nh * k) + CHROME_H),
   };
 }
@@ -462,15 +489,23 @@ function _openMermaidViewer(source, svg) {
   const zoomLabel = overlay.querySelector('.mermaid-viewer-zoom-label');
   const gest = _ivGestures(overlay.querySelector('.mermaid-viewer-scroll'), svgWrap, zoomLabel);
   const content = overlay.querySelector('.mermaid-viewer-content');
-  const win = _ivWindowify(overlay, content, overlay.querySelector('.mermaid-viewer-toolbar'));
+  const toolbarEl = overlay.querySelector('.mermaid-viewer-toolbar');
+  const win = _ivWindowify(overlay, content, toolbarEl);
+  // Measured BEFORE content's width is touched, while the toolbar still has
+  // its roomy CSS-default box to lay out in unclamped (see _ivToolbarMinWidth).
+  const toolbarMinW = _ivToolbarMinWidth(toolbarEl);
   // Size to the diagram the way the image viewer sizes to the picture. The
   // rendered <svg> had its width/height stripped for the fill-the-box layout,
   // so its intrinsic size comes from the viewBox; a missing or degenerate one
   // just leaves the CSS default alone.
   const vb = (svgWrap.querySelector('svg')?.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
   if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
-    const box = _ivFitBox(vb[2], vb[3]);
+    const box = _ivFitBox(vb[2], vb[3], toolbarMinW);
     content.style.width = box.w + 'px';
+    // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
+    // this has to move too or a manual resize could shrink the window back
+    // down past the toolbar's own requirement.
+    content.style.minWidth = (_ivMobile() ? 320 : Math.max(320, toolbarMinW + 2)) + 'px';
     content.style.height = box.h + 'px';
     gest.refit();
   }
@@ -649,7 +684,11 @@ function _openImageViewer(src) {
   const imgEl = overlay.querySelector('.mermaid-viewer-svg img');
 
   const gest = _ivGestures(scrollEl, wrap, zoomLabel);
-  const win = _ivWindowify(overlay, content, overlay.querySelector('.mermaid-viewer-toolbar'));
+  const toolbarEl = overlay.querySelector('.mermaid-viewer-toolbar');
+  const win = _ivWindowify(overlay, content, toolbarEl);
+  // Measured BEFORE content's width is touched, while the toolbar still has
+  // its roomy CSS-default box to lay out in unclamped (see _ivToolbarMinWidth).
+  const toolbarMinW = _ivToolbarMinWidth(toolbarEl);
 
   // ── Background mode (persisted) ──
   let bg = _ivBgGet();
@@ -677,8 +716,12 @@ function _openImageViewer(src) {
   const sizeToImage = () => {
     const nw = imgEl.naturalWidth, nh = imgEl.naturalHeight;
     if (!nw || !nh) return;                       // decode failed — keep CSS default
-    const box = _ivFitBox(nw, nh);
+    const box = _ivFitBox(nw, nh, toolbarMinW);
     content.style.width = box.w + 'px';
+    // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
+    // this has to move too or a manual resize could shrink the window back
+    // down past the toolbar's own requirement.
+    content.style.minWidth = (_ivMobile() ? 320 : Math.max(320, toolbarMinW + 2)) + 'px';
     content.style.height = box.h + 'px';
     gest.refit();
   };

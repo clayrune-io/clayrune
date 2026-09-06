@@ -4396,7 +4396,11 @@
        width/height above with the picture's natural size (see _openImageViewer),
        so it opens fitted rather than filling the screen; these bounds keep a
        resize sane. Custom 8-way handles (makeResizable) replace native
-       `resize: both`; min/max below are read by the JS resizer. */
+       `resize: both`; min/max below are read by the JS resizer — JS also
+       raises min-width per instance to the toolbar's own measured requirement
+       (_ivToolbarMinWidth) on desktop, so a narrow picture never leaves the
+       window narrower than its own controls; this 320px is only the pre-JS/
+       decode-failure fallback. */
     min-width: 320px; min-height: 220px;
     max-width: 95vw; max-height: 92vh;
   }
@@ -4404,6 +4408,13 @@
     display: flex; align-items: center; gap: 6px;
     padding: 10px 14px; border-bottom: 1px solid var(--border, #e0d8cc);
     background: #fafaf6; flex-shrink: 0;
+    /* Backstop, not the primary fix: on mobile the width floor above is left
+       at 320px (forcing it wider would push a fixed-position window past a
+       390px viewport and scroll the whole page horizontally — see
+       _ivFitBox). Wrapping is what keeps every control reachable there
+       instead of clipped. On desktop the JS min-width floor keeps this at a
+       single row; wrap is dormant unless a future button pushes past it. */
+    flex-wrap: wrap; row-gap: 6px;
   }
   .mermaid-viewer-btn {
     font-size: 13px; padding: 5px 12px; cursor: pointer; line-height: 1;

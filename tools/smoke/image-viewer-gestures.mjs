@@ -254,8 +254,16 @@ const small = await page.evaluate(() => {
   const c = document.querySelector('.mermaid-viewer-content');
   return { w: c.offsetWidth, h: c.offsetHeight };
 });
+// The width floor is no longer a flat ~320px: the window's min-width is
+// raised (on desktop) to fit its OWN toolbar's 8 buttons — a fixed-content
+// row that needs ~450px regardless of how narrow the picture is — so a tiny
+// or narrow image never leaves a control clipped/unreachable past the edge
+// (see _ivToolbarMinWidth / _ivFitBox in mermaid.js). 500 is comfortably
+// above that toolbar floor and comfortably below a viewport-filled window
+// (>900px at this 1280-wide viewport), so it still tells "tiny" from
+// "full-screen" apart.
 check('a thumbnail opens at the CSS min size, not full-screen',
-  small.w <= 340 && small.h <= 240, `${small.w}x${small.h}`);
+  small.w <= 500 && small.h <= 240, `${small.w}x${small.h}`);
 
 // ── 10. Closing unbinds every document listener it added ──
 await page.click('._iv-close');
