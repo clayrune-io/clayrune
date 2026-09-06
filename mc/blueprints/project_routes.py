@@ -186,6 +186,7 @@ def load_projects():
             p.setdefault('domain', 'general')
             p.setdefault('blocked_reason', None)
             p.setdefault('backlog', [])
+            p.setdefault('social_queue', [])
             p.setdefault('project_path', '')
             # Phase 4 Distiller per-project defaults (v2.1 §11 — I5 closure).
             # Mirrors the current_task / next_action precedent. Written through
@@ -346,6 +347,11 @@ def api_projects():
         p['backlog_next_text'] = ((open_items[0].get('text') or '')[:200]
                                   if open_items else '')
         p.pop('backlog', None)
+        # Same trim, same reason, for the social queue — the Social tab
+        # lazy-loads full bodies from GET .../social/queue on modal open.
+        social_queue = p.get('social_queue') or []
+        p['social_pending_count'] = sum(1 for i in social_queue if i.get('status') == 'pending')
+        p.pop('social_queue', None)
     return jsonify(projects)
 
 
@@ -1081,6 +1087,152 @@ def delete_backlog_item(project_id, item_id):
     p['last_updated'] = now_iso()
     save_project(project_id, p)
     return jsonify({'ok': True})
+
+
+# ── Social approvals queue (Phase 1 — no outbound posting) ──────────────────
+# Mirrors the backlog CRUD shape above: records live on the project dict
+# (`social_queue`), persisted through the same load_project/save_project pair.
+# Phase 1 stops at "approved" — there is deliberately no /post endpoint here;
+# nothing in this file ever calls out to Discord/LinkedIn/etc.
+
+_SOCIAL_STATUSES = ('pending', 'approved', 'posted', 'rejected', 'needs_changes')
+
+# The exact line AGENT_RULES.md requires on any post an agent originated
+# (as opposed to a reply, which carries no claim of authorship to attribute).
+_ATTRIBUTION_LINE = 'Written by me - Edited by Claude'
+
+
+def _attribution_violation(item):
+    """True if an originated draft is missing the required attribution line.
+
+    Replies (`originated: False`) are exempt — pushing back on a reply for a
+    line that only makes sense on an original post would just be noise.
+    """
+    return bool(item.get('originated')) and _ATTRIBUTION_LINE not in (item.get('body') or '')
+
+
+@bp.route('/api/project/<project_id>/social/queue', methods=['GET'])
+def get_social_queue(project_id):
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'not found'}), 404
+    return jsonify(p.get('social_queue', []))
+
+
+@bp.route('/api/project/<project_id>/social/queue', methods=['POST'])
+def add_social_queue_item(project_id):
+    data = request.get_json() or {}
+    if not (data.get('body') or '').strip():
+        return jsonify({'error': 'body required'}), 400
+
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'not found'}), 404
+
+    queue = p.setdefault('social_queue', [])
+    item = {
+        'id': str(uuid.uuid4())[:8],
+        'project_id': project_id,
+        'platform': data.get('platform', ''),
+        'body': data['body'].strip(),
+        'media': data.get('media', []),
+        'originated': bool(data.get('originated', True)),
+        'status': 'pending',
+        'created_by': data.get('created_by', 'agent'),
+        'created_at': now_iso(),
+        'decided_at': None,
+        'decided_by': None,
+        'note': data.get('note', ''),
+        'external_id': data.get('external_id'),
+    }
+    queue.insert(0, item)
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'item': item})
+
+
+@bp.route('/api/project/<project_id>/social/queue/<item_id>', methods=['PATCH'])
+def update_social_queue_item(project_id, item_id):
+    data = request.get_json()
+    if not data:
+        return jsonify({'error': 'no data'}), 400
+
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    queue = p.get('social_queue', [])
+    item = next((i for i in queue if i['id'] == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    if 'body' in data:
+        item['body'] = data['body'].strip()
+    if 'platform' in data:
+        item['platform'] = data['platform']
+    if 'media' in data and isinstance(data['media'], list):
+        item['media'] = data['media']
+    if 'note' in data:
+        item['note'] = data['note']
+    if 'status' in data and data['status'] in _SOCIAL_STATUSES:
+        item['status'] = data['status']
+
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'item': item})
+
+
+@bp.route('/api/project/<project_id>/social/queue/<item_id>/approve', methods=['POST'])
+def approve_social_queue_item(project_id, item_id):
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    queue = p.get('social_queue', [])
+    item = next((i for i in queue if i['id'] == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    # The attribution guard is the whole point of Phase 1 gating on a human
+    # click rather than posting straight through — refuse BEFORE the status
+    # flips, so a missing line never silently becomes an approved draft.
+    if _attribution_violation(item):
+        return jsonify({
+            'error': f"Originated posts must include the line \"{_ATTRIBUTION_LINE}\" "
+                     f"before they can be released.",
+        }), 400
+
+    data = request.get_json(silent=True) or {}
+    item['status'] = 'approved'
+    item['decided_at'] = now_iso()
+    item['decided_by'] = data.get('decided_by', 'user')
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    _log_agent_activity(project_id, f"Social: released a {item.get('platform') or 'draft'} post")
+    return jsonify({'ok': True, 'item': item})
+
+
+@bp.route('/api/project/<project_id>/social/queue/<item_id>/reject', methods=['POST'])
+def reject_social_queue_item(project_id, item_id):
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    queue = p.get('social_queue', [])
+    item = next((i for i in queue if i['id'] == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    data = request.get_json(silent=True) or {}
+    # "Push back" — sent back for changes, not killed outright. A hard kill
+    # is still reachable via PATCH {"status": "rejected"} if that's ever needed.
+    item['status'] = 'needs_changes'
+    item['note'] = data.get('note', item.get('note', ''))
+    item['decided_at'] = now_iso()
+    item['decided_by'] = data.get('decided_by', 'user')
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'item': item})
 
 
 # ── GitHub sync endpoints ────────────────────────────────────────────────────

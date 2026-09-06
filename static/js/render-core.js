@@ -392,6 +392,17 @@ function modalContentHTML(p) {
   const backlogBadge = bl.open
     ? `<span class="backlog-badge">${bl.open} open</span>` : '';
 
+  // Same lazy-load shape as the backlog above: /api/projects only ships a
+  // pending count, the full queue arrives from GET .../social/queue on modal
+  // open (modal-manager.js).
+  const socialQueueLoaded = !!(p._socialQueueFull && Array.isArray(p.social_queue));
+  const socialQueue = socialQueueLoaded ? p.social_queue : [];
+  const socialPendingCount = socialQueueLoaded
+    ? socialQueue.filter(i => i.status === 'pending').length
+    : (p.social_pending_count || 0);
+  const socialBadge = socialPendingCount
+    ? `<span class="backlog-badge">${socialPendingCount} pending</span>` : '';
+
   const modalLive = computeLiveStatus(p.id);
   const currentTaskHTML = p.blocked
     ? `<span class="summary-value blocked-text">${esc(p.blocked_reason||'Blocked')}</span>`
@@ -399,7 +410,7 @@ function modalContentHTML(p) {
 
   // Migrate stale tab selections (memory/rules moved to three-dot menu;
   // hivemind moved to global sidebar Hivemind view)
-  const validTabs = ['agent','backlog','agent-log','documents','activity','workflows'];
+  const validTabs = ['agent','backlog','social','agent-log','documents','activity','workflows'];
   let activeTab = modalActiveTab[p.id] || 'agent';
   if (!validTabs.includes(activeTab)) { activeTab = 'agent'; modalActiveTab[p.id] = 'agent'; }
 
@@ -547,6 +558,47 @@ function modalContentHTML(p) {
       `<div class="backlog-loading" style="padding:18px 12px;text-align:center;`
       + `color:var(--text-faint);font-size:12px">Loading backlog…</div>`);
 
+  // ── Social approvals queue — visual language borrowed straight from the
+  // Backlog list above (same .backlog-item/.backlog-text/.status-badge
+  // classes). The queue splits Pending / Decided / All instead of Open / Done
+  // because nothing here is ever "closed" the way a backlog item is — a
+  // rejected draft still wants to be reviewable from All.
+  const socialFilter = socialFilterMap[p.id] || 'pending';
+  const socialFiltered = !tabOn('social') ? [] : socialQueue.filter(i => {
+    if (socialFilter === 'pending') return i.status === 'pending';
+    if (socialFilter === 'decided') return SOCIAL_DECIDED.includes(i.status);
+    return true;
+  });
+  const socialItemsHTML = socialFiltered.map(item => {
+    const missingAttribution = item.originated && !(item.body || '').includes(SOCIAL_ATTRIBUTION_LINE);
+    return `
+    <div class="backlog-item social-item status-${esc(item.status)}" data-item-id="${esc(item.id)}">
+      <div style="flex:1;min-width:0">
+        <div class="social-item-head">
+          <span class="status-badge social-platform-badge">${esc(item.platform || 'unspecified')}</span>
+          <span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>
+          ${!item.originated ? '<span class="backlog-source">reply</span>' : ''}
+        </div>
+        <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
+          onblur="saveSocialBody(event,'${esc(p.id)}','${esc(item.id)}')"
+        >${esc(item.body)}</div>
+        ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
+        <div class="note-input-row">
+          <input type="text" id="social-note-${esc(item.id)}" placeholder="Note back to the agent"
+            value="${esc(item.note || '')}"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
+        </div>
+      </div>
+      <div class="backlog-meta social-item-actions">
+        <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
+        <button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with the note above">Push back</button>
+      </div>
+    </div>`;
+  }).join('') || (socialQueueLoaded
+    ? `<div class="backlog-loading" style="padding:18px 12px;text-align:center;color:var(--text-faint);font-size:12px">Nothing ${socialFilter === 'all' ? 'in the queue' : socialFilter} yet.</div>`
+    : `<div class="backlog-loading" style="padding:18px 12px;text-align:center;color:var(--text-faint);font-size:12px">Loading queue…</div>`);
+
   const undoBtn = undoStack.length && undoStack[undoStack.length-1].projectId === p.id
     ? `<button class="btn-undo" onclick="performUndo(event)" title="Undo ${undoStack[undoStack.length-1].label}">↩ Undo</button>`
     : '';
@@ -585,6 +637,9 @@ function modalContentHTML(p) {
             </button>
             <button class="modal-menu-item${activeTab==='backlog'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','backlog')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backlog"/></svg></span> Backlog${bl.open ? `<span class="tab-badge" style="margin-left:auto">${bl.open}</span>` : ''}
+            </button>
+            <button class="modal-menu-item${activeTab==='social'?' active':''}" onclick="_mcMenuSwitchTab('${esc(p.id)}','social')">
+              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-globe"/></svg></span> Social${socialPendingCount ? `<span class="tab-badge" style="margin-left:auto">${socialPendingCount}</span>` : ''}
             </button>
             <button class="modal-menu-item${activeTab==='agent-log'?' active':''}" data-tab-name="agent-log" onclick="_mcMenuSwitchTab('${esc(p.id)}','agent-log')">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-log"/></svg></span> Agent Log
@@ -790,11 +845,12 @@ function modalContentHTML(p) {
     <div class="modal-tab-bar">
       <div class="modal-tab ${activeTab==='agent'?'active':''}" onclick="switchModalTab('${esc(p.id)}','agent')">Agent</div>
       <div class="modal-tab ${activeTab==='backlog'?'active':''}" onclick="switchModalTab('${esc(p.id)}','backlog')">Backlog${bl.open ? `<span class="tab-badge">${bl.open}</span>` : ''}</div>
+      <div class="modal-tab ${activeTab==='social'?'active':''}" onclick="switchModalTab('${esc(p.id)}','social')">Social${socialPendingCount ? `<span class="tab-badge">${socialPendingCount}</span>` : ''}</div>
       <div class="modal-tab ${activeTab==='agent-log'?'active':''}" data-tab-name="agent-log" onclick="switchModalTab('${esc(p.id)}','agent-log')">Agent Log</div>
       <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
       <div class="modal-tab ${activeTab==='workflows'?'active':''}" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
-      ${activeTab !== 'agent' ? `<div class="modal-tab-search">
+      ${(activeTab !== 'agent' && activeTab !== 'social') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
           oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
@@ -836,6 +892,20 @@ function modalContentHTML(p) {
             </div>
           </div>
           <div class="backlog-list">${backlogItemsHTML}</div>
+        </div>`}
+      </div>
+      <div class="modal-tab-content ${activeTab==='social'?'active':''}" data-tab="social">
+        ${!tabOn('social') ? '' : `
+        <div class="card-section">
+          <div class="section-title">
+            <span>Social ${socialBadge}</span>
+          </div>
+          <div class="social-filter-bar">
+            <button class="social-filter-btn${socialFilter==='pending'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','pending')">Pending</button>
+            <button class="social-filter-btn${socialFilter==='decided'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','decided')">Decided</button>
+            <button class="social-filter-btn${socialFilter==='all'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','all')">All</button>
+          </div>
+          <div class="backlog-list">${socialItemsHTML}</div>
         </div>`}
       </div>
       <div class="modal-tab-content ${activeTab==='agent'?'active':''}" data-tab="agent">

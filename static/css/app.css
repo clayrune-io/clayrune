@@ -1598,6 +1598,48 @@
   .gh-sync-badge:hover { background: var(--accent-dim); }
   .gh-sync-badge.syncing { opacity: 0.6; pointer-events: none; }
 
+  /* SOCIAL APPROVALS QUEUE — same list/item/badge language as Backlog above
+     (.backlog-item, .backlog-text, .status-badge); only the filter chips and
+     the attribution warning are new, and the chips reuse the segmented-control
+     values already established by .rail-mode / .rail-mode-btn. */
+  .social-filter-bar {
+    display: flex; gap: 2px; margin-bottom: 10px; width: fit-content;
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 9px; padding: 2px;
+  }
+  .social-filter-btn {
+    padding: 5px 12px; border: none; border-radius: 7px; cursor: pointer;
+    background: transparent; color: var(--text-faint);
+    font-size: 12px; font-weight: 600; line-height: 1.2; transition: background .12s, color .12s;
+  }
+  .social-filter-btn:hover { color: var(--text-dim); }
+  .social-filter-btn.active {
+    background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.06);
+  }
+  .social-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  .social-platform-badge { text-transform: capitalize; }
+  .social-attr-warn {
+    font-size: 11px; color: var(--red-text); background: var(--red-dim);
+    border-radius: 3px; padding: 4px 7px; margin: 4px 0; line-height: 1.4;
+  }
+  .social-item-actions { flex-direction: column; align-items: stretch; gap: 4px; }
+  .btn-social-edit, .btn-social-release, .btn-social-pushback {
+    font-size: 11px; padding: 3px 10px; border-radius: 3px; cursor: pointer;
+    white-space: nowrap; font-weight: 600;
+  }
+  .btn-social-edit {
+    background: transparent; color: var(--text-dim); border: 1px solid var(--border2);
+  }
+  .btn-social-edit:hover { border-color: var(--accent); color: var(--accent); }
+  .btn-social-release {
+    background: var(--green-dim); color: var(--green-text); border: 1px solid var(--green);
+  }
+  .btn-social-release:hover { opacity: 0.85; }
+  .btn-social-pushback {
+    background: var(--red-dim); color: var(--red-text); border: 1px solid var(--red);
+  }
+  .btn-social-pushback:hover { opacity: 0.85; }
+
   /* TOAST NOTIFICATIONS */
   #toast-container {
     position: fixed; top: 16px; right: 16px; z-index: 100000;

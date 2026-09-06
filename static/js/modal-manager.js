@@ -300,7 +300,7 @@ function openProjectModal(projectId, restoreState) {
   if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext();
   // /api/projects trims backlog note/attachment BODIES to counts; lazy-load this
   // project's FULL backlog so the modal's note/attachment panels populate.
-  Promise.all([fetchAgentStatus(projectId), fetchTerminalStatus(projectId), refreshProjectBacklog(projectId)])
+  Promise.all([fetchAgentStatus(projectId), fetchTerminalStatus(projectId), refreshProjectBacklog(projectId), refreshProjectSocialQueue(projectId)])
     .then(() => refreshModalById(projectId));
 
   // Re-size agent chat when modal is resized + persist size pref. Skip the

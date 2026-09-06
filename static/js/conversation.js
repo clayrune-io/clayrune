@@ -4371,6 +4371,21 @@ async function refreshProjectBacklog(projectId) {
   } catch(e) {}
 }
 
+// Same lazy-load shape as refreshProjectBacklog, for the Social approvals queue.
+async function refreshProjectSocialQueue(projectId) {
+  try {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue`);
+    if (!res.ok) return;
+    const queue = await res.json();
+    const p = allProjects.find(x => x.id === projectId);
+    if (p) {
+      p.social_queue = queue;
+      p._socialQueueFull = true;
+      refreshModalById(projectId);
+    }
+  } catch(e) {}
+}
+
 // Fetch all agent sessions for a project on modal open / page boot
 async function fetchAgentStatus(projectId) {
   try {
@@ -4609,6 +4624,7 @@ window.renderAgentQuestion = renderAgentQuestion;
 window.sendFollowup = sendFollowup;
 window.stopAgent = stopAgent;
 window.refreshProjectBacklog = refreshProjectBacklog;
+window.refreshProjectSocialQueue = refreshProjectSocialQueue;
 window.fetchAgentStatus = fetchAgentStatus;
 window.approvePlan = approvePlan;
 window._parsePlanSteps = _parsePlanSteps;

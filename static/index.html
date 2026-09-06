@@ -879,6 +879,14 @@ const _orderKey = _isMobileDevice ? 'projectOrder_mobile' : 'projectOrder';
 let projectOrder = JSON.parse(localStorage.getItem(_orderKey) || '[]');
 let activeFilter = 'all';
 let showDoneMap = {};
+// Social approvals queue: projectId → 'pending' | 'decided' | 'all'.
+let socialFilterMap = {};
+// Statuses the "Decided" filter shows — everything past pending. Mirrors
+// _SOCIAL_STATUSES in project_routes.py minus 'pending'.
+const SOCIAL_DECIDED = ['approved', 'posted', 'rejected', 'needs_changes'];
+// Mirrors _ATTRIBUTION_LINE in project_routes.py — client-side copy is
+// display-only (the warning banner); the server is the actual guard.
+const SOCIAL_ATTRIBUTION_LINE = 'Written by me - Edited by Claude';
 let modalSearchQuery = {};  // projectId → search filter string
 let openAttPanels = new Set();
 let openNotesPanels = new Set();
@@ -3519,6 +3527,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/mermaid.js"></script>
 <script type="module" src="/static/js/search-chats.js"></script>
 <script type="module" src="/static/js/backlog-actions.js"></script>
+<script type="module" src="/static/js/social-actions.js"></script>
 <script type="module" src="/static/js/cross-backlog.js"></script>
 <script type="module" src="/static/js/scheduler.js"></script>
 <script type="module" src="/static/js/schedule-calendar.js"></script>
