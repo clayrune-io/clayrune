@@ -242,6 +242,7 @@
   body.surface-pages .modal-window[data-modal-id="__history"],
   body.surface-pages .modal-window[data-modal-id="__inbox"],
   body.surface-pages .modal-window[data-modal-id="__all_backlog"],
+  body.surface-pages .modal-window[data-modal-id="__all_social"],
   body.surface-pages .modal-window[data-modal-id="__scheduler"],
   body.surface-pages .modal-window[data-modal-id="__all_hivemind"],
   body.surface-pages .modal-window[data-modal-id="__shared_rules"],
@@ -257,6 +258,7 @@
   body.surface-pages .modal-window[data-modal-id="__history"] > .modal-content,
   body.surface-pages .modal-window[data-modal-id="__inbox"] > .modal-content,
   body.surface-pages .modal-window[data-modal-id="__all_backlog"] > .modal-content,
+  body.surface-pages .modal-window[data-modal-id="__all_social"] > .modal-content,
   body.surface-pages .modal-window[data-modal-id="__scheduler"] > .modal-content,
   body.surface-pages .modal-window[data-modal-id="__all_hivemind"] > .modal-content,
   body.surface-pages .modal-window[data-modal-id="__shared_rules"] > .modal-content,
@@ -1617,6 +1619,10 @@
     background: var(--surface); color: var(--text); box-shadow: 0 1px 2px rgba(0,0,0,.06);
   }
   .social-item-head { display: flex; align-items: center; gap: 6px; margin-bottom: 4px; }
+  /* Same .status-badge pill as the platform badge to its right — the queue is
+     generic across every project, so a card needs to say whose draft this is
+     at a glance, not just what platform it targets. */
+  .social-project-badge { background: var(--accent-dim); color: var(--accent); font-weight: 700; }
   .social-platform-badge { text-transform: capitalize; }
   .social-attr-warn {
     font-size: 11px; color: var(--red-text); background: var(--red-dim);

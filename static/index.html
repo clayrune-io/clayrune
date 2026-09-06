@@ -507,6 +507,10 @@
       <span class="si-icon"><svg class="si-svg"><use href="#ic-backlog"/></svg></span>
       <span class="si-label">Backlog</span>
     </div>
+    <div class="sidebar-item" data-nav="social" onclick="sidebarNav('social')" title="Every project's pending social drafts, in one pane">
+      <span class="si-icon"><svg class="si-svg"><use href="#ic-globe"/></svg></span>
+      <span class="si-label">Social</span>
+    </div>
     <div class="sidebar-item" data-nav="scheduler" onclick="sidebarNav('scheduler')">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-automation"/></svg></span>
       <span class="si-label">Automation</span>
@@ -819,6 +823,9 @@
     </div>
     <div class="mobile-drawer-item" data-nav="backlog" onclick="mobileDrawerNav('backlog')">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-backlog"/></svg></span><span class="mdi-label">Backlog</span>
+    </div>
+    <div class="mobile-drawer-item" data-nav="social" onclick="mobileDrawerNav('social')">
+      <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-globe"/></svg></span><span class="mdi-label">Social</span>
     </div>
     <div class="mobile-drawer-item" data-nav="hivemind" onclick="mobileDrawerNav('hivemind')">
       <span class="mdi-icon"><svg class="mdi-svg"><use href="#ic-hivemind"/></svg></span><span class="mdi-label">Hivemind</span>
@@ -1154,6 +1161,27 @@ function _preserveOpenBacklogs(fresh) {
   return fresh;
 }
 
+// Same shape as _preserveOpenBacklogs, for the Social approvals queue: a
+// project modal's Social tab and the cross-project __all_social view both
+// lazy-load the full `social_queue` array and mark `_socialQueueFull`, which
+// /api/projects never ships (only `social_pending_count`). Without this, the
+// 30s poll / any refreshSilent() overwrites `fresh` with the summary-only
+// record and the visible queue collapses to empty mid-review.
+// Mutates `fresh` in place; returns it.
+function _preserveOpenSocial(fresh) {
+  const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
+  const allSocialOpen = openModals.has('__all_social');
+  if (!openIds.size && !allSocialOpen) return fresh;
+  const prevFull = {};
+  for (const p of allProjects) {
+    if (p._socialQueueFull && (allSocialOpen || openIds.has(p.id))) prevFull[p.id] = p.social_queue;
+  }
+  for (const p of fresh) {
+    if (prevFull[p.id]) { p.social_queue = prevFull[p.id]; p._socialQueueFull = true; }
+  }
+  return fresh;
+}
+
 // Fail-fast + retry. On mobile, Android Doze parks the WebView's sockets while
 // backgrounded; on resume an existing socket reports "alive" but is dead, so a
 // plain fetch HANGS for the OS TCP timeout (tens of seconds) before throwing —
@@ -1170,7 +1198,7 @@ async function fetchProjects() {
       try {
         const res = await fetchFailFast(API_BASE + '/api/projects', {}, TIMEOUT_MS);
         if (!res.ok) throw new Error('HTTP ' + res.status);
-        allProjects = _preserveOpenBacklogs(await res.json());
+        allProjects = _preserveOpenSocial(_preserveOpenBacklogs(await res.json()));
         applyOrder();
         render();
         return;
@@ -1223,7 +1251,7 @@ function buildSlotArray(filteredIds) {
   return slots;
 }
 
-function render() { renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+function render() { renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
 window.addEventListener('resize', () => { renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
@@ -1514,6 +1542,7 @@ function sidebarNav(target) {
   else if (target === 'processes') openProcessManager();
   else if (target === 'usage') openSystemUsage();
   else if (target === 'backlog') openAllBacklog();
+  else if (target === 'social') openAllSocial();
   else if (target === 'hivemind') openAllHiveminds();
   else if (target === 'skills') openAllSkills();
   else if (target === 'secrets') openSecretsVault();
@@ -2248,7 +2277,7 @@ function showActionToast(message, actions, opts = {}) {
 
 async function refreshSilent() {
   const res = await fetch(API_BASE + '/api/projects');
-  allProjects = _preserveOpenBacklogs(await res.json());
+  allProjects = _preserveOpenSocial(_preserveOpenBacklogs(await res.json()));
   // Refresh global config cache so per-project menu labels reflect the effective mode
   try {
     const cfgRes = await fetch(API_BASE + '/api/config');
@@ -3529,6 +3558,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/backlog-actions.js"></script>
 <script type="module" src="/static/js/social-actions.js"></script>
 <script type="module" src="/static/js/cross-backlog.js"></script>
+<script type="module" src="/static/js/cross-social.js"></script>
 <script type="module" src="/static/js/scheduler.js"></script>
 <script type="module" src="/static/js/schedule-calendar.js"></script>
 <script type="module" src="/static/js/automation-suggestions.js"></script>

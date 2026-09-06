@@ -34,6 +34,19 @@ function avatarHTML(value, size, extraClass) {
     width:${size}px;height:${size}px">\u25CC</span>`;
 }
 
+// The social queue is generic — the same list renders inside any project's
+// modal, and (cross-social.js) inside a view that spans every project at
+// once — so a card can never assume it belongs to whichever project happens
+// to be open. Always resolve identity from the RECORD's own `project_id`,
+// never from an enclosing `p` the caller happened to have in scope.
+function socialProjectBadgeHTML(item) {
+  const proj = (typeof allProjects !== 'undefined'
+    ? allProjects.find(x => x.id === item.project_id) : null) || {};
+  const label = proj.name || item.project_id || 'unknown project';
+  const emoji = proj.emoji ? `${esc(proj.emoji)} ` : '';
+  return `<span class="status-badge social-project-badge">${emoji}${esc(label)}</span>`;
+}
+
 // ── Tile HTML (compact grid card) ───────────────────────────────────────────
 
 // /api/projects no longer ships the `backlog` array — only a summary of it
@@ -575,6 +588,7 @@ function modalContentHTML(p) {
     <div class="backlog-item social-item status-${esc(item.status)}" data-item-id="${esc(item.id)}">
       <div style="flex:1;min-width:0">
         <div class="social-item-head">
+          ${socialProjectBadgeHTML(item)}
           <span class="status-badge social-platform-badge">${esc(item.platform || 'unspecified')}</span>
           <span class="status-badge status-${esc(item.status)}">${esc(String(item.status).replace('_',' '))}</span>
           ${!item.originated ? '<span class="backlog-source">reply</span>' : ''}
@@ -990,6 +1004,7 @@ window.avatarHTML = avatarHTML;
 window.avatarIsFigure = avatarIsFigure;
 window.avatarFigureName = avatarFigureName;
 window.backlogSummary = backlogSummary;
+window.socialProjectBadgeHTML = socialProjectBadgeHTML;
 window.computeLiveStatus = computeLiveStatus;
 window.friendlyStatus = friendlyStatus;
 window.friendlySummary = friendlySummary;

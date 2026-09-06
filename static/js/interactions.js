@@ -640,7 +640,7 @@ function modalDragStart(x, y, target) {
   if (document.body.classList.contains('surface-pages')) {
     const _id = String(win.dataset.modalId || '');
     const _dockable = !_id.startsWith('__') || [
-      '__extensions', '__history', '__inbox', '__all_backlog',
+      '__extensions', '__history', '__inbox', '__all_backlog', '__all_social',
       '__scheduler', '__all_hivemind', '__shared_rules', '__processes',
     ].includes(_id);
     if (_dockable) return false;
