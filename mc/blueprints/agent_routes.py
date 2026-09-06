@@ -90,6 +90,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.skills as _skills                # _skills_catalog_block
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
+import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -4015,6 +4016,12 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
         threading.Thread(target=_read_agent_stream_b, args=(proc, session), daemon=True).start()
+        # MC-944 (§9.6): the revival context above already carries a read floor
+        # keyed on `message` (via _build_agent_context's task=), even when
+        # `revival_msg` itself got wrapped for the too-large-to-resume case —
+        # seed the conversation's delivered-set with the SAME text so those
+        # facts aren't treated as new and resent on a later live follow-up.
+        _memory_turn.seed_delivered(p, session, message)
         stdin_msg = json.dumps({"type": "user", "message": {"role": "user", "content": revival_msg}}) + '\n'
         with session['stdin_lock']:
             try:
@@ -5607,11 +5614,17 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             # claude (rate-limited startup, etc.) can't pin mgr.lock and wedge
             # the whole project. Followups also serialize on stdin_lock, so
             # the initial message always lands first.
-            def _write_initial(_proc=proc, _msg=_initial_msg, _sess=session):
+            def _write_initial(_proc=proc, _msg=_initial_msg, _sess=session, _task=task, _p=p):
                 lk = _sess.get('stdin_lock')
                 if lk:
                     lk.acquire()
                 try:
+                    # MC-944 (per-turn memory delivery, §9.6): dispatch already
+                    # rendered the read floor into the system prompt above — seed
+                    # the conversation's delivered-set with the SAME hits so a
+                    # live follow-up turn later on this session doesn't treat
+                    # them as new facts and resend them.
+                    _memory_turn.seed_delivered(_p, _sess, _task)
                     _proc.stdin.write(_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
                     _proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
                 except Exception as _e:
@@ -6447,23 +6460,32 @@ def agent_followup(project_id):
                 else:
                     # Router off — write stdin directly (original path)
                     claude_content = _apply_mobile_brief(message, data)
-                    stdin_msg = json.dumps({
-                        "type": "user",
-                        "message": {"role": "user", "content": claude_content}
-                    }) + '\n'
 
-                    def _write_stdin():
-                        lock = existing.get('stdin_lock')
+                    def _write_stdin(_content=claude_content, _sess=existing, _p=p, _msg=message):
+                        # MC-944 (§9.6): this is a direct write to an ALREADY-
+                        # LIVE process — no context rebuild happens on this
+                        # path, ever, which is exactly the B5 break ("the read
+                        # floor fires at fresh dispatch" and a session that
+                        # stays alive for days never sees it again). Recompute
+                        # the notes/positions blocks for THIS message and
+                        # prepend them, off mgr.lock like the write itself.
+                        _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
+                        _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
+                        stdin_msg = json.dumps({
+                            "type": "user",
+                            "message": {"role": "user", "content": _out}
+                        }) + '\n'
+                        lock = _sess.get('stdin_lock')
                         if lock:
                             lock.acquire()
                         try:
-                            existing['proc'].stdin.write(stdin_msg)
-                            existing['proc'].stdin.flush()
+                            _sess['proc'].stdin.write(stdin_msg)
+                            _sess['proc'].stdin.flush()
                         except Exception as e:
-                            existing['log_lines'].append(f'[stdin write error: {e}]')
-                            existing['status'] = 'error'
-                            existing['last_status_change_time'] = _time.time()
-                            existing['process_alive'] = False
+                            _sess['log_lines'].append(f'[stdin write error: {e}]')
+                            _sess['status'] = 'error'
+                            _sess['last_status_change_time'] = _time.time()
+                            _sess['process_alive'] = False
                         finally:
                             if lock:
                                 lock.release()
@@ -6550,23 +6572,28 @@ def agent_followup(project_id):
             # Same tier — write stdin directly
             _rs_existing = mrs['existing']
             claude_content = _apply_mobile_brief(message, data)
-            stdin_msg = json.dumps({
-                "type": "user",
-                "message": {"role": "user", "content": claude_content}
-            }) + '\n'
 
-            def _write_stdin_routed():
-                lock = _rs_existing.get('stdin_lock')
+            def _write_stdin_routed(_content=claude_content, _sess=_rs_existing, _p=p, _msg=message):
+                # MC-944 (§9.6) — same rationale as the router-off direct
+                # write above: no context rebuild happens on this path, so
+                # recompute the notes/positions blocks for THIS message here.
+                _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
+                _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
+                stdin_msg = json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": _out}
+                }) + '\n'
+                lock = _sess.get('stdin_lock')
                 if lock:
                     lock.acquire()
                 try:
-                    _rs_existing['proc'].stdin.write(stdin_msg)
-                    _rs_existing['proc'].stdin.flush()
+                    _sess['proc'].stdin.write(stdin_msg)
+                    _sess['proc'].stdin.flush()
                 except Exception as e:
-                    _rs_existing['log_lines'].append(f'[stdin write error: {e}]')
-                    _rs_existing['status'] = 'error'
-                    _rs_existing['last_status_change_time'] = _time.time()
-                    _rs_existing['process_alive'] = False
+                    _sess['log_lines'].append(f'[stdin write error: {e}]')
+                    _sess['status'] = 'error'
+                    _sess['last_status_change_time'] = _time.time()
+                    _sess['process_alive'] = False
                 finally:
                     if lock:
                         lock.release()

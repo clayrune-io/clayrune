@@ -256,6 +256,19 @@ def _load_config():
         # See mc/memory_fts.py.
         'session_fts_enabled': True,
         'session_fts_cold_k': 5,
+        # Per-turn memory delivery (MC-944, MEMORY_DESIGN_V2_SPEC.md §9.6,
+        # build-sequence step 5). The dispatch-time read floor only ever ran
+        # once, at `_build_agent_context()`; a Mode-B process that stays alive
+        # for days never re-entered it. `memory_turn_refresh_enabled` is the
+        # rollback lever (mirrors session_fts_enabled): false restores exactly
+        # today's behaviour on the two live-followup stdin sites.
+        # `memory_turn_budget_bytes` bounds the per-turn notes+positions block
+        # mc/memory_turn.py prepends to a live turn — hard cap, logged when it
+        # truncates. `memory_turn_cold_probe_enabled` gates the one-hit cold
+        # FTS fallback on a warm-floor miss (§9.4's miss condition, per turn).
+        'memory_turn_refresh_enabled': True,
+        'memory_turn_budget_bytes': 3200,
+        'memory_turn_cold_probe_enabled': True,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,

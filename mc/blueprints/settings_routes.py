@@ -120,6 +120,10 @@ _CONFIG_EDITABLE_KEYS = {
     # Cold session search (MC-918) — mc/memory_fts.py. Rollback lever +
     # default cold-hit count for the /memory/search cold tier.
     'session_fts_enabled', 'session_fts_cold_k',
+    # Per-turn memory delivery (MC-944) — mc/memory_turn.py. Read live at the
+    # next stdin write, no respawn needed (like read_floor_topk).
+    'memory_turn_refresh_enabled', 'memory_turn_budget_bytes',
+    'memory_turn_cold_probe_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle
