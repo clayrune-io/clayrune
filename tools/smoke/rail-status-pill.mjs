@@ -81,7 +81,7 @@ try {
     window.updateRailRowStatus(SID);
     const done = snap();
     delete agentStatusCache[SID];
-    return { rest, working, done };
+    return { rest, working, done, restAttr: row().dataset.restStatus || 'completed' };
   }, before.target);
 
   res.working.time.includes('Working') ? ok('turn_start: pill appeared in place, no rebuild')
@@ -97,8 +97,13 @@ try {
     : fail(`turn_complete: timestamp not restored — "${res.done.time}" vs "${res.rest.time}"`);
   !res.done.cls.includes('conv-live-working') ? ok('turn_complete: conv-live-working removed')
     : fail('turn_complete: conv-live-working still present');
-  res.done.dot === res.rest.dot ? ok('turn_complete: dot restored to resting status')
-    : fail(`turn_complete: dot "${res.done.dot}" vs resting "${res.rest.dot}"`);
+  // Compare against the row's OWN data-rest-status, not the snapshot taken
+  // before the probe. This runs against the live server, so a real session can
+  // transition mid-test and move the resting dot underneath us — which failed
+  // the assertion for a reason that had nothing to do with the updater.
+  res.done.dot === `agent-status-dot ${res.restAttr}`
+    ? ok(`turn_complete: dot restored to resting status (${res.restAttr})`)
+    : fail(`turn_complete: dot "${res.done.dot}" vs data-rest-status "${res.restAttr}"`);
 
   (res.working.order === res.rest.order && res.done.order === res.rest.order)
     ? ok('rail order UNCHANGED across both transitions (no re-sort under the cursor)')
