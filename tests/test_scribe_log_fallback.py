@@ -185,6 +185,121 @@ def _stats(mem, project_id):
     return json.loads(fp.read_text(encoding='utf-8'))
 
 
+# ── _scribe_extract routes by the SESSION'S provider (parity audit item 1) ──
+# Was hardcoded to `_find_transcript_file` → `get_runtime('claude')`, so a
+# Codex session's own real rollout transcript was never even looked for.
+
+def test_codex_session_resolves_transcript_via_its_own_runtime(env, monkeypatch):
+    mem, _ = env
+    calls = []
+
+    class _FakeCodexRuntime:
+        def transcript_path(self, pp, psid):
+            calls.append(('transcript_path', pp, psid))
+            return '/fake/rollout.jsonl'
+
+        def render_transcript_for_scribe(self, path):
+            calls.append(('render', path))
+            return 'USER: hi\nASSISTANT: hello\n'
+
+    monkeypatch.setattr(mem._agent_runtime, 'get_runtime',
+                        lambda name: _FakeCodexRuntime() if name == 'codex' else None)
+    seen = {}
+
+    def fake_summarize(text, model, want_why=False):
+        seen['text'] = text
+        return 'codex summary', 'extracted'
+
+    monkeypatch.setattr(mem, '_scribe_summarize_text', fake_summarize)
+    session = {
+        'provider': 'codex', 'provider_session_id': 'thread-77',
+        'claude_session_id': '', 'log_lines': ['SHOULD NOT BE USED'],
+    }
+    entry, reason = mem._scribe_extract(
+        {'id': 'p1', 'project_path': '/fake/proj'}, session)
+    assert entry == 'codex summary'
+    assert reason == 'extracted'  # transcript-backed, NOT extracted_from_log
+    assert seen['text'] == 'USER: hi\nASSISTANT: hello\n'
+    assert calls == [('transcript_path', '/fake/proj', 'thread-77'),
+                     ('render', '/fake/rollout.jsonl')]
+
+
+def test_codex_session_with_no_rollout_falls_back_to_log_lines(env, monkeypatch):
+    """No provider_session_id at all (turn ended before INIT captured one) —
+    same 'no transcript, use log_lines' fallback Claude gets."""
+    mem, _ = env
+    monkeypatch.setattr(mem, '_scribe_summarize_text',
+                        lambda text, model, want_why=False: ('from log', 'extracted'))
+    session = {
+        'provider': 'codex', 'provider_session_id': '',
+        'claude_session_id': '', 'log_lines': ['> Ron: hi', 'working on it'],
+    }
+    entry, reason = mem._scribe_extract({'id': 'p1', 'project_path': '/x'}, session)
+    assert entry == 'from log'
+    assert reason == 'extracted_from_log'
+
+
+def test_codex_runtime_declining_to_render_falls_back_to_log_lines(env, monkeypatch):
+    """A rollout exists but render_transcript_for_scribe() returns None (a
+    real parse failure) — must not be treated as an empty/thin session."""
+    mem, _ = env
+
+    class _FakeCodexRuntime:
+        def transcript_path(self, pp, psid):
+            return '/fake/rollout.jsonl'
+
+        def render_transcript_for_scribe(self, path):
+            return None
+
+    monkeypatch.setattr(mem._agent_runtime, 'get_runtime',
+                        lambda name: _FakeCodexRuntime())
+    monkeypatch.setattr(mem, '_scribe_summarize_text',
+                        lambda text, model, want_why=False: ('from log', 'extracted'))
+    session = {
+        'provider': 'codex', 'provider_session_id': 'thread-1',
+        'claude_session_id': '', 'log_lines': ['> Ron: hi', 'working on it'],
+    }
+    entry, reason = mem._scribe_extract({'id': 'p1', 'project_path': '/x'}, session)
+    assert entry == 'from log'
+    assert reason == 'extracted_from_log'
+
+
+def test_codex_transcript_path_lookup_failure_falls_back_cleanly(env, monkeypatch):
+    """get_runtime() or transcript_path() raising must degrade to the
+    log_lines fallback, never propagate — _scribe_extract never raises."""
+    mem, _ = env
+
+    def _boom(name):
+        raise RuntimeError('unknown provider')
+
+    monkeypatch.setattr(mem._agent_runtime, 'get_runtime', _boom)
+    monkeypatch.setattr(mem, '_scribe_summarize_text',
+                        lambda text, model, want_why=False: ('from log', 'extracted'))
+    session = {
+        'provider': 'codex', 'provider_session_id': 'thread-1',
+        'claude_session_id': '', 'log_lines': ['> Ron: hi', 'working on it'],
+    }
+    entry, reason = mem._scribe_extract({'id': 'p1', 'project_path': '/x'}, session)
+    assert entry == 'from log'
+    assert reason == 'extracted_from_log'
+
+
+def test_no_provider_field_still_defaults_to_claude_path(env, monkeypatch, tmp_path):
+    """A session dict with no 'provider' key at all (every pre-existing
+    Claude session) must take EXACTLY the old Claude path."""
+    mem, _ = env
+    tf = tmp_path / 't.jsonl'
+    tf.write_text('{}\n', encoding='utf-8')
+    monkeypatch.setattr(mem, '_find_transcript_file',
+                        lambda pp, csid: tf if csid == 'abc' else None)
+    monkeypatch.setattr(mem, '_scribe_render_transcript', lambda p: 'RENDERED')
+    monkeypatch.setattr(mem, '_scribe_summarize_text',
+                        lambda text, model, want_why=False: ('claude summary', 'extracted'))
+    session = {'claude_session_id': 'abc', 'log_lines': []}  # no 'provider' key
+    entry, reason = mem._scribe_extract({'id': 'p1', 'project_path': '/x'}, session)
+    assert entry == 'claude summary' and reason == 'extracted'
+
+
 def test_log_backed_extraction_bumps_distinct_counter(write_env, monkeypatch):
     mem, _ = write_env
     pid = 'p-log-counter'

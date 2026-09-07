@@ -161,17 +161,94 @@ class TestPriorCharacter:
         assert agent_routes._prior_character('p1', 'abc') is None
 
 
+class TestNonClaudeFollowupKeepsThePersona:
+    """The audit's live finding (docs/research/CODEX_PARITY_AUDIT.md §"Persona
+    / character survives a turn"): the two non-claude followup/interrupt
+    branches (`/agent/send`, `/agent/interrupt`) re-stash `_system_prompt` with
+    a bare `_build_agent_context(p, incognito=False, task=message)` on every
+    turn — no character_body/character_name/session_id — so a Codex (or any
+    non-claude) chat started with a persona answers as the project default
+    from turn 2 onward. Distinct from the Claude Mode-B "start fresh" branches
+    TestFreshContextKeepsThePersona covers; these two are Mode-A respawns that
+    fire on EVERY non-claude followup, not just a dead-process recovery.
+    """
+
+    @pytest.fixture()
+    def app_client(self, tmp_path, monkeypatch):
+        import server
+        from mc import state as mc_state
+        from mc.blueprints import local_auth as la
+        monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+        sess_snapshot = dict(mc_state.agent_sessions)
+        mc_state.agent_sessions.clear()
+        server.app.config['TESTING'] = True
+        try:
+            yield server.app.test_client()
+        finally:
+            mc_state.agent_sessions.clear()
+            mc_state.agent_sessions.update(sess_snapshot)
+
+    @pytest.fixture()
+    def seeded(self, app_client, tmp_path, monkeypatch, resolves, builds):
+        from mc import state as mc_state
+        project = {'id': 'codex-p1', 'project_path': str(tmp_path)}
+        monkeypatch.setattr(agent_routes, 'load_project', lambda pid: project)
+
+        class _FakeRuntime:
+            calls = []
+            def write_followup(self, handle, message, attachments=None):
+                _FakeRuntime.calls.append((handle, message))
+
+        monkeypatch.setattr(agent_routes._agent_runtime, 'get_runtime',
+                            lambda name: _FakeRuntime())
+        mc_state.agent_sessions['cx-1'] = {
+            'project_id': 'codex-p1', 'provider': 'codex', 'mode': 'A',
+            'status': 'running', 'character': DAVE, 'log_lines': [],
+            'session_id': 'cx-1',
+        }
+        return app_client
+
+    def test_send_refreshes_context_through_fresh_context_for(self, seeded, builds):
+        r = seeded.post('/api/project/codex-p1/agent/send',
+                        json={'session_id': 'cx-1', 'message': 'keep going'})
+        assert r.status_code == 200
+        assert builds['character_body'] == 'YOU ARE DAVE.'
+        assert builds['character_name'] == 'Dave'
+        assert builds['session_id'] == 'cx-1'
+        assert builds['task'] == 'keep going'
+
+    def test_interrupt_refreshes_context_through_fresh_context_for(self, seeded, builds):
+        r = seeded.post('/api/project/codex-p1/agent/interrupt',
+                        json={'session_id': 'cx-1', 'message': 'stop and pivot'})
+        assert r.status_code == 200
+        assert builds['character_body'] == 'YOU ARE DAVE.'
+        assert builds['character_name'] == 'Dave'
+        assert builds['session_id'] == 'cx-1'
+        assert builds['task'] == 'stop and pivot'
+
+
 class TestNoBareRebuildsSurvive:
-    """The regression that actually matters: someone adds an eleventh
+    """The regression that actually matters: someone adds another
     start-fresh branch and reaches for the bare call again."""
 
     def test_the_respawn_machinery_has_no_bare_context_rebuilds(self):
+        import re
         src = (PROJECT_ROOT / 'mc' / 'blueprints' / 'agent_routes.py').read_text(
             encoding='utf-8')
         bare = [ln.strip() for ln in src.split('\n')
                 if "_build_agent_context(p, task=message or '')" in ln
                 or "_build_agent_context(p, task=task or '')" in ln]
-        assert not bare, (
+        # A whitespace-tolerant scan across the whole file for the shape that
+        # actually shipped: a call that closes right after `task=<ident>)`
+        # with no character_body/character_name/session_id kwarg — i.e. it
+        # cannot possibly be carrying the session's persona. The legitimate
+        # dispatch-site calls (`_build_agent_context(p, incognito=False,
+        # task=task,\n    character_body=...)`) keep going past `task=`, so
+        # this pattern does not match them.
+        multiline_bare = re.findall(
+            r'_build_agent_context\(\s*p,\s*incognito=False,\s*task=\w+\s*\)',
+            src)
+        assert not bare and not multiline_bare, (
             'a start-fresh respawn rebuilt its context without the session, '
             'which drops the persona — use _fresh_context_for(p, <session>, …): '
-            + '; '.join(bare))
+            + '; '.join(bare) + '; '.join(multiline_bare))

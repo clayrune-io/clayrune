@@ -587,6 +587,24 @@ class AgentRuntime(ABC):
         """
         return None
 
+    def render_transcript_for_scribe(self, path: Path) -> Optional[str]:
+        """Render this provider's raw transcript file into the compact
+        `ACTION`/`RESULT`/`ASSISTANT`/`THINKING`/`USER`-prefixed line format
+        `mc.memory._scribe_summarize_text` consumes.
+
+        `mc.memory._scribe_extract` (`_session_transcript_path` et al.) is
+        Claude-shape only — it renders a `.jsonl` of `{message: {content:
+        [...]}}` blocks. A provider whose transcript uses a different record
+        shape (e.g. Codex's rollout: `response_item`/`message`, `reasoning`,
+        `custom_tool_call[_output]`) must NOT be special-cased inside the
+        Scribe for that; it adapts its own shape at this boundary instead.
+
+        Returns None when this provider has no adaptation (the caller falls
+        back to `session['log_lines']`, captured for every provider) or the
+        file could not be parsed. Default: unsupported.
+        """
+        return None
+
     @abstractmethod
     def dispatch(self, **kwargs) -> SessionHandle:
         """Spawn a new agent session. Returns a SessionHandle immediately."""
@@ -3237,6 +3255,19 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     session = handle.session_dict
     cbs = handle.meta.get('callbacks', {})
 
+    # MC Tool Protocol (mc:question / mc:todo — see with_mc_tool_protocol):
+    # every Mode-A provider's system prompt tells it to use this fence
+    # (`_build_agent_context`'s universal context block), but nothing on this
+    # shared reader ever parsed it — the fence landed in log_lines as literal
+    # text and the run dead-ended (parity audit item 4, "mc:question on
+    # Codex"). Mirrors GeminiRuntime._read_stream's OWN handling of the same
+    # protocol: accumulate this turn's assistant text, suppress a `` ```mc: ``
+    # fence from the live chat once it starts (it streams faster than a
+    # turn-end cleanup could remove it), and scan the complete turn for
+    # blocks once the process exits.
+    turn_text_parts: List[str] = []
+    _mc_suppressing = False
+
     def _cb(name: str, ev: AgentEvent) -> None:
         fn = cbs.get(name)
         if fn:
@@ -3265,9 +3296,14 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['log_lines'].append(line)
                     session['last_output_time'] = _time.time()
             elif ev.type == EventType.ASSISTANT_TEXT:
-                session['log_lines'].append(ev.payload.get('text', line))
-                session['last_output_time'] = _time.time()
-                _cb('on_assistant_text', ev)
+                _txt = ev.payload.get('text', line)
+                turn_text_parts.append(_txt)
+                if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
+                    _mc_suppressing = True
+                if not _mc_suppressing:
+                    session['log_lines'].append(_txt)
+                    session['last_output_time'] = _time.time()
+                    _cb('on_assistant_text', ev)
             elif ev.type == EventType.TOOL_USE:
                 blocks = ev.payload.get('blocks', [])
                 tname = blocks[0].get('name', '') if blocks else ''
@@ -3308,11 +3344,39 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
+        # MC Tool Protocol: scan this turn's complete text for mc: blocks
+        # (e.g. an emulated AskUserQuestion) and apply them before deciding
+        # status — a question holds the turn in 'idle' awaiting the user's
+        # reply rather than completing. Mirrors GeminiRuntime._read_stream.
+        mc_res = {'blocks_found': False, 'paused': False}
+        try:
+            turn_text = ''.join(turn_text_parts)
+            # Module-level, not runtime.apply_mc_tool_blocks() — the method
+            # form exists only so Gemini's own reader (which lives on the
+            # runtime) can call `self.`; this shared reader is already in the
+            # same module as the real implementation.
+            mc_res = apply_mc_tool_blocks(session, turn_text)
+            if _mc_suppressing and not mc_res['blocks_found']:
+                # A ```mc: fence appeared but no complete, valid block was
+                # parsed (turn ended mid-block, or it was malformed) — flush
+                # the suppressed text so it is not silently lost.
+                leftover = turn_text.strip()
+                if leftover:
+                    session['log_lines'].append(leftover)
+            if mc_res['paused']:
+                session['log_lines'].append(
+                    '[Waiting for your answer — choose above to continue]')
+        except Exception as e:
+            session.setdefault('log_lines', []).append(
+                f'[mc-tool scan error: {e}]')
         if session.get('proc') is proc:
             if session.get('status') == 'running':
-                session['status'] = 'completed' if rc == 0 else 'error'
+                if mc_res['paused']:
+                    session['status'] = 'idle'
+                else:
+                    session['status'] = 'completed' if rc == 0 else 'error'
                 session['last_status_change_time'] = _time.time()
-                if rc != 0:
+                if not mc_res['paused'] and rc != 0:
                     session['log_lines'].append(
                         f"[{runtime.name} exited with code {rc}]")
                     try:
@@ -3369,6 +3433,11 @@ _CODEX_META_CACHE_MAX = 2048
 # rationale as _SESSION_ROW_CACHE (full-file parse is the expensive part).
 _CODEX_ROW_CACHE: Dict[str, Any] = {}
 _CODEX_ROW_CACHE_MAX = 512
+
+# render_transcript_for_scribe(): cap on one tool-result body, mirroring
+# mc.memory._SCRIBE_RESULT_CAP (2000) — a giant `function_call_output` /
+# `custom_tool_call_output` must not blow the Scribe's per-call token budget.
+_CODEX_SCRIBE_RESULT_CAP = 2000
 
 
 def _codex_rollout_files() -> List[Path]:
@@ -3944,6 +4013,117 @@ class CodexRuntime(AgentRuntime):
             results.append(dict(row))
         return results
 
+    def render_transcript_for_scribe(self, path: Path) -> Optional[str]:
+        """Render a Codex rollout into the Scribe's compact line format.
+
+        The rollout's `response_item` record carries the shapes the Scribe
+        needs (docs/research/CODEX_PARITY_AUDIT.md §0), but they are NOT
+        Claude's `{message: {content: [...]}}` shape — a census of every
+        record type across every rollout on this machine (2026-09-07,
+        codex-cli 0.153.4) confirms the exact fields used below:
+
+          response_item/message               role, content[].text
+          response_item/reasoning              summary[].text (readable
+                                                summary only — `content` is
+                                                null and `encrypted_content`
+                                                is opaque when reasoning
+                                                encryption is on; summary is
+                                                simply absent on those turns,
+                                                which is a silent, expected
+                                                thinking-line drop, not a bug)
+          response_item/function_call          name, arguments (JSON string)
+          response_item/function_call_output   call_id, output (JSON string
+                                                wrapping {output, metadata})
+          response_item/custom_tool_call       name, input (raw string,
+                                                e.g. apply_patch's own diff
+                                                format — NOT JSON)
+          response_item/custom_tool_call_output call_id, output (same
+                                                JSON-string wrapper as
+                                                function_call_output)
+
+        `session_meta` (line 1) and `event_msg` records (turn_started,
+        token_count, ...) carry no renderable conversation content and are
+        skipped. Developer-role messages are Codex's injected plugin/hook
+        preambles (same shape as a real reply — see `list_sessions()`) and
+        are dropped the same way, so they don't pollute what the summarizer
+        thinks the user said.
+
+        Returns None (not '') on any read/parse failure so the caller can
+        distinguish "nothing to render" from "this session had no rollout at
+        all" and fall back to `session['log_lines']` either way — never
+        raises.
+        """
+        out: List[str] = []
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(rec, dict) or rec.get('type') != 'response_item':
+                        continue
+                    payload = rec.get('payload')
+                    if not isinstance(payload, dict):
+                        continue
+                    ptype = payload.get('type')
+
+                    if ptype == 'message':
+                        role = payload.get('role', '')
+                        if role == 'developer':
+                            continue
+                        content = payload.get('content')
+                        texts = []
+                        if isinstance(content, list):
+                            for b in content:
+                                if isinstance(b, dict) and b.get('text'):
+                                    texts.append(str(b['text']))
+                        text = '\n'.join(t.strip() for t in texts if t).strip()
+                        if not text:
+                            continue
+                        out.append(f"{'USER' if role == 'user' else 'ASSISTANT'}: {text}")
+
+                    elif ptype == 'reasoning':
+                        summary = payload.get('summary')
+                        texts = []
+                        if isinstance(summary, list):
+                            for b in summary:
+                                if isinstance(b, dict) and b.get('text'):
+                                    texts.append(str(b['text']))
+                        text = '\n'.join(t.strip() for t in texts if t).strip()
+                        if text:
+                            out.append(f"THINKING: {text[:2000]}")
+
+                    elif ptype in ('function_call', 'custom_tool_call'):
+                        name = payload.get('name', '?')
+                        raw_args = (payload.get('arguments') if ptype == 'function_call'
+                                   else payload.get('input'))
+                        s = raw_args if isinstance(raw_args, str) else (
+                            json.dumps(raw_args, ensure_ascii=False) if raw_args else '')
+                        out.append(f"ACTION {name}: {s[:400]}")
+
+                    elif ptype in ('function_call_output', 'custom_tool_call_output'):
+                        c = payload.get('output')
+                        if not isinstance(c, str):
+                            try:
+                                c = json.dumps(c, ensure_ascii=False) if c else ''
+                            except Exception:
+                                c = str(c) if c else ''
+                        c = (c or '').strip()
+                        if not c:
+                            continue
+                        if len(c) > _CODEX_SCRIBE_RESULT_CAP:
+                            half = _CODEX_SCRIBE_RESULT_CAP // 2
+                            c = (f"{c[:half]}\n…[{len(c) - _CODEX_SCRIBE_RESULT_CAP} "
+                                f"chars elided]…\n{c[-half:]}")
+                        out.append(f"RESULT: {c}")
+        except Exception:
+            return None
+        return '\n'.join(out)
+
     def _codex_auth_state(self) -> Tuple[str, Optional[str]]:
         """Where codex actually keeps its credentials.
 
@@ -4024,12 +4204,20 @@ class CodexRuntime(AgentRuntime):
             supports_session_resume=True,
             supports_mcp=True,
             supports_skills=False,
-            supports_plan_mode=True,
+            # [live] codex-cli 0.153.4: no ExitPlanMode-equivalent anchor —
+            # plan detection/approval (agent_routes.py) is wired only to the
+            # Claude readers, so this flag had been surfacing a plan-approval
+            # UI (static/js/conversation.js) that could never receive data.
+            # Parity audit §2 "Plan detection / approval".
+            supports_plan_mode=False,
             supports_ask_user_question=False,
             supports_streaming_text=True,
             emits_usage=True,
             emits_rate_limit=False,
-            emits_cost=True,
+            # [live] `turn.completed` carries `usage` only — keys
+            # ['type', 'usage'], no `cost_usd`. Was True; nothing on this
+            # path has ever emitted a cost. Parity audit §2 "Cost reporting".
+            emits_cost=False,
             emits_num_turns=False,
             image_input=True,
             context_window=None,
@@ -4060,6 +4248,17 @@ class CodexRuntime(AgentRuntime):
 
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model, resume_id=resume_id or '')
+        # MC Tool Protocol (mc:question — parity audit item 4): the universal
+        # context block already TELLS Codex to use this fence
+        # (_build_agent_context); without appending the protocol text itself
+        # nothing ever explains the fence's shape, so the instruction was
+        # strictly worse than not asking. Copies GeminiRuntime.dispatch's own
+        # pattern. Stashing the augmented value as `system_prompt` (below)
+        # means it also survives into `session['_system_prompt']` via
+        # `_mode_a_dispatch`, so every per-turn respawn keeps it — see
+        # write_followup, which re-applies this in case agent_routes.py
+        # rebuilt `_system_prompt` from a bare context in between.
+        system_prompt = self.with_mc_tool_protocol(system_prompt)
         full_prompt = task
         if system_prompt and not resume_id:
             # AGENTS.md hierarchy is primary; prepend to task as a quick override.
@@ -4078,6 +4277,17 @@ class CodexRuntime(AgentRuntime):
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
             _kill_pid(old_proc.pid)
+        # Re-apply the MC Tool Protocol before composing the respawn prompt.
+        # `agent_routes.py`'s /agent/send and /agent/interrupt refresh
+        # `session['_system_prompt']` from a bare project context ahead of
+        # every followup (so MEMORY/AGENT_RULES edits ride along) — that
+        # rebuild has no notion of the emulated question protocol, so without
+        # this the fence dispatch() added would silently disappear from turn
+        # 2 onward. `with_mc_tool_protocol` is idempotent (no duplication if
+        # already present), so this is safe whether or not a refresh ran.
+        # Mirrors GeminiRuntime.write_followup's identical re-application.
+        session['_system_prompt'] = self.with_mc_tool_protocol(
+            session.get('_system_prompt') or '')
         full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
         # Re-state -m: this respawns codex, and the flag doesn't carry over.

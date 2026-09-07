@@ -2870,14 +2870,25 @@ def _scribe_extract(project, session):
     stdout-tail summary. Never raises. Dispatch-time incognito/housekeeping
     gate is asserted here too so Phase-2 mid-session triggers inherit it.
 
-    Transcript file is the PREFERRED source and is Claude-only
-    (`_session_transcript_path` delegates to ClaudeRuntime; every other
-    provider returns None by design). When none is found — any non-Claude
-    session, or a Claude session whose csid never landed — this falls back to
-    `session['log_lines']` (captured for every provider) rendered into the
-    same shape and fed to the IDENTICAL summarizer (MC-922). A successful
-    log-backed extraction is tagged 'extracted_from_log' so it stays
-    separately countable from a transcript-backed 'extracted'.
+    Transcript file is the PREFERRED source, routed through the SESSION'S
+    OWN provider rather than hardcoded to Claude (parity audit item 1,
+    "Scribe on Codex" — `mc.memory` used to call `get_runtime('claude')`
+    unconditionally, so extraction never even looked for a transcript on a
+    non-Claude session). Claude keeps its exact prior path
+    (`_find_transcript_file` → `_scribe_render_transcript`, Claude-shape
+    `.jsonl`). A non-Claude provider is asked for its own transcript via
+    `transcript_path(pp, provider_session_id)`, and — because that shape is
+    NOT Claude's — for its OWN rendering via `render_transcript_for_scribe()`
+    (default None = "no adaptation"; `CodexRuntime` implements it against the
+    rollout's `response_item` records). This is deliberately NOT a
+    special-case inside the Scribe: the shape-specific parsing lives on the
+    runtime, at the boundary, and this function only chooses which one to
+    ask. Whenever no transcript is found OR a provider declines to render
+    one, this falls back to `session['log_lines']` (captured for every
+    provider) rendered into the same shape and fed to the IDENTICAL
+    summarizer (MC-922). A successful log-backed extraction is tagged
+    'extracted_from_log' so it stays separately countable from a
+    transcript-backed 'extracted'.
     """
     if not state.CONFIG.get('scribe_enabled', True):
         return None, 'disabled'
@@ -2885,14 +2896,27 @@ def _scribe_extract(project, session):
         return None, 'gated'
     pid = project.get('id', '')
     pp = project.get('project_path', '')
+    provider = (session.get('provider') or 'claude').lower()
     csid = session.get('claude_session_id', '')
-    tf = _find_transcript_file(pp, csid) if csid else None
+    # The id that identifies this session TO its own provider — csid for
+    # Claude, the Codex/opencode thread id (provider_session_id) otherwise.
+    # Only used to pick the 'no_csid' vs 'no_transcript' outcome reason below;
+    # actual lookup is per-provider (tf resolution just under this).
+    provider_sid = csid if provider == 'claude' else session.get('provider_session_id', '')
+    tf = None
+    if provider == 'claude':
+        tf = _find_transcript_file(pp, csid) if csid else None
+    elif provider_sid:
+        try:
+            tf = _agent_runtime.get_runtime(provider).transcript_path(pp, provider_sid)
+        except Exception as e:
+            _log(f"[scribe] {provider} transcript_path lookup failed: {e}")
     from_log = False
     log_lines = None
     if not tf:
         log_lines = session.get('log_lines') or []
         if not log_lines:
-            return None, ('no_csid' if not csid else 'no_transcript')
+            return None, ('no_csid' if not provider_sid else 'no_transcript')
         from_log = True
     with _scribe_lock:
         if pid in _scribing_projects:
@@ -2900,8 +2924,25 @@ def _scribe_extract(project, session):
         _scribing_projects.add(pid)
     try:
         try:
-            transcript = (_render_log_lines_as_transcript(log_lines) if from_log
-                          else _scribe_render_transcript(tf))
+            if from_log:
+                transcript = _render_log_lines_as_transcript(log_lines)
+            elif provider == 'claude':
+                transcript = _scribe_render_transcript(tf)
+            else:
+                # tf is guaranteed non-None here: `from_log` is set True
+                # whenever `not tf` (above), and this branch only runs when
+                # `from_log` is False — pyright can't correlate the two
+                # separate variables across the intervening lock/branches.
+                transcript = _agent_runtime.get_runtime(provider).render_transcript_for_scribe(tf)  # pyright: ignore[reportArgumentType]
+                if transcript is None:
+                    # Runtime declined (unsupported provider, or a real parse
+                    # failure) — fall back to log_lines rather than treat an
+                    # unparseable transcript as an empty/thin session.
+                    log_lines = session.get('log_lines') or []
+                    if not log_lines:
+                        return None, 'no_transcript'
+                    transcript = _render_log_lines_as_transcript(log_lines)
+                    from_log = True
         except Exception:
             return None, 'parse_empty'
         model = state.CONFIG.get('scribe_model', '') or 'haiku'

@@ -408,6 +408,71 @@ class TestCodexRuntime:
         assert '@openai/codex' in cmd
         assert '--json' in cmd
 
+    # ── mc:question wiring (parity audit item 4) ────────────────────────────
+    # The universal context block TELLS Codex to emit the mc:question fence
+    # (_build_agent_context), but nothing on dispatch() ever appended the
+    # protocol text that explains its shape — copies GeminiRuntime.dispatch's
+    # own with_mc_tool_protocol() call. End-to-end proof that a fence is
+    # actually PARSED lives in test_runtime_completion_log.py (drives the
+    # real _mode_a_reader); these pin that CodexRuntime feeds it one.
+
+    def test_dispatch_appends_mc_tool_protocol_to_system_prompt(self, monkeypatch):
+        captured = {}
+
+        def _fake_mode_a_dispatch(*args, **kwargs):
+            captured['kwargs'] = kwargs
+            return 'HANDLE'
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
+        self.rt._bin_cache = 'codex'
+        result = self.rt.dispatch(project_path='/p', task='do X',
+                                  system_prompt='MEMORY STUFF', session_dict={})
+        assert result == 'HANDLE'
+        stashed = captured['kwargs']['system_prompt']
+        assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in stashed
+        assert 'MEMORY STUFF' in stashed
+
+    def test_dispatch_appends_protocol_even_with_empty_system_prompt(self, monkeypatch):
+        """Incognito dispatch (_dispatch_via_runtime skips context entirely)
+        must still let Codex ask a question — matches GeminiRuntime, which
+        calls with_mc_tool_protocol() unconditionally."""
+        captured = {}
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch',
+                            lambda *a, **kw: captured.update(kw) or 'HANDLE')
+        self.rt._bin_cache = 'codex'
+        self.rt.dispatch(project_path='/p', task='do X', system_prompt='',
+                         session_dict={})
+        assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in captured['system_prompt']
+
+    def test_write_followup_reapplies_protocol_to_stashed_system_prompt(self, monkeypatch):
+        """agent_routes.py's /agent/send and /agent/interrupt refresh
+        `_system_prompt` from a bare project context ahead of every followup
+        (persona-continuity fix) — that rebuild knows nothing about the
+        emulated question protocol, so write_followup must re-wrap whatever
+        is CURRENTLY stashed, not just what dispatch() set on turn 1."""
+        class _FakeStdin:
+            def write(self, s): pass
+            def close(self): pass
+
+        class _FakeProc:
+            stdin = _FakeStdin()
+            stdout = iter([])
+            def wait(self): return 0
+            def poll(self): return 0
+
+        monkeypatch.setattr(agent_runtime.subprocess, 'Popen',
+                            lambda *a, **kw: _FakeProc())
+        self.rt._bin_cache = 'codex'
+        session = {'_system_prompt': 'REFRESHED PLAIN CONTEXT, NO PROTOCOL',
+                  'log_lines': [], 'proc': None}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='s1', provider='codex', mode='A',
+            project_path='/p', project_id='p1', session_dict=session,
+            meta={'callbacks': {}})
+        self.rt.write_followup(handle, 'go on')
+        assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in session['_system_prompt']
+        assert 'REFRESHED PLAIN CONTEXT, NO PROTOCOL' in session['_system_prompt']
+
     def test_parse_event_thread_started(self):
         """thread.started → INIT with thread_id"""
         line = json.dumps({'type': 'thread.started',
@@ -535,8 +600,13 @@ class TestCodexRuntime:
         assert caps.name == 'codex'
         assert caps.supports_session_resume is True
         assert caps.supports_mcp is True
-        assert caps.supports_plan_mode is True
-        assert caps.emits_cost is True
+        # [live, codex-cli 0.153.4] Both corrected by the parity audit (§2):
+        # no ExitPlanMode-equivalent anchor exists, so a live plan-approval
+        # UI had nothing behind it; `turn.completed` carries `usage` only,
+        # never a cost figure. These used to assert True — pinning the
+        # mis-declaration in place instead of catching it (audit §3).
+        assert caps.supports_plan_mode is False
+        assert caps.emits_cost is False
         assert caps.context_injection == 'file'
         assert caps.context_file_name == 'AGENTS.md'
 
@@ -748,6 +818,164 @@ class TestCodexRuntime:
 
         assert msg.get('type') == 'thread.started', f'Expected thread.started, got: {msg}'
         assert 'thread_id' in msg, f'Expected thread_id in: {msg}'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CodexRuntime.render_transcript_for_scribe — parity audit item 1, "Scribe on
+# Codex". mc.memory._scribe_extract used to be Claude-only end to end
+# (hardcoded get_runtime('claude')), so extraction never even looked for a
+# Codex transcript. The rollout is NOT Claude's {message: {content: [...]}}
+# shape, so the adaptation lives here, at the runtime boundary, rather than
+# as a special-case inside the Scribe. Record shapes below are taken from a
+# real byte-for-byte census of every rollout on the audit machine
+# (2026-09-07, codex-cli 0.153.4) — see the method's own docstring.
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _append_jsonl(path, records):
+    with open(path, 'a', encoding='utf-8') as fh:
+        for rec in records:
+            fh.write(json.dumps(rec) + '\n')
+
+
+class TestCodexRenderTranscriptForScribe:
+    def setup_method(self):
+        self.rt = CodexRuntime()
+
+    def test_renders_user_and_assistant_messages(self, tmp_path):
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-1', str(tmp_path),
+                                 [('user', 'read the config'),
+                                  ('assistant', 'reading it now')])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'USER: read the config' in out
+        assert 'ASSISTANT: reading it now' in out
+
+    def test_developer_role_preambles_are_dropped(self, tmp_path):
+        """Codex injects plugin/hook preambles as developer-role messages —
+        same shape as a real reply. They must not reach the summarizer."""
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-2', str(tmp_path),
+                                 [('developer', 'plugin hook noise'),
+                                  ('user', 'real question')])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'plugin hook noise' not in out
+        assert 'USER: real question' in out
+
+    def test_renders_reasoning_summary_as_thinking(self, tmp_path):
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-3', str(tmp_path), [('user', 'hi')])
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'response_item',
+            'payload': {'type': 'reasoning', 'content': None,
+                       'encrypted_content': 'gAAA...opaque',
+                       'summary': [{'type': 'summary_text',
+                                   'text': 'Considering search options'}]},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'THINKING: Considering search options' in out
+        assert 'gAAA...opaque' not in out  # never leak the encrypted blob
+
+    def test_reasoning_with_no_summary_drops_silently(self, tmp_path):
+        """Reasoning-encryption-on turns carry summary: [] — this is a real,
+        expected content drop, not a parse failure; must not raise or empty
+        out the whole render."""
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-4', str(tmp_path), [('user', 'hi')])
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'response_item',
+            'payload': {'type': 'reasoning', 'content': None,
+                       'encrypted_content': 'gAAA...opaque', 'summary': []},
+        }, {
+            'timestamp': '2026-09-07T12-53-30Z', 'type': 'response_item',
+            'payload': {'type': 'message', 'role': 'assistant',
+                       'content': [{'type': 'output_text', 'text': 'done'}]},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'THINKING' not in out
+        assert 'ASSISTANT: done' in out
+
+    def test_renders_function_call_and_output(self, tmp_path):
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-5', str(tmp_path), [('user', 'hi')])
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'response_item',
+            'payload': {'type': 'function_call', 'name': 'shell',
+                       'arguments': '{"command":["bash","-lc","ls -la"]}',
+                       'call_id': 'call_1'},
+        }, {
+            'timestamp': '2026-09-07T12-53-30Z', 'type': 'response_item',
+            'payload': {'type': 'function_call_output', 'call_id': 'call_1',
+                       'output': '{"output":"total 0\\n","metadata":{"exit_code":0}}'},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'ACTION shell: {"command":["bash","-lc","ls -la"]}' in out
+        assert 'RESULT: {"output":"total 0' in out
+
+    def test_renders_custom_tool_call_apply_patch(self, tmp_path):
+        """custom_tool_call's `input` is a raw string (apply_patch's own diff
+        format) — NOT JSON, unlike function_call's `arguments`."""
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-6', str(tmp_path), [('user', 'hi')])
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'response_item',
+            'payload': {'type': 'custom_tool_call', 'name': 'apply_patch',
+                       'status': 'completed', 'call_id': 'call_2',
+                       'input': '*** Begin Patch\n*** Add File: x.py\n+pass\n'},
+        }, {
+            'timestamp': '2026-09-07T12-53-30Z', 'type': 'response_item',
+            'payload': {'type': 'custom_tool_call_output', 'call_id': 'call_2',
+                       'output': '{"output":"Success.\\n","metadata":{"exit_code":0}}'},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'ACTION apply_patch: *** Begin Patch' in out
+        assert 'RESULT: {"output":"Success.' in out
+
+    def test_giant_tool_result_is_capped(self, tmp_path):
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-7', str(tmp_path), [('user', 'hi')])
+        huge = 'x' * 5000
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'response_item',
+            'payload': {'type': 'function_call_output', 'call_id': 'c',
+                       'output': huge},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert 'chars elided' in out
+        assert len(out) < 5000
+
+    def test_session_meta_and_event_msg_records_produce_no_lines(self, tmp_path):
+        """Line 1 is always session_meta; event_msg carries turn-boundary/
+        token-count bookkeeping. Neither is renderable conversation content."""
+        root = tmp_path / 'sessions'
+        f = _write_codex_rollout(root, 'th-8', str(tmp_path), [])
+        _append_jsonl(f, [{
+            'timestamp': '2026-09-07T12-53-29Z', 'type': 'event_msg',
+            'payload': {'type': 'task_started', 'turn_id': 't1'},
+        }])
+        out = self.rt.render_transcript_for_scribe(f)
+        assert out == ''
+
+    def test_missing_file_returns_none_not_empty_string(self, tmp_path):
+        """None (unparseable/absent) must be distinguishable from '' (a real,
+        empty-but-valid render) — the caller falls back to log_lines on None."""
+        assert self.rt.render_transcript_for_scribe(tmp_path / 'nope.jsonl') is None
+
+    def test_base_runtime_default_is_unsupported(self):
+        """The ABC default — every provider without an override (Gemini,
+        opencode, goose, aider, kiro) declines rather than guesses."""
+        from mc.agent_runtime import AgentRuntime
+
+        class _Bare(AgentRuntime):
+            name = 'bare'
+            def resolve_binary(self): return None
+            def health_check(self): return None
+            def capabilities(self): return None
+            def dispatch(self, **kw): raise NotImplementedError
+            def write_followup(self, *a, **kw): raise NotImplementedError
+            def interrupt(self, *a, **kw): raise NotImplementedError
+            def stop(self, *a, **kw): raise NotImplementedError
+
+        assert _Bare().render_transcript_for_scribe(Path('/nope')) is None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

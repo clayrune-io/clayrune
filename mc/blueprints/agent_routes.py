@@ -4494,8 +4494,15 @@ def _runtime_log_completion(ev, session):
                 # bookkeeping file — this line is already the one place every
                 # non-claude failure reaches disk (MC-935). Keep the field
                 # order stable; _RUNTIME_ERROR_LINE_RE parses it positionally.
+                # `session['model']` is a Claude-only field (set on a pinned
+                # respawn, agent_send: L4540); `_dispatch_via_runtime` stamps
+                # every non-claude session's model into `agent_model` instead
+                # (L4915). Reading only `model` left the runtime path's model=
+                # perpetually blank, and `_recent_quota_failures` drops any
+                # line with an empty model — so MC-934 quota protection never
+                # fired for a single non-claude provider (parity audit item 3a).
                 _log(f"[runtime-error] provider={session.get('provider', '')} "
-                     f"model={session.get('model', '')} "
+                     f"model={session.get('model') or session.get('agent_model', '')} "
                      f"session={session.get('session_id', '')} "
                      f"ts={now_iso()}: {detail}")
             _log_agent_completion(session)
@@ -4858,8 +4865,19 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
-                          character_body='', model_override=''):
+                          character_body='', model_override='',
+                          resume_id=''):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
+
+    `resume_id` (parity audit item 3, "Resume"): the provider's own session
+    id to continue — for Codex this is `provider_session_id` (the thread id
+    `codex exec resume <id>` expects), captured off a prior turn's
+    `_mode_a_reader` INIT event and persisted to the agent log
+    (`_log_agent_completion`). Was hardcoded '' here, so `CodexRuntime.
+    build_command`'s correctly-built `exec resume` branch was unreachable —
+    every "resumed" Codex chat was actually a fresh thread wearing the old
+    MC session_id. Providers that don't support resume (`build_command`
+    ignoring the kwarg) are unaffected by a non-empty value passed through.
 
     The runtime owns: binary resolution, subprocess.Popen, reader thread,
     output parsing. MC keeps owning the agent_sessions dict — the runtime
@@ -4915,7 +4933,14 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'agent_model': model,
             'pinned_model': model_override or '',
             'character': character_meta,
+            '_resume_id': resume_id,
         }
+        if resume_id:
+            # Seed provider_session_id with the id we're resuming so it is
+            # never blank even if this turn's INIT event doesn't fire (e.g.
+            # an error before the CLI emits thread.started). A real INIT
+            # event overwrites it — see _mode_a_reader.
+            session['provider_session_id'] = resume_id
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
 
@@ -4940,9 +4965,22 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     # discarded. `build_command` is pure (no subprocess) so logging it costs
     # nothing on the success path and is best-effort on the failure path —
     # a run must still be attempted even if this line can't be built.
+    # Not every runtime's build_command() accepts resume_id (only codex and
+    # opencode do today) — this is a diagnostics-only argv preview, so a
+    # provider that doesn't take the kwarg must fall back to the no-resume
+    # form rather than lose the whole log line to a TypeError.
     try:
+        try:
+            # Not every provider's build_command() declares resume_id (only
+            # codex and opencode do) — TypeError below catches those; pyright
+            # can't see the duck-typed cross-provider call is intentional.
+            _cmd_preview = runtime.build_command(
+                model=model, resume_id=resume_id)  # pyright: ignore[reportCallIssue]
+        except TypeError:
+            _cmd_preview = runtime.build_command(model=model)
+        resume_note = f" (resuming {resume_id})" if resume_id else ""
         _log(f"[dispatch] provider={provider_name} cmd: "
-             f"{' '.join(runtime.build_command(model=model))}")
+             f"{' '.join(_cmd_preview)}{resume_note}")
     except Exception as e:
         _log(f"[dispatch] provider={provider_name} model={model!r} "
              f"(cmd unavailable: {e})")
@@ -4952,7 +4990,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             project_path=pp,
             task=task,
             system_prompt=system_prompt,
-            resume_id='',
+            resume_id=resume_id,
             mode='A',
             model=model,
             incognito=incognito,
@@ -5100,13 +5138,19 @@ def _prior_character(project_id, resume_id):
     The `''` case is the same bug mirrored: a chat that ran with no persona must
     not silently acquire one because the project default changed since. A resume
     continues what the conversation WAS, never what the project is now.
+
+    `resume_id` is `claude_session_id` for a Claude resume; for a non-claude
+    resume (parity audit item 3, "Resume") it is `provider_session_id` — the
+    two fields never collide (one is a CLI-assigned csid, the other a
+    provider thread id), so matching either is safe.
     """
     if not resume_id:
         return None
     try:
         seen = False
         for e in _load_agent_log(project_id):
-            if e.get('claude_session_id') != resume_id:
+            if (e.get('claude_session_id') != resume_id
+                    and e.get('provider_session_id') != resume_id):
                 continue
             seen = True
             ch = e.get('character') or {}
@@ -5396,7 +5440,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          display_task=display_task,
                                          character_meta=character_meta,
                                          character_body=character_body,
-                                         model_override=model_override)
+                                         model_override=model_override,
+                                         resume_id=resume_id)
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
@@ -6272,8 +6317,8 @@ def agent_followup(project_id):
             # (see _compose_respawn_prompt in agent_runtime.py).
             if not existing.get('incognito'):
                 try:
-                    existing['_system_prompt'] = _build_agent_context(
-                        p, incognito=False, task=message)
+                    existing['_system_prompt'] = _fresh_context_for(
+                        p, existing, task=message)
                 except Exception as e:
                     _log(f"[followup] context refresh failed: {e}")
             try:
@@ -6883,8 +6928,8 @@ def agent_interrupt(project_id):
             # Refresh stashed context (see the followup path for rationale).
             if not session.get('incognito'):
                 try:
-                    session['_system_prompt'] = _build_agent_context(
-                        p, incognito=False, task=message)
+                    session['_system_prompt'] = _fresh_context_for(
+                        p, session, task=message)
                 except Exception as e:
                     _log(f"[interrupt] context refresh failed: {e}")
             try:
@@ -8261,12 +8306,19 @@ def _recent_codex_conversation_rows(project_id, p, limit):
                 _conversation_character_display({'character': live.get('character')}, p)
                 if live else None),
             'provider': 'codex',
-            # A real rollout exists now, and `codex exec resume <thread_id>` is
-            # a genuine CLI resume — but `_dispatch_via_runtime` hardcodes
-            # `resume_id=''` (agent_routes.py:4948; parity-audit item 3, not
-            # wired here). Advertising resumable=True would offer a control
-            # the dispatch path silently drops. Keep this honest until that
-            # lands.
+            # `_dispatch_via_runtime` now threads `resume_id` through to
+            # `codex exec resume <thread_id>` (parity audit item 3) — the
+            # DISPATCH half of resume is real. Still `resumable: False` here
+            # because nothing on the frontend sends `provider_session_id` as
+            # the resume id yet: `resume_conversation_id` is populated from
+            # `claude_session_id` everywhere in static/js (agent-log.js,
+            # conversation.js, resume-preview.js), which this row leaves ''
+            # on purpose — repurposing it for a Codex thread id would be a
+            # much larger, separate change across every one of those call
+            # sites. Advertising resumable=True here would offer a control
+            # that silently starts a fresh thread instead. Flip once the
+            # frontend rail is wired to send provider_session_id for a
+            # provider!='claude' row.
             'resumable': False,
             'resume_mode': 'readonly',
         })

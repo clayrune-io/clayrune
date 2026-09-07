@@ -58,6 +58,7 @@ class _FakeRuntime:
 
     def __init__(self):
         self.dispatch_callbacks = None
+        self.last_resume_id = None
 
     def model_supported(self, model):
         return False
@@ -76,6 +77,17 @@ class _FakeRuntime:
                 type=agent_runtime_mod.EventType.INIT, provider=self.name,
                 session_id=tid, mc_session_id=mc_session_id,
                 timestamp='', payload={'session_id': tid, 'thread_id': tid})
+        # __MSG__: yields a REAL ASSISTANT_TEXT event (unlike the default
+        # None below, which the reader appends as a raw non-protocol line
+        # without ever feeding turn_text_parts/mc:-block detection) — needed
+        # to drive the mc:question/mc:todo scan at turn end, which only sees
+        # text that arrived as an ASSISTANT_TEXT event.
+        if line.startswith('__MSG__:'):
+            text = line.split(':', 1)[1]
+            return agent_runtime_mod.AgentEvent(
+                type=agent_runtime_mod.EventType.ASSISTANT_TEXT, provider=self.name,
+                session_id=None, mc_session_id=mc_session_id,
+                timestamp='', payload={'text': text})
         return None  # plain text — the reader appends it to log_lines
 
     def run_turn(self, handle, lines, rc=0):
@@ -92,6 +104,7 @@ class _FakeRuntime:
                  session_dict=None, project_id='', register_process=None,
                  callbacks=None, **_extra):
         self.dispatch_callbacks = callbacks
+        self.last_resume_id = resume_id
         return agent_runtime_mod.SessionHandle(
             mc_session_id=mc_session_id,
             provider=self.name,
@@ -338,3 +351,157 @@ def test_claude_completion_writes_one_row_not_two(env):
     rows = _log_rows(env)
     assert len(rows) == 1, rows
     assert rows[0]['provider'] == 'claude'
+
+
+# ── MC-934 quota key mismatch (parity audit item 3a) ────────────────────────
+# `_runtime_log_completion` used to read `session['model']`, a field ONLY the
+# claude respawn path ever sets (pinned respawn, agent_send). Every non-claude
+# session stamps its model into `agent_model` (_dispatch_via_runtime) instead,
+# so `[runtime-error] ... model= ...` was always written blank, and
+# `_recent_quota_failures` silently drops any line with an empty model —
+# quota protection was a no-op for every runtime-dispatched provider.
+
+def test_error_line_carries_agent_model_when_model_field_is_unset(env, monkeypatch):
+    ar = env['ar']
+    lines = []
+    monkeypatch.setattr(ar, '_log', lambda msg, **k: lines.append(msg))
+
+    sid, handle = _dispatch(env, model_override='gpt-5-codex')
+    env['runtime'].run_turn(handle, ['boom'], rc=1)
+
+    error_lines = [ln for ln in lines if ln.startswith('[runtime-error]')]
+    assert len(error_lines) == 1, lines
+    assert 'model=gpt-5-codex' in error_lines[0]
+
+
+def test_error_line_prefers_explicit_model_field_over_agent_model(env, monkeypatch):
+    """A claude-style pinned respawn (session['model'] set) must not be
+    shadowed by a stale agent_model — model wins when both are present."""
+    ar = env['ar']
+    lines = []
+    monkeypatch.setattr(ar, '_log', lambda msg, **k: lines.append(msg))
+
+    sid, handle = _dispatch(env, model_override='gpt-5-codex')
+    env['sessions'][sid]['model'] = 'gpt-5-codex-mini'
+    env['runtime'].run_turn(handle, ['boom'], rc=1)
+
+    error_lines = [ln for ln in lines if ln.startswith('[runtime-error]')]
+    assert len(error_lines) == 1, lines
+    assert 'model=gpt-5-codex-mini' in error_lines[0]
+
+
+# ── Resume threading (parity audit item 3, "Resume") ────────────────────────
+# `_dispatch_via_runtime` hardcoded `resume_id=''`, so `CodexRuntime.
+# build_command`'s correctly-built `exec resume <id>` branch was unreachable —
+# every "resumed" Codex chat was actually a fresh thread wearing the old MC
+# session_id. These pin the id actually reaching runtime.dispatch(), and the
+# session dict carrying it forward before any INIT event has fired.
+
+def test_resume_id_reaches_runtime_dispatch(env):
+    sid, handle = _dispatch(env, resume_id='thread-prior-99')
+    assert env['runtime'].last_resume_id == 'thread-prior-99'
+
+
+def test_resume_id_seeds_provider_session_id_before_init_fires(env):
+    """If the process errors before emitting thread.started, the session
+    must still carry the id it was resuming — not go blank."""
+    sid, handle = _dispatch(env, resume_id='thread-prior-99')
+    assert env['sessions'][sid]['provider_session_id'] == 'thread-prior-99'
+
+
+def test_the_seeded_resume_id_survives_the_turns_init_event(env):
+    """`_mode_a_reader`'s INIT branch uses setdefault (agent_runtime.py) so a
+    turn's own thread.started never clobbers an identity already known for
+    this MC session — which is what keeps a resumed chat's provider_session_id
+    stable across every subsequent respawn, not just the first one."""
+    sid, handle = _dispatch(env, resume_id='thread-prior-99')
+    env['runtime'].run_turn(handle, ['__INIT__:thread-prior-99', 'ok'])
+    assert env['sessions'][sid]['provider_session_id'] == 'thread-prior-99'
+
+
+def test_fresh_dispatch_without_resume_id_is_unaffected(env):
+    sid, handle = _dispatch(env)
+    assert env['runtime'].last_resume_id == ''
+    assert 'provider_session_id' not in env['sessions'][sid]
+
+
+def test_prior_character_matches_by_provider_session_id(env):
+    """A non-claude resume has no claude_session_id to key off — the persona
+    lookup that `_dispatch_agent_internal` uses ahead of the provider branch
+    must also recognize `provider_session_id`."""
+    ar = env['ar']
+    dave = {'scope': 'global', 'name': 'dave'}
+    monkeypatch_log = [{'provider_session_id': 'thread-prior-99',
+                        'claude_session_id': '', 'character': dave}]
+    orig = ar._load_agent_log
+    ar._load_agent_log = lambda pid: monkeypatch_log
+    try:
+        assert ar._prior_character('proj1', 'thread-prior-99') == 'global:dave'
+    finally:
+        ar._load_agent_log = orig
+
+
+# ── mc:question on the shared Mode-A reader (parity audit item 4) ──────────
+# The universal context block tells every Mode-A provider to use the mc:
+# fence, but `_mode_a_reader` never scanned for it — the fence landed in
+# log_lines as literal text and the run dead-ended. These drive the REAL
+# `_mode_a_reader` (via `_FakeRuntime.run_turn`, same as every test above),
+# not a mock, so they break if the wiring is removed or the ordering of the
+# status-decision vs mc-tool-scan changes.
+
+def test_mc_question_pauses_the_turn_and_populates_pending_questions(env):
+    sid, handle = _dispatch(env)
+    lines = [
+        '__MSG__:Let me check something first.\n',
+        '__MSG__:```mc:question\n',
+        ('__MSG__:{"questions": [{"header": "Env", "question": "Which env?", '
+         '"options": [{"label": "prod", "description": "production"}, '
+         '{"label": "dev", "description": "development"}]}]}\n'),
+        '__MSG__:```\n',
+    ]
+    env['runtime'].run_turn(handle, lines, rc=0)
+    session = env['sessions'][sid]
+    assert session['status'] == 'idle'
+    assert session['waiting_for_question'] is True
+    assert len(session['pending_questions']) == 1
+    q = session['pending_questions'][0]['questions'][0]
+    assert q['question'] == 'Which env?'
+    assert q['options'][0]['label'] == 'prod'
+    # The raw fence must never reach the visible chat.
+    assert not any('```mc:question' in ln for ln in session['log_lines'])
+    assert any('Let me check something first.' in ln for ln in session['log_lines'])
+    assert any('Waiting for your answer' in ln for ln in session['log_lines'])
+    # The Mode-A PROCESS still exited (it's a respawn-per-turn provider), so
+    # the completion hook still fires and logs a row — just tagged 'idle',
+    # not 'completed'/'error', matching what the reply's later write_followup
+    # respawn will overwrite once it resolves.
+    rows = _log_rows(env)
+    assert len(rows) == 1
+    assert rows[0]['status'] == 'idle'
+
+
+def test_mc_question_malformed_block_is_reported_not_silently_dropped(env):
+    sid, handle = _dispatch(env)
+    lines = [
+        '__MSG__:```mc:question\n',
+        '__MSG__:{not valid json\n',
+        '__MSG__:```\n',
+    ]
+    env['runtime'].run_turn(handle, lines, rc=0)
+    session = env['sessions'][sid]
+    assert session.get('waiting_for_question') is not True
+    assert session['status'] == 'completed'  # rc=0, no valid question to pause on
+    assert any('malformed block' in ln for ln in session['log_lines'])
+
+
+def test_ordinary_text_with_no_mc_fence_is_unaffected(env):
+    """The common case — no mc: fence at all — must render identically to
+    plain ASSISTANT_TEXT with no suppression or scanning artifacts."""
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['__MSG__:Reading the config now.',
+                                     '__MSG__:Done, config looks fine.'], rc=0)
+    session = env['sessions'][sid]
+    assert session['status'] == 'completed'
+    assert 'Reading the config now.' in session['log_lines']
+    assert 'Done, config looks fine.' in session['log_lines']
+    assert not any('Waiting for your answer' in ln for ln in session['log_lines'])
