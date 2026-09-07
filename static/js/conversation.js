@@ -4627,6 +4627,14 @@ window.refreshProjectBacklog = refreshProjectBacklog;
 window.refreshProjectSocialQueue = refreshProjectSocialQueue;
 window.fetchAgentStatus = fetchAgentStatus;
 window.approvePlan = approvePlan;
+// interop: resume-preview.js's turn_start SSE handler bootstraps this poll —
+// see the MC-937 Phase 4 render-gap fix (a subagent dispatched mid-turn while
+// the panel is open+visible was otherwise never discovered: the SSE stream
+// carries no active_subagents field at all, and _subagentPollStart's own
+// self-sustain logic only re-arms itself from INSIDE fetchAgentStatus, so
+// nothing ever took the first tick without this cross-module export).
+window._subagentPollStart = _subagentPollStart;
+window._subagentPollStop = _subagentPollStop;
 window._parsePlanSteps = _parsePlanSteps;
 window._planCardHTML = _planCardHTML;
 window.mcBackFromConv = mcBackFromConv;

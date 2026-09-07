@@ -10,24 +10,48 @@
  * client-side re-derives it. Before this change nothing consumed the field:
  * Ron asked "is anyone working right now?" five times on a day when agents
  * WERE running and the app showed nothing, not on the Floor, not in the rail,
- * nowhere. This slice adds the two consuming surfaces:
+ * nowhere. This slice adds three consuming surfaces:
  *   1. a nested card inside the spawning agent's message thread
  *      (conversation.js: _subagentCardsHTML / _renderSubagentCards, cold +
  *      warm render paths sharing _subagentCardRowHTML / _subagentCardMeta so
  *      they can't drift)
  *   2. a "+N helpers" badge on that agent's Channel-rail roster row
  *      (_channelRoster's helperCount, updateRailRowStatus's live patch)
+ *   3. the SAME "+N" badge on the figure's card on the Floor (floor.js:
+ *      _floorFigure reading the `subagents` field floor_routes.py's
+ *      _figure() already carried)
  *
  * A regression here is silent in the exact way the bug report was silent: no
  * server round-trip breaks, a running subagent just renders as nothing.
  *
+ * POST-MORTEM (2026-09-07): cases 1-6 below all passed on `master` while Ron
+ * could see NEITHER surface in the real app. Two independent gaps, both
+ * invisible to a test that seeds agentStatusCache directly:
+ *   - floor.js never read `f.subagents` at all (no code path, not a data or
+ *     timing bug) — case 7 opens the real Floor and would have caught it on
+ *     day one.
+ *   - the ONLY thing that ever calls fetchAgentStatus again for an
+ *     already-open, already-settled modal is a tab switch or
+ *     _subagentPollStart's own self-sustaining poll — which could only ever
+ *     be bootstrapped from INSIDE fetchAgentStatus's own tail call. A
+ *     subagent dispatched mid-turn while the user passively watches a
+ *     healthy SSE stream (exactly Ron's report) was never discovered: the
+ *     SSE protocol itself carries no active_subagents field, so nothing
+ *     ever re-polled. Case 8 reproduces this by seeding NO activeSubagents
+ *     at all and letting only the mocked /agent/status endpoint's timing +
+ *     the turn_start-bootstrapped poll surface the card — the thing every
+ *     prior case's direct-cache-seed shortcut could never exercise.
+ *
  * This is a real headless boot (real index.html + real static/js/*.js served
  * verbatim, no server, no network) — same hermetic shape as
  * channel-message-attribution.mjs and channel-mode-roster.mjs.
- * agentStatusCache / conversationsCache are seeded directly in-page (same
- * shortcut those two tests use), so no /agent/status response shape needs
- * mocking — the exact server field (`active_subagents`) is mirrored onto the
- * client-side cache key (`activeSubagents`) fetchAgentStatus itself writes.
+ * agentStatusCache / conversationsCache are seeded directly in-page for cases
+ * 1-6 (same shortcut those two tests use) — the exact server field
+ * (`active_subagents`) is mirrored onto the client-side cache key
+ * (`activeSubagents`) fetchAgentStatus itself writes. Cases 7-8 deliberately
+ * do NOT take that shortcut — they mock /api/floor and
+ * /api/project/<id>/agent/status instead, because the shortcut is exactly
+ * what let the real bug through.
  *
  * RUN
  *   cd tools/smoke && node subagent-visibility.mjs
@@ -46,6 +70,7 @@ const INDEX_HTML = readFileSync(resolve(REPO_ROOT, 'static', 'index.html'), 'utf
 const ORIGIN = 'http://mc.smoke.test';
 const PID = 'smoke_subagent';        // running + finished + attribution + highlight cases
 const PID_EMPTY = 'smoke_sub_empty'; // the empty-list "no chrome" case
+const PID_DISCO = 'smoke_sub_disco'; // discovery-poll case: subagent appears AFTER the panel is open
 
 const STATIC = {};
 for (const f of readdirSync(JS_DIR)) if (f.endsWith('.js')) STATIC[`/static/js/${f}`] = ['text/javascript; charset=utf-8', readFileSync(resolve(JS_DIR, f), 'utf8')];
@@ -65,7 +90,47 @@ function fixtureProject(id, name) {
     distiller_skip_errors: true,
   };
 }
-const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Subagent Smoke'), fixtureProject(PID_EMPTY, 'Empty Smoke')]);
+const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Subagent Smoke'), fixtureProject(PID_EMPTY, 'Empty Smoke'), fixtureProject(PID_DISCO, 'Discovery Smoke')]);
+
+// /api/floor fixture — a live-shaped figure with a running subagent, for the
+// Floor coverage this file never had (see header). Mirrors floor_routes.py's
+// _figure() shape closely enough for _floorFigure/_floorRoom to render it.
+const FLOOR_JSON = JSON.stringify({
+  rooms: [{
+    id: PID, name: 'Subagent Smoke', color: '', emoji: '🧪',
+    figures: [{
+      session_id: 'sess-sub', claude_session_id: 'csid-sub', state: 'working', reason: '',
+      activity: '', task: 'root-cause the flaky test', character: null,
+      name: 'Fenn', name_from: 'default', avatar: '', provider: 'claude',
+      model: 'claude-opus-5', model_from: 'own', started_at: new Date().toISOString(),
+      age: '2m', trigger_type: 'manual', hivemind_id: '',
+      subagents: [{ agent_id: 'abc123', label: 'root-cause the flaky test', running: true, elapsed_seconds: 12, tool_calls: 4 }],
+    }],
+  }],
+  quiet: [], bench: [], counts: { rooms: 1, figures: 1, quiet: 0 },
+});
+
+// Discovery-poll case: the FIRST /agent/status response for PID_DISCO carries
+// no subagent (matching a normal turn start); only once DISCO_DELAY_MS have
+// elapsed does the response start including one — modelling a subagent that
+// gets dispatched a moment AFTER the panel is already open and settled, the
+// exact "Ron is watching this chat and nothing changed" report. If nothing
+// ever re-polls after that point, the card can never appear no matter how
+// correct the render functions are.
+let DISCO_START = Date.now();
+const DISCO_DELAY_MS = 1200;
+function discoStatusBody() {
+  const subagentAppeared = (Date.now() - DISCO_START) > DISCO_DELAY_MS;
+  return JSON.stringify({
+    sessions: [{
+      session_id: 'sess-disco', claude_session_id: 'csid-disco', status: 'running',
+      task: 'a normal turn', started_at: new Date().toISOString(), character: null,
+      active_subagents: subagentAppeared
+        ? [{ agent_id: 'disco1', parent_claude_session_id: 'csid-disco', label: 'late subagent', started_at: new Date().toISOString(), elapsed_seconds: 3, tool_calls: 1, running: true }]
+        : [],
+    }],
+  });
+}
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -86,6 +151,8 @@ try {
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path === `/api/project/${PID_DISCO}/agent/status`) return route.fulfill({ status: 200, contentType: 'application/json', body: discoStatusBody() });
     return route.abort();  // includes the search "full-buffer" fetch — _csEnsureComplete tolerates the failure
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -264,6 +331,65 @@ try {
     ? ok('warm updater also stays a no-op for an empty list — no empty chrome ever created')
     : fail('warm updater created an empty .subagent-cards container');
 
+  // ── 7. The Floor — a figure with a running subagent shows the "+N" badge ──
+  // Cases 1-6 only ever exercised the in-thread card + Channel-rail badge;
+  // this file never opened the Floor at all, which is half of why the real
+  // bug (floor.js's _floorFigure never read f.subagents) shipped invisible.
+  await page.evaluate(() => { if (typeof openFloor === 'function') openFloor(); });
+  await page.waitForSelector('.fl-fig', { timeout: 5000 });
+  const floorBadge = await page.$eval('.fl-fig .conv-helpers', (el) => el.textContent.trim()).catch(() => null);
+  floorBadge === '+1'
+    ? ok('Floor figure shows the "+1" helper badge for a running subagent')
+    : fail(`expected a "+1" badge on the Floor figure card, got: ${floorBadge}`);
+  await page.evaluate(() => { if (typeof closeFloor === 'function') closeFloor(); });
+
+  // ── 8. Discovery: a subagent that appears AFTER the panel is already open
+  // and settled must still surface — with NO tab switch, NO manual cache
+  // seed, and NO direct _renderSubagentCards call from this test. This is
+  // the render-gap the hermetic cases above cannot catch: they all seed
+  // agentStatusCache[sid].activeSubagents directly, which proves the render
+  // FUNCTIONS are correct but never proves anything ever calls them again
+  // once a modal is just sitting open and being watched (Ron's actual
+  // report). Root cause: the SSE stream carries no active_subagents field at
+  // all, and the self-canceling poll (_subagentPollStart) used to only be
+  // reachable from inside fetchAgentStatus's own tail call — nothing ever
+  // took the first tick. The fix bootstraps it from the turn_start SSE
+  // handler; this simulates exactly that call, across the real
+  // conversation.js/resume-preview.js module boundary via `window.`.
+  DISCO_START = Date.now();  // reset the fixture's clock right before settling
+  const discoSid = await page.evaluate(({ pid }) => {
+    const sid = 'sess-disco';
+    agentHistory.unshift({ projectId: pid, sessionId: sid, projectName: 'Discovery Smoke', task: 'a normal turn', status: 'running', startedAt: new Date().toISOString() });
+    // Deliberately NO activeSubagents key here — anything shown below must
+    // come from the poll, not from this seed.
+    agentStatusCache[sid] = { status: 'running', task: 'a normal turn', projectId: pid, startedAt: new Date().toISOString(), claudeSessionId: 'csid-disco', character: null };
+    agentOutputBuffers[sid] = ['> Do a normal thing.'];
+    openProjectModal(pid);
+    return sid;
+  }, { pid: PID_DISCO });
+  await page.waitForSelector(`.modal-window[data-modal-id="${PID_DISCO}"] #agent-output-${discoSid}`, { timeout: 5000 });
+  const discoScope = `.modal-window[data-modal-id="${PID_DISCO}"] `;
+  const cardBeforeBootstrap = await page.$(`${discoScope}.subagent-card`);
+  !cardBeforeBootstrap
+    ? ok('discovery case: no card yet right after open (the fixture subagent has not "appeared" server-side)')
+    : fail('discovery case: a card already existed before the bootstrap — fixture timing is wrong');
+  const bootstrapExported = await page.evaluate(({ pid }) => {
+    if (typeof window._subagentPollStart !== 'function') return false;
+    window._subagentPollStart(pid);
+    return true;
+  }, { pid: PID_DISCO });
+  bootstrapExported
+    ? ok('window._subagentPollStart is reachable across the conversation.js → resume-preview.js module boundary')
+    : fail('window._subagentPollStart is NOT exported — the turn_start handler cannot reach it (this is the exact cross-module gap that shipped)');
+  // The self-poll ticks every 4s; give it one tick plus margin. No tab
+  // switch, no refreshModal, no manual render call happens between here and
+  // the assertion — only the passage of time and the poll this test started.
+  await page.waitForSelector(`${discoScope}.subagent-card`, { timeout: 5500 }).catch(() => {});
+  const discoCard = await page.$eval(`${discoScope}.subagent-card .subagent-card-label`, (el) => el.textContent.trim()).catch(() => null);
+  discoCard === 'late subagent'
+    ? ok('discovery case: a subagent that appeared after the panel settled was found and rendered with zero manual intervention')
+    : fail(`discovery case: subagent never rendered (got label: ${discoCard}) — a live-watched panel would show nothing until the user switched tabs`);
+
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) {
     uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
@@ -271,7 +397,7 @@ try {
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — nested subagent cards render running/finished states correctly, never desync attribution, survive a highlight pass, and the rail shows a stable (non-re-sorting) helper count.'
+    ? '\n✅ PASS — nested subagent cards render running/finished states correctly, never desync attribution, survive a highlight pass, the rail shows a stable (non-re-sorting) helper count, the Floor shows the same badge, and a subagent dispatched after the panel settles is still discovered.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);

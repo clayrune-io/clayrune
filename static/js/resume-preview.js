@@ -479,6 +479,19 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
       updateAgentStatusUI(sessionId, serverStatus);
       window.updateRailRowStatus?.(sessionId);  // MC-940: rail row too, in place
     }
+    // Nested subagent reconciliation (MC-937 Phase 4). This function already
+    // has `sess` — the raw server session object carrying `active_subagents`
+    // — in hand for the status/question checks above, but used to drop the
+    // field on the floor: a subagent that started while this session's SSE
+    // was zombied/unhealthy (the only condition under which the freshness
+    // reconciler calls this at all) was never discovered by this path either.
+    // Same field-name mirror fetchAgentStatus does (active_subagents →
+    // activeSubagents), then the same in-place patches.
+    if (cached) {
+      cached.activeSubagents = sess.active_subagents || [];
+      window._renderSubagentCards?.(sessionId);
+      window.updateRailRowStatus?.(sessionId);
+    }
     // Question-form reconciliation. A `type: question` SSE event can be
     // silently dropped the same way — agent ends up waiting with no form
     // visible while the chat shows "Completed". Server now mirrors
@@ -758,6 +771,21 @@ function connectAgentStream(projectId, sessionId) {
         updateHistoryStatus(sessionId, 'running');
         updateAgentStatusUI(sessionId, 'running');
         window.updateRailRowStatus?.(sessionId);  // MC-940: rail row too, in place
+        // A subagent typically gets dispatched early in a turn, but the SSE
+        // stream carries no active_subagents field at all (server-side that
+        // lives only on /agent/status) — the only way to discover one is a
+        // poll, and _subagentPollStart's own self-sustain logic only re-arms
+        // itself from INSIDE fetchAgentStatus's tail, so nothing ever took the
+        // first tick for a session the user is passively watching over a
+        // healthy stream. Bootstrap it here, right as the turn we'd expect a
+        // subagent from begins. Guarded on the panel actually being visible
+        // (agent-output node present) so a background/unopened session's
+        // turn_start doesn't start a poll nobody can see the result of —
+        // fetchAgentStatus's own visibility+running gate then self-stops it
+        // within one tick if there's nothing to show.
+        if (document.getElementById(`agent-output-${sessionId}`)) {
+          window._subagentPollStart?.(projectId);
+        }
         // §4: turn_start is the reliable hot-path show point (it skips
         // refreshModal, so the declarative cold-render won't fire here).
         hideTypingIndicator(sessionId);  // clear any stale node first

@@ -200,6 +200,15 @@ function _floorFigure(pid, f) {
   // a single 13px dot — a figure mid-turn looked identical to one that had been
   // idle for twenty hours. It owns the edge, the tint and a word now.
   const stateWord = { asking: 'needs you', working: 'working', idle: 'idle' }[f.state] || f.state;
+  // "Is anyone working right now?" was asked six times on a day helpers WERE
+  // out (2026-09-02) because the Floor carried f.subagents (6a5650a) but no
+  // card ever read it — the same "+N" convention the Channel roster row
+  // already uses for the identical fact, reused here so the two surfaces
+  // agree rather than inventing a second visual language for one concept.
+  const runningHelpers = (f.subagents || []).filter(s => s.running).length;
+  const helpers = runningHelpers > 0
+    ? `<span class="conv-helpers" title="${runningHelpers} helper${runningHelpers !== 1 ? 's' : ''} working">+${runningHelpers}</span>`
+    : '';
   return `<div class="fl-fig fl-${esc(f.state)}"
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
@@ -209,7 +218,7 @@ function _floorFigure(pid, f) {
           title="${esc(nameTitle)}"
           onclick="event.stopPropagation();floorRename('${esc(f.session_id)}','${esc(f.name || '')}')"
         >${esc(f.name || 'unnamed')}</span>${type}
-        <span class="fl-state">${esc(stateWord)}</span>
+        <span class="fl-state">${esc(stateWord)}</span>${helpers}
         <span class="fl-age">${esc(f.age || '')}</span></div>
       <div class="fl-engine">${esc(engine)}</div>
       <div class="fl-act">${esc(_floorLine(f))}</div>

@@ -411,6 +411,22 @@ function closeModalById(modalId) {
     if (_dropInbox) { _mcConvFromInbox = false; _mcInboxOpen = false; }
     if (_dropSurface) _mcSurfaceOpen = false;
     _mcUnwindHistory(n);
+    // Returning to the dashboard on mobile (hardware-back OR the in-app
+    // "← Dashboard"/X affordance both funnel here) never explicitly
+    // repainted #projects-col — the WhatsApp-style list sat there un-rebuilt,
+    // relying entirely on the ambient 30s fetchProjects() poll or a window
+    // 'resize' event to ever refresh it. Any transient bad state picked up
+    // while the modal covered it (a stale/partial render, a filter/view flag
+    // left in an inconsistent spot) could sit wrong for up to 30s with no
+    // visible trigger to self-heal — exactly the "looks fine after a hard
+    // reload, breaks again after exiting a chat" shape of report. Cheap and
+    // idempotent (same call the periodic poll already makes); desktop is
+    // unaffected — isMobileChatList() gates it exactly like renderProjects()
+    // itself does internally.
+    if (typeof isMobileChatList === 'function' && isMobileChatList()
+        && typeof renderProjects === 'function') {
+      renderProjects();
+    }
   }
 }
 
