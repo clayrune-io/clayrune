@@ -124,6 +124,10 @@ _CONFIG_EDITABLE_KEYS = {
     # next stdin write, no respawn needed (like read_floor_topk).
     'memory_turn_refresh_enabled', 'memory_turn_budget_bytes',
     'memory_turn_cold_probe_enabled',
+    # Plan-time negation interrupt (MC-944) — mc/negation_interrupt.py. Read
+    # live per scan, no respawn needed.
+    'negation_interrupt_mode', 'negation_interrupt_max_hits',
+    'negation_interrupt_window_tokens',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle

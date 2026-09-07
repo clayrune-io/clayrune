@@ -91,6 +91,7 @@ import mc.distiller as _distiller          # exploration read-floor (registered 
 import mc.skills as _skills                # _skills_catalog_block
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
+import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -2009,6 +2010,32 @@ def _session_plan_files(rec) -> list[str]:
     return files
 
 
+def _observe_negation_interrupt(session, tool_name, tool_input) -> None:
+    """Called from both live `tool_use` stream sites (MC-944 §5.4, build step
+    8) — AFTER the tool call has already streamed back, never before it, so
+    this can never delay, deny, or alter a tool call (see
+    mc.negation_interrupt's module docstring for why this is a passive
+    observer and not a `PreToolUse` hook).
+
+    `is_relevant()` is a pure string check (no I/O) run on every tool call;
+    `load_project` — real disk I/O — only runs on the rare subset that passes
+    it (an Agent dispatch, or a Write/Edit under docs/** or ~/.claude/plans/).
+    Never raises: a bug here must not cost a live turn its stream processing.
+    """
+    try:
+        if not _negation_interrupt.is_relevant(tool_name, tool_input):
+            return
+        proj = load_project(session.get('project_id', ''))
+        if not proj:
+            return
+        _negation_interrupt.observe_tool_call(
+            proj,
+            session.get('session_id') or session.get('id') or '',
+            tool_name, tool_input)
+    except Exception as e:
+        _log(f"[negation-interrupt] observe failed: {e}")
+
+
 def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     """Universal Clayrune-aware behaviors that apply to EVERY agent —
     regular project agents, hivemind workers, future agent types.
@@ -3203,6 +3230,7 @@ def _read_agent_stream(proc, session):
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
+                            _observe_negation_interrupt(session, tool_name, tool_input)
                             # Track .md file edits for plan file detection
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
@@ -3422,6 +3450,7 @@ def _read_agent_stream_b(proc, session):
                             activity = _format_tool_activity(tool_name, tool_input)
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
+                            _observe_negation_interrupt(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
                                 if fp.lower().endswith('.md'):

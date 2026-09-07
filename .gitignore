@@ -35,6 +35,12 @@ data/memory/
 data/beacon/
 /beacon/*.json
 data/logs/
+# Plan-time negation interrupt observability log (MC-944, MEMORY_DESIGN_V2_SPEC.md
+# §5.4) — per-project JSONL of fires/near-misses, written by
+# mc/negation_interrupt.py. Runtime telemetry, not source; step 9 reads it
+# locally to compute the interrupt's false-positive rate before any promotion
+# past report mode.
+data/negation_interrupt_log/
 # Chat-reducer archive of original (pre-summary) replies. The reducer is OFF
 # (decision 2026-06-12) but the archived originals are user data — keep on
 # disk, never publish.

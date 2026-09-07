@@ -269,6 +269,20 @@ def _load_config():
         'memory_turn_refresh_enabled': True,
         'memory_turn_budget_bytes': 3200,
         'memory_turn_cold_probe_enabled': True,
+        # Plan-time negation interrupt (MC-944, MEMORY_DESIGN_V2_SPEC.md §5.4,
+        # build-sequence step 8, Condition 15). Watches an Agent dispatch
+        # prompt or a Write/Edit under docs/**/~/.claude/plans/** for text
+        # that re-proposes a standing position, and LOGS it (never blocks,
+        # never surfaces to the agent) to data/negation_interrupt_log/ — see
+        # mc/negation_interrupt.py. `negation_interrupt_mode` is the switch
+        # Condition 15 names: only 'report' is implemented; 'advisory' and
+        # 'block' are later stages gated on the false-positive rate this log
+        # exists to measure (§16 step 9), not yet built. `_max_hits` caps
+        # fires logged per scan (Condition 16); `_window_tokens` is the
+        # conjunctive-match window's width, a step-9 tuning input.
+        'negation_interrupt_mode': 'report',
+        'negation_interrupt_max_hits': 2,
+        'negation_interrupt_window_tokens': 40,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,
