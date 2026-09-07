@@ -3349,6 +3349,85 @@ def _mode_a_interrupt(handle: SessionHandle) -> None:
 # CodexRuntime — OpenAI Codex CLI (codex exec --json)
 # ─────────────────────────────────────────────────────────────────────────────
 
+# Codex's real on-disk session store. NOT ~/.codex/sessions/<thread_id>/ (that
+# layout has never existed — see transcript_path()). Verified live against
+# codex-cli 0.153.4: ~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO8601>-<thread_id>.jsonl,
+# line 1 always a `session_meta` record carrying `cwd` (docs/research/CODEX_PARITY_AUDIT.md §0).
+_CODEX_HOME = Path.home() / '.codex' / 'sessions'
+
+# Read-through cache for a rollout's line-1 session_meta, keyed by file path →
+# (mtime, size, cwd, thread_id). Reading only line 1 is cheap, but list_sessions()
+# has to do it for every rollout on the machine (Codex has no per-project
+# directory the way Claude does — scan-and-filter on cwd is the only option,
+# per the audit), so repeat calls (project-modal reopens) still pay to re-open
+# every file without this. Same rationale/shape as _SESSION_ROW_CACHE (above,
+# ClaudeRuntime.list_sessions()'s cache).
+_CODEX_META_CACHE: Dict[str, Any] = {}
+_CODEX_META_CACHE_MAX = 2048
+
+# Read-through cache for CodexRuntime.list_sessions() rows — same shape and
+# rationale as _SESSION_ROW_CACHE (full-file parse is the expensive part).
+_CODEX_ROW_CACHE: Dict[str, Any] = {}
+_CODEX_ROW_CACHE_MAX = 512
+
+
+def _codex_rollout_files() -> List[Path]:
+    """Every rollout*.jsonl under ~/.codex/sessions, unsorted. [] on any OSError."""
+    try:
+        if not _CODEX_HOME.exists():
+            return []
+        return list(_CODEX_HOME.glob('*/*/*/rollout-*.jsonl'))
+    except OSError:
+        return []
+
+
+def _codex_read_meta(f: Path) -> Tuple[Optional[str], Optional[str]]:
+    """(cwd, thread_id) from a rollout's line-1 `session_meta` record, or
+    (None, None) on any read/parse failure. Cached by (mtime, size) — rollouts
+    are append-only and line 1 never changes once written."""
+    try:
+        st = f.stat()
+    except OSError:
+        return None, None
+    key = str(f)
+    cached = _CODEX_META_CACHE.get(key)
+    if cached and cached[0] == st.st_mtime and cached[1] == st.st_size:
+        return cached[2], cached[3]
+    cwd: Optional[str] = None
+    thread_id: Optional[str] = None
+    try:
+        with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+            first = fh.readline()
+        rec = json.loads(first)
+        if isinstance(rec, dict) and rec.get('type') == 'session_meta':
+            payload = rec.get('payload') or {}
+            if isinstance(payload, dict):
+                cwd = payload.get('cwd')
+                thread_id = payload.get('id') or payload.get('session_id')
+    except Exception:
+        pass
+    if len(_CODEX_META_CACHE) >= _CODEX_META_CACHE_MAX:
+        for k in list(_CODEX_META_CACHE)[:_CODEX_META_CACHE_MAX // 4]:
+            _CODEX_META_CACHE.pop(k, None)
+    _CODEX_META_CACHE[key] = (st.st_mtime, st.st_size, cwd, thread_id)
+    return cwd, thread_id
+
+
+def _codex_same_path(a: Optional[str], b: Optional[str]) -> bool:
+    """Resolve + case-fold both sides before comparing — `cwd` in session_meta
+    and MC's `project_path` come from different sources (CLI-recorded vs. the
+    project record) and Windows paths are case-insensitive."""
+    if not a or not b:
+        return False
+    try:
+        ra = str(Path(a).resolve())
+        rb = str(Path(b).resolve())
+    except Exception:
+        ra, rb = str(a), str(b)
+    if sys.platform == 'win32':
+        return ra.casefold() == rb.casefold()
+    return ra == rb
+
 
 class CodexRuntime(AgentRuntime):
     """Driver for OpenAI's `codex` CLI.
@@ -3720,19 +3799,150 @@ class CodexRuntime(AgentRuntime):
         return None
 
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
-        """Codex stores sessions in ~/.codex/sessions/<thread_id>/transcript.jsonl."""
+        """Locate the rollout .jsonl for a Codex thread id, or None.
+
+        `session_id` here is `provider_session_id` — the `thread.started` id
+        captured by `_mode_a_reader` (INIT branch) — NOT an MC session id.
+
+        The old implementation looked for
+        ~/.codex/sessions/<thread_id>/transcript.jsonl, a layout that has never
+        existed (see docs/research/CODEX_PARITY_AUDIT.md §0) — it returned None
+        on every Codex session ever run. The real layout is
+        ~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-<ISO8601>-<thread_id>.jsonl,
+        and the thread id is embedded verbatim in the filename, so a glob on it
+        resolves directly without opening any file. Verified live against
+        codex-cli 0.153.4 (`git log`-free — a real `codex exec` run's rollout
+        was inspected byte-for-byte).
+
+        `project_path`, when given, disambiguates the pathological case of a
+        filename collision (or a stale glob) by checking the matching rollout's
+        own `session_meta.cwd` — thread ids are CLI-generated UUIDs so a
+        collision is not expected in practice, but a Codex session must never
+        be attributed to the wrong project's chat history.
+        """
         if not session_id:
             return None
-        p = Path.home() / '.codex' / 'sessions' / session_id
         try:
-            if p.exists():
-                transcript = p / 'transcript.jsonl'
-                if transcript.exists():
-                    return transcript
-                return p
+            matches = sorted(
+                _CODEX_HOME.glob(f'*/*/*/rollout-*-{session_id}.jsonl'),
+                key=lambda f: (f.stat().st_mtime if f.exists() else 0),
+            )
         except OSError:
-            pass
-        return None
+            return None
+        if not matches:
+            return None
+        if not project_path:
+            return matches[-1]
+        # Prefer the newest match whose recorded cwd matches this project. If
+        # NO match has a readable cwd at all (corrupt/partial first line),
+        # fall back to the newest match outright — a parse failure must not
+        # make an otherwise-real transcript invisible. But if cwd WAS readable
+        # on at least one match and none of them agree with this project, that
+        # is a genuine mismatch (thread id collision, or the wrong project
+        # asking) — return None rather than silently handing back a
+        # transcript that belongs to a different project's chat history.
+        any_readable_cwd = False
+        for f in reversed(matches):
+            cwd, _ = _codex_read_meta(f)
+            if cwd:
+                any_readable_cwd = True
+                if _codex_same_path(cwd, project_path):
+                    return f
+        return matches[-1] if not any_readable_cwd else None
+
+    def list_sessions(self, project_path: str, limit: int = 5) -> List[Dict[str, Any]]:
+        """List recent Codex conversations for a project by scanning rollouts.
+
+        Codex has no per-project directory the way Claude's ~/.claude/projects/
+        <encoded-path> does (its sessions dir is flat, partitioned only by
+        date) — so unlike ClaudeRuntime.list_sessions(), project scoping is a
+        scan-and-filter on each rollout's session_meta.cwd rather than a
+        directory lookup (docs/research/CODEX_PARITY_AUDIT.md §0 point 1).
+        Line-1-only reads are cached (_codex_read_meta), so repeat calls only
+        pay full-file parse cost for files that changed.
+
+        Returns [{session_id, mtime, first_user, last_user, turns, size}]
+        sorted by mtime desc, at most `limit` entries — same shape as
+        ClaudeRuntime.list_sessions() so callers can treat the two uniformly.
+        `session_id` here is the Codex thread id (provider_session_id).
+        """
+        if not project_path:
+            return []
+        matches: List[Tuple[Path, float, int, str]] = []
+        for f in _codex_rollout_files():
+            cwd, thread_id = _codex_read_meta(f)
+            if not thread_id or not _codex_same_path(cwd, project_path):
+                continue
+            try:
+                st = f.stat()
+            except OSError:
+                continue
+            matches.append((f, st.st_mtime, st.st_size, thread_id))
+        matches.sort(key=lambda t: t[1], reverse=True)
+        matches = matches[:limit]
+
+        results: List[Dict[str, Any]] = []
+        for f, mtime, fsize, thread_id in matches:
+            ckey = str(f)
+            cached = _CODEX_ROW_CACHE.get(ckey)
+            if cached and cached[0] == mtime and cached[1] == fsize:
+                results.append(dict(cached[2]))
+                continue
+
+            first_user = ''
+            last_user = ''
+            turns = 0
+            try:
+                with open(f, 'r', encoding='utf-8', errors='replace') as fh:
+                    for raw_line in fh:
+                        try:
+                            rec = json.loads(raw_line)
+                        except Exception:
+                            continue
+                        if not isinstance(rec, dict) or rec.get('type') != 'response_item':
+                            continue
+                        payload = rec.get('payload') or {}
+                        if not isinstance(payload, dict) or payload.get('type') != 'message':
+                            continue
+                        if payload.get('role') != 'user':
+                            continue
+                        content = payload.get('content')
+                        texts = []
+                        if isinstance(content, list):
+                            for block in content:
+                                if isinstance(block, dict) and block.get('text'):
+                                    texts.append(str(block['text']))
+                        text = ' '.join(t.strip() for t in texts if t).strip()
+                        if not text:
+                            continue
+                        # Codex prepends its own injected preambles
+                        # (<recommended_plugins>, plugin hook markers) as
+                        # user-role messages — strip the same way Claude's
+                        # list_sessions() does, or the label defaults to
+                        # injected boilerplate instead of what the user typed.
+                        clean = strip_injected_preamble(text)
+                        if not clean or is_nonuser_message(clean):
+                            continue
+                        turns += 1
+                        if not first_user:
+                            first_user = clean
+                        last_user = clean
+            except Exception:
+                pass
+            row = {
+                'session_id': thread_id,
+                'mtime': mtime,
+                'first_user': first_user[:300],
+                'last_user': last_user[:300],
+                'turns': turns,
+                'size': fsize,
+            }
+            if len(_CODEX_ROW_CACHE) >= _CODEX_ROW_CACHE_MAX:
+                for k in list(_CODEX_ROW_CACHE)[:_CODEX_ROW_CACHE_MAX // 4]:
+                    _CODEX_ROW_CACHE.pop(k, None)
+            _CODEX_ROW_CACHE[ckey] = (mtime, fsize, row)
+            results.append(dict(row))
+        return results
 
     def _codex_auth_state(self) -> Tuple[str, Optional[str]]:
         """Where codex actually keeps its credentials.

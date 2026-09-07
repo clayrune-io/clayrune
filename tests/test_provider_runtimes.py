@@ -33,6 +33,45 @@ from mc.agent_runtime import (
 )
 
 
+def _write_codex_rollout(root, thread_id, cwd, messages, dt='2026-09-07T12-53-28'):
+    """Write a rollout fixture in Codex's REAL on-disk layout.
+
+    Layout + record shapes verified live against codex-cli 0.153.4 (today's
+    installed version — the audit's numbers were taken against 0.151.0, so
+    this was re-probed rather than trusted; see
+    docs/research/CODEX_PARITY_AUDIT.md §0): line 1 is always a `session_meta`
+    record carrying `cwd`; message turns are `response_item`/`message` records
+    with a `role` and a `content[]` of `{type, text}` blocks — a real rollout
+    was inspected byte-for-byte (`codex exec --json` run in a scratch dir) to
+    confirm both.
+
+    `messages` is [(role, text), ...]; only 'user'/'assistant' roles matter to
+    list_sessions(), 'developer' rows exercise the non-user-role skip (Codex
+    interleaves plugin/hook preambles as message turns the same as a real
+    reply, unlike Claude's separate content-block shape).
+    """
+    date = dt.split('T')[0]
+    y, m, d = date.split('-')
+    day_dir = root / y / m / d
+    day_dir.mkdir(parents=True, exist_ok=True)
+    f = day_dir / f'rollout-{dt}-{thread_id}.jsonl'
+    lines = [json.dumps({
+        'timestamp': f'{dt}Z', 'ordinal': 0, 'type': 'session_meta',
+        'payload': {'session_id': thread_id, 'id': thread_id, 'cwd': cwd,
+                    'originator': 'codex_exec', 'cli_version': '0.153.4',
+                    'source': 'exec'},
+    })]
+    for i, (role, text) in enumerate(messages, start=1):
+        block_type = 'input_text' if role == 'user' else 'output_text'
+        lines.append(json.dumps({
+            'timestamp': f'{dt}Z', 'ordinal': i, 'type': 'response_item',
+            'payload': {'type': 'message', 'id': f'item_{i}', 'role': role,
+                        'content': [{'type': block_type, 'text': text}]},
+        }))
+    f.write_text('\n'.join(lines) + '\n', encoding='utf-8')
+    return f
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry: all 7 providers registered
 # ─────────────────────────────────────────────────────────────────────────────
@@ -590,6 +629,84 @@ class TestCodexRuntime:
 
     def test_transcript_path_missing_session(self):
         assert self.rt.transcript_path('/some/path', '') is None
+
+    # ── real rollout layout (docs/research/CODEX_PARITY_AUDIT.md §0) ──────────
+    # `test_transcript_path_missing_session` above only asserts the empty-id
+    # case — the audit's own point: that single missing positive assertion is
+    # why `transcript_path()` pointed at a directory layout that has NEVER
+    # existed (`~/.codex/sessions/<thread_id>/transcript.jsonl`) for months
+    # without a red test. These exercise the REAL layout end to end.
+
+    def test_transcript_path_resolves_real_rollout_layout(self, tmp_path, monkeypatch):
+        root = tmp_path / 'sessions'
+        thread_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+        cwd = str(tmp_path / 'project')
+        f = _write_codex_rollout(root, thread_id, cwd,
+                                 [('user', 'hi'), ('assistant', 'hello')])
+        monkeypatch.setattr(agent_runtime, '_CODEX_HOME', root)
+        assert self.rt.transcript_path(cwd, thread_id) == f
+        # No project_path given: still resolves off the thread id alone (the
+        # id is embedded in the filename — no file content needs reading).
+        assert self.rt.transcript_path('', thread_id) == f
+
+    def test_transcript_path_scoped_by_cwd_rejects_wrong_project(self, tmp_path, monkeypatch):
+        """Same thread id asked for from a DIFFERENT project's path must not
+        silently hand back another project's transcript."""
+        root = tmp_path / 'sessions'
+        thread_id = 'thread-a'
+        _write_codex_rollout(root, thread_id, str(tmp_path / 'project_a'), [('user', 'hi')])
+        monkeypatch.setattr(agent_runtime, '_CODEX_HOME', root)
+        assert self.rt.transcript_path(str(tmp_path / 'project_b'), thread_id) is None
+
+    def test_transcript_path_missing_thread_returns_none(self, tmp_path, monkeypatch):
+        monkeypatch.setattr(agent_runtime, '_CODEX_HOME', tmp_path / 'sessions')
+        assert self.rt.transcript_path(str(tmp_path), 'no-such-thread') is None
+
+    def test_list_sessions_scopes_by_cwd_and_parses_turns(self, tmp_path, monkeypatch):
+        root = tmp_path / 'sessions'
+        proj = str(tmp_path / 'myproj')
+        other = str(tmp_path / 'otherproj')
+        _write_codex_rollout(
+            root, 'thread-1', proj,
+            [('developer', 'plugin hook noise — not a user turn'),
+             ('user', 'first question'),
+             ('assistant', 'first answer'),
+             ('user', 'second question'),
+             ('assistant', 'second answer')],
+            dt='2026-09-07T08-00-00')
+        _write_codex_rollout(root, 'thread-2', other, [('user', 'unrelated project chat')],
+                             dt='2026-09-07T09-00-00')
+        monkeypatch.setattr(agent_runtime, '_CODEX_HOME', root)
+        rows = self.rt.list_sessions(proj, limit=5)
+        assert len(rows) == 1, rows
+        row = rows[0]
+        assert row['session_id'] == 'thread-1'
+        assert row['turns'] == 2
+        assert row['first_user'] == 'first question'
+        assert row['last_user'] == 'second question'
+
+    def test_list_sessions_sorts_newest_first_and_respects_limit(self, tmp_path, monkeypatch):
+        root = tmp_path / 'sessions'
+        proj = str(tmp_path / 'myproj')
+        import os
+        import time as _t
+        f_old = _write_codex_rollout(root, 'older', proj, [('user', 'old chat')],
+                                     dt='2026-09-01T08-00-00')
+        f_new = _write_codex_rollout(root, 'newer', proj, [('user', 'new chat')],
+                                     dt='2026-09-07T08-00-00')
+        # Filesystem mtime, not the encoded filename timestamp, is what
+        # list_sessions() sorts on — pin both explicitly so the assertion
+        # can't flake on two writes landing within the same mtime tick.
+        now = _t.time()
+        os.utime(f_old, (now - 3600, now - 3600))
+        os.utime(f_new, (now, now))
+        monkeypatch.setattr(agent_runtime, '_CODEX_HOME', root)
+        rows = self.rt.list_sessions(proj, limit=1)
+        assert len(rows) == 1
+        assert rows[0]['session_id'] == 'newer'
+
+    def test_list_sessions_no_project_path_returns_empty(self):
+        assert self.rt.list_sessions('', limit=5) == []
 
     def test_live_probe_events(self):
         """Live probe: codex exec --json emits thread.started as first event.

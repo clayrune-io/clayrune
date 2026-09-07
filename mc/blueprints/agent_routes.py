@@ -4367,6 +4367,13 @@ def _log_agent_completion(session):
         'summary': summary[:2000],
         'session_id': session.get('session_id', ''),
         'claude_session_id': session.get('claude_session_id', ''),
+        # Provider-neutral equivalent of claude_session_id for Mode-A runtimes
+        # (currently Codex). Captured at dispatch/turn time into the session
+        # dict (mc/agent_runtime.py _mode_a_reader, INIT branch) and otherwise
+        # discarded at process exit — this is the one write. Without it, the
+        # rollout that transcript_path() can now locate has no id to locate it
+        # BY once the in-memory session is gone (docs/research/CODEX_PARITY_AUDIT.md §0).
+        'provider_session_id': session.get('provider_session_id', ''),
         'started_at': session.get('started_at', ''),
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),
@@ -8153,13 +8160,127 @@ def _conversation_character_display(log_entry, project):
     }
 
 
-def _non_claude_conversation_rows(project_id, p, limit):
+def _recent_codex_conversation_rows(project_id, p, limit):
+    """Codex conversations backed by real rollout transcripts.
+
+    Was routed through `_non_claude_conversation_rows` on the (wrong)
+    assumption that Codex leaves no transcript — `CodexRuntime.transcript_path()`
+    pointed at a directory layout that never existed, so every Codex session
+    looked transcript-less. It is not: `CodexRuntime.list_sessions()` scans the
+    real rollout store (docs/research/CODEX_PARITY_AUDIT.md §0), giving Codex
+    the same transcript-derived listing Claude gets from
+    `_recent_claude_transcripts()`, keyed on `provider_session_id` (the Codex
+    thread id) instead of `claude_session_id`.
+
+    Returns (rows, covered_mc_session_ids). The second element lets the caller
+    exclude those MC session ids from `_non_claude_conversation_rows()` so a
+    Codex chat is never listed twice — once here, once as a bare agent-log
+    row. Agent-log entries written before this fix (or a turn whose
+    `provider_session_id` capture failed) carry no thread id, can't be matched
+    to a rollout, and are deliberately left uncovered so
+    `_non_claude_conversation_rows()` still shows them; that history is not
+    lost, only less detailed.
+    """
+    project_path = p.get('project_path', '')
+    try:
+        codex_sessions = _agent_runtime.get_runtime('codex').list_sessions(  # pyright: ignore[reportAttributeAccessIssue]
+            project_path, limit=limit)
+    except Exception as e:
+        _log(f"[conversations] codex list_sessions failed: {e}")
+        codex_sessions = []
+    if not codex_sessions:
+        return [], set()
+
+    # Newest agent-log row per Codex thread id — same role as log_by_csid
+    # plays for Claude below: live status/character/trigger come from here.
+    log_by_psid = {}
+    for e in _load_agent_log(project_id):
+        if (e.get('provider') or '').lower() != 'codex':
+            continue
+        psid = e.get('provider_session_id', '')
+        if not psid:
+            continue
+        prev = log_by_psid.get(psid)
+        if prev is None or e.get('ts', '') >= prev.get('ts', ''):
+            log_by_psid[psid] = e
+
+    live_by_psid = {}
+    for s in agent_sessions.values():
+        if s.get('project_id') != project_id:
+            continue
+        psid = s.get('provider_session_id', '')
+        if psid:
+            live_by_psid[psid] = s
+
+    from datetime import datetime, timezone
+    rows = []
+    covered_mc_sids = set()
+    for c in codex_sessions:
+        thread_id = c['session_id']
+        log_entry = log_by_psid.get(thread_id, {})
+        live = live_by_psid.get(thread_id)
+        if log_entry.get('session_id'):
+            covered_mc_sids.add(log_entry['session_id'])
+        if live:
+            status = live.get('status', 'unknown')
+            mc_session_id = live.get('session_id', '')
+        elif log_entry:
+            status = log_entry.get('status', 'completed')
+            mc_session_id = log_entry.get('session_id', '')
+        else:
+            # A rollout with no matching agent-log row at all — e.g. a run
+            # that crashed before _log_agent_completion wrote its entry.
+            status = 'interrupted' if c['turns'] > 0 else 'empty'
+            mc_session_id = ''
+        label = ' '.join((c['last_user'] or c['first_user'] or '(empty)').split())
+        try:
+            ts_iso = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
+        except Exception:
+            ts_iso = ''
+        rows.append({
+            'claude_session_id': '',
+            'provider_session_id': thread_id,
+            'mc_session_id': mc_session_id,
+            'status': status,
+            'label': label,
+            'first_user': c['first_user'],
+            'last_user': c['last_user'],
+            'turns': c['turns'],
+            'size': c['size'],
+            'mtime': c['mtime'],
+            'ts': ts_iso,
+            'ts_relative': time_ago(ts_iso) if ts_iso else '',
+            'live': bool(live),
+            'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
+            'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
+            'trigger_type': (log_entry.get('trigger_type') or '') if log_entry else '',
+            'source': (log_entry.get('source') or '') if log_entry else '',
+            'steward': False,
+            'steward_objective': '',
+            'character': _conversation_character_display(log_entry, p) or (
+                _conversation_character_display({'character': live.get('character')}, p)
+                if live else None),
+            'provider': 'codex',
+            # A real rollout exists now, and `codex exec resume <thread_id>` is
+            # a genuine CLI resume — but `_dispatch_via_runtime` hardcodes
+            # `resume_id=''` (agent_routes.py:4948; parity-audit item 3, not
+            # wired here). Advertising resumable=True would offer a control
+            # the dispatch path silently drops. Keep this honest until that
+            # lands.
+            'resumable': False,
+            'resume_mode': 'readonly',
+        })
+    return rows, covered_mc_sids
+
+
+def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
     """Agent-log rows for providers that leave no Claude transcript (MC-929).
 
-    `GeminiRuntime.transcript_path()` (and every other non-Claude runtime)
-    returns None by design — no transcript store — and a non-Claude turn never
-    populates `claude_session_id` (MC-922). So those chats have no membership
-    in `_recent_claude_transcripts()` at all, no matter how many of them run.
+    `GeminiRuntime.transcript_path()` (and every other non-Claude runtime
+    except Codex — see `_recent_codex_conversation_rows`) returns None by
+    design — no transcript store — and a non-Claude turn never populates
+    `claude_session_id` (MC-922). So those chats have no membership in
+    `_recent_claude_transcripts()` at all, no matter how many of them run.
     The agent log is the only record of them, keyed on MC's OWN session_id.
 
     Mode A (every non-Claude runtime today) respawns one process per turn, and
@@ -8171,7 +8292,12 @@ def _non_claude_conversation_rows(project_id, p, limit):
     have the verbatim exchange lives only in memory and is gone once the
     session leaves `agent_sessions` (restart / 24h purge). Callers must not
     claim more fidelity than this — see `reconstruct_dead_session`.
+
+    `exclude_sids`: MC session ids already represented by a transcript-backed
+    row from `_recent_codex_conversation_rows` — dropped here so a Codex chat
+    with a resolvable rollout is never listed twice.
     """
+    exclude_sids = exclude_sids or set()
     groups = {}
     for e in _load_agent_log(project_id):
         if e.get('claude_session_id'):
@@ -8180,7 +8306,7 @@ def _non_claude_conversation_rows(project_id, p, limit):
         if provider == 'claude':
             continue  # e.g. an in-progress row before Claude assigned a csid
         sid = e.get('session_id', '')
-        if not sid or e.get('hivemind_ws_id'):
+        if not sid or e.get('hivemind_ws_id') or sid in exclude_sids:
             continue  # hivemind worker turns aren't a chat the rail shows
         groups.setdefault(sid, []).append(e)
 
@@ -8366,12 +8492,14 @@ def get_project_conversations(project_id):
             'resume_mode': 'live',
         })
 
-    # UNION: agent-log rows for every provider that leaves no transcript.
-    # Dedup is structural, not a post-hoc filter — _non_claude_conversation_rows
-    # only emits rows whose entries have NO claude_session_id, and every Claude
-    # row above always carries one (its `sid` IS the transcript's csid), so the
-    # two sets can't overlap on the same conversation.
-    out.extend(_non_claude_conversation_rows(project_id, p, limit))
+    # UNION: Codex conversations backed by real rollout transcripts, THEN
+    # agent-log rows for whatever's left (providers with no transcript store
+    # at all, plus any Codex chat _recent_codex_conversation_rows couldn't
+    # match to a rollout). codex_covered_sids keeps the two from double-listing
+    # the same conversation.
+    codex_rows, codex_covered_sids = _recent_codex_conversation_rows(project_id, p, limit)
+    out.extend(codex_rows)
+    out.extend(_non_claude_conversation_rows(project_id, p, limit, exclude_sids=codex_covered_sids))
     out.sort(key=lambda r: r['mtime'], reverse=True)
     return jsonify(out[:limit])
 

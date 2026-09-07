@@ -66,6 +66,16 @@ class _FakeRuntime:
         return None
 
     def parse_event(self, line, mc_session_id):
+        # A magic line lets a test simulate the provider's INIT event (what
+        # CodexRuntime.parse_event does for `thread.started`) without needing
+        # a second fake-runtime class — _mode_a_reader's INIT branch is what
+        # writes session['provider_session_id'].
+        if line.startswith('__INIT__:'):
+            tid = line.split(':', 1)[1]
+            return agent_runtime_mod.AgentEvent(
+                type=agent_runtime_mod.EventType.INIT, provider=self.name,
+                session_id=tid, mc_session_id=mc_session_id,
+                timestamp='', payload={'session_id': tid, 'thread_id': tid})
         return None  # plain text — the reader appends it to log_lines
 
     def run_turn(self, handle, lines, rc=0):
@@ -181,6 +191,34 @@ def test_completed_non_claude_session_writes_exactly_one_row(env):
     assert row['claude_session_id'] == ''
     assert row['status'] == 'completed'
     assert row['summary'] == 'Done.'
+
+
+# ── provider_session_id: captured, and now persisted (parity audit §0/item 2) ─
+# Previously written in exactly one place (_mode_a_reader's INIT branch) and
+# read in zero — it never reached the agent log, so a Codex conversation had
+# no id to find its rollout BY once the in-memory session was gone. This pins
+# the wiring through the SAME real _mode_a_reader -> _log_agent_completion
+# path the row-count tests above exercise, not a hand-built entry dict.
+
+def test_provider_session_id_reaches_the_agent_log(env):
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['__INIT__:thread-abc-123', 'the reply'])
+
+    assert handle.session_dict['provider_session_id'] == 'thread-abc-123'
+    rows = _log_rows(env)
+    assert len(rows) == 1, rows
+    assert rows[0]['provider_session_id'] == 'thread-abc-123'
+
+
+def test_provider_session_id_absent_defaults_to_empty_string(env):
+    """A provider that never emits an INIT event (or a turn before it fires)
+    must not KeyError _log_agent_completion — the field is opt-in per turn."""
+    sid, handle = _dispatch(env)
+    env['runtime'].run_turn(handle, ['no init event this turn'])
+
+    rows = _log_rows(env)
+    assert len(rows) == 1
+    assert rows[0]['provider_session_id'] == ''
 
 
 def test_dispatch_actually_passes_the_completion_hook(env):
