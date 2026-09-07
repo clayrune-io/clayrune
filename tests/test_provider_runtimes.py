@@ -1485,6 +1485,9 @@ def test_codex_catalog_matches_current_cli_models():
     """The picker must not keep retired model ids after Codex moves on."""
     codex = agent_runtime.get_runtime('codex')
     assert [model_id for model_id, _label in codex.model_choices()] == [
+        # Added 2026-09-08: the live CLI (0.153.4) defaults to this, and the
+        # picker had gone a release behind without anything failing.
+        'gpt-6-astra',
         'gpt-5.6-sol',
         'gpt-5.6-terra',
         'gpt-5.6-luna',

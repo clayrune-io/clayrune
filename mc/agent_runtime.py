@@ -3519,6 +3519,12 @@ class CodexRuntime(AgentRuntime):
     # Internal/special-purpose entries (gpt-reserve, codex-auto-review) are not
     # general chat choices and intentionally stay out of the composer.
     MODEL_CHOICES = [
+        # Verified 2026-09-08 against the live CLI (codex-cli 0.153.4): the
+        # operator's own ~/.codex/config.toml already selects gpt-6-astra, so
+        # the picker was offering a strictly older set than the CLI runs by
+        # default. `codex --help` documents -m/--model but does not enumerate
+        # ids, so this list is maintained by hand and drifts silently.
+        ('gpt-6-astra', 'GPT-6 Astra'),
         ('gpt-5.6-sol', 'GPT-5.6 Sol'),
         ('gpt-5.6-terra', 'GPT-5.6 Terra'),
         ('gpt-5.6-luna', 'GPT-5.6 Luna'),
