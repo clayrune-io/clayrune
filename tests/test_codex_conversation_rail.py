@@ -76,7 +76,7 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
     monkeypatch.setattr(ar, 'load_project', lambda pid: (
         {'id': pid, 'project_path': str(project_path)} if pid == 'proj1' else None))
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10: [])
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [])
     monkeypatch.setattr(agent_runtime_mod, '_CODEX_HOME', tmp_path / 'codex_sessions')
     # The read-through caches are module-level and keyed by absolute path —
     # a prior test in the same process could leave a stale entry that

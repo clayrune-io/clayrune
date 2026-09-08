@@ -41,7 +41,7 @@ def client(tmp_path, monkeypatch):
         {'id': pid, 'project_path': str(tmp_path)} if pid == 'proj1' else None))
     # No Claude transcripts anywhere unless a test overrides it — isolates the
     # non-Claude path from whatever real transcript scanning would do.
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10: [])
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [])
 
     sess_snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
@@ -121,7 +121,7 @@ def test_claude_conversation_still_appears_once_with_live_join(client, tmp_path,
     from mc import state as mc_state
 
     csid = 'claude-csid-1'
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10: [
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [
         {'session_id': csid, 'mtime': 1000.0, 'first_user': 'hello',
          'last_user': 'hello', 'turns': 1, 'size': 10},
     ])
@@ -153,7 +153,7 @@ def test_claude_conversation_still_appears_once_with_live_join(client, tmp_path,
 def test_auth_probe_filtered_non_claude_row_kept(client, tmp_path, monkeypatch):
     from mc.blueprints import agent_routes as ar
 
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10: [
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [
         {'session_id': 'ghost-probe', 'mtime': 2000.0, 'first_user': 'ok',
          'last_user': 'ok', 'turns': 1, 'size': 5},
     ])

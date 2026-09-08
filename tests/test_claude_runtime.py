@@ -1487,6 +1487,60 @@ def test_list_sessions_respects_limit(tmp_path, monkeypatch):
     assert len(results) == 3
 
 
+def test_list_sessions_must_include_csids_survives_the_limit_cut(tmp_path, monkeypatch):
+    """ws001/D6: a transcript in `must_include_csids` must be returned even
+    when it doesn't rank in the freshest `limit` by mtime.
+
+    Before this fix, `get_project_conversations` had no way to protect a
+    LIVE session's own transcript from this cut — `list_sessions` sorted by
+    mtime and sliced BEFORE any caller could know which file was live. A
+    running conversation dropped off `/conversations` the moment `limit`
+    other transcripts got touched more recently (hm_d9c76579 finding D6),
+    with no purge and no race required.
+    """
+    import os
+    from mc.agent_runtime import ClaudeRuntime
+    from mc import agent_runtime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_path / '.claude' / 'projects'
+    monkeypatch.setattr(agent_runtime, '_CLAUDE_HOME', fake_home)
+
+    project_path = str(tmp_path / 'test-proj')
+    encoded = rt._encode_project_path(project_path)
+    d = fake_home / encoded
+    d.mkdir(parents=True)
+
+    # The live session's transcript — oldest of the bunch, so a plain mtime
+    # cut at limit=3 would drop it.
+    live_csid = 'live-session-old'
+    f = d / f'{live_csid}.jsonl'
+    f.write_text(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': 'still going'}}),
+                 encoding='utf-8')
+    os.utime(f, (1_000_000_000, 1_000_000_000))
+
+    # 5 fresher transcripts, all newer than the live one.
+    for i in range(5):
+        g = d / f'other-{i:03d}.jsonl'
+        g.write_text(json.dumps({'type': 'user', 'message': {'role': 'user', 'content': f'msg {i}'}}),
+                     encoding='utf-8')
+        os.utime(g, (2_000_000_000 + i, 2_000_000_000 + i))
+
+    # Without must_include_csids, the live session's file is cut.
+    plain = rt.list_sessions(project_path, limit=3)
+    assert live_csid not in {r['session_id'] for r in plain}, (
+        'test setup invalid: the plain mtime cut should already exclude the '
+        'live session — if it does not, the fixture needs a bigger gap')
+
+    # With it, the live session survives on top of the `limit` freshest others.
+    protected = rt.list_sessions(project_path, limit=3, must_include_csids={live_csid})
+    sids = {r['session_id'] for r in protected}
+    assert live_csid in sids, (
+        f'live session {live_csid!r} dropped off list_sessions() despite '
+        f'must_include_csids — got {sids}')
+    assert len(protected) == 3  # capped at `limit`; the must-include row took one of the 3 slots
+
+
 # ── Gemini new-provider smoke test with usage fields ─────────────────────────
 
 

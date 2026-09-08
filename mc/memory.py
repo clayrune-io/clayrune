@@ -207,13 +207,16 @@ def _extract_user_text(msg_field):
     return ''
 
 
-def _recent_claude_transcripts(project_path, limit=5):
+def _recent_claude_transcripts(project_path, limit=5, must_include_csids=None):
     """Scan the Claude transcript directory for a project.
 
     Returns [{session_id, mtime, first_user, last_user, turns, size}] sorted by mtime desc.
     Delegates to ClaudeRuntime.list_sessions() — scanning logic lives in the runtime.
+    `must_include_csids`: session ids that must survive the mtime cut even if
+    they don't rank in the freshest `limit` (see list_sessions docstring, D6).
     """
-    return _agent_runtime.get_runtime('claude').list_sessions(project_path, limit=limit)  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
+    return _agent_runtime.get_runtime('claude').list_sessions(  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
+        project_path, limit=limit, must_include_csids=must_include_csids)
 
 
 def _find_transcript_file(project_path, claude_session_id):

@@ -44,7 +44,7 @@ def _wire(monkeypatch, tmp_path, *, session_char, log_char):
 
     monkeypatch.setattr(ar, 'load_project', lambda pid: (
         {'id': 'p1', 'name': 'P1', 'project_path': str(tmp_path)} if pid == 'p1' else None))
-    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda path, limit=20: [
+    monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda path, limit=20, must_include_csids=None: [
         {'session_id': CSID, 'first_user': 'hi', 'last_user': 'hi',
          'turns': 2, 'size': 10, 'mtime': 1_760_000_000.0}])
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: (

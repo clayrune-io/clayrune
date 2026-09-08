@@ -1313,7 +1313,8 @@ class ClaudeRuntime(AgentRuntime):
             return None
         return _CLAUDE_HOME / encoded / f'{session_id}.jsonl'
 
-    def list_sessions(self, project_path: str, limit: int = 5) -> List[Dict[str, Any]]:
+    def list_sessions(self, project_path: str, limit: int = 5,
+                       must_include_csids: Optional[set] = None) -> List[Dict[str, Any]]:
         """List recent sessions by scanning the Claude transcript directory.
 
         Mirrors _recent_claude_transcripts() in server.py. Uses parse_event()
@@ -1321,7 +1322,19 @@ class ClaudeRuntime(AgentRuntime):
         Checks every path-encoded variant — see _encoded_dir_candidates().
 
         Returns [{session_id, mtime, first_user, last_user, turns, size}]
-        sorted by mtime desc, at most `limit` entries.
+        sorted by mtime desc, at most `limit` entries. When `must_include_csids`
+        is given, any transcript whose filename stem (== claude_session_id) is
+        in that set is GUARANTEED a slot regardless of its mtime rank — the
+        remaining slots (limit minus however many must-include rows exist)
+        are filled with the freshest others, so the total stays capped at
+        `limit`, it just no longer drops a specific file to get there.
+
+        Without this, a session with a currently-running conversation drops
+        off the moment `limit` OTHER transcripts get touched more recently —
+        the mtime cut below runs before any caller has a chance to know which
+        file belongs to a live session (ws001/D6: `/conversations` truncates
+        a running chat off its own list). The caller (get_project_conversations)
+        passes the live claude_session_ids for this project.
         """
         candidates = [_CLAUDE_HOME / e for e in self._encoded_dir_candidates(project_path)]
         if not candidates:
@@ -1364,7 +1377,12 @@ class ClaudeRuntime(AgentRuntime):
             except OSError:
                 continue
         files.sort(key=lambda x: x[1], reverse=True)
-        files = files[:limit]
+        if must_include_csids:
+            must_keep = [t for t in files if t[0].stem in must_include_csids]
+            rest = [t for t in files if t[0].stem not in must_include_csids]
+            files = must_keep + rest[:max(0, limit - len(must_keep))]
+        else:
+            files = files[:limit]
 
         results: List[Dict[str, Any]] = []
         for f, mtime in files:

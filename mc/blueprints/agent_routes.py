@@ -8496,8 +8496,11 @@ def get_project_conversations(project_id):
     if not p:
         return jsonify([])
     project_path = p.get('project_path', '')
-    convos = _recent_claude_transcripts(project_path, limit=limit)
 
+    # Built BEFORE the transcript scan (not after, as it used to be) so the
+    # live claude_session_ids can be passed as `must_include_csids` — a
+    # running conversation's transcript must survive the mtime cut even if
+    # `limit` other transcripts were touched more recently (ws001/D6).
     live_by_csid = {}
     for s in agent_sessions.values():
         if s.get('project_id') != project_id:
@@ -8514,6 +8517,9 @@ def get_project_conversations(project_id):
                 # does not (see the fallback at the emit site below).
                 'character': s.get('character'),
             }
+
+    convos = _recent_claude_transcripts(project_path, limit=limit,
+                                         must_include_csids=set(live_by_csid.keys()))
 
     log_by_csid = {}
     for e in _load_agent_log(project_id):
@@ -8617,7 +8623,20 @@ def get_project_conversations(project_id):
     out.extend(codex_rows)
     out.extend(_non_claude_conversation_rows(project_id, p, limit, exclude_sids=codex_covered_sids))
     out.sort(key=lambda r: r['mtime'], reverse=True)
-    return jsonify(out[:limit])
+    # The final union-wide cut (ws001/D6): up to 3 independently-limited
+    # sources compete for `limit` slots here, so a row that's actually LIVE
+    # right now (the transcript-level must_include above only covers the
+    # Claude source) must not be sliced away just because other providers'
+    # rows happen to have fresher mtimes. Every row above sets 'live' —
+    # keep all of those, then fill the remaining slots with the freshest
+    # non-live rows.
+    if len(out) > limit:
+        live_rows = [r for r in out if r.get('live')]
+        non_live = [r for r in out if not r.get('live')]
+        keep = max(0, limit - len(live_rows))
+        out = live_rows + non_live[:keep]
+        out.sort(key=lambda r: r['mtime'], reverse=True)
+    return jsonify(out)
 
 
 # ── PLAN tab load cache ───────────────────────────────────────────────────────
