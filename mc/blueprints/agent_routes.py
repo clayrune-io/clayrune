@@ -722,7 +722,7 @@ def _respawn_sysprompt_args(session, project, task=''):
             project, incognito=bool((session or {}).get('incognito')),
             task=task, character_body=body, character_name=name,
             session_id=(session or {}).get('session_id', ''),
-            character_skills=sk)
+            character_skills=sk, source=(session or {}).get('source', ''))
     except Exception as e:
         _log(f"[respawn] sysprompt rebuild failed: {e}")
         # A stale context beats no context: the alternative is a turn with no
@@ -3919,12 +3919,21 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     resume_flags = []
     context = None
     revival_msg = message
+    # Both context rebuilds below used to omit incognito/session_id/source
+    # (hm_d9c76579 f_adf3a4bd): a revived incognito conversation got MEMORY
+    # and rules injected back into it — the one thing incognito exists to
+    # prevent — and a revived delegated (source='agent') session lost the
+    # MC-925 "unnamed worker" framing and could claim the default agent_name.
+    _revive_incognito = bool(entry.get('incognito'))
+    _revive_source = entry.get('source') or ''
     if too_large:
         size_mb = size_bytes / (1024 * 1024)
-        context = _build_agent_context(p, task=message or '',
+        context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
-                                       character_skills=_revive_char_skills)
+                                       session_id=session_id,
+                                       character_skills=_revive_char_skills,
+                                       source=_revive_source)
         revival_msg = (f"[Resuming a previous conversation that grew too large to "
                        f"resume directly ({size_mb:.0f} MB). Start fresh but continue "
                        f"the user's request below.]\n\n{message}")
@@ -3936,10 +3945,12 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         # rules/read-floor/API reference (see _respawn_sysprompt_args). The
         # in-memory stash died with the old MC process, so rebuild fresh.
         try:
-            context = _build_agent_context(p, task=message or '',
+            context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                            character_body=_revive_char_body,
                                            character_name=_revive_char_name,
-                                           character_skills=_revive_char_skills)
+                                           session_id=session_id,
+                                           character_skills=_revive_char_skills,
+                                           source=_revive_source)
         except Exception as e:
             _log(f"[revive] {project_id}: context rebuild failed: {e}")
 
@@ -4011,6 +4022,15 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             # persona again — which is exactly what the null `character` rows
             # in the log are.
             'character': _revive_character,
+            # Same class of bug, different fields (f_d20a4e36 / f_adf3a4bd):
+            # a rebuilt dict with no 'incognito'/'source' un-hides an incognito
+            # chat on the Floor/agent_log and drops a delegated session's
+            # 'unnamed worker' framing on its NEXT respawn/rebuild, since both
+            # _fresh_context_for and _respawn_sysprompt_args read these keys
+            # straight off this dict.
+            'incognito': _revive_incognito,
+            'source': _revive_source,
+            'provider': entry.get('provider') or 'claude',
         }
         with mgr.lock:
             agent_sessions[session_id] = session
@@ -4079,6 +4099,9 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'num_turns': entry.get('num_turns', 0),
         '_system_prompt': context or '',
         'character': _revive_character,   # same reason as Mode B above
+        'incognito': _revive_incognito,
+        'source': _revive_source,
+        'provider': entry.get('provider') or 'claude',
     }
     with mgr.lock:
         agent_sessions[session_id] = session
@@ -4851,7 +4874,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
                           character_body='', model_override='',
-                          resume_id=''):
+                          resume_id='', source=''):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     `resume_id` (parity audit item 3, "Resume"): the provider's own session
@@ -4919,6 +4942,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'pinned_model': model_override or '',
             'character': character_meta,
             '_resume_id': resume_id,
+            # f_4a2ccd47 (hm_d9c76579): `source` was never a parameter of this
+            # function at all, so a delegated (source='agent') non-claude
+            # dispatch had no way to record it — MC-925's "unnamed worker"
+            # framing in _build_agent_context can only fire when `source` is
+            # present, so a personaless Codex/Gemini/opencode worker introduced
+            # itself as the project's default agent instead.
+            'source': source or '',
         }
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
@@ -4929,15 +4959,23 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
 
-    # Build system_prompt blob (MEMORY/AGENT_RULES). Skip when incognito.
+    # Build system_prompt blob (MEMORY/AGENT_RULES). `incognito=True` is
+    # passed THROUGH to _build_agent_context, not used to skip the call
+    # (f_4a2ccd47): the claude path (_dispatch_agent_internal) always builds
+    # context and lets `incognito` change what goes IN it — dropping
+    # MEMORY/rules/the recent-activity dump while keeping the persona, the
+    # incognito notice block, and (for a delegated worker) the "unnamed
+    # worker session" framing. The `if not incognito: skip` guard this used
+    # to have gave an incognito chat on a non-claude provider NO context at
+    # all, persona included — it answered as the bare CLI.
     system_prompt = ''
     try:
-        if not incognito:
-            system_prompt = _build_agent_context(p, incognito=False, task=task,
-                                                 character_body=character_body,
-                                                 character_name=(character_meta or {}).get('agent_name') or '',
-                                                 session_id=session_id,
-                                                 character_skills=(character_meta or {}).get('skills') or [])
+        system_prompt = _build_agent_context(p, incognito=incognito, task=task,
+                                             character_body=character_body,
+                                             character_name=(character_meta or {}).get('agent_name') or '',
+                                             session_id=session_id,
+                                             character_skills=(character_meta or {}).get('skills') or [],
+                                             source=source)
     except Exception as e:
         _log(f"[runtime-dispatch] context build failed: {e}")
 
@@ -5426,7 +5464,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          character_meta=character_meta,
                                          character_body=character_body,
                                          model_override=model_override,
-                                         resume_id=resume_id)
+                                         resume_id=resume_id,
+                                         source=source)
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
