@@ -6053,6 +6053,24 @@ def agent_send(project_id):
             if revived:
                 return jsonify({'ok': True, 'session_id': session_id,
                                 'revived': True, 'route': 'revive'})
+            # `_revive_from_agent_log` only handles Claude rows (it needs a
+            # claude_session_id to `-r`). A dead non-Claude conversation
+            # (gemini, codex, market-scout persona, etc.) falls straight
+            # through it and used to land on the fresh-dispatch path below,
+            # which has no idea a prior provider/persona ever existed — the
+            # conversation silently came back as claude+no-persona under a
+            # BRAND NEW session id (ws001 f_1e1909aa). agent_followup already
+            # does this same fallback (agent_routes.py:6304); /agent/send is
+            # the route the chat composer actually uses, so it needs it too.
+            try:
+                fresh_sid = _revive_non_claude_from_agent_log(project_id, session_id, message, p)
+            except Exception as e:
+                fresh_sid = None
+                _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
+            if fresh_sid:
+                return jsonify({'ok': True, 'session_id': fresh_sid,
+                                'revived': False, 'fresh': True,
+                                'route': 'revive-non-claude'})
         # Last resort before starting over: the client may address a chat by its
         # CLAUDE session id (the transcript-reconstruct thread keys its tab on the
         # csid, since no MC session id exists for a transcript-only conversation).
