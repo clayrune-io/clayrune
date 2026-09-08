@@ -7364,7 +7364,14 @@ def _active_subagents_for_session(s, project_path):
     sessions at any moment are not running). Never raises — a scan failure
     yields [] (cosmetic; must not take the whole /agent/status payload
     down)."""
-    if s.get('status') != 'running':
+    # The gate is 'is this session ALIVE', not 'is it mid-turn'. It used to be
+    # status != 'running', which was wrong in exactly the case the feature
+    # exists for: a parent that dispatches a helper and then waits sits at
+    # 'idle' between turns, so the helper vanished from the Floor for the
+    # whole time it was actually working and reappeared only if you looked
+    # while the parent happened to be streaming. Freshness of the subagent's
+    # own transcript is the real signal, and the windows below bound it.
+    if s.get('status') not in ('running', 'idle'):
         return []
     csid = s.get('claude_session_id') or ''
     if not csid or not project_path:

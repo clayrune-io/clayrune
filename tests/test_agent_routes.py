@@ -385,6 +385,7 @@ def test_providers_endpoint_carries_per_provider_model_catalog(client):
     assert 'models' in by_name['claude']
     assert any(m['id'] == 'claude-opus-5' for m in by_name['claude']['models'])
     assert [m['id'] for m in by_name['codex']['models']] == [
+        'gpt-6-astra',
         'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
         'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini',
     ]
