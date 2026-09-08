@@ -531,3 +531,92 @@ def test_a_weekly_schedule_survives_the_create_round_trip(ctx):
     assert r.status_code == 201
     body = r.get_json()
     assert body['next_run'], 'created enabled with no next_run — the old silent death'
+
+
+# ── stale-session purge keys on LAST ACTIVITY, not dispatch time ─────────────
+#
+# mc_d9c76579 finding f_c82ae579: the purge used to test `started_at` (set once
+# at construction, never updated) against a 60-minute cutoff. Any conversation
+# that had simply been open for over an hour got deleted the instant its
+# status left running/idle for ANY reason — including the ordinary Mode A
+# running->completed flip between turns. A user who paused for a few minutes
+# mid-conversation on an hour-plus-old chat came back to find it gone. Fixed
+# to key on `last_output_time` (refreshed on every turn / status transition),
+# so only a session that has been genuinely untouched for an hour is purged.
+
+def _seed_session(ctx, sid, *, status, started_at, last_output_time=None,
+                   last_status_change_time=None):
+    mgr = ctx.sr.get_manager('p1')
+    mgr.add_session(sid)
+    sess = {
+        'session_id': sid, 'project_id': 'p1', 'status': status,
+        'started_at': started_at,
+    }
+    if last_output_time is not None:
+        sess['last_output_time'] = last_output_time
+    if last_status_change_time is not None:
+        sess['last_status_change_time'] = last_status_change_time
+    ctx.sr.agent_sessions[sid] = sess
+    return sess
+
+
+def test_purge_spares_an_hour_old_conversation_that_just_went_idle(ctx, monkeypatch):
+    """Regression for f_c82ae579 — FAILS on the parent commit.
+
+    A conversation dispatched 3 hours ago (well past the 60-minute cutoff on
+    `started_at`) just finished a turn one second ago and is sitting at
+    `completed`, waiting on the user's next message — i.e. it is mid-flow.
+    The purge must not touch it.
+    """
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    now = _time.time()
+    old_started = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace('+00:00', 'Z')
+    sid = 'live-midflow-001'
+    _seed_schedules(ctx, [])
+    try:
+        _seed_session(ctx, sid, status='completed', started_at=old_started,
+                      last_output_time=now - 1)
+        _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+        assert sid in ctx.sr.agent_sessions, (
+            'purge deleted a conversation that was active one second ago — '
+            'it must key on last activity, not dispatch time')
+    finally:
+        ctx.sr.agent_sessions.pop(sid, None)
+        ctx.sr.get_manager('p1').remove_session(sid)
+
+
+def test_purge_still_reaps_a_session_truly_untouched_for_an_hour(ctx, monkeypatch):
+    """Companion: staleness detection still works when last activity — not
+    just dispatch time — is over an hour old."""
+    import time as _time
+    from datetime import datetime, timedelta, timezone
+    stale_started = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace('+00:00', 'Z')
+    stale_ts = _time.time() - (61 * 60)
+    sid = 'truly-stale-001'
+    _seed_schedules(ctx, [])
+    try:
+        _seed_session(ctx, sid, status='error', started_at=stale_started,
+                      last_output_time=stale_ts)
+        _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+        assert sid not in ctx.sr.agent_sessions, (
+            'a session genuinely untouched for over an hour should still be purged')
+    finally:
+        ctx.sr.agent_sessions.pop(sid, None)
+        ctx.sr.get_manager('p1').remove_session(sid)
+
+
+def test_purge_falls_back_to_started_at_when_no_activity_timestamp_recorded(ctx, monkeypatch):
+    """Old-shape session dicts with no last_output_time/last_status_change_time
+    keep the pre-fix behavior (started_at) rather than crashing or leaking."""
+    from datetime import datetime, timedelta, timezone
+    stale_started = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat().replace('+00:00', 'Z')
+    sid = 'no-activity-field-001'
+    _seed_schedules(ctx, [])
+    try:
+        _seed_session(ctx, sid, status='error', started_at=stale_started)
+        _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+        assert sid not in ctx.sr.agent_sessions
+    finally:
+        ctx.sr.agent_sessions.pop(sid, None)
+        ctx.sr.get_manager('p1').remove_session(sid)

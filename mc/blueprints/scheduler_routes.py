@@ -756,6 +756,12 @@ def _scheduler_loop():
         # ── Purge stale sessions from memory ──────────────────────────────
         try:
             cutoff = now - timedelta(minutes=60)
+            # Computed independently of `cutoff` (rather than `cutoff.timestamp()`)
+            # because pyright infers `now`'s type as `datetime | Unbound` at this
+            # point in the function (same root cause as the existing
+            # reportOperatorIssue ignores just below) and therefore `cutoff` as
+            # `datetime | timedelta`, which has no `.timestamp()` attribute.
+            cutoff_epoch = _time.time() - 3600
             total_stale = 0
             for mgr in all_managers():
                 with mgr.lock:
@@ -767,10 +773,28 @@ def _scheduler_loop():
                             continue
                         if s['status'] not in ('running', 'idle'):
                             try:
-                                ts = datetime.fromisoformat(s['started_at'].replace('Z', '+00:00'))
-                                if ts.tzinfo is None:
-                                    ts = ts.replace(tzinfo=timezone.utc)
-                                if ts < cutoff:  # pyright: ignore[reportOperatorIssue]  # moved-verbatim typing debt (1.13)
+                                # Key staleness on LAST ACTIVITY, not dispatch
+                                # time. `started_at` is set once at construction
+                                # and never moves, so a long-lived conversation
+                                # that just finished a turn was ALREADY past the
+                                # cutoff and got reaped within one tick of
+                                # leaving running/idle — deleting a chat the
+                                # user was still mid-conversation with.
+                                # `last_output_time` / `last_status_change_time`
+                                # are refreshed on every turn and every status
+                                # transition (see the ~30 write sites in
+                                # agent_routes.py), so a session only goes
+                                # stale once an hour has passed with nothing
+                                # happening on it.
+                                last_active = s.get('last_output_time') or s.get('last_status_change_time')
+                                if last_active is not None:
+                                    is_stale = last_active < cutoff_epoch
+                                else:
+                                    ts = datetime.fromisoformat(s['started_at'].replace('Z', '+00:00'))
+                                    if ts.tzinfo is None:
+                                        ts = ts.replace(tzinfo=timezone.utc)
+                                    is_stale = ts < cutoff  # pyright: ignore[reportOperatorIssue]  # moved-verbatim typing debt (1.13)
+                                if is_stale:
                                     stale.append(sid)
                             except Exception:
                                 stale.append(sid)
