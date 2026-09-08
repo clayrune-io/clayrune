@@ -283,6 +283,17 @@ def _load_config():
         'negation_interrupt_mode': 'report',
         'negation_interrupt_max_hits': 2,
         'negation_interrupt_window_tokens': 40,
+        # Per-turn conduct-rule tail (mc/behavior_tail.py) — extends the
+        # memory_turn split ("behaviour rules re-deliver every turn, facts
+        # deliver once") to the standing reply-shape/no-promise/no-narration
+        # rules themselves. A compact (~500B) block appended as the LAST part
+        # of every system prompt build (all providers) and, for Claude Mode-B
+        # live sessions that never rebuild context, re-prepended to the two
+        # direct-stdin-write sites on every turn. Default ON; false restores
+        # the pre-existing behaviour (those rules live only once, in the bulk
+        # SHARED_RULES.md block) with no respawn needed — both injection
+        # sites read this live.
+        'behavior_tail_enabled': True,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,

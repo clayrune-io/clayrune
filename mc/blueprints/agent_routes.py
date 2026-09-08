@@ -91,6 +91,7 @@ import mc.distiller as _distiller          # exploration read-floor (registered 
 import mc.skills as _skills                # _skills_catalog_block
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
+import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
@@ -2846,6 +2847,19 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     ct = project.get('current_task', '')
     if ct:
         parts.append(f"Current task: {ct}")
+
+    # LAST, always — the point of a tail block is to be the last thing before
+    # generation. Provider-agnostic: every dispatch, respawn, and non-Claude
+    # followup (which rebuilds this whole context every turn) goes through
+    # this one function, so appending here is what makes it apply everywhere
+    # with one call site. Claude Mode-B live stdin writes bypass this
+    # function entirely (see mc.behavior_tail's docstring) — those two sites
+    # invoke the SAME module directly, which is why this text must never
+    # ALSO live in SHARED_RULES.md: it would then appear twice on a fresh
+    # dispatch (once here, once inside the SHARED_RULES.md block above).
+    _tail = _behavior_tail.render()
+    if _tail:
+        parts.append(_tail)
 
     return "\n\n".join(parts)
 
@@ -6541,6 +6555,15 @@ def agent_followup(project_id):
                 else:
                     # Router off — write stdin directly (original path)
                     claude_content = _apply_mobile_brief(message, data)
+                    # Per-turn conduct tail (extends the memory_turn split to
+                    # behaviour rules): baked into `claude_content` itself,
+                    # ahead of the mobile-brief directive, so it rides the
+                    # existing `_refresh['block'] + '\n\n' + _content`
+                    # assembly below unchanged and stays the last STATIC
+                    # block before the per-message directive/message text.
+                    _tail_text = _behavior_tail.render()
+                    if _tail_text:
+                        claude_content = _tail_text + '\n\n' + claude_content
 
                     def _write_stdin(_content=claude_content, _sess=existing, _p=p, _msg=message):
                         # MC-944 (§9.6): this is a direct write to an ALREADY-
@@ -6653,6 +6676,12 @@ def agent_followup(project_id):
             # Same tier — write stdin directly
             _rs_existing = mrs['existing']
             claude_content = _apply_mobile_brief(message, data)
+            # Per-turn conduct tail — see the router-off site above for why
+            # this is baked into `claude_content` rather than threaded
+            # through `_out` separately.
+            _tail_text = _behavior_tail.render()
+            if _tail_text:
+                claude_content = _tail_text + '\n\n' + claude_content
 
             def _write_stdin_routed(_content=claude_content, _sess=_rs_existing, _p=p, _msg=message):
                 # MC-944 (§9.6) — same rationale as the router-off direct
