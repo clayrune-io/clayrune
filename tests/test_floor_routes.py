@@ -126,6 +126,37 @@ def test_incognito_and_housekeeping_never_reach_the_board(floor):
     assert [q['id'] for q in d['quiet']] == ['a']
 
 
+def test_a_hivemind_worker_reaches_the_board(floor):
+    """Regression for f_972afc35 / f_e7b1ba91 — FAILS on the parent commit.
+
+    Hivemind workers and the orchestrator are minted `housekeeping: True`
+    (the same flag used for genuine background chores like memory condense),
+    which hid them from the Floor unconditionally. Live during hm_d9c76579:
+    /agent/status showed 3 running hivemind workers, /api/floor showed 0 —
+    on a board whose entire purpose is "who is doing what". A hivemind
+    worker is first-class, user-visible work, so `hivemind_id` — which every
+    hivemind session carries and a chore never does — earns it back onto
+    the board despite `housekeeping`.
+    """
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', housekeeping=True, hivemind_id='hm_1',
+                             trigger_type='hivemind_worker')
+    d = _get(c)
+    assert [f['session_id'] for r in d['rooms'] for f in r['figures']] == ['1']
+
+
+def test_a_plain_housekeeping_chore_still_stays_off_the_board(floor):
+    """The other half of the same fix: a session with NO hivemind_id — a
+    memory-condense/title-generation chore — must still be hidden. Splitting
+    the flag must not blanket-unhide every housekeeping session."""
+    fr, c, sessions, projects, _ = floor
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', housekeeping=True)
+    d = _get(c)
+    assert d['rooms'] == []
+
+
 def test_a_finished_session_is_not_a_figure(floor):
     fr, c, sessions, projects, _ = floor
     projects.append({'id': 'a', 'name': 'Alpha'})

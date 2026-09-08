@@ -343,14 +343,27 @@ def _figure_subagents(s):
 def _live_sessions(defaults=None, labels=None):
     """Sessions worth drawing, grouped by project.
 
-    Housekeeping and incognito are excluded for the same reason
-    `_project_live_agent` excludes them: incognito's whole promise is that it
-    does not show up on the public indicators, and a cross-project board is the
-    most public indicator there is.
+    Incognito is excluded because that is its whole promise: it does not show
+    up on the public indicators, and a cross-project board is the most public
+    indicator there is.
+
+    Housekeeping is excluded UNLESS the session is hivemind work
+    (`hivemind_id` set — both workers, `hivemind_routes.py:~977/~1038`, and the
+    orchestrator, `~1278`). `housekeeping` was minted for genuine background
+    chores nobody wants on a board (memory condense, title/summary
+    generation) and hivemind spawns reused the same flag to mean "not
+    user-initiated" — a different question. Measured live during
+    hm_d9c76579: `/agent/status` showed 3 running hivemind workers,
+    `/api/floor` showed 0 (f_972afc35 / f_e7b1ba91). A hivemind worker is
+    first-class, user-visible work — the single most "is anything happening?"
+    moment this board exists for — so it belongs here. A memory-condense
+    session carries no `hivemind_id` and stays hidden.
     """
     rooms: dict = {}
     for s in agent_sessions.values():
-        if s.get('housekeeping') or s.get('incognito'):
+        if s.get('incognito'):
+            continue
+        if s.get('housekeeping') and not s.get('hivemind_id'):
             continue
         if s.get('status') not in ('running', 'idle'):
             continue
