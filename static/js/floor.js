@@ -15,6 +15,17 @@ const FLOOR_MODAL = '__floor';
 let floorTimer = null;
 let floorQuietOpen = false;
 
+// `window.avatarHTML` is a cross-module global (render-core.js) — the same
+// exposure as `esc`, `openModals`, `_clampModalSize`. mention-autocomplete.js
+// already guards this call with a `typeof` check; the Floor didn't, so a
+// module-load-order race (or a future rename) throws mid-render and freezes
+// the whole board (ws001 Finding 1). Guard here the way floor.js's own
+// _floorEngine() guards window._providerModelChoices.
+function _floorAvatarHTML(value, size) {
+  return (typeof window.avatarHTML === 'function')
+    ? window.avatarHTML(value, size) : '';
+}
+
 async function openFloor() {
   if (openModals.has(FLOOR_MODAL)) {
     const entry = openModals.get(FLOOR_MODAL);
@@ -125,7 +136,7 @@ function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();
   return `<span class="fl-face" title="${has ? 'click to change the face' : 'click to give this figure a face'}"
       onclick="event.stopPropagation();floorSetAvatar('${esc(f.session_id)}','${esc(f.avatar || '')}')"
-    >${window.avatarHTML(f.avatar, FLOOR_FACE_PX)}</span>`;
+    >${_floorAvatarHTML(f.avatar, FLOOR_FACE_PX)}</span>`;
 }
 
 async function floorSetAvatar(sessionId, current) {
@@ -302,7 +313,7 @@ function _floorBench(bench, rooms, quiet) {
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
-        <span class="fl-face fl-face-bench">${window.avatarHTML(b.avatar, FLOOR_FACE_PX)}</span>
+        <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}</span>
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
@@ -444,35 +455,53 @@ async function refreshFloor() {
     return;
   }
 
-  const c = d.counts || {};
-  const counts = document.getElementById('floor-counts');
-  if (counts) {
-    counts.textContent = `${c.figures || 0} live · ${c.rooms || 0} room${c.rooms === 1 ? '' : 's'}`
+  // Everything below THROWS on a bad payload or a broken cross-module global
+  // (window.avatarHTML, per figure/bench card). refreshFloor is async and
+  // nothing catches its rejection (openFloor:57 awaits it inside an
+  // uncaught async fn; the interval callback below calls it bare) — so
+  // without this try/finally, one throw here left `floorTimer` set from a
+  // PRIOR successful tick but nothing ever scheduling the next one: the
+  // board froze permanently (ws001 Finding 1). The invariant this encodes is
+  // "refreshFloor always schedules its next poll", not "catch this one
+  // throw" — same shape as the fetch-catch above, for the render half.
+  try {
+    // Build the WHOLE board — header text included — before touching the
+    // DOM at all. Previously the counts header was written first and the
+    // body last; a throw in between left a TRUTHFUL header ("2 live · 2
+    // rooms") over a SILENTLY EMPTY body, indistinguishable from "nobody is
+    // working". Computing both first means either the whole render lands or
+    // none of it does — a stale-but-honest board, never a fabricated one.
+    const c = d.counts || {};
+    const countsText = `${c.figures || 0} live · ${c.rooms || 0} room${c.rooms === 1 ? '' : 's'}`
       + ` · ${c.quiet || 0} quiet`;
+
+    const rooms = (d.rooms || []).map(_floorRoom).join('');
+    const empty = !(d.rooms || []).length
+      ? `<div class="fl-empty">
+           <div class="fl-empty-mark">&#9675;</div>
+           <div class="fl-empty-head">Nobody is working right now</div>
+           <div class="fl-empty-sub">Pick someone off the bench below and put them in a room.</div>
+         </div>` : '';
+    // Said once, not guessed per card: with partial-message streaming off there
+    // is no thinking/writing signal at all, and a row reading "working…" for a
+    // whole turn should be explained rather than look broken.
+    const note = d.activity_states === false
+      ? `<div class="memory-hint" style="margin-top:10px">Live thinking/writing states are off
+         (<code>activity_states_enabled</code>), so a running figure just reads "working".</div>` : '';
+
+    // Order is the priority order: who is working, then who you could put to
+    // work, then — last — the projects with nobody in them. Quiet sat in the
+    // middle and the eye hit a collapsed grey count on its way to the bench.
+    const bodyHTML = `<div class="fl-rooms">${rooms}</div>${empty}
+      ${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}
+      ${_floorQuiet(d.quiet || [])}${note}`;
+
+    const counts = document.getElementById('floor-counts');
+    if (counts) counts.textContent = countsText;
+    body.innerHTML = bodyHTML;
+  } finally {
+    _floorSchedulePoll(parseInt(d.poll_seconds, 10) || 5);
   }
-
-  const rooms = (d.rooms || []).map(_floorRoom).join('');
-  const empty = !(d.rooms || []).length
-    ? `<div class="fl-empty">
-         <div class="fl-empty-mark">&#9675;</div>
-         <div class="fl-empty-head">Nobody is working right now</div>
-         <div class="fl-empty-sub">Pick someone off the bench below and put them in a room.</div>
-       </div>` : '';
-  // Said once, not guessed per card: with partial-message streaming off there
-  // is no thinking/writing signal at all, and a row reading "working…" for a
-  // whole turn should be explained rather than look broken.
-  const note = d.activity_states === false
-    ? `<div class="memory-hint" style="margin-top:10px">Live thinking/writing states are off
-       (<code>activity_states_enabled</code>), so a running figure just reads "working".</div>` : '';
-
-  // Order is the priority order: who is working, then who you could put to
-  // work, then — last — the projects with nobody in them. Quiet sat in the
-  // middle and the eye hit a collapsed grey count on its way to the bench.
-  body.innerHTML = `<div class="fl-rooms">${rooms}</div>${empty}
-    ${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}
-    ${_floorQuiet(d.quiet || [])}${note}`;
-
-  _floorSchedulePoll(parseInt(d.poll_seconds, 10) || 5);
 }
 
 // Start the board's poll if it is not already running. Split out of
@@ -495,7 +524,10 @@ function _floorSchedulePoll(pollSeconds) {
     }
     const e = openModals.get(FLOOR_MODAL);
     if (e && e.minimized) return;   // minimized: alive, but not worth a poll
-    refreshFloor();
+    // refreshFloor's own try/finally already guarantees the NEXT poll gets
+    // scheduled even if this render throws; .catch here only stops that
+    // throw from surfacing as an unhandled promise rejection in the console.
+    refreshFloor().catch(() => {});
   }, secs * 1000);
 }
 
