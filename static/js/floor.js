@@ -440,6 +440,7 @@ async function refreshFloor() {
     d = await res.json();
   } catch (e) {
     body.innerHTML = `<div class="dave-empty">Could not read the floor: ${esc(e.message)}</div>`;
+    _floorSchedulePoll(5);   // keep asking; one bad fetch must not freeze the board
     return;
   }
 
@@ -471,22 +472,31 @@ async function refreshFloor() {
     ${_floorBench(d.bench || [], d.rooms || [], d.quiet || [])}
     ${_floorQuiet(d.quiet || [])}${note}`;
 
-  if (!floorTimer) {
-    // Floor is a live board; the client floor was 10s, which silently
-    // overrode any faster server value. Keep a sane lower bound, but let
-    // the server ask for a fast tick.
-    const secs = Math.max(3, parseInt(d.poll_seconds, 10) || 5);
-    floorTimer = setInterval(() => {
-      // Stop polling if the window went away by any route (Escape, the modal
-      // manager's own close) rather than only through closeFloor().
-      if (!openModals.has(FLOOR_MODAL)) {
-        clearInterval(floorTimer); floorTimer = null; return;
-      }
-      const e = openModals.get(FLOOR_MODAL);
-      if (e && e.minimized) return;   // minimized: alive, but not worth a poll
-      refreshFloor();
-    }, secs * 1000);
-  }
+  _floorSchedulePoll(parseInt(d.poll_seconds, 10) || 5);
+}
+
+// Start the board's poll if it is not already running. Split out of
+// refreshFloor so the FETCH-ERROR path can reach it too: that path used to
+// `return` before this code, so a single failed fetch — a restart, a slow
+// load — left the board frozen until it was closed and reopened. That is the
+// "sometimes it updates, sometimes it doesn't" behaviour; the payload was
+// fine, the board had simply stopped asking.
+function _floorSchedulePoll(pollSeconds) {
+  if (floorTimer) return;
+  // Floor is a live board; the client floor was 10s, which silently overrode
+  // any faster server value. Keep a sane lower bound, but let the server ask
+  // for a fast tick.
+  const secs = Math.max(3, pollSeconds || 5);
+  floorTimer = setInterval(() => {
+    // Stop polling if the window went away by any route (Escape, the modal
+    // manager's own close) rather than only through closeFloor().
+    if (!openModals.has(FLOOR_MODAL)) {
+      clearInterval(floorTimer); floorTimer = null; return;
+    }
+    const e = openModals.get(FLOOR_MODAL);
+    if (e && e.minimized) return;   // minimized: alive, but not worth a poll
+    refreshFloor();
+  }, secs * 1000);
 }
 
 // ── Interop: re-expose for inline / generated-on*= callers. Runtime-only.
