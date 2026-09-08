@@ -3087,56 +3087,13 @@ def _note_activity_state(session, msg):
     session['activity_state'] = state_
 
 
-def _tool_preview(text, limit):
-    """Single-line, length-capped preview of a tool argument.
-
-    Collapses ALL whitespace FIRST, then truncates. Both halves matter:
-
-    - A Bash command is frequently multi-line (a heredoc — `python - <<'PY'`…).
-      Slicing the raw string kept the newlines, and the frontend splits a
-      multi-line log entry into separate lines: only the first stayed a
-      `[tool: …]` chip while the rest ("COGS = 0.52", "p") rendered as ordinary
-      agent bubbles — stray script fragments littering the chat.
-    - Cutting mid-token gave no signal it was truncated, so a fragment read like
-      real (broken) output. Mark it with an ellipsis instead.
-    """
-    s = ' '.join((text or '').split())
-    return s if len(s) <= limit else s[:limit].rstrip() + '…'
-
-
-def _format_tool_activity(name, inp):
-    """Format a tool_use block into a compact, single-line activity line."""
-    if name in ('Read', 'Edit', 'Write'):
-        fp = inp.get('file_path', '')
-        short = Path(fp).name if fp else '?'
-        return f'[tool: {name}] {short}'
-    if name == 'Bash':
-        cmd = _tool_preview(inp.get('command', '') or inp.get('description', ''), 80)
-        return f'[tool: Bash] {cmd}'
-    if name in ('Grep', 'Glob'):
-        pat = _tool_preview(inp.get('pattern', ''), 80)
-        return f'[tool: {name}] {pat}'
-    if name == 'Task':
-        desc = _tool_preview(inp.get('description', ''), 50)
-        return f'[tool: Task] {desc}'
-    if name == 'WebSearch':
-        q = _tool_preview(inp.get('query', ''), 60)
-        return f'[tool: WebSearch] {q}'
-    if name == 'AskUserQuestion':
-        qs = inp.get('questions', [])
-        preview = _tool_preview(qs[0].get('question', ''), 60) if qs else ''
-        return f'[tool: AskUserQuestion] {preview}'
-    if name == 'TodoWrite':
-        todos = inp.get('todos', []) or []
-        total = len(todos)
-        done = sum(1 for t in todos if isinstance(t, dict) and t.get('status') == 'completed')
-        in_prog = next((t.get('content', '') for t in todos
-                        if isinstance(t, dict) and t.get('status') == 'in_progress'), '')
-        summary = f'{done}/{total}'
-        if in_prog:
-            summary += f' — now: {_tool_preview(in_prog, 60)}'
-        return f'[tool: TodoWrite] {summary}'
-    return f'[tool: {name}]'
+# _tool_preview / _format_tool_activity now live in mc/agent_runtime.py so the
+# shared Mode-A reader (`_mode_a_reader`, serving codex/opencode/goose/aider/
+# kiro) can format its tool lines identically to Claude's own reader below —
+# see that module for the full rationale (parity audit item 8). Aliased here
+# so every existing call site in this file is unchanged.
+_tool_preview = _agent_runtime._tool_preview
+_format_tool_activity = _agent_runtime._format_tool_activity
 
 
 # ── Single-emit gate ─────────────────────────────────────────────────────────

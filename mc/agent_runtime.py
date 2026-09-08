@@ -3249,6 +3249,87 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     return handle
 
 
+# ── Tool-line formatting — shared by Claude's native reader (agent_routes.py
+# `_read_agent_stream`) and every Mode-A provider (`_mode_a_reader`, below) ──
+#
+# Moved here (from mc/blueprints/agent_routes.py) so `_mode_a_reader` can use
+# the SAME formatter Claude's own reader uses, instead of the bare
+# `f"[{runtime.name} tool: {tname}]"` line it used to emit (parity audit
+# item 8: Codex's rollout carries the full command AND result body for every
+# tool call — strictly more detail than Claude's transcript captures — while
+# the old Mode-A line captured *less*: no command, no output, just a name
+# repeated verbatim call after call. A six-`shell`-call Codex turn rendered as
+# six identical, wordless `[codex tool: shell]` lines with nothing to tell
+# them apart). This gives every Mode-A provider Claude's actual level of
+# detail (tool name + a short single-line argument preview) — never the
+# result/output, matching Claude, which also never echoes a tool_result into
+# the chat.
+#
+# agent_routes.py imports this module (`import mc.agent_runtime as
+# _agent_runtime`); the reverse import would be circular, which is why the
+# functions live here rather than the other way around.
+def _tool_preview(text, limit):
+    """Single-line, length-capped preview of a tool argument.
+
+    Collapses ALL whitespace FIRST, then truncates. Both halves matter:
+
+    - A Bash command is frequently multi-line (a heredoc — `python - <<'PY'`…).
+      Slicing the raw string kept the newlines, and the frontend splits a
+      multi-line log entry into separate lines: only the first stayed a
+      `[tool: …]` chip while the rest ("COGS = 0.52", "p") rendered as ordinary
+      agent bubbles — stray script fragments littering the chat.
+    - Cutting mid-token gave no signal it was truncated, so a fragment read like
+      real (broken) output. Mark it with an ellipsis instead.
+    """
+    s = ' '.join((text or '').split())
+    return s if len(s) <= limit else s[:limit].rstrip() + '…'
+
+
+def _format_tool_activity(name, inp):
+    """Format a tool_use block into a compact, single-line activity line.
+
+    The literal `[tool: …]` prefix (no provider name) is load-bearing: the
+    frontend's `agentLineCls()` (static/js/rich-text.js), the "Tool call
+    lines" show/hide toggle (`adv-hide-tool-lines`), and the plan-mode
+    `ExitPlanMode` detector all key off that exact prefix — a
+    provider-qualified prefix (`[codex tool: …]`) bypasses all three. Mirrors
+    the fix already applied to GeminiRuntime._read_stream's own tool-use line.
+    """
+    if name in ('Read', 'Edit', 'Write'):
+        fp = inp.get('file_path', '')
+        short = Path(fp).name if fp else '?'
+        return f'[tool: {name}] {short}'
+    if name in ('Bash', 'shell'):
+        # 'shell' is Codex's (and other OpenAI-style Mode-A CLIs') name for
+        # the same call Claude calls 'Bash' — same input shape (`command`).
+        cmd = _tool_preview(inp.get('command', '') or inp.get('description', ''), 80)
+        return f'[tool: {name}] {cmd}'
+    if name in ('Grep', 'Glob'):
+        pat = _tool_preview(inp.get('pattern', ''), 80)
+        return f'[tool: {name}] {pat}'
+    if name == 'Task':
+        desc = _tool_preview(inp.get('description', ''), 50)
+        return f'[tool: Task] {desc}'
+    if name == 'WebSearch':
+        q = _tool_preview(inp.get('query', ''), 60)
+        return f'[tool: WebSearch] {q}'
+    if name == 'AskUserQuestion':
+        qs = inp.get('questions', [])
+        preview = _tool_preview(qs[0].get('question', ''), 60) if qs else ''
+        return f'[tool: AskUserQuestion] {preview}'
+    if name == 'TodoWrite':
+        todos = inp.get('todos', []) or []
+        total = len(todos)
+        done = sum(1 for t in todos if isinstance(t, dict) and t.get('status') == 'completed')
+        in_prog = next((t.get('content', '') for t in todos
+                        if isinstance(t, dict) and t.get('status') == 'in_progress'), '')
+        summary = f'{done}/{total}'
+        if in_prog:
+            summary += f' — now: {_tool_preview(in_prog, 60)}'
+        return f'[tool: TodoWrite] {summary}'
+    return f'[tool: {name}]'
+
+
 def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                    runtime: 'AgentRuntime') -> None:
     """Generic stdout reader for Mode-A providers. Uses runtime.parse_event()."""
@@ -3307,7 +3388,16 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             elif ev.type == EventType.TOOL_USE:
                 blocks = ev.payload.get('blocks', [])
                 tname = blocks[0].get('name', '') if blocks else ''
-                session['log_lines'].append(f"[{runtime.name} tool: {tname}]")
+                tinput = blocks[0].get('input', {}) if blocks else {}
+                if not isinstance(tinput, dict):
+                    tinput = {}
+                # Claude's own line format (`[tool: Name] preview`, no
+                # provider name) via the shared formatter above — see its
+                # docstring for why the bare `[{provider} tool: {name}]` this
+                # used to emit broke both the frontend's tool-line styling
+                # and Ron's transcript (six indistinguishable
+                # `[codex tool: shell]` lines with no command shown).
+                session['log_lines'].append(_format_tool_activity(tname, tinput))
                 session['last_output_time'] = _time.time()
             elif ev.type == EventType.INIT:
                 session.setdefault('provider_session_id',

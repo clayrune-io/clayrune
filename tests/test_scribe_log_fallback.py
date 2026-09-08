@@ -158,6 +158,29 @@ def test_render_log_lines_empty_input(env):
     assert mem._render_log_lines_as_transcript(None) == ''
 
 
+def test_render_log_lines_handles_canonical_tool_prefix_with_preview(env):
+    """Every Mode-A reader (_mode_a_reader, GeminiRuntime._read_stream) now
+    emits the SAME canonical `[tool: Name] preview` shape Claude's own reader
+    uses (no provider name before "tool:", and — for _mode_a_reader as of
+    this fix — a short argument preview after the closing bracket). The
+    provider-qualified `[codex tool: Bash]` shape above must keep working;
+    this pins the canonical shape doesn't silently vanish as noise."""
+    mem, _ = env
+    rendered = mem._render_log_lines_as_transcript([
+        '> Ron: do X',
+        'working on it',
+        '[tool: shell] git status',
+        '[tool: Read]',
+    ])
+    lines = rendered.splitlines()
+    assert lines == [
+        'USER: Ron: do X',
+        'ASSISTANT: working on it',
+        'ACTION tool: shell: git status',
+        'ACTION tool: Read',
+    ]
+
+
 # ── _write_session_memory: the new counter actually increments ─────────────
 
 @pytest.fixture()

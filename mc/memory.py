@@ -2747,10 +2747,18 @@ def _render_log_lines_as_transcript(log_lines):
         elif s.startswith('['):
             # Every MC-synthesized status/system line starts with '[' (tool
             # markers, [hint]/[error]/[interrupted]/exit-code notices, mcp-sync
-            # results). Keep only the tool marker; drop the rest as noise, not
+            # results). A tool marker is either the older provider-qualified
+            # "[codex tool: Bash]" (no preview, so the whole tag sits inside
+            # the brackets) or the canonical "[tool: Bash] ls -la" every
+            # Mode-A reader now emits (parity audit item 8) — name inside the
+            # brackets, an optional argument preview after them. Keep both
+            # shapes as an ACTION line; drop everything else as noise, not
             # conversation content.
-            if s.endswith(']') and ' tool: ' in s:
-                out.append(f"ACTION {s[1:-1]}")
+            close = s.find(']')
+            if close != -1 and 'tool: ' in s[:close]:
+                tag = s[1:close]
+                rest = s[close + 1:].strip()
+                out.append(f"ACTION {tag}" + (f": {rest}" if rest else ""))
         else:
             out.append(f"ASSISTANT: {s}")
     return '\n'.join(out)
