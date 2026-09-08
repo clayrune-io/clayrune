@@ -113,7 +113,12 @@ async function loadAgentLog(projectId) {
 async function _loadAgentLogInner(projectId) {
   try {
     const res = await fetch(API_BASE + `/api/project/${projectId}/agent/log`);
-    agentLogCache[projectId] = await res.json();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    // Fetch into a local var first — only replace the cache once the parse has
+    // actually succeeded, so a malformed/partial response can't stomp a good
+    // cache with garbage.
+    const fresh = await res.json();
+    agentLogCache[projectId] = fresh;
     // Populate planFile in status cache from agent log entries
     for (const entry of agentLogCache[projectId]) {
       if (entry.plan_file && entry.session_id) {
@@ -131,7 +136,14 @@ async function _loadAgentLogInner(projectId) {
       pendingResumeId[projectId] = getDefaultResumeId(projectId);
     }
     refreshModal();
-  } catch(e) {}
+  } catch(e) {
+    // Deliberately does NOT touch agentLogCache[projectId] — a failed refetch
+    // must leave whatever list was already rendered standing, not blank it.
+    // This used to be a fully silent catch(e){}; a transient network blip
+    // here was how the rail's dominant row source (agent-log entries supply
+    // ~139 of 141 rail rows) went empty and stayed empty (f_6506aeb9).
+    console.warn(`[Clayrune] agent/log refetch failed for ${projectId}:`, e);
+  }
 }
 
 async function loadConversations(projectId) {
@@ -144,9 +156,15 @@ async function loadConversations(projectId) {
 async function _loadConversationsInner(projectId) {
   try {
     const res = await fetch(API_BASE + `/api/project/${projectId}/conversations?limit=20`);
-    conversationsCache[projectId] = await res.json();
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const fresh = await res.json();
+    conversationsCache[projectId] = fresh;
     refreshModal();
-  } catch(e) {}
+  } catch(e) {
+    // Same reasoning as _loadAgentLogInner above: leave the previous list
+    // standing on failure instead of silently going blank (f_6506aeb9).
+    console.warn(`[Clayrune] conversations refetch failed for ${projectId}:`, e);
+  }
 }
 
 // Optimistically upsert a conversation entry so the picker reflects the user's

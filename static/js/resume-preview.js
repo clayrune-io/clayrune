@@ -886,11 +886,35 @@ function connectAgentStream(projectId, sessionId) {
         delete agentEventSources[sessionId];
         delete sseRetryCount[sessionId];
         if (agentSSEWatchdogs[sessionId]) { clearInterval(agentSSEWatchdogs[sessionId]); delete agentSSEWatchdogs[sessionId]; }
-        delete agentLogCache[projectId];  // invalidate so fresh data (with claude_session_id) loads
-        delete conversationsCache[projectId];  // refresh transcript-based list too
-        if (agentLogOpen[projectId]) loadAgentLog(projectId);  // re-fetch if panel is open
-        loadConversations(projectId);
-        refreshModal();
+        if (msg.status === 'idle') {
+          // This is Mode A's equivalent of turn_complete (non-Claude agents
+          // close the SSE after every turn — see server generate() Mode A
+          // branch, agent_routes.py — the process is still alive and
+          // sendFollowup() reconnects). Treat it exactly like turn_complete:
+          // NO cache invalidation, NO refreshModal(). The old code here
+          // deleted agentLogCache/conversationsCache and then called
+          // refreshModal() synchronously, one line before either cache had
+          // been refetched — every rail row (~139 of 141 come from
+          // agentLogCache) briefly rendered off an undefined cache and
+          // vanished, recovering only once the ~1.6MB agent/log refetch
+          // landed (hivemind f_6506aeb9, 141->0 measured live). refreshModal
+          // also does content.innerHTML = modalContentHTML(p), recreating the
+          // chat textarea on every turn — the mobile IME-death root cause
+          // documented at the turn_start handler above. In-place update only,
+          // same as turn_complete.
+          window.updateRailRowStatus?.(sessionId);
+        } else {
+          // Genuinely terminal (stopped/error/other) — refresh the rail data,
+          // but refresh INTO the cache and swap; never delete-then-render.
+          // loadAgentLog/loadConversations (agent-log.js) already fetch
+          // unconditionally and only replace the cache once the response
+          // lands, calling refreshModal() themselves at that point — so
+          // there's no window where the rail renders off an emptied cache,
+          // and a failed fetch (still swallowed there, now logged) leaves the
+          // previous list standing instead of blanking it.
+          if (agentLogOpen[projectId]) loadAgentLog(projectId);  // re-fetch if panel is open
+          loadConversations(projectId);
+        }
         renderAgentConsole();
         refreshSilent();
       } else if (msg.type === 'error') {
@@ -912,11 +936,12 @@ function connectAgentStream(projectId, sessionId) {
         delete agentEventSources[sessionId];
         delete sseRetryCount[sessionId];
         if (agentSSEWatchdogs[sessionId]) { clearInterval(agentSSEWatchdogs[sessionId]); delete agentSSEWatchdogs[sessionId]; }
-        delete agentLogCache[projectId];  // invalidate so fresh data loads
-        delete conversationsCache[projectId];
+        // Refresh INTO the cache and swap, not delete-then-render — see the
+        // matching comment in the 'status' handler above (f_6506aeb9). A
+        // stream error is rare next to a turn completing, but the same
+        // delete+sync-refreshModal here produced the identical 0-row flash.
         if (agentLogOpen[projectId]) loadAgentLog(projectId);  // re-fetch if panel is open
         loadConversations(projectId);
-        refreshModal();
         renderAgentConsole();
         // Surface a fresh auth banner if the failure was caused by a 401.
         refreshAuthStatus();
