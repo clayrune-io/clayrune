@@ -1836,17 +1836,20 @@ function updateRailRowStatus(sessionId) {
       else time.textContent = row.dataset.tsRelative || '';
     }
   });
-  // Channel-mode roster row (MC-937 Phase 1): one row per PERSONA, not per
+  // Channel-mode roster row (MC-937 Phase 1): one row per PERSON, not per
   // session, so it can't be matched by csid/mcsid like the block above —
-  // match on the character it represents instead. Only the right-slot
-  // content is touched, same restraint as the block above: which SECTION
-  // (In the room / Bench) the row sits in is NOT updated here — reordering/
+  // match on the identity it represents instead (`_convCharKey`, shared with
+  // `_channelRoster` — ws_005: a hand-rolled `character`-only key here used
+  // to go empty for a no-persona session, so the default agent's row never
+  // got this in-place turn_start/turn_complete patch and stayed stuck on
+  // stale status until the next full rebuild). Only the right-slot content
+  // is touched, same restraint as the block above: which SECTION (In the
+  // room / Bench) the row sits in is NOT updated here — reordering/
   // re-bucketing the roster mid-turn is exactly the "worse than a stale pill"
   // case the comment on this function already rules out. The next full rail
   // rebuild (mode switch, project reopen, poll-driven refreshModalById)
   // reconciles bucketing.
-  const charKey = (s.character && s.character.name)
-    ? (s.character.scope || 'global') + ':' + s.character.name : '';
+  const charKey = _convCharKey({ character: s.character, identity: s.identity });
   if (charKey) {
     document.querySelectorAll(`.channel-row[data-char-key="${q(charKey)}"]`).forEach(row => {
       const time = row.querySelector('.conv-time');
@@ -2079,9 +2082,31 @@ function mobileUserConversationsHTML(p, convos) {
 // cap for the channel view"). A persona whose only history is older than the
 // cached 20 will surface on the Bench again once Phase 2 lands.
 function _convCharKey(c) {
+  // The server resolves EVERY session to an identity now (mc/identity.py,
+  // ws_005) — a hired persona keys the same 'scope:name' this always used,
+  // and a session with none resolves to the operator's default agent (e.g.
+  // "Vector") instead of the empty string that made it un-rosterable.
+  // `character` stays the fallback for any payload that predates the field.
+  if (c && c.identity && c.identity.key) return c.identity.key;
   const ch = c && c.character;
   if (!ch || !ch.name) return '';
   return (ch.scope || 'global') + ':' + ch.name;
+}
+
+// Normalizes a row/session's persona into the {name, agent_name,
+// display_name, avatar, scope, deleted} shape `_channelRowHTML` and
+// `openChannelPerson` already render. A session with no `character` still
+// has an `identity` (default agent, or 'unnamed' for a delegated session
+// with no persona — MC-925) — filling that into the SAME shape means the
+// render path needed no changes, instead of teaching it a second naming
+// rule that could drift from the server's (ws_005's whole point).
+function _convCharFor(c) {
+  if (c && c.character && c.character.name) return c.character;
+  const id = c && c.identity;
+  if (id && id.key) {
+    return { name: '', agent_name: id.name, display_name: id.name, avatar: id.avatar, scope: '', deleted: false };
+  }
+  return {};
 }
 
 // projectId -> "scope:name" of the roster row currently narrowing the rail to
@@ -2103,17 +2128,21 @@ function _channelRoster(projectId) {
   const groups = {};
   for (const c of (conversationsCache[projectId] || [])) {
     const key = _convCharKey(c);
-    if (!key) continue;
-    const g = groups[key] || (groups[key] = { key, char: c.character, mtime: -1, tsRelative: '' });
+    // 'unnamed:' (a delegated session with no persona — MC-925) is live-only
+    // by design: a HISTORICAL row for one is never roster material, or a
+    // finished delegated run would leave a permanent, un-addressable
+    // "unnamed" bench entry no click can do anything useful with.
+    if (!key || key === 'unnamed:') continue;
+    const g = groups[key] || (groups[key] = { key, char: _convCharFor(c), mtime: -1, tsRelative: '' });
     const mtime = c.mtime || 0;
-    if (mtime >= g.mtime) { g.mtime = mtime; g.tsRelative = c.ts_relative || ''; g.char = c.character; }
+    if (mtime >= g.mtime) { g.mtime = mtime; g.tsRelative = c.ts_relative || ''; g.char = _convCharFor(c); }
   }
   const liveState = {};    // key -> {state:'working'|'waiting', sessionId}
   const helperCount = {};  // key -> count of currently-RUNNING nested subagents (MC-937 Phase 4)
   for (const sid in agentStatusCache) {
     const s = agentStatusCache[sid];
     if (!s || s.projectId !== projectId) continue;
-    const key = _convCharKey({ character: s.character });
+    const key = _convCharKey({ character: s.character, identity: s.identity });
     if (!key) continue;
     // A session's helpers count regardless of the waiting/working branch below
     // (defensive — in practice a subagent only exists while its parent turn is
@@ -2123,9 +2152,13 @@ function _channelRoster(projectId) {
     const waiting = !!(s.waitingForPlanApproval || s.waitingForQuestion);
     const working = s.status === 'running' && !waiting;
     if (!waiting && !working) continue;
+    // Same live-only rule as the history loop above — a delegated no-persona
+    // session may seed the roster WHILE it's actually working, never merely
+    // waiting (which would otherwise land it on the Bench).
+    if (key === 'unnamed:' && !working) continue;
     // A session in progress but not yet reflected in conversationsCache still
     // belongs on the roster — seed a bare group so it isn't dropped.
-    if (!groups[key]) groups[key] = { key, char: s.character, mtime: 0, tsRelative: '' };
+    if (!groups[key]) groups[key] = { key, char: _convCharFor({ character: s.character, identity: s.identity }), mtime: 0, tsRelative: '' };
     if (working) liveState[key] = { state: 'working', sessionId: sid };
     else if (!liveState[key] || liveState[key].state !== 'working') liveState[key] = { state: 'waiting', sessionId: sid };
   }
@@ -4411,7 +4444,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [] };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [] };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch

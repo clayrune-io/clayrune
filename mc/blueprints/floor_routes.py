@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+from mc import identity as _identity
 from mc import state
 from mc.characters import MAX_EMOJI_LEN, clean_avatar
 from mc.core import _atomic_write_text, _log, time_ago
@@ -215,9 +216,12 @@ def _figure_name(s, labels):
         own = (ch.get('agent_name') or '').strip()
         if own:
             return own, 'character'
-    if (s.get('source') or '') == 'agent':
-        return 'unnamed', 'unnamed'
-    return _clean_name(state.CONFIG.get('agent_name', '')), 'default'
+    # Shared with the Channel roster (mc/identity.py) — see ws_005. Keeping
+    # this ONE call instead of a third hand-copied default/unnamed branch is
+    # the whole point: two copies of this precedence is what let the Channel
+    # rail drift out of sync with the Floor in the first place.
+    _key, name, _avatar, name_from = _identity.resolve_default_identity(s.get('source'))
+    return name, name_from
 
 
 def _figure_avatar(s, labels):
@@ -246,9 +250,9 @@ def _figure_avatar(s, labels):
         own = _clean_avatar(ch.get('avatar'))
         if own:
             return own
-    if (s.get('source') or '') == 'agent':
-        return ''
-    return _clean_avatar(state.CONFIG.get('agent_avatar', ''))
+    # Shared tail — see _figure_name's call to the same function.
+    _key, _name, avatar, _name_from = _identity.resolve_default_identity(s.get('source'))
+    return avatar
 
 
 def _figure_model(s, proj_default):

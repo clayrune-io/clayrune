@@ -408,7 +408,11 @@ async function dispatchAgent(projectId) {
 
     agentOutputBuffers[sessionId] = savedBuf;
     agentServerLines[sessionId] = 1;
-    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider };
+    // Carries `character` like the temp-session write above (:346) — dropped
+    // here previously, so a just-dispatched chat's persona (or its Channel
+    // roster identity — ws_005) vanished from the cache the instant the temp
+    // ID was promoted, until the next /agent/status poll refilled it.
+    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
 
     // Zero-gap: if resuming a known prior conversation, patch its last_user now.
     // For a fresh session, we don't know the claude_session_id yet; it will be

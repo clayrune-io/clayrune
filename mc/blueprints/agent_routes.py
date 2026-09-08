@@ -88,6 +88,7 @@ from mc.state import (
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
+import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
@@ -7504,6 +7505,14 @@ def agent_status(project_id):
                 'pinned_model': s.get('pinned_model', ''),
                 # Per-chat persona {name,scope,display_name} or None → header pill.
                 'character': s.get('character'),
+                # Who the Channel roster (static/js/conversation.js) groups this
+                # LIVE session under — see mc/identity.py (ws_005). Emitted here
+                # too (not just on /conversations rows) so a session dispatched
+                # moments ago — before its first /conversations poll — still has
+                # a roster key to seed a bare group under (_channelRoster already
+                # does this for the persona case; the no-persona case needed the
+                # key to exist at all).
+                'identity': _identity.resolve_identity(s.get('character'), s.get('source', '')),
                 # Chat-level pin marker — server-authoritative (see _pinned_csids).
                 'pinned': bool(s.get('claude_session_id')
                                and s.get('claude_session_id') in _pinned_csids),
@@ -8346,6 +8355,10 @@ def _recent_codex_conversation_rows(project_id, p, limit):
             ts_iso = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
         except Exception:
             ts_iso = ''
+        _row_source = (log_entry.get('source') or '') if log_entry else ''
+        _row_character = _conversation_character_display(log_entry, p) or (
+            _conversation_character_display({'character': live.get('character')}, p)
+            if live else None)
         rows.append({
             'claude_session_id': '',
             'provider_session_id': thread_id,
@@ -8363,12 +8376,14 @@ def _recent_codex_conversation_rows(project_id, p, limit):
             'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
             'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
             'trigger_type': (log_entry.get('trigger_type') or '') if log_entry else '',
-            'source': (log_entry.get('source') or '') if log_entry else '',
+            'source': _row_source,
             'steward': False,
             'steward_objective': '',
-            'character': _conversation_character_display(log_entry, p) or (
-                _conversation_character_display({'character': live.get('character')}, p)
-                if live else None),
+            'character': _row_character,
+            # Who the Channel roster groups this row under — see mc/identity.py
+            # (ws_005). Emitted ALONGSIDE `character`, never replacing it: this
+            # is a roster-grouping key, not a persona record.
+            'identity': _identity.resolve_identity(_row_character, _row_source),
             'provider': 'codex',
             # `_dispatch_via_runtime` now threads `resume_id` through to
             # `codex exec resume <thread_id>` (parity audit item 3) — the
@@ -8442,6 +8457,16 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             mtime = datetime.fromisoformat(ts.replace('Z', '+00:00')).timestamp()
         except Exception:
             mtime = 0
+        _row_source = latest.get('source') or ''
+        # Same live-session fallback the Claude branch has below: the agent-log
+        # row is written from the dispatch payload, so a session whose persona
+        # resolved (or changed) AFTER spawn carries no character there — only
+        # the live session knows it. Without this a running Gemini/Codex chat
+        # was doubly invisible: no character on the row, AND no fallback to
+        # the one place that had it (ws_005 side-fix).
+        _row_character = _conversation_character_display(latest, p) or (
+            _conversation_character_display({'character': live.get('character')}, p)
+            if live else None)
         rows.append({
             'claude_session_id': '',
             'mc_session_id': sid,
@@ -8458,10 +8483,11 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             'waiting_for_question': bool(live.get('waiting_for_question')) if live else False,
             'waiting_for_plan_approval': bool(live.get('waiting_for_plan_approval')) if live else False,
             'trigger_type': latest.get('trigger_type') or '',
-            'source': latest.get('source') or '',
+            'source': _row_source,
             'steward': False,
             'steward_objective': '',
-            'character': _conversation_character_display(latest, p),
+            'character': _row_character,
+            'identity': _identity.resolve_identity(_row_character, _row_source),
             # Provider + resumability, so the UI never offers a Resume control
             # that silently starts a fresh session. Mode A has no native `-r`;
             # the best honest offer is a read-only history (see
@@ -8566,6 +8592,10 @@ def get_project_conversations(project_id):
             ts_iso = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
         except Exception:
             ts_iso = ''
+        _row_source = (log_entry.get('source') or '') if log_entry else ''
+        _row_character = _conversation_character_display(log_entry, p) or (
+            _conversation_character_display({'character': live.get('character')}, p)
+            if live else None)
         out.append({
             'claude_session_id': sid,
             'mc_session_id': mc_session_id,
@@ -8589,7 +8619,7 @@ def get_project_conversations(project_id):
             # chats and route agent/scheduled runs to the Agent Log side flow.
             # Empty (transcript-only / manual, no 'agent' source) = user-initiated.
             'trigger_type': (log_entry.get('trigger_type') or '') if log_entry else '',
-            'source': (log_entry.get('source') or '') if log_entry else '',
+            'source': _row_source,
             'steward': is_steward,
             'steward_objective': (p.get('steward_objective') or '') if is_steward else '',
             # WHO the chat was with. The log entry has carried this all along;
@@ -8603,9 +8633,13 @@ def get_project_conversations(project_id):
             # running chat renders faceless in the rail AND the Channel roster
             # says "No conversations with <agent> yet" about an agent you can
             # see mid-turn on the right of the same screen.
-            'character': _conversation_character_display(log_entry, p) or (
-                _conversation_character_display({'character': live.get('character')}, p)
-                if live else None),
+            'character': _row_character,
+            # Who the Channel roster groups this row under — see mc/identity.py
+            # (ws_005). A None `character` (no persona) resolves to the
+            # operator's default agent instead of dropping the row; a
+            # delegated session with no persona (MC-925) resolves to a
+            # separate 'unnamed' bucket instead of masquerading as the default.
+            'identity': _identity.resolve_identity(_row_character, _row_source),
             # Claude transcripts are Claude by construction; the CLI's own `-r`
             # is a real resume. Kept alongside the non-Claude rows' provider/
             # resumable/resume_mode fields below (union, not two shapes).
