@@ -4893,6 +4893,17 @@
     color: var(--text-faint);
     background: color-mix(in srgb, var(--text-faint) 12%, transparent);
   }
+  /* The "+N helpers" badge (.conv-helpers, shared with the Channel rail row)
+     is a neutral accent pill everywhere else — correct there, since a roster
+     row's own colour already carries its state. On a Floor card the badge
+     sits inside a card whose border/tint/dot already say WORKING; a blue pill
+     in a green card read as unrelated metadata, not the reason the card lit
+     up. Scoped to `.fl-working` so a genuinely idle figure's badge (there
+     isn't one — idle-with-helpers is remapped to fl-working in floor.js) and
+     the rail's badge are untouched. */
+  .fl-fig.fl-working .conv-helpers {
+    background: color-mix(in srgb, var(--green) 20%, transparent); color: var(--green);
+  }
 
   /* ── identity: a face, a name, a type ─────────────────────────────────── */
   /* Ron: "on the floor area we can show them in bigger size." A figure is a
