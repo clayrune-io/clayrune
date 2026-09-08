@@ -7,7 +7,13 @@ MC-937 Phase 4 (`5c77642`); the Floor never carried it.
 
 Liveness is NOT re-decided here: `_figure_subagents` delegates to
 `agent_routes._active_subagents_for_session`, so the Floor cannot drift into a
-second heuristic. These tests pin that delegation and the running-only gate.
+second heuristic. These tests pin that delegation and — hm_d9c76579
+f_cdb76b7a — that `_figure_subagents` carries NO status gate of its own.
+`37cc20d` widened `_active_subagents_for_session`'s gate to
+`('running', 'idle')` (a parent waiting on a helper sits at 'idle'), but this
+file used to still assert the pre-fix `!= 'running'` short-circuit, which is
+exactly the duplicate-gate regression: the Floor never reached the fixed
+function for an idle parent.
 """
 import pytest
 
@@ -26,9 +32,29 @@ def fr(monkeypatch):
     return _fr
 
 
-def test_idle_session_is_never_scanned(fr):
-    """An idle figure costs zero — same gate /agent/status applies."""
-    assert fr._figure_subagents({'status': 'idle', 'project_id': 'x'}) == []
+def test_idle_session_with_a_waiting_helper_still_shows_it(fr, monkeypatch):
+    """Regression for f_cdb76b7a / f_31dbc93d — FAILS on the parent commit.
+
+    A parent that dispatches a helper and then waits sits at status='idle',
+    which is exactly the case the '+N helpers' badge exists for. Before this
+    fix, `_figure_subagents` short-circuited on its OWN `!= 'running'` gate
+    before `_active_subagents_for_session` (already fixed by 37cc20d to
+    accept 'idle') was ever reached, so the Floor showed subagents=[] for a
+    waiting parent even though /agent/status reported the helper as live.
+    """
+    seen = {}
+
+    def _fake(s, project_path):
+        seen['called'] = True
+        return [{'agent_id': 'a1', 'running': True, 'tool_calls': 3}]
+
+    monkeypatch.setattr(
+        'mc.blueprints.agent_routes._active_subagents_for_session', _fake)
+    out = fr._figure_subagents({'status': 'idle', 'project_id': 'x'})
+    assert seen.get('called'), (
+        'an idle (waiting-on-helper) session must still reach agent_routes — '
+        'the Floor must not re-decide liveness with its own gate')
+    assert out[0]['tool_calls'] == 3
 
 
 def test_running_session_delegates_to_agent_routes(fr, monkeypatch):

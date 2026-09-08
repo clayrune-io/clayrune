@@ -320,11 +320,16 @@ def _figure_subagents(s):
     """Running subagents for this session, or [] — never raises.
 
     Reuses agent_routes' single source of truth so the Floor cannot drift into
-    a second liveness heuristic. Only a 'running' session is scanned, which is
-    the same gate /agent/status applies, so an idle figure costs nothing.
+    a second liveness heuristic. No status gate here — `37cc20d` widened
+    `_active_subagents_for_session`'s own gate to `('running', 'idle')` (a
+    parent waiting on a helper sits at 'idle'), but this function kept a
+    second, stricter copy (`!= 'running'`) that short-circuited BEFORE the
+    fixed gate was ever reached, so the Floor's "+N helpers" badge stayed
+    dead for exactly the waiting-parent case the fix was for
+    (hm_d9c76579 f_cdb76b7a / f_31dbc93d). Two copies of one liveness
+    predicate in two files is what produced that regression — don't
+    re-introduce a copy here; let the imported function own it.
     """
-    if s.get('status') != 'running':
-        return []
     try:
         from mc.blueprints.agent_routes import _active_subagents_for_session
         pid = s.get('project_id') or ''
