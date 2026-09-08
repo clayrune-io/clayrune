@@ -511,5 +511,11 @@ def floor():
         # card, so the UI can say "activity states are off" instead of showing
         # every figure as blank.
         'activity_states': bool(state.CONFIG.get('activity_states_enabled', False)),
-        'poll_seconds': 30,
+        # 30s meant a short-lived helper could start and finish between two
+        # polls and never appear at all, and a figure that went to work sat
+        # reading 'idle' for up to half a minute. Ron reported the board
+        # blank six separate times against a payload that was correct when
+        # queried directly. The board is a live-status view; it has to tick
+        # faster than the thing it watches.
+        'poll_seconds': 5,
     })

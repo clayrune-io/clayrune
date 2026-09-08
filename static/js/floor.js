@@ -472,7 +472,10 @@ async function refreshFloor() {
     ${_floorQuiet(d.quiet || [])}${note}`;
 
   if (!floorTimer) {
-    const secs = Math.max(10, parseInt(d.poll_seconds, 10) || 30);
+    // Floor is a live board; the client floor was 10s, which silently
+    // overrode any faster server value. Keep a sane lower bound, but let
+    // the server ask for a fast tick.
+    const secs = Math.max(3, parseInt(d.poll_seconds, 10) || 5);
     floorTimer = setInterval(() => {
       // Stop polling if the window went away by any route (Escape, the modal
       // manager's own close) rather than only through closeFloor().
