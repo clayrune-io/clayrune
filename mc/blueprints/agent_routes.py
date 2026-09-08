@@ -4114,12 +4114,26 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     provider = (entry.get('provider') or '').lower()
     if not provider or provider == 'claude':
         return None
-    character_name = ((entry.get('character') or {}).get('name')) or ''
+    # `character` must be a "scope:name" reference — see `_resolve_character`'s
+    # docstring. The agent_log record stores scope and name as separate keys
+    # (`{'name': 'dave', 'scope': 'global', ...}`); passing the bare name
+    # (hm_d9c76579 f_98b5163b) makes `'dave'.partition(':')` yield
+    # `('dave', '', '')`, so `_resolve_character` treats `scope='dave'` as
+    # invalid and falls back to the project's `default_character` instead of
+    # the persona this conversation was actually running — a dead non-Claude
+    # chat with a real persona revives under the wrong one, or a project
+    # default when it should have none.
+    _character = entry.get('character') or {}
+    _char_scope = (_character.get('scope') or 'global').strip().lower()
+    _char_name = (_character.get('name') or '').strip()
+    character_ref = (f'{_char_scope}:{_char_name}'
+                     if _char_name and _char_scope in ('project', 'global') else '')
     try:
-        _dispatch_agent_internal(project_id, message, incognito=False,
+        _dispatch_agent_internal(project_id, message, incognito=bool(entry.get('incognito')),
                                  reuse_session_id=session_id,
                                  provider_override=provider,
-                                 character=character_name)
+                                 character=character_ref,
+                                 source=entry.get('source') or '')
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None

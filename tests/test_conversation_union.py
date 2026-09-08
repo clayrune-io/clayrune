@@ -224,7 +224,11 @@ def test_revive_non_claude_dispatches_fresh_session(client, tmp_path, monkeypatc
     assert calls['task'] == 'continue please'
     assert calls['kw']['reuse_session_id'] == 'geminisid1'
     assert calls['kw']['provider_override'] == 'gemini'
-    assert calls['kw']['character'] == 'market-scout'
+    # hm_d9c76579 f_98b5163b: `character` must be a resolvable 'scope:name'
+    # reference, not the bare name — `_resolve_character` partitions on ':',
+    # so a bare 'market-scout' was silently treated as an invalid scope and
+    # fell through to the project's default character instead.
+    assert calls['kw']['character'] == 'project:market-scout'
 
 
 def test_revive_non_claude_returns_none_for_claude_session(client, tmp_path):
