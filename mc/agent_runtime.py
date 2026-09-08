@@ -272,10 +272,38 @@ _INJECTED_PREAMBLE_RE = re.compile(
 # identifying label of a non-user chat we want to KEEP so the client filters the
 # whole conversation out. Skipping them here unmasked scheduled runs as fake user
 # chats (the label fell through to the "Continue from where you left off." nudge).
+#
+# `<recommended_plugins>` is NOT an MC injection — it is the Codex CLI's OWN
+# harness, prepended as a user-role message ahead of anything MC sends (a real
+# rollout: response_item #6, role=user, body "Here is a list of plugins that
+# are available but not installed…"). It only appears in Codex's own transcript,
+# never Claude's, so listing it here is safe for both callers of this function.
 _NONUSER_LABEL_RE = re.compile(
-    r'^\s*(?:<task-notification|<system-reminder)',
+    r'^\s*(?:<task-notification|<system-reminder|<recommended_plugins\b)',
     re.IGNORECASE,
 )
+
+# Codex has no `--append-system-prompt` equivalent for `exec` — `dispatch()`
+# and `_compose_respawn_prompt` both fold MC's system prompt (persona, MEMORY,
+# AGENT_RULES) into the SAME stdin blob as the user's actual message, joined
+# on the literal `'\n\n---\n\n'` separator, with the user's text always LAST
+# (`parts.append(message)` / `parts.append(task)` is unconditionally the final
+# element). Claude never does this — its system prompt goes over
+# `--append-system-prompt-file`, a separate CLI arg — so its transcript's
+# user-role records are already just the user's text, and `list_sessions()`
+# needs no equivalent split.
+#
+# `\r?\n` (not a literal `\n`), because `subprocess.Popen(..., text=True)`
+# applies universal-newline translation on write: the `\n` in the Python
+# string that composed the separator lands in Codex's stdin — and therefore
+# in the rollout Codex writes back out — as `\r\n` on Windows. Verified
+# against a live rollout: `_compose_respawn_prompt`'s join produced
+# `\r\n\r\n---\r\n\r\n` on disk, which a literal `\n\n---\n\n` search misses
+# entirely, leaving the label on the system-prompt/tail blob it was meant to
+# strip. `re.search(..., reverse)`-style "last match" via `list(finditer())`
+# so it is a no-op for a real short user message that never contains the
+# separator (the overwhelmingly common case).
+_CODEX_DISPATCH_SEP_RE = re.compile(r'\r?\n\r?\n---\r?\n\r?\n')
 
 
 def strip_injected_preamble(text: str) -> str:
@@ -286,6 +314,17 @@ def strip_injected_preamble(text: str) -> str:
 def is_nonuser_message(text: str) -> bool:
     """True if `text` is an injected/system turn, not something the user typed."""
     return bool(_NONUSER_LABEL_RE.match(text or ''))
+
+
+def _strip_codex_system_prefix(text: str) -> str:
+    """Drop a Codex dispatch/respawn's leading system-prompt+context blob,
+    keeping only the real user message that was appended after it — see
+    `_CODEX_DISPATCH_SEP_RE` above. A no-op when the separator isn't present.
+    """
+    matches = list(_CODEX_DISPATCH_SEP_RE.finditer(text))
+    if matches:
+        return text[matches[-1].end():].strip()
+    return text
 
 
 # MC Tool Protocol side-effect hooks. mc:todo backlog sync lives in server.py
@@ -3736,7 +3775,10 @@ class CodexRuntime(AgentRuntime):
                       resume_id: str = '') -> List[str]:
         """Return the codex exec command for non-interactive use.
 
-        Flags verified against codex 0.133.0 `codex exec --help`:
+        Flags verified against codex 0.133.0 `codex exec --help` and
+        `codex exec resume --help` (0.151.0 — the flag is documented on the
+        resume subcommand too, it is not inherited from the original
+        session):
           exec [PROMPT]                    -- non-interactive; reads prompt from stdin
           --json                           -- JSONL event stream to stdout
           --dangerously-bypass-approvals-and-sandbox -- skip all prompts (CI use)
@@ -3744,6 +3786,17 @@ class CodexRuntime(AgentRuntime):
           -C / --cd DIR                    -- working dir (set by Popen cwd, not here)
           exec resume --last               -- resume most recent session
           exec resume SESSION_ID           -- resume specific session by thread_id
+
+        The bypass flag is added on BOTH branches. It was missing from the
+        resume branch until this fix — every non-resume dispatch runs
+        unattended (no TTY on `subprocess.Popen(stdin=PIPE)`), and a resumed
+        session is no different, but without the flag a tool call that needs
+        approval blocks on a confirmation prompt nothing can answer; the
+        write on a closed stdin pipe reads as EOF, and codex exits non-zero.
+        This was unreachable dead code until `write_followup` started passing
+        `resume_id` (see its docstring) — fixing that path without this one
+        would have traded "forks every turn" for "the first tool call kills
+        the resumed turn".
         """
         prefix = self._cmd_prefix()
         if resume_id:
@@ -3753,6 +3806,7 @@ class CodexRuntime(AgentRuntime):
             else:
                 cmd.append(resume_id)
             cmd.append('--json')
+            cmd.append('--dangerously-bypass-approvals-and-sandbox')
         else:
             cmd = prefix + ['exec', '--json',
                             '--dangerously-bypass-approvals-and-sandbox']
@@ -4101,10 +4155,21 @@ class CodexRuntime(AgentRuntime):
                         # Codex prepends its own injected preambles
                         # (<recommended_plugins>, plugin hook markers) as
                         # user-role messages — strip the same way Claude's
-                        # list_sessions() does, or the label defaults to
-                        # injected boilerplate instead of what the user typed.
+                        # list_sessions() does (is_nonuser_message covers
+                        # <recommended_plugins> — see _NONUSER_LABEL_RE), or
+                        # the label defaults to injected boilerplate instead
+                        # of what the user typed. Then, Codex-specific:
+                        # dispatch()/_compose_respawn_prompt fold MC's own
+                        # system prompt into the SAME user-role message ahead
+                        # of the real task (Claude sends its system prompt via
+                        # a separate CLI arg, so never needs this) — drop that
+                        # prefix too, or the label becomes "Your name is
+                        # Vector…" instead of what was actually asked.
                         clean = strip_injected_preamble(text)
                         if not clean or is_nonuser_message(clean):
+                            continue
+                        clean = _strip_codex_system_prefix(clean)
+                        if not clean:
                             continue
                         turns += 1
                         if not first_user:
@@ -4390,6 +4455,26 @@ class CodexRuntime(AgentRuntime):
         session = handle.session_dict
         old_proc = session.get('proc')
         if old_proc and old_proc.poll() is None:
+            # Disown the old proc BEFORE killing it, not after. `_kill_pid`
+            # on Windows is a BLOCKING `subprocess.run(['taskkill', '/F', ...])`
+            # — it does not return until the target is dead, which force-closes
+            # its stdout pipe well before that. `_mode_a_reader`'s own thread
+            # for `old_proc` is blocked on that pipe and unblocks (EOF) DURING
+            # this call, i.e. concurrently with it, on another thread — so its
+            # `finally` block (which decides whether to log "[codex exited
+            # with code N]") can run and complete before this line even
+            # returns. Its only defense is `session.get('proc') is proc`, and
+            # that check only works if the reassignment has ALREADY happened
+            # — reassigning `session['proc']` AFTER this call (as the old code
+            # did) loses that race almost every time a follow-up arrives while
+            # the previous turn is still alive/tearing down. Reproduced live:
+            # a genuinely-completing old process, force-killed mid-teardown,
+            # left a spurious "[codex exited with code 1]" / "[hint] Codex
+            # exited with code 1. Check auth and model name." in the chat
+            # immediately followed by the NEW turn's real, successful reply —
+            # exactly Ron's Kalshi screenshot. Clearing the reference first
+            # makes the guard win instead of racing.
+            session['proc'] = None
             _kill_pid(old_proc.pid)
         # Re-apply the MC Tool Protocol before composing the respawn prompt.
         # `agent_routes.py`'s /agent/send and /agent/interrupt refresh
@@ -4402,10 +4487,34 @@ class CodexRuntime(AgentRuntime):
         # Mirrors GeminiRuntime.write_followup's identical re-application.
         session['_system_prompt'] = self.with_mc_tool_protocol(
             session.get('_system_prompt') or '')
-        full_prompt = _compose_respawn_prompt(session, message)
+
+        # CODEX_PARITY_AUDIT.md (a) item 4, "Use resume for follow-up turns":
+        # this used to ALWAYS kill the process and respawn a brand-new codex
+        # thread via `_compose_respawn_prompt` (system prompt + a 4000-char
+        # tail of the prior turn, re-injected because a fresh thread has no
+        # memory of anything). Every follow-up therefore left its own rollout
+        # file with its own thread id, and each one is what the conversation
+        # rail lists as a SEPARATE conversation — one real chat rendered as N
+        # rows, all read-only, all "2 turns". `provider_session_id` is the
+        # thread id captured off this session's own `thread.started` event
+        # (dispatch, or an earlier followup — see `_mode_a_reader`'s INIT
+        # branch); once it exists, `codex exec resume <id>` continues that
+        # SAME thread with its full history already on disk, so the only
+        # thing this turn needs to send is the new message — no tail, no
+        # system-prompt re-injection (the resumed process already has both,
+        # exactly like Claude's `-r` doesn't need `--append-system-prompt`
+        # replayed either). Falls back to the old tail-replay respawn only
+        # when no thread id was ever captured (e.g. dispatch's INIT event
+        # never fired because the CLI errored before emitting it) — that
+        # session genuinely has nothing to resume.
+        resume_id = session.get('provider_session_id') or ''
+        if resume_id:
+            full_prompt = message
+        else:
+            full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
         # Re-state -m: this respawns codex, and the flag doesn't carry over.
-        cmd = self.build_command(model=self.session_model(handle))
+        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
