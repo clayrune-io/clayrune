@@ -1,6 +1,6 @@
 # Backup, Export/Import & Restore Points — Spec
 
-Status: **DRAFT v1.1 (2026-09-08)** · Author: spec session 2026-09-08, from
+Status: **DRAFT v1.2 (2026-09-08)** · Author: spec session 2026-09-08, from
 Ron's ask: *"backs up all data … import / export … at either individual
 project level or master CR level … recover everything (maybe also recovery
 points per project like windows recovery points?) and also migrate to other
@@ -13,6 +13,20 @@ systems."*
 > **agent artifacts** category (§4.6); the manifest records the chosen
 > categories and import announces what an archive does NOT contain (§4.5);
 > restore semantics for an absent category are stated (§4.7).
+
+> **v1.2 changelog — Ron reverses the category default (same day):**
+> *"Everything should be backed up unless user explicitly selects
+> otherwise."* The checklist becomes **opt-OUT**: every category ships ON;
+> the user unticks. A backup nobody configured must be complete. The
+> default archive on this install is therefore **≈4.3 GB** — or **≈50 GB**
+> counting non-git project directories (§4.8) — and the spec states that
+> plainly rather than hiding transcripts behind opt-in because the number
+> is uncomfortable. Untracked checkout files (v1.1 Open Q1) resolve to
+> **INCLUDED**, with the bounding rule in §4.8. Two things v1.2 does NOT
+> change: the vault stays the explicit unset question of §4.2 (ruled
+> separately; "everything" does not silently reverse it), and the
+> never-travels list stands — browser profiles, jobsearch profiles, logs
+> are live session state / machine detritus, not the user's data.
 
 Companion precedents this spec builds on rather than reinventing:
 `tools/memory-snapshot.py` (snapshot/restore discipline for the memory
@@ -92,7 +106,7 @@ Every size below is a real `du` measurement, not an estimate. Classes:
 | `~/.codex/sessions/` | Codex rollouts | 78 MB | O, BIG-ish |
 | `~/.claude/agents/` | Characters (10 files) | 52 KB | O |
 | `~/.claude/skills/` | Installed skills | 97 MB — but 96 MB is ONE skill's bundled assets (`video-shotcraft`); text is ~1 MB | O |
-| `~/.claude.json` | CC's own global config (MCP servers + CC-internal state) | 70 KB | X-ish — CC-owned, not audited; see Open Q3 |
+| `~/.claude.json` | CC's own global config (MCP servers + CC-internal state) | 70 KB | X-ish — CC-owned, not audited; see Open Q2 |
 
 ### `~/.clayrune/` — durable operator state
 
@@ -123,27 +137,62 @@ protects (all gitignored or outside any repo):
 locations are enumerable, individually tiny, and a user has no reason to
 want journals without reports. What the category does NOT cover, stated so
 nobody assumes otherwise: agent-written docs that are **committed** in a
-project's repo (git protects those; §4.1's repo pointer is their story),
-and **untracked** files in a checkout (unbounded and junk-heavy —
-`_scratch/`, build outputs; see Open Q1).
+project's repo (git protects those; §4.1's repo pointer is their story).
+Files that **no repo protects** — untracked checkout files and whole
+non-git project dirs — are their own category since v1.2; see §4.8.
+
+### Unprotected work files — measured per registered project (2026-09-08)
+
+Untracked-and-not-ignored files (`git ls-files --others
+--exclude-standard`) across every registered project with a git checkout:
+
+| Project | Untracked files | Size |
+|---|---|---|
+| mission_control | 453 | 39.8 MB |
+| fl3_v1 | 343 | 19.5 MB |
+| daytrading | 151 | 2.4 MB |
+| clayrune_website, discord_reader, fl3_v2, market_replay, polymarket, clayrune_cloud | ≤5 each | <1 MB combined |
+| **Total (git checkouts)** | ~950 | **≈62 MB — zero files over 10 MB** |
+
+Registered projects whose `project_path` is **not a git repo at all** —
+whole-directory measurement, because nothing protects any of it:
+
+| Project (non-git dir) | Whole-dir size |
+|---|---|
+| day_trading_engulfing_scanner | **44.4 GB** |
+| cad3d | 825 MB |
+| find_ron_a_job | 112 MB |
+| find_teya_a_job_as_pmo | 91 MB |
+| apex_trader | 64 MB |
+| eden_s_math_learning_project | 58 MB |
+| options_trader | 14 MB |
+| **Total (non-git dirs)** | **≈45.6 GB** |
+
+The split in these two tables — 62 MB bounded vs. 45.6 GB dominated by
+one directory — is why §4.8 treats git-checkout strays and non-git dirs
+under one category but with per-directory line items.
 
 ### The totals that matter
 
-| Category (each independently selectable, §4.6) | Measured size (uncompressed) |
-|---|---|
-| **Records + memory** (records + sidecars + config + schedules + hiveminds + rules + `data/skills` + memory vaults + characters + `~/.claude/skills`) | **≈195 MB** (≈100 MB if the one 96 MB skill-asset blob is size-capped) |
-| **Agent artifacts** (table above) | **≈9 MB** |
-| **Media / uploads** (`data/uploads` 242 MB + user-upload share of the above) | **≈242 MB** |
-| **Transcripts** (CC `.jsonl` 3.7 GB + Codex sessions 78 MB) | **≈3.8 GB** |
-| **Vault** (re-encrypted, §4.2 — user must answer, never silently defaulted) | 4 KB |
-| Never offered (browser profiles, jobsearch, logs, mcp_installs) | 5.8 GB never travels |
+| Category (opt-out checklist, §4.6) | Measured size (uncompressed) | Default |
+|---|---|---|
+| **Records + memory** (records + sidecars + config + schedules + hiveminds + rules + `data/skills` + memory vaults + characters + `~/.claude/skills`) | **≈195 MB** (≈100 MB if the one 96 MB skill-asset blob is size-capped) | ON |
+| **Agent artifacts** (table above) | **≈9 MB** | ON |
+| **Media / uploads** (`data/uploads`) | **≈242 MB** | ON |
+| **Transcripts** (CC `.jsonl` 3.7 GB + Codex sessions 78 MB) | **≈3.8 GB** | ON |
+| **Unprotected work files** (§4.8 — untracked checkout files ≈62 MB + non-git dirs ≈45.6 GB, per-dir line items) | **≈62 MB – 45.7 GB** | ON |
+| **Vault** (re-encrypted, §4.2) | 4 KB | **unset — must answer** |
+| Never offered (browser profiles, jobsearch, logs, mcp_installs) | 5.8 GB never travels | — |
 
-Everything checked ≈ **4.2 GB**; the everyday choice is ~200 MB. The
-lesson of the numbers: **the state worth protecting is ~200 MB; the state
-that would sink the feature is ~9.6 GB sitting next to it.** The checklist
-is not an optimization; it is the difference between a backup users run
-and one they don't — and the user, not this spec, decides where on that
-line each export sits.
+**The default archive on this install weighs ≈4.3 GB** (everything ON,
+untracked checkout files included, before any untick) — **≈50 GB if all
+seven non-git project directories stay ticked**, of which a single
+project (`day_trading_engulfing_scanner`, 44.4 GB) is 89%. That is the
+honest cost of "everything"; the spec states it rather than quietly
+keeping transcripts opt-in because the number is uncomfortable. The
+running total in the export UI (§4.6) is what makes unticking an
+informed act — the user, not this spec, decides where between 200 MB and
+50 GB each export sits.
 
 ---
 
@@ -178,7 +227,9 @@ Checked so the spec doesn't reinvent or collide:
 
 ## 3. Non-goals
 
-- **The system does not back up the user's git repos.** §4.1.
+- **The system does not back up the git-tracked content of the user's
+  repos.** §4.1. (Since v1.2 it DOES sweep what git leaves unprotected —
+  untracked checkout files and non-git project dirs, §4.8.)
 - **The system will not export browser profiles**, ever. A saved profile is
   a live credential (CLAUDE.md, browser-pane section); 1.7 GB of session
   cookies in a portable zip is a credential-theft artifact.
@@ -263,6 +314,14 @@ never quietly incomplete. Secret-bearing export is **attended-only**
 `allow_unattended`); an unattended backup therefore records the vault
 question as `"vault": "not_asked"` in the manifest, not as an answer.
 
+**v1.2 note:** the everything-by-default ruling (§4.6) does **not**
+reverse this section. Ron ruled on the vault specifically and separately;
+a credential bundle created by a default nobody chose is the one case
+where completeness is not the safer error. The vault remains the single
+unset item on an otherwise all-ON checklist. If Ron means "everything"
+to cover the vault too, that is a new ruling to be taken back to him —
+not an inference this spec makes.
+
 Open: whether `allow_unattended: false` entries and per-project-scoped
 entries export at all, or only under a second flag. Default proposal:
 scope rules travel with the entry; nothing is widened by transit.
@@ -335,8 +394,8 @@ role prefixes (`data/`, `memory/<project_id>/`, `home/agents/`,
   "created_at": "2026-09-08T12:00:00Z",
   "clayrune_version": "<git describe / release tag>",
   "kind": "full | project | restore_point",
-  "categories": {"records": true, "artifacts": true, "media": false,
-                 "transcripts": false, "vault": false},
+  "categories": {"records": true, "artifacts": true, "media": true,
+                 "transcripts": true, "unprotected": true, "vault": false},
   "contains_secrets": false,
   "projects": [{"id": "...", "project_path": "...",
                 "git_remote": "...", "git_head": "..."}],
@@ -367,26 +426,39 @@ Stability rules — the part that makes it a backup rather than a file:
   silent-truncation failure class as the backlog-note caps — the user
   discovers the hole at the worst possible moment, restore time.
 
-### 4.6 What goes in is a checklist, not a fixed ladder (Ron, 2026-09-08)
+### 4.6 The checklist is opt-OUT: everything ships ON (Ron, 2026-09-08, v1.2)
 
-The user picks categories **per export**, each shown with its size
-**measured live before the export starts** — the choice is between
-~200 MB and ~4.2 GB, and an unlabeled choice at that spread is no choice.
+Ron's ruling, verbatim: *"Everything should be backed up unless user
+explicitly selects otherwise."* **A backup nobody configured must be
+complete.** Every category starts checked; the user unticks what they
+don't want. The failure mode this ruling picks: a too-big archive the
+user trims, over a too-small archive the user discovers at restore time.
+
+What keeps a 4–50 GB default from being a trap is *visibility*, not a
+quieter default: each category (and each per-directory line in §4.8)
+shows its size **measured live before the export starts**, and the UI
+shows a **running total** that updates as items are ticked and unticked —
+unticking is an informed act or it is nothing.
 `GET /api/backup/size-preview` walks the candidate paths and returns
-per-category bytes; the UI (and CLI `--preview`) renders the checklist
-from it. Nothing is bundled invisibly.
+per-category (and per-directory) bytes; the UI and CLI `--preview`
+render the checklist from it. Nothing is bundled invisibly, and nothing
+is omitted invisibly.
 
-| Category | Contents | Measured (this install) | Checklist state |
+| Category | Contents | Measured (this install) | Default |
 |---|---|---|---|
-| **Records + memory** | project records + sidecars, config, schedules, hiveminds, rules, `data/skills`, memory vaults, characters, `~/.claude/skills` | ≈195 MB | pre-checked (an archive with none of it isn't a backup; still uncheckable for artifact-only exports) |
-| **Agent artifacts** | `docs/_journal/` across all registered projects, `data/media/`, `data/reply_archive/`, `data/maintenance_reports/`, `data/projects/<id>/` workspaces (§1 table) | ≈9 MB | unchecked |
-| **Media / uploads** | `data/uploads/` | ≈242 MB | unchecked |
-| **Transcripts** | CC `.jsonl` + `~/.codex/sessions/` — history, not operating state (agent-log backfill reconstructs run history from `*_agent_log.json`, which is in records); also the most privacy-dense artifact on the machine | ≈3.8 GB | unchecked |
-| **Vault** | re-encrypted secrets (§4.2) | 4 KB | **unset — export refuses to proceed until answered** |
+| **Records + memory** | project records + sidecars, config, schedules, hiveminds, rules, `data/skills`, memory vaults, characters, `~/.claude/skills` | ≈195 MB | ON |
+| **Agent artifacts** | `docs/_journal/` across all registered projects, `data/media/`, `data/reply_archive/`, `data/maintenance_reports/`, `data/projects/<id>/` workspaces (§1 table) | ≈9 MB | ON |
+| **Media / uploads** | `data/uploads/` | ≈242 MB | ON |
+| **Transcripts** | CC `.jsonl` + `~/.codex/sessions/` — history rather than operating state (agent-log backfill reconstructs run history from `*_agent_log.json`), and the most privacy-dense artifact on the machine. Still ON: "everything" that is the user's data is the ruling, and 3.8 GB is its measured, stated cost | ≈3.8 GB | ON |
+| **Unprotected work files** | untracked checkout files + non-git project dirs, per-directory line items — §4.8 | ≈62 MB + up to 45.6 GB | ON |
+| **Vault** | re-encrypted secrets (§4.2) | 4 KB | **unset — export refuses to proceed until answered** (v1.2 does not reverse this, §4.2) |
 
-Selecting zero categories is refused. The archive filename encodes the
-shape (`clayrune-2026-09-08-records+artifacts.crbackup`) so a folder of
-backups is legible without opening manifests.
+Unticking every category is refused (an empty archive is not a backup).
+The archive filename encodes the shape — full default:
+`clayrune-2026-09-08-full.crbackup`; anything unticked:
+`clayrune-2026-09-08-full-minus-transcripts.crbackup` — so a folder of
+backups is legible without opening manifests, and a trimmed one is
+visibly trimmed.
 
 ### 4.7 Restore semantics when a category is absent
 
@@ -405,6 +477,61 @@ states per category `restored` / `not in archive — existing files
 untouched`. A project restored without its media renders normally but
 shows **degraded (media not in backup)** on surfaces that reference
 missing uploads, same pattern as the missing-repo state in §4.1.
+
+### 4.8 Unprotected work files — the bounding rule (v1.2)
+
+The class Ron's everything-rule protects is **files that are real work
+and in no repo**. §4.1's exclusion was never "the checkout is not our
+problem" — it was "**git-protected files are git's job**". Files git
+does not protect fall to us. Two sub-classes, one category, measured in
+§1:
+
+**(a) Untracked files in a git checkout** — `git ls-files --others
+--exclude-standard`, i.e. untracked AND not ignored. This is bounded in
+practice: **≈62 MB across all registered checkouts, zero files over
+10 MB** (mission_control 39.8 MB/453 files is the largest). The rule:
+
+- **Respect `.gitignore`.** An ignored file is one the operator already
+  classified as not-work (`_scratch/`, backups, build output,
+  `node_modules`). The known ignored-but-real-work cases — journals,
+  reports — are already named locations in the agent-artifacts category,
+  which is exactly where an exception to this rule must go: **by name,
+  never by loosening the sweep**.
+- **Per-file ceiling 10 MB.** A stray dataset or video does not silently
+  balloon the default. Over-ceiling files are **listed by path and size
+  in `manifest.warnings` and in the export report** — named, not
+  silently dropped (today's count on this install: zero).
+
+**(b) Registered projects whose `project_path` is not a git repo** —
+nothing protects any byte of these, so the whole directory is in scope,
+and this is where "unbounded" is measured fact, not caution:
+**45.6 GB across seven dirs, 44.4 GB of it one project**
+(`day_trading_engulfing_scanner`). The narrowest honest rule under
+everything-by-default:
+
+- **Each non-git dir is its own checklist line, with its measured size,
+  default ON.** Per-directory granularity is what stops one 44 GB
+  directory from forcing an all-or-nothing choice on the other six
+  (325 MB combined). No size-based auto-exclusion — the ruling says the
+  user unticks, not the spec — but any single line over **1 GB** is
+  visually flagged in the preview so the number cannot be scrolled past.
+- **Junk-dir name exclusions apply inside non-git dirs** (`node_modules`,
+  `.venv`/`venv`, `__pycache__`, `.cache`, `dist`, `build`) — these are
+  regenerable tool output by construction, the same class `.gitignore`
+  filters in sub-class (a), and each exclusion that fires is listed in
+  the export report with the bytes it skipped.
+- The per-file 10 MB ceiling does **not** apply inside non-git dirs — a
+  45 GB data directory is mostly large files, and a ceiling would gut
+  the very content the line item exists to carry. The line-item size is
+  the honest signal instead.
+
+Restore of this category writes files back to their original absolute
+paths (same-machine) or through the §8 path remap (migration), additive
+per §4.7 — an existing file with different content is **not
+overwritten**; it is listed in the restore report as `conflict — kept
+existing, archived copy at <path>.crbak-restored`. Unprotected files
+have no version history by definition; a restore that overwrites them
+would be the only destructive write in this design, so it is not one.
 
 ---
 
@@ -443,8 +570,9 @@ missing uploads, same pattern as the missing-repo state in §4.1.
   own history.
 - **New endpoints, all under one namespace** (avoids the taken
   `/api/project/<id>/import`): `GET /api/backup/size-preview`,
-  `POST /api/backup/create` (refuses a request without an explicit
-  `categories` object — no server-side default bundle, per §4.6),
+  `POST /api/backup/create` — **no `categories` object means the full
+  default: everything ON, vault `not_asked`** (§4.6, v1.2); an explicit
+  object opts OUT per category and is echoed into the manifest —
   `GET /api/backup/list`, `POST /api/backup/restore`,
   `POST /api/backup/export-project/<id>`, `POST /api/backup/import`
   (dry-run by default, `apply: true` to commit),
@@ -459,18 +587,21 @@ missing uploads, same pattern as the missing-repo state in §4.1.
 
 ## 7. Build order — smallest shippable first
 
-**Phase 1 — full-install backup + restore, category-aware from day one.**
+**Phase 1 — full-install backup + restore, complete by default.**
 `mc/backup.py` + CLI + `size-preview/create/list/restore` endpoints.
 Same-machine semantics (no path remap). Manifest format 1 **including the
 `categories` field** — it cannot be retrofitted without a format bump, so
-it ships first. Categories available in Phase 1: records, artifacts,
-media, transcripts; `create` refuses a request that doesn't name its
-categories, and the CLI prints the size preview before writing. The vault
-is not yet includable — Phase 1 records `"vault": "not_available"` and
-the CLI says so out loud rather than silently omitting. Restore is
-per-category additive (§4.7) with the absent-category announcement.
-Ships alone: "Clayrune can save and restore itself, and every archive
-says what it is."
+it ships first. All categories ship in Phase 1 — records, artifacts,
+media, transcripts, **and the §4.8 unprotected-files sweep** — because
+under v1.2 the default backup must be complete, and a Phase 1 that
+silently lacked a default-ON category would violate the ruling it ships
+under. `create` with no `categories` object produces the full default;
+the CLI prints the size preview (with per-directory §4.8 lines and the
+running total) before writing. The vault is not yet includable — Phase 1
+records `"vault": "not_available"` and the CLI says so out loud rather
+than silently omitting. Restore is per-category additive (§4.7/§4.8)
+with the absent-category announcement. Ships alone: "Clayrune can save
+and restore itself, and every archive says what it is."
 
 **Phase 2 — per-project export/import + collision handling + vault.**
 `export-project`, `import` with dry-run collision report (§4.4), path
@@ -512,22 +643,22 @@ agent session *loads its memory index* — asserted, not assumed.
 
 ~~1. Secrets flag default~~ — **ruled by Ron 2026-09-08:** user choice at
 export time, tri-state unset until answered, no spec-picked default
-(§4.2). Mechanism (keyring stays home, passphrase re-encrypt) unchanged.
+(§4.2). v1.2's everything-default explicitly does not reverse this.
 
-1. **Ron:** should the agent-artifacts category also sweep **untracked**
-   files in a project checkout (e.g. the `docs/_ws00*` audit files agents
-   left uncommitted in this repo)? v1 says no — unbounded and
-   junk-heavy (`_scratch/`, build outputs) — so those files are protected
-   by nothing until committed. If yes, it needs an allowlist glob
-   (`docs/**/*.md`, untracked only), not a blanket sweep.
-2. **Ron:** does `data/notifications.json` (timeline) belong in records,
+~~2. Untracked checkout files~~ — **resolved by v1.2's
+everything-default: INCLUDED**, with the §4.8 bounding rule
+(respect-.gitignore + 10 MB per-file ceiling for checkouts; per-dir
+line items + junk-dir name exclusions for non-git dirs). Measured:
+≈62 MB (checkouts) + ≈45.6 GB (non-git dirs, one project = 44.4 GB).
+
+1. **Ron:** does `data/notifications.json` (timeline) belong in records,
    or is history-on-a-new-machine noise? (100 KB either way; records for
    now.)
-3. `~/.claude.json` contents were not audited this session. If per-user
+2. `~/.claude.json` contents were not audited this session. If per-user
    MCP servers live only there (not in `.mcp.json` / `data/mcp/`), Phase 2
    needs a scoped extract of its `mcpServers` key rather than the file.
-4. Whether hivemind archives (`data/hiveminds/_archived`) travel, or only
+3. Whether hivemind archives (`data/hiveminds/_archived`) travel, or only
    live hiveminds.
-5. Restore-point auto-triggers (before steward cycles? before schedule
+4. Restore-point auto-triggers (before steward cycles? before schedule
    runs?) — deferred until Phase 3 usage shows where rollbacks actually
    point.
