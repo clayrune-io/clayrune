@@ -7621,3 +7621,50 @@
   .fl-prov-badge.prov-goose    { color: #f59e0b; }
   .fl-prov-badge.prov-aider    { color: #ef4444; }
   .fl-prov-badge.prov-kiro     { color: #06b6d4; }
+
+  /* ── Drag-to-hire (docs/DRAG_TO_HIRE_SPEC.md, Ron 2026-09-09) ────────────
+     Grabbing a Floor figure fades the whole board except the tiles it can
+     legally be dropped on — "dead targets look dead before the drop, not
+     after" (spec §7). One class on <body> does the fade; the target/refused/
+     hover classes are toggled live on the dashboard's own `.card` elements
+     (render-core.js tileHTML) from floor.js's pointer handlers. */
+  .fl-hire-to {
+    flex: 0 0 auto; cursor: pointer; font-size: 12px;
+    line-height: 1; padding: 3px 6px; background: none; color: var(--text-faint);
+    border: 1px solid transparent; border-radius: 5px;
+  }
+  .fl-fig-top .fl-hire-to { padding: 1px 4px; font-size: 11px; }
+  .fl-bench-card:hover .fl-hire-to, .fl-fig:hover .fl-hire-to { border-color: var(--border); }
+  .fl-hire-to:hover { color: var(--accent); border-color: var(--accent); }
+  .fl-fig.fl-draggable { touch-action: none; }
+
+  body.hire-active #projects-col .card,
+  body.hire-active .sidebar,
+  body.hire-active .header,
+  body.hire-active .fl-room,
+  body.hire-active .fl-bench,
+  body.hire-active .fl-quiet {
+    opacity: 0.35; pointer-events: none; transition: opacity 0.15s ease;
+  }
+  body.hire-active #projects-col .card.hire-target {
+    opacity: 1; pointer-events: auto;
+    box-shadow: 0 0 0 2px var(--accent); border-radius: 10px;
+    transition: opacity 0.15s ease, transform 0.1s ease, filter 0.1s ease;
+  }
+  body.hire-active #projects-col .card.hire-target.hire-hover {
+    transform: scale(1.03); filter: brightness(1.08);
+  }
+  body.hire-active #projects-col .card.hire-refused { cursor: not-allowed; }
+  .hire-ghost {
+    position: fixed; z-index: 99999; opacity: 0.85; pointer-events: none;
+    transform: translate(-50%, -50%);
+  }
+
+  /* Un-hire — a rail-row action on the Channel Bench, never "In the room"
+     (spec §5: removing a live agent is refused server-side; this button
+     simply never appears on that row). Mirrors .conv-hide's affordance. */
+  .conv-row .conv-unhire {
+    flex-shrink: 0; align-self: center; background: transparent; border: none;
+    color: var(--text-faint); font-size: 13px; padding: 2px 6px; cursor: pointer;
+  }
+  .conv-row .conv-unhire:hover { color: var(--red-text); }
