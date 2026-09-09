@@ -2263,11 +2263,37 @@ function _channelRoster(projectId) {
     if (working) liveState[key] = { state: 'working', sessionId: sid };
     else if (!liveState[key] || liveState[key].state !== 'working') liveState[key] = { state: 'waiting', sessionId: sid };
   }
+  // Deliberate hires (docs/DRAG_TO_HIRE_SPEC.md §3.2): "Bench = derived
+  // participants ∪ hired members − explicitly removed." Without this, a
+  // character hired via drag-to-hire but never yet talked to would be
+  // invisible on its own roster until its first conversation — exactly the
+  // gap hiring exists to close (hiring is a deliberate act, distinct from
+  // the side effect of having worked somewhere). `roster` rides on the
+  // project record (`/api/projects`), same object `allProjects` already
+  // holds; no separate fetch. Resolving a bare ref to a display name/avatar
+  // needs the character catalog, so this seeds it the same way the composer
+  // picker does — a no-op once that fetch has already landed.
+  const _hireProj = (typeof allProjects !== 'undefined' ? allProjects : []).find((x) => x.id === projectId);
+  const roster = (_hireProj && _hireProj.roster) || [];
+  if (roster.length) _ensureCharacters(projectId);
+  const charList = characterCache[projectId] || [];
+  for (const entry of roster) {
+    if (entry.removed_at || !entry.character) continue;
+    const key = entry.character;
+    if (groups[key]) { groups[key].hired = true; continue; }
+    const [hScope, hName] = key.split(':');
+    const rec = charList.find((c) => (c.scope || 'global') === hScope && c.name === hName);
+    const char = rec
+      ? { name: rec.name, agent_name: rec.agent_name, display_name: rec.display_name, avatar: rec.avatar, scope: rec.scope || 'global' }
+      : { name: hName, display_name: hName, scope: hScope, deleted: true };
+    groups[key] = { key, char, mtime: 0, tsRelative: '', hired: true };
+  }
+
   const inRoom = [], bench = [];
   for (const key in groups) {
     const g = groups[key];
     const ls = liveState[key] || null;
-    const row = { key: g.key, char: g.char, tsRelative: g.tsRelative, mtime: g.mtime, liveState: ls, helperCount: helperCount[key] || 0 };
+    const row = { key: g.key, char: g.char, tsRelative: g.tsRelative, mtime: g.mtime, liveState: ls, helperCount: helperCount[key] || 0, hired: !!g.hired };
     (ls && ls.state === 'working' ? inRoom : bench).push(row);
   }
   const byRecency = (a, b) => (b.mtime || 0) - (a.mtime || 0);
@@ -2307,19 +2333,55 @@ function _channelRowHTML(p, r, inRoom) {
   // shows it without waiting on the next poll tick.
   const helpers = r.helperCount > 0
     ? `<span class="conv-helpers" title="${r.helperCount} helper${r.helperCount !== 1 ? 's' : ''} working">+${r.helperCount}</span>` : '';
+  // Un-hire (docs/DRAG_TO_HIRE_SPEC.md §5) — Bench only, never "In the room":
+  // removing a live agent's address mid-turn is refused server-side (409),
+  // so the affordance simply doesn't appear on a row that could hit it.
+  const unhire = (!inRoom && r.hired)
+    ? `<button class="conv-unhire" onclick="event.stopPropagation();unhireFromProject('${esc(p.id)}','${esc(r.key)}','${name}')"
+        title="Remove from this project — conversation history stays" aria-label="Remove from project">&#10005;</button>`
+    : '';
   return `<div class="conv-row channel-row" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
       onclick="openChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
     <div class="conv-main">
       <div class="conv-top">
         <span class="conv-name">${name}</span>
-        ${helpers}
+        ${helpers}${unhire}
         <span class="conv-time">${right}</span>
       </div>
       <div class="conv-bot"><span class="conv-sub">${role}</span></div>
     </div>
   </div>`;
 }
+
+// Un-hire: sets removed_at server-side, never deletes (spec §5 — history
+// stays, only the roster row's address goes away). Refused with 409 while a
+// live session is running as this character on this project; that message
+// is shown verbatim rather than replaced, since it already names who and
+// why ("Fenn is working here right now — remove after her run ends").
+function unhireFromProject(projectId, characterRef, displayName) {
+  const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find((x) => x.id === projectId);
+  const projName = proj ? (proj.name || proj.id) : projectId;
+  if (!window.confirm(`Remove ${displayName} from ${projName}? Conversation history stays — you can re-hire any time.`)) return;
+  fetch(API_BASE + '/api/project/' + encodeURIComponent(projectId) + '/roster/' + encodeURIComponent(characterRef),
+      { method: 'DELETE' })
+    .then(async (res) => {
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+      return data;
+    })
+    .then((data) => {
+      if (proj) proj.roster = data.roster;
+      if (window.showToast) showToast(displayName + ' removed from ' + projName + '.', 3000);
+      if (typeof refreshModalById === 'function') refreshModalById(projectId);
+      else refreshModal();
+    })
+    .catch((e) => {
+      if (window.showToast) showToast('Could not remove: ' + e.message, 4000);
+      else alert('Could not remove: ' + e.message);
+    });
+}
+window.unhireFromProject = unhireFromProject;
 
 // Roster view, or — when a person is selected — that person's conversations
 // and nothing else (reuses mobileUserConversationsHTML's own row renderer, so

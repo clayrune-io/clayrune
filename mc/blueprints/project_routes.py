@@ -215,6 +215,12 @@ def load_projects():
             # sort tier — both unrelated uses of the word "pin".
             if not isinstance(p.get('pinned_conversations'), list):
                 p['pinned_conversations'] = []
+            # Deliberate roster membership (DRAG_TO_HIRE_SPEC.md §3.1) — a
+            # field on the existing record, never a sidecar, so it needs no
+            # EXCLUDED_SIDECAR_SUFFIXES entry. Absent means empty, same as
+            # every other list default here.
+            if not isinstance(p.get('roster'), list):
+                p['roster'] = []
             _decorate_attachments(p)
             projects.append(p)
         except Exception as e:
@@ -1087,6 +1093,127 @@ def delete_backlog_item(project_id, item_id):
     p['last_updated'] = now_iso()
     save_project(project_id, p)
     return jsonify({'ok': True})
+
+
+# ── Roster — deliberate hire/un-hire (docs/DRAG_TO_HIRE_SPEC.md) ────────────
+# Membership is a field on the EXISTING project record (`roster`), never a
+# sidecar — see the DATA_DIR-pollution rule in CLAUDE.md and spec §3.1.
+# Entries are never deleted; un-hire sets `removed_at` (§5). Hiring is
+# presence, not permission: `_roster_block()` (agent_routes.py) is unchanged,
+# and dispatch stays callable on any project regardless of this list (§3.3).
+
+def _character_ref_of_session(s):
+    """The 'scope:name' a live session was hired as, or None (no persona)."""
+    ch = s.get('character')
+    if not isinstance(ch, dict) or not ch.get('name'):
+        return None
+    return f"{ch.get('scope') or 'global'}:{ch.get('name')}"
+
+
+def _character_has_live_session(project_id, character_ref):
+    """True if `character_ref` is mid-run on this project right now.
+
+    Backs the un-hire refusal (§5): "Fenn is working here right now — remove
+    after her run ends." Reads the shared in-memory map directly, the same
+    source /api/floor and /agent/status use for liveness.
+    """
+    for s in agent_sessions.values():
+        if s.get('project_id') != project_id:
+            continue
+        if s.get('status') != 'running':
+            continue
+        if _character_ref_of_session(s) == character_ref:
+            return True
+    return False
+
+
+@bp.route('/api/project/<project_id>/roster/hire', methods=['POST'])
+def hire_to_roster(project_id):
+    """Add (or revive) a roster entry — the deliberate-hire path.
+
+    `{"character": "global:<name>"}`. Idempotent: hiring an already-hired,
+    non-removed character writes nothing and returns `already_hired: true` —
+    the drag-drop and the no-drag "Hire to project…" path both rely on this
+    to show the same "already hired" toast instead of erroring (spec §6
+    cases 2/3).
+
+    404 for any ref that does not resolve to a real character FILE, which
+    also covers a `project:` ref belonging to a DIFFERENT project (§6 case
+    4): `read_character` is scoped to search inside THIS project's own
+    `project_path`, so a foreign project-local character simply isn't found
+    there — no separate cross-project check needed.
+    """
+    data = request.get_json(silent=True) or {}
+    character = (data.get('character') or '').strip()
+    scope, _, name = character.partition(':')
+    scope = (scope or '').strip().lower()
+    name = (name or '').strip()
+    if scope not in ('global', 'project') or not name:
+        return jsonify({'error': f"character {character!r} is not a valid "
+                                  f"'global:<name>' or 'project:<name>' reference"}), 400
+
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    try:
+        from mc import characters as _characters
+        rec = _characters.read_character(
+            scope, name,
+            project_path=(p.get('project_path') if scope == 'project' else None),
+            include_body=False)
+    except Exception as e:
+        _log(f"[roster] character resolve failed for {character!r}: {e}")
+        rec = None
+    if not rec:
+        return jsonify({'error': f"character '{character}' not found"}), 404
+
+    roster = p.setdefault('roster', [])
+    ref = f'{scope}:{name}'
+    live = next((r for r in roster if r.get('character') == ref and not r.get('removed_at')), None)
+    already_hired = live is not None
+    if not already_hired:
+        # Revive a previously-removed row rather than append a second one —
+        # un-hire never deletes (§3.1), so a re-hire finds its old entry.
+        revived = next((r for r in roster if r.get('character') == ref), None)
+        if revived is not None:
+            revived['removed_at'] = None
+            revived['hired_at'] = now_iso()
+            revived['hired_by'] = (data.get('hired_by') or 'drag')
+        else:
+            roster.append({'character': ref, 'hired_at': now_iso(),
+                            'hired_by': (data.get('hired_by') or 'drag'),
+                            'removed_at': None})
+        p['last_updated'] = now_iso()
+        save_project(project_id, p)
+    return jsonify({'roster': roster, 'already_hired': already_hired})
+
+
+@bp.route('/api/project/<project_id>/roster/<character_ref>', methods=['DELETE'])
+def unhire_from_roster(project_id, character_ref):
+    """Un-hire: sets `removed_at`, never deletes the row (§5).
+
+    Refused (409) while the character has a live session on this project —
+    removal must not silently evict a running agent's address mid-turn.
+    """
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    roster = p.get('roster', [])
+    entry = next((r for r in roster if r.get('character') == character_ref and not r.get('removed_at')), None)
+    if entry is None:
+        return jsonify({'error': 'not hired'}), 404
+
+    if _character_has_live_session(project_id, character_ref):
+        _, _, name = character_ref.partition(':')
+        return jsonify({'error': f"{name or character_ref} is working here right now "
+                                  f"— remove after the run ends"}), 409
+
+    entry['removed_at'] = now_iso()
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    return jsonify({'ok': True, 'roster': roster})
 
 
 # ── Social approvals queue (Phase 1 — no outbound posting) ──────────────────

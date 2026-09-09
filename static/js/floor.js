@@ -220,7 +220,10 @@ function _floorFigure(pid, f) {
     ? `<span class="fl-type">${esc(f.character.display)}</span><button class="fl-edit"
         title="Edit this persona — face, description, instructions, engine"
         onclick="event.stopPropagation();floorEditType('${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(pid)}')"
-        >&#9998;</button>`
+        >&#9998;</button><button class="fl-hire-to"
+        title="Hire ${esc(f.character.display)} onto a project — the no-drag path (docs/DRAG_TO_HIRE_SPEC.md §8)"
+        onclick="event.stopPropagation();floorHireMenu('${esc(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}')"
+        >&#8981;</button>`
     : `<span class="fl-type fl-untyped">no type</span>`;
   const nameTitle = chosen
     ? (f.name_from === 'self' ? 'named itself — click to change' : 'you named this — click to change')
@@ -249,7 +252,14 @@ function _floorFigure(pid, f) {
   const helpers = runningHelpers > 0
     ? `<span class="conv-helpers" title="${runningHelpers} helper${runningHelpers !== 1 ? 's' : ''} working">+${runningHelpers}</span>`
     : '';
-  return `<div class="fl-fig fl-${esc(visualState)}"
+  // Drag-to-hire (docs/DRAG_TO_HIRE_SPEC.md §7/§8) only starts from a figure
+  // that carries a character — a characterless session has nothing to hire
+  // (spec §11). No pointerdown handler at all for those, so a plain Vector
+  // run behaves exactly as before: click opens the chat, nothing else.
+  const dragAttrs = f.character
+    ? ` onpointerdown="floorFigDown(event,'${esc(pid)}','${esc(f.character.scope || 'global')}','${esc(f.character.name)}','${esc(f.character.display)}','${esc(f.avatar || '')}')"`
+    : '';
+  return `<div class="fl-fig fl-${esc(visualState)}${f.character ? ' fl-draggable' : ''}"${dragAttrs}
       onclick="floorOpenFigure('${esc(pid)}','${esc(f.claude_session_id)}','${esc(f.session_id)}')"
       title="${esc(f.task || '')}">
     ${_floorAvatar(f)}
@@ -462,6 +472,11 @@ function floorToggleQuiet() {
 }
 
 function floorOpenFigure(pid, csid, mcSessionId) {
+  // A mouse click still fires on the fl-fig div after a real drag-release —
+  // preventDefault on pointermove does not suppress it. `_lastHireDragEnd` is
+  // stamped the moment a drag crosses the activation threshold (§9.3's 8px/
+  // long-press gate), so "grabbed and dropped" never also reopens the chat.
+  if (Date.now() - _lastHireDragEnd < 300) return;
   // Hierarchy is for delegation, not for inspection (DAVE_DESIGN §8): a figure
   // is always directly reachable, never only through whoever spawned it.
   openProjectModal(pid);
@@ -560,6 +575,240 @@ function _floorSchedulePoll(pollSeconds) {
   }, secs * 1000);
 }
 
+// ── Drag-to-hire (docs/DRAG_TO_HIRE_SPEC.md) ────────────────────────────────
+// Grab a Floor figure that carries a character, drop it on a project tile
+// (`#projects-col .card[data-id]`, render-core.js's tileHTML), and that
+// character joins the project's `roster` — permanent membership, not just a
+// chat. Pointer Events throughout (§8), never HTML5 drag-and-drop: the
+// existing OS-file-drop precedents (attDrop/createDrop, render-core.js) are
+// the wrong tool for an intra-app gesture — they never fire on touch, which
+// would fail the phone requirement (Ron uses Clayrune from his phone)
+// structurally rather than just clumsily.
+//
+// One state object, not per-figure state: only one drag can be in flight at
+// a time, and keeping it in a single `_hireDrag` makes "is a drag active"
+// and "cancel whatever is active" both a single null-check, no scanning.
+let _hireDrag = null;
+// Stamped the instant a drag crosses the activation threshold (8px travel
+// for mouse, a long-press for touch — §9.3's "no accidental entry" rule).
+// floorOpenFigure reads this to swallow the click a mouse-up still fires on
+// the same element; see the comment there.
+let _lastHireDragEnd = 0;
+
+const HIRE_LONG_PRESS_MS = 400;   // spec §8: "long-press (~400ms)"
+const HIRE_DRAG_SLOP_PX = 8;      // spec §9.3: "a real drag (8px pointer travel)"
+
+function floorFigDown(e, pid, scope, name, display, avatar) {
+  if (typeof e.button === 'number' && e.button !== 0) return;   // left/primary only
+  // A second pointer going down mid-drag (a stray second finger) must not
+  // start a SECOND drag on top of the first — only one figure can be "picked
+  // up" at once, and the first one wins.
+  if (_hireDrag) return;
+  const el = e.currentTarget;
+  const st = {
+    pid, scope, name, display, avatar,
+    pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
+    startX: e.clientX, startY: e.clientY,
+    active: false, el, ghost: null, longPressTimer: null,
+  };
+  _hireDrag = st;
+  if (st.pointerType === 'touch') {
+    st.longPressTimer = setTimeout(() => {
+      if (_hireDrag === st && !st.active) _floorHireActivate(st, st.startX, st.startY);
+    }, HIRE_LONG_PRESS_MS);
+  }
+  try { el.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  el.addEventListener('pointermove', _floorHireMove);
+  el.addEventListener('pointerup', _floorHireUp);
+  el.addEventListener('pointercancel', _floorHireCancel);
+}
+
+function _floorHireMove(e) {
+  const st = _hireDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  const dx = e.clientX - st.startX, dy = e.clientY - st.startY;
+  if (!st.active) {
+    // Mouse/pen: 8px of travel is itself the activation gesture. Touch waits
+    // for the long-press timer instead — real finger movement before it
+    // fires reads as an attempt to scroll the figure list, not a drag, so it
+    // cancels the timer rather than activating (§9.3: no accidental entry).
+    if (st.pointerType !== 'touch' && Math.hypot(dx, dy) > HIRE_DRAG_SLOP_PX) {
+      _floorHireActivate(st, e.clientX, e.clientY);
+    } else if (st.pointerType === 'touch' && Math.hypot(dx, dy) > HIRE_DRAG_SLOP_PX * 1.5) {
+      clearTimeout(st.longPressTimer);
+      _floorHireTeardown(st, false);
+    }
+    return;
+  }
+  e.preventDefault();
+  if (st.ghost) { st.ghost.style.left = e.clientX + 'px'; st.ghost.style.top = e.clientY + 'px'; }
+  _floorHireHoverAt(e.clientX, e.clientY);
+}
+
+function _floorHireActivate(st, x, y) {
+  st.active = true;
+  clearTimeout(st.longPressTimer);
+  if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* not every device */ } }
+  document.body.classList.add('hire-active');
+  const ghost = document.createElement('div');
+  ghost.className = 'hire-ghost';
+  ghost.innerHTML = _floorAvatarHTML(st.avatar, FLOOR_FACE_PX);
+  ghost.style.left = x + 'px';
+  ghost.style.top = y + 'px';
+  document.body.appendChild(ghost);
+  st.ghost = ghost;
+  // Mark every project tile as a valid target or a visibly dead one, up
+  // front — "dead targets look dead before the drop, not after" (§7). A
+  // project-scoped character can only ever hire into its own project; a
+  // global one can hire into any of them.
+  document.querySelectorAll('#projects-col .card').forEach((card) => {
+    const ok = st.scope !== 'project' || card.dataset.id === st.pid;
+    card.classList.toggle('hire-target', ok);
+    card.classList.toggle('hire-refused', !ok);
+  });
+}
+
+function _floorHireHoverAt(x, y) {
+  const el = document.elementFromPoint(x, y);
+  const card = el && el.closest && el.closest('#projects-col .card.hire-target');
+  document.querySelectorAll('#projects-col .card.hire-hover').forEach((c) => {
+    if (c !== card) c.classList.remove('hire-hover');
+  });
+  if (card) card.classList.add('hire-hover');
+}
+
+function _floorHireUp(e) {
+  const st = _hireDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  clearTimeout(st.longPressTimer);
+  if (!st.active) { _floorHireTeardown(st, false); return; }
+  const el = document.elementFromPoint(e.clientX, e.clientY);
+  const card = el && el.closest && el.closest('#projects-col .card');
+  const allowed = !!(card && (st.scope !== 'project' || card.dataset.id === st.pid));
+  _floorHireTeardown(st, true);
+  if (allowed) _hireDrop(card.dataset.id, st);
+  // A refused or off-target release writes nothing and opens nothing — Esc
+  // and "release outside any tile" are the same cancel per spec §7.
+}
+
+function _floorHireCancel(e) {
+  const st = _hireDrag;
+  if (!st || (e && e.pointerId !== st.pointerId)) return;
+  clearTimeout(st.longPressTimer);
+  _floorHireTeardown(st, st.active);
+}
+
+function _floorHireTeardown(st, wasDrag) {
+  document.body.classList.remove('hire-active');
+  document.querySelectorAll('#projects-col .card.hire-target,#projects-col .card.hire-refused,#projects-col .card.hire-hover')
+    .forEach((c) => c.classList.remove('hire-target', 'hire-refused', 'hire-hover'));
+  if (st.ghost) { st.ghost.remove(); st.ghost = null; }
+  st.el.removeEventListener('pointermove', _floorHireMove);
+  st.el.removeEventListener('pointerup', _floorHireUp);
+  st.el.removeEventListener('pointercancel', _floorHireCancel);
+  try { st.el.releasePointerCapture(st.pointerId); } catch (e) { /* already released */ }
+  if (wasDrag) _lastHireDragEnd = Date.now();
+  _hireDrag = null;
+}
+
+// Esc cancels a drag in progress (§7) — writes nothing, opens nothing,
+// restores everything by tearing down the one class + the marker classes.
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _hireDrag && _hireDrag.active) {
+    _floorHireTeardown(_hireDrag, true);
+  }
+});
+
+// POST the hire, or report why not. Shared by the drag drop and the no-drag
+// "Hire to project…" menu (floorHireMenu) — both outcomes in §6 route
+// through this one call so they can never disagree about what "hired" means.
+async function _hireCharacter(scope, name, projectId, hiredBy) {
+  try {
+    const res = await fetch(API_BASE + '/api/project/' + encodeURIComponent(projectId) + '/roster/hire', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ character: scope + ':' + name, hired_by: hiredBy || 'drag' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    return data;
+  } catch (e) {
+    if (window.showToast) showToast('Could not hire: ' + e.message, 4000);
+    return null;
+  }
+}
+
+function _hireProjectName(projectId) {
+  const p = (typeof allProjects !== 'undefined' ? allProjects : []).find((x) => x.id === projectId);
+  return p ? (p.name || p.id) : projectId;
+}
+
+async function _hireDrop(projectId, st) {
+  const data = await _hireCharacter(st.scope, st.name, projectId, 'drag');
+  if (!data) return;
+  _hireToast(data, st.display, projectId);
+  _hireOpenChannel(projectId, st.scope + ':' + st.name);
+  if (window.refreshFloor) refreshFloor();
+}
+
+// The toast text carries both mitigations from spec §9: symmetry (un-hire is
+// one click away, said implicitly by "hired" never reading as irreversible)
+// and the surfaced-not-silent threshold — 5+ hired agents on one project
+// names the position's own reopen trigger instead of crossing it quietly.
+function _hireToast(data, display, projectId) {
+  if (!window.showToast) return;
+  const projName = _hireProjectName(projectId);
+  if (data.already_hired) {
+    showToast(display + ' is already on ' + projName + '.', 3000);
+    return;
+  }
+  const n = (data.roster || []).filter((r) => !r.removed_at).length;
+  showToast(n >= 5
+    ? `Hired ${display} onto ${projName} — that's ${n} agents here, the rail is getting crowded.`
+    : `Hired ${display} onto ${projName}.`, 3500);
+}
+
+// Post-hire open: the project modal, in Channel mode, with the hired
+// character's row selected (spec §10 — depends on Channel mode Phase 1,
+// which has shipped). setRailMode/openChannelPerson are conversation.js
+// exports; the timeout mirrors floorOpenFigure/floorPlace's own wait for the
+// modal to finish mounting before touching its rail.
+function _hireOpenChannel(projectId, characterRef) {
+  openProjectModal(projectId);
+  setTimeout(() => {
+    if (typeof window.setRailMode === 'function') window.setRailMode(projectId, 'channel');
+    if (typeof window.openChannelPerson === 'function') window.openChannelPerson(projectId, characterRef);
+  }, 500);
+}
+
+// The no-drag path (§8, hard requirement — "the drag is an accelerator,
+// never the only door"). Floor has no context-menu component yet, so this is
+// a button on the figure card + a plain picker rather than a right-click
+// menu; every outcome in §6 is still reachable through it. A project-scoped
+// character has exactly one legal target — its own project — so it hires
+// straight there with no picker at all.
+async function floorHireMenu(currentPid, scope, name, display) {
+  let targetPid = currentPid;
+  if (scope !== 'project') {
+    const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter((p) =>
+      !(typeof isIncognitoProject === 'function' && isIncognitoProject(p)) &&
+      !(typeof isStewardWorkspace === 'function' && isStewardWorkspace(p)));
+    if (!projects.length) { if (window.showToast) showToast('No projects to hire into.', 3000); return; }
+    const listing = projects.map((p, i) => `${i + 1}. ${p.name || p.id}`).join('\n');
+    const pick = window.prompt(`Hire ${display} into which project? Type its number.\n\n${listing}`, '');
+    if (pick === null) return;
+    const idx = parseInt(pick, 10) - 1;
+    const chosen = projects[idx]
+      || projects.find((p) => (p.name || p.id).toLowerCase() === pick.trim().toLowerCase());
+    if (!chosen) { if (window.showToast) showToast('No matching project.', 3000); return; }
+    targetPid = chosen.id;
+  }
+  const data = await _hireCharacter(scope, name, targetPid, 'menu');
+  if (!data) return;
+  _hireToast(data, display, targetPid);
+  _hireOpenChannel(targetPid, scope + ':' + name);
+  if (window.refreshFloor) refreshFloor();
+}
+
 // ── Interop: re-expose for inline / generated-on*= callers. Runtime-only.
 //    `openFloor` ← sidebarNav('floor'). The rest ← generated on*= handlers
 //    inside the board (refresh button, quiet toggle, figure and room clicks).
@@ -567,6 +816,8 @@ window.openFloor = openFloor;
 window.closeFloor = closeFloor;
 window.refreshFloor = refreshFloor;
 window.floorToggleQuiet = floorToggleQuiet;
+window.floorFigDown = floorFigDown;
+window.floorHireMenu = floorHireMenu;
 window.floorOpenFigure = floorOpenFigure;
 window.floorRename = floorRename;
 window.floorSetAvatar = floorSetAvatar;
