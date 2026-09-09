@@ -15,12 +15,25 @@ it (spec §6).
     python tools/clayrune-backup.py restore <path.crbackup> --only records
     python tools/clayrune-backup.py restore <path.crbackup> --sandbox-root <dir>
 
+    python tools/clayrune-backup.py export-project <project_id> --vault omit
+    python tools/clayrune-backup.py export-project <project_id> --vault include --passphrase <p>
+    python tools/clayrune-backup.py import <path.crbackup>
+    python tools/clayrune-backup.py import <path.crbackup> --apply --new-path <dir>
+    python tools/clayrune-backup.py import <path.crbackup> --apply \
+        --project-resolution replace --schedule-resolution replace
+
 `--sandbox-root` is a VERIFICATION-ONLY escape hatch (never used by the
 server's own restore route): it prefixes every destination path so a
 round-trip can be proven into a scratch directory instead of overwriting the
 live install. Phase 1 is same-machine, real-path restore by design (spec
 §4.1/§8 — path remapping is Phase 2); the flag exists for testing that
 design without touching production state while doing it.
+
+`export-project`/`import` are Phase 2 (spec §7): per-project portability,
+with real path remapping (§8) — no sandbox flag needed there because the
+remap itself already writes to wherever `--new-path` says, not to the live
+absolute paths, unless you point it back at them on purpose. `import`
+defaults to a dry run (the §4.4 collision report); pass `--apply` to commit.
 """
 import argparse
 import json
@@ -111,6 +124,101 @@ def cmd_list(_args):
     return 0
 
 
+def cmd_export_project(args):
+    vault_arg = {'include': True, 'omit': False, None: None}[args.vault]
+    categories = _categories_from_exclude(args.exclude)
+    try:
+        result = bk.export_project(
+            args.project_id, categories=categories, vault=vault_arg,
+            vault_passphrase=args.passphrase, label=args.label,
+            dest_dir=Path(args.dest) if args.dest else None)
+    except bk.BackupError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return 1
+    print(f"exported project '{args.project_id}' -> {result['path']}")
+    print(f"  {result['files_written']} files written, {len(result['warnings'])} warnings")
+    print(f"  vault: {result['manifest']['vault_status']}")
+    for w in result['warnings'][:20]:
+        print(f"    - [{w['kind']}] {w['path']} {w.get('detail', '')}")
+    print('\nrepo checklist (this archive does not carry the repo itself):')
+    for line in result['repo_checklist']:
+        print(f'  - {line}')
+    return 0
+
+
+def _print_dry_run(report: dict):
+    print(report['announcement'])
+    print(f"\narchive kind: {report['manifest']['kind']}   "
+         f"vault: {report['vault_status']}   contains_secrets: {report['contains_secrets']}")
+    for cls, items in report['collisions'].items():
+        if not items:
+            continue
+        print(f"\n{cls} collisions:")
+        for it in items:
+            marker = 'LOCAL COPY EXISTS' if it.get('exists_locally') else 'no local collision'
+            label = it.get('id') or it.get('name')
+            print(f"  - {label}  [{marker}]  options: {', '.join(it['options'])}"
+                 f" (default: {it['default']})")
+            if it.get('note'):
+                print(f"      note: {it['note']}")
+    for pid, required in report['path_remap_required'].items():
+        if required:
+            print(f"\nproject '{pid}': recorded project_path does not exist on this machine — "
+                 f"--new-path is required to apply")
+    print('\nrepo checklist:')
+    for line in report['repo_checklist']:
+        print(f'  - {line}')
+
+
+def cmd_import(args):
+    if not args.apply:
+        try:
+            report = bk.import_dry_run(Path(args.archive))
+        except bk.BackupError as e:
+            print(f'ERROR: {e}', file=sys.stderr)
+            return 1
+        print('** DRY RUN ** — nothing written. Pass --apply to commit.\n')
+        _print_dry_run(report)
+        return 0
+
+    try:
+        report = bk.import_project(
+            Path(args.archive),
+            project_resolution=args.project_resolution,
+            schedule_resolution=args.schedule_resolution,
+            new_project_path=args.new_path,
+            vault_passphrase=args.passphrase)
+    except bk.BackupIntegrityError as e:
+        print(f'ABORTED before any write: {e}', file=sys.stderr)
+        return 1
+    except bk.BackupError as e:
+        print(f'ERROR: {e}', file=sys.stderr)
+        return 1
+
+    if report.get('status') == 'skipped':
+        print(f"skipped: {report['reason']}")
+        return 0
+
+    print(f"imported '{report['old_project_id']}' -> '{report['final_project_id']}'")
+    print(f"  project_path: {report['old_project_path']} -> {report['new_project_path']}"
+         f"  (remapped: {report['path_remapped']})")
+    for cat, n in report['restored'].items():
+        print(f"  {cat}: {n} file(s) restored")
+    print(f"  schedules: {report['schedules_imported']} imported, "
+         f"{report['schedules_skipped']} skipped (all arrive disabled)")
+    print(f"  vault: {report['vault']}")
+    if report.get('pre_replace_copy'):
+        print(f"  pre-replace safety copy: {report['pre_replace_copy']}")
+    if report['warnings']:
+        print(f"  {len(report['warnings'])} warning(s):")
+        for w in report['warnings'][:20]:
+            print(f"    - {w}")
+    print('\nrepo checklist:')
+    for line in report['repo_checklist']:
+        print(f'  - {line}')
+    return 0
+
+
 def cmd_restore(args):
     manifest = json.loads(__import__('zipfile').ZipFile(args.archive).read('manifest.json'))
     print(bk.announcement_for(manifest))
@@ -162,6 +270,27 @@ def main():
                    help='VERIFICATION ONLY: prefix every destination under this dir '
                         'instead of the real absolute paths')
     p.set_defaults(fn=cmd_restore)
+
+    p = sub.add_parser('export-project', help='export one project (spec §4.1) for migration')
+    p.add_argument('project_id')
+    p.add_argument('--vault', choices=['include', 'omit'], default=None,
+                   help='the vault question — unanswered refuses to export (spec §4.2)')
+    p.add_argument('--passphrase', help='required with --vault include')
+    p.add_argument('--exclude', nargs='+', metavar='CATEGORY')
+    p.add_argument('--dest', help='destination dir (default: ~/.clayrune/backups)')
+    p.add_argument('--label')
+    p.set_defaults(fn=cmd_export_project)
+
+    p = sub.add_parser('import', help='import a project export (dry run unless --apply)')
+    p.add_argument('archive')
+    p.add_argument('--apply', action='store_true', help='commit the import (default: dry run)')
+    p.add_argument('--project-resolution', choices=['skip', 'replace', 'import-as-copy'],
+                   default='skip')
+    p.add_argument('--schedule-resolution', choices=['skip', 'replace'], default='skip')
+    p.add_argument('--new-path', dest='new_path',
+                   help='remap project_path to this directory (spec §8)')
+    p.add_argument('--passphrase', help='vault passphrase, if the archive contains secrets')
+    p.set_defaults(fn=cmd_import)
 
     args = ap.parse_args()
     return args.fn(args)

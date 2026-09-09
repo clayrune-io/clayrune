@@ -238,6 +238,18 @@ def _aesgcm(key: bytes):
     return AESGCM(key)
 
 
+def _scrypt_key(passphrase: str, salt: bytes) -> bytes:
+    """Derive a 32-byte AES-256 key from a user passphrase (backup §4.2).
+    Deliberately separate from the master-key path above: this key is never
+    stored anywhere, it exists only for the lifetime of one export/import call."""
+    from cryptography.hazmat.primitives.kdf.scrypt import Scrypt
+    kdf = Scrypt(salt=salt, length=32, n=2 ** 14, r=8, p=1)
+    return kdf.derive(passphrase.encode('utf-8'))
+
+
+_EXPORT_AAD = b'clayrune-vault-export-v1'
+
+
 def _seal(name: str, value: str) -> dict[str, Any]:
     key = load_master_key()[0]
     nonce = os.urandom(12)
@@ -818,3 +830,136 @@ def env_for(mapping: Iterable[tuple[str, str]],
     return {var: get_secret_value(name, consumer=consumer,
                                   project_id=project_id, unattended=unattended)
             for var, name in mapping}
+
+
+# ── Backup/export re-encrypt (docs/BACKUP_EXPORT_SPEC.md §4.2, Phase 2) ─────
+#
+# A backup archive must never carry a plaintext secret NOR this machine's
+# master key (the destination has its own keyring entry). The answer is the
+# same shape §4.2 specifies: dispense every value server-side, seal the lot
+# under a user-supplied passphrase (scrypt KDF + AES-256-GCM, never stored),
+# and on import write each entry back through the normal sealed-record path
+# so it lands under the *destination's* own master key. No route here ever
+# returns plaintext to a caller — mc/backup.py only ever sees ciphertext
+# bytes, matching vault rule 2 (CLAUDE.md, "no route returns a plaintext
+# value").
+
+def export_all_for_backup(passphrase: str, *, consumer: str,
+                          scope_filter: str | None = None) -> bytes:
+    """Dispense every secret (optionally narrowed to one project's ``scope``)
+    and return a passphrase-sealed ciphertext blob. ``scope_filter`` exists so
+    a per-project export (mc/backup.py's ``export_project``) carries only that
+    project's own secrets rather than the whole global vault — nothing is
+    widened by transit (spec §4.2 open note)."""
+    if not passphrase:
+        raise SecretsError('a passphrase is required to export the vault')
+    with _lock:
+        store = _load_store()
+        entries = []
+        for name, rec in store['secrets'].items():
+            if scope_filter is not None and rec.get('scope', 'global') != scope_filter:
+                continue
+            try:
+                value = _open(name, rec)
+            except SecretsError as e:
+                _log(f"[secrets] export skipped '{name}': {e}")
+                continue
+            entries.append({
+                'name': name, 'value': value,
+                'username': rec.get('username', ''),
+                'description': rec.get('description', ''),
+                'hint': rec.get('hint', ''),
+                'scope': rec.get('scope', 'global'),
+                'allow_unattended': bool(rec.get('allow_unattended', True)),
+                'kind': rec.get('kind', KIND_PASSWORD),
+                'issuer': rec.get('issuer', ''), 'account': rec.get('account', ''),
+                'digits': rec.get('digits', 6), 'period': rec.get('period', 30),
+                'algorithm': rec.get('algorithm', 'SHA1'),
+            })
+    payload = json.dumps({'version': STORE_VERSION, 'entries': entries},
+                         ensure_ascii=False).encode('utf-8')
+    salt = os.urandom(16)
+    key = _scrypt_key(passphrase, salt)
+    nonce = os.urandom(12)
+    ct = _aesgcm(key).encrypt(nonce, payload, _EXPORT_AAD)
+    _audit('export', consumer=consumer, count=len(entries), scope_filter=scope_filter)
+    return json.dumps({
+        'salt': base64.b64encode(salt).decode('ascii'),
+        'nonce': base64.b64encode(nonce).decode('ascii'),
+        'ciphertext': base64.b64encode(ct).decode('ascii'),
+    }).encode('utf-8')
+
+
+def _import_entry_raw(entry: dict[str, Any]) -> None:
+    """Write one exported entry straight into the store under THIS machine's
+    master key. Deliberately bypasses ``set_secret``'s otpauth-URI sniffing —
+    the value here is already the normalized secret ``_open`` returned, not
+    something a human just pasted, so re-detecting it would be redundant and
+    would drop the TOTP issuer/account/digits/period fields that only travel
+    via this function's explicit copy below."""
+    name = entry['name']
+    if not valid_name(name):
+        raise SecretsError(f"invalid secret name in import: {name!r}")
+    with _lock:
+        store = _load_store()
+        rec = _seal(name, entry['value'])
+        rec.update({
+            'username': str(entry.get('username') or ''),
+            'description': str(entry.get('description') or ''),
+            'hint': str(entry.get('hint') or ''),
+            'scope': str(entry.get('scope') or 'global'),
+            'allow_unattended': bool(entry.get('allow_unattended', True)),
+            'created_at': now_iso(), 'updated_at': now_iso(),
+            'last_used_at': None, 'use_count': 0,
+            'kind': entry.get('kind', KIND_PASSWORD),
+        })
+        for key in ('issuer', 'account', 'digits', 'period', 'algorithm'):
+            if entry.get(key) is not None:
+                rec[key] = entry[key]
+        store['secrets'][name] = rec
+        store['key_backend'] = key_backend()
+        _save_store(store)
+    _audit('set', name=name, scope=rec['scope'], allow_unattended=rec['allow_unattended'],
+           kind=rec['kind'], replaced=False, via='import')
+
+
+def import_all_from_backup(blob: bytes, passphrase: str, *, consumer: str,
+                           on_collision: str = 'skip',
+                           rescope: tuple[str, str] | None = None) -> dict[str, list[str]]:
+    """Decrypt an ``export_all_for_backup`` blob and write every entry through
+    the sealed-record path (never through set_secret's plaintext argument
+    order — see ``_import_entry_raw``). ``on_collision``: ``'skip'`` (default)
+    leaves an existing same-named secret untouched; ``'replace'`` overwrites it.
+    ``rescope=(old_id, new_id)``: an entry scoped to ``old_id`` is rewritten to
+    ``new_id`` before it's written — needed when the caller is
+    mc.backup.import_project's ``import-as-copy`` path, which mints a new
+    project id; without this a project-scoped secret would import under a
+    scope no local project actually has, silently unusable (the same "state
+    present but invisible" failure class the memory-vault remap exists to
+    avoid). Returns ``{'imported': [names], 'skipped': [names]}``."""
+    try:
+        outer = json.loads(blob.decode('utf-8'))
+        salt = base64.b64decode(outer['salt'])
+        nonce = base64.b64decode(outer['nonce'])
+        ct = base64.b64decode(outer['ciphertext'])
+        key = _scrypt_key(passphrase, salt)
+        payload = _aesgcm(key).decrypt(nonce, ct, _EXPORT_AAD)
+        data = json.loads(payload.decode('utf-8'))
+    except Exception as e:
+        raise SecretsError(
+            f'could not decrypt vault archive — wrong passphrase or corrupted archive: {e}') from e
+
+    existing_names = {r['name'] for r in list_secrets()}
+    imported: list[str] = []
+    skipped: list[str] = []
+    for entry in data.get('entries', []):
+        if rescope and entry.get('scope') == rescope[0]:
+            entry = dict(entry, scope=rescope[1])
+        name = entry['name']
+        if name in existing_names and on_collision == 'skip':
+            skipped.append(name)
+            continue
+        _import_entry_raw(entry)
+        imported.append(name)
+    _audit('import', consumer=consumer, imported=len(imported), skipped=len(skipped))
+    return {'imported': imported, 'skipped': skipped}
