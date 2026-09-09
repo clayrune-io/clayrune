@@ -2273,12 +2273,14 @@ from mc.blueprints import remote_routes as _bp_remote  # noqa: E402
 
 _bp_remote.wire(
     session_labels_path=_DATA_ROOT / 'data' / 'session_labels.json',
+    enrollment_liveness_path=_DATA_ROOT / 'data' / 'remote_enrollment_liveness.json',
 )
 app.register_blueprint(_bp_remote.bp)
 # Inbound shims: startup (under __main__) starts the enforcer daemon and the
 # one-shot CP warmup thread — call sites unchanged.
 _session_label_enforcer_loop = _bp_remote._session_label_enforcer_loop
 _warmup_control_plane = _bp_remote._warmup_control_plane
+_enrollment_liveness_loop = _bp_remote._enrollment_liveness_loop
 
 
 # ── Web push + presence + mobile pairing ── extracted to
@@ -2746,6 +2748,12 @@ def boot(check_port=True):
     # Auto-cleanup unnamed CF Access sessions (per-session revoke, strict mode).
     # Roll back: set auto_revoke_unnamed_sessions=false in data/config.json.
     threading.Thread(target=_session_label_enforcer_loop, daemon=True).start()
+    # Enrollment-liveness watchdog: notices when the device-enrollment
+    # identity disappears from the OS keystore (2026-09-08 KB5124008 vault
+    # wipe). Deliberately outside the tunnel supervisor — see
+    # remote_routes._enrollment_liveness_loop's docstring for why that
+    # matters. Runs even with no provider installed / never enrolled.
+    threading.Thread(target=_enrollment_liveness_loop, daemon=True).start()
     # Cloud Run cold-start mitigation: hit /v1/health on startup so the user's
     # first interaction (Enable / Resume / Disconnect) hits a warm CP instance.
     # Cheap; idempotent; safe even if remote-access provider is absent.

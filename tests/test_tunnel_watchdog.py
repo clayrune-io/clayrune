@@ -200,6 +200,40 @@ def test_next_outage_is_gated_by_the_cooldown(sup, monkeypatch):
     assert len(sent) == 2, "cooldown expired but the alert stayed suppressed"
 
 
+def test_permanent_outage_re_nags_after_cooldown(sup, monkeypatch):
+    """THE BUG (found 2026-09-09, session 977afb9529eb): `down_alert_sent_at`
+    was cleared only when cloudflared came back alive. An outage that NEVER
+    recovers never clears it, so the old `if down_alert_sent_at is not None:
+    return` blocked every later cooldown check forever — measured: exactly
+    one down-alert in 111MB of log despite an outage lasting hours. Fixed by
+    gating solely on `_last_alert_wall` (which tracks "time since last mail",
+    not "has this outage ever been reported")."""
+    sent = []
+    monkeypatch.setattr(sup, "_send_down_alert", lambda *a, **k: sent.append(a))
+    monkeypatch.setattr(ts, "_DOWN_ALERT_AFTER_S", 1.0)
+    monkeypatch.setattr(ts, "_DOWN_ALERT_COOLDOWN_S", 0.2)
+    down_since = time.time() - 60
+
+    sup._maybe_alert_down(down_since)
+    time.sleep(0.05)
+    assert len(sent) == 1
+
+    # Same outage, still down (down_alert_sent_at was never cleared because
+    # cloudflared never came back) — a tick right after must stay quiet.
+    sup._maybe_alert_down(down_since)
+    time.sleep(0.05)
+    assert len(sent) == 1, "re-fired inside the cooldown"
+
+    # Cooldown elapses while the SAME outage is still down.
+    time.sleep(0.25)
+    sup._maybe_alert_down(down_since)
+    time.sleep(0.05)
+    assert len(sent) == 2, (
+        "outage never recovered, so down_alert_sent_at stayed set forever — "
+        "the old code read that as 'already alerted, never check again'"
+    )
+
+
 def test_alert_body_is_actionable_and_never_raises(sup):
     """The mail must survive a machine with no mailer configured, and must tell
     someone reading it on a phone what to actually do."""

@@ -357,13 +357,23 @@ class TunnelSupervisor:
             log.warning("down alert could not be sent: %s", e)
 
     def _maybe_alert_down(self, down_since: float) -> None:
-        """Fire the alert once per outage, subject to the cooldown."""
+        """Fire the alert once per outage, then keep re-arming on the cooldown
+        for as long as the SAME outage continues.
+
+        Fixed 2026-09-09: this used to `return` outright whenever
+        `down_alert_sent_at` was already set, and that field is only cleared
+        on recovery (_watchdog_loop, alive branch) — so an outage that never
+        recovers alerted exactly once, ever. Measured: one down-alert in
+        111MB of log despite an outage that lasted hours. `_last_alert_wall`
+        is the actual cooldown clock (it survives recovery, so a tunnel
+        flapping every 11 minutes still only mails once per cooldown window);
+        `down_alert_sent_at` now only needs to track "has an alert fired for
+        the CURRENT outage" for status/observability, not gate re-arming.
+        """
         down_for = time.time() - down_since
         if down_for < _DOWN_ALERT_AFTER_S:
             return
         with self._lock:
-            if self._state.down_alert_sent_at is not None:
-                return                      # already alerted for THIS outage
             last = self._last_alert_wall
             if last is not None and (time.time() - last) < _DOWN_ALERT_COOLDOWN_S:
                 return                      # inside the quiet period
