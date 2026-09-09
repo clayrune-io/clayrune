@@ -6,6 +6,48 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Drag-to-hire: the drag survives the board, and the drop arms the composer
+
+Two defects against the drag-to-hire gesture (docs/DRAG_TO_HIRE_SPEC.md), both
+found by driving the real UI rather than by reading the diff.
+
+- **The Floor's own poll was killing the drag.** `refreshFloor` rewrites
+  `#floor-body` wholesale every 5s, so a drag that lasted longer than one tick
+  — any drag where you pause to aim — had the card yanked out from under the
+  pointer. Its listeners died with it: the ghost froze mid-board, `pointerup`
+  reached nothing, and `hire-active` plus the ghost were stranded on screen with
+  `_hireDrag` still set, which made every *later* drag return early at its own
+  guard. That is the "agent stuck on the board and nothing else works" report.
+  Fixed twice over: the poll now skips a tick while a drag is in flight, and the
+  pointer handlers moved from the card to `window`, so the gesture outlives the
+  node by construction.
+- **Tiles under a modal were unhittable.** A drop resolves its target with
+  `elementFromPoint`, which returns whatever paints on top — and the Floor is a
+  1120px window centred over the grid. So most of the board was a dead zone with
+  nothing on screen to say why. `body.hire-active` now fades the whole
+  `#modal-layer` to 0.16 and takes every `.modal-window` out of hit-testing for
+  the duration: every tile is reachable, and you can see the one you are aiming
+  at through the modal. Scoped to the layer, not to the Floor, so a second open
+  modal can't reintroduce the same dead zone.
+- **Esc belongs to the drag.** The global Escape handler is registered first, so
+  one keystroke cancelled the drag *and* closed the Floor underneath it. Guarded
+  the same way the mermaid-viewer case already is.
+- **The drop lands armed now.** It used to drill to the agent's channel row and
+  leave PERSONA on "None", so the next thing typed went to the project default —
+  correct-looking and wrong. `_hireOpenChannel` now sets the composer character
+  as part of the same transition, which is the value `dispatchAgent` puts in
+  `body.character`. Verified end to end against a real dispatch: the resulting
+  session carries `character: {name: ui-fixer, scope: global}` and takes that
+  character's pinned model. Starter chips only fill the textarea, so they
+  dispatch through the same armed composer.
+- **`tools/smoke/drag-to-hire.mjs` would have caught this and didn't.** It
+  pinned the Floor window and the drop tile to *disjoint corners*, so it tested
+  a geometry the real app never has. It now overlaps them deliberately (and
+  asserts the occlusion is real before relying on it), holds a drag across a
+  poll tick and a forced re-render, checks the composer is armed after the drop,
+  and proves every cancel path — off-target release, Escape, window blur —
+  leaves no ghost and a board that can still start another drag.
+
 ## [Unreleased] — Backup panel: a Cancel button, a destination you pick at Create, and a panel that reattaches
 
 Three more defects against the Backup panel (MC-945), same real install where

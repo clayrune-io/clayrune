@@ -7647,12 +7647,22 @@
 
   body.hire-active #projects-col .card,
   body.hire-active .sidebar,
-  body.hire-active .header,
-  body.hire-active .fl-room,
-  body.hire-active .fl-bench,
-  body.hire-active .fl-quiet {
+  body.hire-active .header {
     opacity: 0.35; pointer-events: none; transition: opacity 0.15s ease;
   }
+  /* The board has to GET OUT OF THE WAY, not just dim behind glass. Every open
+     modal — the Floor itself, a project chat left open beside it — is a
+     `.modal-window` in `#modal-layer` painted over `#projects-col`, and
+     `elementFromPoint` (which is how a drop finds its tile) returns whatever is
+     visually on top. So a tile under a modal was unhittable: no .hire-hover, no
+     drop, and no way to tell from the screen why. Dropping the whole LAYER's
+     pointer-events makes every tile reachable and fades the modals far enough
+     back that Ron can see the tile he is aiming at through them. Scoped to the
+     layer rather than to the Floor window so a second modal can't reintroduce
+     the same dead zone. The ghost lives on <body>, not in here, so it stays
+     fully opaque. */
+  body.hire-active .modal-layer { opacity: 0.16; transition: opacity 0.15s ease; }
+  body.hire-active .modal-window { pointer-events: none; }
   body.hire-active #projects-col .card.hire-target {
     opacity: 1; pointer-events: auto;
     box-shadow: 0 0 0 2px var(--accent); border-radius: 10px;

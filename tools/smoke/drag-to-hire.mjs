@@ -96,7 +96,13 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS) });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    // Non-empty so the composer's Persona picker has a real option to select —
+    // the post-drop "is the composer armed" assertion reads the select's value,
+    // and an empty list would only ever render "None".
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+      { name: 'code-reviewer', display_name: 'code-reviewer', agent_name: 'Fenn', scope: 'global',
+        description: 'reviews a diff', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
+    ]) });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FLOOR_PAYLOAD) });
     if (path === '/api/project/smoke_target/roster/hire' && req.method() === 'POST') {
       hireCalls.push(JSON.parse(req.postData() || '{}'));
@@ -125,25 +131,36 @@ try {
   if (pageErrors.length) pageErrors.forEach((e) => fail('uncaught page error during boot: ' + e));
   else ok('app booted clean, no uncaught exceptions');
 
-  // The Floor is a floating window the real app centers over the dashboard
-  // grid (by design — Ron positions it beside the tiles he's dragging onto).
-  // A headless run has no such positioning judgment, so pin both the Floor
-  // window and the drop target to disjoint corners here — test-only inline
-  // styles, so the drag lands on real, unobstructed screen coordinates
-  // regardless of how wide this run's grid happens to lay out.
+  // The Floor is a 1120px-wide window the real app CENTERS over the dashboard
+  // grid, so in real use most tiles sit UNDERNEATH it. This run used to pin the
+  // window and the drop target to disjoint corners, which is exactly why it
+  // passed green while the real UI could not drop at all: `elementFromPoint`
+  // (how a drop finds its tile) returns whatever paints on top, and the modal
+  // does. So pin them OVERLAPPING instead — test-only inline styles for
+  // deterministic geometry, with the occlusion itself asserted below rather
+  // than assumed, so a future layout change can't quietly un-test it.
   await page.evaluate(() => { window.openFloor(); });
   await page.waitForSelector('.fl-fig.fl-draggable', { timeout: 5000 });
   await page.evaluate(() => {
     const win = document.querySelector('.modal-window[data-modal-id="__floor"]');
-    win.style.left = '10px'; win.style.top = '10px';
+    win.style.left = '300px'; win.style.top = '60px';
     const content = win.querySelector('.modal-content');
-    content.style.width = '340px'; content.style.maxWidth = '340px';
-    content.style.maxHeight = '460px'; content.style.overflow = 'auto';
+    content.style.width = '700px'; content.style.maxWidth = '700px';
+    content.style.maxHeight = '700px'; content.style.overflow = 'auto';
     const target = document.querySelector('#projects-col .card[data-id="smoke_target"]');
-    target.style.position = 'fixed'; target.style.left = '1000px'; target.style.top = '650px';
-    target.style.width = '340px'; target.style.zIndex = '1';
+    target.style.position = 'fixed'; target.style.left = '520px'; target.style.top = '430px';
+    target.style.width = '300px'; target.style.height = '160px'; target.style.zIndex = '1';
   });
   ok('Floor opened, Fenn\'s figure is marked draggable');
+
+  const occlusion = await page.evaluate(() => {
+    const t = document.querySelector('#projects-col .card[data-id="smoke_target"]').getBoundingClientRect();
+    const el = document.elementFromPoint(t.x + t.width / 2, t.y + t.height / 2);
+    return { inFloor: !!(el && el.closest('.modal-window[data-modal-id="__floor"]')), hit: el ? el.className.toString().slice(0, 40) : null };
+  });
+  occlusion.inFloor
+    ? ok('premise holds: the drop target sits UNDER the Floor window (hit-tests to the modal at rest)')
+    : fail(`this run is not testing occlusion — the target tile hit-tests to ${occlusion.hit}, not the Floor window`);
 
   const figBox = await page.$eval('.fl-fig.fl-draggable', (el) => {
     const r = el.getBoundingClientRect();
@@ -180,6 +197,49 @@ try {
   const ghostVisible = await page.$eval('.hire-ghost', (el) => !!el).catch(() => false);
   ghostVisible ? ok('a ghost face follows the pointer') : fail('.hire-ghost did not appear');
 
+  // The modal layer has to step aside for the whole drag — faded enough to aim
+  // through, and out of the hit-test entirely.
+  const layer = await page.evaluate(() => ({
+    opacity: parseFloat(getComputedStyle(document.querySelector('.modal-layer')).opacity),
+    winPE: getComputedStyle(document.querySelector('.modal-window[data-modal-id="__floor"]')).pointerEvents,
+  }));
+  (layer.opacity < 0.4 && layer.winPE === 'none')
+    ? ok(`modal layer stepped aside during the drag (opacity ${layer.opacity}, pointer-events ${layer.winPE})`)
+    : fail(`modal layer must fade AND stop hit-testing during a hire drag; got opacity ${layer.opacity}, pointer-events ${layer.winPE}`);
+
+  // ── The drag must outlive the Floor's own refresh ────────────────────────
+  // The Floor polls /api/floor and rewrites #floor-body wholesale. That used
+  // to destroy the node under the pointer: the ghost froze, pointerup reached
+  // nothing, and `hire-active` + the ghost were stranded on the board with
+  // `_hireDrag` still set — which made every later drag a no-op too. Any drag
+  // where Ron pauses to aim outlives one 5s tick, so this was the common case.
+  await page.evaluate(() => { window.__dragNode = document.querySelector('.fl-fig.fl-draggable'); });
+  await page.waitForTimeout(4200);   // fixture asks for a 5s poll; floor's floor is 3s
+  const survived = await page.evaluate(() => ({
+    stillMounted: document.contains(window.__dragNode),
+    hireActive: document.body.classList.contains('hire-active'),
+    ghost: !!document.querySelector('.hire-ghost'),
+  }));
+  (survived.stillMounted && survived.hireActive && survived.ghost)
+    ? ok('a poll tick during the drag is skipped — the dragged node, the ghost and hire-active all survive')
+    : fail(`the Floor poll disrupted an in-flight drag: ${JSON.stringify(survived)}`);
+
+  // And if the board DOES re-render mid-drag by some other route (a forced
+  // refresh, a modal close), the gesture still has to complete: the pointer
+  // handlers live on `window`, not on the card, so losing the card is survivable.
+  await page.evaluate(() => window.refreshFloor());
+  await page.waitForTimeout(150);
+  await page.mouse.move(figBox.x + 60, figBox.y + 40, { steps: 3 });
+  await page.waitForTimeout(120);
+  const afterRerender = await page.evaluate(({ x, y }) => {
+    const g = document.querySelector('.hire-ghost');
+    return { nodeGone: !document.contains(window.__dragNode), ghost: !!g,
+             tracking: g ? Math.abs(parseFloat(g.style.left) - x) < 2 && Math.abs(parseFloat(g.style.top) - y) < 2 : false };
+  }, { x: figBox.x + 60, y: figBox.y + 40 });
+  (afterRerender.nodeGone && afterRerender.ghost && afterRerender.tracking)
+    ? ok('a forced re-render replaced the dragged card and the ghost still tracks the pointer')
+    : fail(`drag did not survive a mid-flight re-render: ${JSON.stringify(afterRerender)}`);
+
   if (SHOT_DIR) {
     await page.screenshot({ path: resolve(SHOT_DIR, 'drag-to-hire-mid-drag.png') });
     ok(`mid-drag screenshot written to ${resolve(SHOT_DIR, 'drag-to-hire-mid-drag.png')}`);
@@ -188,7 +248,15 @@ try {
   // ── Drop on the target tile ───────────────────────────────────────────────
   await page.mouse.move(tileBox.x, tileBox.y, { steps: 10 });
   await page.$eval('#projects-col .card[data-id="smoke_target"]', (el) => el.classList.contains('hire-hover'))
-    .then((v) => v ? ok('hovered tile picks up .hire-hover') : fail('hovered tile missing .hire-hover'));
+    .then((v) => v ? ok('hovered tile picks up .hire-hover — through the modal that covers it') : fail('hovered tile missing .hire-hover'));
+  const hitThroughModal = await page.evaluate(({ x, y }) => {
+    const el = document.elementFromPoint(x, y);
+    const card = el && el.closest('#projects-col .card');
+    return card ? card.dataset.id : (el ? el.className.toString().slice(0, 40) : null);
+  }, tileBox);
+  hitThroughModal === 'smoke_target'
+    ? ok('the occluded tile hit-tests to itself mid-drag, so a drop can find it')
+    : fail(`mid-drag hit-test should reach smoke_target, got ${hitThroughModal}`);
   await page.mouse.up();
 
   await page.waitForFunction(() => !document.body.classList.contains('hire-active'), { timeout: 3000 })
@@ -215,6 +283,24 @@ try {
   await page.waitForSelector(`.modal-window[data-modal-id="${PID_TARGET}"] .channel-back`, { timeout: 5000 })
     .then(() => ok('Fenn\'s row is selected (no history yet, so the filtered/empty view + back button show)'),
           () => fail('channel person filter never engaged for the hired character'));
+
+  // ── The drop must ARM the composer, not just drill to the row ────────────
+  // Landing on the agent's empty channel with PERSONA still on "None" sent the
+  // next thing typed to the project default — correct-looking and wrong. The
+  // pending value is what dispatchAgent puts in `body.character`, so assert the
+  // state that actually reaches the wire, not only the select's displayed text.
+  const armed = await page.evaluate((pid) => {
+    const w = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
+    const sel = w && w.querySelector('.composer-character-row .composer-provider-select');
+    return { pending: window.getPendingCharacter ? window.getPendingCharacter(pid) : '(no accessor)',
+             selectValue: sel ? sel.value : '(no persona select on screen)' };
+  }, PID_TARGET);
+  armed.pending === 'global:code-reviewer'
+    ? ok('composer is armed with the dropped character — the next dispatch carries body.character')
+    : fail(`pendingDispatchCharacter should be global:code-reviewer, got ${armed.pending}`);
+  armed.selectValue === 'global:code-reviewer'
+    ? ok('the Persona select shows the dropped agent (state and display agree)')
+    : fail(`the Persona select should read global:code-reviewer, got ${armed.selectValue}`);
 
   if (SHOT_DIR) {
     await page.screenshot({ path: resolve(SHOT_DIR, 'drag-to-hire-channel-view.png') });
@@ -245,8 +331,74 @@ try {
                              : fail(`expected exactly 1 un-hire call, got ${unhireCalls.length}`);
   }
 
-  // ── A click that never crossed the drag threshold still opens the chat ───
+  // ── Cleanup is unconditional (spec §7) ──────────────────────────────────
+  // Every way out of a drag has to leave the board spotless. A path that skips
+  // teardown doesn't just litter one ghost: `_hireDrag` stays set, so the very
+  // next pointerdown returns early at its own guard and the board is dead until
+  // a reload. So each case here ends by proving another drag can still START.
   await page.evaluate(({ pid }) => { closeModalById ? closeModalById(pid) : null; }, { pid: PID_TARGET }).catch(() => {});
+  const startDrag = async () => {
+    const f = await (await page.$('.fl-fig.fl-draggable')).boundingBox();
+    await page.mouse.move(f.x + f.width / 2, f.y + f.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(f.x + f.width / 2 + 30, f.y + f.height / 2 + 20, { steps: 4 });
+    await page.waitForSelector('body.hire-active', { timeout: 2000 });
+  };
+  const residue = () => page.evaluate(() => ({
+    hireActive: document.body.classList.contains('hire-active'),
+    ghosts: document.querySelectorAll('.hire-ghost').length,
+    marks: document.querySelectorAll('#projects-col .card.hire-target,#projects-col .card.hire-refused,#projects-col .card.hire-hover').length,
+  }));
+  const assertClean = async (label) => {
+    const r = await residue();
+    (!r.hireActive && r.ghosts === 0 && r.marks === 0)
+      ? ok(`${label}: board left spotless`)
+      : fail(`${label}: left residue ${JSON.stringify(r)}`);
+    // Esc/blur cancel the drag but leave the physical button DOWN — release it
+    // before grabbing again, or the next mouse.down() is a no-op and this reads
+    // as a dead board when the board is fine.
+    await page.mouse.up();
+    await startDrag().then(() => ok(`${label}: a fresh drag still starts afterwards`),
+                           () => fail(`${label}: the board is dead — a later drag never activated`));
+  };
+
+  await startDrag();
+  // A point with no tile under it, measured DURING the drag (the modal stops
+  // hit-testing then, so a spot that looks empty at rest may not be).
+  const deadSpot = await page.evaluate(() => {
+    for (let y = window.innerHeight - 8; y > 40; y -= 16)
+      for (let x = 8; x < window.innerWidth - 8; x += 32) {
+        const el = document.elementFromPoint(x, y);
+        if (el && !el.closest('#projects-col .card')) return [x, y];
+      }
+    return null;
+  });
+  const hiresBefore = hireCalls.length;
+  if (!deadSpot) fail('could not find a tile-free point to test an invalid drop');
+  else {
+    await page.mouse.move(deadSpot[0], deadSpot[1], { steps: 6 });
+    await page.mouse.up();
+    await page.waitForTimeout(200);
+    hireCalls.length === hiresBefore
+      ? ok('a release off every tile hires nobody')
+      : fail(`an off-target release fired ${hireCalls.length - hiresBefore} unwanted hire(s)`);
+    await assertClean('release off-target');
+  }
+  await page.keyboard.press('Escape');
+  await page.waitForTimeout(150);
+  await assertClean('Escape mid-drag');
+  await page.evaluate(() => window.dispatchEvent(new Event('blur')));
+  await page.waitForTimeout(150);
+  await assertClean('window blur mid-drag (release landed in another app)');
+  // assertClean leaves a drag in flight; cancel it rather than releasing, so
+  // the release can't land on a tile and hire somebody this case never asked for.
+  await page.keyboard.press('Escape');
+  await page.mouse.up();
+  // Past floorOpenFigure's 300ms click-swallow window, so the plain-click case
+  // below is testing the click and not this teardown's stamp.
+  await page.waitForTimeout(450);
+
+  // ── A click that never crossed the drag threshold still opens the chat ───
   await page.click('.fl-fig.fl-draggable');
   await page.waitForSelector(`.modal-window[data-modal-id="${PID_HOME}"]`, { timeout: 5000 })
     .then(() => ok('a plain click (no drag) still opens the figure\'s own chat, unaffected'),

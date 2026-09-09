@@ -576,6 +576,17 @@ function _floorSchedulePoll(pollSeconds) {
     }
     const e = openModals.get(FLOOR_MODAL);
     if (e && e.minimized) return;   // minimized: alive, but not worth a poll
+    // A poll mid-drag DESTROYS the drag. refreshFloor rewrites #floor-body
+    // wholesale, so the card the pointer is holding is replaced by a new
+    // node: its listeners die with it, the capture is lost, the ghost
+    // freezes where it stood, and pointerup reaches nothing — so
+    // `hire-active` and the ghost stay on screen forever and `_hireDrag`
+    // never clears, which makes every LATER drag return early at the
+    // `if (_hireDrag)` guard. That is the "agent stuck on the board, nothing
+    // else works" failure: it took a drag lasting longer than one 5s tick,
+    // which is any drag where Ron pauses to aim. The window-level listeners
+    // below now survive the node going away; this skip means it doesn't.
+    if (_hireDrag) return;
     // refreshFloor's own try/finally already guarantees the NEXT poll gets
     // scheduled even if this render throws; .catch here only stops that
     // throw from surfacing as an unhandled promise rejection in the console.
@@ -626,9 +637,16 @@ function floorFigDown(e, pid, scope, name, display, avatar) {
     }, HIRE_LONG_PRESS_MS);
   }
   try { el.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
-  el.addEventListener('pointermove', _floorHireMove);
-  el.addEventListener('pointerup', _floorHireUp);
-  el.addEventListener('pointercancel', _floorHireCancel);
+  // On WINDOW, not on `el`. The gesture outlives the node: the Floor re-renders
+  // its whole body on every poll, the modal can close, a room can empty — and a
+  // listener bound to the card dies with the card, taking the pointerup that
+  // would have dropped (or cleaned up) with it. Window sees the release no
+  // matter what happened to the thing being dragged.
+  window.addEventListener('pointermove', _floorHireMove);
+  window.addEventListener('pointerup', _floorHireUp);
+  window.addEventListener('pointercancel', _floorHireCancel);
+  // Releasing over another app never sends us a pointerup at all.
+  window.addEventListener('blur', _floorHireCancel);
 }
 
 function _floorHireMove(e) {
@@ -701,7 +719,10 @@ function _floorHireUp(e) {
 
 function _floorHireCancel(e) {
   const st = _hireDrag;
-  if (!st || (e && e.pointerId !== st.pointerId)) return;
+  if (!st) return;
+  // `blur` carries no pointerId, so only a real PointerEvent gets filtered by
+  // it — comparing unconditionally made the blur cancel a silent no-op.
+  if (e && e.pointerId !== undefined && e.pointerId !== st.pointerId) return;
   clearTimeout(st.longPressTimer);
   _floorHireTeardown(st, st.active);
 }
@@ -711,10 +732,15 @@ function _floorHireTeardown(st, wasDrag) {
   document.querySelectorAll('#projects-col .card.hire-target,#projects-col .card.hire-refused,#projects-col .card.hire-hover')
     .forEach((c) => c.classList.remove('hire-target', 'hire-refused', 'hire-hover'));
   if (st.ghost) { st.ghost.remove(); st.ghost = null; }
-  st.el.removeEventListener('pointermove', _floorHireMove);
-  st.el.removeEventListener('pointerup', _floorHireUp);
-  st.el.removeEventListener('pointercancel', _floorHireCancel);
-  try { st.el.releasePointerCapture(st.pointerId); } catch (e) { /* already released */ }
+  // Belt as well as braces: the ghost is appended to <body>, so a stale one
+  // from any path that somehow skipped this teardown would sit on the board
+  // until a reload. Sweep by class, not only by handle.
+  document.querySelectorAll('.hire-ghost').forEach((g) => g.remove());
+  window.removeEventListener('pointermove', _floorHireMove);
+  window.removeEventListener('pointerup', _floorHireUp);
+  window.removeEventListener('pointercancel', _floorHireCancel);
+  window.removeEventListener('blur', _floorHireCancel);
+  try { st.el.releasePointerCapture(st.pointerId); } catch (e) { /* already released, or the node is gone */ }
   if (wasDrag) _lastHireDragEnd = Date.now();
   _hireDrag = null;
 }
@@ -722,8 +748,8 @@ function _floorHireTeardown(st, wasDrag) {
 // Esc cancels a drag in progress (§7) — writes nothing, opens nothing,
 // restores everything by tearing down the one class + the marker classes.
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && _hireDrag && _hireDrag.active) {
-    _floorHireTeardown(_hireDrag, true);
+  if (e.key === 'Escape' && _hireDrag) {
+    _floorHireTeardown(_hireDrag, _hireDrag.active);
   }
 });
 
@@ -784,6 +810,22 @@ function _hireOpenChannel(projectId, characterRef) {
   openProjectModal(projectId);
   setTimeout(() => {
     if (typeof window.setRailMode === 'function') window.setRailMode(projectId, 'channel');
+    // ARM THE COMPOSER, don't just drill to the row. Landing on the agent's
+    // (empty) channel with PERSONA still reading "None" meant the next thing
+    // typed went to the project default — the drop looked finished and was one
+    // step short. `setComposerCharacter` writes `pendingDispatchCharacter`,
+    // which is the value dispatchAgent actually puts in the POST body
+    // (`body.character`, resume-preview.js), so this arms the real payload and
+    // not merely the select's displayed text. The starter chips only fill the
+    // textarea, so they dispatch through the same armed composer.
+    if (typeof window.setComposerCharacter === 'function') {
+      window.setComposerCharacter(projectId, characterRef);
+    }
+    // Land on the +New screen so the armed persona is on screen and one keypress
+    // from dispatch. openChannelPerson overrides this when the agent already has
+    // history here (switchAgentTab clears the New state) — a resumed chat keeps
+    // its own spawn persona, and the arming stays for the next new chat.
+    if (typeof window.newAgentTab === 'function') window.newAgentTab(projectId);
     if (typeof window.openChannelPerson === 'function') window.openChannelPerson(projectId, characterRef);
   }, 500);
 }

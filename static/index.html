@@ -2155,7 +2155,13 @@ document.addEventListener('keydown', (e) => {
   // viewer AND the modal underneath it in the same keystroke (open an image from
   // a chat, hit Esc, lose the chat). The viewer is topmost, so Esc is its key;
   // a second Esc then closes the modal, which is what people expect.
-  if (e.key === 'Escape' && focusedModalId && !document.querySelector('.mermaid-viewer-overlay')) {
+  // Same reasoning for a hire drag in flight (floor.js): Esc is the drag's
+  // cancel key, and this handler is registered first, so without the guard one
+  // keystroke cancelled the drag AND closed the Floor out from under it —
+  // you'd have to reopen the board to try the drop again. `hire-active` on
+  // <body> is the published "a drag is in flight" signal (the CSS reads it too).
+  if (e.key === 'Escape' && focusedModalId && !document.querySelector('.mermaid-viewer-overlay')
+      && !document.body.classList.contains('hire-active')) {
     closeModalById(focusedModalId);
   }
 });
