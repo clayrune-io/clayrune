@@ -2389,7 +2389,7 @@ def _engine_label(rec):
     return ' · '.join(bits)
 
 
-def _roster_block(project, port):
+def _roster_block(project, port, session_id=''):
     """Who the hired types are, which engine each one runs on, and which of the
     two ways to call them shows up.
 
@@ -2442,7 +2442,14 @@ def _roster_block(project, port):
           "/agent/dispatch -d '{\"task\":\"…\",\"character\":\"global:<type>\"}' "
           "spawns a REAL session: its own figure on the Floor, its own chat Ron "
           "can open and argue with. Right for work that outlives your turn or "
-          "that he should be able to watch.")
+          "that he should be able to watch.\n"
+          "  The catch used to be that dispatch left you BLIND: unlike the Task "
+          "tool, nothing woke you when the child finished, so 'I'll report back' "
+          "was a promise with no trigger behind it. Add "
+          f"\"notify_session\":\"{session_id or '<your session id>'}\" to the dispatch "
+          "body and the child's status and final answer are delivered into THIS "
+          "chat as a message when it ends — which wakes you to continue. Use it "
+          "on every dispatch whose result you intend to act on.")
 
 
 def _build_agent_context(project, incognito=False, task='', character_body='',
@@ -2532,7 +2539,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
             "where none did.")
     _has_roster = False
     if session_id and not incognito:
-        _ros = _roster_block(project, state.CONFIG.get('port', 5199))
+        _ros = _roster_block(project, state.CONFIG.get('port', 5199), session_id)
         if _ros:
             parts.append(_ros)
             _has_roster = True
@@ -4349,6 +4356,40 @@ def _log_agent_dispatch_pending(session):
     except Exception as e:
         _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
 
+def _notify_agent_spawner(project_id, notify_sid, child, summary):
+    """Deliver a finished child agent's result into its spawner's chat.
+
+    Thread + localhost HTTP on purpose -- see the call site in
+    _log_agent_completion for why we do not call the handler inline.
+    """
+    def _send():
+        try:
+            import urllib.request
+            who = child.get('character') or child.get('provider') or 'agent'
+            status = child.get('status', 'unknown')
+            body = json.dumps({
+                'message': (
+                    f"[dispatched agent finished] {who} "
+                    f"(session {child.get('session_id', '')[:12]}) ended with "
+                    f"status={status}.\n\n"
+                    f"Task: {child.get('task', '')[:400]}\n\n"
+                    f"Its final message:\n{(summary or '')[:1500]}\n\n"
+                    "This is the callback you asked for at dispatch. Continue "
+                    "the work it was part of -- do not re-dispatch it."
+                ),
+                'session_id': notify_sid,
+            }).encode()
+            req = urllib.request.Request(
+                f'http://127.0.0.1:{PORT}/api/project/{project_id}/agent/send',
+                data=body, headers={'Content-Type': 'application/json'})
+            urllib.request.urlopen(req, timeout=30).read()
+            _log(f"[notify-spawner] delivered {child.get('session_id','')[:12]} -> {notify_sid[:12]}")
+        except Exception as e:
+            _log(f"[notify-spawner] delivery to {notify_sid[:12]} failed: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
+
+
 def _log_agent_completion(session):
     """Save a summary entry when an agent session finishes."""
     project_id = session.get('project_id')
@@ -4414,6 +4455,23 @@ def _log_agent_completion(session):
             summary = '[no assistant output — run failed with no captured error text]'
         else:
             summary = '[no assistant output captured]'
+
+    # MC-946 -- wake the spawner. An agent that dispatches another agent over
+    # HTTP gets a Floor figure and a chat the user can open, but nothing tells
+    # it when the child ends; the in-process Agent tool notifies, this does not.
+    # That asymmetry is what turns "I'll report back when it returns" into an
+    # empty promise, because there is no trigger behind it. Delivering the
+    # child's own summary into the spawner's chat closes it without giving up
+    # the visibility that made HTTP dispatch the right choice.
+    #
+    # Fired on a thread through the ordinary /agent/send route rather than by
+    # calling the handler directly: send owns the running/followup/revive
+    # routing decision and takes the per-project lock, which THIS function may
+    # already hold. Best-effort by design -- a failed callback must never break
+    # completion logging for the child that just finished.
+    _notify_sid = (session.get('_notify_session') or '').strip()
+    if _notify_sid and _notify_sid != session.get('session_id'):
+        _notify_agent_spawner(project_id, _notify_sid, session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
     # Best-effort: failures silently produce empty telemetry.
@@ -5401,7 +5459,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
-                             model_override='', strict_character=False):
+                             model_override='', strict_character=False,
+                             notify_session=''):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -5732,6 +5791,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # stays in the SAME tree it started in.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
+                # Spawner callback (MC-946). When an agent dispatches
+                # another agent over HTTP it goes dark: unlike the
+                # in-process Agent tool, nothing wakes the spawner when
+                # this session ends, so "I'll report back" is a promise
+                # with no mechanism behind it. Carrying the spawner's
+                # session id here lets _log_agent_completion deliver the
+                # result into that chat.
+                '_notify_session': notify_session,
                 'mode': 'B',
                 'stdin_lock': threading.Lock(),
                 'process_alive': True,
@@ -5840,6 +5907,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Worktree isolation (b264200a) — see the Mode B note above.
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
+                '_notify_session': notify_session,  # MC-946, see Mode B note
                 'mode': 'A',
                 'last_output_time': _time.time(),
                 'last_status_change_time': _time.time(),
@@ -5929,6 +5997,11 @@ def agent_dispatch(project_id):
     # Heuristic: a raw agent/curl dispatch has no browser Origin and no mobile
     # client tag → treat as 'agent' so it auto-routes to the side flow without
     # the caller having to remember. Real UI requests always carry an Origin.
+    # MC-946: an agent dispatching another agent can name its OWN session
+    # here to be woken when the child finishes. Optional and unvalidated
+    # on purpose -- a stale or wrong id costs one undelivered note, and
+    # failing the dispatch over a callback would be far worse.
+    notify_session = (data.get('notify_session') or '').strip()
     source = (data.get('source') or '').strip().lower()
     if not source and not request.headers.get('Origin') and not data.get('client'):
         source = 'agent'
@@ -5949,7 +6022,8 @@ def agent_dispatch(project_id):
                                               # replay a persona pinned once
                                               # at write time and must stay
                                               # best-effort; they don't set this.
-                                              strict_character=True)
+                                              strict_character=True,
+                                              notify_session=notify_session)
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
