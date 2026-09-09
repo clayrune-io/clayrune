@@ -138,16 +138,26 @@ happened, when, links to the artifact, `story_score`. Most entries never become
 posts. This is the raw material that separates the Desk from a prompt box, and
 it is the one thing Clayrune has that a standalone social tool cannot get.
 
-### Voice profile (new)
+### Voice profiles (new) — two of them
 
 What stops the output smelling like marketing. Seeded from Ron's own writing —
 commit messages, backlog text, chat — then **maintained by diffing every edit he
 makes to a draft.** An edit is the highest-quality training signal in the system
 and today it is discarded on save.
 
-Holds: register, banned words and constructions, claims he will not make, how he
-refers to the product, and a running list of rewrites with before and after.
-The teacher's curriculum is derived from this, not maintained separately.
+Each profile holds: register, banned words and constructions, claims that voice
+will not make, how it refers to the product, and a running list of rewrites with
+before and after.
+
+Per the decision below there are two, and they are not variants of one another:
+
+- **`ron`** — first person, a builder saying what he built and what it cost him.
+  Owns X.
+- **`clayrune`** — the product speaking about itself. Owns LinkedIn.
+
+Both feed **one** teacher's curriculum. Ron is learning to market, not learning
+two jobs, and the lessons that matter (specificity over adjectives, claims that
+survive checking) are register-independent.
 
 ### Campaign board (new)
 
@@ -213,14 +223,44 @@ on a slower clock than the drafting.
 - **It does not become a general campaign manager for other people's products.**
   One operator, his own projects.
 
+## Decided (Ron, 2026-09-09)
+
+### Identity: both, split by platform
+
+**X carries `ron`. LinkedIn carries `clayrune`.** A story that runs on both
+platforms is written twice from the same signal, never cross-posted, and the two
+drafts may make different claims because the two voices have different standing
+to make them.
+
+Consequence the Desk must enforce: `ron` may say "I got this wrong for three
+weeks"; `clayrune` may not say it in the first person. The voice profile's
+banned-construction list is the mechanism, not a style note in a prompt.
+
+### Platforms: X and LinkedIn, v1
+
+Reddit, Discord and Facebook are out of v1 even though the vault holds
+credentials for all three. Reddit in particular is not a publishing target —
+it rewards participation and punishes broadcast, so it needs a different
+function than the one specified here.
+
+### Finding — "Clayrune on LinkedIn" has two implementations, and the obvious one is wrong
+
+A LinkedIn **Company Page** is the literal reading, and it starts at zero
+followers reaching nobody. That is precisely the failure this design exists to
+avoid, and it would make the Desk look broken for months for reasons that have
+nothing to do with the writing.
+
+**v1 posts the `clayrune` voice from Ron's existing personal LinkedIn profile**
+— product register, product subject matter, his distribution. The vault's
+LinkedIn entry already authenticates that profile, so nothing new is needed.
+
+This is reversible: a Company Page can be created later and the `clayrune`
+profile re-pointed at it once there is an audience worth moving. Creating the
+page is outward-facing, so it is Ron's call, not the Desk's, and it is not on
+the v1 path.
+
 ## Open
 
-These change the build materially and are not deferrable past v1.
-
-- **Whose account.** Ron the builder, or Clayrune the product. This decides the
-  voice profile's foundation and the entire register.
-- **Which platforms ship first**, and which the Desk never touches. The vault
-  holds five; that is not an argument for using five.
 - **Cadence and volume.** What arrives, how often, and how many drafts in a
   batch stops being help and starts being homework.
 - **Whether replies come back.** Write-only is far simpler and probably wrong,
@@ -228,3 +268,5 @@ These change the build materially and are not deferrable past v1.
 - **Whether the story score is worth being clever about** before there is any
   published history to learn from. A dumb score plus Ron's veto may beat a
   smart one.
+- **Whether `clayrune` posting from a personal profile confuses readers**, and
+  what the tell is if it does. Watch for it; do not pre-solve it.
