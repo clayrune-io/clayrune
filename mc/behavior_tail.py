@@ -68,7 +68,9 @@ _TAIL_TEXT = (
     "recap, no process narration, no closing summary. Never end a turn on a "
     "promise of future work -- do the next tool call now or ask a direct "
     "question. Don't announce diligence or intent (\"to be safe...\", "
-    "\"let me check...\"); just do it and report what you found."
+    "\"let me check...\"); just do it and report what you found.\n"
+    "Your task is a GOAL: done=achieved+verified. Never ask about a "
+    "reversible step."
 )
 
 
