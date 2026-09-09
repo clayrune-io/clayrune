@@ -84,10 +84,20 @@ function openBackupSurface(tab) {
       // and auto-expanding it pushed the Create button off-screen.
       expanded: { records: false, artifacts: false, media: false, transcripts: false, unprotected: false },
       label: '', creating: false, createResult: null, createError: null,
+      createNotice: null,
       // Async create (POST /api/backup/create {"async":true}) — a ~48GB
       // archive is minutes of writing, so the job is polled for real byte
       // progress instead of parking on a disabled button.
       job: null,
+      // Reattach (GET /api/backup/jobs). The job_id used to live ONLY here,
+      // so closing the panel — or reloading the page — orphaned a running
+      // 48GB write: idle form on screen, no way to watch or cancel it. The
+      // server is the only thing that outlives both, so we ask it on open.
+      // Deliberately not sessionStorage: that dies with the tab too.
+      jobsProbe: { done: false },
+      // Most recent archive in the DEFAULT destination, so the panel opens
+      // saying when you last backed up rather than nothing at all.
+      lastBackup: { loaded: false, loading: false, item: null },
       // Destination override (MC-945 follow-up): `override` is per-action —
       // it's sent as `dest_dir` on the next create/list call, never persisted.
       // The persisted default lives in Settings (backup_dest_dir); this is
@@ -133,8 +143,69 @@ function _backupRender(modalId) {
   } else {
     body.innerHTML = _backupCreateTabHTML(st);
     _backupLoadSizePreview(modalId);
+    _backupLoadLastBackup(modalId);
   }
   _backupLoadDestDir(modalId);
+  _backupProbeJobs(modalId);
+}
+
+// ── Reattach to a create that is already running ────────────────────────────
+//
+// Runs once per opened panel. If the server still has a live job we drop
+// straight into the progress + Cancel state; if the only thing it has is a
+// job that finished while the panel was closed, we show that result rather
+// than a blank form. Either way the source of truth is the SERVER — this
+// has to survive a full page reload, not just a modal close.
+async function _backupProbeJobs(modalId) {
+  const entry = openModals.get(modalId);
+  if (!entry || entry._backup.jobsProbe.done) return;
+  entry._backup.jobsProbe.done = true;
+  let data;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/jobs');
+    if (!res.ok) return;
+    data = await res.json();
+  } catch (e) {
+    return;   // no reattach is a degraded panel, never a broken one
+  }
+  const st = entry._backup;
+  if (st.job || st.creating) return;             // this panel already started one
+  const live = (data.active || [])[0];
+  if (live) {
+    st.creating = true;
+    st.job = live;
+    st.createResult = null; st.createError = null; st.createNotice = null;
+    _backupRender(modalId);
+    _backupPollJob(modalId, live.job_id);
+    return;
+  }
+  const last = (data.recent || [])[0];
+  if (last && last.status === 'done' && last.result) {
+    st.createResult = last.result;
+    st.createNotice = 'This finished while the panel was closed.';
+    _backupRender(modalId);
+  }
+}
+
+// The newest archive sitting in the DEFAULT destination. Same endpoint the
+// Restore tab lists from, minus any per-action override — "where your
+// backups normally land" is the honest thing to report on the Backup tab.
+async function _backupLoadLastBackup(modalId) {
+  const entry = openModals.get(modalId);
+  if (!entry || entry._backup.lastBackup.loaded || entry._backup.lastBackup.loading) return;
+  entry._backup.lastBackup.loading = true;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/list');
+    const data = await res.json();
+    const items = (res.ok && data.backups) ? data.backups : [];
+    entry._backup.lastBackup.item = items.find(b => b.kind === 'full' && !b.error) || null;
+  } catch (e) {
+    entry._backup.lastBackup.item = null;
+  } finally {
+    entry._backup.lastBackup.loaded = true;
+    entry._backup.lastBackup.loading = false;
+    _backupRender(modalId);
+  }
 }
 
 // ── Destination override (create + restore/list tabs) ───────────────────────
@@ -250,34 +321,71 @@ function _backupCreateTabHTML(state) {
   const rows = DEFAULT_BACKUP_CATEGORIES.map(cat => _backupCategoryRowHTML(cat, state)).join('');
   const noneChecked = DEFAULT_BACKUP_CATEGORIES.every(c => !state.checklist[c]);
 
+  const running = !!(state.job && state.job.status !== 'done' && state.job.status !== 'error'
+    && state.job.status !== 'cancelled');
+
   return `
+    ${_backupLastBackupHTML(state)}
     <div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;line-height:1.5">
       Everything is included by default — untick what you don't want. Sizes are measured live before anything
-      is written.
+      is written. You choose the folder when you hit Create.
     </div>
-    ${_backupDestDirFieldHTML(state)}
+    <div style="font-size:11px;font-weight:700;color:var(--text);margin-bottom:2px">1. What to include</div>
     <div>${rows}</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:8px;border-top:2px solid var(--border)">
       <span style="font-size:12px;color:var(--text-faint)">Total</span>
       <span style="font-size:13px;font-weight:700;color:var(--text);font-family:var(--mono)">${state.sizeLoading ? 'measuring…' : _fmtBackupBytes(total)}</span>
     </div>
     <div style="margin-top:12px">
-      <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">Label (optional)</label>
+      <label style="display:block;font-size:11px;font-weight:700;color:var(--text);margin-bottom:4px">2. Label (optional)</label>
       <input type="text" value="${esc(state.label)}" placeholder="before-migration"
         oninput="_backupSetLabel(this.value)"
         style="width:100%;padding:6px 10px;font-size:13px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)">
     </div>
     ${noneChecked ? '<div style="margin-top:8px;font-size:11px;color:var(--red-text)">Untick everything and there is nothing to back up — pick at least one category.</div>' : ''}
     ${state.createError ? `<div style="margin-top:10px;font-size:12px;color:var(--red-text)">${esc(state.createError)}</div>` : ''}
+    ${state.createNotice ? `<div style="margin-top:10px;font-size:12px;color:var(--text-faint)">${esc(state.createNotice)}</div>` : ''}
     ${state.createResult ? _backupCreateResultHTML(state.createResult) : ''}
     <div id="backup-job-progress">${state.job ? _backupJobProgressHTML(state.job) : ''}</div>
-    <div style="display:flex;justify-content:flex-end;margin-top:14px">
-      <button class="btn-add" ${(noneChecked || state.creating) ? 'disabled' : ''} onclick="_backupCreate()">${state.creating ? 'Creating…' : 'Create backup'}</button>
-    </div>`;
+    ${running ? '' : `<div style="display:flex;justify-content:flex-end;margin-top:14px">
+      <button class="btn-add" ${(noneChecked || state.creating) ? 'disabled' : ''} onclick="_backupCreate()">${state.creating ? 'Creating…' : 'Create backup…'}</button>
+    </div>`}`;
+}
+
+// Most-recent-backup summary. Everything here comes from the archive's own
+// manifest via list_backups(), so it describes what is actually on disk —
+// not what this panel happens to remember doing.
+function _backupLastBackupHTML(state) {
+  const lb = state.lastBackup;
+  if (!lb.loaded) {
+    return `<div style="margin-bottom:12px;font-size:11px;color:var(--text-faint)">Checking for previous backups…</div>`;
+  }
+  if (!lb.item) {
+    return `<div style="margin-bottom:12px;padding:8px 12px;border:1px dashed var(--border);border-radius:6px;font-size:11px;color:var(--text-faint)">
+      No backup has been made yet.</div>`;
+  }
+  const b = lb.item;
+  const cats = Object.entries(b.categories || {}).filter(([k, v]) => k !== 'vault' && v).map(([k]) => k);
+  const when = b.created_at ? new Date(b.created_at).toLocaleString() : 'unknown date';
+  return `<div style="margin-bottom:12px;padding:9px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;font-size:11px">
+    <div style="display:flex;gap:8px;align-items:baseline;flex-wrap:wrap">
+      <span style="font-weight:700;color:var(--text)">Last backup</span>
+      <span style="color:var(--text-faint)">${esc(when)}</span>
+      <span style="margin-left:auto;font-family:var(--mono);color:var(--text)">${_fmtBackupBytes(b.bytes)}</span>
+    </div>
+    <div style="margin-top:3px;color:var(--text-faint);font-family:var(--mono);word-break:break-all">${esc(b.path)}</div>
+    <div style="margin-top:3px;color:var(--text-faint)">${esc(cats.join(', ') || 'no categories')}${
+      b.file_count ? ` &middot; ${b.file_count} files` : ''}${
+      b.warning_count ? ` &middot; ${b.warning_count} warning${b.warning_count === 1 ? '' : 's'}` : ''}</div>
+  </div>`;
 }
 
 function _backupJobProgressHTML(job) {
   const pct = job.total_bytes ? Math.min(100, Math.floor((job.bytes_written / job.total_bytes) * 100)) : 0;
+  // Cancel lives INSIDE #backup-job-progress on purpose: the poll patches
+  // only that subtree every 700ms (a full re-render would eat the caret in
+  // the Label field), so a button anywhere else would never track the state.
+  const cancelling = job.status === 'cancelling' || job.cancel_requested;
   return `<div style="margin-top:12px">
     <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text-faint);margin-bottom:4px">
       <span>${_fmtBackupBytes(job.bytes_written || 0)} of ${_fmtBackupBytes(job.total_bytes || 0)}
@@ -289,7 +397,38 @@ function _backupJobProgressHTML(job) {
       <div style="height:100%;width:${pct}%;background:var(--accent);transition:width .3s"></div>
     </div>
     ${job.current_file ? `<div style="margin-top:4px;font-size:10px;color:var(--text-faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(job.current_file)}</div>` : ''}
+    <div style="display:flex;justify-content:flex-end;margin-top:8px">
+      <button class="btn-browse" id="backup-cancel-btn" ${cancelling ? 'disabled' : ''}
+        style="border-color:var(--red-text,#ef4444);color:var(--red-text,#ef4444)"
+        onclick="_backupCancelJob()">${cancelling ? 'Cancelling…' : 'Cancel backup'}</button>
+    </div>
   </div>`;
+}
+
+// Cooperative: the server flags the job and its write loop stops between
+// entries, deleting its own .partial. Nothing is killed, so there is no
+// half-written archive and no multi-GB orphan left behind.
+async function _backupCancelJob() {
+  const modalId = '__backup';
+  const entry = openModals.get(modalId);
+  if (!entry || !entry._backup.job) return;
+  const st = entry._backup;
+  const jobId = st.job.job_id;
+  st.job = { ...st.job, status: 'cancelling' };   // immediate feedback; the poll confirms it
+  const el = entry.element && entry.element.querySelector('#backup-job-progress');
+  if (el) el.innerHTML = _backupJobProgressHTML(st.job);
+  try {
+    const res = await fetch(API_BASE + '/api/backup/create/cancel/' + encodeURIComponent(jobId),
+      { method: 'POST' });
+    const data = await res.json();
+    if (!res.ok) {
+      st.createError = data.error || `Cancel failed (HTTP ${res.status})`;
+      _backupRender(modalId);
+    }
+  } catch (e) {
+    st.createError = 'Cancel failed: ' + e.message;
+    _backupRender(modalId);
+  }
 }
 
 function _backupCreateResultHTML(r) {
@@ -329,19 +468,35 @@ async function _backupLoadSizePreview(modalId) {
   }
 }
 
-async function _backupCreate() {
+// Create is a two-step flow now: the folder picker opens HERE, seeded at the
+// default from Settings → System, and the write starts only once a folder is
+// confirmed. Ron's call — a Destination field parked at the top of the form
+// is a question asked before the user has decided to do anything.
+function _backupCreate() {
+  const entry = openModals.get('__backup');
+  if (!entry) return;
+  const dd = entry._backup.destDir;
+  openFolderPicker(null, {
+    startPath: (dd.override || dd.effective || ''),
+    title: 'Choose backup destination',
+    onSelect: (path) => { _backupSetDestDirOverride(path); _backupStartCreate(path); },
+  });
+}
+
+async function _backupStartCreate(destDir) {
   const modalId = '__backup';
   const entry = openModals.get(modalId);
   if (!entry) return;
   const st = entry._backup;
-  st.creating = true; st.createError = null; st.createResult = null; st.job = null;
+  st.creating = true; st.createError = null; st.createResult = null;
+  st.createNotice = null; st.job = null;
   _backupRender(modalId);
   try {
     const res = await fetch(API_BASE + '/api/backup/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         categories: st.checklist, label: st.label || undefined,
-        dest_dir: (st.destDir.override || '').trim() || undefined,
+        dest_dir: (destDir || '').trim() || undefined,
         async: true,   // => 202 {job_id}; the write runs on a worker thread
       }),
     });
@@ -387,6 +542,17 @@ async function _backupPollJob(modalId, jobId) {
     st.createResult = data.result;
     st.job = null;
     st.restoreList.loaded = false;
+    st.lastBackup.loaded = false;
+    _backupRender(modalId);
+    return;
+  }
+  if (data.status === 'cancelled') {
+    // The user asked for this — report it as an outcome, not a failure, and
+    // say plainly that nothing was left behind.
+    st.creating = false;
+    st.job = null;
+    st.createError = null;
+    st.createNotice = 'Backup cancelled — the partial archive was deleted, nothing was written.';
     _backupRender(modalId);
     return;
   }
@@ -919,6 +1085,8 @@ window._backupSetLabel = _backupSetLabel;
 window._backupSetDestDirOverride = _backupSetDestDirOverride;
 window._backupRefreshList = _backupRefreshList;
 window._backupCreate = _backupCreate;
+window._backupStartCreate = _backupStartCreate;
+window._backupCancelJob = _backupCancelJob;
 window._backupToggleExpand = _backupToggleExpand;
 window._backupBrowseDestDir = _backupBrowseDestDir;
 window._backupRestoreConfirm = _backupRestoreConfirm;

@@ -586,12 +586,24 @@ would be the only destructive write in this design, so it is not one.
   thread, with `GET /api/backup/create/status/<job_id>` reporting
   bytes/files written against their totals, the current member and the
   warning count (a ~48 GB default archive is minutes of writing, and the
-  synchronous default stays byte-for-byte what the CLI and tests use) —
+  synchronous default stays byte-for-byte what the CLI and tests use);
+  **`POST /api/backup/create/cancel/<job_id>`** aborts one cooperatively —
+  a flag the write loop checks between entries, never a killed thread, so
+  the worker unwinds through its own cleanup and removes the `.partial`;
+  the job ends in `cancelled`, which is NOT `error`. **`GET
+  /api/backup/jobs`** lists active + recently-finished jobs so a reopened
+  panel (or a reloaded page) can reattach to a write it did not start —
+  the `job_id` otherwise lives only in the tab that launched it —
   `GET /api/backup/list`, `POST /api/backup/restore`,
   `POST /api/backup/export-project/<id>`, `POST /api/backup/import`
   (dry-run by default, `apply: true` to commit),
   `POST/GET /api/backup/restore-point/<project_id>`,
   `POST /api/backup/rollback/<project_id>/<snap>`.
+- **The destination is chosen inside the create flow**, not as a field on
+  the form: the folder picker opens when the user hits Create, seeded at
+  the `backup_dest_dir` default from Settings → System (Ron, 2026-09-09).
+  The Restore tab keeps a destination field of its own — it needs to
+  *list* from an alternate folder. `dest_dir` on the route is unchanged.
 - Logic lives in `mc/backup.py`, importable without `server.py` (same
   isolation rule as `distiller.py`); routes in
   `mc/blueprints/backup_routes.py`; `tools/clayrune-backup.py` CLI drives

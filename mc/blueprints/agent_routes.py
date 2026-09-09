@@ -4338,6 +4338,14 @@ def _log_agent_dispatch_pending(session):
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
         'character': session.get('character'),
+        # Same field/guard as _log_agent_completion — kept here too so a
+        # dispatch that never reaches completion (killed mid-run) still
+        # carries its spawner in the durable row.
+        'spawned_by_session_id': (
+            (session.get('_notify_session') or '').strip()
+            if (session.get('_notify_session') or '').strip() != sid
+            else ''
+        ),
     }
     try:
         log = _load_agent_log(project_id)
@@ -4546,6 +4554,19 @@ def _log_agent_completion(session):
         'status': session.get('status', 'unknown'),
         'summary': summary[:2000],
         'session_id': session.get('session_id', ''),
+        # MC-946's `_notify_session` lives only on the in-memory session dict
+        # (agent_routes.py:5854/:5963) — nothing wrote it here, so the rail had
+        # no way to tell a dispatched worker apart from a peer conversation
+        # once the process exited or the server restarted. Empty for every
+        # session that wasn't spawned by another agent (the overwhelming
+        # majority), so this is a no-op for ordinary chats. Same self-pointer
+        # guard as `_maybe_notify_spawner` — a session naming itself must not
+        # render as its own nested child.
+        'spawned_by_session_id': (
+            (session.get('_notify_session') or '').strip()
+            if (session.get('_notify_session') or '').strip() != session.get('session_id', '')
+            else ''
+        ),
         'claude_session_id': session.get('claude_session_id', ''),
         # Provider-neutral equivalent of claude_session_id for Mode-A runtimes
         # (currently Codex). Captured at dispatch/turn time into the session
@@ -8465,6 +8486,23 @@ def _conversation_character_display(log_entry, project):
     }
 
 
+def _row_spawned_by(log_entry, live):
+    """MC-946's spawner link for a conversation row — same fallback shape as
+    `_conversation_character_display`'s caller-side pattern: the durable
+    agent-log row only gets `spawned_by_session_id` once `_log_agent_completion`
+    or `_log_agent_dispatch_pending` runs, so a worker still mid-run has
+    nothing there yet. The live session dict (`_notify_session`, set at
+    dispatch) fills that gap while it's running. `live` is sometimes the raw
+    `agent_sessions` record (key `_notify_session`) and sometimes the trimmed
+    `live_by_csid` projection (normalized to `notify_session`) — accept both.
+    """
+    sid = ((log_entry or {}).get('spawned_by_session_id') or '').strip()
+    if sid:
+        return sid
+    live = live or {}
+    return (live.get('notify_session') or live.get('_notify_session') or '').strip()
+
+
 def _recent_codex_conversation_rows(project_id, p, limit):
     """Codex conversations backed by real rollout transcripts.
 
@@ -8546,6 +8584,7 @@ def _recent_codex_conversation_rows(project_id, p, limit):
         _row_character = _conversation_character_display(log_entry, p) or (
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
+        _row_spawned = _row_spawned_by(log_entry, live)
         rows.append({
             'claude_session_id': '',
             'provider_session_id': thread_id,
@@ -8571,6 +8610,10 @@ def _recent_codex_conversation_rows(project_id, p, limit):
             # (ws_005). Emitted ALONGSIDE `character`, never replacing it: this
             # is a roster-grouping key, not a persona record.
             'identity': _identity.resolve_identity(_row_character, _row_source),
+            # MC-946 — who dispatched this session, if it's a throwaway worker
+            # rather than a chat the user opened directly. Empty for everyone
+            # else. See docs standing position on lifespan-split nesting.
+            'spawned_by_session_id': _row_spawned,
             'provider': 'codex',
             # `_dispatch_via_runtime` now threads `resume_id` through to
             # `codex exec resume <thread_id>` (parity audit item 3) — the
@@ -8654,6 +8697,7 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
         _row_character = _conversation_character_display(latest, p) or (
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
+        _row_spawned = _row_spawned_by(latest, live)
         rows.append({
             'claude_session_id': '',
             'mc_session_id': sid,
@@ -8675,6 +8719,7 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             'steward_objective': '',
             'character': _row_character,
             'identity': _identity.resolve_identity(_row_character, _row_source),
+            'spawned_by_session_id': _row_spawned,
             # Provider + resumability, so the UI never offers a Resume control
             # that silently starts a fresh session. Mode A has no native `-r`;
             # the best honest offer is a read-only history (see
@@ -8729,6 +8774,10 @@ def get_project_conversations(project_id):
                 # The live session knows its persona even when the agent-log row
                 # does not (see the fallback at the emit site below).
                 'character': s.get('character'),
+                # Same rationale, same fallback shape, for MC-946's spawner link
+                # (agent_log only gets this at completion; a still-running
+                # worker's row has nothing until then).
+                'notify_session': (s.get('_notify_session') or '').strip(),
             }
 
     convos = _recent_claude_transcripts(project_path, limit=limit,
@@ -8783,6 +8832,7 @@ def get_project_conversations(project_id):
         _row_character = _conversation_character_display(log_entry, p) or (
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
+        _row_spawned = _row_spawned_by(log_entry, live)
         out.append({
             'claude_session_id': sid,
             'mc_session_id': mc_session_id,
@@ -8827,6 +8877,10 @@ def get_project_conversations(project_id):
             # delegated session with no persona (MC-925) resolves to a
             # separate 'unnamed' bucket instead of masquerading as the default.
             'identity': _identity.resolve_identity(_row_character, _row_source),
+            # MC-946 — the spawning session's mc_session_id, or '' for an
+            # ordinary user-opened chat. Lets the rail nest a dispatched
+            # worker under its spawner instead of listing it as a peer.
+            'spawned_by_session_id': _row_spawned,
             # Claude transcripts are Claude by construction; the CLI's own `-r`
             # is a real resume. Kept alongside the non-Claude rows' provider/
             # resumable/resume_mode fields below (union, not two shapes).

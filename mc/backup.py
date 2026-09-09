@@ -164,6 +164,18 @@ class BackupIntegrityError(BackupError):
     """A file's sha256 didn't match before any write happened (spec §4.5)."""
 
 
+class BackupCancelled(BackupError):
+    """The caller asked for the create to stop mid-write.
+
+    Cooperative, never a killed thread: create_backup() polls ``cancel_cb``
+    between entries and raises this, so the write unwinds through the same
+    ``except BaseException`` that deletes the .partial temp — an aborted
+    48GB run leaves no multi-GB orphan behind. Kept distinct from a plain
+    BackupError so a caller can report 'cancelled' rather than 'failed';
+    the user asked for this outcome, it is not a defect.
+    """
+
+
 def _is_within(child: Path, parent: Path) -> bool:
     return child == parent or parent in child.parents
 
@@ -753,16 +765,34 @@ def _read_and_maybe_reserialize(entry: _Entry) -> bytes:
 
 def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = None,
                   label: Optional[str] = None,
-                  progress_cb: Optional[Callable[[dict], None]] = None) -> dict:
+                  progress_cb: Optional[Callable[[dict], None]] = None,
+                  cancel_cb: Optional[Callable[[], bool]] = None) -> dict:
     """``progress_cb``, if given, is called after every file is written with
     ``{files_written, total_files, bytes_written, total_bytes, current_file,
     warnings_count}`` — the async job path (mc/blueprints/backup_routes.py)
     passes one so a poller can render a real progress bar; the synchronous
     CLI/test path passes none and behaves exactly as before. A callback
-    exception is swallowed, never allowed to abort the write in progress."""
+    exception is swallowed, never allowed to abort the write in progress.
+
+    ``cancel_cb``, if given, is polled at the run's phase boundaries and once
+    per entry inside the write loop; the first truthy return raises
+    BackupCancelled. This is the ONLY safe way to stop a 48GB write — killing
+    the worker thread would strand the .partial temp and could leave a
+    half-flushed zip, while unwinding through the existing cleanup path
+    deletes it. A cancel_cb exception is swallowed like progress_cb's: a
+    broken callback must never abort a good write."""
     cats = _normalize_categories(categories)
     if not any(cats.get(c) for c in DEFAULT_CATEGORIES):
         raise BackupError('refusing to create an empty archive — untick fewer categories')
+
+    def _cancelled() -> bool:
+        if cancel_cb is None:
+            return False
+        try:
+            return bool(cancel_cb())
+        except Exception as e:
+            _log(f"[backup] cancel check failed, treating as not-cancelled: {e}")
+            return False
 
     paths = _paths()
     # Validate the destination BEFORE enumerating: the sweep walks the whole
@@ -783,6 +813,11 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
         entries, warns, _lines = _enumerate_unprotected(paths, projects, unprotected_excl)
         all_entries += entries
         warnings += warns
+
+    # Enumeration alone runs for minutes on a large install, so honour a
+    # cancel that arrived during it rather than starting a write nobody wants.
+    if _cancelled():
+        raise BackupCancelled('backup cancelled before any file was written')
 
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = _filename_for(cats, unprotected_excl)
@@ -812,6 +847,11 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
     try:
         with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
             for e in all_entries:
+                # Between entries, never mid-file: the abort unwinds through
+                # the except-BaseException below, which deletes the .partial.
+                if _cancelled():
+                    raise BackupCancelled(
+                        f'backup cancelled after {written} of {total_files} files')
                 arcname = f"{e.arc_prefix}/{e.relpath}"
                 try:
                     data = _read_and_maybe_reserialize(e)

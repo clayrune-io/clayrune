@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 /**
- * Backup panel — the four defects Ron reported against the shipped panel.
+ * Backup panel — the defects Ron reported against the shipped panel.
  *
  * WHY THIS EXISTS
  * ---------------
+ * Round one (four defects):
  * 1. "Unprotected work files" auto-expanded its per-directory list with no way
  *    to close it — dozens of rows on a real install, pushing Create off-screen.
  * 2. Only 'unprotected' had a breakdown at all; the other four categories
@@ -12,6 +13,18 @@
  *    ships a server-side folder picker that works over remote access.
  * 4. Create was synchronous: a ~48GB archive parked on a dead "Creating…"
  *    button for minutes with no progress.
+ *
+ * Round two (this pass):
+ * 5. No way to STOP a running backup — a 48GB write the user cannot abort is
+ *    worse than a blocking one. Cancel is cooperative and ends in its own
+ *    'cancelled' state, never 'failed'.
+ * 6. The destination moved OUT of the form and INTO the create flow: tick
+ *    categories, hit Create, and the picker opens then — seeded at the
+ *    Settings → System default. One numbered flow, exactly one accent button.
+ * 7. Reopening the panel mid-run lost the job entirely, because the job_id
+ *    lived only in the closing tab's JS. The panel now re-discovers it from
+ *    the server (GET /api/backup/jobs), and shows the last backup's details
+ *    when nothing is running.
  *
  * Hermetic, like boot-smoke.mjs: the page and every /static/** file are served
  * from THIS checkout, the backup + browse APIs are canned, everything else is
@@ -56,19 +69,39 @@ const SIZE_PREVIEW = {
   },
 };
 
+// One archive already on disk, so the panel has a "last backup" to describe.
+const LAST_BACKUP = {
+  path: 'D:\\backups\\clayrune-2026-09-08-full.crbackup',
+  bytes: 41.2 * GB, created_at: '2026-09-08T22:10:00Z', kind: 'full', format: 1,
+  categories: { records: true, artifacts: true, media: true, transcripts: true,
+                unprotected: true, vault: false },
+  file_count: 95_000, warning_count: 2,
+};
+
 // Job progress: two running ticks then done, so the bar has to actually move.
+const RUNNING_TICK = {
+  status: 'running', files_written: 12000, total_files: 96000, bytes_written: 6 * GB,
+  total_bytes: 48 * GB, current_file: 'unprotected/nongit/scanner/data/ticks.csv',
+  warnings_count: 1, result: null, error: null, cancel_requested: false,
+};
 const JOB_TICKS = [
-  { status: 'running', files_written: 12000, total_files: 96000, bytes_written: 6 * GB,
-    total_bytes: 48 * GB, current_file: 'unprotected/nongit/scanner/data/ticks.csv', warnings_count: 1, result: null, error: null },
-  { status: 'running', files_written: 48000, total_files: 96000, bytes_written: 24 * GB,
-    total_bytes: 48 * GB, current_file: 'unprotected/nongit/scanner/data/more.csv', warnings_count: 2, result: null, error: null },
+  RUNNING_TICK,
+  { ...RUNNING_TICK, files_written: 48000, bytes_written: 24 * GB,
+    current_file: 'unprotected/nongit/scanner/data/more.csv', warnings_count: 2 },
   { status: 'done', files_written: 96000, total_files: 96000, bytes_written: 48 * GB,
     total_bytes: 48 * GB, current_file: 'manifest.json', warnings_count: 2, error: null,
-    result: { path: 'D:\\backups\\clayrune-2026-09-09-full.crbackup', files_written: 96000, warnings: [{ kind: 'oversize_skipped', path: 'x' }] } },
+    result: { path: 'D:\\backups\\clayrune-2026-09-09-full.crbackup', files_written: 96000,
+              bytes: 41.9 * GB, warnings: [{ kind: 'oversize_skipped', path: 'x' }] } },
 ];
 
 let createBody = null;
+let createCalls = 0;
+let cancelCalls = [];
 let tick = 0;
+let mode = 'progress';      // 'progress' walks JOB_TICKS; 'hold' stays running
+let cancelled = false;
+let activeJobs = [];        // what GET /api/backup/jobs reports as live
+let recentJobs = [];
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -105,18 +138,32 @@ await page.route('**/*', (route) => {
   if (path === '/api/config') return json({});
   if (path === '/api/backup/size-preview') return json(SIZE_PREVIEW);
   if (path === '/api/backup/dest-dir') return json({ configured: null, effective: 'C:\\Users\\x\\.clayrune\\backups' });
-  if (path === '/api/backup/list') return json({ backups: [] });
+  if (path === '/api/backup/list') return json({ backups: [LAST_BACKUP] });
+  if (path === '/api/backup/jobs') return json({ active: activeJobs, recent: recentJobs });
   if (path === '/api/browse/folders')
     return json({ path: 'C:\\Users\\x\\Backups', parent: 'C:\\Users\\x', home: 'C:\\Users\\x',
                   workspace_base: '', folders: [{ name: 'nightly', path: 'C:\\Users\\x\\Backups\\nightly' }] });
   if (path === '/api/backup/create') {
+    createCalls++;
     createBody = JSON.parse(route.request().postData() || '{}');
     return json({ job_id: 'job-smoke-1', status: 'running' }, 202);
   }
+  if (path.startsWith('/api/backup/create/cancel/')) {
+    cancelCalls.push(decodeURIComponent(path.split('/').pop()));
+    cancelled = true;
+    return json({ job_id: 'job-smoke-1', status: 'cancelling', cancelled: true });
+  }
   if (path.startsWith('/api/backup/create/status/')) {
+    const jobId = decodeURIComponent(path.split('/').pop());
+    if (cancelled)
+      return json({ job_id: jobId, started_at: '2026-09-09T00:00:00Z', ...RUNNING_TICK,
+                    status: 'cancelled', result: null, error: null,
+                    cancelled_reason: 'backup cancelled after 12000 of 96000 files' });
+    if (mode === 'hold')
+      return json({ job_id: jobId, started_at: '2026-09-09T00:00:00Z', ...RUNNING_TICK });
     const body = JOB_TICKS[Math.min(tick, JOB_TICKS.length - 1)];
     tick++;
-    return json({ job_id: 'job-smoke-1', started_at: '2026-09-09T00:00:00Z', ...body });
+    return json({ job_id: jobId, started_at: '2026-09-09T00:00:00Z', ...body });
   }
   return route.abort();
 });
@@ -127,6 +174,13 @@ const rowCount = () => page.evaluate(() =>
 const visibleBreakdownPaths = () => page.evaluate(() =>
   [...document.querySelectorAll('#backup-body span')]
     .map(d => d.textContent.trim()).filter(t => /^[A-Za-z]:\\/.test(t)));
+const bodyText = async () => (await page.textContent('#backup-body')).replace(/\s+/g, ' ');
+const reopenPanel = async () => {
+  await page.evaluate(() => window.closeModalById('__backup'));
+  await page.waitForTimeout(100);
+  await page.evaluate(() => window.openBackupSurface('backup'));
+  await page.waitForSelector('#backup-body label', { timeout: 10000 });
+};
 
 try {
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -163,7 +217,9 @@ try {
       : fail(`${cat}: expanded but ${wantPath} is not in ${JSON.stringify(shown)}`);
     await page.evaluate((c) => window._backupToggleExpand(c), cat);
     const after = await visibleBreakdownPaths();
-    after.length === 0 ? ok(`${cat}: collapses again`) : fail(`${cat}: still showing ${after.length} rows`);
+    // The "last backup" card also prints a path — it is not a breakdown row.
+    const leftover = after.filter(p => !p.includes('clayrune-2026-09-08'));
+    leftover.length === 0 ? ok(`${cat}: collapses again`) : fail(`${cat}: still showing ${leftover.length} rows`);
   }
 
   // The caret must not tick the checkbox it sits inside (it lives in a <label>).
@@ -178,30 +234,47 @@ try {
     : fail(`caret click changed checkboxes ${JSON.stringify(before)}→${JSON.stringify(afterClick)} (rows: ${expandedNow})`);
   await page.locator('#backup-body label span[onclick*="_backupToggleExpand"]').last().click();
 
-  // ── 3. destination picker reuses the existing folder picker ──────────────
-  const browse = page.locator('#backup-body button.btn-browse').first();
-  await browse.count() > 0 ? ok('Destination has a Browse… button') : fail('no Browse button on Destination');
-  await browse.click();
+  // ── 6a. no Destination field on the form, one accent button ─────────────
+  const destFields = await page.locator('#backup-body input.path-input').count();
+  destFields === 0
+    ? ok('the Destination field is GONE from the Backup form')
+    : fail(`${destFields} destination input(s) still sit on the create form`);
+  const accents = await page.locator('#backup-body button.btn-add').count();
+  accents === 1
+    ? ok('exactly one accent button (the final action) on the tab')
+    : fail(`${accents} accent buttons on the Backup tab`);
+  const idle = await bodyText();
+  /1\. What to include/.test(idle) && /2\. Label/.test(idle)
+    ? ok('inputs are numbered top-down (1. What to include, 2. Label)')
+    : fail(`inputs are not numbered: "${idle.slice(0, 120)}"`);
+
+  // ── 7b. last backup details, from the archive's own manifest ────────────
+  /Last backup/.test(idle) && /clayrune-2026-09-08-full\.crbackup/.test(idle)
+    ? ok('last backup is surfaced at the top with its path')
+    : fail('no last-backup summary on the Backup tab');
+  /41\.2 GB/.test(idle) && /records, artifacts/.test(idle) && /95000 files/.test(idle)
+    ? ok('last backup reports size, categories and file count')
+    : fail(`last-backup summary is missing size/categories: "${idle.slice(0, 200)}"`);
+
+  // ── 3 + 6b. the picker opens FROM Create, seeded at the default ─────────
+  await page.click('#backup-body button.btn-add');
   await page.waitForSelector('#fp-overlay .fp-dialog', { timeout: 5000 });
-  ok('Browse opens the existing server-side folder picker (#fp-overlay)');
+  ok('Create opens the existing server-side folder picker (#fp-overlay)');
   const title = (await page.textContent('#fp-overlay .fp-title') || '').trim();
   /backup destination/i.test(title) ? ok(`picker is titled for this job ("${title}")`)
     : fail(`picker title is still the project one: "${title}"`);
-  await page.click('#fp-select');   // "Use this folder"
-  await page.waitForTimeout(300);
-  const destVal = await page.inputValue('#backup-body input.path-input');
-  destVal === 'C:\\Users\\x\\Backups'
-    ? ok('chosen folder lands in the Destination field')
-    : fail(`Destination field holds ${JSON.stringify(destVal)}`);
+  createCalls === 0
+    ? ok('nothing is written until a folder is confirmed')
+    : fail('create fired before the user picked a folder');
 
   // ── 4. real progress, not a dead button ─────────────────────────────────
-  await page.evaluate(() => window._backupCreate());
+  await page.click('#fp-select');   // "Use this folder"
   await page.waitForSelector('#backup-job-progress div', { timeout: 5000 });
   createBody && createBody.async === true
     ? ok('create posts async:true (job id back immediately)')
     : fail(`create body did not request async: ${JSON.stringify(createBody)}`);
   createBody && createBody.dest_dir === 'C:\\Users\\x\\Backups'
-    ? ok('create carries the picked destination')
+    ? ok('create carries the folder chosen in the flow')
     : fail(`create dest_dir = ${JSON.stringify(createBody && createBody.dest_dir)}`);
 
   const firstText = (await page.textContent('#backup-job-progress')).replace(/\s+/g, ' ').trim();
@@ -216,10 +289,64 @@ try {
 
   await page.waitForFunction(
     () => /Created/.test(document.querySelector('#backup-body')?.textContent || ''), { timeout: 15000 });
-  const done = (await page.textContent('#backup-body')).replace(/\s+/g, ' ');
+  const done = await bodyText();
   /clayrune-2026-09-09-full\.crbackup/.test(done)
     ? ok('job completion swaps the bar for the real result (archive path + warnings)')
     : fail('completed job never rendered its result');
+
+  // ── 5. cancel a running job ─────────────────────────────────────────────
+  mode = 'hold'; cancelled = false; tick = 0; cancelCalls = [];
+  await reopenPanel();
+  await page.click('#backup-body button.btn-add');
+  await page.waitForSelector('#fp-overlay .fp-dialog', { timeout: 5000 });
+  await page.click('#fp-select');
+  await page.waitForSelector('#backup-cancel-btn', { timeout: 5000 });
+  ok('a Cancel button sits next to the progress bar while a job runs');
+  (await page.locator('#backup-body button.btn-add').count()) === 0
+    ? ok('the Create button is replaced while the write is in flight')
+    : fail('Create is still clickable during a running backup');
+
+  await page.click('#backup-cancel-btn');
+  await page.waitForFunction(
+    () => /cancelled/i.test(document.querySelector('#backup-body')?.textContent || ''), { timeout: 15000 });
+  cancelCalls.length === 1
+    ? ok(`cancel POSTs to the cancel endpoint (job ${cancelCalls[0]})`)
+    : fail(`cancel endpoint called ${cancelCalls.length} times`);
+  const afterCancel = await bodyText();
+  /cancelled/i.test(afterCancel) && !/failed/i.test(afterCancel)
+    ? ok('a cancelled job reads as CANCELLED, not failed')
+    : fail(`cancel was reported as a failure: "${afterCancel.slice(0, 160)}"`);
+  /partial archive was deleted/i.test(afterCancel)
+    ? ok('the panel says the partial archive was cleaned up')
+    : fail('no reassurance that the .partial was removed');
+  (await page.locator('#backup-body button.btn-add').count()) === 1
+    ? ok('Create comes back after a cancel')
+    : fail('Create did not return after cancelling');
+
+  // ── 7a. reopening reattaches to a job this tab never started ────────────
+  mode = 'hold'; cancelled = false;
+  activeJobs = [{ job_id: 'job-from-another-tab', status: 'running', started_at: '2026-09-09T01:00:00Z',
+                  ...RUNNING_TICK }];
+  await reopenPanel();
+  await page.waitForSelector('#backup-cancel-btn', { timeout: 8000 });
+  ok('a reopened panel reattaches to the running job (progress + Cancel, no new create)');
+  const reattached = await bodyText();
+  /GB of 48/.test(reattached)
+    ? ok('reattached panel renders the live byte progress from the server')
+    : fail(`reattached panel shows no progress: "${reattached.slice(0, 160)}"`);
+  createCalls === 2
+    ? ok('reattaching started NO new backup')
+    : fail(`reattach fired ${createCalls - 2} extra create call(s)`);
+
+  // ── 7c. reopening after it finished shows the result, not a blank ───────
+  activeJobs = [];
+  recentJobs = [{ job_id: 'job-from-another-tab', status: 'done', started_at: '2026-09-09T01:00:00Z',
+                  finished_at: '2026-09-09T01:40:00Z', ...JOB_TICKS[2] }];
+  await reopenPanel();
+  await page.waitForFunction(
+    () => /finished while the panel was closed/i.test(
+      document.querySelector('#backup-body')?.textContent || ''), { timeout: 8000 });
+  ok('a panel reopened after the job finished shows its result, not a blank form');
 
   if (process.env.MC_SMOKE_SHOT) {
     await page.evaluate(() => window._backupToggleExpand('unprotected'));

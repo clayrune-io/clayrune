@@ -6,6 +6,51 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Backup panel: a Cancel button, a destination you pick at Create, and a panel that reattaches
+
+Three more defects against the Backup panel (MC-945), same real install where
+the default archive is ~48 GB.
+
+- **A running backup can be cancelled.** There was no abort at all: async
+  create handed back a `job_id` and then owned the machine for minutes. Cancel
+  is **cooperative** — `POST /api/backup/create/cancel/<job_id>` sets a flag,
+  `create_backup(cancel_cb=…)` polls it at the run's phase boundaries and once
+  per entry, and raises `BackupCancelled`, which unwinds through the *existing*
+  failure cleanup so the worker deletes its own `.partial`. The thread is never
+  killed: that would strand a multi-GB temp and could leave a half-flushed zip.
+  `cancelled` is its own terminal state, deliberately **not** `error` — the
+  user asked for it. The panel swaps Create for Cancel next to the progress bar
+  while a write is in flight.
+- **The destination moved out of the form and into the flow.** No more
+  Destination field parked at the top asking a question before the user has
+  decided to do anything: tick categories, hit **Create backup…**, and the
+  folder picker opens *then*, seeded at the `backup_dest_dir` default from
+  Settings → System (which keeps its own Browse button). The Restore tab keeps
+  its field — it needs to *list* from an alternate folder. Backup tab now reads
+  as the house convention wants: numbered inputs (1. What to include,
+  2. Label), exactly one accent button.
+- **Reopening the panel reattaches to a running backup.** The `job_id` lived
+  only in the JS state of the tab that started it, so closing the window — or
+  reloading the page — orphaned a live 48 GB write: idle form on screen, no way
+  to watch or cancel it. `GET /api/backup/jobs` lists `active` and `recent`
+  jobs so the panel re-discovers one on open, from the **server** (not
+  sessionStorage, which dies with the tab too). When nothing is running the tab
+  leads with the **last backup**: when, how big, where, and which categories,
+  read from the archive's own manifest via `list_backups()`.
+- **Registry retention is now a UX property, not just a memory one.** Finished
+  jobs expire at 6 h *and* cap at 20, so a panel reopened after the write
+  completed still shows the result instead of a blank form; a running job is
+  never pruned at any age. The async job result also stopped carrying the full
+  manifest — one entry per archived file, hundreds of MB of JSON on a real
+  install, echoed by every 700 ms status poll, that no caller read. The
+  synchronous route still returns it, unchanged.
+
+`tests/test_backup_cancel.py` (17) covers the cooperative abort and its temp
+cleanup, cancel-before-write, the cancel/jobs routes, the slim result, and both
+retention bounds; `tools/smoke/backup-panel-breakdown.mjs` grew to 38 checks
+including cancel, reattach and the last-backup card. 108 backup tests + the
+boot smoke stay green.
+
 ## [Unreleased] — Backup panel: a breakdown you can close, a picker, and a progress bar
 
 Four defects against the shipped Backup panel (MC-945), all found by using it

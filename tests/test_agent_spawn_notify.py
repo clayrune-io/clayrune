@@ -144,6 +144,53 @@ def test_last_reply_text_skips_status_lines_and_the_task_seed():
     assert ar._last_reply_text({'log_lines': ['> Ron: x', '[status]']}) == ''
 
 
+def test_completion_persists_spawner_onto_the_agent_log_row(monkeypatch, tmp_path):
+    """The nesting feature (rail: worker indented under its spawner) needs a
+    durable record of who dispatched whom — `_notify_session` lived only on
+    the in-memory session dict, so it vanished the moment the child's process
+    exited or the server restarted. `_log_agent_completion` is the one place
+    that writes the durable agent_log row; the spawner id must land there.
+    """
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(ar, '_notify_agent_spawner', lambda *a, **k: None)
+    session = {
+        'project_id': 'mission_control', 'session_id': 'child-1',
+        '_notify_session': 'parent-1', 'status': 'completed',
+        'task': 'run the tests', 'log_lines': ['hello', 'all tests passed'],
+    }
+    ar._log_agent_completion(session)
+    log = ar._load_agent_log('mission_control')
+    assert log[0]['spawned_by_session_id'] == 'parent-1'
+
+
+def test_completion_does_not_persist_a_self_pointing_spawner(monkeypatch, tmp_path):
+    """Same self-notify guard as `_maybe_notify_spawner`, applied to the durable
+    row: a session naming itself must not render as its own nested child."""
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
+    monkeypatch.setattr(ar, '_notify_agent_spawner', lambda *a, **k: None)
+    session = {
+        'project_id': 'mission_control', 'session_id': 'self-1',
+        '_notify_session': 'self-1', 'status': 'completed',
+        'log_lines': ['done'],
+    }
+    ar._log_agent_completion(session)
+    log = ar._load_agent_log('mission_control')
+    assert log[0]['spawned_by_session_id'] == ''
+
+
+def test_ordinary_session_has_no_spawner_field_set(monkeypatch, tmp_path):
+    """The overwhelming majority of sessions are user-opened, not dispatched —
+    this must stay a silent no-op for them."""
+    monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
+    session = {
+        'project_id': 'mission_control', 'session_id': 'plain-1',
+        'status': 'completed', 'log_lines': ['hi'],
+    }
+    ar._log_agent_completion(session)
+    log = ar._load_agent_log('mission_control')
+    assert log[0]['spawned_by_session_id'] == ''
+
+
 def test_callback_names_the_agent_not_its_record(monkeypatch):
     """A live session's `character` is a dict, not a string.
 
