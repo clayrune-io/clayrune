@@ -1682,45 +1682,70 @@ window._isStewardConvo = _isStewardConvo;
 // `includeHidden` forces hidden chats into the result regardless of the
 // per-project reveal toggle — used to count how many HIDDEN chats match the
 // current search (see mobileUserConversationsHTML).
-function _userInitiatedConvos(projectId, includeHidden) {
+// Programmatic/no-content noise — a row with no character, no spawner, no
+// source and no label (an aborted dispatch that never reached a first
+// message), scheduler/cron/hivemind auto-triggers, or a trivial 1-turn ack.
+// Extracted from `_userInitiatedConvos`'s `_keep` so the Channel person
+// drill-down (`_railChannelHTML`/`openChannelPerson`) can drop the same rows
+// — that path reads `conversationsCache` directly and never passed through
+// `_userInitiatedConvos`, so a dead 0-turn stub surfaced as a "(empty)"
+// READ-ONLY row under whichever identity a characterless session resolves to
+// (usually the default agent, since c597a56 made that identity roster-
+// visible). Steward threads are the one exception — always real, never noise.
+function _isNoiseConvoRow(c) {
   const AGENT_TRIGGERS = new Set(['schedule', 'hivemind_worker', 'hivemind_orchestrator', 'hivemind', 'auto', 'housekeeping']);
   const AGENT_SOURCES = new Set(['agent', 'api', 'cron']);  // programmatic dispatch → side flow
+  if (_isStewardConvo(c)) return false;
+  if (AGENT_TRIGGERS.has(c.trigger_type || '')) return true;
+  // MC-938 Phase 0: a persona dispatched without a browser Origin gets
+  // auto-tagged source:agent (agent_routes.py:5567-5574) purely so it routes
+  // to the side flow — that heuristic can't tell "curl/scheduler fired this"
+  // from "a human picked Fenn from the composer and hit send". A `character`
+  // on the row is proof a human chose an agent to talk to, so it overrides
+  // the programmatic-source drop here. Genuinely automated triggers (the
+  // AGENT_TRIGGERS check above) are unaffected — this only rescues rows that
+  // already passed that gate.
+  // MC-946: a dispatched worker also lands here source:agent, character:null
+  // (agent_routes.py's /agent/send dispatch-fallback path never reads
+  // `character` — filed separately, not fixed here). It used to be
+  // indistinguishable from cron/scheduler noise, so it was dropped by the
+  // same rule above. `spawned_by_session_id` is the durable proof it's a
+  // real worker with a known spawner (MC-946/backend), not scheduler noise
+  // — keep it so the rail can nest it under that spawner below. Standing
+  // position: nest by LIFESPAN, never by "who happened to message it" — a
+  // HIRED persona (c.character set) already survives via the check above
+  // and must never be re-homed under a spawner just because one dispatched
+  // it once.
+  if (AGENT_SOURCES.has(c.source || '') && !c.character && !c.spawned_by_session_id) return true;
+  const src = c.source || '';
+  // A dead stub — zero turns, no first/last user text at all (an aborted
+  // dispatch that never reached a real message) — server-side this renders
+  // as the literal placeholder string "(empty)" in `c.label`, which
+  // `_bestConvLabel` below would then treat as real, non-empty content (it
+  // falls back to `c.label` when `last_user` is blank). Check the RAW fields
+  // first so the placeholder text can't masquerade as a genuine label.
+  if (!src && !c.character && !c.spawned_by_session_id && !(c.turns || 0)
+      && !(c.first_user || '').trim() && !(c.last_user || '').trim()) return true;
+  // Test the label with agent-facing preambles (resume/continue + the per-turn
+  // brevity directive) stripped, so a genuine user chat whose message merely
+  // CARRIES a prepended "[BINDING…]" directive isn't misread as a system chat.
+  const label = _bestConvLabel(c);
+  if (!src && !label) return true;                              // nothing but a system preamble
+  if (!src && _AGENT_LABEL_RE.test(label)) return true;         // legacy agent/system chat
+  if (!src && _NOISE_RESUME_RE.test(label)) return true;         // empty-task "Continue where we left off."
+  if (!src && (c.turns || 0) <= 1 && _TRIVIAL_ACK_RE.test(label)) return true;  // trivial 1-turn ack
+  return false;
+}
+window._isNoiseConvoRow = _isNoiseConvoRow;
+
+function _userInitiatedConvos(projectId, includeHidden) {
   const hidden = _hiddenConvSet(projectId);
   const showHidden = !!includeHidden || !!_showHiddenConvos[projectId];
   const _keep = (c) => {
     // Stewards are the one automated-trigger exception — always surfaced (unless
     // the user explicitly hid this one).
     if (_isStewardConvo(c)) return showHidden || !hidden.has(_convHideKey(c));
-    if (AGENT_TRIGGERS.has(c.trigger_type || '')) return false;
-    // MC-938 Phase 0: a persona dispatched without a browser Origin gets
-    // auto-tagged source:agent (agent_routes.py:5567-5574) purely so it routes
-    // to the side flow — that heuristic can't tell "curl/scheduler fired this"
-    // from "a human picked Fenn from the composer and hit send". A `character`
-    // on the row is proof a human chose an agent to talk to, so it overrides
-    // the programmatic-source drop here. Genuinely automated triggers (the
-    // AGENT_TRIGGERS check above) are unaffected — this only rescues rows that
-    // already passed that gate.
-    // MC-946: a dispatched worker also lands here source:agent, character:null
-    // (agent_routes.py's /agent/send dispatch-fallback path never reads
-    // `character` — filed separately, not fixed here). It used to be
-    // indistinguishable from cron/scheduler noise, so it was dropped by the
-    // same rule above. `spawned_by_session_id` is the durable proof it's a
-    // real worker with a known spawner (MC-946/backend), not scheduler noise
-    // — keep it so the rail can nest it under that spawner below. Standing
-    // position: nest by LIFESPAN, never by "who happened to message it" — a
-    // HIRED persona (c.character set) already survives via the check above
-    // and must never be re-homed under a spawner just because one dispatched
-    // it once.
-    if (AGENT_SOURCES.has(c.source || '') && !c.character && !c.spawned_by_session_id) return false;
-    const src = c.source || '';
-    // Test the label with agent-facing preambles (resume/continue + the per-turn
-    // brevity directive) stripped, so a genuine user chat whose message merely
-    // CARRIES a prepended "[BINDING…]" directive isn't misread as a system chat.
-    const label = _bestConvLabel(c);
-    if (!src && !label) return false;                              // nothing but a system preamble
-    if (!src && _AGENT_LABEL_RE.test(label)) return false;         // legacy agent/system chat
-    if (!src && _NOISE_RESUME_RE.test(label)) return false;         // empty-task "Continue where we left off."
-    if (!src && (c.turns || 0) <= 1 && _TRIVIAL_ACK_RE.test(label)) return false;  // trivial 1-turn ack
+    if (_isNoiseConvoRow(c)) return false;
     if (!showHidden && hidden.has(_convHideKey(c))) return false;
     return true;
   };
@@ -2062,7 +2087,14 @@ function mobileUserConversationsHTML(p, convos) {
     // persona at all until /conversations started emitting one, so every chat
     // in the list looked identical — you had to open one to find out whether
     // it was the review with Fenn or the plan with Marlow.
-    const _cChar = c.character;
+    // `_convCharFor` (not the bare `c.character`) so a characterless session
+    // that only resolves to the default agent's `identity` (Vector, ws_005 /
+    // c597a56) still gets a face and name here — the Channel person-drilldown
+    // reuses this same row renderer for exactly that persona, and a bare
+    // `c.character` read left every one of its rows blank (no avatar, no
+    // name line) even though `_channelRoster`/`_channelRowHTML` had already
+    // been fixed to resolve it.
+    const _cChar = _convCharFor(c);
     const _cWho = _cChar && (_cChar.agent_name || _cChar.display_name);
     const face = (_cChar && _cChar.avatar)
       ? `<span class="conv-face" title="${esc(_cWho || '')}${
@@ -2288,7 +2320,12 @@ function _railChannelHTML(p) {
     const roster = _channelRoster(p.id);
     const person = roster.inRoom.concat(roster.bench).find(r => r.key === filterKey);
     const who = person ? esc(person.char.agent_name || person.char.display_name || person.char.name) : 'this agent';
-    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === filterKey);
+    // Same noise gate `_userInitiatedConvos` applies to the Chats tab — this
+    // path reads conversationsCache directly and never passed through it, so
+    // a dead 0-turn stub (no character, no spawner, no content) surfaced here
+    // as a "(empty)" row for whatever identity a characterless session
+    // resolves to (see _isNoiseConvoRow).
+    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === filterKey && !_isNoiseConvoRow(c));
     const list = convos.length
       ? mobileUserConversationsHTML(p, convos)
       : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
@@ -2322,7 +2359,7 @@ function _railChannelHTML(p) {
 // as clicking any other chat row would.
 function openChannelPerson(projectId, key) {
   _channelPersonFilter[projectId] = key;
-  const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key);
+  const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
   convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   if (convos.length) {
     const c = convos[0];
