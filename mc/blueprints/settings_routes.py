@@ -131,6 +131,9 @@ _CONFIG_EDITABLE_KEYS = {
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled',
+    # Artifact coverage advisory (mc/artifact_coverage.py). Read live at turn
+    # end — no respawn needed.
+    'artifact_coverage_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle
