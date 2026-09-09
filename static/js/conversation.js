@@ -1745,7 +1745,11 @@ function _userInitiatedConvos(projectId, includeHidden) {
     // Stewards are the one automated-trigger exception — always surfaced (unless
     // the user explicitly hid this one).
     if (_isStewardConvo(c)) return showHidden || !hidden.has(_convHideKey(c));
-    if (_isNoiseConvoRow(c)) return false;
+    // showHidden is the user asking to see EVERYTHING, so it has to outrank the
+    // noise gate too. Ordering these the other way round made "Show N hidden"
+    // toggle its own label and reveal nothing, because the rows it counts are
+    // exactly the ones the gate had already dropped (Ron, 2026-09-09).
+    if (!showHidden && _isNoiseConvoRow(c)) return false;
     if (!showHidden && hidden.has(_convHideKey(c))) return false;
     return true;
   };
@@ -2023,9 +2027,16 @@ function mobileUserConversationsHTML(p, convos) {
   // level no matter how deep the dispatch chain actually goes.
   const byMcsid = {};
   _rankOrdered.forEach(c => { const m = c.mc_session_id || ''; if (m) byMcsid[m] = c; });
+  // A spawner id is proof an AGENT started this session, so it nests — having a
+  // `character` does NOT exempt it. The lifespan position says a thread stands
+  // on its own only when a HUMAN hired someone; Dave dispatching Tilda for one
+  // task is not a hire, and Tilda's row carrying a character does not make it
+  // one. (Ron, 2026-09-09: workers must appear under the spawner's row even
+  // when they have a name.) Once drag-to-hire lands, the project roster becomes
+  // the real "human hired this" signal and should be consulted here instead.
   const _topAncestor = (c) => {
     let cur = c, hops = 0;
-    while (!cur.character && cur.spawned_by_session_id && byMcsid[cur.spawned_by_session_id]
+    while (cur.spawned_by_session_id && byMcsid[cur.spawned_by_session_id]
            && byMcsid[cur.spawned_by_session_id] !== cur && hops++ < 20) {
       cur = byMcsid[cur.spawned_by_session_id];
     }
@@ -2034,7 +2045,7 @@ function mobileUserConversationsHTML(p, convos) {
   const childrenByRoot = new Map();
   const ordered = [];
   for (const c of _rankOrdered) {
-    const isWorker = !c.character && !!c.spawned_by_session_id;
+    const isWorker = !!c.spawned_by_session_id;
     const root = isWorker ? _topAncestor(c) : c;
     if (root !== c) {
       if (!childrenByRoot.has(root)) childrenByRoot.set(root, []);
