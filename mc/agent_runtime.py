@@ -1022,6 +1022,9 @@ class ClaudeRuntime(AgentRuntime):
                 Path(os.environ.get('USERPROFILE', '')) / '.claude' / 'bin' / 'claude.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / '.claude' / 'bin' / 'claude.exe',
                 Path(os.environ.get('USERPROFILE', '')) / 'AppData' / 'Roaming' / 'npm' / 'claude.cmd',
+                # Custom npm prefix — same gap the GeminiRuntime list had.
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'claude.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'bin' / 'claude.cmd',
             ]
         else:
             home = Path(os.environ.get('HOME', str(Path.home())))
@@ -2180,6 +2183,14 @@ class GeminiRuntime(AgentRuntime):
             for c in [
                 Path(os.environ.get('APPDATA', '')) / 'npm' / 'gemini.cmd',
                 Path(os.environ.get('USERPROFILE', '')) / 'AppData' / 'Roaming' / 'npm' / 'gemini.cmd',
+                # A custom npm prefix (`~/.npm-global`) is the OTHER common
+                # Windows layout, and the CodexRuntime list below already
+                # covers it. Without these two, an install under the current
+                # prefix is invisible here while a stale AppData\npm copy is
+                # not — which is precisely how this box ran gemini 0.20.0
+                # from Dec 2025 against a 0.57.0 install (2026-09-09).
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'gemini.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'bin' / 'gemini.cmd',
             ]:
                 try:
                     if c.exists():
