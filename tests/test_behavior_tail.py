@@ -48,12 +48,16 @@ def _project(proj_path, provider='claude'):
 
 # ── the block itself ─────────────────────────────────────────────────────────
 
-def test_tail_stays_under_the_600_byte_budget():
+def test_tail_stays_under_the_750_byte_budget():
     """A per-turn, per-provider, per-project cost forever — this is the whole
-    reason the brief caps it. If this ever fails, shrink the text, don't
-    raise the number."""
+    reason the brief caps it. Default answer to a failure here is STILL to
+    shrink the text. Raised 600 -> 750 on 2026-09-09 (Ron) for exactly one
+    addition: the GOAL clause, which changes the turn's stop condition from
+    "I have said enough" to "the objective is met" and is the whole reason
+    agents stop asking permission for reversible work. Nothing else earns a
+    raise; the next thing that wants space cuts something instead."""
     import mc.behavior_tail as bt
-    assert len(bt._TAIL_TEXT.encode('utf-8')) <= 600
+    assert len(bt._TAIL_TEXT.encode('utf-8')) <= 750
 
 
 def test_render_empty_when_disabled(monkeypatch):
