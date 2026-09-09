@@ -24,7 +24,9 @@ daemon loop gains obs.heartbeat('session-label-enforcer').
 
 import json
 import os
+import subprocess
 import sys
+import threading
 import time as _time
 from pathlib import Path
 
@@ -72,13 +74,16 @@ bp = Blueprint('remote_routes', __name__)
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────────
 SESSION_LABELS_PATH: Path = None  # type: ignore[assignment]
+ENROLLMENT_LIVENESS_PATH: Path = None  # type: ignore[assignment]
 
 
-def wire(*, session_labels_path):
-    """Late-bind the _DATA_ROOT-derived path constant (1.6 lesson: module-level
+def wire(*, session_labels_path, enrollment_liveness_path=None):
+    """Late-bind the _DATA_ROOT-derived path constants (1.6 lesson: module-level
     path constants become wired placeholders set by server.py)."""
-    global SESSION_LABELS_PATH
+    global SESSION_LABELS_PATH, ENROLLMENT_LIVENESS_PATH
     SESSION_LABELS_PATH = session_labels_path
+    if enrollment_liveness_path is not None:
+        ENROLLMENT_LIVENESS_PATH = enrollment_liveness_path
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -617,6 +622,160 @@ def _warmup_control_plane():
         _log(f"[remote-access] CP warmup {url} -> {r.status_code} in {dt_ms}ms", flush=True)
     except Exception as e:
         _log(f"[remote-access] CP warmup failed (will not retry): {e}", flush=True)
+
+
+# ── Enrollment liveness (deliberately outside the tunnel supervisor) ────────
+# Root cause of the 2026-09-08 outage (session 977afb9529eb): a Windows
+# servicing reboot emptied the whole Credential Manager vault, deleting the
+# device-enrollment identity. Every piece of down-alerting lived INSIDE
+# TunnelSupervisor, and tunnel_supervisor.start() *raises* when
+# device_keys.load_identity() is None — so losing enrollment disabled the
+# only code that would have said so. Nobody was told for ~8 hours.
+#
+# This loop is its own daemon thread, started unconditionally at server
+# startup exactly like _session_label_enforcer_loop / _warmup_control_plane
+# above — NOT gated on a running supervisor or an enrolled identity, because
+# noticing the identity is gone is the entire point. `enrolled=False,
+# error_code=None` (device_keys.load_identity() returns None cleanly) is the
+# unambiguous "really not enrolled" signal; `KeystoreUnavailable` (locked /
+# no backend) is a DIFFERENT condition — surfaced elsewhere as
+# error_code=tunnel_keystore_unavailable — and must not be treated the same
+# way here, or a transient keystore hiccup would read as "enrollment lost".
+_ENROLLMENT_CHECK_INTERVAL_S = 120  # cheap local keystore read; no network
+# Same cadence as the tunnel down-alert cooldown (MC_REMOTE_ALERT_COOLDOWN_S)
+# so a user who's already being paged about remote access doesn't also get a
+# second, differently-timed nag train for the same underlying incident.
+_ENROLLMENT_ALERT_COOLDOWN_S = float(
+    os.environ.get("MC_REMOTE_ALERT_COOLDOWN_S", "21600"))
+
+
+def _load_enrollment_liveness_state() -> dict:
+    try:
+        with open(ENROLLMENT_LIVENESS_PATH, 'r', encoding='utf-8') as f:
+            data = json.load(f)
+            return data if isinstance(data, dict) else {}
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _save_enrollment_liveness_state(d: dict) -> None:
+    ENROLLMENT_LIVENESS_PATH.parent.mkdir(parents=True, exist_ok=True)
+    tmp = ENROLLMENT_LIVENESS_PATH.with_suffix('.json.tmp')
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(d, f, indent=2, ensure_ascii=False)
+    os.replace(tmp, ENROLLMENT_LIVENESS_PATH)
+
+
+def _send_enrollment_lost_alert(down_seconds: float) -> None:
+    """Mail the operator that the device-enrollment identity has disappeared.
+
+    Mirrors tunnel_supervisor._send_down_alert: same mailer, same
+    best-effort-in-every-sense contract — a machine with no mail configured
+    just logs and moves on, and the subprocess is bounded so a hung SMTP can
+    never wedge this loop.
+    """
+    mins = int(down_seconds // 60)
+    subject = "[Clayrune] Remote access ENROLLMENT LOST"
+    body = (
+        "Clayrune's remote-access device identity has disappeared from this "
+        "machine's credential store.\n\n"
+        "This is not a network blip — it means the OS keystore (Windows "
+        "Credential Manager) no longer has the enrollment record, so remote "
+        "access cannot reconnect on its own. (The 2026-09-08 outage was "
+        "Windows itself wiping the whole vault during a servicing reboot.)\n\n"
+        "To fix it:\n"
+        "  1. Open Clayrune on the machine itself.\n"
+        "  2. Settings -> Remote Access -> Enable Remote Access (re-enroll).\n\n"
+        f"First noticed about {mins} minute(s) ago. You are getting this "
+        f"once; it will repeat at most every "
+        f"{int(_ENROLLMENT_ALERT_COOLDOWN_S // 3600)}h while it stays lost.\n"
+    )
+    try:
+        repo_root = Path(__file__).resolve().parent.parent.parent
+        mailer = repo_root / "tools" / "night-review" / "send_mail.py"
+        if not mailer.exists():
+            _log(f"[remote-access] enrollment-lost alert: mailer not found at {mailer}", flush=True)
+            return
+        subprocess.run(
+            [sys.executable, str(mailer), "--subject", subject, "--body", body],
+            capture_output=True, timeout=60, check=False,
+        )
+        _log(f"[remote-access] enrollment lost ~{mins}m — alert sent", flush=True)
+    except Exception as e:
+        _log(f"[remote-access] enrollment-lost alert could not be sent: {e}", flush=True)
+
+
+def _check_enrollment_liveness_once() -> dict:
+    """One pass: read current enrollment state, detect a True->False
+    transition, and alert (cooldown-gated) while it persists.
+
+    State is persisted to ENROLLMENT_LIVENESS_PATH (not in-memory only) so a
+    server restart — which is exactly what happens across a Windows
+    servicing reboot, the actual incident — doesn't reset the "have we ever
+    seen this device enrolled" baseline and mistake an already-lost identity
+    for a fresh install that never enrolled.
+    """
+    try:
+        from mc_remote import device_keys
+    except Exception:
+        return {'ok': True, 'skipped': 'no_provider'}
+
+    try:
+        enrolled = device_keys.load_identity() is not None
+    except device_keys.KeystoreUnavailable:
+        # Read failure, not a loss — do not conflate with "really not
+        # enrolled" (see module comment above).
+        return {'ok': True, 'skipped': 'keystore_unavailable'}
+
+    st = _load_enrollment_liveness_state()
+    now = _time.time()
+
+    if enrolled:
+        if st.get('lost_at') is not None:
+            _log("[remote-access] enrollment identity is back", flush=True)
+        if not st.get('ever_seen_enrolled') or st.get('lost_at') is not None:
+            st['ever_seen_enrolled'] = True
+            st['lost_at'] = None
+            _save_enrollment_liveness_state(st)
+        return {'ok': True, 'enrolled': True}
+
+    if not st.get('ever_seen_enrolled'):
+        # Never enrolled on this device — not a transition, nothing to alert.
+        return {'ok': True, 'enrolled': False, 'skipped': 'never_enrolled'}
+
+    if st.get('lost_at') is None:
+        st['lost_at'] = now
+        _log("[remote-access] enrollment identity has disappeared (was "
+             "enrolled, now isn't) — OS credential store may have been "
+             "wiped or the entries deleted", flush=True)
+
+    last = st.get('last_alert_wall')
+    should_alert = last is None or (now - last) >= _ENROLLMENT_ALERT_COOLDOWN_S
+    if should_alert:
+        st['last_alert_wall'] = now
+    _save_enrollment_liveness_state(st)
+
+    if should_alert:
+        down_for = now - st['lost_at']
+        threading.Thread(target=_send_enrollment_lost_alert, args=(down_for,),
+                         daemon=True, name='mc-remote-enrollment-alert').start()
+    return {'ok': True, 'enrolled': False, 'lost_at': st['lost_at']}
+
+
+def _enrollment_liveness_loop():
+    """Daemon thread: run the enrollment-liveness check every N seconds.
+
+    Started unconditionally at server startup (see server.py) — no
+    supervisor, no enrolled identity, no provider even installed is
+    required for this loop to run and heartbeat cleanly.
+    """
+    while True:
+        obs.heartbeat('enrollment-liveness')  # -> /api/system/loops
+        try:
+            _check_enrollment_liveness_once()
+        except Exception as e:
+            _log(f"[remote-access] enrollment liveness check crashed: {e}", flush=True)
+        _time.sleep(_ENROLLMENT_CHECK_INTERVAL_S)
 
 
 def _session_label_enforcer_loop():

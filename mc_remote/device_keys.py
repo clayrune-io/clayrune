@@ -47,7 +47,7 @@ from cryptography.hazmat.primitives.serialization import (
 import keyring
 from keyring.errors import KeyringError, KeyringLocked, NoKeyringError
 
-from . import config
+from . import config, identity_mirror
 
 log = logging.getLogger(__name__)
 
@@ -168,17 +168,38 @@ def store_identity(identity: DeviceIdentity, device_priv_b64: str) -> None:
                 pass
         raise
 
+    # Write-through mirror into Clayrune's own vault (identity_mirror.py) so
+    # a wiped OS credential store — the 2026-09-08 incident — isn't a single
+    # point of failure for this identity. The keystore write above is
+    # authoritative; this is redundancy only and must never fail enrollment.
+    identity_mirror.write({
+        "device_pub":       identity.device_pub_b64,
+        "device_id":        identity.device_id,
+        "username":         identity.username,
+        "hostname":         identity.hostname,
+        "enrollment_token": identity.enrollment_token,
+        "device_priv":      device_priv_b64,
+    })
+
 
 def load_identity() -> Optional[DeviceIdentity]:
     """Return the persisted identity if all required fields are present.
 
     Returns None if not enrolled. Does NOT load or expose the private key.
+
+    If a field is genuinely missing (`_get` returns falsy — NOT the
+    KeystoreUnavailable exception, which is a read failure and propagates
+    untouched) this falls back to the Clayrune vault mirror
+    (`identity_mirror.py`). Conflating the two would defeat the whole point:
+    `enrolled=false, error_code=None` must mean "really not enrolled," and
+    `error_code=tunnel_keystore_unavailable` must mean "can't tell right
+    now" — see provider_impl.status().
     """
     fields = {}
     for logical in ("device_pub", "device_id", "username", "hostname", "enrollment_token"):
         v = _get(logical)
         if not v:
-            return None
+            return _restore_from_mirror()
         fields[logical] = v
     return DeviceIdentity(
         device_id=fields["device_id"],
@@ -189,12 +210,49 @@ def load_identity() -> Optional[DeviceIdentity]:
     )
 
 
+def _restore_from_mirror() -> Optional[DeviceIdentity]:
+    """One or more keystore fields are genuinely absent. Check the vault
+    mirror; if it has a complete identity, restore it INTO the keystore
+    (self-heal) so subsequent reads don't depend on the mirror forever, then
+    return it. Returns None if the mirror has nothing usable either — that
+    is a real "not enrolled."
+    """
+    mirrored = identity_mirror.read()
+    if mirrored is None:
+        return None
+    identity = DeviceIdentity(
+        device_id=mirrored["device_id"],
+        device_pub_b64=mirrored["device_pub"],
+        username=mirrored["username"],
+        hostname=mirrored["hostname"],
+        enrollment_token=mirrored["enrollment_token"],
+    )
+    try:
+        store_identity(identity, mirrored["device_priv"])
+        log.warning("keystore identity missing; restored from Clayrune vault mirror")
+    except KeystoreUnavailable as e:
+        log.warning("keystore identity missing; mirror found but restore failed: %s", e)
+    return identity
+
+
 def load_device_priv() -> Optional[bytes]:
     """Return the raw 32-byte private key seed if enrolled, else None.
 
-    Callers should not hold this in memory longer than necessary.
+    Callers should not hold this in memory longer than necessary. Falls back
+    to the vault mirror the same way load_identity() does — a caller (e.g.
+    sign()) may ask for the private key without having called
+    load_identity() first.
     """
     s = _get("device_priv")
+    if not s:
+        mirrored = identity_mirror.read()
+        s = mirrored.get("device_priv") if mirrored else None
+        if s:
+            log.warning("device_priv missing from keystore; using Clayrune vault mirror")
+            try:
+                _set("device_priv", s)
+            except KeystoreUnavailable:
+                pass
     if not s:
         return None
     try:
@@ -235,6 +293,10 @@ def clear_identity() -> None:
             _del(logical)
         except Exception as e:
             last_err = e
+    # Clear the mirror too: without this, a disconnected/revoked device
+    # would self-heal itself back on the next load_identity() call via
+    # _restore_from_mirror(), silently undoing an explicit disconnect.
+    identity_mirror.clear()
     if last_err is not None:
         # Don't raise — the surface area where this matters (disconnect)
         # benefits more from "we tried" than from a hard failure. Log only.
