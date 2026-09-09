@@ -4935,7 +4935,10 @@
   .fl-fig-top { align-items: center; }
   /* On the bench the card is already a column, so the face floats left of the
      text with the description wrapping under it. */
-  .fl-face-bench { float: left; margin: 0 9px 2px 0; }
+  /* margin-bottom 7px (was 2px): clears the bigger .fl-prov-badge, which
+     protrudes 4px below the face's own bottom edge — without this the badge
+     clipped the wrapped bench-card text underneath it. */
+  .fl-face-bench { float: left; margin: 0 9px 7px 0; }
   .fl-bench-top { align-items: baseline; }
   .fl-who {
     font-size: 12px; font-weight: 700; color: var(--text);
@@ -7604,15 +7607,15 @@
      colour everywhere in the app, not a second palette. */
   .fl-face { position: relative; }
   .fl-prov-badge {
-    position: absolute; right: -3px; bottom: -3px;
-    width: 20px; height: 20px; border-radius: 50%;
-    background: var(--bg-alt, var(--bg)); border: 1px solid var(--border);
+    position: absolute; right: -4px; bottom: -4px;
+    width: 28px; height: 28px; border-radius: 50%;
+    background: var(--bg-alt, var(--bg)); border: 1.5px solid var(--border);
     display: flex; align-items: center; justify-content: center;
     pointer-events: none;
   }
   .fl-prov-badge svg {
-    width: 12px; height: 12px; fill: none; stroke: currentColor;
-    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+    width: 20px; height: 20px; fill: currentColor; stroke: currentColor;
+    stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
   }
   .fl-prov-badge.prov-claude   { color: var(--accent); }
   .fl-prov-badge.prov-gemini   { color: #4285f4; }
