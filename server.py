@@ -1641,6 +1641,14 @@ from mc.blueprints import secrets_routes as _bp_secrets  # noqa: E402
 
 app.register_blueprint(_bp_secrets.bp)
 
+# ── Backup / restore (Phase 1, docs/BACKUP_EXPORT_SPEC.md). No wire() — like
+# secrets_routes, mc/backup.py resolves every path itself (MC_DATA_DIR / repo
+# root / ~/.clayrune/backups) so tools/clayrune-backup.py can restore a broken
+# install with no server running.
+from mc.blueprints import backup_routes as _bp_backup  # noqa: E402
+
+app.register_blueprint(_bp_backup.bp)
+
 # ── Global config + folder-browse + domain settings endpoints (10 routes:
 # /api/config GET+PUT, /api/browse/folders + create_folder, the 4
 # /api/settings/domains, and below the project-order tombstone
