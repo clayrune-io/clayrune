@@ -2995,7 +2995,7 @@
   /* White bubbles for plain agent narration ONLY — must NOT touch the prompt
      (blue), tool/status/error/queued/followup (transparent chips) sub-types,
      or they'd render white-on-white (user text became invisible otherwise). */
-  .agent-3pane .agent-main .agent-output .agent-line:not(.agent-line-prompt):not(.agent-line-tool):not(.agent-line-status):not(.agent-line-error):not(.agent-line-queued):not(.agent-line-followup) {
+  .agent-3pane .agent-main .agent-output .agent-line:not(.agent-line-prompt):not(.agent-line-tool):not(.agent-line-status):not(.agent-line-error):not(.agent-line-queued):not(.agent-line-followup):not(.agent-line-coverage) {
     background: var(--surface); border-color: var(--border);
   }
   /* Composer sits on the warm page (--bg); the pill itself is the white card —
@@ -3966,6 +3966,12 @@
   .agent-output .agent-line-tool { color: var(--amber-text); }
   .agent-output .agent-line-status { color: var(--green-text); font-weight: 600; }
   .agent-output .agent-line-error { color: var(--red-text); }
+  .agent-output .agent-line-coverage {
+    color: var(--amber-text); background: var(--amber-dim);
+    border-left: 3px solid var(--amber);
+    padding: 6px 10px; border-radius: 4px; margin: 6px 0;
+    font-size: 12px; line-height: 1.45;
+  }
   .agent-output .agent-line-followup { color: var(--accent); font-weight: 600; }
   .agent-output .agent-line-queued { color: var(--yellow, #e5c07b); font-weight: 600; font-style: italic; }
 
@@ -4033,6 +4039,7 @@
      (Agent narration .agent-line is also mono; user prompts are sans/Inter.) */
   .agent-output .agent-line-tool,
   .agent-output .agent-line-status,
+  .agent-output .agent-line-coverage,
   .agent-output .agent-line-error,
   .agent-output .agent-line-queued,
   .agent-output .agent-line-followup {
@@ -4105,7 +4112,7 @@
      Body class is set by setChatStyle() in index.html (localStorage
      mc_chat_style); no JS in the render path changed. */
   body.chat-flow .agent-output { gap: 0; }
-  body.chat-flow .agent-output .agent-line:not(.agent-line-prompt):not(.agent-line-tool):not(.agent-line-status):not(.agent-line-error):not(.agent-line-queued):not(.agent-line-followup) {
+  body.chat-flow .agent-output .agent-line:not(.agent-line-prompt):not(.agent-line-tool):not(.agent-line-status):not(.agent-line-error):not(.agent-line-queued):not(.agent-line-followup):not(.agent-line-coverage) {
     align-self: stretch !important;
     max-width: 100% !important;
     background: transparent !important;
@@ -4119,6 +4126,7 @@
   body.chat-flow .agent-output .agent-line-prompt,
   body.chat-flow .agent-output .agent-line-tool,
   body.chat-flow .agent-output .agent-line-status,
+  body.chat-flow .agent-output .agent-line-coverage,
   body.chat-flow .agent-output .agent-line-error,
   body.chat-flow .agent-output .agent-line-queued,
   body.chat-flow .agent-output .agent-line-followup {

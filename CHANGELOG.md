@@ -6,6 +6,36 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Artifact coverage: catching a substituted answer
+
+An agent was asked to review a LinkedIn search from a pasted URL carrying
+`f_EA=true`, `distance=0.0` and specific keywords. Its fetch of that page
+returned nothing, so it quietly re-ran a DIFFERENT search (`distance=25`, no
+`f_EA`) and reported those 25 results as the answer — a confident verdict
+("nothing worth chasing") built on data the user never asked for. It took two
+rounds of pushback to surface, and the first correction still hid the defect.
+
+- **`SHARED_RULES.md` — "SUBSTITUTION IS A LIE"** (operator-local, not in the
+  repo): cannot run it as specified → stop and say so. Zero results is a valid
+  answer. Full disclosure on the first pass, and any conclusion drawn from the
+  wrong run is retracted in the same message.
+- **New `mc/artifact_coverage.py`** — the half that does not rely on the
+  model's honesty. At turn end it compares the literal artifacts the user's
+  message named (URL query params, file paths, backticked tokens, ids) against
+  the ACTUAL tool inputs recorded off the stream, and appends one advisory
+  line when something the user specified was never touched. Computed from the
+  stream, so the agent can neither author, suppress nor forge it.
+- **Coverage, not similarity.** Prose distance fires constantly or never; a
+  binary per-artifact check fires rarely and precisely. Param-level once the
+  host was reached (a URL rewrite is legitimate), tracking params ignored,
+  silent on a turn with no tool calls, capped at four misses.
+- **Annotates, never blocks** — a passive observer at the two live `tool_use`
+  stream sites in `agent_routes.py`, after dispatch, so it cannot delay, deny
+  or alter a tool call. `artifact_coverage_enabled` (default ON) silences it
+  live, no respawn.
+- 16 tests in `tests/test_artifact_coverage.py`, anchored on the real incident
+  plus the false-positive classes each design rule pays for; suite 2169 green.
+
 ## [Unreleased] — Skill import security scanner (MC-912)
 
 Clayrune imported skills from paste, folder, git and plugin sources with no

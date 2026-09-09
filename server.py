@@ -294,6 +294,13 @@ def _load_config():
         # SHARED_RULES.md block) with no respawn needed — both injection
         # sites read this live.
         'behavior_tail_enabled': True,
+        # Artifact coverage (mc/artifact_coverage.py) — at turn end, compare
+        # the literal artifacts the user's message named (URL query params,
+        # file paths, backticked tokens, ids) against the ACTUAL tool inputs
+        # recorded off the stream, and append one advisory line when the agent
+        # answered without ever touching something the user specified. Read
+        # live per turn; false silences the line with no respawn.
+        'artifact_coverage_enabled': True,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,

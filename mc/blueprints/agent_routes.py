@@ -94,6 +94,7 @@ import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b26
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
+import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -2038,6 +2039,61 @@ def _observe_negation_interrupt(session, tool_name, tool_input) -> None:
         _log(f"[negation-interrupt] observe failed: {e}")
 
 
+# ── Artifact coverage (see mc/artifact_coverage.py for the incident) ─────────
+# Three passive hooks on the live stream, all best-effort, none of which can
+# affect a tool call: record each call's inputs, then at turn end compare them
+# against the literal artifacts the user's last message specified. The check is
+# computed from the ACTUAL stream, never from the agent's own account of what
+# it did — that is the entire point, since the failure being caught is an agent
+# reporting a different query's results as the answer.
+_COVERAGE_MAX_BLOBS = 200
+
+
+def _coverage_note_tool(session, tool_name, tool_input) -> None:
+    """Record one tool call's inputs into the current turn's buffer."""
+    try:
+        blobs = session.setdefault('_coverage_blobs', [])
+        if len(blobs) >= _COVERAGE_MAX_BLOBS:
+            return
+        blobs.append(_artifact_coverage.flatten_tool_input(tool_name, tool_input))
+    except Exception as e:
+        _log(f"[coverage] note failed: {e}")
+
+
+def _coverage_last_user_message(session) -> str:
+    """The user's most recent message, read back off the visible transcript.
+
+    Read from `log_lines` rather than wired into the ~8 places that dispatch or
+    send a message: one read site cannot drift out of sync with the others, and
+    every one of those sites already appends the message in this exact shape
+    (`\\n> {user_label}: {message}\\n`).
+    """
+    label = state.CONFIG.get('user_name') or 'User'
+    prefix = f"\n> {label}: "
+    for line in reversed(session.get('log_lines') or []):
+        if isinstance(line, str) and line.startswith(prefix):
+            return line[len(prefix):].strip()
+    return ''
+
+
+def _emit_coverage_advisory(session) -> None:
+    """At turn end: one advisory line if the user named something concrete that
+    no tool call touched. Silent on a turn with no tool calls, and silent when
+    everything specified was used — which is the overwhelming majority."""
+    try:
+        blobs = session.get('_coverage_blobs') or []
+        session['_coverage_blobs'] = []
+        if not state.CONFIG.get('artifact_coverage_enabled', True):
+            return
+        line = _artifact_coverage.advisory_line(
+            _coverage_last_user_message(session), blobs)
+        if line:
+            session.setdefault('log_lines', []).append(line)
+            session['last_output_time'] = _time.time()
+    except Exception as e:
+        _log(f"[coverage] advisory failed: {e}")
+
+
 def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     """Universal Clayrune-aware behaviors that apply to EVERY agent —
     regular project agents, hivemind workers, future agent types.
@@ -3203,6 +3259,7 @@ def _read_agent_stream(proc, session):
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
                             _observe_negation_interrupt(session, tool_name, tool_input)
+                            _coverage_note_tool(session, tool_name, tool_input)
                             # Track .md file edits for plan file detection
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
@@ -3275,6 +3332,7 @@ def _read_agent_stream(proc, session):
                         session['num_turns'] = msg['num_turns']
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
+                    _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
                 # Web push hook: intercept PushNotification tool_use + turn results.
                 _handle_push_signal(
@@ -3423,6 +3481,7 @@ def _read_agent_stream_b(proc, session):
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
                             _observe_negation_interrupt(session, tool_name, tool_input)
+                            _coverage_note_tool(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
                                 if fp.lower().endswith('.md'):
@@ -3488,6 +3547,7 @@ def _read_agent_stream_b(proc, session):
                         session['num_turns'] = msg['num_turns']
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
+                    _emit_coverage_advisory(session)
                     _scan_result_event_for_auth(msg)
                     # Turn boundary — process stays alive
                     session['status'] = 'idle'

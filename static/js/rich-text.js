@@ -215,6 +215,10 @@ function agentLineCls(text) {
       ? 'agent-line agent-line-prompt agent-line-cmd'
       : 'agent-line agent-line-prompt';
   }
+  // Substitution advisory (mc/artifact_coverage.py) — reads as a warning,
+  // not as the green status lines, because it is a claim about the answer
+  // the user is about to trust.
+  if (t.startsWith('[coverage]')) return 'agent-line agent-line-coverage';
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';
