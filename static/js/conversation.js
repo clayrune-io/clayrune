@@ -1700,7 +1700,18 @@ function _userInitiatedConvos(projectId, includeHidden) {
     // the programmatic-source drop here. Genuinely automated triggers (the
     // AGENT_TRIGGERS check above) are unaffected — this only rescues rows that
     // already passed that gate.
-    if (AGENT_SOURCES.has(c.source || '') && !c.character) return false;
+    // MC-946: a dispatched worker also lands here source:agent, character:null
+    // (agent_routes.py's /agent/send dispatch-fallback path never reads
+    // `character` — filed separately, not fixed here). It used to be
+    // indistinguishable from cron/scheduler noise, so it was dropped by the
+    // same rule above. `spawned_by_session_id` is the durable proof it's a
+    // real worker with a known spawner (MC-946/backend), not scheduler noise
+    // — keep it so the rail can nest it under that spawner below. Standing
+    // position: nest by LIFESPAN, never by "who happened to message it" — a
+    // HIRED persona (c.character set) already survives via the check above
+    // and must never be re-homed under a spawner just because one dispatched
+    // it once.
+    if (AGENT_SOURCES.has(c.source || '') && !c.character && !c.spawned_by_session_id) return false;
     const src = c.source || '';
     // Test the label with agent-facing preambles (resume/continue + the per-turn
     // brevity directive) stripped, so a genuine user chat whose message merely
@@ -1731,6 +1742,9 @@ function _userInitiatedConvos(projectId, includeHidden) {
       // log (rather than /conversations) would fail the character-carries-a-
       // human-pick override above and be dropped all over again.
       character: e.character || null,
+      // MC-946: same reasoning — an aged-out WORKER needs this to survive the
+      // AGENT_SOURCES drop above, same as a persona needs `character`.
+      spawned_by_session_id: e.spawned_by_session_id || '',
     };
     if (!_keep(c)) continue;
     out.push(c);
@@ -1967,8 +1981,44 @@ function mobileUserConversationsHTML(p, convos) {
   // Bubble chats that need attention (waiting) then working ones to the top so
   // an active/awaiting conversation is never buried under older history.
   const _rank = c => { const s = _convLiveState(live, c); return s === 'waiting' ? 0 : s === 'working' ? 1 : 2; };
-  const ordered = convos.map((c, i) => [c, i]).sort((a, b) => _rank(a[0]) - _rank(b[0]) || a[1] - b[1]).map(x => x[0]);
-  const rows = ordered.map(c => {
+  const _rankOrdered = convos.map((c, i) => [c, i]).sort((a, b) => _rank(a[0]) - _rank(b[0]) || a[1] - b[1]).map(x => x[0]);
+
+  // MC-946: a session an agent dispatched FOR ONE TASK (spawned_by_session_id
+  // set, no character) renders nested one level directly under its spawner's
+  // row, instead of as a peer conversation — the earlier failure mode this
+  // fixes is that such a worker was either dropped from the list entirely
+  // (the AGENT_SOURCES filter above) or, once rescued, looked like an
+  // unrelated chat with no way to tell it apart from one the user opened.
+  // A HIRED persona (c.character set) is exempt even if it also carries a
+  // spawner — the standing position splits nesting by LIFESPAN: a throwaway
+  // worker reports into its spawner's thread, a hired character keeps its
+  // own top-level row regardless of who happened to dispatch it.
+  // Chains (a worker that itself dispatched a worker) collapse onto the
+  // TOPMOST ancestor found in this list, so indentation never runs past one
+  // level no matter how deep the dispatch chain actually goes.
+  const byMcsid = {};
+  _rankOrdered.forEach(c => { const m = c.mc_session_id || ''; if (m) byMcsid[m] = c; });
+  const _topAncestor = (c) => {
+    let cur = c, hops = 0;
+    while (!cur.character && cur.spawned_by_session_id && byMcsid[cur.spawned_by_session_id]
+           && byMcsid[cur.spawned_by_session_id] !== cur && hops++ < 20) {
+      cur = byMcsid[cur.spawned_by_session_id];
+    }
+    return cur;
+  };
+  const childrenByRoot = new Map();
+  const ordered = [];
+  for (const c of _rankOrdered) {
+    const isWorker = !c.character && !!c.spawned_by_session_id;
+    const root = isWorker ? _topAncestor(c) : c;
+    if (root !== c) {
+      if (!childrenByRoot.has(root)) childrenByRoot.set(root, []);
+      childrenByRoot.get(root).push(c);
+    } else {
+      ordered.push(c);
+    }
+  }
+  const _renderConvRow = (c, isChild) => {
     const csid = c.claude_session_id || '';
     const mcsid = c.mc_session_id || '';
     const hideKey = _convHideKey(c);
@@ -2037,7 +2087,7 @@ function mobileUserConversationsHTML(p, convos) {
     const splitBtn = _canSplit
       ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
       : '';
-    return `<div class="conv-row ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" data-mcsid="${esc(mcsid || '')}" data-ts-relative="${esc(c.ts_relative || '')}" data-rest-status="${esc(stt)}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
+    return `<div class="conv-row ${isChild ? 'conv-row-child' : ''} ${isHidden ? 'conv-hidden' : ''}${liveSt ? ' conv-live-' + liveSt : ''}${isActive ? ' active' : ''}" data-search="${esc(_convSearchText(c))}" data-csid="${esc(csid || '')}" data-mcsid="${esc(mcsid || '')}" data-ts-relative="${esc(c.ts_relative || '')}" data-rest-status="${esc(stt)}" onclick="openConversation('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="${esc(c.label || '')}">
       ${face}
       <div class="conv-main">
         <div class="conv-top">
@@ -2049,6 +2099,14 @@ function mobileUserConversationsHTML(p, convos) {
       </div>
       ${splitBtn}${hideBtn}
     </div>`;
+  };
+  // Interleave: each root row immediately followed by its nested children (in
+  // their original rank order), so a worker always renders directly below the
+  // spawner it belongs to rather than wherever its own rank would place it.
+  const rows = ordered.map(c => {
+    const own = _renderConvRow(c, false);
+    const kids = (childrenByRoot.get(c) || []).map(k => _renderConvRow(k, true)).join('');
+    return own + kids;
   }).join('');
   // The toggle counts only the hidden chats MATCHING the current search. Using
   // hidden.size (the project-wide total) meant a search with no hidden matches
