@@ -79,7 +79,15 @@ function openBackupSurface(tab) {
       tab: tab || 'backup',
       checklist: _newBackupChecklist(),
       sizePreview: null, sizeLoading: false,
+      // Per-category disclosure. COLLAPSED by default and deliberately not
+      // persisted: 'unprotected' alone is dozens of rows on a real install,
+      // and auto-expanding it pushed the Create button off-screen.
+      expanded: { records: false, artifacts: false, media: false, transcripts: false, unprotected: false },
       label: '', creating: false, createResult: null, createError: null,
+      // Async create (POST /api/backup/create {"async":true}) — a ~48GB
+      // archive is minutes of writing, so the job is polled for real byte
+      // progress instead of parking on a disabled button.
+      job: null,
       // Destination override (MC-945 follow-up): `override` is per-action —
       // it's sent as `dest_dir` on the next create/list call, never persisted.
       // The persisted default lives in Settings (backup_dest_dir); this is
@@ -156,10 +164,28 @@ function _backupDestDirFieldHTML(st, opts = {}) {
       <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
         Destination ${opts.label || ''} <span style="opacity:.7">(override for this action only — set the default in Settings &rarr; System)</span>
       </label>
-      <input type="text" value="${esc(dd.override)}" placeholder="${esc(placeholder)}"
-        oninput="_backupSetDestDirOverride(this.value)"
-        style="width:100%;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      <div style="display:flex;gap:6px;align-items:center">
+        <input class="path-input" type="text" value="${esc(dd.override)}" placeholder="${esc(placeholder)}"
+          oninput="_backupSetDestDirOverride(this.value)"
+          style="flex:1;box-sizing:border-box;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+        <button class="btn-browse" onclick="_backupBrowseDestDir()" title="Browse for folder">Browse&hellip;</button>
+      </div>
     </div>`;
+}
+
+// The folder picker from project-forms.js in callback mode — same dialog and
+// same GET /api/browse/folders the project path field uses. Deliberately NOT
+// the File System Access API or a native dialog: the browser is often not on
+// the machine the backup is written to (phone, remote access).
+function _backupBrowseDestDir() {
+  const entry = openModals.get('__backup');
+  if (!entry) return;
+  const dd = entry._backup.destDir;
+  openFolderPicker(null, {
+    startPath: (dd.override || dd.effective || ''),
+    title: 'Choose backup destination',
+    onSelect: (path) => { _backupSetDestDirOverride(path); _backupRender('__backup'); },
+  });
 }
 
 function _backupSetDestDirOverride(v) {
@@ -173,6 +199,47 @@ function _backupSetDestDirOverride(v) {
 
 // ── Backup tab (create) ──────────────────────────────────────────────────────
 
+// One row per category. Every category carries the same disclosure — the
+// backend returns `directories` for all of them now (mc/backup.py
+// size_preview), not just 'unprotected' — so there is exactly one breakdown
+// pattern in this panel, not two.
+function _backupCategoryRowHTML(cat, state) {
+  const sp = state.sizePreview;
+  const c = sp && sp.categories && sp.categories[cat];
+  const bytes = c ? _fmtBackupBytes(c.bytes) : (state.sizeLoading ? '…' : '');
+  const dirs = (c && c.directories) || [];
+  const expanded = !!state.expanded[cat];
+  // preventDefault/stopPropagation: the row is a <label> wrapping the
+  // checkbox, so without them clicking the caret would also tick the box.
+  const caret = dirs.length
+    ? `<span onclick="event.preventDefault();event.stopPropagation();_backupToggleExpand('${cat}')"
+         title="${expanded ? 'Collapse' : 'Expand'}"
+         style="display:inline-block;width:12px;text-align:center;cursor:pointer;color:var(--text-faint);transform:rotate(${expanded ? 90 : 0}deg);transition:transform .12s">&#9656;</span>`
+    : '<span style="display:inline-block;width:12px"></span>';
+  const dirLines = (expanded && dirs.length) ? `
+    <div style="margin:2px 0 6px 30px;font-size:10px;color:var(--text-faint)">
+      ${dirs.map(d => `
+        <div style="display:flex;justify-content:space-between;gap:8px;${d.bytes > 1073741824 ? 'color:var(--amber)' : ''}">
+          <span style="word-break:break-all">${esc(d.path)}${d.bytes > 1073741824 ? ' &#x26A0;' : ''}</span>
+          <span style="white-space:nowrap">${_fmtBackupBytes(d.bytes)}</span>
+        </div>`).join('')}
+    </div>` : '';
+  return `<label style="display:flex;align-items:center;gap:6px;padding:6px 4px;cursor:pointer;border-bottom:1px solid var(--border)">
+      <input type="checkbox" ${state.checklist[cat] ? 'checked' : ''} onchange="_backupToggleCategory('${cat}',this.checked)">
+      ${caret}
+      <span style="flex:1;font-size:13px;color:var(--text)">${BACKUP_CATEGORY_LABELS[cat]}${
+        dirs.length ? ` <span style="color:var(--text-faint);font-size:10px">(${dirs.length})</span>` : ''}</span>
+      <span style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${bytes}</span>
+    </label>${dirLines}`;
+}
+
+function _backupToggleExpand(cat) {
+  const entry = openModals.get('__backup');
+  if (!entry) return;
+  entry._backup.expanded[cat] = !entry._backup.expanded[cat];
+  _backupRender('__backup');
+}
+
 function _backupCreateTabHTML(state) {
   const sp = state.sizePreview;
   const total = DEFAULT_BACKUP_CATEGORIES.reduce((sum, cat) => {
@@ -180,22 +247,7 @@ function _backupCreateTabHTML(state) {
     const c = sp && sp.categories && sp.categories[cat];
     return sum + (c ? c.bytes || 0 : 0);
   }, 0);
-  const rows = DEFAULT_BACKUP_CATEGORIES.map(cat => {
-    const c = sp && sp.categories && sp.categories[cat];
-    const bytes = c ? _fmtBackupBytes(c.bytes) : (state.sizeLoading ? '…' : '');
-    const dirLines = (cat === 'unprotected' && c && c.directories && c.directories.length) ? `
-      <div style="margin:2px 0 6px 26px;font-size:10px;color:var(--text-faint)">
-        ${c.directories.map(d => `
-          <div style="display:flex;justify-content:space-between;gap:8px;${d.bytes > 1073741824 ? 'color:var(--amber)' : ''}">
-            <span>${esc(d.path)}${d.bytes > 1073741824 ? ' &#x26A0;' : ''}</span><span>${_fmtBackupBytes(d.bytes)}</span>
-          </div>`).join('')}
-      </div>` : '';
-    return `<label style="display:flex;align-items:center;gap:8px;padding:6px 4px;cursor:pointer;border-bottom:1px solid var(--border)">
-        <input type="checkbox" ${state.checklist[cat] ? 'checked' : ''} onchange="_backupToggleCategory('${cat}',this.checked)">
-        <span style="flex:1;font-size:13px;color:var(--text)">${BACKUP_CATEGORY_LABELS[cat]}</span>
-        <span style="font-size:11px;color:var(--text-faint);font-family:var(--mono)">${bytes}</span>
-      </label>${dirLines}`;
-  }).join('');
+  const rows = DEFAULT_BACKUP_CATEGORIES.map(cat => _backupCategoryRowHTML(cat, state)).join('');
   const noneChecked = DEFAULT_BACKUP_CATEGORIES.every(c => !state.checklist[c]);
 
   return `
@@ -218,9 +270,26 @@ function _backupCreateTabHTML(state) {
     ${noneChecked ? '<div style="margin-top:8px;font-size:11px;color:var(--red-text)">Untick everything and there is nothing to back up — pick at least one category.</div>' : ''}
     ${state.createError ? `<div style="margin-top:10px;font-size:12px;color:var(--red-text)">${esc(state.createError)}</div>` : ''}
     ${state.createResult ? _backupCreateResultHTML(state.createResult) : ''}
+    <div id="backup-job-progress">${state.job ? _backupJobProgressHTML(state.job) : ''}</div>
     <div style="display:flex;justify-content:flex-end;margin-top:14px">
       <button class="btn-add" ${(noneChecked || state.creating) ? 'disabled' : ''} onclick="_backupCreate()">${state.creating ? 'Creating…' : 'Create backup'}</button>
     </div>`;
+}
+
+function _backupJobProgressHTML(job) {
+  const pct = job.total_bytes ? Math.min(100, Math.floor((job.bytes_written / job.total_bytes) * 100)) : 0;
+  return `<div style="margin-top:12px">
+    <div style="display:flex;justify-content:space-between;gap:8px;font-size:11px;color:var(--text-faint);margin-bottom:4px">
+      <span>${_fmtBackupBytes(job.bytes_written || 0)} of ${_fmtBackupBytes(job.total_bytes || 0)}
+        &middot; ${job.files_written || 0}/${job.total_files || 0} files${
+        job.warnings_count ? ` &middot; ${job.warnings_count} warning${job.warnings_count === 1 ? '' : 's'}` : ''}</span>
+      <span style="font-family:var(--mono)">${pct}%</span>
+    </div>
+    <div style="height:6px;background:var(--surface2);border-radius:3px;overflow:hidden">
+      <div style="height:100%;width:${pct}%;background:var(--accent);transition:width .3s"></div>
+    </div>
+    ${job.current_file ? `<div style="margin-top:4px;font-size:10px;color:var(--text-faint);font-family:var(--mono);white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${esc(job.current_file)}</div>` : ''}
+  </div>`;
 }
 
 function _backupCreateResultHTML(r) {
@@ -265,7 +334,7 @@ async function _backupCreate() {
   const entry = openModals.get(modalId);
   if (!entry) return;
   const st = entry._backup;
-  st.creating = true; st.createError = null; st.createResult = null;
+  st.creating = true; st.createError = null; st.createResult = null; st.job = null;
   _backupRender(modalId);
   try {
     const res = await fetch(API_BASE + '/api/backup/create', {
@@ -273,17 +342,71 @@ async function _backupCreate() {
       body: JSON.stringify({
         categories: st.checklist, label: st.label || undefined,
         dest_dir: (st.destDir.override || '').trim() || undefined,
+        async: true,   // => 202 {job_id}; the write runs on a worker thread
       }),
     });
     const data = await res.json();
-    if (!res.ok) { st.createError = data.error || `Create failed (HTTP ${res.status})`; }
-    else { st.createResult = data; st.restoreList.loaded = false; }
+    if (!res.ok) {
+      st.createError = data.error || `Create failed (HTTP ${res.status})`;
+      st.creating = false; _backupRender(modalId);
+      return;
+    }
+    st.job = { job_id: data.job_id, status: 'running', files_written: 0, total_files: 0,
+               bytes_written: 0, total_bytes: 0, current_file: null, warnings_count: 0 };
+    _backupRender(modalId);
+    _backupPollJob(modalId, data.job_id);
   } catch (e) {
     st.createError = 'Create failed: ' + e.message;
-  } finally {
     st.creating = false;
     _backupRender(modalId);
   }
+}
+
+async function _backupPollJob(modalId, jobId) {
+  const entry = openModals.get(modalId);
+  if (!entry) return;                                   // modal closed — job keeps running server-side
+  const st = entry._backup;
+  if (!st.job || st.job.job_id !== jobId) return;       // superseded by a newer run
+  let data;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/create/status/' + encodeURIComponent(jobId));
+    data = await res.json();
+    if (!res.ok) {
+      st.createError = data.error || `Lost track of the backup job (HTTP ${res.status})`;
+      st.creating = false; st.job = null;
+      _backupRender(modalId);
+      return;
+    }
+  } catch (e) {
+    setTimeout(() => _backupPollJob(modalId, jobId), 2000);  // transient fetch failure — keep watching
+    return;
+  }
+  st.job = data;
+  if (data.status === 'done') {
+    st.creating = false;
+    st.createResult = data.result;
+    st.job = null;
+    st.restoreList.loaded = false;
+    _backupRender(modalId);
+    return;
+  }
+  if (data.status === 'error') {
+    st.creating = false;
+    st.createError = data.error || 'Backup failed';
+    st.job = null;
+    _backupRender(modalId);
+    return;
+  }
+  // Still running: patch ONLY the progress subtree. A full _backupRender here
+  // would rebuild the body every 700ms and blow away focus/caret in the Label
+  // field while the user is typing.
+  const el = entry.element && entry.element.querySelector('#backup-job-progress');
+  if (el) el.innerHTML = _backupJobProgressHTML(data);
+  else if (st.tab === 'backup') _backupRender(modalId);
+  // Any other tab: keep polling silently. Re-rendering the Restore tab every
+  // tick because the progress node isn't on screen would throw away its list
+  // and its scroll position twice a second.
+  setTimeout(() => _backupPollJob(modalId, jobId), 700);
 }
 
 // ── Restore tab ───────────────────────────────────────────────────────────────
@@ -796,6 +919,8 @@ window._backupSetLabel = _backupSetLabel;
 window._backupSetDestDirOverride = _backupSetDestDirOverride;
 window._backupRefreshList = _backupRefreshList;
 window._backupCreate = _backupCreate;
+window._backupToggleExpand = _backupToggleExpand;
+window._backupBrowseDestDir = _backupBrowseDestDir;
 window._backupRestoreConfirm = _backupRestoreConfirm;
 window._backupImportSetPath = _backupImportSetPath;
 window._backupImportDryRun = _backupImportDryRun;

@@ -15,7 +15,25 @@ Routes:
                                      destination for this call only (MC-945
                                      follow-up, refused if inside the repo or
                                      data/projects/ — see
-                                     mc.backup.validate_backup_dest_dir)
+                                     mc.backup.validate_backup_dest_dir);
+                                     `async: true` returns `{job_id}`
+                                     immediately (202) and runs the write on a
+                                     worker thread instead — see the job
+                                     endpoints below. Omitted/false keeps the
+                                     original synchronous contract byte-for-
+                                     byte (the CLI and the route tests in
+                                     tests/test_backup_dest_dir.py depend on
+                                     this staying the default).
+    GET  /api/backup/create/status/<job_id>   poll an async job: status
+                                     (running/done/error), files_written/
+                                     total_files, bytes_written/total_bytes,
+                                     current_file, warnings_count, and (once
+                                     done) the same body the synchronous path
+                                     returns. Same in-memory job dict +
+                                     background-thread shape as
+                                     terminal_routes.py's terminal_sessions —
+                                     this codebase's existing pattern for a
+                                     long-running job with live progress.
     GET  /api/backup/list           archives under the configured backup
                                      destination (default ~/.clayrune/backups/);
                                      `dest_dir` query arg overrides it, same
@@ -69,6 +87,9 @@ Rollback is the only Phase 3a write into project state, so it follows
 restore/import's attended-only rule — except `dry_run:true`, which never
 writes and is safe for a steward cycle to request as a preview.
 """
+import threading
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 from flask import Blueprint, jsonify, request
@@ -81,6 +102,61 @@ bp = Blueprint('backup_routes', __name__)
 
 def _err(e: Exception, code: int = 400):
     return jsonify({'error': str(e)}), code
+
+
+# ── Async create job (POST /api/backup/create with `async: true`) ──────────
+#
+# Same shape as terminal_routes.py's terminal_sessions: an in-memory dict of
+# job state, mutated by a background thread, read by a polling GET. Lives
+# here (not in mc/backup.py) so create_backup() stays importable/synchronous
+# for tools/clayrune-backup.py and the test suite — threading is an HTTP-layer
+# concern, not something the standalone module needs to know about.
+_backup_jobs: dict[str, dict] = {}
+_backup_jobs_lock = threading.Lock()
+_MAX_FINISHED_JOBS = 20  # bounded memory: this is an uptime-long dict, not one that's ever cleared
+
+
+def _prune_backup_jobs_locked():
+    finished = [j for j in _backup_jobs.values() if j['status'] in ('done', 'error')]
+    if len(finished) <= _MAX_FINISHED_JOBS:
+        return
+    finished.sort(key=lambda j: j['started_at'])
+    for j in finished[:len(finished) - _MAX_FINISHED_JOBS]:
+        _backup_jobs.pop(j['job_id'], None)
+
+
+def _run_backup_job(job_id, categories, label, dest_dir):
+    def _progress(p):
+        with _backup_jobs_lock:
+            job = _backup_jobs.get(job_id)
+            if job is not None:
+                job.update(p)
+    try:
+        result = _backup.create_backup(categories=categories, label=label, dest_dir=dest_dir,
+                                       progress_cb=_progress)
+    except _backup.BackupError as e:
+        with _backup_jobs_lock:
+            job = _backup_jobs.get(job_id)
+            if job is not None:
+                job['status'] = 'error'
+                job['error'] = str(e)
+        return
+    except Exception as e:
+        _log(f"[backup] async create {job_id} failed: {e}")
+        with _backup_jobs_lock:
+            job = _backup_jobs.get(job_id)
+            if job is not None:
+                job['status'] = 'error'
+                job['error'] = str(e)
+        return
+    _log(f"[backup] created (async {job_id}) {result['path']} "
+        f"({result['files_written']} files, {len(result['warnings'])} warnings)")
+    with _backup_jobs_lock:
+        job = _backup_jobs.get(job_id)
+        if job is not None:
+            job['status'] = 'done'
+            job['result'] = {'path': result['path'], 'manifest': result['manifest'],
+                             'files_written': result['files_written'], 'warnings': result['warnings']}
 
 
 def _is_unattended() -> bool:
@@ -115,6 +191,30 @@ def api_backup_create():
     label = data.get('label')
     raw_dest = data.get('dest_dir') or None  # absent/blank => configured default (spec §5 + MC-945 follow-up)
     dest_dir = Path(raw_dest) if raw_dest else None
+
+    if data.get('async'):
+        # Validate up front so a bad destination 400s immediately instead of
+        # only surfacing through the first poll (dest_dir's own validation
+        # inside create_backup() still applies too — this is just fail-fast).
+        if dest_dir is not None:
+            try:
+                _backup.validate_backup_dest_dir(dest_dir)
+            except _backup.BackupError as e:
+                return _err(e)
+        job_id = uuid.uuid4().hex[:12]
+        job = {
+            'job_id': job_id, 'status': 'running',
+            'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+            'files_written': 0, 'total_files': 0, 'bytes_written': 0, 'total_bytes': 0,
+            'current_file': None, 'warnings_count': 0, 'result': None, 'error': None,
+        }
+        with _backup_jobs_lock:
+            _prune_backup_jobs_locked()
+            _backup_jobs[job_id] = job
+        threading.Thread(target=_run_backup_job, args=(job_id, categories, label, dest_dir),
+                         daemon=True).start()
+        return jsonify({'job_id': job_id, 'status': 'running'}), 202
+
     try:
         result = _backup.create_backup(categories=categories, label=label, dest_dir=dest_dir)
     except _backup.BackupError as e:
@@ -126,6 +226,15 @@ def api_backup_create():
         f"({result['files_written']} files, {len(result['warnings'])} warnings)")
     return jsonify({'path': result['path'], 'manifest': result['manifest'],
                     'files_written': result['files_written'], 'warnings': result['warnings']})
+
+
+@bp.route('/api/backup/create/status/<job_id>')
+def api_backup_create_status(job_id):
+    with _backup_jobs_lock:
+        job = _backup_jobs.get(job_id)
+        if not job:
+            return jsonify({'error': 'unknown job_id'}), 404
+        return jsonify(dict(job))
 
 
 @bp.route('/api/backup/list')

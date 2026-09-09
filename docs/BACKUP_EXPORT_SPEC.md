@@ -444,6 +444,15 @@ per-category (and per-directory) bytes; the UI and CLI `--preview`
 render the checklist from it. Nothing is bundled invisibly, and nothing
 is omitted invisibly.
 
+**Per-directory rows are per-category, not just §4.8** (added 2026-09-09,
+after the shipped panel gave a breakdown for `unprotected` alone and a bare
+total for the other four). Every category returns `directories: [{path,
+bytes, files}]`, bucketed by the real directory each file was enumerated from
+and sorted largest-first; `unprotected` keeps its extra `kind`/`project_id`
+fields. The panel renders all five with the SAME disclosure, **collapsed by
+default** — auto-expanding `unprotected` alone was dozens of rows that pushed
+the Create button off-screen on a real install.
+
 | Category | Contents | Measured (this install) | Default |
 |---|---|---|---|
 | **Records + memory** | project records + sidecars, config, schedules, hiveminds, rules, `data/skills`, memory vaults, characters, `~/.claude/skills` | ≈195 MB | ON |
@@ -572,7 +581,12 @@ would be the only destructive write in this design, so it is not one.
   `/api/project/<id>/import`): `GET /api/backup/size-preview`,
   `POST /api/backup/create` — **no `categories` object means the full
   default: everything ON, vault `not_asked`** (§4.6, v1.2); an explicit
-  object opts OUT per category and is echoed into the manifest —
+  object opts OUT per category and is echoed into the manifest; **`async:
+  true` returns `{job_id}` immediately (202)** and writes on a worker
+  thread, with `GET /api/backup/create/status/<job_id>` reporting
+  bytes/files written against their totals, the current member and the
+  warning count (a ~48 GB default archive is minutes of writing, and the
+  synchronous default stays byte-for-byte what the CLI and tests use) —
   `GET /api/backup/list`, `POST /api/backup/restore`,
   `POST /api/backup/export-project/<id>`, `POST /api/backup/import`
   (dry-run by default, `apply: true` to commit),

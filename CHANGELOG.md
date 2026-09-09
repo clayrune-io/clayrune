@@ -6,6 +6,56 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Backup panel: a breakdown you can close, a picker, and a progress bar
+
+Four defects against the shipped Backup panel (MC-945), all found by using it
+on a real install where the default archive is ~48 GB.
+
+- **The breakdown collapses, and every category has one.** "Unprotected work
+  files" auto-expanded dozens of directory rows with no way to close them,
+  pushing everything below off-screen; the other four categories showed a
+  total and nothing else. `size_preview()` now returns `directories:
+  [{path, bytes, files}]` for **every** category — bucketed by each entry's
+  real source directory in the stat pass that was already happening, so no
+  second filesystem walk — and the panel renders all five through one
+  disclosure component, **collapsed by default**, with a caret affordance.
+  The caret sits inside the row's `<label>`, so it takes care to expand
+  without ticking the category (`preventDefault` + `stopPropagation`).
+- **The destination gets the picker Clayrune already ships.** `Browse…` next
+  to the Destination field in the panel and in Settings → System, reusing
+  `openFolderPicker()` (now with a callback mode; the project-path behaviour
+  is untouched) over `GET /api/browse/folders`. Deliberately not the File
+  System Access API and not a native dialog: the browser is frequently not on
+  the machine the archive lands on.
+- **Real progress instead of a dead button.** `POST /api/backup/create` with
+  `async: true` returns `{job_id}` immediately (202) and writes on a worker
+  thread; `GET /api/backup/create/status/<job_id>` reports bytes and files
+  written against their totals, the member being written, and the warning
+  count. The panel polls it into a real bar with a percentage, patching only
+  the progress node so typing in the Label field survives the tick. **The
+  synchronous path is unchanged** — no `async` key still means the response
+  *is* the finished backup, which the CLI and the existing route tests rely
+  on. Job registry lives in the blueprint (`mc/backup.py` stays importable
+  without a server), same in-memory-dict + thread shape as terminal sessions.
+- **The `.partial` temp file no longer collides or leaks.** It was
+  `.{fname}.partial` — a pure function of the category set, so two concurrent
+  creates targeted one path; measured here as `[WinError 32]` after ~15.6 GB.
+  Now pid + random per run. Both writers also remove their own temp when a
+  write fails (a crashed run used to orphan it forever — a 15.6 GB one was
+  found in `~/.clayrune/backups`), and `list_backups()` sweeps `.partial`
+  files older than 24 h, an age gate no live writer can trip.
+
+`tests/test_backup_progress.py` (18) covers the breakdown shape, the progress
+callback, the async job's success/failure/validation paths, temp-name
+uniqueness, failure cleanup and the sweep; `tools/smoke/backup-panel-breakdown.mjs`
+drives the real panel headless for the collapse/expand, picker and progress-bar
+behaviour. 91 backup tests + the boot smoke stay green.
+
+**Still on Ron's desk, not a code change:** one directory —
+`DayTrading/engulfing-scanner` — is 44.3 GB of the 48 GB default, 93% of every
+backup. The panel now flags it amber and can show it; whether it belongs in
+the default archive is a policy call.
+
 ## [Unreleased] — Artifact coverage: catching a substituted answer
 
 An agent was asked to review a LinkedIn search from a pasted URL carrying
