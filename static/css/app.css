@@ -7593,3 +7593,31 @@
   body.adv-hide-github .gh-sync-badge { display: none !important; }
   body.adv-hide-agent-log .modal-tab[data-tab-name="agent-log"] { display: none !important; }
   body.adv-hide-memory .modal-menu-item.mc-adv-memory { display: none !important; }
+
+  /* ── Floor: model-provider mark on the face (Ron, 2026-09-09) ───────────
+     A small logo pinned to the face's own corner rather than a text pill on
+     the card — it is an identifier on a tile, not a feature of its own, and
+     the face is already the one element that appears at every size the Floor
+     renders (room figures at 72px, bench cards via .fl-face-bench). `.fl-face`
+     already forms the positioning context for both. Colour reuses the exact
+     .provider-badge.prov-* values (app.css:6353) so a provider is the same
+     colour everywhere in the app, not a second palette. */
+  .fl-face { position: relative; }
+  .fl-prov-badge {
+    position: absolute; right: -3px; bottom: -3px;
+    width: 20px; height: 20px; border-radius: 50%;
+    background: var(--bg-alt, var(--bg)); border: 1px solid var(--border);
+    display: flex; align-items: center; justify-content: center;
+    pointer-events: none;
+  }
+  .fl-prov-badge svg {
+    width: 12px; height: 12px; fill: none; stroke: currentColor;
+    stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round;
+  }
+  .fl-prov-badge.prov-claude   { color: var(--accent); }
+  .fl-prov-badge.prov-gemini   { color: #4285f4; }
+  .fl-prov-badge.prov-codex    { color: #10b981; }
+  .fl-prov-badge.prov-opencode { color: #8b5cf6; }
+  .fl-prov-badge.prov-goose    { color: #f59e0b; }
+  .fl-prov-badge.prov-aider    { color: #ef4444; }
+  .fl-prov-badge.prov-kiro     { color: #06b6d4; }
