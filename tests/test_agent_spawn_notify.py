@@ -142,3 +142,41 @@ def test_last_reply_text_skips_status_lines_and_the_task_seed():
     ]}
     assert ar._last_reply_text(sess) == 'all 14 tests passed'
     assert ar._last_reply_text({'log_lines': ['> Ron: x', '[status]']}) == ''
+
+
+def test_callback_names_the_agent_not_its_record(monkeypatch):
+    """A live session's `character` is a dict, not a string.
+
+    The first real callback (2026-09-09) opened with the entire character
+    record -- scope, engine, avatar, model -- where "Tobin" belonged.
+    """
+    captured = {}
+
+    class _FakeThread:
+        def __init__(self, target=None, **kw):
+            self._t = target
+
+        def start(self):
+            self._t()
+
+    class _Resp:
+        def read(self):
+            return b''
+
+    def _fake_urlopen(req, timeout=None):
+        captured['body'] = req.data.decode()
+        return _Resp()
+
+    import urllib.request as u
+    # The sender runs on a thread; run it inline so the assertion is not a race.
+    monkeypatch.setattr(ar.threading, 'Thread', _FakeThread)
+    monkeypatch.setattr(u, 'urlopen', _fake_urlopen)
+
+    ar._notify_agent_spawner('p', 'parent', {
+        'session_id': 'child',
+        'character': {'agent_name': 'Tobin', 'display_name': 'builder',
+                      'engine': {'model': 'claude-sonnet-5'}},
+        'status': 'completed', 'task': 't',
+    }, '4')
+    assert 'Tobin' in captured.get('body', '')
+    assert 'claude-sonnet-5' not in captured.get('body', '')

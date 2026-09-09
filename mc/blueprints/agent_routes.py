@@ -4411,7 +4411,16 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
     def _send():
         try:
             import urllib.request
-            who = child.get('character') or child.get('provider') or 'agent'
+            # `character` is a DICT on a live session (name/scope/engine/
+            # avatar), not a string -- printing it raw dumped the whole record
+            # into the spawner's chat where a name belonged. Observed
+            # 2026-09-09 on the first real callback.
+            _char = child.get('character')
+            if isinstance(_char, dict):
+                who = (_char.get('agent_name') or _char.get('display_name')
+                       or _char.get('name') or 'agent')
+            else:
+                who = _char or child.get('provider') or 'agent'
             status = child.get('status', 'unknown')
             body = json.dumps({
                 'message': (
