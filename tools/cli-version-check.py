@@ -85,9 +85,34 @@ def _npm(args, timeout=60):
     return _run([exe] + args, timeout=timeout)
 
 
+def _prefix_fallback(name):
+    """Find `name` under npm's configured prefix when PATH does not carry it.
+
+    Without this the tool is blind in exactly the environment it is meant to
+    audit: this script runs from whatever shell the scheduler hands it, and on
+    2026-09-09 that shell's PATH lacked ~/.npm-global while the SERVER resolved
+    gemini there fine. `shutil.which` returned None, the row became
+    'not_installed', and a working 0.59.0 install vanished from the report --
+    a version auditor that silently omits a CLI is the failure it exists to
+    catch. MC's own runtimes probe these same locations.
+    """
+    rc, out = _npm(['config', 'get', 'prefix'], timeout=30)
+    roots = []
+    if rc == 0 and out and not out.startswith('undefined'):
+        roots.append(out.strip())
+    roots.append(os.path.join(os.path.expanduser('~'), '.npm-global'))
+    for root in roots:
+        for rel in (name + '.cmd', name + '.exe', name,
+                    os.path.join('bin', name), os.path.join('bin', name + '.cmd')):
+            cand = os.path.join(root, rel)
+            if os.path.isfile(cand):
+                return cand
+    return None
+
+
 def installed_version(name):
     """(version, resolved_path) for the copy PATH actually resolves."""
-    path = shutil.which(name)
+    path = shutil.which(name) or _prefix_fallback(name)
     if not path:
         return None, None
     rc, out = _run([path, '--version'], timeout=60)
@@ -188,8 +213,11 @@ def main():
     ap.add_argument('--json', action='store_true', help='machine-readable output')
     args = ap.parse_args()
 
-    rows = [check_one(c, args.apply) for c in CLIS]
-    live = [r for r in rows if r.get('status') != 'not_installed']
+    # Report every row, including not_installed. Hiding those was how a
+    # resolution failure looked identical to "we don't run that CLI here".
+    # not_installed is informational and does NOT set the exit code -- not
+    # every box runs all six.
+    live = [check_one(c, args.apply) for c in CLIS]
 
     if args.json:
         print(json.dumps({'clis': live}, indent=2))
@@ -205,7 +233,7 @@ def main():
             if r.get('update_error'):
                 print('           UPDATE FAILED: %s' % r['update_error'])
 
-    return 1 if any(r['status'] != 'ok' for r in live) else 0
+    return 1 if any(r['status'] not in ('ok', 'not_installed') for r in live) else 0
 
 
 if __name__ == '__main__':
