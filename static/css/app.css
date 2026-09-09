@@ -7617,9 +7617,13 @@
     width: 20px; height: 20px; fill: currentColor; stroke: currentColor;
     stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round;
   }
-  .fl-prov-badge.prov-claude   { color: var(--accent); }
+  /* Brand colours, not theme colours — the whole point of these marks is that
+     Ron recognises the vendor at a glance, and --accent is this theme's blue
+     (#5b9ef5), which made Claude read as a second Gemini. Anthropic's mark is
+     coral; OpenAI's is near-black (below). */
+  .fl-prov-badge.prov-claude   { color: #d97757; }
   .fl-prov-badge.prov-gemini   { color: #4285f4; }
-  .fl-prov-badge.prov-codex    { color: #10b981; }
+  .fl-prov-badge.prov-codex    { color: #1a1a1a; }
   .fl-prov-badge.prov-opencode { color: #8b5cf6; }
   .fl-prov-badge.prov-goose    { color: #f59e0b; }
   .fl-prov-badge.prov-aider    { color: #ef4444; }
