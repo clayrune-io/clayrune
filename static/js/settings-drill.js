@@ -691,6 +691,10 @@ async function _renderSettings() {
         <div><div class="settings-label">Port</div><div class="settings-hint">Requires restart to take effect</div></div>
         ${numInput('port', cfg.port)}
       </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Backup Destination</div><div class="settings-hint">Where backups are written. Blank uses ~/.clayrune/backups. Can't be inside the repo or data/projects/.</div></div>
+        ${textInput('backup_dest_dir', cfg.backup_dest_dir || '')}
+      </div>
     </div>
 
     <div class="settings-section">

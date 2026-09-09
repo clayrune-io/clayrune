@@ -2689,11 +2689,19 @@ function autoSizeNameInput(input) {
 
 async function saveSetting(key, value) {
   try {
-    await fetch(API_BASE + '/api/config', {
+    const res = await fetch(API_BASE + '/api/config', {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ [key]: value }),
     });
+    if (!res.ok) {
+      // A validating key (e.g. backup_dest_dir refusing a repo-internal
+      // path) returns {error} instead of silently rewriting the value —
+      // surface that instead of the generic failure toast.
+      const data = await res.json().catch(() => ({}));
+      showToast(data.error || 'Failed to save setting', 4000);
+      return;
+    }
     // Mirror into the in-memory config so anything reading _globalConfig
     // (e.g. the mobile-brief-replies gate that tags outgoing messages with
     // client="mobile") picks up the new value without a page reload.

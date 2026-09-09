@@ -10,8 +10,20 @@ Routes:
     GET  /api/backup/size-preview   live per-category (+ per-directory §4.8)
                                      byte counts, before anything is written
     POST /api/backup/create         no `categories` body key => full default
-                                     (everything ON, vault not_available)
-    GET  /api/backup/list           archives under ~/.clayrune/backups/
+                                     (everything ON, vault not_available);
+                                     `dest_dir` overrides the configured
+                                     destination for this call only (MC-945
+                                     follow-up, refused if inside the repo or
+                                     data/projects/ — see
+                                     mc.backup.validate_backup_dest_dir)
+    GET  /api/backup/list           archives under the configured backup
+                                     destination (default ~/.clayrune/backups/);
+                                     `dest_dir` query arg overrides it, same
+                                     refusal rule as create
+    GET  /api/backup/dest-dir       `{configured, effective}` — the persisted
+                                     `backup_dest_dir` config value and the
+                                     actual path writes land in when unset;
+                                     backs the Backup panel's override field
     POST /api/backup/restore        per-category additive restore (§4.7/§4.8);
                                      announces absent categories before it runs
 
@@ -101,8 +113,10 @@ def api_backup_create():
     data = request.get_json(silent=True) or {}
     categories = data.get('categories')  # absent => full default (spec §6)
     label = data.get('label')
+    raw_dest = data.get('dest_dir') or None  # absent/blank => configured default (spec §5 + MC-945 follow-up)
+    dest_dir = Path(raw_dest) if raw_dest else None
     try:
-        result = _backup.create_backup(categories=categories, label=label)
+        result = _backup.create_backup(categories=categories, label=label, dest_dir=dest_dir)
     except _backup.BackupError as e:
         return _err(e)
     except Exception as e:
@@ -116,11 +130,29 @@ def api_backup_create():
 
 @bp.route('/api/backup/list')
 def api_backup_list():
+    raw_dest = request.args.get('dest_dir') or None
+    dest_dir = Path(raw_dest) if raw_dest else None
     try:
-        return jsonify({'backups': _backup.list_backups()})
+        return jsonify({'backups': _backup.list_backups(dest_dir=dest_dir)})
+    except _backup.BackupError as e:
+        return _err(e)
     except Exception as e:
         _log(f"[backup] list failed: {e}")
         return _err(e, 500)
+
+
+@bp.route('/api/backup/dest-dir')
+def api_backup_dest_dir():
+    """Effective backup destination for the UI's override field (MC-945
+    follow-up): the persisted `backup_dest_dir` config value plus the actual
+    path writes land in when unset (~/.clayrune/backups)."""
+    try:
+        configured = _backup.effective_backup_dir_config()
+        effective = _backup.effective_backup_dir()
+    except Exception as e:
+        _log(f"[backup] dest-dir failed: {e}")
+        return _err(e, 500)
+    return jsonify({'configured': configured, 'effective': effective})
 
 
 @bp.route('/api/backup/restore', methods=['POST'])
