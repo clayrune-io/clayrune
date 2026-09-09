@@ -3168,6 +3168,10 @@
     transition: background 0.12s;
   }
   .conv-row:last-child { border-bottom: none; }
+  /* MC-946: a worker an agent dispatched for one task, nested directly under
+     its spawner's row — one level of indent only, even if the dispatch chain
+     goes deeper (conversation.js `_topAncestor` collapses it here first). */
+  .conv-row.conv-row-child { padding-left: 34px; }
   /* Transcript-derived rows (mobile Layer 2 / the rail) carry a smaller face
      than the desktop row's 42px status disc — they are a list to scan, not a
      board to read, and a 42px slot there costs a third of the row height. */
