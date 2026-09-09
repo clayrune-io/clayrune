@@ -35,6 +35,27 @@ its own history. `import` is attended-only outright (no trigger-type carve-out
 at all, unlike restore/export-project); `export-project` itself may run
 unattended, but its `vault: true` option cannot (mc.backup._resolve_vault_choice
 enforces this — see spec §4.2, secret-bearing export is attended-only).
+
+    Phase 3a — restore points (docs/BACKUP_EXPORT_SPEC.md §4.3, backend only):
+    GET  /api/backup/restore-point/<project_id>            list, newest first
+    POST /api/backup/restore-point/<project_id>             create; body may
+                                                              set `label`, `pin`
+    PATCH  /api/backup/restore-point/<project_id>/<snap_id>  body: `label`
+                                                              and/or `pinned`
+    DELETE /api/backup/restore-point/<project_id>/<snap_id>  delete one
+    POST /api/backup/rollback/<project_id>/<snap_id>         body: `dry_run`
+                                                              (read-only preview
+                                                              — cannot_reverse
+                                                              + memory-index
+                                                              diff, no writes),
+                                                              `restore_memory_index`
+
+Restore-point creation/list/label/pin/delete are reversible, additive
+operations on the project's OWN backup artifacts (not the project itself) —
+same "backup creation may run unattended" class as export-project, no gate.
+Rollback is the only Phase 3a write into project state, so it follows
+restore/import's attended-only rule — except `dry_run:true`, which never
+writes and is safe for a steward cycle to request as a preview.
 """
 from pathlib import Path
 
@@ -188,4 +209,71 @@ def api_backup_import():
         _log(f"[backup] import {path} failed: {e}")
         return _err(e, 500)
     _log(f"[backup] import {path}: {report.get('status')}")
+    return jsonify(report)
+
+
+# ── Phase 3a — restore points (spec §4.3) ───────────────────────────────────
+
+@bp.route('/api/backup/restore-point/<project_id>', methods=['GET', 'POST'])
+def api_backup_restore_point(project_id):
+    if request.method == 'GET':
+        try:
+            return jsonify({'restore_points': _backup.list_restore_points(project_id)})
+        except Exception as e:
+            _log(f"[backup] restore-point list failed for {project_id}: {e}")
+            return _err(e, 500)
+    data = request.get_json(silent=True) or {}
+    try:
+        result = _backup.create_restore_point(
+            project_id, label=data.get('label'), pin=bool(data.get('pin')))
+    except _backup.BackupError as e:
+        return _err(e)
+    except Exception as e:
+        _log(f"[backup] restore-point create failed for {project_id}: {e}")
+        return _err(e, 500)
+    _log(f"[backup] restore point created {project_id}/{result['snap_id']} "
+        f"({result['files_written']} files)")
+    return jsonify(result)
+
+
+@bp.route('/api/backup/restore-point/<project_id>/<snap_id>', methods=['PATCH', 'DELETE'])
+def api_backup_restore_point_item(project_id, snap_id):
+    try:
+        if request.method == 'DELETE':
+            return jsonify(_backup.delete_restore_point(project_id, snap_id))
+        data = request.get_json(silent=True) or {}
+        manifest = None
+        if 'label' in data:
+            manifest = _backup.label_restore_point(project_id, snap_id, data['label'])
+        if 'pinned' in data:
+            manifest = _backup.pin_restore_point(project_id, snap_id, bool(data['pinned']))
+        if manifest is None:
+            return jsonify({'error': "PATCH body needs 'label' and/or 'pinned'"}), 400
+        return jsonify(manifest)
+    except _backup.BackupError as e:
+        return _err(e, 404)
+    except Exception as e:
+        _log(f"[backup] restore-point {project_id}/{snap_id} update failed: {e}")
+        return _err(e, 500)
+
+
+@bp.route('/api/backup/rollback/<project_id>/<snap_id>', methods=['POST'])
+def api_backup_rollback(project_id, snap_id):
+    data = request.get_json(silent=True) or {}
+    dry_run = bool(data.get('dry_run'))
+    if _is_unattended() and not dry_run:
+        return jsonify({'error': 'rollback is attended-only — refused for this trigger type'}), 403
+    try:
+        report = _backup.rollback(
+            project_id, snap_id,
+            restore_memory_index=bool(data.get('restore_memory_index')),
+            unattended=_is_unattended(), dry_run=dry_run)
+    except _backup.BackupIntegrityError as e:
+        return _err(e, 422)
+    except _backup.BackupError as e:
+        return _err(e, 404 if 'no restore point' in str(e) else 400)
+    except Exception as e:
+        _log(f"[backup] rollback {project_id}/{snap_id} failed: {e}")
+        return _err(e, 500)
+    _log(f"[backup] rollback {project_id}/{snap_id}: dry_run={dry_run} restored={report.get('restored')}")
     return jsonify(report)

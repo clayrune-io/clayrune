@@ -1,4 +1,5 @@
-"""Clayrune backup / restore — Phase 1 + Phase 2 of docs/BACKUP_EXPORT_SPEC.md.
+"""Clayrune backup / restore — Phase 1 + Phase 2 + Phase 3a of
+docs/BACKUP_EXPORT_SPEC.md.
 
 Phase 1: full-install backup + restore, complete by default, same-machine
 semantics only. Phase 2 (below the Phase 1 code, "Phase 2" banner comment):
@@ -12,7 +13,13 @@ and relocate the vault dir, and remap every other project-scoped archive
 member (records, artifacts, transcripts, unprotected) to the new path/id
 consistently — a missed one silently orphans that surface, not an error.
 Manifest format 1, including the ``categories`` field (spec §4.5) so it never
-needed a format bump to grow into this.
+needed a format bump to grow into this. Phase 3a (below the Phase 2 code,
+"Phase 3a" banner comment): backend-only restore points — cheap, frequent,
+per-project snapshots (record + sidecars + memory vault + AGENT_RULES.md,
+spec §4.3) with create/list/label/pin/delete/rollback, retention, and a
+structured "what rollback cannot reverse" report. No frontend here — the
+checklist UI and the restore-point UI are a separate, parallel change against
+``static/``.
 
 Importable WITHOUT server.py (spec §6, same isolation rule as distiller.py) —
 every path is resolved independently here, the way ``mc/db.py`` and
@@ -49,6 +56,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import shutil
 import subprocess
 import zipfile
 from dataclasses import dataclass
@@ -110,6 +118,7 @@ def _paths():
         'codex_sessions_dir': home / '.codex' / 'sessions',
         'backup_dir': clayrune_home() / 'backups',
         'incoming_dir': clayrune_home() / 'backups' / '_incoming',
+        'restore_points_dir': clayrune_home() / 'restore-points',
     }
 
 
@@ -1398,3 +1407,386 @@ def import_project(archive_path: Path, *,
 
         report['repo_checklist'] = repo_checklist_for(manifest.get('repo_pointer', {}), new_path)
         return report
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Phase 3a — restore points (spec §4.3, build order §7 Phase 3, backend only)
+# ═══════════════════════════════════════════════════════════════════════════
+#
+# A restore point is NOT a project export. Spec §4.3 scopes it narrowly:
+# "record + sidecars + memory vault + AGENT_RULES.md" — no .mcp.json, no
+# media, no transcripts, no unprotected-files sweep. Cheap and frequent
+# (~1-30MB, seconds) is the point; export_project's broader slice is a
+# deliberate non-goal here, so this gets its own enumerator rather than
+# reusing/trimming _enumerate_project_records.
+#
+# Stored as a plain directory tree under restore_points_dir, not a .crbackup
+# zip — same "not under data/projects/, not the repo" placement as backups
+# (spec §2 finding 1), but rollback reads individual files back (the
+# MEMORY.md/archive gate below) and retention prunes whole snapshots, both of
+# which are directory operations, not zip-member ones.
+#
+# THE MEMORY-INDEX GATE (spec §4.3, tools/memory-snapshot.py precedent): a
+# whole-file MEMORY.md/MEMORY_ARCHIVE.md restore silently reintroduces
+# watermarks and superseded state the system already retired. Every restore
+# point still snapshots both files (so the option exists at all), but
+# rollback() restores topic files unconditionally and only writes the index
+# files when the caller passes restore_memory_index=True explicitly. The
+# "read the diff first" half of that gate is rollback(..., dry_run=True):
+# computes the full report — including a unified diff of both index files —
+# without writing anything, so a UI confirm dialog has real content to show
+# before the toggle is even reachable.
+
+RETENTION_KEEP = 10
+
+
+def _slugify(label: Optional[str]) -> str:
+    if not label:
+        return 'point'
+    kept = ''.join(c if (c.isalnum() or c in ('-', '_')) else '-' for c in label.strip())
+    return kept.strip('-')[:40] or 'point'
+
+
+def _restore_point_dir(paths: dict, project_id: str, snap_id: str) -> Path:
+    return paths['restore_points_dir'] / project_id / snap_id
+
+
+def _enumerate_restore_point_entries(paths: dict, project: dict) -> tuple[list[_Entry], list[_Warning]]:
+    """spec §4.3's list, exactly: the project record + its
+    EXCLUDED_SIDECAR_SUFFIXES sidecars, the memory vault (index files
+    included, so they exist to diff/restore under the gate above), and
+    AGENT_RULES.md. Deliberately narrower than _enumerate_project_records,
+    which also carries .mcp.json — not named in §4.3."""
+    entries: list[_Entry] = []
+    warnings: list[_Warning] = []
+    pid = project['id']
+    dd = paths['data_dir']
+    if dd.is_dir():
+        for f in sorted(dd.iterdir()):
+            if not f.is_file() or f.suffix not in ('.json', '.jsonl'):
+                continue
+            if f.name != f'{pid}.json' and not f.name.startswith(f'{pid}_'):
+                continue
+            entries.append(_Entry(dest=f, category='record', arc_prefix='records',
+                                  relpath=f.name, reserialize_json=(f.suffix == '.json')))
+    d = _memory_dir_for(project, paths)
+    base = d if d is not None else paths['memory_fallback_dir']
+    for f in _memory_files_for(project, paths):
+        try:
+            rel = f.relative_to(base).as_posix()
+        except ValueError:
+            rel = f.name
+        cat = 'memory_index' if f.name in ('MEMORY.md', 'MEMORY_ARCHIVE.md') else 'memory_topic'
+        entries.append(_Entry(dest=f, category=cat, arc_prefix='memory', relpath=rel))
+    pp = project.get('project_path', '') or ''
+    if pp:
+        rules = Path(pp) / 'AGENT_RULES.md'
+        if rules.is_file():
+            entries.append(_Entry(dest=rules, category='rules', arc_prefix='rules',
+                                  relpath='AGENT_RULES.md'))
+    return entries, warnings
+
+
+def _create_restore_point_for(project: dict, *, label: Optional[str] = None, pin: bool = False) -> dict:
+    """Does the actual snapshot for whatever project dict it's handed —
+    split out from create_restore_point() so rollback()'s auto-snapshot can
+    call it without requiring the project to be a currently REGISTERED one
+    (rollback exists partly to recover from a project record that got
+    deleted or corrupted; refusing to snapshot 'whatever still exists' right
+    before fixing that would defeat the point)."""
+    paths = _paths()
+    entries, warnings = _enumerate_restore_point_entries(paths, project)
+
+    # Microsecond precision, not _now_iso()'s second precision: two points
+    # created in the same second (a rollback's auto-snapshot immediately
+    # followed by a manual one, or a test loop) must still sort correctly —
+    # snap_id IS the sort key list_restore_points() uses, below.
+    stamp = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S%f')
+    slug = _slugify(label)
+    snap_id = f'{stamp}-{slug}'
+    root = _restore_point_dir(paths, project['id'], snap_id)
+    n = 2
+    while root.exists():  # same-second collision — never silently overwrite a prior snapshot
+        snap_id = f'{stamp}-{slug}-{n}'
+        root = _restore_point_dir(paths, project['id'], snap_id)
+        n += 1
+    root.mkdir(parents=True)
+
+    files_manifest: dict[str, dict] = {}
+    written = 0
+    for e in entries:
+        try:
+            data = _read_and_maybe_reserialize(e)
+        except FileNotFoundError:
+            warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
+            continue
+        except (OSError, PermissionError) as exc:
+            # File-by-file, never copytree (spec §6): one locked/unreadable
+            # file skips-and-logs, never aborts the whole snapshot.
+            warnings.append(_Warning('unreadable', str(e.dest), f'{exc.__class__.__name__}: {exc}'))
+            continue
+        except Exception as exc:
+            warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
+            continue
+        dest = root / e.arc_prefix / e.relpath
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(data)
+        files_manifest[f'{e.arc_prefix}/{e.relpath}'] = {
+            'sha256': _sha256_bytes(data), 'bytes': len(data), 'category': e.category}
+        written += 1
+
+    pp = project.get('project_path', '') or ''
+    remote, head = _git_info(Path(pp)) if pp else (None, None)
+    manifest = {
+        'snap_id': snap_id, 'label': label or '', 'pinned': bool(pin),
+        'created_at': _now_iso(), 'project_id': project['id'], 'project_path': pp,
+        'git_remote': remote, 'git_head': head,
+        'files': files_manifest, 'warnings': [w.__dict__ for w in warnings],
+    }
+    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+
+    pruned = _enforce_retention(project['id'])
+    return {'snap_id': snap_id, 'path': str(root), 'manifest': manifest,
+           'files_written': written, 'warnings': manifest['warnings'], 'pruned': pruned}
+
+
+def create_restore_point(project_id: str, *, label: Optional[str] = None, pin: bool = False) -> dict:
+    paths = _paths()
+    projects = _iter_registered_projects(paths['data_dir'])
+    project = _project_or_raise(projects, project_id)
+    return _create_restore_point_for(project, label=label, pin=pin)
+
+
+def _load_restore_point_manifest(paths: dict, project_id: str, snap_id: str) -> dict:
+    root = _restore_point_dir(paths, project_id, snap_id)
+    mf = root / 'manifest.json'
+    if not mf.is_file():
+        raise BackupError(f"no restore point '{snap_id}' for project '{project_id}'")
+    return json.loads(mf.read_text(encoding='utf-8'))
+
+
+def list_restore_points(project_id: str) -> list[dict]:
+    paths = _paths()
+    d = paths['restore_points_dir'] / project_id
+    out: list[dict] = []
+    if not d.is_dir():
+        return out
+    for sub in sorted(d.iterdir()):
+        mf = sub / 'manifest.json'
+        if not mf.is_file():
+            continue
+        try:
+            manifest = json.loads(mf.read_text(encoding='utf-8'))
+        except Exception as exc:
+            out.append({'snap_id': sub.name, 'error': f'unreadable: {exc}'})
+            continue
+        out.append({
+            'snap_id': manifest.get('snap_id', sub.name), 'label': manifest.get('label', ''),
+            'pinned': bool(manifest.get('pinned', False)), 'created_at': manifest.get('created_at'),
+            'git_head': manifest.get('git_head'), 'file_count': len(manifest.get('files', {})),
+            'bytes': sum(f.get('bytes', 0) for f in manifest.get('files', {}).values()),
+            'warning_count': len(manifest.get('warnings', [])),
+        })
+    # snap_id, not created_at, is the sort key: the stamp prefix is
+    # microsecond-precision and fixed-width, so lexicographic order on it IS
+    # chronological order, with no same-second ties to break arbitrarily the
+    # way created_at (second precision) would have.
+    return sorted(out, key=lambda r: r.get('snap_id') or '', reverse=True)
+
+
+def _enforce_retention(project_id: str, keep: int = RETENTION_KEEP) -> list[str]:
+    """Keep the last N unpinned points; every pinned point is exempt from the
+    count entirely (spec §4.3: 'keep the last N=10 per project + any the
+    user pins'). list_restore_points() is already newest-first, so the
+    excess is simply whatever falls past index `keep`."""
+    points = [p for p in list_restore_points(project_id) if 'error' not in p]
+    unpinned = [p for p in points if not p.get('pinned')]
+    pruned: list[str] = []
+    for p in unpinned[keep:]:
+        try:
+            delete_restore_point(project_id, p['snap_id'])
+            pruned.append(p['snap_id'])
+        except BackupError as exc:
+            _log(f"[backup] retention prune of restore point {project_id}/{p['snap_id']} failed: {exc}")
+    return pruned
+
+
+def label_restore_point(project_id: str, snap_id: str, label: str) -> dict:
+    paths = _paths()
+    manifest = _load_restore_point_manifest(paths, project_id, snap_id)
+    manifest['label'] = label
+    root = _restore_point_dir(paths, project_id, snap_id)
+    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    return manifest
+
+
+def pin_restore_point(project_id: str, snap_id: str, pinned: bool) -> dict:
+    paths = _paths()
+    manifest = _load_restore_point_manifest(paths, project_id, snap_id)
+    manifest['pinned'] = bool(pinned)
+    root = _restore_point_dir(paths, project_id, snap_id)
+    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    return manifest
+
+
+def delete_restore_point(project_id: str, snap_id: str) -> dict:
+    paths = _paths()
+    root = _restore_point_dir(paths, project_id, snap_id)
+    if not (root / 'manifest.json').is_file():
+        raise BackupError(f"no restore point '{snap_id}' for project '{project_id}'")
+    try:
+        shutil.rmtree(root)
+    except OSError as exc:
+        raise BackupError(f'could not delete restore point {snap_id}: {exc}') from exc
+    return {'snap_id': snap_id, 'deleted': True}
+
+
+def _diff_lines(old: str, new: str, fromfile: str, tofile: str) -> str:
+    import difflib
+    return ''.join(difflib.unified_diff(
+        old.splitlines(keepends=True), new.splitlines(keepends=True),
+        fromfile=fromfile, tofile=tofile))
+
+
+def _memory_index_diff(paths: dict, project: dict, manifest: dict) -> dict:
+    """Unified diff for MEMORY.md / MEMORY_ARCHIVE.md, snapshot vs live —
+    the 'read the diff' half of the §4.3 unsafe toggle. Always computed
+    (both files are small); never written unless rollback() is called with
+    restore_memory_index=True."""
+    out: dict[str, Any] = {}
+    d = _memory_dir_for(project, paths)
+    live_base = d if d is not None else paths['memory_fallback_dir']
+    root = _restore_point_dir(paths, manifest['project_id'], manifest['snap_id'])
+    for name in ('MEMORY.md', 'MEMORY_ARCHIVE.md'):
+        snap_meta = manifest.get('files', {}).get(f'memory/{name}')
+        if snap_meta is None:
+            out[name] = {'in_snapshot': False}
+            continue
+        snap_path = root / 'memory' / name
+        try:
+            snap_text = snap_path.read_text(encoding='utf-8')
+        except OSError:
+            out[name] = {'in_snapshot': True, 'error': 'snapshot file unreadable'}
+            continue
+        live_path = live_base / name
+        live_text = live_path.read_text(encoding='utf-8') if live_path.is_file() else ''
+        if snap_text == live_text:
+            out[name] = {'in_snapshot': True, 'identical': True, 'diff': ''}
+        else:
+            out[name] = {'in_snapshot': True, 'identical': False,
+                         'diff': _diff_lines(live_text, snap_text, f'live/{name}', f'snapshot/{name}')}
+    return out
+
+
+def _restore_point_dest(paths: dict, project_id: str, project_path: str,
+                        arcname: str, category: str) -> Optional[Path]:
+    """Resolve a snapshot member's live destination from the CURRENT
+    project_path/id, not a path baked into the manifest at snapshot time —
+    same-project rollback, not migration, so there is no remap step, but the
+    project may still have moved between the snapshot and the rollback."""
+    rel = arcname.split('/', 1)[1] if '/' in arcname else arcname
+    if category == 'record':
+        return paths['data_dir'] / rel
+    if category in ('memory_topic', 'memory_index'):
+        d = _memory_dir_for({'id': project_id, 'project_path': project_path}, paths)
+        base = d if d is not None else paths['memory_fallback_dir']
+        return base / rel
+    if category == 'rules':
+        return (Path(project_path) / 'AGENT_RULES.md') if project_path else None
+    return None
+
+
+def rollback(project_id: str, snap_id: str, *, restore_memory_index: bool = False,
+            unattended: bool = False, dry_run: bool = False) -> dict:
+    """spec §4.3: reverses the project record, its sidecars, and
+    AGENT_RULES.md fully; restores memory topic files but never the index
+    files unless explicitly asked; and returns, as STRUCTURED data (not a log
+    line), everything it cannot and does not touch — the repo, side effects
+    in the world, cross-project/global state. dry_run computes and returns
+    the whole report, memory diff included, without writing anything, so a
+    confirm dialog has real content before the write path ever runs.
+    Attended-only unless dry_run — a preview is read-only and safe for a
+    steward cycle to request; committing a rollback is not (spec §6:
+    'machinery must not roll back its own history')."""
+    if unattended and not dry_run:
+        raise BackupError('rollback is attended-only — refused for this trigger type (spec §6)')
+
+    paths = _paths()
+    projects = _iter_registered_projects(paths['data_dir'])
+    manifest = _load_restore_point_manifest(paths, project_id, snap_id)
+    root = _restore_point_dir(paths, project_id, snap_id)
+
+    # Stage + verify EVERY file's sha256 before any write — same pre-write-
+    # abort discipline as restore_backup()/import_project().
+    staged: list[tuple[str, dict, bytes]] = []
+    for arcname, meta in manifest.get('files', {}).items():
+        f = root / arcname
+        try:
+            data = f.read_bytes()
+        except OSError as exc:
+            raise BackupError(f'restore point file missing or unreadable: {arcname}: {exc}') from exc
+        if _sha256_bytes(data) != meta.get('sha256'):
+            raise BackupIntegrityError(f'sha256 mismatch for {arcname} — aborting before any write')
+        staged.append((arcname, meta, data))
+
+    project_now = next((p for p in projects if p['id'] == project_id), None)
+    pp = (project_now or {}).get('project_path') or manifest.get('project_path') or ''
+    _remote_now, head_now = _git_info(Path(pp)) if pp else (None, None)
+    head_snapshot = manifest.get('git_head')
+    memory_diff = _memory_index_diff(paths, project_now or {'id': project_id, 'project_path': pp}, manifest)
+
+    cannot_reverse = [
+        {'kind': 'repo', 'changed': bool(pp) and head_now != head_snapshot,
+         'detail': (f"repo was at {head_snapshot or 'unknown'} when this restore point was taken, "
+                   f"is now at {head_now or 'unknown'} — rollback does not touch git")},
+        {'kind': 'side_effects', 'changed': None,
+         'detail': 'Sent emails, social posts, API calls, fired schedules, dispensed secrets, '
+                  'and files written outside the project are not undone.'},
+        {'kind': 'global_state', 'changed': None,
+         'detail': 'Global skills, characters, config.json, and other projects a hivemind '
+                  'touched are not restored.'},
+        {'kind': 'memory_index', 'changed': any(v.get('identical') is False for v in memory_diff.values()),
+         'restored': bool(restore_memory_index), 'diff': memory_diff,
+         'detail': ('MEMORY.md and MEMORY_ARCHIVE.md are snapshotted but restored only when '
+                   'restore_memory_index=True is passed explicitly — read the diff first.')},
+    ]
+
+    report: dict[str, Any] = {
+        'project_id': project_id, 'snap_id': snap_id, 'dry_run': dry_run,
+        'restore_memory_index': bool(restore_memory_index),
+        'cannot_reverse': cannot_reverse,
+        'restored': {'record': 0, 'memory_topic': 0, 'memory_index': 0, 'rules': 0},
+        'refused': [], 'errors': [],
+    }
+    if dry_run:
+        report['would_restore'] = sorted({
+            m['category'] for _a, m, _d in staged
+            if m['category'] != 'memory_index' or restore_memory_index})
+        return report
+
+    pre_rollback = _create_restore_point_for(
+        {'id': project_id, 'project_path': pp}, label=f'pre-rollback-{snap_id}')
+    report['pre_rollback_snapshot'] = pre_rollback['snap_id']
+
+    known_ids_manifest = {'projects': [{'id': project_id}]}
+    for arcname, meta, data in staged:
+        cat = meta['category']
+        if cat == 'memory_index' and not restore_memory_index:
+            continue
+        dest = _restore_point_dest(paths, project_id, pp, arcname, cat)
+        if dest is None:
+            report['errors'].append(f'could not resolve destination for {arcname}')
+            continue
+        if cat == 'record':
+            refusal = _validate_records_write(dest, paths, known_ids_manifest)
+            if refusal:
+                report['refused'].append(refusal)
+                continue
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            dest.write_bytes(data)
+            report['restored'][cat] += 1
+        except OSError as exc:
+            report['errors'].append(f'{dest}: {exc}')
+
+    return report
