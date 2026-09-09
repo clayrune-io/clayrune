@@ -83,12 +83,23 @@ async function saveProjectPath(projectId, inputEl) {
 }
 
 // ── Folder picker (project_path) ────────────────────────────────────────────
-let _fpState = { projectId: null, currentPath: '', parent: null, home: '', workspaceBase: '' };
+let _fpState = { projectId: null, currentPath: '', parent: null, home: '', workspaceBase: '',
+                 onSelect: null, title: '' };
 
-function openFolderPicker(projectId) {
-  _fpState.projectId = projectId;
-  const p = allProjects.find(x => x.id === projectId);
-  const startPath = (p && p.project_path) || '';
+// openFolderPicker(projectId) — original behaviour: "Use this folder" saves
+// the chosen path as that project's project_path.
+// openFolderPicker(null, {startPath, onSelect, title}) — callback mode, for
+// any other path field (the backup destination in the Backup panel and in
+// Settings → System). Same dialog, same /api/browse/folders backend, so a
+// remote/phone console works exactly as it does for the project path; the
+// caller just decides what "chosen" means.
+function openFolderPicker(projectId, opts) {
+  opts = opts || {};
+  _fpState.projectId = projectId || null;
+  _fpState.onSelect = opts.onSelect || null;
+  _fpState.title = opts.title || 'Choose project folder';
+  const p = projectId ? allProjects.find(x => x.id === projectId) : null;
+  const startPath = opts.startPath != null ? opts.startPath : ((p && p.project_path) || '');
 
   let overlay = document.getElementById('fp-overlay');
   if (!overlay) {
@@ -99,7 +110,7 @@ function openFolderPicker(projectId) {
     overlay.innerHTML = `
       <div class="fp-dialog">
         <div class="fp-header">
-          <div class="fp-title">Choose project folder</div>
+          <div class="fp-title">${esc(_fpState.title)}</div>
           <button class="fp-close" onclick="closeFolderPicker()">&times;</button>
         </div>
         <div class="fp-path-bar">
@@ -125,6 +136,8 @@ function openFolderPicker(projectId) {
     document.body.appendChild(overlay);
   } else {
     overlay.style.display = 'flex';
+    const t = overlay.querySelector('.fp-title');
+    if (t) t.textContent = _fpState.title;
   }
   fpLoad(startPath);
 }
@@ -133,6 +146,7 @@ function closeFolderPicker() {
   const overlay = document.getElementById('fp-overlay');
   if (overlay) overlay.remove();
   _fpState.projectId = null;
+  _fpState.onSelect = null;
 }
 
 async function fpLoad(path) {
@@ -205,6 +219,12 @@ async function fpCreateFolder() {
 async function fpSelectCurrent() {
   const projectId = _fpState.projectId;
   const chosen = _fpState.currentPath;
+  const cb = _fpState.onSelect;
+  if (cb) {
+    closeFolderPicker();  // before the callback: it re-renders the modal underneath
+    if (chosen) cb(chosen);
+    return;
+  }
   if (!projectId || !chosen) { closeFolderPicker(); return; }
   try {
     await fetch(API_BASE + `/api/project/${projectId}`, {

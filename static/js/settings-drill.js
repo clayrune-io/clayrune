@@ -691,9 +691,15 @@ async function _renderSettings() {
         <div><div class="settings-label">Port</div><div class="settings-hint">Requires restart to take effect</div></div>
         ${numInput('port', cfg.port)}
       </div>
-      <div class="settings-row">
+      <div class="settings-row" style="align-items:flex-start;flex-direction:column;gap:6px">
         <div><div class="settings-label">Backup Destination</div><div class="settings-hint">Where backups are written. Blank uses ~/.clayrune/backups. Can't be inside the repo or data/projects/.</div></div>
-        ${textInput('backup_dest_dir', cfg.backup_dest_dir || '')}
+        <div style="display:flex;width:100%;gap:6px;align-items:center">
+          <input id="settings-backup-dest-dir" class="settings-input" type="text"
+            value="${esc(cfg.backup_dest_dir || '')}"
+            onchange="saveSetting('backup_dest_dir',this.value)"
+            style="flex:1;box-sizing:border-box">
+          <button class="btn-browse" onclick="browseBackupDestDir()" title="Browse for folder">Browse&hellip;</button>
+        </div>
       </div>
     </div>
 
@@ -808,3 +814,21 @@ window.drillSettings = drillSettings;             // interop: master-list rows +
 window.drillSettingsSub = drillSettingsSub;       // interop: layer-2 sub-rows (generated onclick)
 window.settingsBack = settingsBack;               // interop: header back arrow (generated onclick)
 window.filterSettings = filterSettings;           // interop: search box (generated oninput)
+
+// Reuses the project folder picker in callback mode (project-forms.js) rather
+// than a File System Access / native dialog — the server-side browse endpoint
+// is what works over remote access, where the browser is not on the machine
+// the backup lands on.
+function browseBackupDestDir() {
+  const input = document.getElementById('settings-backup-dest-dir');
+  openFolderPicker(null, {
+    startPath: input ? input.value : '',
+    title: 'Choose backup destination',
+    onSelect: (path) => {
+      const el = document.getElementById('settings-backup-dest-dir');
+      if (el) el.value = path;
+      saveSetting('backup_dest_dir', path);
+    },
+  });
+}
+window.browseBackupDestDir = browseBackupDestDir;  // interop: Settings → System row (generated onclick)

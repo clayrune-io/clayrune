@@ -58,6 +58,8 @@ import json
 import os
 import shutil
 import subprocess
+import time
+import uuid
 import zipfile
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -338,6 +340,12 @@ class _Entry:
     arc_prefix: str        # zip member = f"{arc_prefix}/{relpath}"
     relpath: str
     reserialize_json: bool = False
+    # The real directory this entry is enumerated from — size_preview() groups
+    # entries by this to build the per-category breakdown rows (spec parity
+    # with _enumerate_unprotected's `lines`, extended to every category, not
+    # just unprotected). None falls back to arc_prefix (still a stable group
+    # key, just not a real filesystem path).
+    group_path: Optional[Path] = None
 
 
 @dataclass
@@ -369,7 +377,8 @@ def _walk_dir(root: Path, category: str, arc_prefix: str,
         for name in filenames:
             p = Path(dirpath) / name
             rel = p.relative_to(root).as_posix()
-            entries.append(_Entry(dest=p, category=category, arc_prefix=arc_prefix, relpath=rel))
+            entries.append(_Entry(dest=p, category=category, arc_prefix=arc_prefix, relpath=rel,
+                                  group_path=root))
     return entries
 
 
@@ -383,7 +392,8 @@ def _enumerate_records(paths: dict, projects: list[dict]) -> tuple[list[_Entry],
         for f in sorted(dd.iterdir()):
             if f.is_file() and f.suffix in ('.json', '.jsonl'):
                 entries.append(_Entry(dest=f, category='records', arc_prefix='records/projects',
-                                      relpath=f.name, reserialize_json=(f.suffix == '.json')))
+                                      relpath=f.name, reserialize_json=(f.suffix == '.json'),
+                                      group_path=dd))
     for key, arc in (
         ('config_json', 'records/config'), ('settings_json', 'records/config'),
         ('grid_layout_json', 'records/config'), ('schedules_json', 'records/config'),
@@ -394,20 +404,21 @@ def _enumerate_records(paths: dict, projects: list[dict]) -> tuple[list[_Entry],
         f = paths[key]
         if f.is_file():
             entries.append(_Entry(dest=f, category='records', arc_prefix=arc, relpath=f.name,
-                                  reserialize_json=(f.suffix == '.json')))
+                                  reserialize_json=(f.suffix == '.json'), group_path=f.parent))
     for key, arc in (('hiveminds_dir', 'records/hiveminds'), ('skills_dir', 'records/data-skills'),
                      ('mcp_dir', 'records/mcp')):
         entries += _walk_dir(paths[key], 'records', arc)
     for proj in projects:
+        d = _memory_dir_for(proj, paths)
+        base = d if d is not None else paths['memory_fallback_dir']
         for f in _memory_files_for(proj, paths):
-            d = _memory_dir_for(proj, paths)
-            base = d if d is not None else paths['memory_fallback_dir']
             try:
                 rel = f.relative_to(base).as_posix()
             except ValueError:
                 rel = f.name
             entries.append(_Entry(dest=f, category='records',
-                                  arc_prefix=f"records/memory/{proj['id']}", relpath=rel))
+                                  arc_prefix=f"records/memory/{proj['id']}", relpath=rel,
+                                  group_path=base))
     entries += _walk_dir(paths['claude_agents_dir'], 'records', 'records/characters')
     entries += _walk_dir(paths['claude_skills_dir'], 'records', 'records/home-skills')
     return entries, warnings
@@ -441,8 +452,14 @@ def _enumerate_transcripts(paths: dict, _projects: list[dict]) -> tuple[list[_En
         for f in root.rglob('*.jsonl'):
             if f.is_file():
                 rel = f.relative_to(root).as_posix()
+                # Breakdown groups by the first path segment (the encoded
+                # project dir) rather than the whole transcripts/claude tree,
+                # so the disclosure shows per-project transcript size instead
+                # of one opaque combined row.
+                top = rel.split('/', 1)[0]
                 entries.append(_Entry(dest=f, category='transcripts',
-                                      arc_prefix='transcripts/claude', relpath=rel))
+                                      arc_prefix='transcripts/claude', relpath=rel,
+                                      group_path=root / top))
     entries += _walk_dir(paths['codex_sessions_dir'], 'transcripts', 'transcripts/codex')
     return entries, []
 
@@ -591,18 +608,30 @@ def size_preview(categories: Optional[dict] = None) -> dict:
 
     for name in ('records', 'artifacts', 'media', 'transcripts'):
         if not cats.get(name):
-            result['categories'][name] = {'enabled': False, 'bytes': 0, 'files': 0}
+            result['categories'][name] = {'enabled': False, 'bytes': 0, 'files': 0, 'directories': []}
             continue
         entries, warns = _ENUMERATORS[name](paths, projects)
         total = 0
         n = 0
+        # Same per-directory breakdown unprotected already had (§4.8), now for
+        # every category: bucket by each entry's group_path (the real dir it
+        # was enumerated from), computed in this same stat pass rather than a
+        # second filesystem walk.
+        groups: dict[str, dict] = {}
         for e in entries:
             try:
-                total += e.dest.stat().st_size
-                n += 1
+                sz = e.dest.stat().st_size
             except OSError:
                 warns.append(_Warning('vanished', str(e.dest), 'disappeared during preview'))
-        result['categories'][name] = {'enabled': True, 'bytes': total, 'files': n}
+                continue
+            total += sz
+            n += 1
+            key = str(e.group_path) if e.group_path is not None else e.arc_prefix
+            g = groups.setdefault(key, {'path': key, 'bytes': 0, 'files': 0})
+            g['bytes'] += sz
+            g['files'] += 1
+        directories = sorted(groups.values(), key=lambda l: -l['bytes'])
+        result['categories'][name] = {'enabled': True, 'bytes': total, 'files': n, 'directories': directories}
         result['warnings'] += [w.__dict__ for w in warns]
         result['total_bytes'] += total
 
@@ -620,6 +649,66 @@ def size_preview(categories: Optional[dict] = None) -> dict:
 
     result['categories']['vault'] = {'status': 'not_available'}
     return result
+
+
+# ── Partial-archive temp files ───────────────────────────────────────────────
+#
+# The temp name MUST be unique per run. It used to be a pure function of the
+# category set (".{fname}.partial"), so two concurrent creates with the same
+# categories targeted the SAME path — measured on this install: the second
+# run died with [WinError 32] after writing ~15.6GB into a file the first run
+# already had open. Async create (POST /api/backup/create {"async": true})
+# makes concurrent runs much likelier, so pid+time+random it is.
+#
+# A crashed/failed run also used to leave its .partial behind forever (one
+# 15.6GB orphan was found in ~/.clayrune/backups). Both writers now unlink
+# their own temp on failure, and sweep_stale_partials() clears anything older
+# than STALE_PARTIAL_AGE that no live writer can still be touching.
+
+STALE_PARTIAL_AGE = 24 * 60 * 60  # seconds; a live write updates mtime continuously
+
+
+def _partial_path_for(dest_dir: Path, fname: str) -> Path:
+    return dest_dir / f'.{fname}.{os.getpid()}-{uuid.uuid4().hex[:8]}.partial'
+
+
+def _discard_partial(tmp_path: Path) -> None:
+    """Remove a temp archive after a failed write. Best-effort and silent on
+    an already-gone file; a failure to clean up must never mask the original
+    exception being propagated."""
+    try:
+        tmp_path.unlink()
+    except FileNotFoundError:
+        pass
+    except OSError as e:
+        _log(f"[backup] could not remove partial {tmp_path}: {e}")
+
+
+def sweep_stale_partials(dest_dir: Path, older_than: float = STALE_PARTIAL_AGE) -> list[dict]:
+    """Delete abandoned .partial files in a backup directory, returning what
+    was removed (path + bytes) so the caller can report it rather than have
+    space silently appear. The age gate is the concurrency guard: a run that
+    is still writing touches its temp continuously, so it can never be old
+    enough to qualify."""
+    removed: list[dict] = []
+    if not dest_dir.is_dir():
+        return removed
+    now = time.time()
+    for f in dest_dir.glob('.*.partial'):
+        try:
+            st = f.stat()
+        except OSError:
+            continue
+        if now - st.st_mtime < older_than:
+            continue
+        try:
+            f.unlink()
+        except OSError as e:
+            _log(f"[backup] stale partial {f} could not be removed: {e}")
+            continue
+        removed.append({'path': str(f), 'bytes': st.st_size})
+        _log(f"[backup] swept stale partial {f} ({st.st_size} bytes)")
+    return removed
 
 
 # ── Create (spec §6 — POST /api/backup/create) ───────────────────────────────
@@ -663,7 +752,14 @@ def _read_and_maybe_reserialize(entry: _Entry) -> bytes:
 
 
 def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = None,
-                  label: Optional[str] = None) -> dict:
+                  label: Optional[str] = None,
+                  progress_cb: Optional[Callable[[dict], None]] = None) -> dict:
+    """``progress_cb``, if given, is called after every file is written with
+    ``{files_written, total_files, bytes_written, total_bytes, current_file,
+    warnings_count}`` — the async job path (mc/blueprints/backup_routes.py)
+    passes one so a poller can render a real progress bar; the synchronous
+    CLI/test path passes none and behaves exactly as before. A callback
+    exception is swallowed, never allowed to abort the write in progress."""
     cats = _normalize_categories(categories)
     if not any(cats.get(c) for c in DEFAULT_CATEGORIES):
         raise BackupError('refusing to create an empty archive — untick fewer categories')
@@ -693,70 +789,108 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
     if label:
         fname = fname.replace('.crbackup', f'-{label}.crbackup')
     final_path = dest_dir / fname
-    tmp_path = dest_dir / f'.{fname}.partial'
+    tmp_path = _partial_path_for(dest_dir, fname)
+
+    # Pre-stat every entry so progress can report bytes_written/total_bytes
+    # from the start, rather than only learning the total once the write
+    # finishes (spec: Ron's 44.8GB default backup needs an honest percentage,
+    # not a bar that jumps to 100% when it's already done). Best-effort: a
+    # file that vanishes between this pass and the write pass is caught there
+    # anyway (existing FileNotFoundError handling below), just under-counted
+    # here.
+    total_files = len(all_entries)
+    total_bytes = 0
+    for e in all_entries:
+        try:
+            total_bytes += e.dest.stat().st_size
+        except OSError:
+            pass
 
     files_manifest: dict[str, dict] = {}
     written = 0
-    with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-        for e in all_entries:
-            arcname = f"{e.arc_prefix}/{e.relpath}"
-            try:
-                data = _read_and_maybe_reserialize(e)
-            except FileNotFoundError:
-                warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
-                continue
-            except (OSError, PermissionError) as exc:
-                # File-by-file, never copytree (spec §6, the `nul` incident):
-                # one locked/unreadable file skips-and-logs, never aborts.
-                warnings.append(_Warning('unreadable', str(e.dest), f'{exc.__class__.__name__}: {exc}'))
-                continue
-            except Exception as exc:  # malformed JSON that never recovered on retry
-                warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
-                continue
-            zf.writestr(arcname, data)
-            files_manifest[arcname] = {
-                'sha256': _sha256_bytes(data), 'bytes': len(data),
-                'dest': str(e.dest), 'category': e.category,
+    bytes_written = 0
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for e in all_entries:
+                arcname = f"{e.arc_prefix}/{e.relpath}"
+                try:
+                    data = _read_and_maybe_reserialize(e)
+                except FileNotFoundError:
+                    warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
+                    continue
+                except (OSError, PermissionError) as exc:
+                    # File-by-file, never copytree (spec §6, the `nul` incident):
+                    # one locked/unreadable file skips-and-logs, never aborts.
+                    warnings.append(_Warning('unreadable', str(e.dest), f'{exc.__class__.__name__}: {exc}'))
+                    continue
+                except Exception as exc:  # malformed JSON that never recovered on retry
+                    warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
+                    continue
+                zf.writestr(arcname, data)
+                bytes_written += len(data)
+                if progress_cb is not None:
+                    try:
+                        progress_cb({'files_written': written + 1, 'total_files': total_files,
+                                     'bytes_written': bytes_written, 'total_bytes': total_bytes,
+                                     'current_file': arcname, 'warnings_count': len(warnings)})
+                    except Exception:
+                        pass
+                files_manifest[arcname] = {
+                    'sha256': _sha256_bytes(data), 'bytes': len(data),
+                    'dest': str(e.dest), 'category': e.category,
+                }
+                written += 1
+
+            manifest = {
+                'format': FORMAT_VERSION,
+                'created_at': _now_iso(),
+                'clayrune_version': _clayrune_version(),
+                'kind': 'full',
+                'categories': {
+                    'records': bool(cats.get('records')), 'artifacts': bool(cats.get('artifacts')),
+                    'media': bool(cats.get('media')), 'transcripts': bool(cats.get('transcripts')),
+                    'unprotected': _unprotected_enabled(cats), 'vault': False,
+                },
+                'unprotected_excluded_projects': sorted(unprotected_excl),
+                'vault_status': 'not_available',
+                'contains_secrets': False,
+                'projects': [
+                    {'id': p['id'], 'project_path': p.get('project_path', ''),
+                    'git_remote': (g := _git_info(Path(p.get('project_path', '') or '.')))[0],
+                    'git_head': g[1]}
+                    for p in projects
+                ],
+                'files': files_manifest,
+                'warnings': [w.__dict__ for w in warnings],
             }
-            written += 1
+            zf.writestr('manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
 
-        manifest = {
-            'format': FORMAT_VERSION,
-            'created_at': _now_iso(),
-            'clayrune_version': _clayrune_version(),
-            'kind': 'full',
-            'categories': {
-                'records': bool(cats.get('records')), 'artifacts': bool(cats.get('artifacts')),
-                'media': bool(cats.get('media')), 'transcripts': bool(cats.get('transcripts')),
-                'unprotected': _unprotected_enabled(cats), 'vault': False,
-            },
-            'unprotected_excluded_projects': sorted(unprotected_excl),
-            'vault_status': 'not_available',
-            'contains_secrets': False,
-            'projects': [
-                {'id': p['id'], 'project_path': p.get('project_path', ''),
-                'git_remote': (g := _git_info(Path(p.get('project_path', '') or '.')))[0],
-                'git_head': g[1]}
-                for p in projects
-            ],
-            'files': files_manifest,
-            'warnings': [w.__dict__ for w in warnings],
-        }
-        zf.writestr('manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
-
-    os.replace(tmp_path, final_path)  # atomic: a half-written archive never appears as a finished one
+        os.replace(tmp_path, final_path)  # atomic: a half-written archive never appears as a finished one
+    except BaseException:
+        # Anything from a disk-full to an interrupt: take the temp file
+        # with us rather than leave a multi-GB orphan behind that nobody
+        # knows to delete (one 15.6GB one was found in ~/.clayrune/backups).
+        _discard_partial(tmp_path)
+        raise
     return {'path': str(final_path), 'manifest': manifest, 'files_written': written,
            'warnings': manifest['warnings']}
 
 
 # ── List ──────────────────────────────────────────────────────────────────────
 
-def list_backups(dest_dir: Optional[Path] = None) -> list[dict]:
+def list_backups(dest_dir: Optional[Path] = None, sweep_stale: bool = True) -> list[dict]:
+    """``sweep_stale`` clears abandoned .partial temps (older than
+    STALE_PARTIAL_AGE) from the directory being listed — listing is the one
+    call every surface makes, and an orphaned partial is invisible until
+    someone notices the missing disk space. Pass False to list without
+    touching anything."""
     paths = _paths()
     d = validate_backup_dest_dir(dest_dir) if dest_dir else paths['backup_dir']
     out = []
     if not d.is_dir():
         return out
+    if sweep_stale:
+        sweep_stale_partials(d)
     for f in sorted(d.glob('*.crbackup')):
         try:
             with zipfile.ZipFile(f) as zf:
@@ -1124,59 +1258,66 @@ def export_project(project_id: str, *, categories: Optional[dict] = None,
     if label:
         fname = fname.replace('.crbackup', f'-{label}.crbackup')
     final_path = dest_dir / fname
-    tmp_path = dest_dir / f'.{fname}.partial'
+    tmp_path = _partial_path_for(dest_dir, fname)
 
     files_manifest: dict[str, dict] = {}
     written = 0
-    with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
-        for e in all_entries:
-            arcname = f"{e.arc_prefix}/{e.relpath}"
-            try:
-                data = _read_and_maybe_reserialize(e)
-            except FileNotFoundError:
-                warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
-                continue
-            except (OSError, PermissionError) as exc:
-                warnings.append(_Warning('unreadable', str(e.dest), f'{exc.__class__.__name__}: {exc}'))
-                continue
-            except Exception as exc:
-                warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
-                continue
-            zf.writestr(arcname, data)
-            files_manifest[arcname] = {'sha256': _sha256_bytes(data), 'bytes': len(data),
-                                       'dest': str(e.dest), 'category': e.category}
-            written += 1
+    try:
+        with zipfile.ZipFile(tmp_path, 'w', compression=zipfile.ZIP_DEFLATED, allowZip64=True) as zf:
+            for e in all_entries:
+                arcname = f"{e.arc_prefix}/{e.relpath}"
+                try:
+                    data = _read_and_maybe_reserialize(e)
+                except FileNotFoundError:
+                    warnings.append(_Warning('vanished', str(e.dest), 'gone before it could be read'))
+                    continue
+                except (OSError, PermissionError) as exc:
+                    warnings.append(_Warning('unreadable', str(e.dest), f'{exc.__class__.__name__}: {exc}'))
+                    continue
+                except Exception as exc:
+                    warnings.append(_Warning('unreadable', str(e.dest), f'parse failed: {exc}'))
+                    continue
+                zf.writestr(arcname, data)
+                files_manifest[arcname] = {'sha256': _sha256_bytes(data), 'bytes': len(data),
+                                           'dest': str(e.dest), 'category': e.category}
+                written += 1
 
-        if vault_status == 'included':
-            blob = _secrets_store.export_all_for_backup(
-                vault_passphrase or '', consumer='backup-export', scope_filter=project_id)
-            zf.writestr('secrets/vault.enc', blob)
-            files_manifest['secrets/vault.enc'] = {
-                'sha256': _sha256_bytes(blob), 'bytes': len(blob), 'category': 'vault'}
-            written += 1
+            if vault_status == 'included':
+                blob = _secrets_store.export_all_for_backup(
+                    vault_passphrase or '', consumer='backup-export', scope_filter=project_id)
+                zf.writestr('secrets/vault.enc', blob)
+                files_manifest['secrets/vault.enc'] = {
+                    'sha256': _sha256_bytes(blob), 'bytes': len(blob), 'category': 'vault'}
+                written += 1
 
-        manifest = {
-            'format': FORMAT_VERSION,
-            'created_at': _now_iso(),
-            'clayrune_version': _clayrune_version(),
-            'kind': 'project',
-            'categories': {
-                'records': bool(cats.get('records')), 'artifacts': bool(cats.get('artifacts')),
-                'media': bool(cats.get('media')), 'transcripts': bool(cats.get('transcripts')),
-                'unprotected': _unprotected_enabled(cats), 'vault': vault_status == 'included',
-            },
-            'vault_status': vault_status,
-            'contains_secrets': vault_status == 'included',
-            'projects': [{'id': project_id, 'project_path': pp,
-                         'git_remote': remote, 'git_head': head}],
-            'repo_pointer': repo_pointer,
-            'schedules': schedules,
-            'files': files_manifest,
-            'warnings': [w.__dict__ for w in warnings],
-        }
-        zf.writestr('manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
+            manifest = {
+                'format': FORMAT_VERSION,
+                'created_at': _now_iso(),
+                'clayrune_version': _clayrune_version(),
+                'kind': 'project',
+                'categories': {
+                    'records': bool(cats.get('records')), 'artifacts': bool(cats.get('artifacts')),
+                    'media': bool(cats.get('media')), 'transcripts': bool(cats.get('transcripts')),
+                    'unprotected': _unprotected_enabled(cats), 'vault': vault_status == 'included',
+                },
+                'vault_status': vault_status,
+                'contains_secrets': vault_status == 'included',
+                'projects': [{'id': project_id, 'project_path': pp,
+                             'git_remote': remote, 'git_head': head}],
+                'repo_pointer': repo_pointer,
+                'schedules': schedules,
+                'files': files_manifest,
+                'warnings': [w.__dict__ for w in warnings],
+            }
+            zf.writestr('manifest.json', json.dumps(manifest, indent=2, ensure_ascii=False))
 
-    os.replace(tmp_path, final_path)
+        os.replace(tmp_path, final_path)
+    except BaseException:
+        # Anything from a disk-full to an interrupt: take the temp file
+        # with us rather than leave a multi-GB orphan behind that nobody
+        # knows to delete (one 15.6GB one was found in ~/.clayrune/backups).
+        _discard_partial(tmp_path)
+        raise
     return {'path': str(final_path), 'manifest': manifest, 'files_written': written,
            'warnings': manifest['warnings'], 'repo_checklist': repo_checklist_for(repo_pointer)}
 
