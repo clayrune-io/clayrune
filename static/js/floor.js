@@ -136,11 +136,25 @@ function _floorHue(name) {
 // reason a 49px WhatsApp avatar never feels cramped.
 const FLOOR_FACE_PX = 72;
 
+// Model-provider mark, pinned to the face's own corner (Ron, 2026-09-09: "the
+// logo of their model provider next to them ... easy to identify which is
+// what"). Deliberately NOT render-core.js's `_providerBadge` — that one hides
+// claude as the assumed default for a usage-breakdown table; here every
+// figure's engine is the point, claude included. `ic-prov-<name>` symbols
+// live in index.html; a provider with no symbol renders no badge at all
+// rather than a guessed or blank one.
+const FLOOR_PROV_ICONS = new Set(['claude', 'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro']);
+function _floorProviderBadge(provider) {
+  const p = (provider || '').toLowerCase();
+  if (!FLOOR_PROV_ICONS.has(p)) return '';
+  return `<span class="fl-prov-badge prov-${p}" title="${esc(p)}"><svg><use href="#ic-prov-${p}"/></svg></span>`;
+}
+
 function _floorAvatar(f) {
   const has = !!(f.avatar || '').trim();
   return `<span class="fl-face" title="${has ? 'click to change the face' : 'click to give this figure a face'}"
       onclick="event.stopPropagation();floorSetAvatar('${esc(f.session_id)}','${esc(f.avatar || '')}')"
-    >${_floorAvatarHTML(f.avatar, FLOOR_FACE_PX)}</span>`;
+    >${_floorAvatarHTML(f.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(f.provider)}</span>`;
 }
 
 async function floorSetAvatar(sessionId, current) {
@@ -328,7 +342,7 @@ function _floorBench(bench, rooms, quiet) {
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
     return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
-        <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}</span>
+        <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(b.provider)}</span>
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
           ${b.display === b.name ? '' : `<span class="fl-type">${esc(b.name)}</span>`}
           <button class="fl-edit" title="Edit this persona — face, description, instructions, engine"
