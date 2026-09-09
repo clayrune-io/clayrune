@@ -350,7 +350,15 @@ function _floorBench(bench, rooms, quiet) {
     const eng = _floorEngine(b.provider, b.model, b.effort, '');
     const hue = _floorHue(b.name || b.display || '');
     const tint = open ? '' : ` style="border-left-color:hsl(${hue} 55% 62%)"`;
-    return `<div class="fl-bench-card${open ? ' fl-bench-open' : ''}"${tint}>
+    // The Bench is the natural drag SOURCE for hiring — it is the list of
+    // people you could put to work, whereas a room figure is already working.
+    // Shipping drag on figures only (spec §7/§8 reads "figure") left the real
+    // Floor with nothing useful to drag: the sole figure with a character is
+    // usually the project's own agent, already hired here (Ron, 2026-09-09).
+    // `pid` is '' — a bench card belongs to no project until it is dropped on
+    // one; floorFigDown only uses pid for the already-hired-here check.
+    const bDrag = ` onpointerdown="floorFigDown(event,'','${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(b.avatar || '')}')"`;
+    return `<div class="fl-bench-card fl-draggable${open ? ' fl-bench-open' : ''}"${tint}${bDrag}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
         <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(b.provider)}</span>
         <span class="fl-bench-top"><span class="fl-who">${esc(b.display)}</span>
