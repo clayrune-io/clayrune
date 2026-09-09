@@ -806,6 +806,9 @@ function modalContentHTML(p) {
           <button class="modal-menu-item" onclick="openAllSkillsForProject('${esc(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-skills"/></svg></span> Skills
           </button>
+          <button class="modal-menu-item" onclick="openProjectExport('${esc(p.id)}')">
+            <span class="menu-icon"><svg class="menu-svg"><use href="#ic-backup"/></svg></span> Export
+          </button>
           <button class="modal-menu-item" onclick="openAllMCPForProject('${esc(p.id)}')">
             <span class="menu-icon"><svg class="menu-svg"><use href="#ic-mcp"/></svg></span> MCP servers
           </button>
