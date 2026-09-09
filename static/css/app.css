@@ -7643,7 +7643,7 @@
   .fl-fig-top .fl-hire-to { padding: 1px 4px; font-size: 11px; }
   .fl-bench-card:hover .fl-hire-to, .fl-fig:hover .fl-hire-to { border-color: var(--border); }
   .fl-hire-to:hover { color: var(--accent); border-color: var(--accent); }
-  .fl-fig.fl-draggable { touch-action: none; }
+  .fl-fig.fl-draggable, .fl-bench-card.fl-draggable { touch-action: none; }
 
   body.hire-active #projects-col .card,
   body.hire-active .sidebar,
