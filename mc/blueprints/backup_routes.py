@@ -24,8 +24,24 @@ Routes:
                                      byte (the CLI and the route tests in
                                      tests/test_backup_dest_dir.py depend on
                                      this staying the default).
+    POST /api/backup/create/cancel/<job_id>   ask a running async job to
+                                     stop. Cooperative: it sets a flag the
+                                     write loop checks between entries (the
+                                     thread is never killed — that would
+                                     strand the multi-GB .partial temp), and
+                                     the worker deletes its own temp on the
+                                     way out via the same cleanup path as a
+                                     failure. Terminal state is `cancelled`,
+                                     deliberately NOT `error` — the user
+                                     asked for it.
+    GET  /api/backup/jobs           active + recently-finished create jobs,
+                                     so a REOPENED panel (or a reloaded page)
+                                     can reattach to a write it never started
+                                     — the job_id itself only ever lived in
+                                     the tab that launched it
     GET  /api/backup/create/status/<job_id>   poll an async job: status
-                                     (running/done/error), files_written/
+                                     (running/cancelling/done/error/
+                                     cancelled), files_written/
                                      total_files, bytes_written/total_bytes,
                                      current_file, warnings_count, and (once
                                      done) the same body the synchronous path
@@ -88,6 +104,7 @@ restore/import's attended-only rule — except `dry_run:true`, which never
 writes and is safe for a steward cycle to request as a preview.
 """
 import threading
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -111,18 +128,43 @@ def _err(e: Exception, code: int = 400):
 # here (not in mc/backup.py) so create_backup() stays importable/synchronous
 # for tools/clayrune-backup.py and the test suite — threading is an HTTP-layer
 # concern, not something the standalone module needs to know about.
+#
+# The registry is also the ONLY way a reopened panel finds a running job:
+# the job_id lives in the closing tab's JS state and dies with it, so
+# GET /api/backup/jobs below re-discovers it from here. That makes retention
+# a UX property, not just a memory one — a job pruned too eagerly shows the
+# user a blank form where their finished 48GB backup's result should be.
 _backup_jobs: dict[str, dict] = {}
 _backup_jobs_lock = threading.Lock()
-_MAX_FINISHED_JOBS = 20  # bounded memory: this is an uptime-long dict, not one that's ever cleared
+_TERMINAL_STATES = ('done', 'error', 'cancelled')
+_MAX_FINISHED_JOBS = 20          # bounded memory: an uptime-long dict, never otherwise cleared
+_FINISHED_JOB_TTL = 6 * 60 * 60  # seconds a finished job stays queryable (see above)
 
 
 def _prune_backup_jobs_locked():
-    finished = [j for j in _backup_jobs.values() if j['status'] in ('done', 'error')]
+    """Bound the registry two ways: drop finished jobs older than the TTL,
+    then cap what remains at _MAX_FINISHED_JOBS (oldest first). A running
+    job is never pruned at any age — a 48GB write legitimately takes hours."""
+    now = time.time()
+    for j in [j for j in _backup_jobs.values() if j['status'] in _TERMINAL_STATES]:
+        if now - (j.get('finished_at_mono') or now) > _FINISHED_JOB_TTL:
+            _backup_jobs.pop(j['job_id'], None)
+    finished = [j for j in _backup_jobs.values() if j['status'] in _TERMINAL_STATES]
     if len(finished) <= _MAX_FINISHED_JOBS:
         return
     finished.sort(key=lambda j: j['started_at'])
     for j in finished[:len(finished) - _MAX_FINISHED_JOBS]:
         _backup_jobs.pop(j['job_id'], None)
+
+
+def _finish_job_locked(job: dict, status: str, **fields) -> None:
+    """Move a job to a terminal state. Stamps both a wall-clock time (for the
+    UI) and a monotonic-ish one (for the TTL) so every terminal path ages out
+    the same way — an un-stamped job would sit in the registry forever."""
+    job['status'] = status
+    job['finished_at'] = datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ')
+    job['finished_at_mono'] = time.time()
+    job.update(fields)
 
 
 def _run_backup_job(job_id, categories, label, dest_dir):
@@ -131,32 +173,62 @@ def _run_backup_job(job_id, categories, label, dest_dir):
             job = _backup_jobs.get(job_id)
             if job is not None:
                 job.update(p)
+
+    def _cancel_requested():
+        # Read under the lock — the cancel route writes this flag from the
+        # request thread while the worker is mid-write.
+        with _backup_jobs_lock:
+            job = _backup_jobs.get(job_id)
+            return bool(job and job.get('cancel_requested'))
+
     try:
         result = _backup.create_backup(categories=categories, label=label, dest_dir=dest_dir,
-                                       progress_cb=_progress)
+                                       progress_cb=_progress, cancel_cb=_cancel_requested)
+    except _backup.BackupCancelled as e:
+        # Terminal, but NOT an error: create_backup() already unwound through
+        # its own cleanup, so the .partial is gone. Must be caught BEFORE
+        # BackupError below — BackupCancelled subclasses it.
+        _log(f"[backup] async create {job_id} cancelled: {e}")
+        with _backup_jobs_lock:
+            job = _backup_jobs.get(job_id)
+            if job is not None:
+                _finish_job_locked(job, 'cancelled', cancelled_reason=str(e))
+        return
     except _backup.BackupError as e:
         with _backup_jobs_lock:
             job = _backup_jobs.get(job_id)
             if job is not None:
-                job['status'] = 'error'
-                job['error'] = str(e)
+                _finish_job_locked(job, 'error', error=str(e))
         return
     except Exception as e:
         _log(f"[backup] async create {job_id} failed: {e}")
         with _backup_jobs_lock:
             job = _backup_jobs.get(job_id)
             if job is not None:
-                job['status'] = 'error'
-                job['error'] = str(e)
+                _finish_job_locked(job, 'error', error=str(e))
         return
     _log(f"[backup] created (async {job_id}) {result['path']} "
         f"({result['files_written']} files, {len(result['warnings'])} warnings)")
+    # Deliberately NOT the full manifest: it carries one entry per archived
+    # file, so on a real install (96k files) the job result — and every status
+    # poll that echoes it — would be hundreds of MB of JSON nobody reads. Keep
+    # the fields a panel renders, plus the size/categories a REOPENED panel
+    # needs to describe a job it never saw start. The synchronous route still
+    # returns the manifest, unchanged.
+    try:
+        archive_bytes = Path(result['path']).stat().st_size
+    except OSError:
+        archive_bytes = None
+    manifest = result['manifest'] or {}
     with _backup_jobs_lock:
         job = _backup_jobs.get(job_id)
         if job is not None:
-            job['status'] = 'done'
-            job['result'] = {'path': result['path'], 'manifest': result['manifest'],
-                             'files_written': result['files_written'], 'warnings': result['warnings']}
+            _finish_job_locked(job, 'done', result={
+                'path': result['path'], 'files_written': result['files_written'],
+                'warnings': result['warnings'], 'bytes': archive_bytes,
+                'categories': manifest.get('categories'),
+                'created_at': manifest.get('created_at'),
+            })
 
 
 def _is_unattended() -> bool:
@@ -207,6 +279,9 @@ def api_backup_create():
             'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
             'files_written': 0, 'total_files': 0, 'bytes_written': 0, 'total_bytes': 0,
             'current_file': None, 'warnings_count': 0, 'result': None, 'error': None,
+            'cancel_requested': False, 'cancelled_reason': None,
+            'finished_at': None, 'finished_at_mono': None,
+            'label': label, 'dest_dir': str(dest_dir) if dest_dir else None,
         }
         with _backup_jobs_lock:
             _prune_backup_jobs_locked()
@@ -234,7 +309,57 @@ def api_backup_create_status(job_id):
         job = _backup_jobs.get(job_id)
         if not job:
             return jsonify({'error': 'unknown job_id'}), 404
-        return jsonify(dict(job))
+        out = dict(job)
+    out.pop('finished_at_mono', None)  # internal TTL bookkeeping, not API
+    return jsonify(out)
+
+
+@bp.route('/api/backup/jobs')
+def api_backup_jobs():
+    """Discover create jobs WITHOUT knowing an id — the reattach path.
+
+    A job_id only ever lived in the JS state of the tab that started it, so
+    closing the Backup panel (or reloading the page) used to orphan a running
+    48GB write: the user got an idle form, could not watch it, and could not
+    cancel it. The server outlives both, so the panel asks here on open.
+
+    `active` is what is still writing (running/cancelling), newest first;
+    `recent` is the finished tail the registry still holds, so a panel
+    reopened after the write completed shows the result instead of a blank.
+    """
+    with _backup_jobs_lock:
+        _prune_backup_jobs_locked()
+        jobs = [dict(j) for j in _backup_jobs.values()]
+    for j in jobs:
+        j.pop('finished_at_mono', None)  # internal TTL bookkeeping, not API
+    active = sorted([j for j in jobs if j['status'] not in _TERMINAL_STATES],
+                    key=lambda j: j['started_at'], reverse=True)
+    recent = sorted([j for j in jobs if j['status'] in _TERMINAL_STATES],
+                    key=lambda j: (j.get('finished_at') or '', j['started_at']), reverse=True)
+    return jsonify({'active': active, 'recent': recent})
+
+
+@bp.route('/api/backup/create/cancel/<job_id>', methods=['POST'])
+def api_backup_create_cancel(job_id):
+    """Cooperative abort for an async create. Sets a flag; the worker
+    notices between entries, raises BackupCancelled, and deletes its own
+    .partial on the way out. We never kill the thread: a killed writer
+    leaves a half-flushed zip and a multi-GB orphan nobody knows to clean
+    up (one 15.6GB one was already found in ~/.clayrune/backups)."""
+    with _backup_jobs_lock:
+        job = _backup_jobs.get(job_id)
+        if not job:
+            return jsonify({'error': 'unknown job_id'}), 404
+        if job['status'] in ('done', 'error', 'cancelled'):
+            # Already terminal — report it rather than pretend we stopped
+            # something. Not an error: a double-click on Cancel is normal.
+            return jsonify({'job_id': job_id, 'status': job['status'],
+                            'cancelled': False,
+                            'detail': f"job already finished ({job['status']})"})
+        job['cancel_requested'] = True
+        job['status'] = 'cancelling'
+    _log(f"[backup] cancel requested for async create {job_id}")
+    return jsonify({'job_id': job_id, 'status': 'cancelling', 'cancelled': True})
 
 
 @bp.route('/api/backup/list')
