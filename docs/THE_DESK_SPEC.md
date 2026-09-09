@@ -10,9 +10,8 @@ whole suite which also manage it all in one place."*
 Supersedes the framing behind the Social Approvals Queue (`203082e`, `910d38f`).
 That queue survives as one component of five.
 
-Field scan in flight: `docs/research/SOCIAL_WORKSPACE_FIELD_SCAN.md` (Quill,
-session `ea807b553b05`) settles the publishing-mechanics section. Everything
-here that depends on it is marked.
+Field scan landed: `docs/research/SOCIAL_WORKSPACE_FIELD_SCAN.md` (Quill,
+session `ea807b553b05`). Its corrections are folded in below and marked.
 
 ---
 
@@ -77,12 +76,33 @@ absence is why the current tab is inert.
   own permission to post unattended — the learning-system authority guard
   principle applies here verbatim.
 
-**Assumption, stated because it drives the build:** publishing goes through the
-**browser pane with named profiles**, not platform APIs. Precedent is already in
-this repo — `~/.clayrune/browser_profiles_named/` holds signed-in profiles for
-linkedin, facebook, reddit, discord and x, and the vault holds credentials for
-all five. Confirm against the field scan before building; the fragility of
-browser automation against UI changes is the main risk this carries.
+**Corrected 2026-09-09 by the field scan** (`docs/research/SOCIAL_WORKSPACE_FIELD_SCAN.md`).
+The v0 draft of this spec assumed browser-pane automation for publishing. That
+was wrong, and the correction is cheap enough to make the browser path
+indefensible:
+
+- **X publishes through the API.** Pay-per-use since 2026-02-06, no subscription.
+  Verified directly at `docs.x.com/x-api/getting-started/pricing`, not taken from
+  the scan: **$0.015 a post, $0.200 if it contains a URL, $0.005 a read.**
+- **LinkedIn publishes through Share on LinkedIn** (`w_member_social`), which is
+  free and rate-limited at 150 requests per member per day. It needs no
+  registered entity. The Community Management API does, and we do not need it,
+  because the `clayrune` voice posts from a personal profile by the decision
+  below.
+
+Clayrune's posts point at releases and repos, so nearly all of them pay X's link
+rate. **100 link-posts a month is $20.** That is the real number and it is not
+worth engineering around.
+
+**The Desk still reads through the browser pane, never through the API.** Reads
+are $0.005 each, so watching replies at 1,000/day is $150/month while the pane
+does it for nothing on a profile that is already signed in. This is the split
+that makes the mentor function affordable, and it is why the pane infrastructure
+stays load-bearing even though it no longer publishes.
+
+**Build, do not rent.** Postiz (AGPL, self-hostable, MCP server) and Blotato
+($29/month, hosted MCP) both solve fan-out across nine to twenty platforms. We
+publish to two. The fan-out is the commodity part and we do not need it.
 
 ### 2. Incubator
 
@@ -259,14 +279,72 @@ profile re-pointed at it once there is an audience worth moving. Creating the
 page is outward-facing, so it is Ron's call, not the Desk's, and it is not on
 the v1 path.
 
+## The constraint that outranks everything else: being detected
+
+The field scan turned up one finding that reshapes the design rather than
+informing it.
+
+**LinkedIn suppresses content it classifies as AI slop.** Its Chief Product
+Officer said on 2026-08-21 that the report button had been used over a million
+times and that flagged content was getting **40% fewer views** than a few weeks
+earlier. Detection vendor Pangram measured 40% of long-form LinkedIn posts as
+fully AI-generated. Audiences perceive AI-written posts as less authentic
+*regardless of quality*, and the effect is strongest in B2B niches where founder
+credibility is the asset.
+
+That last clause describes this exact case. Clayrune's audience is developers
+evaluating a tool built by one person, so the founder's credibility **is** the
+product's credibility. Being caught running an AI social operation costs more
+here than in almost any other segment.
+
+Three consequences, all of them build requirements:
+
+1. **Ron's edit is the detection defense, not a courtesy.** A draft released
+   unedited is the single highest-risk artifact the system can produce. The
+   voice profile exists to make his edits smaller over time, not to make them
+   unnecessary.
+2. **The Desk tracks its own edit rate and says something when it collapses.**
+   If Ron starts releasing drafts unchanged, that is the failure mode, not the
+   success condition. Precedent is already in this repo: the learning system's
+   human promotion gate ran 80 promoted against 2 rejected and was never a
+   quality gate at all. Assume the same drift here and instrument for it.
+3. **Volume is a risk, not a goal.** Every additional post per week raises
+   detection exposure against an audience that is already suspicious. This
+   settles the cadence question below in one direction: start low.
+
+**Silent failure is the specific danger.** Reddit shadowbans return success to
+the poster, and suppressed LinkedIn posts look normal to their author. An
+unattended system optimising on "did it post" sees green in both cases. Publish
+receipts must record reach, not just acceptance, or the Desk cannot tell the
+difference between working and being invisible.
+
 ## Open
 
 - **Cadence and volume.** What arrives, how often, and how many drafts in a
-  batch stops being help and starts being homework.
-- **Whether replies come back.** Write-only is far simpler and probably wrong,
-  since the mentor function has nothing to review without them.
+  batch stops being help and starts being homework. Constrained above: start
+  low, and treat volume as exposure.
 - **Whether the story score is worth being clever about** before there is any
   published history to learn from. A dumb score plus Ron's veto may beat a
   smart one.
 - **Whether `clayrune` posting from a personal profile confuses readers**, and
   what the tell is if it does. Watch for it; do not pre-solve it.
+- **How long Share-on-LinkedIn app provisioning takes for a new
+  `w_member_social` app**, and whether the 2026 authenticity crackdown has
+  tightened that review. The scan could not close this and it gates LinkedIn v1.
+
+## Resolved by the field scan
+
+- **Replies come back, through the pane.** The mentor function needs them and
+  the API price made write-only look inevitable; the pane makes it a non-issue.
+- **Reddit stays out**, now for a second and better reason than "different
+  function": its API terms define commercial use against a product with a launch
+  plan, and its anti-spam model shadowbans exactly this pattern silently.
+- **The approval gate is permanent.** Pinterest requires per-item human choice,
+  YouTube requires express consent, and Postiz's own agent documentation asks
+  for a human in the loop. This was already a principle here; it is also a term
+  of service. Design it as a feature rather than a stage to outgrow.
+- **Henry is not verifiable as shipped.** Announced and funded 2026-04-06, but
+  five months on `meethenry.ai` is a landing page with a request-access button,
+  no pricing, no docs, no reviews. Treat the announcement as a shape worth
+  borrowing and nothing more; do not benchmark against a product nobody has
+  used.
