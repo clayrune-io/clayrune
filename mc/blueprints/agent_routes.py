@@ -3559,6 +3559,10 @@ def _read_agent_stream_b(proc, session):
                     # Turn boundary — process stays alive
                     session['status'] = 'idle'
                     session['last_status_change_time'] = _time.time()
+                    # MC-946: for a dispatched child this IS "done" — Mode B
+                    # never exits on its own, so the exit-time hook would fire
+                    # late or never. Latched, so the exit path can't repeat it.
+                    _maybe_notify_spawner(session, _last_reply_text(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
                 # Web push hook: intercept PushNotification tool_use + turn results.
@@ -4356,6 +4360,48 @@ def _log_agent_dispatch_pending(session):
     except Exception as e:
         _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
 
+def _last_reply_text(session):
+    """The child's last real assistant text, for the spawner callback.
+
+    Deliberately the same exclusions _log_agent_completion uses for its
+    summary: skip MC status lines in [brackets] and the dispatcher's own
+    "> user: task" seed, or the callback would hand the spawner back the very
+    task it just sent (MC-935 hit exactly that on the agent_log summary).
+    """
+    for line in reversed(session.get('log_lines') or []):
+        t = (line or '').strip()
+        if not t or t.startswith('[') or t.startswith('> '):
+            continue
+        return t
+    return ''
+
+
+def _maybe_notify_spawner(session, summary):
+    """Fire the spawner callback at most once for this session.
+
+    Called from TWO places because "the child is done" has two different
+    meanings depending on runtime, and the first version only handled one:
+
+      - Mode A / process exit -- _log_agent_completion.
+      - Mode B TURN BOUNDARY -- the default runtime keeps the process alive
+        between turns, so a dispatched agent finishes its work and goes 'idle'
+        while its process lives on indefinitely. Waiting for exit meant the
+        callback fired long after the answer existed, or never. Measured
+        2026-09-09: child d1f5942f0701 answered and went idle; no callback.
+
+    Both paths can run for one session, hence the _notify_sent latch.
+    """
+    sid = (session.get('_notify_session') or '').strip()
+    if not sid or sid == session.get('session_id'):
+        return
+    if session.get('_notify_sent'):
+        return
+    if session.get('incognito'):
+        return
+    session['_notify_sent'] = True
+    _notify_agent_spawner(session.get('project_id', ''), sid, session, summary)
+
+
 def _notify_agent_spawner(project_id, notify_sid, child, summary):
     """Deliver a finished child agent's result into its spawner's chat.
 
@@ -4469,9 +4515,7 @@ def _log_agent_completion(session):
     # routing decision and takes the per-project lock, which THIS function may
     # already hold. Best-effort by design -- a failed callback must never break
     # completion logging for the child that just finished.
-    _notify_sid = (session.get('_notify_session') or '').strip()
-    if _notify_sid and _notify_sid != session.get('session_id'):
-        _notify_agent_spawner(project_id, _notify_sid, session, summary)
+    _maybe_notify_spawner(session, summary)
 
     # Extract token telemetry from the transcript before building the entry.
     # Best-effort: failures silently produce empty telemetry.

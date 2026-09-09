@@ -113,3 +113,32 @@ def test_incognito_child_does_not_notify(monkeypatch):
     except Exception:
         pass
     assert calls == []
+
+
+def test_notify_fires_once_and_is_latched(monkeypatch):
+    """Mode B calls this at the turn boundary AND again at process exit.
+
+    Without the latch a dispatched child would post its result into the
+    spawner's chat twice — and the second copy arrives whenever the process
+    happens to die, which reads as the agent repeating itself for no reason.
+    """
+    calls = []
+    monkeypatch.setattr(ar, '_notify_agent_spawner',
+                        lambda *a, **k: calls.append(a))
+    sess = {'project_id': 'p', 'session_id': 'child',
+            '_notify_session': 'parent', 'log_lines': ['the answer is 4']}
+    ar._maybe_notify_spawner(sess, 'the answer is 4')
+    ar._maybe_notify_spawner(sess, 'the answer is 4')
+    assert len(calls) == 1
+    assert sess['_notify_sent'] is True
+
+
+def test_last_reply_text_skips_status_lines_and_the_task_seed():
+    """MC-935 in miniature: handing back the task instead of the answer."""
+    sess = {'log_lines': [
+        '> Ron: run the tests',          # dispatcher's seed
+        'all 14 tests passed',           # the real answer
+        '[exited with code 0]',          # MC status line
+    ]}
+    assert ar._last_reply_text(sess) == 'all 14 tests passed'
+    assert ar._last_reply_text({'log_lines': ['> Ron: x', '[status]']}) == ''
