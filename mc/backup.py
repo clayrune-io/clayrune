@@ -669,6 +669,10 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
         raise BackupError('refusing to create an empty archive — untick fewer categories')
 
     paths = _paths()
+    # Validate the destination BEFORE enumerating: the sweep walks the whole
+    # memory vault and transcript tree, so a refused path used to cost a full
+    # filesystem crawl before erroring out (measured: >120s on this install).
+    dest_dir = validate_backup_dest_dir(dest_dir) if dest_dir else paths['backup_dir']
     projects = _iter_registered_projects(paths['data_dir'])
     unprotected_excl = _unprotected_exclusions(cats)
 
@@ -684,7 +688,6 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
         all_entries += entries
         warnings += warns
 
-    dest_dir = validate_backup_dest_dir(dest_dir) if dest_dir else paths['backup_dir']
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = _filename_for(cats, unprotected_excl)
     if label:
