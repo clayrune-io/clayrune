@@ -171,6 +171,10 @@ _CONFIG_EDITABLE_KEYS = {
     'distiller_proposal_dedupe_days',
     'distiller_cross_project_walk_debounce_session_count',
     'distiller_cross_project_walk_debounce_seconds',
+    # Backup destination override (MC-945 follow-up, mc/backup.py). Blank/unset
+    # falls back to ~/.clayrune/backups — validated in update_config below so a
+    # bad value (inside the repo or data/projects/) is refused, not persisted.
+    'backup_dest_dir',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -209,6 +213,16 @@ def get_config():
 def update_config():
     """Update config keys and persist to config.json."""
     data = request.get_json() or {}
+    # Validated here, not just where it's drawn (same reasoning as
+    # agent_avatar below): a bad backup_dest_dir persisted to config.json
+    # would silently redirect every future backup into the repo or
+    # data/projects/ until someone noticed. Refused outright, not rewritten.
+    if data.get('backup_dest_dir') and 'backup_dest_dir' in _CONFIG_EDITABLE_KEYS:
+        from mc import backup as _backup
+        try:
+            _backup.validate_backup_dest_dir(data['backup_dest_dir'])
+        except _backup.BackupError as e:
+            return jsonify({'error': str(e)}), 400
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:

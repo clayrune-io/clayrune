@@ -66,6 +66,7 @@ from typing import Any, Callable, Optional
 
 from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
 from mc import secrets_store as _secrets_store
+from mc import state as _state
 from mc.core import _log
 from mc.secrets_store import clayrune_home
 
@@ -116,10 +117,21 @@ def _paths():
         'claude_agents_dir': claude_dir / 'agents',
         'claude_skills_dir': claude_dir / 'skills',
         'codex_sessions_dir': home / '.codex' / 'sessions',
-        'backup_dir': clayrune_home() / 'backups',
+        'backup_dir': _configured_backup_dir() or (clayrune_home() / 'backups'),
         'incoming_dir': clayrune_home() / 'backups' / '_incoming',
         'restore_points_dir': clayrune_home() / 'restore-points',
     }
+
+
+def _configured_backup_dir() -> Optional[Path]:
+    """The user's chosen backup destination (``backup_dest_dir`` in
+    config.json — mc/blueprints/settings_routes.py's ``_CONFIG_EDITABLE_KEYS``
+    pattern), or None when unset/blank so callers fall back to the default.
+    Standalone-safe: ``state.CONFIG`` is an empty dict when this module is
+    imported without server.py (tools/clayrune-backup.py), which is exactly
+    the "unset" case."""
+    val = (_state.CONFIG or {}).get('backup_dest_dir')
+    return Path(val) if val else None
 
 
 # Spec §4.8: files git already tracks/ignores are git's problem, not ours;
@@ -148,6 +160,48 @@ class BackupFormatError(BackupError):
 
 class BackupIntegrityError(BackupError):
     """A file's sha256 didn't match before any write happened (spec §4.5)."""
+
+
+def _is_within(child: Path, parent: Path) -> bool:
+    return child == parent or parent in child.parents
+
+
+def validate_backup_dest_dir(dest_dir: Path | str) -> Path:
+    """Refuse a backup destination inside the repo or inside DATA_DIR
+    (data/projects/) — CLAUDE.md binding rules: nothing operator-specific
+    goes in the repo (an archive carries the vault + operator-specific
+    state), and a stray non-project file under data/projects/ is read as a
+    malformed project record and 500s both restart endpoints. Returns the
+    resolved path when it's safe; raises BackupError, never rewrites the
+    path silently."""
+    resolved = Path(dest_dir).expanduser().resolve()
+    repo_root = REPO_ROOT.resolve()
+    if _is_within(resolved, repo_root):
+        raise BackupError(
+            f'refusing backup destination inside the repo ({resolved}) — '
+            'archives contain operator-specific state that must never live in the repo; '
+            'pick a directory outside the checkout')
+    data_dir = _paths()['data_dir'].resolve()
+    if _is_within(resolved, data_dir):
+        raise BackupError(
+            f'refusing backup destination inside data/projects/ ({resolved}) — '
+            'a stray file there is read as a malformed project record and breaks '
+            'both restart endpoints; pick a different directory')
+    return resolved
+
+
+def effective_backup_dir_config() -> Optional[str]:
+    """The raw configured ``backup_dest_dir`` value (None when unset) — for
+    the UI to show the user what's actually persisted, separate from
+    ``_paths()['backup_dir']``'s resolved effective path."""
+    val = (_state.CONFIG or {}).get('backup_dest_dir')
+    return str(val) if val else None
+
+
+def effective_backup_dir() -> str:
+    """The path a backup actually lands in when no per-call override is
+    given — configured default, else ~/.clayrune/backups."""
+    return str(_paths()['backup_dir'])
 
 
 def _now_iso() -> str:
@@ -630,7 +684,7 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
         all_entries += entries
         warnings += warns
 
-    dest_dir = Path(dest_dir) if dest_dir else paths['backup_dir']
+    dest_dir = validate_backup_dest_dir(dest_dir) if dest_dir else paths['backup_dir']
     dest_dir.mkdir(parents=True, exist_ok=True)
     fname = _filename_for(cats, unprotected_excl)
     if label:
@@ -696,7 +750,7 @@ def create_backup(categories: Optional[dict] = None, dest_dir: Optional[Path] = 
 
 def list_backups(dest_dir: Optional[Path] = None) -> list[dict]:
     paths = _paths()
-    d = Path(dest_dir) if dest_dir else paths['backup_dir']
+    d = validate_backup_dest_dir(dest_dir) if dest_dir else paths['backup_dir']
     out = []
     if not d.is_dir():
         return out

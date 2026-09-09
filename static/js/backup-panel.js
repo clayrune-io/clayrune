@@ -80,6 +80,11 @@ function openBackupSurface(tab) {
       checklist: _newBackupChecklist(),
       sizePreview: null, sizeLoading: false,
       label: '', creating: false, createResult: null, createError: null,
+      // Destination override (MC-945 follow-up): `override` is per-action —
+      // it's sent as `dest_dir` on the next create/list call, never persisted.
+      // The persisted default lives in Settings (backup_dest_dir); this is
+      // just where the effective value (for the placeholder) comes from.
+      destDir: { loaded: false, configured: null, effective: null, override: '' },
       restoreList: { loaded: false, loading: false, items: [] },
       restoreResult: null, restoreError: null,
       importState: {
@@ -121,6 +126,49 @@ function _backupRender(modalId) {
     body.innerHTML = _backupCreateTabHTML(st);
     _backupLoadSizePreview(modalId);
   }
+  _backupLoadDestDir(modalId);
+}
+
+// ── Destination override (create + restore/list tabs) ───────────────────────
+
+async function _backupLoadDestDir(modalId) {
+  const entry = openModals.get(modalId);
+  if (!entry || entry._backup.destDir.loaded) return;
+  try {
+    const res = await fetch(API_BASE + '/api/backup/dest-dir');
+    const data = await res.json();
+    entry._backup.destDir.configured = data.configured || null;
+    entry._backup.destDir.effective = data.effective || null;
+  } catch (e) {
+    // Leave effective/configured null — the field still works as a plain
+    // override input, just without a placeholder to show what "default" means.
+  } finally {
+    entry._backup.destDir.loaded = true;
+    _backupRender(modalId);
+  }
+}
+
+function _backupDestDirFieldHTML(st, opts = {}) {
+  const dd = st.destDir;
+  const placeholder = dd.effective || (dd.loaded ? '' : 'loading…');
+  return `
+    <div style="margin-bottom:12px">
+      <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">
+        Destination ${opts.label || ''} <span style="opacity:.7">(override for this action only — set the default in Settings &rarr; System)</span>
+      </label>
+      <input type="text" value="${esc(dd.override)}" placeholder="${esc(placeholder)}"
+        oninput="_backupSetDestDirOverride(this.value)"
+        style="width:100%;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+    </div>`;
+}
+
+function _backupSetDestDirOverride(v) {
+  const entry = openModals.get('__backup');
+  if (!entry) return;
+  entry._backup.destDir.override = v;
+  // A changed override invalidates the currently-loaded restore list so
+  // switching tabs (or hitting "Refresh list") re-fetches from the new dir.
+  entry._backup.restoreList.loaded = false;
 }
 
 // ── Backup tab (create) ──────────────────────────────────────────────────────
@@ -153,8 +201,9 @@ function _backupCreateTabHTML(state) {
   return `
     <div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;line-height:1.5">
       Everything is included by default — untick what you don't want. Sizes are measured live before anything
-      is written. Archives land in <code>~/.clayrune/backups/</code>.
+      is written.
     </div>
+    ${_backupDestDirFieldHTML(state)}
     <div>${rows}</div>
     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;padding-top:8px;border-top:2px solid var(--border)">
       <span style="font-size:12px;color:var(--text-faint)">Total</span>
@@ -221,7 +270,10 @@ async function _backupCreate() {
   try {
     const res = await fetch(API_BASE + '/api/backup/create', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ categories: st.checklist, label: st.label || undefined }),
+      body: JSON.stringify({
+        categories: st.checklist, label: st.label || undefined,
+        dest_dir: (st.destDir.override || '').trim() || undefined,
+      }),
     });
     const data = await res.json();
     if (!res.ok) { st.createError = data.error || `Create failed (HTTP ${res.status})`; }
@@ -238,14 +290,18 @@ async function _backupCreate() {
 
 function _backupRestoreTabHTML(state) {
   const rl = state.restoreList;
+  const destField = _backupDestDirFieldHTML(state, { label: 'to list from' }) + `
+    <div style="display:flex;justify-content:flex-end;margin:-6px 0 12px">
+      <button class="btn-tiny" onclick="_backupRefreshList()">Refresh list</button>
+    </div>`;
   if (!rl.loaded) {
-    return `<div style="padding:30px 12px;text-align:center;color:var(--text-faint);font-size:12px">Loading backups…</div>`;
+    return destField + `<div style="padding:30px 12px;text-align:center;color:var(--text-faint);font-size:12px">Loading backups…</div>`;
   }
   const fullBackups = rl.items.filter(i => i.kind === 'full' && !i.error);
   const listHtml = fullBackups.length
     ? fullBackups.map(b => _backupRestoreRowHTML(b)).join('')
-    : `<div style="padding:30px 12px;text-align:center;color:var(--text-faint);font-size:12px">No full-install backups yet. Create one from the Backup tab.</div>`;
-  return `
+    : `<div style="padding:30px 12px;text-align:center;color:var(--text-faint);font-size:12px">No full-install backups found in this destination.</div>`;
+  return destField + `
     <div style="font-size:11px;color:var(--text-faint);margin-bottom:10px;line-height:1.5">
       Restore is per-category and additive — an absent category is left untouched, never deleted to match the
       archive. Restoring does not touch your code, your git history, or anything an agent already did in the
@@ -254,6 +310,13 @@ function _backupRestoreTabHTML(state) {
     ${listHtml}
     ${state.restoreError ? `<div style="margin-top:10px;font-size:12px;color:var(--red-text)">${esc(state.restoreError)}</div>` : ''}
     ${state.restoreResult ? _backupRestoreResultHTML(state.restoreResult) : ''}`;
+}
+
+function _backupRefreshList() {
+  const entry = openModals.get('__backup');
+  if (!entry) return;
+  entry._backup.restoreList.loaded = false;
+  _backupRender('__backup');
 }
 
 function _backupRestoreRowHTML(b) {
@@ -285,12 +348,21 @@ async function _backupLoadList(modalId) {
   const entry = openModals.get(modalId);
   if (!entry || entry._backup.restoreList.loaded || entry._backup.restoreList.loading) return;
   entry._backup.restoreList.loading = true;
+  const override = (entry._backup.destDir.override || '').trim();
+  const url = API_BASE + '/api/backup/list' + (override ? `?dest_dir=${encodeURIComponent(override)}` : '');
   try {
-    const res = await fetch(API_BASE + '/api/backup/list');
+    const res = await fetch(url);
     const data = await res.json();
-    entry._backup.restoreList = { loaded: true, loading: false, items: data.backups || [] };
+    if (!res.ok) {
+      entry._backup.restoreList = { loaded: true, loading: false, items: [] };
+      entry._backup.restoreError = data.error || `List failed (HTTP ${res.status})`;
+    } else {
+      entry._backup.restoreList = { loaded: true, loading: false, items: data.backups || [] };
+      entry._backup.restoreError = null;
+    }
   } catch (e) {
     entry._backup.restoreList = { loaded: true, loading: false, items: [] };
+    entry._backup.restoreError = 'List failed: ' + e.message;
   }
   _backupRender(modalId);
 }
@@ -721,6 +793,8 @@ window.openBackupSurface = openBackupSurface;             // sidebarNav('backup'
 window.switchBackupTab = switchBackupTab;
 window._backupToggleCategory = _backupToggleCategory;
 window._backupSetLabel = _backupSetLabel;
+window._backupSetDestDirOverride = _backupSetDestDirOverride;
+window._backupRefreshList = _backupRefreshList;
 window._backupCreate = _backupCreate;
 window._backupRestoreConfirm = _backupRestoreConfirm;
 window._backupImportSetPath = _backupImportSetPath;
