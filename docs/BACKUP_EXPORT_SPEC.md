@@ -1,10 +1,18 @@
 # Backup, Export/Import & Restore Points — Spec
 
-Status: **DRAFT v1 (2026-09-08)** · Author: spec session 2026-09-08, from
+Status: **DRAFT v1.1 (2026-09-08)** · Author: spec session 2026-09-08, from
 Ron's ask: *"backs up all data … import / export … at either individual
 project level or master CR level … recover everything (maybe also recovery
 points per project like windows recovery points?) and also migrate to other
 systems."*
+
+> **v1.1 changelog — Ron's ruling on scope selection (same day).** (1) The
+> vault is a **user choice presented at export time, unset until answered**
+> — not a default this spec picks (§4.2). (2) The fixed tier ladder becomes
+> a **per-export category checklist** with live sizes, including a new
+> **agent artifacts** category (§4.6); the manifest records the chosen
+> categories and import announces what an archive does NOT contain (§4.5);
+> restore semantics for an absent category are stated (§4.7).
 
 Companion precedents this spec builds on rather than reinventing:
 `tools/memory-snapshot.py` (snapshot/restore discipline for the memory
@@ -98,19 +106,44 @@ Every size below is a real `du` measurement, not an estimate. Classes:
 | `memory-snapshots/` | Existing memory-corpus snapshots (`tools/memory-snapshot.py:48`) | 2.5 MB | X (already are backups) |
 | `mcp_installs/` | Installed MCP binaries — reinstallable | 32 MB | X |
 
+### Agent-authored artifacts — where agent output actually lands (measured)
+
+Agent-produced work is scattered across five locations, none of which git
+protects (all gitignored or outside any repo):
+
+| Location | What | Measured |
+|---|---|---|
+| `<project_path>/docs/_journal/` | Unattended-run journals (the CLAUDE.md backlog-notes rule sends all steward/night-review logs here) | 2.26 MB across 6 projects with journals; mission-control alone 1.68 MB / 165 files |
+| `data/media/` | Agent-generated media (renders, screenshots, video assets) | 6.5 MB |
+| `data/reply_archive/` | Archived agent replies | 120 KB |
+| `data/maintenance_reports/` | Maintenance/night-review audit reports | 48 KB |
+| `data/projects/<id>/` workspace dirs | Per-project agent workspaces (one exists: `engulfing-analyst`) | 84 KB |
+
+**Total ≈ 9 MB.** This is one selectable category, not several — the
+locations are enumerable, individually tiny, and a user has no reason to
+want journals without reports. What the category does NOT cover, stated so
+nobody assumes otherwise: agent-written docs that are **committed** in a
+project's repo (git protects those; §4.1's repo pointer is their story),
+and **untracked** files in a checkout (unbounded and junk-heavy —
+`_scratch/`, build outputs; see Open Q1).
+
 ### The totals that matter
 
-| Bundle | Measured size (uncompressed) |
+| Category (each independently selectable, §4.6) | Measured size (uncompressed) |
 |---|---|
-| **Core tier** (records + sidecars + config + schedules + hiveminds + rules + `data/skills` + memory vaults + characters + `~/.claude/skills`) | **≈195 MB** (≈100 MB if the one 96 MB skill-asset blob is size-capped) |
-| + media tier (`data/uploads` + `data/media`) | +248 MB ≈ **445 MB** |
-| + transcripts tier (CC `.jsonl` + Codex sessions) | +3.8 GB ≈ **4.2 GB** |
-| Excluded always (browser profiles, jobsearch, logs, mcp_installs) | 5.8 GB never travels |
+| **Records + memory** (records + sidecars + config + schedules + hiveminds + rules + `data/skills` + memory vaults + characters + `~/.claude/skills`) | **≈195 MB** (≈100 MB if the one 96 MB skill-asset blob is size-capped) |
+| **Agent artifacts** (table above) | **≈9 MB** |
+| **Media / uploads** (`data/uploads` 242 MB + user-upload share of the above) | **≈242 MB** |
+| **Transcripts** (CC `.jsonl` 3.7 GB + Codex sessions 78 MB) | **≈3.8 GB** |
+| **Vault** (re-encrypted, §4.2 — user must answer, never silently defaulted) | 4 KB |
+| Never offered (browser profiles, jobsearch, logs, mcp_installs) | 5.8 GB never travels |
 
-The lesson of the numbers: **the state worth protecting is ~200 MB; the
-state that would sink the feature is ~9.6 GB sitting next to it.** Tiering
+Everything checked ≈ **4.2 GB**; the everyday choice is ~200 MB. The
+lesson of the numbers: **the state worth protecting is ~200 MB; the state
+that would sink the feature is ~9.6 GB sitting next to it.** The checklist
 is not an optimization; it is the difference between a backup users run
-and one they don't.
+and one they don't — and the user, not this spec, decides where on that
+line each export sits.
 
 ---
 
@@ -152,7 +185,7 @@ Checked so the spec doesn't reinvent or collide:
 - **No field-level merge on import.** Whole-object replace-or-skip only
   (§4.4). Merging two divergent backlogs line-by-line is a sync engine;
   this is not one.
-- **No incremental/differential backups** in any phase here. Core tier is
+- **No incremental/differential backups** in any phase here. The records category is
   ~200 MB; zip it whole.
 - **No cloud/off-site target.** That is `clayrune_cloud`'s product surface;
   this feature writes local archives the user can put anywhere.
@@ -205,22 +238,30 @@ consequences fall out before any policy choice:
    member is passphrase-ciphertext, which keeps faith with vault rule 2
    ("no route returns a plaintext value", CLAUDE.md).
 
-**The open policy question, for Ron:**
+**Ron's ruling (2026-09-08): the user chooses, per export — the spec does
+not pick a default.** The vault appears on the export checklist (§4.6) as
+a **tri-state that starts unset**: the export does not proceed until the
+user answers include or omit. Both failure modes are real and symmetric —
+a leaked credential bundle, and a user who assumed their backup was
+complete and finds at restore time it wasn't. A silent default fails one
+of them quietly; an unavoidable question fails neither. The question is
+shown with the trade-off in one line each:
 
-| | Include secrets (flag ON) | Omit secrets (default) |
+| | Include vault | Omit vault |
 |---|---|---|
 | Migration | complete — new machine just works | user re-enters credentials once |
 | Risk | archive is a credential bundle; passphrase is the only lock; file may sit in Downloads/USB/cloud sync forever | archive is safe to handle carelessly |
 | Blast radius if leaked | every stored credential | zero |
 
-**Recommendation: build the flag, default OFF.** Export without secrets is
-safe-by-default; migration with secrets is one explicit
-`include_secrets: true` + passphrase away. A secrets-bearing archive is
-marked loudly: `-SECRETS` filename suffix, `contains_secrets: true` in the
-manifest, and the import UI states what is inside before the passphrase
-prompt. Secret-bearing export is **attended-only** (refused for
-steward/scheduled trigger types — same enforcement point as
-`allow_unattended`).
+When included: passphrase required at export time (the mechanism above,
+unchanged). A secrets-bearing archive is marked loudly: `-SECRETS`
+filename suffix, `contains_secrets: true` in the manifest, and the import
+UI states what is inside before the passphrase prompt. When omitted:
+`contains_secrets: false`, and import says so (§4.5) — an archive is
+never quietly incomplete. Secret-bearing export is **attended-only**
+(refused for steward/scheduled trigger types — same enforcement point as
+`allow_unattended`); an unattended backup therefore records the vault
+question as `"vault": "not_asked"` in the manifest, not as an answer.
 
 Open: whether `allow_unattended: false` entries and per-project-scoped
 entries export at all, or only under a second flag. Default proposal:
@@ -294,7 +335,8 @@ role prefixes (`data/`, `memory/<project_id>/`, `home/agents/`,
   "created_at": "2026-09-08T12:00:00Z",
   "clayrune_version": "<git describe / release tag>",
   "kind": "full | project | restore_point",
-  "tiers": ["core", "media"],
+  "categories": {"records": true, "artifacts": true, "media": false,
+                 "transcripts": false, "vault": false},
   "contains_secrets": false,
   "projects": [{"id": "...", "project_path": "...",
                 "git_remote": "...", "git_head": "..."}],
@@ -317,16 +359,52 @@ Stability rules — the part that makes it a backup rather than a file:
   aborts the whole restore pre-write, not mid-write.
 - Round-trip test in CI: create → import into a temp tree → byte-compare.
   A format change that breaks the round-trip cannot merge.
+- **`categories` is load-bearing, format-1, day one.** Every archive
+  records exactly which categories it contains, and every import/restore
+  **announces what is absent before it runs**: *"This archive has no
+  media and no transcripts. The vault question was answered: omit."* A
+  partial backup that doesn't announce what it is missing is the same
+  silent-truncation failure class as the backlog-note caps — the user
+  discovers the hole at the worst possible moment, restore time.
 
-### 4.6 Transcripts are opt-in, and why
+### 4.6 What goes in is a checklist, not a fixed ladder (Ron, 2026-09-08)
 
-CC transcripts + Codex rollouts are 3.8 GB — 90% of an "everything"
-backup — and are history, not operating state: a restored install works
-without them (agent-log backfill already reconstructs run history from
-`*_agent_log.json`, which IS in core). They are also the most
-privacy-dense artifact on the machine (every prompt ever typed). Opt-in
-`tiers: ["transcripts"]` includes them for the user who wants total
-migration; default backups stay ~200 MB.
+The user picks categories **per export**, each shown with its size
+**measured live before the export starts** — the choice is between
+~200 MB and ~4.2 GB, and an unlabeled choice at that spread is no choice.
+`GET /api/backup/size-preview` walks the candidate paths and returns
+per-category bytes; the UI (and CLI `--preview`) renders the checklist
+from it. Nothing is bundled invisibly.
+
+| Category | Contents | Measured (this install) | Checklist state |
+|---|---|---|---|
+| **Records + memory** | project records + sidecars, config, schedules, hiveminds, rules, `data/skills`, memory vaults, characters, `~/.claude/skills` | ≈195 MB | pre-checked (an archive with none of it isn't a backup; still uncheckable for artifact-only exports) |
+| **Agent artifacts** | `docs/_journal/` across all registered projects, `data/media/`, `data/reply_archive/`, `data/maintenance_reports/`, `data/projects/<id>/` workspaces (§1 table) | ≈9 MB | unchecked |
+| **Media / uploads** | `data/uploads/` | ≈242 MB | unchecked |
+| **Transcripts** | CC `.jsonl` + `~/.codex/sessions/` — history, not operating state (agent-log backfill reconstructs run history from `*_agent_log.json`, which is in records); also the most privacy-dense artifact on the machine | ≈3.8 GB | unchecked |
+| **Vault** | re-encrypted secrets (§4.2) | 4 KB | **unset — export refuses to proceed until answered** |
+
+Selecting zero categories is refused. The archive filename encodes the
+shape (`clayrune-2026-09-08-records+artifacts.crbackup`) so a folder of
+backups is legible without opening manifests.
+
+### 4.7 Restore semantics when a category is absent
+
+**Restore is per-category and additive; an absent category is left
+untouched, never deleted to match the archive.** Restoring a
+records-only archive onto an install with media does not delete the
+media; restoring onto a fresh machine simply leaves those surfaces
+empty. The alternative — mirror semantics, delete-to-match — turns
+"restore my records" into "and silently destroy 242 MB of uploads the
+archive never contained", which is the wrong default for a recovery
+tool and is **not offered** in any phase of this spec.
+
+The user is told which semantics they got, twice: the pre-restore
+announcement (§4.5) lists absent categories, and the post-restore report
+states per category `restored` / `not in archive — existing files
+untouched`. A project restored without its media renders normally but
+shows **degraded (media not in backup)** on surfaces that reference
+missing uploads, same pattern as the missing-repo state in §4.1.
 
 ---
 
@@ -364,7 +442,9 @@ migration; default backups stay ~200 MB.
   `with-secret --unattended` detection. Machinery must not roll back its
   own history.
 - **New endpoints, all under one namespace** (avoids the taken
-  `/api/project/<id>/import`): `POST /api/backup/create`,
+  `/api/project/<id>/import`): `GET /api/backup/size-preview`,
+  `POST /api/backup/create` (refuses a request without an explicit
+  `categories` object — no server-side default bundle, per §4.6),
   `GET /api/backup/list`, `POST /api/backup/restore`,
   `POST /api/backup/export-project/<id>`, `POST /api/backup/import`
   (dry-run by default, `apply: true` to commit),
@@ -379,25 +459,37 @@ migration; default backups stay ~200 MB.
 
 ## 7. Build order — smallest shippable first
 
-**Phase 1 — full-install backup + restore (the safety net).**
-`mc/backup.py` + CLI + `create/list/restore` endpoints. Core tier only, no
-secrets, same-machine semantics (no path remap). Manifest format 1,
-sha256, round-trip CI test. Ships alone: "Clayrune can save and restore
-itself."
+**Phase 1 — full-install backup + restore, category-aware from day one.**
+`mc/backup.py` + CLI + `size-preview/create/list/restore` endpoints.
+Same-machine semantics (no path remap). Manifest format 1 **including the
+`categories` field** — it cannot be retrofitted without a format bump, so
+it ships first. Categories available in Phase 1: records, artifacts,
+media, transcripts; `create` refuses a request that doesn't name its
+categories, and the CLI prints the size preview before writing. The vault
+is not yet includable — Phase 1 records `"vault": "not_available"` and
+the CLI says so out loud rather than silently omitting. Restore is
+per-category additive (§4.7) with the absent-category announcement.
+Ships alone: "Clayrune can save and restore itself, and every archive
+says what it is."
 
-**Phase 2 — per-project export/import + collision handling.**
+**Phase 2 — per-project export/import + collision handling + vault.**
 `export-project`, `import` with dry-run collision report (§4.4), path
-remap + memory-vault re-encoding (§8), repo-pointer checklist (§4.1),
-media tier flag. This is the migration story.
+remap + memory-vault re-encoding (§8), repo-pointer checklist (§4.1).
+The **vault category lands here** (passphrase re-encrypt machinery,
+§4.2) — migration is its use case, and once it exists the export flow
+asks the unset-until-answered question everywhere. This is the migration
+story.
 
-**Phase 3 — restore points.**
+**Phase 3 — restore points + the checklist UI.**
 Snapshot/rollback endpoints + UI (list, label, pin, the cannot-reverse
-dialog of §4.3). Built on Phase 1/2 primitives; cheap because the archive
-code already exists.
+dialog of §4.3), and the export checklist surface: live per-category
+sizes from `size-preview`, the tri-state vault question, filename
+shaping. Built on Phase 1/2 primitives; cheap because the archive code
+already exists.
 
 **Phase 4 — deferred conveniences, each gated on demand:**
-secrets flag (pending Ron's §4.2 decision), transcripts tier, scheduled
-auto-backup + retention, `--include-repo-bundle`.
+scheduled auto-backup + retention (unattended runs record
+`"vault": "not_asked"`, §4.2), `--include-repo-bundle`.
 
 ## 8. The hardest problem: project identity is an absolute path
 
@@ -418,10 +510,19 @@ agent session *loads its memory index* — asserted, not assumed.
 
 ## 9. Open questions
 
-1. **Ron:** secrets flag default — recommendation in §4.2 is build-it,
-   default OFF, passphrase-re-encrypted, attended-only.
-2. **Ron:** does `data/notifications.json` (timeline) belong in core, or
-   is history-on-a-new-machine noise? (100 KB either way; core for now.)
+~~1. Secrets flag default~~ — **ruled by Ron 2026-09-08:** user choice at
+export time, tri-state unset until answered, no spec-picked default
+(§4.2). Mechanism (keyring stays home, passphrase re-encrypt) unchanged.
+
+1. **Ron:** should the agent-artifacts category also sweep **untracked**
+   files in a project checkout (e.g. the `docs/_ws00*` audit files agents
+   left uncommitted in this repo)? v1 says no — unbounded and
+   junk-heavy (`_scratch/`, build outputs) — so those files are protected
+   by nothing until committed. If yes, it needs an allowlist glob
+   (`docs/**/*.md`, untracked only), not a blanket sweep.
+2. **Ron:** does `data/notifications.json` (timeline) belong in records,
+   or is history-on-a-new-machine noise? (100 KB either way; records for
+   now.)
 3. `~/.claude.json` contents were not audited this session. If per-user
    MCP servers live only there (not in `.mcp.json` / `data/mcp/`), Phase 2
    needs a scoped extract of its `mcpServers` key rather than the file.
