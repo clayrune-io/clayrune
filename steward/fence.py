@@ -156,6 +156,13 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     low = cmd.lower()
     if not re.search(r'\b(curl|wget|http|invoke-webrequest|invoke-restmethod|iwr)\b', low):
         return FenceDecision(False, '')
+    # Checked BEFORE the mutating gate: the browser API is the browser
+    # capability regardless of which verb reaches it, and "looks like a GET"
+    # must not be a way around the block below.
+    if re.search(r'/api/browser/(launch|read|input|navigate)', low):
+        return FenceDecision(True, "autonomous web browsing is out of steward scope — "
+                                   "the browser HTTP API is the same capability as the "
+                                   "browser MCP tools, which are blocked")
     mutating = bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', cmd, re.I)) or \
         bool(re.search(r'(^|\s)(--data\b|--data-raw\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b)', cmd)) or \
         bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', cmd, re.I))

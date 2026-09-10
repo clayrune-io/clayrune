@@ -946,6 +946,13 @@ _READ_JS_TEMPLATE = r"""
       var cs;
       try { cs = getComputedStyle(el); } catch (e) { return null; }
       if (!cs) return null;
+      // display:none and visibility:hidden are the FIRST things anyone reaches
+      // for to hide text, and this function checked neither — such text came
+      // back as ordinary visible content with hidden_content_flagged:false,
+      // which is worse than no check at all because it reads as assurance.
+      // (Wren's audit, 2026-09-10, docs/UNTRUSTED_INPUT_SURFACE.md.)
+      if (cs.display === 'none') return 'display_none';
+      if (cs.visibility === 'hidden' || cs.visibility === 'collapse') return 'visibility_hidden';
       var op = parseFloat(cs.opacity);
       if (!isNaN(op) && op <= 0.02) return 'zero_opacity';
       var fs = parseFloat(cs.fontSize);
