@@ -35,9 +35,9 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Iterable
 import json
+import re
 
 from mc.core import _log
-from mc.memory import _encode_project_path
 
 # Whatever the human pasted, we did not type. A message that is mostly a stack
 # trace, a diff or a JSON blob is evidence of what they were DOING, not of how
@@ -49,10 +49,42 @@ MIN_SAMPLES = 40
 
 MAX_CHARS = 600
 MIN_CHARS = 12
-# Returned when the exclusion list cannot be computed. It matches no real
-# directory, so the caller skipping it is harmless; what matters is that the
-# set is non-empty, because `collect` refuses to run on an empty one.
-_ENCODE_FAILED = '<unresolvable-incognito-path>'
+class IncognitoBoundaryUnresolved(RuntimeError):
+    """Raised when we cannot prove which transcripts are incognito.
+
+    THIS REPLACES A SENTINEL THAT CLOSED NOTHING. The first cut returned a
+    `'<unresolvable-incognito-path>'` string into the skip set on a corrupt
+    record and called that fail-closed. It was not: `collect` only ever asked
+    `d.name not in skip_dirs`, and no real directory is named that, so every
+    directory — including the actual incognito one — passed the check. The set
+    was non-empty and the test asserted only non-emptiness, so it shipped green.
+    A refusal has to be something the caller cannot ignore.
+    """
+
+
+# Credentials pasted into an ordinary-looking sentence are the leak `_looks_typed`
+# cannot catch: it screens SHAPE (length, punctuation density), and `sk-...` in a
+# short line looks exactly like prose. These patterns drop the whole message —
+# never redact in place, because a sentence with a hole in it is still evidence we
+# read something we should not have.
+_SECRET_PATTERNS = tuple(re.compile(p, re.I) for p in (
+    r'\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}',        # OpenAI/Stripe-style
+    r'\bgh[pousr]_[A-Za-z0-9]{16,}',              # GitHub
+    r'\bAKIA[0-9A-Z]{12,}',                       # AWS access key id
+    r'\bxox[baprs]-[A-Za-z0-9-]{10,}',            # Slack
+    r'\bey[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}',  # JWT
+    # `Authorization: Bearer <token>` puts a word between the separator and the
+    # value, so `[:=]\s*\S{12,}` alone misses it — the separator may be a space.
+    r'\b(?:bearer|authorization)\b[\s:=]+(?:bearer[\s:=]+)?\S{12,}',
+    r'\b(?:pass(?:word|wd)?|secret|api[_ -]?key|token|credential)\s*[:=]\s*\S{6,}',
+    r'\b[A-Za-z0-9+/]{40,}={0,2}\b',             # long base64 run
+    r'\b[0-9a-f]{32,}\b',                        # long hex (keys, hashes)
+))
+
+
+def _carries_a_secret(text: str) -> bool:
+    return any(p.search(text) for p in _SECRET_PATTERNS)
+
 
 _PASTE_MARKERS = ('```', 'Traceback (most recent call last)', '<system-reminder>',
                   '[Image #', '[Request interrupted', '<command-name>')
@@ -114,43 +146,56 @@ def _looks_typed(text: str) -> bool:
     return True
 
 
-def incognito_dirs(data_dir: Path) -> set[str]:
-    """Transcript DIRECTORY names that belong to the incognito workspace.
+def incognito_workspace(data_dir: Path) -> Path | None:
+    """The resolved cwd of the incognito workspace, or None if it never ran.
 
-    Exclusion has to be by directory, not by session id, and that is a measured
-    correction rather than a preference: `_incognito.json`'s `activity_log` holds
-    only `{ts, msg}` — no `claude_session_id` — so an id-based skip list comes
-    back empty and silently excludes nothing. What IS reliable is the workspace:
-    every incognito session runs with cwd `<auto_workspace_base>/_incognito`, and
-    Claude Code files transcripts under `~/.claude/projects/<encoded-cwd>/`. On
-    this machine that is one real directory.
+    Returns a PATH rather than encoded directory names because the encoding is
+    not something to guess at. Both `Documents-_claude-...` and
+    `Documents--claude-...` exist on this disk, so Claude Code's underscore
+    handling has changed over time; matching on the transcript's own recorded
+    `cwd` sidesteps the whole question.
 
-    Incognito transcripts are written to disk like any other — the privacy
-    boundary is that `_log_agent_completion` refuses to record them. So a reader
-    walking the disk directly must re-apply the exclusion itself; there is
-    nothing to inherit. A voice trained on an incognito session would be exactly
-    the trace incognito exists to not leave.
+    Raises `IncognitoBoundaryUnresolved` when the record exists but cannot be
+    read or carries no path. A missing file is different and is NOT an error:
+    it means incognito has never been used, so there is nothing to exclude.
     """
-    out: set[str] = set()
+    fp = Path(data_dir) / '_incognito.json'
     try:
-        rec = json.loads((Path(data_dir) / '_incognito.json').read_text(encoding='utf-8'))
+        rec = json.loads(fp.read_text(encoding='utf-8'))
     except FileNotFoundError:
-        return out
+        return None
     except Exception as e:
-        _log(f'[desk] could not read the incognito exclusion list: {e}')
-        # FAIL CLOSED. A corrupt record must not be read as "nothing to exclude"
-        # — that silently opens the one door this function exists to shut.
-        return {_ENCODE_FAILED}
+        _log(f'[desk] incognito record unreadable, refusing to seed: {e}')
+        raise IncognitoBoundaryUnresolved(
+            f'{fp} could not be read, so incognito transcripts cannot be '
+            f'identified') from e
     path = rec.get('project_path') or rec.get('path')
     if not path:
-        return {_ENCODE_FAILED}
-    enc = _encode_project_path(path)
-    if not enc:
-        return {_ENCODE_FAILED}
-    # Claude Code sometimes also folds underscores to dashes; the workspace is
-    # literally named `_incognito`, so that variant is the common case here, not
-    # an edge one.
-    return {enc, enc.replace('_', '-')}
+        raise IncognitoBoundaryUnresolved(
+            f'{fp} carries no project_path, so incognito transcripts cannot be '
+            f'identified')
+    try:
+        return Path(path).resolve()
+    except Exception as e:
+        raise IncognitoBoundaryUnresolved(f'incognito path {path!r} is unusable') from e
+
+
+def _file_cwd(text: str) -> str | None:
+    """The cwd a transcript records for itself, from the first record carrying one.
+
+    Not every line has it — the first line of a real transcript did not, which is
+    why this scans rather than reading `[0]`.
+    """
+    for line in text.splitlines():
+        if '"cwd"' not in line:
+            continue
+        try:
+            cwd = json.loads(line).get('cwd')
+        except Exception:
+            continue
+        if cwd:
+            return cwd
+    return None
 
 
 def collect(data_dir: Path,
@@ -159,23 +204,30 @@ def collect(data_dir: Path,
     """The human's own recent messages, newest transcripts first.
 
     `data_dir` is REQUIRED and is not a convenience argument — it is how the
-    incognito exclusion is computed. Making it optional would mean a caller that
-    forgot it reads every transcript on the disk including the private ones, and
-    the failure would be invisible, which is the worst shape a privacy bug can
-    have. So there is no default: no `data_dir`, no read.
+    incognito boundary is computed. Making it optional means a caller who forgot
+    it reads every private transcript with no visible failure, which is the worst
+    shape a privacy bug can take. So there is no default: no `data_dir`, no read.
 
-    Newest-first on purpose. A voice is how someone writes NOW, and this corpus
-    reaches back months; the cap means the oldest simply never get read rather
-    than diluting the sample.
+    Raises `IncognitoBoundaryUnresolved` rather than degrading. There is no
+    partial-credit mode here — either we can tell which transcripts are private
+    or we do not read any of them.
+
+    Newest-first: a voice is how someone writes NOW, and this corpus reaches back
+    months, so the cap drops the oldest rather than diluting the sample.
     """
+    # FIRST, before the root-exists shortcut and before any file is opened: an
+    # unresolvable boundary is a refusal whatever else is true, and checking it
+    # after an early return is how a guard stops guarding.
+    private = incognito_workspace(data_dir)
+
     root = Path(transcript_root or (Path.home() / '.claude' / 'projects'))
     if not root.exists():
         return []
-    skip_dirs = incognito_dirs(data_dir)
+    private_key = str(private).casefold() if private else None
 
     files: list[Path] = []
     for d in root.iterdir():
-        if d.is_dir() and d.name not in skip_dirs:
+        if d.is_dir():
             files.extend(d.glob('*.jsonl'))
     files.sort(key=lambda f: f.stat().st_mtime, reverse=True)
 
@@ -187,6 +239,16 @@ def collect(data_dir: Path,
             text = f.read_text(encoding='utf-8', errors='replace')
         except Exception:
             continue
+
+        # THE EXCLUSION, against the transcript's own recorded cwd rather than
+        # against a guess at how its directory name was encoded. A file that
+        # will not say where it ran is SKIPPED, not read: an unidentifiable
+        # transcript is exactly the one we cannot clear.
+        if private_key is not None:
+            cwd = _file_cwd(text)
+            if cwd is None or str(Path(cwd)).casefold() == private_key:
+                continue
+
         for line in text.splitlines():
             if len(out) >= limit:
                 break
@@ -196,7 +258,7 @@ def collect(data_dir: Path,
                 continue
             if rec.get('type') != 'user':
                 continue
-            # isMeta is the CLI's own injected turns, isCompactSummary is a
+            # isMeta is the CLI's own injected turns; isCompactSummary is a
             # model-written recap wearing a user role. Neither was typed.
             if rec.get('isMeta') or rec.get('isCompactSummary'):
                 continue
@@ -204,7 +266,7 @@ def collect(data_dir: Path,
             if not isinstance(content, str):
                 continue
             typed = _strip_envelope(content)
-            if typed and _looks_typed(typed):
+            if typed and _looks_typed(typed) and not _carries_a_secret(typed):
                 out.append(typed)
     return out
 

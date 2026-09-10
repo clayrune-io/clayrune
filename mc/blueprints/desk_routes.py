@@ -213,7 +213,15 @@ def seed_voice(name):
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
 
-    samples = _seed.collect(PROJECTS_DIR, limit=max(50, min(600, int(d.get('sample') or 300))))
+    try:
+        samples = _seed.collect(
+            PROJECTS_DIR, limit=max(50, min(600, int(d.get('sample') or 300))))
+    except _seed.IncognitoBoundaryUnresolved as e:
+        # No partial-credit mode. If we cannot tell which transcripts are
+        # private, we read none of them and say so — the UI promises
+        # "Incognito sessions are never read" and that has to stay true.
+        return jsonify({'error': f'cannot establish the incognito boundary: {e}',
+                        'seeded': False}), 409
     if len(samples) < _seed.MIN_SAMPLES:
         # Not an error. A fresh install has no corpus, and saying so beats
         # characterising a voice off four messages and presenting it as learned.
