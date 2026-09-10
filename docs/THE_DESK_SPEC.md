@@ -151,6 +151,25 @@ Owns the agenda and has an opinion Ron did not ask for.
 
 Five stores. Four do not exist today, which is the concrete measure of the gap.
 
+**BUILT 2026-09-09 (`adbc563`).** All four now exist, with 44 tests:
+
+| Store | Where | Notes |
+|---|---|---|
+| Signal feed | `data/desk_signals.jsonl` | Append-only. Consumption is a *later line*, never a rewrite. |
+| Voice profiles | `data/desk.json` | `record_edit()` learns from every human edit; `voice_brief()` renders it for the drafting agent. |
+| Campaign board | `data/desk.json` | A campaign without a thesis is refused — it would be a folder. |
+| Story ledger | `data/desk.json` | `similar_published()` is the repetition guard. |
+| Draft queue | project record | Unchanged, as specced. |
+
+Code: `mc/desk.py`, `mc/blueprints/desk_routes.py` (`/api/desk/*`), wired in
+`server.py`. Both files are **siblings** of `DATA_DIR`, never members — a stray
+`*.json` under `data/projects/` becomes a malformed project and 500s both
+restart endpoints. Nothing in either module publishes; two tests assert that.
+
+**Still to build:** the four surfaces (Board / Queue / Calendar / Ledger), the
+signal *producers* that feed the feed from commits/backlog/journals, and the
+drafting agent that turns a signal into a queued draft.
+
 ### Signal feed (new)
 
 Append-only stream of things that happened. Entry: source project, what
