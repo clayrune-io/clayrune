@@ -113,6 +113,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import backup as _backup
 from mc.core import _log
+from mc.state import agent_sessions
 
 bp = Blueprint('backup_routes', __name__)
 
@@ -231,12 +232,44 @@ def _run_backup_job(job_id, categories, label, dest_dir):
             })
 
 
-def _is_unattended() -> bool:
-    """Same signal class as with-secret's server-side unattended detection
-    (CLAUDE.md secrets section) — a header the dispatcher sets for
-    steward/scheduled trigger types, absent for an interactive session."""
-    return (request.headers.get('X-Clayrune-Trigger-Type') or '').lower() in (
-        'steward', 'scheduled', 'unattended')
+def _is_unattended(project_id: str | None = None) -> bool:
+    """Server-side unattended detection — same source of truth as MC-923's
+    with-secret.py / GET /api/session/trigger-type (agent_routes.py:3802):
+    the `trigger_type` MC itself recorded on a session at dispatch time, which
+    the calling agent process cannot rewrite. The previous version trusted an
+    `X-Clayrune-Trigger-Type` header nobody ever sent (self-reported, and
+    absent by default resolves the PERMISSIVE branch — that was the bug: every
+    unattended gate on this surface was silently off).
+
+    This never reads anything the caller sends. Instead it asks: is there a
+    LIVE session, currently mid-turn (`status == 'running'`), that could be
+    the one making this very HTTP call right now? A Bash-tool `curl` to this
+    route can only exist because some Claude CLI session is executing a tool
+    call at this instant, so if such a session is running and its recorded
+    trigger_type isn't `'manual'`, this request is presumed to be that
+    session's own tool call.
+
+    `project_id` scopes the check to sessions dispatched against that project
+    (export-project, rollback both operate on one project already named in
+    the URL). Routes with no project scope (restore, import) pass None and
+    every running session anywhere counts — conservative, same "one witness
+    taints the candidate" OR the learning-safety rails use elsewhere.
+
+    Fails CLOSED: a running session whose trigger_type is missing or blank
+    (e.g. a revived session — some revive paths don't carry it, see
+    `_note_claude_sid`) is treated as unattended, not as the lenient 'manual'
+    default the rest of this file uses for display. No running session found
+    at all (the common case for a human clicking Export in the SPA, which
+    isn't a Claude CLI session and has nothing to find) resolves attended.
+    """
+    for s in agent_sessions.values():
+        if s.get('status') != 'running':
+            continue
+        if project_id is not None and s.get('project_id') != project_id:
+            continue
+        if s.get('trigger_type') != 'manual':
+            return True
+    return False
 
 
 @bp.route('/api/backup/size-preview')
@@ -431,7 +464,7 @@ def api_backup_export_project(project_id):
         result = _backup.export_project(
             project_id, categories=categories, vault=vault,
             vault_passphrase=vault_passphrase, label=label,
-            unattended=_is_unattended())
+            unattended=_is_unattended(project_id))
     except _backup.BackupError as e:
         return _err(e)
     except Exception as e:
@@ -527,13 +560,13 @@ def api_backup_restore_point_item(project_id, snap_id):
 def api_backup_rollback(project_id, snap_id):
     data = request.get_json(silent=True) or {}
     dry_run = bool(data.get('dry_run'))
-    if _is_unattended() and not dry_run:
+    if _is_unattended(project_id) and not dry_run:
         return jsonify({'error': 'rollback is attended-only — refused for this trigger type'}), 403
     try:
         report = _backup.rollback(
             project_id, snap_id,
             restore_memory_index=bool(data.get('restore_memory_index')),
-            unattended=_is_unattended(), dry_run=dry_run)
+            unattended=_is_unattended(project_id), dry_run=dry_run)
     except _backup.BackupIntegrityError as e:
         return _err(e, 422)
     except _backup.BackupError as e:
