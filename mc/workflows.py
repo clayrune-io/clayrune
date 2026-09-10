@@ -678,6 +678,16 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
     agent session's SSE-poll heartbeat, which a workflow run has none of.
     Resolution is `POST /api/workflow-runs/<run_id>/decision`, called by a
     human (run-view UI is a later phase)."""
+    # Under pytest this function is exercised by every approval-gate test, and
+    # it sends REAL mail: Ron's inbox took a run of "[Clayrune workflow]
+    # DECISION NEEDED: gated / gated2 / adopt-wait" — those are fixture names,
+    # not workflows he owns. Same failure class as the test suite spawning a
+    # real `claude auth login` (af7e0a3): a test must never take an action the
+    # outside world can see. Opt in explicitly to exercise the send itself.
+    import os
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('MC_LIVE_MAIL_TESTS'):
+        _log('[workflows] approval-gate email suppressed under pytest')
+        return
     mailer = Path(__file__).resolve().parent.parent / 'tools' / 'night-review' / 'send_mail.py'
     if not mailer.exists():
         return
