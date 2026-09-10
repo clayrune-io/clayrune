@@ -133,18 +133,25 @@ function renderAllSocial() {
   for (const p of allProjects) {
     if (!p._socialQueueFull || !Array.isArray(p.social_queue)) continue;
     for (const item of p.social_queue) {
-      // `approved` belongs here too, and leaving it out was a hole: a released
-      // draft vanished from the queue before anyone could record that it
-      // actually went out, so the ledger could never be written from this
-      // surface. Both states are genuinely waiting on Ron — one for a decision,
-      // the other for the post plus its link. `posted` and `rejected` are done.
-      if (item.status !== 'pending' && item.status !== 'approved') continue;
+      // `approved` and `needs_changes` belong here too, and leaving either out
+      // was the same hole: a released draft vanished before anyone could
+      // record it went out, and a pushed-back draft vanished before the note
+      // could reach the writer. All three are genuinely waiting on someone —
+      // a decision, the post plus its link, or a rewrite. `posted` and
+      // `rejected` are done. Measured 2026-09-10: Ron pushed back
+      // mission_control item 9b8bb91e and it read as destroyed — it was still
+      // here in social_queue, just rendered nowhere.
+      if (item.status !== 'pending' && item.status !== 'approved' && item.status !== 'needs_changes') continue;
       if (q && !(item.body || '').toLowerCase().includes(q)) continue;
       rows.push({ p, item });
     }
   }
   rows.sort((a, b) => (b.item.created_at || '').localeCompare(a.item.created_at || ''));
-  if (countEl) countEl.textContent = `${rows.length} pending draft${rows.length===1?'':'s'}`;
+  const waitingN = rows.filter(r => r.item.status === 'needs_changes').length;
+  if (countEl) {
+    countEl.textContent = `${rows.length} draft${rows.length===1?'':'s'}`
+      + (waitingN ? ` (${waitingN} pushed back)` : '');
+  }
   if (!rows.length) {
     const msg = _allSocialHydrating ? 'Loading pending drafts…' : 'Nothing pending across any project.';
     container.innerHTML = `<div style="padding:40px 12px;text-align:center;color:var(--text-faint);font-size:12px">${msg}</div>`;
@@ -161,12 +168,14 @@ function renderAllSocial() {
   // which one happens to be open elsewhere on screen.
   container.innerHTML = rows.map(({ p, item }) => {
     const missingAttribution = item.originated && !(item.body || '').includes(SOCIAL_ATTRIBUTION_LINE);
+    const needsChanges = item.status === 'needs_changes';
     return `
     <div class="backlog-item social-item status-${esc(item.status)}" data-item-id="${esc(item.id)}">
       <div style="flex:1;min-width:0">
         <div class="social-item-head">
           ${socialProjectBadgeHTML(item)}
           <span class="status-badge social-platform-badge">${esc(item.platform || 'unspecified')}</span>
+          ${needsChanges ? `<span class="status-badge status-needs_changes">Pushed back</span>` : ''}
           ${!item.originated ? '<span class="backlog-source">reply</span>' : ''}
         </div>
         <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
@@ -174,19 +183,19 @@ function renderAllSocial() {
         >${esc(item.body)}</div>
         ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
-        <div class="note-input-row">
-          <input type="text" id="social-note-${esc(item.id)}" placeholder="Note back to the agent"
-            value="${esc(item.note || '')}"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
-        </div>
+        ${needsChanges
+          ? `<div class="social-pushback-note"><strong>Note to the writer:</strong> ${esc(item.note || '')}</div>`
+          : ''}
       </div>
       <div class="backlog-meta social-item-actions">
         <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
-        <button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+        ${needsChanges
+          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
+          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
         ${item.status === 'approved'
           ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
           : ''}
-        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with the note above">Push back</button>
+        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
       </div>
     </div>`;
   }).join('');

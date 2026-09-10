@@ -168,10 +168,72 @@ async function markSocialItemPosted(e, projectId, itemId) {
   await _reloadSocialAfterMutation(projectId);
 }
 
-async function pushBackSocialItem(e, projectId, itemId) {
+// Push back MUST capture the note as part of the click, not read it from a
+// field the user may never have touched. Measured 2026-09-10 on
+// mission_control queue item 9b8bb91e: pushed back via the old inline
+// `social-note-<id>` field, landed in needs_changes with note: '' — Posy was
+// told "wrong" and given no instruction. Same modal-window construction as
+// openSocialEditModal (commit 0adb8ed); this one exists to force the note,
+// not to edit the body.
+function pushBackSocialItem(e, projectId, itemId) {
   e.stopPropagation();
-  const noteInput = document.getElementById(`social-note-${itemId}`);
-  const note = noteInput ? noteInput.value.trim() : '';
+  openPushBackModal(projectId, itemId);
+}
+
+function openPushBackModal(projectId, itemId) {
+  const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(p => p.id === projectId);
+  const item = proj && Array.isArray(proj.social_queue)
+    ? proj.social_queue.find(i => i.id === itemId) : null;
+  if (!item) {
+    if (typeof showToast === 'function') showToast('Could not find this draft — try reopening the queue.', 4000);
+    return;
+  }
+
+  const modalId = `__social_pushback_${itemId}`;
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content modal-fit';
+  _clampModalSize(content, 480);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px;position:relative">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">Push back to the writer</h2>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px">${esc(item.platform || 'unspecified')}</div>
+    </div>
+    <div style="padding:6px 28px 22px;display:flex;flex-direction:column;gap:12px">
+      <div class="backlog-text" style="max-height:120px;overflow-y:auto;opacity:.7;cursor:default">${esc(item.body || '')}</div>
+      <div class="form-group" style="margin:0">
+        <label>What should change (required)</label>
+        <textarea id="social-pushback-note-${esc(itemId)}" rows="4"
+          placeholder="Tell the writer what's wrong and what to do instead">${esc((item.note || '').trim())}</textarea>
+      </div>
+      <div id="social-pushback-error-${esc(itemId)}" class="social-attr-warn" style="display:none"></div>
+      <button class="btn-social-pushback" style="width:100%" onclick="submitPushBack('${esc(projectId)}','${esc(itemId)}')">Push back</button>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  const ta = document.getElementById(`social-pushback-note-${itemId}`);
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+async function submitPushBack(projectId, itemId) {
+  const errEl = document.getElementById(`social-pushback-error-${itemId}`);
+  const show = (m) => { if (errEl) { errEl.textContent = m; errEl.style.display = 'block'; } };
+  const noteEl = document.getElementById(`social-pushback-note-${itemId}`);
+  const note = noteEl ? noteEl.value.trim() : '';
+  if (!note) { show("Say what should change — an empty push-back tells the writer nothing."); return; }
   const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/reject`, {
     method: 'POST',
     headers: {'Content-Type': 'application/json'},
@@ -179,10 +241,22 @@ async function pushBackSocialItem(e, projectId, itemId) {
   });
   const data = await res.json().catch(() => ({}));
   if (!res.ok) {
-    showToast(data.error || 'Could not push this draft back.', 4000);
+    show(data.error || 'Could not push this draft back.');
     return;
   }
+  closeModalById(`__social_pushback_${itemId}`);
+  if (typeof showToast === 'function') showToast('Pushed back with your note.');
   await _reloadSocialAfterMutation(projectId);
+}
+
+// A pushed-back draft used to vanish from every queue render — it still
+// existed in social_queue but no view showed `needs_changes`, so an
+// accidental push-back read as destroyed. Restores via the same PATCH the
+// inline field already uses; no new endpoint.
+async function restoreSocialItem(e, projectId, itemId) {
+  e.stopPropagation();
+  await patchSocialItem(projectId, itemId, {status: 'pending'});
+  if (typeof showToast === 'function') showToast('Restored to pending.');
 }
 
 // ── Interop: re-expose for inline onclick/onblur handlers generated in the
@@ -196,3 +270,6 @@ window.saveSocialEditModal = saveSocialEditModal;
 window.releaseSocialItem = releaseSocialItem;
 window.markSocialItemPosted = markSocialItemPosted;
 window.pushBackSocialItem = pushBackSocialItem;
+window.openPushBackModal = openPushBackModal;
+window.submitPushBack = submitPushBack;
+window.restoreSocialItem = restoreSocialItem;

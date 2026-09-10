@@ -594,6 +594,7 @@ function modalContentHTML(p) {
   });
   const socialItemsHTML = socialFiltered.map(item => {
     const missingAttribution = item.originated && !(item.body || '').includes(SOCIAL_ATTRIBUTION_LINE);
+    const needsChanges = item.status === 'needs_changes';
     return `
     <div class="backlog-item social-item status-${esc(item.status)}" data-item-id="${esc(item.id)}">
       <div style="flex:1;min-width:0">
@@ -608,19 +609,19 @@ function modalContentHTML(p) {
         >${esc(item.body)}</div>
         ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
-        <div class="note-input-row">
-          <input type="text" id="social-note-${esc(item.id)}" placeholder="Note back to the agent"
-            value="${esc(item.note || '')}"
-            onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur()}">
-        </div>
+        ${needsChanges
+          ? `<div class="social-pushback-note"><strong>Note to the writer:</strong> ${esc(item.note || '')}</div>`
+          : ''}
       </div>
       <div class="backlog-meta social-item-actions">
         <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
-        <button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+        ${needsChanges
+          ? `<button class="btn-social-restore" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Put this back to pending">Restore to pending</button>`
+          : `<button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
         ${item.status === 'approved'
           ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
           : ''}
-        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with the note above">Push back</button>
+        <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with a note">Push back</button>`}
       </div>
     </div>`;
   }).join('') || (socialQueueLoaded

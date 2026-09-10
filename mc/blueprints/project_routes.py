@@ -1507,10 +1507,17 @@ def reject_social_queue_item(project_id, item_id):
         return jsonify({'error': 'item not found'}), 404
 
     data = request.get_json(silent=True) or {}
+    # A push-back with no instruction is worse than none: the writer learns
+    # "wrong" and not why. Measured 2026-09-10 on mission_control queue item
+    # 9b8bb91e — pushed back with note: '' because the UI read a field the
+    # user never touched. Refuse here too, not just client-side.
+    note = (data.get('note') or '').strip()
+    if not note:
+        return jsonify({'error': 'A push-back needs a note telling the writer what to change.'}), 400
     # "Push back" — sent back for changes, not killed outright. A hard kill
     # is still reachable via PATCH {"status": "rejected"} if that's ever needed.
     item['status'] = 'needs_changes'
-    item['note'] = data.get('note', item.get('note', ''))
+    item['note'] = note
     item['decided_at'] = now_iso()
     item['decided_by'] = data.get('decided_by', 'user')
     p['last_updated'] = now_iso()
