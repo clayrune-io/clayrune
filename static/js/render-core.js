@@ -607,6 +607,9 @@ function modalContentHTML(p) {
       <div class="backlog-meta social-item-actions">
         <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
         <button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+        ${item.status === 'approved'
+          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
+          : ''}
         <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with the note above">Push back</button>
       </div>
     </div>`;

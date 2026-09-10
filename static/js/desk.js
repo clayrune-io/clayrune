@@ -170,11 +170,20 @@ function _deskPendingCount() {
   // Count locally rather than trusting the overview's snapshot: the user can
   // release a draft from the Queue tab without the overview being refetched,
   // and a tab badge that lies about what is waiting is worse than no badge.
+  //
+  // `approved` counts too. A released draft still owes Ron two actions — post
+  // it, then record that it went out — and until the second one happens the
+  // story ledger has no row, which silently disables the repetition guard and
+  // leaves the Calendar and Ledger surfaces empty. Counting only `pending`
+  // would hide exactly the work that closes the loop.
   let n = 0;
   for (const p of (typeof allProjects !== 'undefined' ? allProjects : [])) {
     if (p._socialQueueFull && Array.isArray(p.social_queue)) {
-      n += p.social_queue.filter(i => i.status === 'pending').length;
+      n += p.social_queue.filter(i => i.status === 'pending' || i.status === 'approved').length;
     } else {
+      // The projects payload only summarises PENDING (`social_pending_count`),
+      // so an unhydrated project undercounts until its queue is fetched. Better
+      // than blocking the badge on a full hydration of every project.
       n += (p.social_pending_count || 0);
     }
   }

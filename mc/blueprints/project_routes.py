@@ -1367,6 +1367,89 @@ def approve_social_queue_item(project_id, item_id):
     return jsonify({'ok': True, 'item': item})
 
 
+@bp.route('/api/project/<project_id>/social/queue/<item_id>/posted', methods=['POST'])
+def mark_social_queue_item_posted(project_id, item_id):
+    """Record that a released draft actually went out. THIS CLOSES THE RECEIPT CHAIN.
+
+    Found 2026-09-10 by a design audit of the shipped Desk: `approve` flips the
+    status to `approved` and nothing ever called `desk.record_published`, so the
+    story ledger was only ever written by tests. That made three things
+    impossible at once — the repetition guard had nothing to compare against,
+    the Calendar and Ledger surfaces rendered empty forever, and there was no row
+    for engagement to attach to. `posted` was already in `_SOCIAL_STATUSES` and
+    was never set by any code path.
+
+    This is NOT a publish route and must not become one. It records that a human
+    already posted, which is why it takes a permalink rather than a body. The
+    approval gate is a platform TERM (Pinterest requires per-item human choice,
+    YouTube prior express consent), not a stage to outgrow.
+
+    The permalink is OPTIONAL but it is the thing that makes reactions readable
+    later — without it the ledger row exists and can never be enriched. The
+    response says so explicitly rather than silently degrading.
+    """
+    p = load_project(project_id)
+    if p is None:
+        return jsonify({'error': 'project not found'}), 404
+
+    item = next((i for i in p.get('social_queue', []) if i['id'] == item_id), None)
+    if item is None:
+        return jsonify({'error': 'item not found'}), 404
+
+    # Idempotent: a double-click must not write a second ledger row. The link is
+    # stored on the item, so the second call returns the first row's id.
+    if item.get('status') == 'posted' and item.get('ledger_post_id'):
+        return jsonify({'ok': True, 'item': item, 'already': True,
+                        'post_id': item['ledger_post_id']})
+
+    # You cannot have posted something you never released. Refusing here keeps
+    # the approval gate meaningful instead of letting `posted` route around it.
+    if item.get('status') != 'approved':
+        return jsonify({'error': 'only an approved draft can be marked as posted',
+                        'status': item.get('status')}), 409
+
+    data = request.get_json(silent=True) or {}
+    url = (data.get('url') or '').strip() or None
+
+    post = None
+    try:
+        from mc import desk as _desk
+        post = _desk.record_published(
+            platform=item.get('platform') or 'unspecified',
+            voice=item.get('voice') or 'ron',
+            body=item.get('body') or '',
+            signal_id=item.get('signal_id'),
+            project_id=project_id,
+            url=url,
+            published_at=data.get('published_at'))
+        # Spend the signal so it stops being offered as raw material. Harmless
+        # if the draft came from a human rather than a harvested signal.
+        if item.get('signal_id'):
+            _desk.mark_signal_consumed(item['signal_id'], post['id'])
+    except Exception as e:
+        # Best-effort, deliberately: the human DID post: refusing to record the
+        # status because the ledger write failed would leave the queue lying
+        # about the state of the world, which is worse than a missing row.
+        _log(f'[desk] could not write the ledger for {item_id}: {e}')
+
+    item['status'] = 'posted'
+    item['posted_at'] = now_iso()
+    item['url'] = url
+    if post:
+        item['ledger_post_id'] = post['id']
+    p['last_updated'] = now_iso()
+    save_project(project_id, p)
+    _log_agent_activity(project_id,
+                        f"Social: posted a {item.get('platform') or 'draft'} post")
+    return jsonify({'ok': True, 'item': item,
+                    'post_id': (post or {}).get('id'),
+                    'ledger_written': post is not None,
+                    # Named so the caller can tell the human why reactions will
+                    # never appear for this row, rather than leaving them to
+                    # wonder later.
+                    'reactions_readable': bool(url)})
+
+
 @bp.route('/api/project/<project_id>/social/queue/<item_id>/reject', methods=['POST'])
 def reject_social_queue_item(project_id, item_id):
     p = load_project(project_id)

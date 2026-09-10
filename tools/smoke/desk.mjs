@@ -74,6 +74,11 @@ const QUEUE = [
       + 'it is competing against launch threads with no artifact behind them.' },
   { id: 'd2', project_id: PID, platform: 'linkedin', status: 'pending', body: 'Restore points now keep ten snapshots.',
     originated: false, note: '', created_at: '2026-09-09T09:00:00Z' },
+  // Released but not yet recorded as posted. It still owes Ron the receipt, so
+  // it MUST stay visible in the queue — leaving it out was the hole that made
+  // the story ledger unwritable from this surface.
+  { id: 'd3', project_id: PID, platform: 'x', status: 'approved', body: 'The Desk reads your projects.',
+    originated: false, note: '', created_at: '2026-09-08T09:00:00Z' },
 ];
 
 const OVERVIEW = {
@@ -131,6 +136,7 @@ try {
 
   let harvestCalls = 0;
   const draftCalls = [];
+  const postedCalls = [];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -141,6 +147,11 @@ try {
     if (path === '/api/projects') return J(PROJECTS);
     if (path === '/api/config') return J({});
     if (path === '/api/characters') return J([]);
+    if (path.endsWith('/posted') && req.method() === 'POST') {
+      postedCalls.push(path);
+      return J({ ok: true, item: { id: 'd3', status: 'posted' }, post_id: 'post-9',
+                 ledger_written: true, reactions_readable: true });
+    }
     if (path === `/api/project/${PID}/social/queue`) return J(QUEUE);
     if (path.endsWith('/social/queue')) return J([]);
     if (path === '/api/desk/overview') return J(OVERVIEW);
@@ -224,7 +235,7 @@ try {
   await page.click('.desk-tab:has-text("Queue")');
   await page.waitForSelector('#asl-list .social-item', { timeout: 8000 });
   const rows = await page.$$eval('#asl-list .social-item .backlog-text', els => els.map(e => e.textContent.trim()));
-  if (rows.length === 2 && rows.some(r => r.includes('Shipped drag-to-hire today'))) {
+  if (rows.length === 3 && rows.some(r => r.includes('Shipped drag-to-hire today'))) {
     ok(`Queue hosts cross-social.js's real rows (${rows.length}) — the _hydrateAllSocial bridge holds`);
   } else {
     fail(`Queue rows wrong: ${JSON.stringify(rows)}`);
@@ -240,6 +251,26 @@ try {
     fail(`teaching block missing from the queue row: ${JSON.stringify(teaching)}`);
   }
 
+  // The receipt chain: an approved draft is still queue work, and only its
+  // "Mark posted" writes the story ledger. Until 2026-09-10 nothing did.
+  const statuses = await page.$$eval('#asl-list .social-item',
+    els => els.map(e => (e.className.match(/status-(\w+)/) || [])[1]));
+  if (statuses.includes('approved')) {
+    ok('an approved draft stays in the Queue — it still owes a receipt');
+  } else {
+    fail(`approved drafts vanished from the queue: ${JSON.stringify(statuses)}`);
+  }
+
+  const postedBtns = await page.$$('#asl-list .btn-social-posted');
+  if (postedBtns.length === 1) ok('only the approved draft offers "Mark posted"');
+  else fail(`expected exactly 1 Mark-posted button, got ${postedBtns.length}`);
+
+  page.once('dialog', d => d.accept('https://x.com/RanLevi15/status/1'));
+  await postedBtns[0].click();
+  await page.waitForTimeout(600);
+  if (postedCalls.length === 1) ok('"Mark posted" POSTs the receipt that writes the ledger');
+  else fail(`Mark posted did not call the receipt route: ${JSON.stringify(postedCalls)}`);
+
   const hasActions = await page.$('#asl-list .btn-social-release');
   if (hasActions) ok('Queue rows keep their Release / Edit / Push-back actions');
   else fail('Queue rows lost their action buttons');
@@ -253,8 +284,8 @@ try {
     render();
   });
   const afterPoll = await page.$$eval('#asl-list .social-item', els => els.length);
-  if (afterPoll === 2) ok('a refresh poll does NOT empty the Queue — __desk preserves hydrated rows');
-  else fail(`Queue emptied on refresh: ${afterPoll} rows left, expected 2`);
+  if (afterPoll === 3) ok('a refresh poll does NOT empty the Queue — __desk preserves hydrated rows');
+  else fail(`Queue emptied on refresh: ${afterPoll} rows left, expected 3`);
 
   // ── CALENDAR and LEDGER each render their own thing ──────────────────────
   await page.click('.desk-tab:has-text("Calendar")');

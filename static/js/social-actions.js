@@ -52,6 +52,40 @@ async function releaseSocialItem(e, projectId, itemId) {
   await _reloadSocialAfterMutation(projectId);
 }
 
+// "Mark as posted" — the receipt. Released means Ron approved the copy; POSTED
+// means it actually went out, and only this writes the story ledger.
+//
+// Until 2026-09-10 nothing did: `approve` flipped the status and the ledger was
+// written by its own unit tests and nothing else. That silently disabled the
+// repetition guard (nothing to compare against), left the Calendar and Ledger
+// surfaces permanently empty, and gave engagement no row to attach to.
+//
+// The permalink is asked for but not required. It is what makes reactions
+// readable later, so a skipped one is reported rather than silently accepted.
+async function markSocialItemPosted(e, projectId, itemId) {
+  e.stopPropagation();
+  const url = (prompt(
+    'Paste the link to the post.\n\n' +
+    'Leave blank if you do not have it — the post is still recorded, but its ' +
+    'reactions can never be read back without a link.') || '').trim();
+
+  const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/posted`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({url}),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    showToast(data.error || 'Could not record this as posted.', 4000);
+    return;
+  }
+  if (data.already) showToast('Already recorded.');
+  else if (!data.ledger_written) showToast('Marked posted, but the ledger write failed.', 5000);
+  else if (!data.reactions_readable) showToast('Recorded. No link, so reactions cannot be read later.', 5000);
+  else showToast('Recorded in the ledger.');
+  await _reloadSocialAfterMutation(projectId);
+}
+
 async function pushBackSocialItem(e, projectId, itemId) {
   e.stopPropagation();
   const noteInput = document.getElementById(`social-note-${itemId}`);
@@ -76,4 +110,5 @@ window.patchSocialItem = patchSocialItem;
 window.saveSocialBody = saveSocialBody;
 window.editSocialItem = editSocialItem;
 window.releaseSocialItem = releaseSocialItem;
+window.markSocialItemPosted = markSocialItemPosted;
 window.pushBackSocialItem = pushBackSocialItem;

@@ -1629,10 +1629,17 @@
     border-radius: 3px; padding: 4px 7px; margin: 4px 0; line-height: 1.4;
   }
   .social-item-actions { flex-direction: column; align-items: stretch; gap: 4px; }
-  .btn-social-edit, .btn-social-release, .btn-social-pushback {
+  .btn-social-edit, .btn-social-release, .btn-social-posted, .btn-social-pushback {
     font-size: 11px; padding: 3px 10px; border-radius: 3px; cursor: pointer;
     white-space: nowrap; font-weight: 600;
   }
+  /* "Mark posted" only appears on an ALREADY-approved draft, so it is the live
+     call to action at that moment and wears the accent. Release is green
+     (a decision); this is the receipt that follows it. */
+  .btn-social-posted {
+    background: var(--accent-dim); color: var(--accent); border: 1px solid var(--accent);
+  }
+  .btn-social-posted:hover { opacity: 0.85; }
   .btn-social-edit {
     background: transparent; color: var(--text-dim); border: 1px solid var(--border2);
   }

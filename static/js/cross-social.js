@@ -94,7 +94,12 @@ function renderAllSocial() {
   for (const p of allProjects) {
     if (!p._socialQueueFull || !Array.isArray(p.social_queue)) continue;
     for (const item of p.social_queue) {
-      if (item.status !== 'pending') continue;
+      // `approved` belongs here too, and leaving it out was a hole: a released
+      // draft vanished from the queue before anyone could record that it
+      // actually went out, so the ledger could never be written from this
+      // surface. Both states are genuinely waiting on Ron — one for a decision,
+      // the other for the post plus its link. `posted` and `rejected` are done.
+      if (item.status !== 'pending' && item.status !== 'approved') continue;
       if (q && !(item.body || '').toLowerCase().includes(q)) continue;
       rows.push({ p, item });
     }
@@ -139,6 +144,9 @@ function renderAllSocial() {
       <div class="backlog-meta social-item-actions">
         <button class="btn-social-edit" onclick="editSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Edit the draft">Edit</button>
         <button class="btn-social-release" onclick="releaseSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Approve and hand off the copy">Release</button>
+        ${item.status === 'approved'
+          ? `<button class="btn-social-posted" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')" title="Record that this actually went out, with its link">Mark posted</button>`
+          : ''}
         <button class="btn-social-pushback" onclick="pushBackSocialItem(event,'${esc(p.id)}','${esc(item.id)}')" title="Send back with the note above">Push back</button>
       </div>
     </div>`;
