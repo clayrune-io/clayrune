@@ -101,6 +101,15 @@ const OVERVIEW = {
 // A realistic feed, not two rows: the Board's density is part of what is being
 // checked. Mixed kinds and scores, because the point of the meter is that a
 // scannable eye finds the two stories among twenty chores.
+// One voice that has learned something and one that has not. The COLD one is
+// the case the seeder exists for: `voice_brief` is built out of real edits, so a
+// voice with zero of them hands the writer a single line of register.
+const VOICES = [
+  { name: 'personal', platform: 'x', register: 'First person.', rewrites: [] },
+  { name: 'product', platform: 'linkedin', register: 'Never first person.',
+    rewrites: [{ before: 'a', after: 'b', at: '2026-09-01T00:00:00Z' }] },
+];
+
 const SIGNALS = [
   { kind: 'release',  score: 0.90, txt: 'Shipped drag-to-hire, now live' },
   { kind: 'backlog',  score: 0.85, txt: 'BACKUP PHASE 3 - restore points + checklist UI, shipped' },
@@ -136,6 +145,7 @@ try {
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
   let harvestCalls = 0;
+  const seedCalls = [];
   const draftCalls = [];
   const postedCalls = [];
   await page.route('**/*', (route) => {
@@ -160,6 +170,11 @@ try {
     if (path === '/api/desk/draft' && req.method() === 'POST') {
       draftCalls.push(JSON.parse(req.postData() || '{}'));
       return J({ ok: true, signal_id: 'sig-0', voice: 'ron', platform: 'x', session_id: 's1' });
+    }
+    if (path === '/api/desk/voices') return J(VOICES);
+    if (path.endsWith('/seed') && req.method() === 'POST') {
+      seedCalls.push(path);
+      return J({ ok: true, seeded: true, voice: 'personal', samples: 312, session_id: 's9' });
     }
     if (path === '/api/desk/signals/harvest' && req.method() === 'POST') {
       harvestCalls++;
@@ -352,6 +367,40 @@ try {
 
   // One shot per surface — the four-way split is the product, so a single
   // screenshot of the Board would not show what shipped.
+  // ── Voices: the cold start is visible, and seeding is one click ──────────
+  //
+  // A voice with no learned edits is GUESSING, and the panel has to say so next
+  // to the button that fixes it — otherwise the honest status lives only in a
+  // brief nobody reads.
+  await page.click('.desk-voices-btn');
+  await page.waitForSelector('.modal-window[data-modal-id="__desk_voices"]', { timeout: 8000 });
+  const voiceRows = await page.$$eval('.desk-voice-row', els => els.map(e => ({
+    voice: e.dataset.voice,
+    learned: (e.querySelector('.desk-voice-learned') || {}).textContent.trim(),
+    cold: !!e.querySelector('.desk-voice-learned.cold'),
+    seedable: !!e.querySelector('.desk-seed-btn'),
+  })));
+  if (voiceRows.length === 2 && voiceRows.every(r => r.seedable)) {
+    ok('every voice offers to learn from how the user already writes');
+  } else {
+    fail(`expected 2 seedable voice rows, got ${JSON.stringify(voiceRows)}`);
+  }
+  const coldVoices = voiceRows.filter(r => r.cold);
+  if (coldVoices.length === 1 && coldVoices[0].voice === 'personal' && coldVoices[0].learned.startsWith('0 edits')) {
+    ok('the voice with nothing learned is marked cold, and says "0 edits learned"');
+  } else {
+    fail(`expected exactly the 0-rewrite voice marked cold, got ${JSON.stringify(voiceRows)}`);
+  }
+
+  await page.click('.desk-voice-row[data-voice="personal"] .desk-seed-btn');
+  await page.waitForFunction(() => !document.querySelector('.modal-window[data-modal-id="__desk_voices"]'),
+                             null, { timeout: 8000 }).catch(() => {});
+  if (seedCalls.length === 1 && seedCalls[0].includes('/api/desk/voices/personal/seed')) {
+    ok('seeding posts to the seed route of that specific voice');
+  } else {
+    fail(`expected one seed POST for "personal", got ${JSON.stringify(seedCalls)}`);
+  }
+
   if (SHOT_DIR) {
     for (const t of ['Board', 'Queue', 'Calendar', 'Ledger']) {
       await page.click(`.desk-tab:has-text("${t}")`);

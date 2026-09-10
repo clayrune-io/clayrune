@@ -245,6 +245,109 @@ async function deskSubmitCampaign() {
   await _loadDesk();
 }
 
+// VOICES — and the cold start this exists to close.
+//
+// `voice_brief` is assembled out of the human's REAL edits to real drafts, and
+// that is the differentiator the 2026-09-09 field scan could not find in any
+// surveyed product. But a fresh voice has none: measured 2026-09-10, both
+// starter voices had **0 rewrites**, so the brief handed the writer one line of
+// register and nothing else. The loop only starts paying after you have already
+// corrected it ten times, which is backwards.
+//
+// Ron's framing, and it is the design: "the way a user expresses himself in his
+// requests is also part of who he is — is he paying more attention to details,
+// more attention to actions, results." That evidence exists in volume before a
+// single draft is written, in the messages he has already typed to his agents.
+// So a voice can be SEEDED from it, then corrected by real edits, which outrank
+// anything inferred.
+//
+// The rewrite count is shown per voice because it is the honest status: a voice
+// with 0 is guessing, and the button that fixes it should sit next to the number
+// that says so.
+async function deskVoices() {
+  let voices = [];
+  try {
+    voices = await _deskFetch('/api/desk/voices');
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load the voices: ' + e.message, 4000);
+    return;
+  }
+
+  const modalId = '__desk_voices';
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content modal-fit';
+  _clampModalSize(content, 560);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">Voices</h2>
+    </div>
+    <div style="padding:6px 28px 22px;overflow-y:auto">
+      <div class="hint" style="margin-bottom:14px">A voice learns from every edit you make to a
+        draft. Until it has some, it is guessing — so you can seed it from how you already
+        write to your own agents. Incognito sessions are never read.</div>
+      ${voices.map(v => `
+        <div class="desk-voice-row" data-voice="${esc(v.name)}">
+          <div class="desk-voice-row-head">
+            <span class="camp-voice-name">${esc(v.name)}</span>
+            <span class="desk-platform">${esc(v.platform || '')}</span>
+            <span class="desk-voice-learned${(v.rewrites || []).length ? '' : ' cold'}">
+              ${(v.rewrites || []).length} edit${(v.rewrites || []).length === 1 ? '' : 's'} learned
+            </span>
+            <span style="flex:1"></span>
+            <button class="desk-seed-btn" onclick="deskSeedVoice('${esc(v.name)}')">
+              Learn from how I write
+            </button>
+          </div>
+          <div class="camp-voice-reg">${esc(v.register || 'No register yet.')}</div>
+        </div>`).join('') || '<div class="desk-empty">No voices yet.</div>'}
+      <div id="desk-voice-error" class="social-attr-warn" style="display:none"></div>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+}
+
+// Seeding DISPATCHES rather than computing: what someone attends to — detail,
+// action, results — is a judgement, the same reason triage is an agent and not a
+// keyword score. The agent is briefed to describe a register and never to quote,
+// because a transcript can contain anything that was pasted into it.
+async function deskSeedVoice(name) {
+  const err = document.getElementById('desk-voice-error');
+  const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+  const btn = document.querySelector(`.desk-voice-row[data-voice="${name}"] .desk-seed-btn`);
+  if (btn) { btn.disabled = true; btn.textContent = 'Reading…'; }
+  try {
+    const out = await _deskFetch(`/api/desk/voices/${encodeURIComponent(name)}/seed`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (!out.seeded) {
+      // A real answer, not a failure: a fresh install has nothing to read yet.
+      show(out.reason || 'Not enough of your own writing to characterise a voice yet.');
+      if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; }
+      return;
+    }
+    closeModalById('__desk_voices');
+    if (typeof showToast === 'function') {
+      showToast(`Reading ${out.samples} of your own messages to seed the "${name}" voice.`);
+    }
+  } catch (e) {
+    show('Could not start it: ' + e.message);
+    if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; }
+  }
+}
+
 // Move a campaign through its states from the Board. Proposed -> running is the
 // one that matters; the rest exist so a campaign can be stopped without being
 // deleted, because a dropped campaign is still evidence of a decision.
@@ -355,6 +458,10 @@ function renderDesk() {
     <button class="desk-triage-btn" onclick="deskTriage()" ${_deskTriaging ? 'disabled' : ''}
       title="Ask Posy which of these are worth posting, and in which voice">
       ${_deskTriaging ? 'Weighing…' : "What's worth saying?"}
+    </button>
+    <button class="desk-voices-btn" onclick="deskVoices()"
+      title="Your voices — and what each one has learned">
+      Voices
     </button>
     <button class="desk-harvest-btn" onclick="deskHarvest()" ${_deskHarvesting ? 'disabled' : ''}
       title="Read every project's new commits and shipped backlog items into the feed">
@@ -676,6 +783,8 @@ window.deskDraft = deskDraft;
 window.deskTriage = deskTriage;
 window.deskDecideProposal = deskDecideProposal;
 window.deskNewCampaign = deskNewCampaign;
+window.deskVoices = deskVoices;
+window.deskSeedVoice = deskSeedVoice;
 window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;

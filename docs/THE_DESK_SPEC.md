@@ -210,6 +210,51 @@ Per the decision below there are two, and they are not variants of one another:
   Owns X.
 - **`clayrune`** — the product speaking about itself. Owns LinkedIn.
 
+#### Seeding, built 2026-09-10 — `mc/desk_voice_seed.py`
+
+> The names above are stale: voices became **user data** on 2026-09-10 and the
+> neutral starters are `personal` (X) and `product` (LinkedIn). A hardcoded
+> `('ron', 'clayrune')` in a public repo is operator-specific, which CLAUDE.md
+> forbids.
+
+The "seeded from Ron's own writing" half above was specified and never built, and
+the gap was measurable: **both voices had 0 rewrites**, so `voice_brief` handed
+the writer one line of register. The learning loop only starts paying after ten
+corrections, which is backwards.
+
+Ron's framing settled what the corpus is: *"the way a user expresses himself in
+his requests is also part of who he is — is he paying more attention to details,
+more attention to actions, results. This can and should impact his voice."*
+Conversations are **weak as signals** (most chat is process; the backlog and
+journals already carry the ask) and **strong as voice evidence**. This builds
+only the second. Corpus on this machine: 21,578 typed messages, 16,272
+transcripts.
+
+`POST /api/desk/voices/<name>/seed` collects and dispatches; **Posy**
+characterises. Four properties are load-bearing, each pinned by a test in
+`tests/test_desk_voice_seed.py`:
+
+1. **Incognito is excluded by DIRECTORY, not by session id.** The first cut read
+   ids out of `_incognito.json`'s `activity_log`, which carries only `{ts, msg}`
+   — the skip set came back empty and excluded nothing, silently. The workspace
+   path is what is reliable. A corrupt record **fails closed**, and `collect()`
+   has no default `data_dir`: a caller who forgot it would read every private
+   transcript with no visible failure.
+2. **Clayrune's own injected text is stripped.** 93 of the first 400 messages
+   (23%) opened with `_BRIEF_REPLY_DIRECTIVE`, the hidden "reply in Telegram
+   style" prefix. Left in, a quarter of the sample is the product talking to
+   itself and the characterisation describes *our* prose as the human's.
+3. **Describe, never quote.** A transcript can hold anything that was pasted into
+   it. Pastes (code fences, tracebacks, path walls) are dropped as evidence, and
+   the brief forbids reproducing any sentence, path, number or credential.
+4. **A seed is outranked by real edits.** Below `MIN_SAMPLES` (40) the route
+   returns `seeded: false` with a reason — a real answer, not an error. A voice
+   confidently inferred from four messages is worse than an unseeded one, because
+   the human trusts it.
+
+The **Voices** panel shows each voice's learned-edit count, marks a 0-count voice
+cold, and puts the seed button next to that number.
+
 Both feed **one** teacher's curriculum. Ron is learning to market, not learning
 two jobs, and the lessons that matter (specificity over adjectives, claims that
 survive checking) are register-independent.

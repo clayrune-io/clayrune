@@ -221,3 +221,49 @@ def test_there_is_no_publish_route(client):
     for forbidden in ('requests.', 'urllib.request', 'httpx.', 'tweepy'):
         assert forbidden not in src
     assert client.post('/api/desk/publish', json={}).status_code == 404
+
+# -- voice seeding ------------------------------------------------------------
+#
+# The seed route dispatches an agent to characterise how the human writes. What
+# is worth pinning here is the REFUSALS, because each one protects something the
+# store cannot: an unknown voice, a corpus too thin to characterise, and the
+# projects dir that computes the incognito exclusion.
+
+def test_seeding_an_unknown_voice_is_a_404(client):
+    assert client.post('/api/desk/voices/nobody/seed', json={}).status_code == 404
+
+
+def test_a_thin_corpus_is_a_real_answer_not_an_error(client, tmp_path, monkeypatch):
+    """A fresh install has nothing to read. Saying so beats characterising a
+    voice off four messages and labelling the result 'learned'."""
+    monkeypatch.setattr(desk_routes._seed, 'collect', lambda *a, **k: ['too thin'])
+    r = client.post('/api/desk/voices/personal/seed', json={})
+    assert r.status_code == 200
+    body = r.get_json()
+    assert body['ok'] is True and body['seeded'] is False
+    assert str(desk_routes._seed.MIN_SAMPLES) in body['reason']
+
+
+def test_seeding_dispatches_with_the_sample_and_never_into_a_pseudo_project(
+        client, monkeypatch):
+    """Pseudo-projects are skipped — dispatching INTO `_incognito` to
+    characterise a voice is the one place this must never run."""
+    monkeypatch.setattr(desk_routes._seed, 'collect',
+                        lambda *a, **k: ['m%d and some words' % i for i in range(80)])
+    monkeypatch.setattr(desk_routes, 'load_projects',
+                        lambda: [{'id': '_incognito'}, {'id': 'real_project'}])
+    monkeypatch.setattr(desk_routes, 'load_project', lambda pid: {'id': pid})
+    seen = {}
+
+    def _dispatch(pid, brief, _x, **kw):
+        seen['pid'] = pid
+        seen['brief'] = brief
+        return 'sess-1'
+    monkeypatch.setattr(desk_routes, 'dispatch_agent', _dispatch)
+
+    r = client.post('/api/desk/voices/personal/seed', json={})
+    assert r.status_code == 202
+    assert r.get_json()['samples'] == 80
+    assert seen['pid'] == 'real_project'
+    assert 'DESCRIBE, DO NOT QUOTE' in seen['brief']
+

@@ -7887,6 +7887,41 @@
   .desk-triage-btn:hover:not(:disabled) { background: var(--accent-dim); }
   .desk-triage-btn:disabled { opacity: 0.5; cursor: default; }
 
+  /* Quieter than triage and harvest: this is a settings-shaped action you take
+     once, not the thing you came to the Desk to do. */
+  .desk-voices-btn {
+    display: inline-flex; align-items: center;
+    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
+    border-radius: 999px; cursor: pointer; margin-right: 6px;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .desk-voices-btn:hover { color: var(--accent); border-color: var(--accent); }
+
+  .desk-voice-row {
+    display: flex; flex-direction: column; gap: 5px;
+    padding: 12px 14px; margin-bottom: 10px;
+    border: 1px solid var(--border2); border-radius: 10px;
+  }
+  .desk-voice-row-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+
+  /* The honest status. A voice with nothing learned is guessing, and `cold`
+     says so next to the button that fixes it rather than in a tooltip. */
+  .desk-voice-learned {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.02em;
+    color: var(--text-dim);
+  }
+  .desk-voice-learned.cold { color: var(--red-text, var(--text-dim)); opacity: 0.9; }
+
+  .desk-seed-btn {
+    background: transparent; border: 1px solid var(--accent); color: var(--accent);
+    font-size: 11px; font-weight: 700; padding: 5px 12px;
+    border-radius: 999px; cursor: pointer;
+    transition: background 0.15s, opacity 0.15s;
+  }
+  .desk-seed-btn:hover:not(:disabled) { background: var(--accent-dim); }
+  .desk-seed-btn:disabled { opacity: 0.5; cursor: default; }
+
   .desk-new-campaign {
     flex-shrink: 0; background: transparent; border: 1px dashed var(--border2);
     color: var(--text-dim); font-size: 11px; font-weight: 700;

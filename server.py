@@ -1748,6 +1748,9 @@ _bp_desk.wire(
     dispatch_fn=_bp_agent._dispatch_agent_internal,
     store_path=DESK_STORE_PATH,
     signals_path=DESK_SIGNALS_PATH,
+    # Needed for the incognito exclusion in the voice seeder — see
+    # desk_voice_seed.incognito_dirs. The seeder refuses to guess it.
+    projects_dir=DATA_DIR,
 )
 app.register_blueprint(_bp_desk.bp)
 

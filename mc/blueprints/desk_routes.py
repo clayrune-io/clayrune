@@ -29,6 +29,7 @@ agent posted anyway. Publishing, when it lands, goes in its own module behind
 an explicit human release action, the way automation_routes.accept is the one
 bridge to the scheduler.
 """
+from pathlib import Path
 from typing import Callable, Optional
 
 from flask import Blueprint, jsonify, request
@@ -36,6 +37,7 @@ from flask import Blueprint, jsonify, request
 from mc import desk as _desk
 from mc import desk_brief as _brief
 from mc import desk_harvest as _harvest
+from mc import desk_voice_seed as _seed
 from mc.core import _log
 
 bp = Blueprint('desk_routes', __name__)
@@ -49,11 +51,15 @@ load_project: Callable[[str], Optional[dict]] = None  # type: ignore[assignment]
 # for the same reason — one dispatch engine, not two.
 # Returns the new session id.
 dispatch_agent: Optional[Callable[..., str]] = None
+# data/projects — server.py owns the real path (a frozen build resolves it
+# elsewhere). The voice seeder needs it to compute the INCOGNITO exclusion,
+# so a missing wire has to be visible rather than silently reading everything.
+PROJECTS_DIR: Path = Path('data/projects')
 
 
 def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
-         store_path=None, signals_path=None):
-    global load_projects, load_project, dispatch_agent
+         store_path=None, signals_path=None, projects_dir=None):
+    global load_projects, load_project, dispatch_agent, PROJECTS_DIR
     if load_projects_fn is not None:
         load_projects = load_projects_fn
         _harvest.wire(load_projects_fn=load_projects_fn)
@@ -65,6 +71,8 @@ def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
         _desk.STORE_PATH = store_path
     if signals_path is not None:
         _desk.SIGNALS_PATH = signals_path
+    if projects_dir is not None:
+        PROJECTS_DIR = Path(projects_dir)
 
 
 def _int_arg(name: str, default: int, *, lo: int = 1, hi: int = 1000) -> int:
@@ -176,6 +184,75 @@ def voice_brief(name):
                         'brief': _desk.voice_brief(name, recent=_int_arg('recent', 12, hi=200))})
     except ValueError as e:
         return jsonify({'error': str(e)}), 404
+
+
+@bp.route('/api/desk/voices/<name>/seed', methods=['POST'])
+def seed_voice(name):
+    """Seed a voice from how the human already writes to their own agents.
+
+    THE COLD START. `voice_brief` is built out of the human's real edits to real
+    drafts, and that is the differentiator — but a fresh voice has none.
+    Measured 2026-09-10 on this machine: both voices had 0 rewrites, so the brief
+    was one line of register and nothing else. The loop only starts paying after
+    ten corrections, which is backwards.
+
+    Ron's framing, and it is the whole design: *"the way a user expresses himself
+    in his requests is also part of who he is — is he paying more attention to
+    details, more attention to actions, results."* That evidence exists in volume
+    before a single draft is written: 21,578 typed messages across 16,272
+    transcripts on this box.
+
+    An AGENT characterises it, not a regex, for the same reason triage is an
+    agent — word counts cannot tell you what someone ATTENDS to. It is told to
+    describe a register and never to quote, because a transcript can contain
+    anything the human pasted.
+    """
+    d = request.get_json(silent=True) or {}
+    try:
+        _desk.get_voice(name)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 404
+
+    samples = _seed.collect(PROJECTS_DIR, limit=max(50, min(600, int(d.get('sample') or 300))))
+    if len(samples) < _seed.MIN_SAMPLES:
+        # Not an error. A fresh install has no corpus, and saying so beats
+        # characterising a voice off four messages and presenting it as learned.
+        return jsonify({'ok': True, 'seeded': False, 'samples': len(samples),
+                        'reason': f'need at least {_seed.MIN_SAMPLES} typed messages '
+                                  f'to characterise a voice; found {len(samples)}'}), 200
+
+    brief = _seed.build_seed_brief(samples, name)
+
+    # Seeding has no signal pool to take a project from, so unlike triage there
+    # is no natural home. Any real project will do — dispatch needs one to live
+    # in, and the subject is the human, not the project. Pseudo-projects
+    # (`_incognito`, `_steward_*`) are skipped: dispatching INTO incognito to
+    # characterise a voice is the one place this must never run.
+    pid = d.get('project_id')
+    if not pid and load_projects:
+        real = [p for p in load_projects()
+                if not str(p.get('id', '')).startswith('_')]
+        pid = real[0].get('id') if real else None
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired'}), 503
+
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Seed the "{name}" voice from {len(samples)} of your own messages',
+            character='global:social-media-strategist',
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] voice seed dispatch failed: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+
+    return jsonify({'ok': True, 'seeded': True, 'voice': name,
+                    'samples': len(samples), 'session_id': session_id}), 202
 
 
 # ── Campaign board ───────────────────────────────────────────────────────────
