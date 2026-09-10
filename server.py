@@ -1554,6 +1554,7 @@ _bp_hivemind.wire(
     enrich_run_entries_fn=_bp_agent._enrich_run_entries,
     clayrune_universal_capabilities_fn=_bp_agent._clayrune_universal_capabilities,
     clayrune_api_reference_fn=_bp_agent._clayrune_api_reference,
+    clayrune_api_pointer_card_fn=_bp_agent._clayrune_api_pointer_card,
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
 )

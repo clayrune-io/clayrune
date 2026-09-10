@@ -135,6 +135,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hm, '_clayrune_universal_capabilities',
                         lambda port=None: ['UNIVERSAL-CAPS port=%s' % port])
     monkeypatch.setattr(hm, '_clayrune_api_reference', lambda: 'API-REF-BODY')
+    monkeypatch.setattr(hm, '_clayrune_api_pointer_card',
+                        lambda port, pid: 'API-CARD pid=%s' % pid)
 
     # Run-history stubs (straggler route deps).
     agent_log = []
@@ -433,7 +435,7 @@ class TestSpawn:
         assert len(client.sp_ctx) == 1
         ctx = client.sp_ctx[0]
         assert 'YOUR WORKSTREAM: Schema review' in ctx
-        assert 'UNIVERSAL-CAPS' in ctx and 'API-REF-BODY' in ctx
+        assert 'UNIVERSAL-CAPS' in ctx and 'API-CARD pid=thm' in ctx
         assert f'/api/hivemind/{hm_id}/bus/post' in ctx
 
         # Ledger + session bookkeeping (recorders; manager is the fake).

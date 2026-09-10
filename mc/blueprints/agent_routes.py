@@ -1910,12 +1910,12 @@ def claude_auth_probe():
 # ── Agent endpoints ──────────────────────────────────────────────────────────
 
 def _clayrune_api_reference() -> str:
-    """Return the pre-authored Clayrune API reference for agent system prompts.
+    """Return the pre-authored Clayrune API reference (full text).
 
-    Sourced from `data/agent_reference/CLAYRUNE_API.md`. Injected once per
-    session by `_build_agent_context()` and `_hm_build_worker_context()` so
-    agents don't have to curl-probe endpoints at runtime. Anthropic's prompt
-    cache covers the cost after the first turn.
+    Sourced from `data/agent_reference/CLAYRUNE_API.md` (19.9 KB, ~5k tokens).
+    No longer injected into every session — see `_CLAYRUNE_API_POINTER_CARD`
+    below. Kept as a standalone accessor for anything that still wants the
+    full text (e.g. a skill or an agent that explicitly reads it).
 
     Returns an empty string if the file is missing — failure here must never
     break a session (mirrors the AGENT_RULES.md / SHARED_RULES.md posture).
@@ -1927,6 +1927,39 @@ def _clayrune_api_reference() -> str:
     except Exception:
         pass
     return ''
+
+
+# Measured 2026-09-10: the full CLAYRUNE_API.md (19.9 KB, ~5k tokens) was
+# injected verbatim into EVERY agent's system prompt — the largest slice of a
+# 53.5 KB fixed floor per dispatch, paid even by a code-reviewer that never
+# calls an endpoint. Replaced with this pointer card (uniform for every
+# agent — no `source`/provider gating, Ron declined a config flag): the few
+# endpoints agents actually reach for, plus a directive to Read the full file
+# before guessing or curl-probing a name. Guessing endpoint names is the
+# failure this card exists to stop, so the pull has to be one Read away and
+# actually taken, not assumed.
+_CLAYRUNE_API_POINTER_CARD = """--- CLAYRUNE API (pointer card) ---
+Base: http://localhost:{port}  ·  project_id: {pid}
+
+- Backlog: GET /api/project/{pid}/backlog · PATCH .../backlog/<item_id> {{"status":"..."}}
+  · POST .../backlog/<item_id>/note {{"text":"..."}}
+- Terminal pop-out: POST /api/terminal/launch {{"project_id":"{pid}","command":"..."}}
+- Process registration (MANDATORY for every spawned long-running process):
+  POST /api/processes/register {{"pid":NUM,"name":"...","project_id":"{pid}","command":"..."}}
+- Agent dispatch: POST /api/project/{pid}/agent/dispatch {{"task":"..."}}
+- Browser pane: POST /api/browser/launch {{"project_id":"{pid}","url":"..."}}
+  · POST /api/browser/read {{"session_id":...}}
+- Schedules: GET /api/schedules · POST /api/schedules {{"project_id":"{pid}","task":"...",...}}
+
+This is NOT the full API. Guessing an endpoint name instead of checking is
+the failure this card replaces — before you curl-probe or guess, Read
+`data/agent_reference/CLAYRUNE_API.md` (the complete reference) for anything
+not listed above."""
+
+
+def _clayrune_api_pointer_card(port: int, pid: str) -> str:
+    """Render `_CLAYRUNE_API_POINTER_CARD` for one project/port."""
+    return _CLAYRUNE_API_POINTER_CARD.format(port=port, pid=pid)
 
 
 _PLANS_DIR = Path.home() / '.claude' / 'plans'
@@ -2260,11 +2293,12 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
         # API discovery hint — when an unfamiliar Clayrune feature is needed,
         # don't guess endpoint names; list them.
         f"API discovery: When you need a Clayrune feature you haven't used "
-        f"before, do NOT guess endpoint names (e.g. /api/cron, /api/jobs). "
-        f"Grep server.py for `@app.route` to enumerate the real endpoints, "
-        f"or curl http://localhost:{port}/ and inspect the served HTML. "
-        f"For the curated, current shape of the API, see the "
-        f"'--- CLAYRUNE API REFERENCE ---' block in your system prompt.",
+        f"before, do NOT guess endpoint names (e.g. /api/cron, /api/jobs) or "
+        f"curl-probe for one. Your system prompt has a short "
+        f"'--- CLAYRUNE API (pointer card) ---' block with the handful of "
+        f"endpoints agents reach for most; for anything else, Read "
+        f"`data/agent_reference/CLAYRUNE_API.md` for the curated, current "
+        f"shape of the full API before guessing.",
 
         # User-facing answers: when the user asks how to manage MCP/Skills/etc.,
         # they mean inside Clayrune, NOT via the upstream Claude CLI.
@@ -2688,13 +2722,11 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # live task list. The targeted read-floor below ("RELEVANT MEMORY") is
     # the memory mechanism for every provider: small, task-scoped, safe.
 
-    # Pre-authored Clayrune API reference — agents inside Clayrune used to
-    # curl-probe endpoints every session. Injecting the curated reference
-    # once eliminates that turn-cost; Anthropic's prompt cache makes it free
-    # after the first turn.
-    api_ref = _clayrune_api_reference()
-    if api_ref:
-        parts.append("--- CLAYRUNE API REFERENCE ---\n" + api_ref)
+    # Pointer card, not the full 19.9 KB reference — see
+    # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
+    # lives at data/agent_reference/CLAYRUNE_API.md; the card tells the agent
+    # to Read it rather than paying for it on every dispatch.
+    parts.append(_clayrune_api_pointer_card(port, pid))
 
     # Continuity — what this project was part-way through, and what was
     # promised. Injected DIRECTLY rather than retrieved: "what am I mid-way

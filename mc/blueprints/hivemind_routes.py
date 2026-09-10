@@ -73,6 +73,7 @@ _load_agent_log: Callable[[str], Any] = None  # type: ignore[assignment]
 _enrich_run_entries: Callable[..., Any] = None  # type: ignore[assignment]
 _clayrune_universal_capabilities: Callable[..., Any] = None  # type: ignore[assignment]
 _clayrune_api_reference: Callable[[], str] = None  # type: ignore[assignment]
+_clayrune_api_pointer_card: Callable[[int, str], str] = None  # type: ignore[assignment]
 PORT: int = 0
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
@@ -87,7 +88,8 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
          sysprompt_file_args_fn, sysprompt_cleanup_fn,
          hide_windows_delayed_fn, log_agent_activity_fn, load_agent_log_fn,
          enrich_run_entries_fn, clayrune_universal_capabilities_fn,
-         clayrune_api_reference_fn, popen_flags, startupinfo):
+         clayrune_api_reference_fn, clayrune_api_pointer_card_fn,
+         popen_flags, startupinfo):
     """Late-bind cross-family deps: load_project (projects family, 1.11);
     get_manager + the process-ledger/stream-reader/spawn helpers
     (_register_process, _read_agent_stream, _resolve_claude,
@@ -102,6 +104,7 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
     global _sysprompt_cleanup, _hide_windows_delayed, _log_agent_activity
     global _load_agent_log, _enrich_run_entries
     global _clayrune_universal_capabilities, _clayrune_api_reference
+    global _clayrune_api_pointer_card
     global _POPEN_FLAGS, _STARTUPINFO
     HIVEMIND_DIR = hivemind_dir
     HIVEMIND_DIR.mkdir(parents=True, exist_ok=True)
@@ -119,6 +122,7 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
     _enrich_run_entries = enrich_run_entries_fn
     _clayrune_universal_capabilities = clayrune_universal_capabilities_fn
     _clayrune_api_reference = clayrune_api_reference_fn
+    _clayrune_api_pointer_card = clayrune_api_pointer_card_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
 
@@ -911,10 +915,10 @@ def _hm_build_worker_context(hivemind_id, ws_id):
     # See _clayrune_universal_capabilities().
     parts.extend(_clayrune_universal_capabilities(port=port))
 
-    # Pre-authored Clayrune API reference (same one regular agents get).
-    api_ref = _clayrune_api_reference()
-    if api_ref:
-        parts.append("--- CLAYRUNE API REFERENCE ---\n" + api_ref)
+    # Pointer card, not the full 19.9 KB reference (same card regular agents
+    # get — see _CLAYRUNE_API_POINTER_CARD in agent_routes.py for the
+    # measured numbers behind dropping the full-file injection).
+    parts.append(_clayrune_api_pointer_card(port, manifest.get('project_id', '')))
 
     return "\n\n".join(parts)
 
