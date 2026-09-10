@@ -142,6 +142,33 @@ def main() -> int:
                          "message actually landed. Exit 3 if it did not.")
     args = ap.parse_args()
 
+    import datetime as _dt
+    import os as _os
+    _home = Path(_os.path.expanduser("~")) / ".clayrune"
+
+    # KILL SWITCH (2026-09-10). Touch ~/.clayrune/mail_paused and every sender
+    # stops, whatever called it. Added after Ron's inbox kept filling through
+    # paths I had already "fixed" twice: the only place that reliably stops all
+    # of them is the mailer itself. Delete the file to resume.
+    if (_home / "mail_paused").exists():
+        print("send_mail: refused, ~/.clayrune/mail_paused exists", flush=True)
+        return 4
+
+    # SENDER LEDGER. Every caller is an anonymous subprocess, so nothing
+    # recorded WHO sent what. One append-only line per attempt.
+    try:
+        _home.mkdir(parents=True, exist_ok=True)
+        with (_home / "sent_mail.log").open("a", encoding="utf-8") as _fh:
+            _fh.write("\t".join([
+                _dt.datetime.now().isoformat(timespec="seconds"),
+                str(_os.getppid()),
+                _os.environ.get("CLAUDE_CODE_SESSION_ID", "-"),
+                _os.environ.get("PYTEST_CURRENT_TEST", "-")[:60],
+                (args.subject or "")[:100].replace("\t", " "),
+            ]) + "\n")
+    except Exception:
+        pass  # a ledger failure must never stop a real send
+
     # Resolve body: --body > --body-file > stdin.
     if args.body is not None:
         body = args.body
