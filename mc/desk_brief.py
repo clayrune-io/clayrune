@@ -133,6 +133,7 @@ def build_triage_brief(signals: list[dict], *, voices: list[str],
             f'Title: {campaign.get("title")}',
             f'Thesis: {campaign.get("thesis")}',
             f'Why it is running now: {campaign.get("agenda") or "(not stated)"}',
+            f'Visual its posts need: {campaign.get("visual") or _desk.DEFAULT_VISUAL_REQUIREMENT}',
             'Prefer items that ARGUE this thesis. An item that cannot be made to '
             'serve it is usually not worth a post right now, however interesting.',
         ]
@@ -213,6 +214,26 @@ def build_brief(signal: dict, *, voice: str | None = None,
 
     out += ['', '── THE VOICE YOU ARE WRITING IN ──', _desk.voice_brief(voice)]
 
+    # A post carries a visual, or plainly says it has none — never an invented
+    # or described one. `media` on the queue item has existed since Phase 1 but
+    # nothing ever populated it, so no draft has ever actually shown a reader
+    # anything. Standing position (2026-09-10): default is a REAL captured
+    # screenshot, never generated art depicting the product.
+    visual_need = (campaign.get('visual') if campaign else None) or _desk.DEFAULT_VISUAL_REQUIREMENT
+    out += [
+        '',
+        '── THE VISUAL ──',
+        f'What this post needs: {visual_need}',
+        'A post without a visual is measurably weaker on both target '
+        'platforms. Attach one by naming a REAL file in the draft\'s `media` '
+        'list — capture one with '
+        '`node tools/smoke/capture-screenshot.mjs <url> <output-name.png>` '
+        '(writes under data/media/, the only path a media entry is allowed '
+        'to resolve to). Do NOT invent, describe, or ask for a generated '
+        'image of the product — if you have no real screenshot to attach, '
+        'say so plainly in the draft and post without one.',
+    ]
+
     if prior:
         out += ['', '── WE HAVE ALREADY SAID SOMETHING LIKE THIS ──']
         for p in prior[:3]:
@@ -229,12 +250,16 @@ def build_brief(signal: dict, *, voice: str | None = None,
         f'  curl -s -X POST http://localhost:5199/api/project/{pid}/social/queue \\',
         "    -H 'Content-Type: application/json' \\",
         '    -d \'{"platform":"%s","voice":"%s","signal_id":"%s",'
-        '"body":"...","teaching":"..."}\'' % (platform, voice, signal.get('id')),
+        '"body":"...","teaching":"...","media":["data/media/your-file.png"]}\''
+        % (platform, voice, signal.get('id')),
         '',
         '`teaching` is REQUIRED and is not a summary of the post. In two or three '
         'sentences: why this angle, why this platform, why now, and what it is '
         'competing against in the reader\'s feed. Ron reads it while deciding, '
         'so it has to teach at the moment of judgement.',
+        '',
+        '`media` is a list of real file paths, or omit it if you have no '
+        'screenshot — never a placeholder or an invented path.',
         '',
         'The draft lands as PENDING. You do not publish and you cannot — a human '
         'releases it or it does not go out. Do not ask for that to change.',

@@ -1238,6 +1238,39 @@ def _attribution_violation(item):
     return bool(item.get('originated')) and _ATTRIBUTION_LINE not in (item.get('body') or '')
 
 
+def _media_violation(media):
+    """First entry in `media` that does not resolve under the Desk's media
+    allowlist, or None if every entry is fine.
+
+    Same allowlist `/api/serve-file` renders from (UPLOADS_DIR, data/media —
+    project_routes.py's `serve_file`), checked here at write time instead of
+    only at render time: an unresolvable path stored on a draft renders as a
+    broken image only when a human opens it later, which is a worse moment to
+    discover the mistake than a 400 on the POST/PATCH that stored it.
+    """
+    if not media:
+        return None
+    allowed = [str(UPLOADS_DIR), str(Path(_DATA_ROOT) / 'data' / 'media')]
+    for raw in media:
+        try:
+            real = os.path.realpath(raw)
+        except Exception:
+            return raw
+        rn = os.path.normcase(real)
+        ok = False
+        for a in allowed:
+            try:
+                ar = os.path.normcase(os.path.realpath(a))
+            except Exception:
+                continue
+            if rn == ar or rn.startswith(ar + os.sep):
+                ok = True
+                break
+        if not ok:
+            return raw
+    return None
+
+
 @bp.route('/api/project/<project_id>/social/queue', methods=['GET'])
 def get_social_queue(project_id):
     p = load_project(project_id)
@@ -1252,6 +1285,13 @@ def add_social_queue_item(project_id):
     if not (data.get('body') or '').strip():
         return jsonify({'error': 'body required'}), 400
 
+    media = data.get('media', [])
+    if not isinstance(media, list):
+        return jsonify({'error': 'media must be a list of paths'}), 400
+    bad = _media_violation(media)
+    if bad:
+        return jsonify({'error': f'media path not allowed: {bad}'}), 400
+
     p = load_project(project_id)
     if p is None:
         return jsonify({'error': 'not found'}), 404
@@ -1262,7 +1302,7 @@ def add_social_queue_item(project_id):
         'project_id': project_id,
         'platform': data.get('platform', ''),
         'body': data['body'].strip(),
-        'media': data.get('media', []),
+        'media': media,
         'originated': bool(data.get('originated', True)),
         'status': 'pending',
         'created_by': data.get('created_by', 'agent'),
@@ -1325,7 +1365,12 @@ def update_social_queue_item(project_id, item_id):
         item['body'] = after
     if 'platform' in data:
         item['platform'] = data['platform']
-    if 'media' in data and isinstance(data['media'], list):
+    if 'media' in data:
+        if not isinstance(data['media'], list):
+            return jsonify({'error': 'media must be a list of paths'}), 400
+        bad = _media_violation(data['media'])
+        if bad:
+            return jsonify({'error': f'media path not allowed: {bad}'}), 400
         item['media'] = data['media']
     if 'note' in data:
         item['note'] = data['note']

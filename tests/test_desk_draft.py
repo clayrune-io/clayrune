@@ -92,6 +92,23 @@ def test_brief_argues_the_campaign_thesis_when_there_is_one(store):
     assert 'Do not merely report the event' in b
 
 
+def test_brief_asks_for_a_real_visual_and_how_to_attach_it(store):
+    """The dead `media` field (project_routes.py) is dead because no brief ever
+    asked for it. The brief must state the need explicitly, forbid inventing
+    one, and tell the writer the exact `media` key to POST.
+    """
+    b = desk_brief.build_brief(_signal(store), voice='personal')
+    assert 'screenshot' in b
+    assert 'Do NOT invent, describe, or ask for a generated image' in b
+    assert '"media":' in b
+
+
+def test_brief_carries_the_campaigns_visual_requirement(store):
+    camp = store.create_campaign('t', 'thesis', visual='a screenshot of the new modal')
+    b = desk_brief.build_brief(_signal(store), voice='personal', campaign=camp)
+    assert 'a screenshot of the new modal' in b
+
+
 def test_brief_demands_a_teaching_block_and_forbids_publishing(store):
     b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'teaching` is REQUIRED' in b
