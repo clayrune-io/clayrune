@@ -532,6 +532,14 @@ SCHEDULES_PATH = _DATA_ROOT / 'data' / 'schedules.json'
 # schedules.json, for the same reason.
 AUTOMATION_SUGGESTIONS_PATH = _DATA_ROOT / 'data' / 'automation_suggestions.json'
 
+# The Desk (docs/THE_DESK_SPEC.md) — cross-project marketing state, so it lives
+# outside DATA_DIR entirely for the reason above. Two files on purpose: the
+# curated state is a JSON object, while the signal feed is an append-only LOG
+# and belongs in a jsonl with no cap and nothing silently dropped (the backlog
+# note API's 2000-byte/50-entry silent truncation is the lesson being applied).
+DESK_STORE_PATH = _DATA_ROOT / 'data' / 'desk.json'
+DESK_SIGNALS_PATH = _DATA_ROOT / 'data' / 'desk_signals.jsonl'
+
 MEMORY_DIR = _DATA_ROOT / 'data' / 'memory'  # fallback for projects without project_path
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1721,6 +1729,22 @@ _bp_automation.wire(
     store_path=AUTOMATION_SUGGESTIONS_PATH,
 )
 app.register_blueprint(_bp_automation.bp)
+
+
+# ── The Desk (docs/THE_DESK_SPEC.md) ─────────────────────────────────────────
+# A workspace peer to the Floor, not a tab inside each project — the content
+# itself demands it: stories from different projects go out under the same voice
+# on the same calendar. Routes are /api/desk/..., the per-project Social tab
+# stays as a filtered view of the queue. Nothing in this blueprint publishes;
+# the approval gate is a platform term, not our caution.
+from mc.blueprints import desk_routes as _bp_desk  # noqa: E402
+_bp_desk.wire(
+    load_projects_fn=_bp_projects.load_projects,
+    load_project_fn=_bp_projects.load_project,
+    store_path=DESK_STORE_PATH,
+    signals_path=DESK_SIGNALS_PATH,
+)
+app.register_blueprint(_bp_desk.bp)
 
 
 # ── Static ───────────────────────────────────────────────────────────────────
