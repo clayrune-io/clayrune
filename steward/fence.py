@@ -247,6 +247,18 @@ def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
         return FenceDecision(True, "autonomous web browsing is out of steward scope "
                                    "(unrestricted browser + in-page JS = prompt-injection "
                                    "blast radius)")
+    # Same argument, sharper case: the mail MCP reads Ron's real inbox, so
+    # ANYONE who can email him can put text in front of an unattended cycle.
+    # AGENT_RULES.md now points cycles at tools/mail-mcp/read_digest.py, which
+    # launders the messages through a toolless oneshot() before a tooled
+    # session ever sees them — but a rule an agent can decline to follow is
+    # not a control. Blocking the raw tools here is what makes the laundered
+    # path the ONLY path for a steward. read_digest.py runs via Bash and is
+    # unaffected. (docs/UNTRUSTED_INPUT_SURFACE.md finding #2, 2026-09-10.)
+    if name.startswith('mcp__mail__'):
+        return FenceDecision(True, "read mail through tools/mail-mcp/read_digest.py, which "
+                                   "launders it toolless first — the raw mail tools put "
+                                   "anyone-who-can-email-you into an unattended context")
     return FenceDecision(False, '')
 
 
