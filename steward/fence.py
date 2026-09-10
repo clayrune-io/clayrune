@@ -181,7 +181,11 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
             return FenceDecision(True, "autonomous web browsing is out of steward scope - "
                                        "the browser HTTP API is the same capability as the "
                                        "browser MCP tools, which are blocked")
-        mutating = bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I)) or             bool(re.search(r'(^|\s)(--data|--data-raw|-d|--upload-file|-T|-F|--form)', seg)) or             bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
+        mutating = (
+            bool(re.search(r'-X\s*(POST|PUT|PATCH|DELETE)', seg, re.I))
+            or bool(re.search(r'(^|\s)(--data\b|--data-raw\b|-d\b|--upload-file\b|-T\b|-F\b|--form\b)', seg))
+            or bool(re.search(r'-Method\s+(POST|PUT|PATCH|DELETE)', seg, re.I))
+        )
         if not mutating:
             continue
         if any(h in seg.lower() for h in _LOCAL_HOSTS):
