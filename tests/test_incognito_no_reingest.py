@@ -207,3 +207,48 @@ def test_global_search_excludes_incognito_pseudo_project(tmp_data_dir, monkeypat
     assert resp.status_code == 200
     assert ar.INCOGNITO_PROJECT_ID not in calls
     assert 'normal-proj' in calls
+
+
+# ── the reader F7's own fix did not reach ────────────────────────────────────
+#
+# `_search_project_transcripts` (agent_routes.py:8407) greps the transcript
+# directory straight off disk, so it never goes through `list_sessions` and
+# inherited none of the fix above. Left alone, an incognito chat stayed
+# findable by its own text from the search box — the same broken promise,
+# one route later. A direct disk reader always has to re-apply the exclusion
+# itself; that is the rule this test pins.
+
+def test_search_cannot_find_an_incognito_chat_by_its_own_text(tmp_path, monkeypatch):
+    from mc import agent_runtime as rt
+    from mc.blueprints import agent_routes
+
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    (tmp_path / '.clayrune').mkdir(parents=True, exist_ok=True)
+
+    workspace = tmp_path / 'ws'
+    workspace.mkdir()
+    # NOT `agent_routes._encode_project_path` — that name is late-bound by
+    # wire() and is None when this test runs alone, which turned a real
+    # negative-control run into a setup TypeError instead of an assertion.
+    from mc.memory import _encode_project_path
+    encoded = _encode_project_path(str(workspace))
+    tdir = tmp_path / 'claude_home' / encoded
+    tdir.mkdir(parents=True)
+    monkeypatch.setattr(agent_routes, 'CLAUDE_HOME', tmp_path / 'claude_home')
+    # The route uses the module-global encoder, which wire() populates at
+    # server start. Bind it here so this test stands alone.
+    monkeypatch.setattr(agent_routes, '_encode_project_path', _encode_project_path)
+
+    needle = 'ZEBRAFISH-CONFIDENTIAL-PHRASE'
+    for csid, text in (('incog-1', f'a private line about {needle}'),
+                       ('normal-1', f'an ordinary line about {needle}')):
+        (tdir / f'{csid}.jsonl').write_text(
+            json.dumps({'type': 'user', 'message': {'content': text}}),
+            encoding='utf-8')
+    rt.mark_transcript_incognito('incog-1')
+
+    hits = agent_routes._search_project_transcripts(
+        {'project_path': str(workspace)}, needle, limit=50)
+    csids = {h.get('csid') for h in hits}
+    assert 'normal-1' in csids, 'the ordinary chat should still be findable'
+    assert 'incog-1' not in csids, 'an incognito chat was searchable by its own text'

@@ -8442,6 +8442,14 @@ def _search_project_transcripts(project, query, limit=50):
                 if f.name in seen:
                     continue
                 seen.add(f.name)
+                # A DIRECT DISK READER RE-APPLIES THE EXCLUSION ITSELF — there
+                # is nothing to inherit. This route greps the transcript dir
+                # straight off disk, so the F7 fix at `list_sessions` does not
+                # cover it: without this, an incognito chat stays findable by
+                # its own text from the search box, which is the same broken
+                # promise F7 closed everywhere else. `f.stem` is the csid.
+                if _agent_runtime.is_transcript_incognito(f.stem):
+                    continue
                 try:
                     files.append((f, f.stat().st_mtime))
                 except OSError:
