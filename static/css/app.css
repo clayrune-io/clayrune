@@ -7915,6 +7915,27 @@
 
   /* Quieter than triage and harvest: this is a settings-shaped action you take
      once, not the thing you came to the Desk to do. */
+  /* "Nothing is happening" was the complaint, and this is the answer: a row
+     that persists for the whole minute or two Posy takes to write, instead of
+     a toast that has faded by the time the user looks up. */
+  .desk-writing {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap;
+    padding: 10px 14px; margin-bottom: 14px;
+    border: 1px solid var(--accent); border-radius: 10px;
+    background: var(--accent-dim);
+    font-size: 12px; font-weight: 700; color: var(--text);
+  }
+  .desk-writing-hint { font-weight: 400; color: var(--text-dim); }
+  .desk-writing-dot {
+    width: 8px; height: 8px; border-radius: 50%;
+    background: var(--accent); flex-shrink: 0;
+    animation: desk-writing-pulse 1.4s ease-in-out infinite;
+  }
+  @keyframes desk-writing-pulse {
+    0%, 100% { opacity: 0.25; }
+    50%      { opacity: 1; }
+  }
+
   .desk-voices-btn {
     display: inline-flex; align-items: center;
     background: transparent; border: 1px solid var(--border2); color: var(--text-dim);

@@ -38,6 +38,7 @@ let _deskLoading = false;
 let _deskHarvesting = false;
 let _deskDrafting = new Set();
 let _deskProposals = [];
+let _deskWriting = [];
 let _deskTriaging = false;
 
 // ── data ────────────────────────────────────────────────────────────────────
@@ -506,11 +507,40 @@ async function deskTriage() {
   }
 }
 
+// ACCEPTING USED TO LOOK LIKE NOTHING HAPPENED. Ron, 2026-09-10: "I clicked
+// the what's worth saying button, selected one item for draft but I don't know
+// if anything is happening, there is no indication." The draft WAS being
+// written — the row simply left the list (it is no longer `proposed`), the only
+// feedback was a toast that had already faded, and the Queue badge did not
+// refresh because this function does not reload the Desk payload.
+//
+// Writing takes an agent a minute or two, so the gap between "I clicked" and
+// "something appeared" is exactly where a user concludes the button is broken.
+// Accepted proposals are now fetched too and shown as an in-flight strip until
+// their draft lands in the Queue.
 async function _loadDeskProposals() {
   try {
-    _deskProposals = await _deskFetch('/api/desk/proposals');
-  } catch (e) { _deskProposals = []; }
+    const [proposed, accepted] = await Promise.all([
+      _deskFetch('/api/desk/proposals'),
+      _deskFetch('/api/desk/proposals?state=accepted').catch(() => []),
+    ]);
+    _deskProposals = proposed;
+    // Only those whose post has not arrived yet — once the draft is on the
+    // Queue the Queue badge is the honest indicator and this strip is noise.
+    const drafted = new Set(_deskDraftedSignalIds());
+    _deskWriting = (accepted || []).filter(
+      p => !drafted.has((p.signal && p.signal.id) || p.signal_id));
+  } catch (e) { _deskProposals = []; _deskWriting = []; }
   if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// Signal ids that already have a draft on the queue, hydrated or not.
+function _deskDraftedSignalIds() {
+  const out = [];
+  for (const p of (projects || [])) {
+    for (const i of (p.social_queue || [])) if (i.signal_id) out.push(i.signal_id);
+  }
+  return out;
 }
 
 // Accepting IS the instruction to write — one gate here ("worth saying?"), then
@@ -527,7 +557,9 @@ async function deskDecideProposal(id, decision) {
   } catch (e) {
     if (typeof showToast === 'function') showToast('Could not record that: ' + e.message, 4000);
   }
-  await Promise.all([_loadDeskProposals(), _loadDeskSignals()]);
+  // _loadDesk() too: without it the Queue tab badge does not move, so the
+  // one durable signal that the click did something never appears.
+  await Promise.all([_loadDesk(), _loadDeskProposals(), _loadDeskSignals()]);
 }
 
 // THIS IS WHAT A RUNNING CAMPAIGN ACTUALLY DOES. Until now it did nothing: the
@@ -675,6 +707,14 @@ function _renderBoard() {
   // POSY'S PICKS sit ABOVE the raw feed, because they are the answer to the
   // question the feed only poses. The feed stays visible underneath — nothing is
   // hidden, and a human who disagrees with her can still go and look.
+  const writingHTML = _deskWriting.length ? `
+    <div class="desk-writing">
+      <span class="desk-writing-dot"></span>
+      Posy is writing ${_deskWriting.length} post${_deskWriting.length === 1 ? '' : 's'} —
+      ${_deskWriting.map(p => `<span class="desk-voice-chip">${esc(p.voice)}</span>`).join(' ')}
+      <span class="desk-writing-hint">it lands in the Queue when she is done.</span>
+    </div>` : '';
+
   const propHTML = _deskProposals.length ? `
     ${_deskSectionHTML('Posy suggests', `${_deskProposals.length} worth saying, out of everything below`)}
     <div class="desk-proposals">${_deskProposals.map(p => `
@@ -694,6 +734,7 @@ function _renderBoard() {
       </div>`).join('')}</div>` : '';
 
   return kpiHTML
+    + writingHTML
     + propHTML
     + `<div class="desk-section">
          <span class="desk-section-label">Campaigns</span>
