@@ -213,10 +213,22 @@ function _handleMermaidLine(sessionId, text, el) {
 const _IV_MIN = 0.2, _IV_MAX = 5;
 function _ivGestures(scrollEl, wrap, zoomLabel) {
   let scale = 1;
+  // `wrap` used to be `width:100%` of `scrollEl` (CSS-relative), so growing
+  // the frame grew the rendered diagram by the SAME factor — the visible
+  // fraction (clientWidth / scrollWidth) stayed constant no matter how much
+  // bigger the frame got. `natural` + `fitScale` give the wrap an explicit
+  // PIXEL size instead: fixed until something re-fits it, so enlarging the
+  // frame actually reveals more canvas at the current zoom.
+  const natural = { w: 0, h: 0 };
+  let fitScale = 1;
+  // Set once the user has deliberately zoomed/panned/pinched, so an
+  // automatic resize-triggered re-fit doesn't clobber a view they chose.
+  let userAdjusted = false;
+  let programmatic = false;
   const paint = () => {
     wrap.style.transform = `scale(${scale})`;
     wrap.style.transformOrigin = 'top left';
-    if (zoomLabel) zoomLabel.textContent = Math.round(scale * 100) + '%';
+    if (zoomLabel) zoomLabel.textContent = Math.round(fitScale * scale * 100) + '%';
   };
   // The 0.12s CSS transition is right for a button press and wrong for a
   // continuous gesture — it lags a pinch by a frame and fights every wheel
@@ -245,11 +257,56 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
     scrollEl.scrollHeight > scrollEl.clientHeight + 1;
   const setCursor = () => { scrollEl.style.cursor = pannable() ? 'grab' : ''; };
 
+  // Recompute the wrap's PIXEL base size from the frame's current available
+  // space. This is what "Fit to view", double-tap, and a resize/rotate all
+  // converge on — so they agree on what "fit" means. Narrow frames fit WIDTH
+  // only and leave height to scroll: fitting both on a phone shrinks a tall
+  // diagram past legibility just to make its bottom edge visible up front.
+  const fit = () => {
+    if (!natural.w || !natural.h) return;
+    const cs = getComputedStyle(scrollEl);
+    const padW = (parseFloat(cs.paddingLeft) || 0) + (parseFloat(cs.paddingRight) || 0);
+    const padH = (parseFloat(cs.paddingTop) || 0) + (parseFloat(cs.paddingBottom) || 0);
+    const availW = Math.max(1, scrollEl.clientWidth - padW);
+    const availH = Math.max(1, scrollEl.clientHeight - padH);
+    const kw = availW / natural.w, kh = availH / natural.h;
+    fitScale = _ivMobile() ? kw : Math.min(kw, kh);
+    wrap.style.width = Math.round(natural.w * fitScale) + 'px';
+    wrap.style.height = Math.round(natural.h * fitScale) + 'px';
+    scale = 1;
+    userAdjusted = false;
+    paint();
+    programmatic = true;
+    scrollEl.scrollLeft = 0;
+    scrollEl.scrollTop = 0;
+    setTimeout(() => { programmatic = false; }, 50);
+    setCursor();
+  };
+  const setNatural = (w, h) => { natural.w = w; natural.h = h; };
+
+  // A native one-finger scroll (no JS zoomTo involved) still counts as the
+  // user choosing a view — don't let a later resize snap it back to fit.
+  scrollEl.addEventListener('scroll', () => { if (!programmatic) userAdjusted = true; });
+
+  // Re-run fit on any frame resize (drag-resize, window resize, rotate) —
+  // unless the user has already zoomed/panned away from fit, in which case a
+  // bigger frame should simply reveal more of their current view, not yank
+  // them back to 100%.
+  let ro = null;
+  if (typeof ResizeObserver !== 'undefined') {
+    ro = new ResizeObserver(() => {
+      if (!natural.w || !natural.h) return;
+      if (!userAdjusted) fit(); else setCursor();
+    });
+    ro.observe(scrollEl);
+  }
+
   // Wheel = zoom, no modifier needed. Panning a zoomed-in picture is what the
   // drag below is for; a wheel that scrolls a picture by a few pixels is the
   // less useful of the two bindings.
   scrollEl.addEventListener('wheel', e => {
     e.preventDefault();
+    userAdjusted = true;
     live(true);
     const step = e.deltaMode === 1 ? 1.12 : 1.0022;   // line-mode vs pixel-mode
     zoomTo(scale * Math.pow(step, -e.deltaY), e.clientX, e.clientY);
@@ -261,6 +318,7 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
   let drag = null;
   scrollEl.addEventListener('mousedown', e => {
     if (e.button !== 0 || !pannable()) return;
+    userAdjusted = true;
     drag = { x: e.clientX, y: e.clientY, l: scrollEl.scrollLeft, t: scrollEl.scrollTop };
     scrollEl.style.cursor = 'grabbing';
     e.preventDefault();          // also kills the browser's native image-drag
@@ -283,6 +341,7 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
   scrollEl.addEventListener('touchstart', e => {
     if (e.touches.length === 2) {
       pinch = { d: dist(e.touches) || 1, s: scale };
+      userAdjusted = true;
       live(true);
       e.preventDefault();
     }
@@ -299,17 +358,18 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
     const now = Date.now(), t = e.changedTouches[0];
     if (now - lastTap < 300) {
       lastTap = 0;
-      zoomTo(scale > 1.05 ? 1 : 2.5, t.clientX, t.clientY);
-      setCursor();
+      // Double-tap toggles the SAME fit the button/resize converge on: back to
+      // fit from anywhere zoomed in, or a fixed zoom-in step from fit itself.
+      if (scale > 1.05) { fit(); }
+      else { userAdjusted = true; zoomTo(2.5, t.clientX, t.clientY); setCursor(); }
     } else lastTap = now;
   });
 
   paint();
   setTimeout(setCursor, 0);
   return {
-    zoomBy: f => { zoomTo(scale * f); setCursor(); },
-    reset: () => { zoomTo(1); scrollEl.scrollTop = scrollEl.scrollLeft = 0; setCursor(); },
-    refit: setCursor,
+    zoomBy: f => { userAdjusted = true; zoomTo(scale * f); setCursor(); },
+    fit, setNatural,
     // The pan listeners live on `document` so a drag survives the cursor
     // leaving the canvas — which means closing the viewer by removing its
     // overlay does NOT unbind them. Callers must call this from their close
@@ -317,6 +377,7 @@ function _ivGestures(scrollEl, wrap, zoomLabel) {
     destroy: () => {
       document.removeEventListener('mousemove', onMove);
       document.removeEventListener('mouseup', onUp);
+      if (ro) ro.disconnect();
     },
   };
 }
@@ -344,6 +405,24 @@ const _ivMobile = () => window.matchMedia('(max-width: 960px)').matches;
 // anything has constrained the toolbar's width (i.e. right after the overlay
 // is appended, while the content box still has its roomy CSS default) so each
 // button reports its true unclamped size instead of an already-shrunk one.
+// Live chrome measurement (toolbar height + the windowed content box's own
+// border) so _ivFitBox reserves exactly as much room as the frame actually
+// takes. A hardcoded guess here left the content area a couple of px short
+// of the requested size, which was enough for gest.fit() — which measures
+// the REAL space — to round an exactly-fitting picture down to 99% instead
+// of 100%. Call AFTER _ivWindowify (so the border class is already applied)
+// and before anything has constrained the toolbar's own layout.
+function _ivChrome(content, toolbar) {
+  const cs = getComputedStyle(content);
+  const borderW = (parseFloat(cs.borderLeftWidth) || 0) + (parseFloat(cs.borderRightWidth) || 0);
+  const borderH = (parseFloat(cs.borderTopWidth) || 0) + (parseFloat(cs.borderBottomWidth) || 0);
+  const tbH = Math.ceil(toolbar.getBoundingClientRect().height);
+  return {
+    w: 48 + borderW,             // 24px .mermaid-viewer-scroll padding each side
+    h: tbH + 48 + borderH,       // toolbar + the same 24px padding each side
+  };
+}
+
 function _ivToolbarMinWidth(toolbar) {
   const cs = getComputedStyle(toolbar);
   const gap = parseFloat(cs.columnGap || cs.gap) || 0;
@@ -437,21 +516,23 @@ function _ivWindowify(overlay, content, toolbar) {
 // The old code clamped width and height independently at 95vw/92vh, which for
 // anything bigger than the screen — i.e. every screenshot — meant "maximised".
 //
+// DESKTOP ONLY — both call sites skip this on mobile and keep the CSS
+// 95vw/92vh "modal treatment" frame instead, unconditionally, regardless of
+// the content's own natural size: a diagram whose natural units are tiny
+// (common for mermaid viewBoxes) must still open legible on a phone, not
+// pinned to 1:1. `_ivGestures.fit()` is what actually scales the content to
+// fill whichever frame this (or the mobile CSS default) leaves it with.
+//
 // `toolbarMinW` (from _ivToolbarMinWidth) raises the width floor past the
 // generic 320px so the window is never narrower than its OWN toolbar needs —
 // a floor, not a fixed size: it only bites when the picture is narrower than
-// its controls. Skipped on mobile on purpose: forcing width past a 390px
-// viewport would push the fixed-position window past the screen edge and
-// scroll the whole page horizontally. Mobile instead lets the toolbar wrap
-// (see .mermaid-viewer-toolbar CSS) and keeps the plain 320px floor.
-function _ivFitBox(nw, nh, toolbarMinW) {
-  const CHROME_H = 45 + 48;                     // toolbar + 24px canvas padding x2
-  const CHROME_W = 48;
-  const mobile = _ivMobile();
-  const f = mobile ? 0.95 : 0.8;
-  const k = Math.min(1, (window.innerWidth * f - CHROME_W) / nw,
-                        (window.innerHeight * f - CHROME_H) / nh);
-  const wFloor = mobile ? 320 : Math.max(320, (toolbarMinW || 0) + 2);
+// its controls.
+function _ivFitBox(nw, nh, toolbarMinW, chrome) {
+  const CHROME_W = chrome ? chrome.w : 48;
+  const CHROME_H = chrome ? chrome.h : 93;      // fallback: ~45px toolbar + 48px padding
+  const k = Math.min(1, (window.innerWidth * 0.8 - CHROME_W) / nw,
+                        (window.innerHeight * 0.8 - CHROME_H) / nh);
+  const wFloor = Math.max(320, (toolbarMinW || 0) + 2);
   return {
     w: Math.max(wFloor, Math.round(nw * k) + CHROME_W),
     h: Math.max(220, Math.round(nh * k) + CHROME_H),
@@ -500,14 +581,25 @@ function _openMermaidViewer(source, svg) {
   // just leaves the CSS default alone.
   const vb = (svgWrap.querySelector('svg')?.getAttribute('viewBox') || '').split(/[\s,]+/).map(Number);
   if (vb.length === 4 && vb[2] > 0 && vb[3] > 0) {
-    const box = _ivFitBox(vb[2], vb[3], toolbarMinW);
-    content.style.width = box.w + 'px';
-    // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
-    // this has to move too or a manual resize could shrink the window back
-    // down past the toolbar's own requirement.
-    content.style.minWidth = (_ivMobile() ? 320 : Math.max(320, toolbarMinW + 2)) + 'px';
-    content.style.height = box.h + 'px';
-    gest.refit();
+    gest.setNatural(vb[2], vb[3]);
+    // Desktop: size the WINDOW to the diagram's natural pixels (never bigger —
+    // magnifying on open looks soft). Mobile keeps the CSS 95vw/92vh "modal
+    // treatment" frame regardless of the diagram's own natural size — a small
+    // viewBox must still open legible on a phone, not pinned to 1:1. Either
+    // way, gest.fit() below is what actually scales the diagram to fill
+    // whatever frame this leaves it with.
+    if (!_ivMobile()) {
+      const box = _ivFitBox(vb[2], vb[3], toolbarMinW, _ivChrome(content, toolbarEl));
+      content.style.width = box.w + 'px';
+      // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
+      // this has to move too or a manual resize could shrink the window back
+      // down past the toolbar's own requirement.
+      content.style.minWidth = Math.max(320, toolbarMinW + 2) + 'px';
+      content.style.height = box.h + 'px';
+    } else {
+      content.style.minWidth = '320px';
+    }
+    gest.fit();
   }
   const closeIt = () => {
     overlay.remove();
@@ -542,14 +634,14 @@ function _openMermaidViewer(source, svg) {
     e.stopPropagation(); gest.zoomBy(1 / 1.25);
   });
   overlay.querySelector('.mermaid-viewer-zoom-reset').addEventListener('click', e => {
-    e.stopPropagation(); gest.reset();
+    e.stopPropagation(); gest.fit();
   });
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
-    else if (e.key === '0') gest.reset();
+    else if (e.key === '0') gest.fit();
   };
   document.addEventListener('keydown', onKey);
 }
@@ -716,14 +808,23 @@ function _openImageViewer(src) {
   const sizeToImage = () => {
     const nw = imgEl.naturalWidth, nh = imgEl.naturalHeight;
     if (!nw || !nh) return;                       // decode failed — keep CSS default
-    const box = _ivFitBox(nw, nh, toolbarMinW);
-    content.style.width = box.w + 'px';
-    // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
-    // this has to move too or a manual resize could shrink the window back
-    // down past the toolbar's own requirement.
-    content.style.minWidth = (_ivMobile() ? 320 : Math.max(320, toolbarMinW + 2)) + 'px';
-    content.style.height = box.h + 'px';
-    gest.refit();
+    gest.setNatural(nw, nh);
+    // Desktop: size the WINDOW to the picture's natural pixels (never bigger —
+    // magnifying on open looks soft). Mobile keeps the CSS 95vw/92vh "modal
+    // treatment" frame regardless of the picture's own size. Either way,
+    // gest.fit() below scales the picture to fill whatever frame this leaves.
+    if (!_ivMobile()) {
+      const box = _ivFitBox(nw, nh, toolbarMinW, _ivChrome(content, toolbarEl));
+      content.style.width = box.w + 'px';
+      // Drag-resize (makeResizable) reads computed min-width as ITS floor, so
+      // this has to move too or a manual resize could shrink the window back
+      // down past the toolbar's own requirement.
+      content.style.minWidth = Math.max(320, toolbarMinW + 2) + 'px';
+      content.style.height = box.h + 'px';
+    } else {
+      content.style.minWidth = '320px';
+    }
+    gest.fit();
   };
   if (imgEl.complete) sizeToImage();
   else imgEl.addEventListener('load', sizeToImage, { once: true });
@@ -750,14 +851,14 @@ function _openImageViewer(src) {
     e.stopPropagation(); gest.zoomBy(1 / 1.25);
   });
   overlay.querySelector('._iv-zr').addEventListener('click', e => {
-    e.stopPropagation(); gest.reset();
+    e.stopPropagation(); gest.fit();
   });
   const onKey = e => {
     if (!win.isTop()) return;                     // only the front window listens
     if (e.key === 'Escape') closeIt();
     else if (e.key === '+' || e.key === '=') gest.zoomBy(1.25);
     else if (e.key === '-') gest.zoomBy(1 / 1.25);
-    else if (e.key === '0') gest.reset();
+    else if (e.key === '0') gest.fit();
   };
   document.addEventListener('keydown', onKey);
 }
