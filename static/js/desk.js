@@ -26,6 +26,8 @@
 
 const DESK_MODAL_ID = '__desk';
 const DESK_TABS = ['board', 'queue', 'calendar', 'ledger'];
+// Fixed by Ron's 2026-09-09 decision: ron owns X, clayrune owns LinkedIn.
+const DESK_VOICES = ['ron', 'clayrune'];
 
 let _deskTab = 'board';
 let _deskData = { campaigns: [], hot_signals: [], recent_posts: [], voices: [], pending_drafts: 0 };
@@ -111,6 +113,59 @@ async function deskDraft(signalId, voice) {
     _deskDrafting.delete(signalId);
     _loadDeskSignals();
   }
+}
+
+// Create a campaign. The THESIS is required by the API and that refusal is the
+// point — a campaign without one is a folder, and the Board's job is to answer
+// "why is this running now". The form asks for the thesis first for the same
+// reason, before the title.
+async function deskNewCampaign() {
+  const thesis = (prompt(
+    'What is the argument?\n\n' +
+    'One sentence. Not the topic — the CLAIM you want a reader to end up ' +
+    'believing. This is what every draft in the campaign has to earn.') || '').trim();
+  if (!thesis) return;
+
+  const title = (prompt('Short name for it (for your eyes only):') || '').trim();
+  if (!title) return;
+
+  const agenda = (prompt(
+    'Why now? Optional, and it shows on the Board.\n\n' +
+    'e.g. "launch window opens in three weeks"') || '').trim();
+
+  const voice = (prompt(
+    'Which voice? Type "ron" for X (first person, a builder), ' +
+    'or "clayrune" for LinkedIn (the product speaking).', 'ron') || '').trim();
+  if (!DESK_VOICES.includes(voice)) {
+    if (typeof showToast === 'function') showToast(`"${voice}" is not a voice. Use ron or clayrune.`, 4000);
+    return;
+  }
+
+  try {
+    await _deskFetch('/api/desk/campaigns', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, thesis, agenda, voice }),
+    });
+    if (typeof showToast === 'function') showToast(`Campaign "${title}" created.`);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not create it: ' + e.message, 4000);
+  }
+  await _loadDesk();
+}
+
+// Move a campaign through its states from the Board. Proposed -> running is the
+// one that matters; the rest exist so a campaign can be stopped without being
+// deleted, because a dropped campaign is still evidence of a decision.
+async function deskCampaignState(id, state) {
+  try {
+    await _deskFetch(`/api/desk/campaigns/${encodeURIComponent(id)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ state }),
+    });
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not update it: ' + e.message, 4000);
+  }
+  await _loadDesk();
 }
 
 // ── open ────────────────────────────────────────────────────────────────────
@@ -283,6 +338,12 @@ function _renderBoard() {
       </div>
       <div class="desk-campaign-thesis">${esc(c.thesis)}</div>
       ${c.agenda ? `<div class="desk-campaign-agenda"><b>Why now:</b> ${esc(c.agenda)}</div>` : ''}
+      <div class="desk-campaign-actions">
+        ${c.state === 'proposed' ? `<button onclick="deskCampaignState('${esc(c.id)}','running')">Start it</button>` : ''}
+        ${c.state === 'running' ? `<button onclick="deskCampaignState('${esc(c.id)}','paused')">Pause</button>` : ''}
+        ${c.state === 'paused' ? `<button onclick="deskCampaignState('${esc(c.id)}','running')">Resume</button>` : ''}
+        ${c.state !== 'done' && c.state !== 'dropped' ? `<button onclick="deskCampaignState('${esc(c.id)}','done')">Finish</button>` : ''}
+      </div>
     </div>`).join('')}</div>` : `
     <div class="desk-empty" style="margin-bottom:22px">
       No campaigns yet. A campaign carries a <b>thesis</b> and a reason it is
@@ -325,7 +386,13 @@ function _renderBoard() {
     </div>`;
 
   return kpiHTML
-    + _deskSectionHTML('Campaigns', camps.length ? 'what we are arguing, and why now' : '')
+    + `<div class="desk-section">
+         <span class="desk-section-label">Campaigns</span>
+         ${camps.length ? '<span class="desk-section-hint">what we are arguing, and why now</span>' : ''}
+         <span class="desk-section-rule"></span>
+         <button class="desk-new-campaign" onclick="deskNewCampaign()"
+           title="A campaign carries a thesis and a reason to run now">+ New campaign</button>
+       </div>`
     + campHTML
     + _deskSectionHTML('What happened',
         'highest story value first — most of it will never become a post')
@@ -404,4 +471,6 @@ window.openDesk = openDesk;
 window.deskTab = deskTab;
 window.deskHarvest = deskHarvest;
 window.deskDraft = deskDraft;
+window.deskNewCampaign = deskNewCampaign;
+window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;

@@ -920,6 +920,15 @@ function modalContentHTML(p) {
         <div class="card-section">
           <div class="section-title">
             <span>Social ${socialBadge}</span>
+            <!-- This tab is ONE PROJECT'S SLICE of the Desk's Queue, and nothing
+                 else: no campaigns, no feed, no ledger, and no way to ask for a
+                 draft. Ron went looking for "Read the projects" here and it was
+                 never going to be here, so the tab now says where the rest is
+                 instead of leaving the reader to infer it. -->
+            <button class="btn-open-desk" onclick="openDesk()"
+              title="Campaigns, the signal feed, the calendar and the ledger live on the Desk">
+              Open the Desk →
+            </button>
           </div>
           <div class="social-filter-bar">
             <button class="social-filter-btn${socialFilter==='pending'?' active':''}" onclick="setSocialFilter('${esc(p.id)}','pending')">Pending</button>

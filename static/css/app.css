@@ -7802,6 +7802,39 @@
   }
   .desk-empty b { color: var(--text); }
 
+  .desk-new-campaign {
+    flex-shrink: 0; background: transparent; border: 1px dashed var(--border2);
+    color: var(--text-dim); font-size: 11px; font-weight: 700;
+    padding: 3px 10px; border-radius: 999px; cursor: pointer;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .desk-new-campaign:hover { color: var(--accent); border-color: var(--accent); }
+
+  /* Campaign actions stay hidden until hover: the Board is for READING, and a
+     row of always-on state buttons would turn the argument into a control panel. */
+  .desk-campaign-actions {
+    display: flex; gap: 5px; margin-top: 9px;
+    opacity: 0; transition: opacity 0.15s;
+  }
+  .desk-campaign:hover .desk-campaign-actions { opacity: 1; }
+  .desk-campaign-actions button {
+    background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text-dim); font-size: 10.5px; font-weight: 700;
+    padding: 2px 9px; border-radius: 999px; cursor: pointer;
+  }
+  .desk-campaign-actions button:hover { color: var(--accent); border-color: var(--accent); }
+  .desk-campaign-actions button:focus-visible { opacity: 1; outline: 2px solid var(--accent); }
+
+  /* On the per-project Social tab, which is only ONE PROJECT'S SLICE of the
+     Desk's Queue. Ron went looking for the harvest button there; this says
+     where the rest actually lives. */
+  .btn-open-desk {
+    margin-left: auto; background: transparent; border: 1px solid var(--border2);
+    color: var(--text-dim); font-size: 11px; font-weight: 600;
+    padding: 2px 10px; border-radius: 999px; cursor: pointer;
+  }
+  .btn-open-desk:hover { color: var(--accent); border-color: var(--accent); }
+
   /* ── Campaign cards ────────────────────────────────────────────────────── */
   /* auto-fit, not `1fr 1fr`: with a single campaign a fixed 2-col grid leaves it
      marooned in the left half, which reads as a rendering bug rather than a

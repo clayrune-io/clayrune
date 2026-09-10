@@ -303,6 +303,18 @@ try {
   if (ledText.includes('Took four days')) ok('Ledger renders the full published body');
   else fail('Ledger did not render the post body');
 
+  // ── Campaigns are creatable from the Board, not only from the API ───────
+  await page.click('.desk-tab:has-text("Board")');
+  const newBtn = await page.$('.desk-new-campaign');
+  if (newBtn) ok('the Board offers "+ New campaign" — it was API-only until now');
+  else fail('no way to create a campaign from the Board');
+
+  // A campaign carries state, and a proposed one needs a way to start.
+  const campActions = await page.$$eval('.desk-campaign-actions button',
+    els => els.map(e => e.textContent.trim()));
+  if (campActions.length) ok(`a campaign can be moved from the Board: ${campActions.join(' / ')}`);
+  else fail('a campaign has no state actions on the Board');
+
   // ── Drafting: the Desk briefs the writer, it does not generate ───────────
   await page.click('.desk-tab:has-text("Board")');
   await page.waitForSelector('.desk-signal .desk-draft-btn', { timeout: 8000 });
