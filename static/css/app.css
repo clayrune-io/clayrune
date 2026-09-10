@@ -7685,3 +7685,103 @@
     color: var(--text-faint); font-size: 13px; padding: 2px 6px; cursor: pointer;
   }
   .conv-row .conv-unhire:hover { color: var(--red-text); }
+
+  /* ── The Desk (docs/THE_DESK_SPEC.md) ─────────────────────────────────────
+     Four surfaces, and the visual split is load-bearing: only the QUEUE ever
+     demands anything, so only the Queue tab carries a count badge. The Board is
+     meant to be read, not actioned. */
+  .desk-tabs {
+    display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
+    border-bottom: 1px solid var(--border); margin-bottom: 12px; padding-top: 4px;
+  }
+  .desk-tab {
+    background: transparent; border: none; border-bottom: 2px solid transparent;
+    color: var(--text-faint); font-size: 12px; font-weight: 600;
+    padding: 7px 12px; cursor: pointer; border-radius: 3px 3px 0 0;
+  }
+  .desk-tab:hover { color: var(--text); background: var(--surface2); }
+  .desk-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .desk-tab-badge {
+    display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 4px;
+    background: var(--accent); color: var(--bg); border-radius: 8px;
+    font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+  }
+  .desk-harvest-btn {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
+    font-size: 11px; padding: 5px 11px; border-radius: 4px; cursor: pointer;
+  }
+  .desk-harvest-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .desk-harvest-btn:disabled { opacity: 0.55; cursor: default; }
+
+  .desk-section-label {
+    font-size: 11px; font-weight: 700; text-transform: uppercase;
+    letter-spacing: 0.06em; color: var(--text-faint); margin: 6px 0 8px;
+  }
+  .desk-section-hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
+  .desk-empty {
+    padding: 26px 14px; text-align: center; color: var(--text-faint);
+    font-size: 12px; line-height: 1.6; background: var(--surface2);
+    border-radius: 5px; border: 1px dashed var(--border);
+  }
+
+  /* A campaign leads with its THESIS, not its title — the Board's job is to
+     answer "why is this running now", and a title alone cannot. */
+  .desk-campaign {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-left: 3px solid var(--border); border-radius: 5px;
+    padding: 10px 12px; margin-bottom: 8px;
+  }
+  .desk-campaign.state-running { border-left-color: var(--accent); }
+  .desk-campaign.state-paused, .desk-campaign.state-dropped { opacity: 0.6; }
+  .desk-campaign-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
+  .desk-campaign-title { font-size: 13px; font-weight: 700; color: var(--text); }
+  .desk-campaign-thesis { font-size: 12px; color: var(--text); line-height: 1.5; }
+  .desk-campaign-agenda { font-size: 11px; color: var(--text-faint); margin-top: 5px; font-style: italic; }
+  .desk-voice-chip {
+    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px;
+    background: var(--accent-dim); color: var(--accent); text-transform: lowercase;
+  }
+
+  /* Signal rows are deliberately dense and low-contrast: most will never become
+     posts, so they must be scannable without competing with the Queue. */
+  .desk-signal {
+    display: flex; align-items: baseline; gap: 8px; padding: 5px 8px;
+    border-bottom: 1px solid var(--border); font-size: 12px;
+  }
+  .desk-signal:hover { background: var(--surface2); }
+  .desk-signal-score {
+    flex-shrink: 0; width: 30px; font-variant-numeric: tabular-nums;
+    font-size: 11px; font-weight: 700; color: var(--accent);
+  }
+  .desk-signal-kind { flex-shrink: 0; text-transform: capitalize; }
+  .desk-signal-proj { flex-shrink: 0; font-size: 10px; color: var(--text-faint); }
+  .desk-signal-text {
+    flex: 1; min-width: 0; color: var(--text);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .desk-signal-when {
+    flex-shrink: 0; font-size: 10px; color: var(--text-faint);
+    font-variant-numeric: tabular-nums;
+  }
+
+  .desk-day { margin-bottom: 14px; }
+  .desk-day-label {
+    font-size: 11px; font-weight: 700; color: var(--text-faint);
+    padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px;
+  }
+  .desk-post { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px; font-size: 12px; }
+  .desk-platform { text-transform: capitalize; }
+  .desk-post-body { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+  .desk-ledger-row {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 5px; padding: 9px 11px; margin-bottom: 7px;
+  }
+  .desk-ledger-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
+  .desk-ledger-body { font-size: 12px; color: var(--text); line-height: 1.5; white-space: pre-wrap; }
+  .desk-ledger-outcome { font-size: 11px; color: var(--text-faint); margin-top: 5px; }
+
+  @media (max-width: 960px) {
+    .desk-tab { padding: 7px 9px; font-size: 11px; }
+    .desk-signal-proj, .desk-signal-when { display: none; }
+  }

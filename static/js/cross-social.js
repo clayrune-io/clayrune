@@ -147,6 +147,9 @@ function renderAllSocial() {
 //   • renderAllSocial — the central render() calls it, guarded by
 //     `openModals.has('__all_social')`; also called by openAllSocial and by
 //     _hydrateAllSocial's progressive fill.
+//   • _hydrateAllSocial — the Desk's Queue surface (desk.js) hosts these same
+//     rows, and ES modules do not share top-level names across files.
+window._hydrateAllSocial = _hydrateAllSocial;
 window._allSocialFilter = _allSocialFilter;
 window.openAllSocial = openAllSocial;
 window.renderAllSocial = renderAllSocial;

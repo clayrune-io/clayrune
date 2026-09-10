@@ -522,9 +522,9 @@
       <span class="si-icon"><svg class="si-svg"><use href="#ic-backlog"/></svg></span>
       <span class="si-label">Backlog</span>
     </div>
-    <div class="sidebar-item" data-nav="social" onclick="sidebarNav('social')" title="Every project's pending social drafts, in one pane">
+    <div class="sidebar-item" data-nav="social" onclick="sidebarNav('social')" title="The Desk — campaigns, drafts waiting on you, what went out, and what we have already said">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-globe"/></svg></span>
-      <span class="si-label">Social</span>
+      <span class="si-label">The Desk</span>
     </div>
     <div class="sidebar-item" data-nav="scheduler" onclick="sidebarNav('scheduler')">
       <span class="si-icon"><svg class="si-svg"><use href="#ic-automation"/></svg></span>
@@ -1189,7 +1189,10 @@ function _preserveOpenBacklogs(fresh) {
 // Mutates `fresh` in place; returns it.
 function _preserveOpenSocial(fresh) {
   const openIds = new Set([...openModals.keys()].filter(id => !id.startsWith('__')));
-  const allSocialOpen = openModals.has('__all_social');
+  // The Desk hosts the same hydrated rows on its Queue surface, so it must
+  // preserve them across a poll exactly as the old standalone pane did -
+  // otherwise every 30s refresh empties the Queue tab under the user.
+  const allSocialOpen = openModals.has('__all_social') || openModals.has('__desk');
   if (!openIds.size && !allSocialOpen) return fresh;
   const prevFull = {};
   for (const p of allProjects) {
@@ -1270,7 +1273,7 @@ function buildSlotArray(filteredIds) {
   return slots;
 }
 
-function render() { renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
+function render() { renderStats(); renderProjects(); renderListView(); renderFeed(); if (typeof renderBeacon === 'function') renderBeacon(); renderSidebarProjects(); applyViewMode(); renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); if (openModals.has('__all_backlog')) renderAllBacklog(); if (openModals.has('__all_social')) renderAllSocial(); if (openModals.has('__desk') && typeof renderDesk === 'function') renderDesk(); if (openModals.has('__all_hivemind')) renderAllHiveminds(); }
 
 window.addEventListener('resize', () => { renderMobileAppBar(); renderMobileFilterPills(); if (typeof _syncBottomBarContext === 'function') _syncBottomBarContext(); renderProjects(); });
 
@@ -1561,7 +1564,7 @@ function sidebarNav(target) {
   else if (target === 'processes') openProcessManager();
   else if (target === 'usage') openSystemUsage();
   else if (target === 'backlog') openAllBacklog();
-  else if (target === 'social') openAllSocial();
+  else if (target === 'social') openDesk();
   else if (target === 'hivemind') openAllHiveminds();
   else if (target === 'skills') openAllSkills();
   else if (target === 'secrets') openSecretsVault();
@@ -3593,6 +3596,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/social-actions.js"></script>
 <script type="module" src="/static/js/cross-backlog.js"></script>
 <script type="module" src="/static/js/cross-social.js"></script>
+<script type="module" src="/static/js/desk.js"></script>
 <script type="module" src="/static/js/scheduler.js"></script>
 <script type="module" src="/static/js/schedule-calendar.js"></script>
 <script type="module" src="/static/js/automation-suggestions.js"></script>
