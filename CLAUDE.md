@@ -195,6 +195,25 @@ Both caps now `_log` when they bite. `tools/backlog-journal-export.py` extracts
 notes to journals (re-runnable); `tools/backlog-journal-migrate.py` strips
 unattended notes off live items. `PATCH` accepts `notes` as the only removal path.
 
+## Run the smokes AFTER each merge, not after the last one (added 2026-09-10)
+
+Two agents' branches can both be green and still break on merge. Measured
+2026-09-10: one branch renamed `_channelPersonFilter` to `_channelExpanded`
+(the Channel accordion); a second, cut the same day, added the drag-to-hire
+thread shell written against the OLD name. They touched different lines, so
+git merged both cleanly with no conflict, and neither branch's own green run
+could have caught it. The stale reference surfaced only as a runtime
+`ReferenceError` that took out five `drag-to-hire.mjs` checks.
+
+Worktree isolation prevents agents colliding WHILE they work; nothing checks
+the combination afterwards. The coordination layer (`coordination_enabled`,
+on) is awareness-only and both agents had long exited.
+
+So: after merging an agent branch, run the smokes that cover what it touched
+BEFORE merging the next one. Merging two and testing once tells you something
+broke but not which merge did it. `tools/smoke/*.mjs` is seconds; a bisect
+across two merges is not.
+
 ## Exception-swallowing policy (added 2026-06-09)
 
 When touching any function containing `except Exception: pass`, decide: if the
