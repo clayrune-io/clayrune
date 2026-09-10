@@ -297,11 +297,17 @@ the builder cannot express it. The acceptance test passes.
 
 ## Open — named, not hidden
 
-- **Open: whether an agent step may itself create or edit workflow
-  definitions via the CRUD API.** Recommendation: no for unattended sessions
-  (the authority-guard reading: machinery must not author its own pipelines);
-  attended sessions may, since a human is the author of record. Needs Ron's
-  confirmation before the CRUD ships agent-callable.
+- **SETTLED (Ron, 2026-09-10): an agent step may NOT create or edit workflow
+  definitions, attended or unattended. The CRUD ships non-agent-callable.**
+  The spec had proposed attended-yes/unattended-no, reading the authority
+  guard as a question of who is watching. It is not — it is a question of
+  what the machinery may author. A workflow definition dispatches agents,
+  with characters, on a schedule, with the full tool fleet; an agent writing
+  one is self-expansion in a new costume, and a human approving a pipeline
+  they did not design is the same rubber stamp `_authority_violation()`
+  exists to pre-empt (80 promoted vs 2 rejected, measured 2026-07-11). The
+  human-in-the-loop half of the rail is satisfied by the human AUTHORING the
+  workflow. See `position_whetheranagentsessionmaycreateoreditworkflowdefi`.
 - **Open: run-history retention numbers.** Recommendation: keep last 50 runs
   per workflow or 30 days, whichever is more, mirroring schedule-runs
   paging (`scheduler_routes.py:1276`).
