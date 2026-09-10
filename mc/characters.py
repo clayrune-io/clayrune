@@ -128,17 +128,27 @@ def clean_skills(value):
 def clean_avatar(value):
     """Normalise an avatar, or '' if unusable. Whitespace-stripped, capped.
 
-    Deliberately NOT validated as "is this really an emoji": the emoji set grows
-    every year, any allowlist we write is wrong by the next Unicode release, and
-    the failure mode of being wrong is refusing a face somebody picked. The cap
-    is the real guard — it is what stops this becoming a second name field — so
-    it only relaxes for the shape that is checkable: `fig:<name>` resolves
-    against a real file, and a bogus one draws nothing rather than a sentence.
+    Still NOT an emoji allowlist: the emoji set grows every year, any list we
+    write is wrong by the next Unicode release, and the failure mode of being
+    wrong is refusing a face somebody picked. The cap is the real guard — it is
+    what stops this becoming a second name field — so it only relaxes for the
+    shape that is checkable: `fig:<name>` resolves against a real file, and a
+    bogus one draws nothing rather than a sentence.
+
+    The one thing we DO assert is that an emoji is not plain ASCII. Every emoji
+    carries at least one codepoint above U+007F — including the keycaps, where
+    `1` only becomes 1️⃣ via U+FE0F/U+20E3 — so "no non-ASCII codepoint, no
+    face" rejects junk without naming a single emoji. It exists because an
+    agent naming itself from cmd.exe/PowerShell gets its emoji mangled to `?`
+    by the console codepage BEFORE the request is sent (the Windows-emoji
+    gotcha), and `??` sailed through here and rendered as literal question
+    marks on the Floor for five sessions.
     """
     v = ' '.join(str(value or '').split())
     if v.startswith(AVATAR_FIG_PREFIX):
         return v[:MAX_AVATAR_LEN]
-    return v[:MAX_EMOJI_LEN]
+    v = v[:MAX_EMOJI_LEN]
+    return v if any(ord(c) > 0x7F for c in v) else ''
 
 
 AVATARS_DIR = None  # wired by server.py; assets/avatars/

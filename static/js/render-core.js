@@ -14,6 +14,16 @@ function avatarFigureName(v) {
   return avatarIsFigure(v) ? v.trim().slice(AVATAR_FIG_PREFIX.length) : '';
 }
 
+// Mirrors `characters.clean_avatar` — not an emoji allowlist, just the one
+// assertion that holds for every emoji including the keycaps: at least one
+// codepoint above U+007F. Plain ASCII is a mangled face, not a face. The
+// server rejects it now, but the DOM must not echo a leftover either: `??`
+// (an emoji flattened by a Windows console codepage) rendered as two literal
+// question marks where Fenn's head should have been.
+function avatarIsRenderable(v) {
+  return typeof v === 'string' && /[^\x00-\x7F]/.test(v.trim());
+}
+
 // `size` is the px box. A figure is drawn to fill it; an emoji is sized to sit
 // optically level with one, which is smaller than the box because emoji glyphs
 // carry their own padding.
@@ -25,7 +35,7 @@ function avatarHTML(value, size, extraClass) {
     return `<img class="${cls} av-fig" src="${API_BASE}/api/avatars/${n}" alt=""
       width="${size}" height="${size}" draggable="false">`;
   }
-  if (v) {
+  if (avatarIsRenderable(v)) {
     return `<span class="${cls} av-emoji" style="font-size:${Math.round(size * 0.78)}px;
       width:${size}px;height:${size}px">${esc(v)}</span>`;
   }

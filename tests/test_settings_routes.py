@@ -149,15 +149,21 @@ def test_update_config_happy_persists(ctx):
 
 
 def test_update_config_cleans_the_agent_face(ctx):
-    """`agent_avatar` is the one editable key with a SHAPE, and the cap is the
-    only thing stopping a face field becoming a second name field. Cleaned on
-    write, not just where it is drawn — config.json is read by more than one
-    surface, and a sentence stored there is a sentence every reader has to
-    defend against."""
+    """`agent_avatar` is the one editable key with a SHAPE. Cleaned on write,
+    not just where it is drawn — config.json is read by more than one surface,
+    and a sentence stored there is a sentence every reader has to defend
+    against. Prose is refused outright rather than cut to the cap: the first 8
+    characters of a sentence are not a face either, and an all-ASCII value is
+    also exactly what a Windows console leaves behind when it flattens an emoji
+    to `?`."""
     resp = ctx.client.put('/api/config',
                           json={'agent_avatar': '  the code reviewer, at length  '})
     assert resp.status_code == 200
+    assert ctx.state.CONFIG['agent_avatar'] == ''
+
+    # The cap still applies to what it IS for — a run of real emoji.
     from mc.characters import MAX_EMOJI_LEN
+    ctx.client.put('/api/config', json={'agent_avatar': '\U0001F50D' * 12})
     assert len(ctx.state.CONFIG['agent_avatar']) == MAX_EMOJI_LEN
 
     # A figure reference is a filename and needs the longer cap, or `fig:navigator`

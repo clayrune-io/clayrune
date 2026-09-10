@@ -97,15 +97,45 @@ def _clean_avatar(v):
 
 
 def read_labels():
-    """{session_id: {name, by}}. Never raises — an unreadable file reads empty."""
+    """{session_id: {name, by}}. Never raises — an unreadable file reads empty.
+
+    Repairs on read. Five records were written with `avatar: "??"` before
+    `clean_avatar` rejected ASCII, and a stored value that can no longer be
+    stored is not data to preserve — it is a face nobody can draw, sitting in
+    front of one that resolves. Doing it here rather than in a migration
+    script means it happens on the next poll, on every install, without anyone
+    remembering to run anything; the write is best-effort, so a read-only file
+    still renders correctly, it just re-repairs next time.
+    """
     try:
         if not LABELS_PATH or not Path(LABELS_PATH).is_file():
             return {}
         d = json.loads(Path(LABELS_PATH).read_text(encoding='utf-8'))
-        return d if isinstance(d, dict) else {}
+        if not isinstance(d, dict):
+            return {}
     except Exception as e:
         _log(f'[floor] labels unreadable: {e}')
         return {}
+    repaired = {}
+    for sid, rec in d.items():
+        if not isinstance(rec, dict) or 'avatar' not in rec:
+            continue
+        fixed = _clean_avatar(rec.get('avatar'))
+        if fixed != rec.get('avatar'):
+            rec['avatar'] = fixed
+            repaired[sid] = rec
+    if repaired:
+        d = {sid: rec for sid, rec in d.items()
+             if not (isinstance(rec, dict) and not rec.get('name')
+                     and not rec.get('avatar'))}
+        _log(f'[floor] dropped unusable avatar on {len(repaired)} label(s): '
+             f'{", ".join(sorted(repaired))}')
+        try:
+            _atomic_write_text(Path(LABELS_PATH),
+                               json.dumps(d, indent=2, sort_keys=True) + '\n')
+        except Exception as e:
+            _log(f'[floor] could not persist repaired labels: {e}')
+    return d
 
 
 def set_label(session_id, name=None, by='user', avatar=None):
@@ -239,12 +269,22 @@ def _figure_avatar(s, labels):
     Still no INVENTED default. A delegated session with no persona gets nothing
     (MC-925: its own prompt is told it appears unnamed), and an install that has
     set no face gets the neutral placeholder — absence stays a finding.
+
+    Every arm CLEANS BEFORE IT TESTS. Testing the raw value and returning the
+    cleaned one made an unusable override win the precedence and then resolve
+    to nothing — which is exactly how Fenn drew `??` in its room while the
+    bench card, reading the character file straight, drew `fig:scholar` for the
+    same type at the same moment. A face nobody can render is not an override;
+    it has to fall through to the one underneath it.
     """
     lab = labels.get(s.get('session_id')) or {}
-    if isinstance(lab, dict) and lab.get('avatar'):
-        return _clean_avatar(lab['avatar'])
-    if s.get('floor_avatar'):
-        return _clean_avatar(s['floor_avatar'])
+    if isinstance(lab, dict):
+        own = _clean_avatar(lab.get('avatar'))
+        if own:
+            return own
+    own = _clean_avatar(s.get('floor_avatar'))
+    if own:
+        return own
     ch = s.get('character')
     if isinstance(ch, dict):
         own = _clean_avatar(ch.get('avatar'))

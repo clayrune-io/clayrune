@@ -540,12 +540,17 @@ def test_a_multi_codepoint_emoji_is_not_truncated(floor, tmp_path):
 
 
 def test_an_avatar_cannot_become_a_second_name_field(floor, tmp_path):
+    """Prose is REFUSED now, not cut to `_AVATAR_CHARS`. The cap alone left the
+    first 8 characters of a sentence sitting where a face goes, which is the
+    same class of junk as the `??` a Windows console produces — and the cap is
+    still what stops a long emoji run, it just no longer has to pretend a
+    truncated word is a picture."""
     fr, c, sessions, projects, _ = floor
     fr.LABELS_PATH = tmp_path / 'agent_labels.json'
     projects.append({'id': 'a', 'name': 'Alpha'})
     sessions['1'] = _session('a', '1')
     c.post('/api/floor/figure/1/name', json={'avatar': 'the code reviewer'})
-    assert len(_get(c)['rooms'][0]['figures'][0]['avatar']) == fr._AVATAR_CHARS
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == ''
 
 
 def test_clearing_both_forgets_the_figure_entirely(floor, tmp_path):
@@ -755,3 +760,65 @@ def test_a_project_with_no_folder_cannot_hold_a_roster(floor):
     fr.list_characters = spy
     _get(c)
     assert asked == [None], f'scanned a project with no folder: {asked}'
+
+
+# ── a mangled face must not outrank a real one ──────────────────────────────
+# An agent naming itself from a Windows console gets its emoji flattened to `?`
+# by the codepage BEFORE the request is sent, and `??` used to persist, win the
+# precedence over the character's own face, and render as two literal question
+# marks. The bench card read the character file straight and drew the right
+# face for the same type at the same moment — the two paths disagreeing is the
+# defect, not just the stored value.
+
+def test_an_ascii_mangled_label_falls_through_to_the_character_face(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    (tmp_path / 'agent_labels.json').write_text(
+        '{"1": {"name": "Fenn", "avatar": "??", "by": "self"}}', encoding='utf-8')
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'code-reviewer',
+                                                  'agent_name': 'Fenn',
+                                                  'avatar': 'fig:scholar'})
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert f['avatar'] == 'fig:scholar', 'junk override beat a resolvable face'
+    assert f['name'] == 'Fenn', 'the repair took the name with it'
+
+
+def test_a_mangled_live_session_avatar_falls_through_too(floor, tmp_path):
+    """`floor_avatar` on the live session dict is the second arm and carries
+    the same junk — set_label writes both."""
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', floor_avatar='??',
+                             character={'name': 'code-reviewer', 'avatar': 'fig:scholar'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:scholar'
+
+
+def test_reading_the_labels_file_repairs_a_stored_mangled_face(floor, tmp_path):
+    """Repair on read, not a migration script: it runs on the next poll on
+    every install, with nobody remembering to run anything."""
+    fr, _c, _s, _p, _ch = floor
+    path = tmp_path / 'agent_labels.json'
+    fr.LABELS_PATH = path
+    import json as _json
+    path.write_text(_json.dumps({
+        'keep': {'name': 'Posy', 'avatar': '\U0001F4E3', 'by': 'self'},
+        'named': {'name': 'Vector', 'avatar': '??', 'by': 'self'},
+        'bare': {'name': '', 'avatar': '??', 'by': 'self'},
+    }), encoding='utf-8')
+    out = fr.read_labels()
+    assert out['keep']['avatar'] == '\U0001F4E3', 'a real emoji was collateral'
+    assert out['named']['avatar'] == '', 'junk survived the repair'
+    assert out['named']['name'] == 'Vector', 'the name went with the junk face'
+    assert 'bare' not in out, 'a record with nothing left in it should go'
+    assert _json.loads(path.read_text(encoding='utf-8')) == out, 'repair was not persisted'
+
+
+def test_setting_a_mangled_face_stores_nothing(floor, tmp_path):
+    fr, c, sessions, projects, _ = floor
+    fr.LABELS_PATH = tmp_path / 'agent_labels.json'
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', character={'name': 'x', 'avatar': 'fig:scholar'})
+    c.post('/api/floor/figure/1/name', json={'avatar': '??'})
+    assert _get(c)['rooms'][0]['figures'][0]['avatar'] == 'fig:scholar'

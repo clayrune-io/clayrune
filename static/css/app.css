@@ -4973,6 +4973,32 @@
     margin-left: auto; font-size: 10px; color: var(--text-faint); flex: 0 0 auto;
     font-family: 'JetBrains Mono', monospace;
   }
+  /* The header row has to HOLD at every width the grid reflows to. Every item
+     in it was `flex: 0 0 auto` except the name, and a span's default
+     `min-width: auto` means the name could not shrink either — so the row's
+     intrinsic width simply exceeded the card and the tail (state pill, then
+     `12m ago`) ran out past the right edge, measured at up to 241px past it.
+     It showed on WORKING cards first only because WORKING is the widest state
+     word, but a long name or a long type badge tips an IDLE one over the same
+     way.
+
+     It WRAPS rather than only shrinking. At a 260px card the row genuinely
+     holds more than fits, and shrink-only answered that by starving the name
+     down to "T…" while `19m ago` — the least identifying thing on the card —
+     stayed whole. Wrapping drops the tail to a second line and keeps the name
+     readable, which is the whole point of the card. Shrink is still there
+     underneath, as the floor for a single name too long for a line of its
+     own, and `overflow: hidden` is the last backstop. */
+  .fl-fig-top { min-width: 0; flex-wrap: wrap; row-gap: 2px; overflow: hidden; }
+  .fl-fig-top .fl-who {
+    /* Shrink-only. Growing would eat the free space that `.fl-age`'s
+       `margin-left: auto` needs to pin the timestamp to the right edge. */
+    min-width: 0; flex: 0 1 auto;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .fl-fig-top .fl-type {
+    min-width: 0; flex: 0 1 auto; overflow: hidden; text-overflow: ellipsis;
+  }
   .fl-engine {
     font-size: 10px; color: var(--text-faint); margin-top: 2px; min-width: 0;
     font-family: 'JetBrains Mono', monospace;
