@@ -169,15 +169,14 @@ try {
     ? ok('Vector sits under "In the room" while the live session is actively generating')
     : fail(`Vector should be under "In the room", section was: ${await sectionOf('default:')}`);
 
-  // ── 4. Clicking Vector narrows to real conversations, not an empty filter ─
+  // ── 4. Clicking Vector expands her real conversations inline, not an empty
+  // pane, and the roster stays put around the expanded row (accordion) ──────
   await page.click(`${scope}.channel-row[data-char-key="default:"]`);
-  await page.waitForSelector(`${scope}.channel-back`, { timeout: 3000 });
-  const filteredIds = await page.$$eval(`${scope}.agent-rail-list .conv-row[data-csid]`, (els) => els.map((el) => el.dataset.csid).filter(Boolean));
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="default:"].expanded`, { timeout: 3000 });
+  const filteredIds = await page.$$eval(`${scope}.channel-expanded .conv-row[data-csid]`, (els) => els.map((el) => el.dataset.csid).filter(Boolean));
   filteredIds.includes('default-1')
-    ? ok('clicking Vector\'s row opens her real conversation(s), not an empty pane')
+    ? ok('clicking Vector\'s row expands her real conversation(s), not an empty pane')
     : fail(`clicking Vector should show her chat(s), got: ${JSON.stringify(filteredIds)}`);
-  await page.click(`${scope}.channel-back`);
-  await page.waitForSelector(`${scope}.channel-section-header`, { timeout: 3000 });
 
   // ── 5. The delegated no-persona ('unnamed') session counts while working,
   // and does NOT leave a permanent Bench row once idle (MC-925 + "live only,

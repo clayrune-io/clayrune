@@ -280,9 +280,9 @@ try {
   }, modeScope, { timeout: 3000 }).then(
     () => ok('rail switched to Channel mode'),
     async () => fail(`rail mode should be Channel, was ${await page.$eval(modeScope + '.rail-mode-btn.on', (el) => el.textContent.trim()).catch(() => '(none)')}`));
-  await page.waitForSelector(`.modal-window[data-modal-id="${PID_TARGET}"] .channel-back`, { timeout: 5000 })
-    .then(() => ok('Fenn\'s row is selected (no history yet, so the filtered/empty view + back button show)'),
-          () => fail('channel person filter never engaged for the hired character'));
+  await page.waitForSelector(`.modal-window[data-modal-id="${PID_TARGET}"] .channel-row[data-char-key="global:code-reviewer"].expanded`, { timeout: 5000 })
+    .then(() => ok('Fenn\'s row is expanded inline (no history yet, so the expanded section shows the empty state)'),
+          () => fail('channel person expansion never engaged for the hired character'));
 
   // ── The drop must ARM the composer, not just drill to the row ────────────
   // Landing on the agent's empty channel with PERSONA still on "None" sent the
@@ -318,7 +318,6 @@ try {
     p.roster = roster;
     refreshModalById(pid);
   }, { pid: PID_TARGET, roster: [{ character: 'global:code-reviewer', hired_at: '2026-09-09T00:00:00Z', hired_by: 'drag', removed_at: null }] });
-  await page.click(`${modeScope}.channel-back`);
   await page.waitForSelector(`${modeScope}.channel-row`, { timeout: 3000 });
   const benchRow = await page.$(`${modeScope}.channel-row[data-char-key="global:code-reviewer"] .conv-unhire`);
   benchRow ? ok('the hired-but-never-talked-to character shows on the Bench with a remove control')

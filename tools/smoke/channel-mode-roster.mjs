@@ -179,21 +179,30 @@ try {
   marlowBadge === 'Waiting for you' ? ok('Marlow\'s row shows the "Waiting for you" badge in the timestamp slot')
                                     : fail(`Marlow's row should show the waiting badge, got: ${marlowBadge}`);
 
-  // ── 4. Clicking a person narrows to their conversations, and nothing else ─
+  // ── 4. Clicking a person expands their conversations INLINE, beneath their
+  // row, while the rest of the roster (all 3 rows, both headers) stays put ──
   await page.click(`${scope}.channel-row[data-char-key="project:code-reviewer"]`);
-  await page.waitForSelector(`${scope}.channel-back`, { timeout: 3000 });
-  const filteredIds = await page.$$eval(`${scope}.agent-rail-list .conv-row[data-csid]`, (els) => els.map((el) => el.dataset.csid).filter(Boolean));
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="project:code-reviewer"].expanded`, { timeout: 3000 });
+  const rosterDuringExpand = await page.$$eval(`${scope}.channel-row`, (els) => els.length);
+  rosterDuringExpand === 3
+    ? ok('expanding Fenn kept all 3 roster rows visible (accordion, not a drill-down)')
+    : fail(`expanding Fenn should leave all 3 rows visible, got ${rosterDuringExpand}`);
+  const filteredIds = await page.$$eval(`${scope}.channel-expanded .conv-row[data-csid]`, (els) => els.map((el) => el.dataset.csid).filter(Boolean));
   const filteredSet = new Set(filteredIds);
   (filteredSet.has('fenn-1') && filteredSet.has('fenn-2') && filteredSet.size === 2)
-    ? ok('clicking Fenn narrowed the rail to exactly her 2 conversations')
-    : fail(`clicking Fenn should show exactly [fenn-1, fenn-2], got: ${JSON.stringify([...filteredSet])}`);
+    ? ok('Fenn\'s row expanded to show exactly her 2 conversations')
+    : fail(`Fenn's expanded list should be exactly [fenn-1, fenn-2], got: ${JSON.stringify([...filteredSet])}`);
 
-  // ── 5. "← All people" returns to the full roster ─────────────────────────
-  await page.click(`${scope}.channel-back`);
-  await page.waitForSelector(`${scope}.channel-section-header`, { timeout: 3000 });
-  const rosterBack = await page.$$eval(`${scope}.channel-row`, (els) => els.length);
-  rosterBack === 3 ? ok('"← All people" restored the full 3-person roster')
-                   : fail(`expected the roster back at 3 rows, got ${rosterBack}`);
+  // ── 5. Expanding a different person collapses the first — one open at a
+  // time — and the roster never disappears in between ───────────────────────
+  await page.click(`${scope}.channel-row[data-char-key="project:builder"]`);
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="project:builder"].expanded`, { timeout: 3000 });
+  const fennStillExpanded = await page.$(`${scope}.channel-row[data-char-key="project:code-reviewer"].expanded`);
+  fennStillExpanded ? fail('Fenn\'s row is still expanded — only one person should be open at a time')
+                     : ok('expanding Tobin collapsed Fenn\'s previously-open row');
+  const rosterAfterSwitch = await page.$$eval(`${scope}.channel-row`, (els) => els.length);
+  rosterAfterSwitch === 3 ? ok('switching the expanded person kept all 3 roster rows visible throughout')
+                          : fail(`expected the roster still at 3 rows after switching, got ${rosterAfterSwitch}`);
 
   // ── 6. A vanilla / empty project shows the empty state, not a broken rail ─
   await page.evaluate(({ pid }) => { openProjectModal(pid); }, { pid: PID_EMPTY });
@@ -214,7 +223,7 @@ try {
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — Channel mode groups by person, live/waiting states place rows correctly, click-filter and empty state both hold.'
+    ? '\n✅ PASS — Channel mode groups by person, live/waiting states place rows correctly, the accordion expand/collapse and empty state both hold.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
