@@ -7803,22 +7803,45 @@
   .desk-empty b { color: var(--text); }
 
   /* One row per voice, because the choice is "who says this" and each option
-     carries its own platform and register. A multi-select would hide both. */
+     carries its own platform and register. A multi-select would hide both.
+
+     SPECIFICITY NOTE, and it is why this shipped broken: these rows are <label>
+     elements inside a .form-group, so `.form-group label` (0,1,1) OUTRANKS a
+     bare `.camp-voice-pick` (0,1,0). The block display, uppercase and letter
+     spacing meant for a field label all leaked in — the flex layout never
+     applied, the register text rendered in caps and overflowed the card. Every
+     rule that has to beat it is written as `.form-group .camp-voice-pick`. */
+  /* A short form must not inherit `.modal-content`'s `height: 80vh` — that is
+     right for a chat and wrong here, and it left most of the New-campaign dialog
+     as empty space below the button. Hug the content, cap at the viewport. */
+  .modal-content.modal-fit { height: auto; max-height: 88vh; }
+
   .camp-voice-picks { display: flex; flex-direction: column; gap: 6px; }
-  .camp-voice-pick {
-    display: flex; align-items: center; gap: 8px; cursor: pointer;
-    padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
-    background: var(--surface2); font-size: 12.5px;
+  .form-group .camp-voice-pick {
+    display: flex; align-items: baseline; flex-wrap: wrap; gap: 4px 8px;
+    cursor: pointer; padding: 8px 10px; margin-bottom: 0;
+    border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface2);
+    font-size: 12.5px; font-weight: 400; letter-spacing: 0;
+    text-transform: none; color: var(--text);
   }
-  .camp-voice-pick:hover { border-color: var(--border2); }
-  .camp-voice-pick:has(input:checked) {
+  .form-group .camp-voice-pick:hover { border-color: var(--border2); }
+  .form-group .camp-voice-pick:has(input:checked) {
     border-color: var(--accent); background: var(--accent-dim);
   }
-  .camp-voice-pick input { width: auto; margin: 0; accent-color: var(--accent); }
-  .camp-voice-name { font-weight: 700; color: var(--text); }
+  .form-group .camp-voice-pick input {
+    width: auto; margin: 0; padding: 0; accent-color: var(--accent);
+    align-self: center;
+  }
+  .camp-voice-name {
+    font-weight: 700; color: var(--text); text-transform: none; letter-spacing: 0;
+  }
+  /* Wraps onto its own line rather than truncating: the register is the reason
+     to pick one voice over the other, so hiding it defeats the row. */
   .camp-voice-reg {
-    flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim);
-    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    flex: 1 0 100%; min-width: 0; font-size: 11px; line-height: 1.45;
+    color: var(--text-dim); text-transform: none; letter-spacing: 0;
+    font-weight: 400;
   }
 
   .desk-new-campaign {

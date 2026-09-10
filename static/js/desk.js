@@ -148,7 +148,9 @@ async function deskNewCampaign() {
   win.className = 'modal-window';
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
-  content.className = 'modal-content';
+  // `modal-fit` drops the inherited 80vh height — this form is ~500px tall and
+  // the rest was empty space under the button.
+  content.className = 'modal-content modal-fit';
   _clampModalSize(content, 520);
   content.innerHTML = `
     <div class="modal-header" style="padding:18px 24px 10px 28px">
@@ -157,7 +159,7 @@ async function deskNewCampaign() {
       </div>
       <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">New campaign</h2>
     </div>
-    <div style="padding:6px 28px 22px">
+    <div style="padding:6px 28px 22px;overflow-y:auto">
       <div class="form-group">
         <label>1. The argument</label>
         <input type="text" id="camp-thesis" placeholder="Clayrune keeps agents alive between sessions">
