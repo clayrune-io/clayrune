@@ -299,7 +299,8 @@ async function deskVoices() {
         <div class="desk-voice-row" data-voice="${esc(v.name)}">
           <div class="desk-voice-row-head">
             <span class="camp-voice-name">${esc(v.name)}</span>
-            <span class="desk-platform">${esc(v.platform || '')}</span>
+            <button class="desk-platform desk-platform-btn" onclick="deskPlatformRules('${esc(v.platform || '')}')"
+              title="This voice's platform rules — the brief the writer gets">${esc(v.platform || '')}</button>
             <span class="desk-voice-learned${(v.rewrites || []).length ? '' : ' cold'}">
               ${(v.rewrites || []).length} edit${(v.rewrites || []).length === 1 ? '' : 's'} learned
             </span>
@@ -348,6 +349,87 @@ async function deskSeedVoice(name) {
     show('Could not start it: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; }
   }
+}
+
+// PLATFORM RULES — the brief a writer gets per platform, and what closes the
+// bug where every platform but x/linkedin got an empty string.
+//
+// `desk_brief.build_brief` used to look these up in a hardcoded two-key dict
+// (mc/desk_brief.py's old PLATFORM_NOTES). Ron's own drafts on other platforms
+// — an 837-char facebook post, a 2236-char discord post — were briefed with
+// nothing, because there was nowhere to set the rule. This modal is that
+// somewhere: reached from the platform badge next to each voice, since a voice
+// IS a platform (`platform_for`), so "which rules apply to what I'm about to
+// draft" is one click from the voice that writes it.
+async function deskPlatformRules(platform) {
+  if (!platform) return;
+  let rules = null;
+  try {
+    rules = await _deskFetch(`/api/desk/platforms/${encodeURIComponent(platform)}`);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load platform rules: ' + e.message, 4000);
+    return;
+  }
+
+  const modalId = '__desk_platform_' + platform;
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content modal-fit';
+  _clampModalSize(content, 480);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">${esc(platform)} rules</h2>
+    </div>
+    <div style="padding:6px 28px 22px;overflow-y:auto">
+      <div class="hint" style="margin-bottom:14px">Handed to the writer verbatim before every draft
+        on this platform. ${rules.configured ? ''
+          : 'No rules are set yet — until you save some, the brief tells the writer there are none and to keep it short.'}</div>
+      <div class="form-group">
+        <label>Character limit <span style="text-transform:none;font-weight:400">(optional)</span></label>
+        <input type="number" id="plat-limit" min="1" value="${rules.char_limit ? esc(String(rules.char_limit)) : ''}">
+      </div>
+      <div class="form-group">
+        <label>Rules</label>
+        <textarea class="rules-textarea" id="plat-text" rows="7"
+          placeholder="Cost per post, what gets demoted, how long is too long...">${esc(rules.text || '')}</textarea>
+      </div>
+      <div id="plat-error" class="social-attr-warn" style="display:none"></div>
+      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSavePlatformRules('${esc(platform)}')">Save</button>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+}
+
+async function deskSavePlatformRules(platform) {
+  const modalId = '__desk_platform_' + platform;
+  const err = document.getElementById('plat-error');
+  const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+  const text = (document.getElementById('plat-text') || {}).value || '';
+  const limitRaw = ((document.getElementById('plat-limit') || {}).value || '').trim();
+  const char_limit = limitRaw ? parseInt(limitRaw, 10) : null;
+
+  try {
+    await _deskFetch(`/api/desk/platforms/${encodeURIComponent(platform)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ text, char_limit }),
+    });
+  } catch (e) {
+    return show('Could not save: ' + e.message);
+  }
+  closeModalById(modalId);
+  if (typeof showToast === 'function') showToast(`Saved rules for ${platform}.`);
 }
 
 // Move a campaign through its states from the Board. Proposed -> running is the
@@ -861,6 +943,8 @@ window.deskDecideProposal = deskDecideProposal;
 window.deskNewCampaign = deskNewCampaign;
 window.deskVoices = deskVoices;
 window.deskSeedVoice = deskSeedVoice;
+window.deskPlatformRules = deskPlatformRules;
+window.deskSavePlatformRules = deskSavePlatformRules;
 window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;

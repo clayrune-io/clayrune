@@ -8171,6 +8171,10 @@
     text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
     background: var(--surface3); color: var(--text-dim);
   }
+  /* Clickable variant, used on the Voices modal: the platform badge opens its
+     rules, since the rules are what the writer for that voice is briefed with. */
+  .desk-platform-btn { border: none; cursor: pointer; font-family: inherit; transition: color 0.15s; }
+  .desk-platform-btn:hover { color: var(--accent); }
 
   /* ── Ledger ────────────────────────────────────────────────────────────── */
   .desk-ledger-row {
