@@ -6,6 +6,42 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — Workflow builder: runner + stores (MC-871 Phase 1, backend only)
+
+`mc/workflows.py` + `mc/blueprints/workflow_routes.py`. First of the spec's
+four-phase build order (`docs/WORKFLOW_BUILDER_SPEC.md`); no UI and no
+scheduler wiring yet — those are later passes.
+
+- **Definitions** (`data/workflows.json`) and **run state**
+  (`data/workflow_runs/<run_id>.json`) are siblings of `data/projects/`, never
+  members — same DATA_DIR-pollution rule `data/schedules.json`/`data/desk.json`
+  already follow.
+- **The handoff has no polling loop and no new process.** An agent step's
+  completion is delivered by generalising the existing spawner-notification
+  latch (`agent_routes._maybe_notify_spawner`, MC-946) to also recognise a
+  parked workflow run as a waiter — same two call sites (Mode A exit, Mode B
+  turn boundary), same latch.
+- **Five node types** (agent step, Paths, approval gate, Clayrune action,
+  trigger), compiled from the authored nested-branch tree into a flat
+  name→node map with resolved `next` pointers. A Paths node without its
+  mandatory `otherwise` branch fails validation at save time — the fail-closed
+  default for an agent that doesn't declare a matching outcome.
+- **Definition CRUD and approval-gate decisions refuse an agent caller**,
+  structurally, at the route (missing `Origin` header — the same signal
+  `agent_dispatch` uses to route a dispatch to the 'agent' side flow, but here
+  with no self-report override). Settled by Ron 2026-09-10: authoring or
+  approving a workflow is capability expansion, and the human-in-the-loop half
+  of the authority guard is satisfied by the human *authoring* it, not by
+  attendance.
+- **Restart adoption is fail-closed.** A run parked on a `running` agent step
+  is checked against the agent_log the spawner callback already writes; only
+  a confirmed `completed`/`idle` child advances the run — an orphaned
+  `interrupted` row (meaning "we don't know what happened") does NOT count as
+  success, and is instead surfaced as an `interrupted` run for a human to
+  re-run.
+- 26 new tests (`tests/test_workflows.py`); `mc/workflows.py` and
+  `mc/blueprints/workflow_routes.py` pass `pyright` basic clean.
+
 ## [Unreleased] — The browser pane can read a page now, designed around the real attack
 
 `POST /api/browser/read` (`mc/blueprints/browser_routes.py`) returns a page's

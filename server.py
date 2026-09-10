@@ -540,6 +540,14 @@ AUTOMATION_SUGGESTIONS_PATH = _DATA_ROOT / 'data' / 'automation_suggestions.json
 DESK_STORE_PATH = _DATA_ROOT / 'data' / 'desk.json'
 DESK_SIGNALS_PATH = _DATA_ROOT / 'data' / 'desk_signals.jsonl'
 
+# Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) — same reasoning as
+# the Desk above: definitions are a small JSON object, siblings of DATA_DIR
+# (never members — see the LOAD-BEARING DATA_DIR rule in CLAUDE.md), while run
+# state is one file per run so each run's writes are independent and GC is a
+# plain file delete.
+WORKFLOWS_PATH = _DATA_ROOT / 'data' / 'workflows.json'
+WORKFLOW_RUNS_DIR = _DATA_ROOT / 'data' / 'workflow_runs'
+
 MEMORY_DIR = _DATA_ROOT / 'data' / 'memory'  # fallback for projects without project_path
 MEMORY_DIR.mkdir(parents=True, exist_ok=True)
 
@@ -1756,6 +1764,22 @@ _bp_desk.wire(
 app.register_blueprint(_bp_desk.bp)
 
 
+# ── Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) ─────────────────
+# Phase 1: runner + stores only. Definition CRUD and approval decisions are
+# gated against agent callers INSIDE the blueprint (workflow_routes._refuse_
+# if_agent_caller) -- the authority guard is enforced at the route, not by
+# this wiring. dispatch_agent_internal_fn is the SAME callable the scheduler
+# and the Desk use: one dispatch engine, not a private path for workflows.
+from mc.blueprints import workflow_routes as _bp_workflows  # noqa: E402
+_bp_workflows.wire(
+    workflows_path=WORKFLOWS_PATH,
+    workflow_runs_dir=WORKFLOW_RUNS_DIR,
+    dispatch_agent_internal_fn=_bp_agent._dispatch_agent_internal,
+    load_agent_log_fn=_bp_agent._load_agent_log,
+)
+app.register_blueprint(_bp_workflows.bp)
+
+
 # ── Static ───────────────────────────────────────────────────────────────────
 
 @app.route('/sw.js')
@@ -2770,6 +2794,14 @@ def boot(check_port=True):
     # they don't show as forever-running in the Agent Log / Runs panels.
     # Cheap, synchronous; runs before backfill so the two helpers don't race.
     _boot_phase('reconcile pending agent_log', _reconcile_pending_agent_log_entries)
+    # Workflow run restart adoption (MC-871 spec §Q5, fail-closed): a run whose
+    # current step was 'running' when the server went down is checked against
+    # the agent_log just reconciled above; confirmed-complete children advance
+    # normally, everything else is marked 'interrupted' rather than silently
+    # re-dispatched (an agent step may have had side effects). Must run AFTER
+    # the reconcile phase so an orphaned 'in_progress' row has already been
+    # flipped to 'interrupted' and can't be misread as still running.
+    _boot_phase('workflow run adoption', _bp_workflows.adopt_on_startup)
     # Backfill agent_log from Claude transcripts: makes mid-flight sessions that
     # never finalized (server killed before stream reader's finally) visible in
     # the Agent Log tab. Runs once, in the background, so app.run() isn't blocked.
