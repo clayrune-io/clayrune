@@ -93,17 +93,22 @@ async function deskHarvest() {
 // Ask the roster's writer (Posy) for a draft off one signal. The Desk does not
 // generate — it briefs. The draft lands PENDING on the Queue; nothing here can
 // publish it, and nothing here should ever grow the ability to.
-async function deskDraft(signalId, voice) {
+async function deskDraft(signalId, voice, campaignId) {
   if (_deskDrafting.has(signalId)) return;
   _deskDrafting.add(signalId);
   renderDesk();
   try {
     const out = await _deskFetch('/api/desk/draft', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ signal_id: signalId, voice }),
+      // The campaign is what turns a report into an argument — `build_brief`
+      // injects its thesis and tells the writer to argue it.
+      body: JSON.stringify({ signal_id: signalId, voice, campaign_id: campaignId }),
     });
     if (typeof showToast === 'function') {
-      showToast(`Posy is drafting a ${out.platform} post — it lands in the Queue.`);
+      const camp = _deskRunningCampaign();
+      showToast(campaignId && camp
+        ? `Posy is drafting a ${out.platform} post for "${camp.title}" — it lands in the Queue.`
+        : `Posy is drafting a ${out.platform} post — it lands in the Queue.`);
     }
   } catch (e) {
     // A 409 means the signal was already drafted from, which is a real answer
@@ -359,6 +364,39 @@ function renderDesk() {
   else bodyEl.innerHTML = _renderLedger();
 }
 
+// THIS IS WHAT A RUNNING CAMPAIGN ACTUALLY DOES. Until now it did nothing: the
+// draft buttons were hardcoded to two voice names, and no draft ever carried a
+// campaign_id, so the thesis never reached the writer even though `build_brief`
+// has always accepted one. A campaign was decoration.
+//
+// Now: exactly one running campaign becomes the DEFAULT context for drafting.
+// Its voices are the buttons, and each draft is briefed to argue its thesis
+// rather than merely report the event. With none running (or several, which is
+// ambiguous), the buttons fall back to every available voice and the draft is
+// a standalone post.
+function _deskRunningCampaign() {
+  const running = (_deskData.campaigns || []).filter(c => c.state === 'running');
+  return running.length === 1 ? running[0] : null;
+}
+
+function _deskDraftButtons(s) {
+  const camp = _deskRunningCampaign();
+  const names = camp
+    ? (camp.voices || (camp.voice ? [camp.voice] : []))
+    : (_deskData.voices || []);
+  if (!names.length) {
+    return `<span class="desk-signal-used" title="Create a voice first">no voice</span>`;
+  }
+  return names.map(v => {
+    const label = esc(v).slice(0, 4);
+    const why = camp
+      ? `Draft for "${esc(camp.title)}" in the ${esc(v)} voice`
+      : `Draft a standalone post in the ${esc(v)} voice`;
+    return `<button class="desk-draft-btn" onclick="deskDraft('${esc(s.id)}','${esc(v)}'${
+      camp ? `,'${esc(camp.id)}'` : ''})" title="${why}">${label}</button>`;
+  }).join('');
+}
+
 function _deskSectionHTML(label, hint) {
   return `<div class="desk-section">
     <span class="desk-section-label">${label}</span>
@@ -423,6 +461,9 @@ function _renderBoard() {
       </div>
       <div class="desk-campaign-thesis">${esc(c.thesis)}</div>
       ${c.agenda ? `<div class="desk-campaign-agenda"><b>Why now:</b> ${esc(c.agenda)}</div>` : ''}
+      ${c.state === 'running' ? `<div class="desk-campaign-next">
+        Drafting from the feed below now argues this. Hover any row and pick a voice —
+        the draft lands in the Queue for you to release.</div>` : ''}
       <div class="desk-campaign-actions">
         ${c.state === 'proposed' ? `<button onclick="deskCampaignState('${esc(c.id)}','running')">Start it</button>` : ''}
         ${c.state === 'running' ? `<button onclick="deskCampaignState('${esc(c.id)}','paused')">Pause</button>` : ''}
@@ -457,12 +498,7 @@ function _renderBoard() {
       <span class="desk-signal-when">${esc((s.occurred_at || '').slice(0, 10))}</span>
       ${s.consumed_by
         ? `<span class="desk-signal-used" title="Already drafted from">used</span>`
-        : `<span class="desk-draft-actions">
-             <button class="desk-draft-btn" onclick="deskDraft('${esc(s.id)}','ron')"
-               title="Ask Posy for an X post in Ron's voice">X</button>
-             <button class="desk-draft-btn" onclick="deskDraft('${esc(s.id)}','clayrune')"
-               title="Ask Posy for a LinkedIn post in Clayrune's voice">in</button>
-           </span>`}
+        : `<span class="desk-draft-actions">${_deskDraftButtons(s)}</span>`}
     </div>`;
   }).join('')}</div>` : `
     <div class="desk-empty">

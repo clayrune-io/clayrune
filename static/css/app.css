@@ -7916,6 +7916,13 @@
     padding-top: 8px; border-top: 1px dashed var(--border);
   }
   .desk-campaign-agenda b { color: var(--text-dim); font-weight: 700; }
+  /* A running campaign has to say what running MEANS, or it reads as a status
+     with no consequence — which is what it was until the draft buttons learned
+     to carry a campaign_id. */
+  .desk-campaign-next {
+    font-size: 11.5px; line-height: 1.5; color: var(--accent-soft);
+    margin-top: 8px; padding-top: 8px; border-top: 1px dashed var(--border);
+  }
 
   .desk-state-chip {
     font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;

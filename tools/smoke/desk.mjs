@@ -84,7 +84,8 @@ const QUEUE = [
 const OVERVIEW = {
   campaigns: [{
     id: 'camp-1', title: 'Agent persistence', thesis: 'Clayrune keeps agents alive between sessions',
-    agenda: 'launch window opens in three weeks', voice: 'clayrune', state: 'running',
+    agenda: 'launch window opens in three weeks', state: 'running',
+    voices: ['personal', 'product'], voice: 'personal',
     project_ids: [PID], planned: [], created_at: '2026-09-01T00:00:00Z',
   }],
   running: 1,
@@ -94,7 +95,7 @@ const OVERVIEW = {
     id: 'post-1', platform: 'x', voice: 'ron', body: 'Shipped the Desk. Took four days.',
     project_id: PID, published_at: '2026-09-08T12:00:00Z', outcome: null,
   }],
-  voices: ['ron', 'clayrune'],
+  voices: ['personal', 'product'],
 };
 
 // A realistic feed, not two rows: the Board's density is part of what is being
@@ -320,8 +321,9 @@ try {
   await page.waitForSelector('.desk-signal .desk-draft-btn', { timeout: 8000 });
   await page.click('.desk-signal:first-child .desk-draft-btn');
   await page.waitForTimeout(500);
-  if (draftCalls.length === 1 && draftCalls[0].voice === 'ron') {
-    ok(`a signal's draft button briefs the writer (voice=${draftCalls[0].voice})`);
+  if (draftCalls.length === 1 && draftCalls[0].campaign_id === 'camp-1') {
+    ok(`a draft carries the RUNNING campaign (voice=${draftCalls[0].voice}, `
+       + `campaign=${draftCalls[0].campaign_id}) — the thesis reaches the writer`);
   } else {
     fail(`draft button did not POST /api/desk/draft: ${JSON.stringify(draftCalls)}`);
   }
@@ -329,8 +331,8 @@ try {
   // Both voices are offered per signal, because the platform follows the voice.
   const perRow = await page.$$eval('.desk-signal:first-child .desk-draft-btn',
     els => els.map(e => e.textContent.trim()));
-  if (perRow.length === 2) ok(`both voices offered per signal: ${perRow.join(' / ')}`);
-  else fail(`expected two voice buttons, got ${JSON.stringify(perRow)}`);
+  if (perRow.length === 2) ok(`the campaign's voices are the buttons: ${perRow.join(' / ')}`);
+  else fail(`expected one button per campaign voice, got ${JSON.stringify(perRow)}`);
 
   // ── Harvest is the one button that reaches out to the projects ───────────
   await page.click('.desk-tab:has-text("Board")');
