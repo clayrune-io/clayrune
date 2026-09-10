@@ -148,6 +148,7 @@ try {
   const seedCalls = [];
   const draftCalls = [];
   const postedCalls = [];
+  const patchCalls = [];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -165,6 +166,10 @@ try {
     }
     if (path === `/api/project/${PID}/social/queue`) return J(QUEUE);
     if (path.endsWith('/social/queue')) return J([]);
+    if (/\/social\/queue\/[^/]+$/.test(path) && req.method() === 'PATCH') {
+      patchCalls.push({ path, body: JSON.parse(req.postData() || '{}') });
+      return J({ ok: true, item: { id: path.split('/').pop() } });
+    }
     if (path === '/api/desk/overview') return J(OVERVIEW);
     if (path === '/api/desk/signals') return J(SIGNALS);
     if (path === '/api/desk/draft' && req.method() === 'POST') {
@@ -290,6 +295,53 @@ try {
   const hasActions = await page.$('#asl-list .btn-social-release');
   if (hasActions) ok('Queue rows keep their Release / Edit / Push-back actions');
   else fail('Queue rows lost their action buttons');
+
+  // ── Edit opens a REAL modal, not an inline focus() ───────────────────────
+  // Ron: "when I click Edit it opens up in popup window and allow me to edit
+  // the data? And also abide to popup windows rules so I can zoom in out and
+  // move the window around?" The old editSocialItem just called .focus() on
+  // the contenteditable row, which #asl-list replaces wholesale on every
+  // repaint — the same class of bug as the note field above.
+  await page.click('#asl-list .social-item[data-item-id="d1"] .btn-social-edit');
+  await page.waitForSelector('.modal-window[data-modal-id="__social_edit_d1"]', { timeout: 8000 });
+  if (SHOT_DIR) {
+    const editWin = await page.$('.modal-window[data-modal-id="__social_edit_d1"]');
+    await editWin.screenshot({ path: resolve(SHOT_DIR, 'desk-edit-modal.png') });
+  }
+  const editorText = await page.textContent('.modal-window[data-modal-id="__social_edit_d1"]');
+  if (editorText.includes('Shipped drag-to-hire today') && editorText.includes('Ships-beat-promises')) {
+    ok('Edit opens a real modal window carrying the draft body and teaching note');
+  } else {
+    fail(`edit modal did not carry the draft: ${JSON.stringify(editorText)}`);
+  }
+
+  // Typing survives a forced repaint of the container the OLD editor lived in
+  // — the whole point of moving the editor outside #asl-list.
+  const editorSel = '#social-edit-body-d1';
+  await page.click(editorSel);
+  await page.keyboard.press('End');
+  await page.keyboard.type(' EDITED');
+  await page.evaluate(() => window.renderAllSocial && window.renderAllSocial());
+  await page.waitForTimeout(150);
+  const survived = await page.$eval(editorSel, el => el.value).catch(() => null);
+  if (survived && survived.includes('EDITED')) {
+    ok('typing in the modal survives a forced renderAllSocial() — it no longer shares a lifetime with the list');
+  } else {
+    fail(`edit was lost on repaint: ${JSON.stringify(survived)}`);
+  }
+
+  // Saving goes through the SAME PATCH route the inline field always used —
+  // that route is the Desk's learning loop (desk.record_edit on body change).
+  await page.click('.modal-window[data-modal-id="__social_edit_d1"] .btn-add');
+  await page.waitForFunction(
+    () => !document.querySelector('.modal-window[data-modal-id="__social_edit_d1"]'),
+    null, { timeout: 8000 }).catch(() => {});
+  if (patchCalls.length === 1 && patchCalls[0].path.endsWith('/social/queue/d1')
+      && patchCalls[0].body.body.includes('EDITED')) {
+    ok('Save PATCHes /api/project/<pid>/social/queue/<id> with the edited body — no new route');
+  } else {
+    fail(`Save did not PATCH the existing route as expected: ${JSON.stringify(patchCalls)}`);
+  }
 
   // ── A poll must not empty the Queue under the user ───────────────────────
   // _preserveOpenSocial had to learn about `__desk`; without it the next

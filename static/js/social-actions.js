@@ -28,13 +28,95 @@ async function saveSocialBody(e, projectId, itemId) {
   await patchSocialItem(projectId, itemId, {body});
 }
 
-// "Edit" just focuses the already-editable body field — the field is
-// contenteditable and auto-saves on blur (same interaction as a backlog
-// item's text), so there is no separate edit mode to enter.
+// "Edit" opens a real modal window rather than focusing the inline
+// contenteditable field. That field used to be the whole edit surface, but it
+// lives inside a container (#asl-list / the project modal's Social tab) that
+// gets replaced wholesale on every repaint — progressive hydration, project
+// polls, the Desk's in-flight poll (see deferRepaintWhileTyping in
+// cross-social.js, the stopgap this replaces). A modal outside that container
+// no longer shares a lifetime with the list, so a repaint mid-edit can't
+// destroy it.
 function editSocialItem(e, projectId, itemId) {
   e.stopPropagation();
-  const el = document.getElementById(`social-body-${itemId}`);
-  if (el) el.focus();
+  openSocialEditModal(projectId, itemId);
+}
+
+// Same modal-window construction as deskNewCampaign/deskVoices (desk.js):
+// `.modal-window` + `.modal-content`, registered in `openModals` so drag,
+// zoom (Ctrl+Scroll), minimize and z-order all come for free from the
+// delegated listeners in interactions.js/modal-manager.js — never hand-roll
+// a floating div here.
+function openSocialEditModal(projectId, itemId) {
+  const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(p => p.id === projectId);
+  const item = proj && Array.isArray(proj.social_queue)
+    ? proj.social_queue.find(i => i.id === itemId) : null;
+  if (!item) {
+    if (typeof showToast === 'function') showToast('Could not find this draft — try reopening the queue.', 4000);
+    return;
+  }
+
+  const modalId = `__social_edit_${itemId}`;
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  // `modal-fit` drops the inherited 80vh height so the box hugs its content —
+  // the campaign form left dead space under the button before this.
+  content.className = 'modal-content modal-fit';
+  _clampModalSize(content, 640);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px;position:relative">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">Edit draft</h2>
+      <div style="font-size:11px;color:var(--text-faint);margin-top:2px">${esc(item.platform || 'unspecified')}</div>
+    </div>
+    <div style="padding:6px 28px 22px;display:flex;flex-direction:column;gap:12px;overflow-y:auto">
+      <div class="form-group" style="margin:0">
+        <label>Body</label>
+        <textarea id="social-edit-body-${esc(itemId)}" rows="12"
+          spellcheck="true" style="min-height:280px">${esc(item.body || '')}</textarea>
+      </div>
+      ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
+      <div class="form-group" style="margin:0">
+        <label>Note back to the agent</label>
+        <input type="text" id="social-edit-note-${esc(itemId)}" placeholder="Note back to the agent"
+          value="${esc(item.note || '')}">
+      </div>
+      <div id="social-edit-error-${esc(itemId)}" class="social-attr-warn" style="display:none"></div>
+      <button class="btn-add" style="width:100%" onclick="saveSocialEditModal('${esc(projectId)}','${esc(itemId)}')">Save</button>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  const ta = document.getElementById(`social-edit-body-${itemId}`);
+  if (ta) { ta.focus(); ta.setSelectionRange(ta.value.length, ta.value.length); }
+}
+
+// Saves through the SAME endpoint the inline field always used
+// (patchSocialItem -> PATCH /api/project/<pid>/social/queue/<id>) — this is
+// the Desk's learning loop (mc/blueprints/project_routes.py calls
+// desk.record_edit when the body changes), so there is no separate write path
+// to keep in sync.
+async function saveSocialEditModal(projectId, itemId) {
+  const errEl = document.getElementById(`social-edit-error-${itemId}`);
+  const show = (m) => { if (errEl) { errEl.textContent = m; errEl.style.display = 'block'; } };
+  const bodyEl = document.getElementById(`social-edit-body-${itemId}`);
+  const noteEl = document.getElementById(`social-edit-note-${itemId}`);
+  const body = bodyEl ? bodyEl.value.trim() : '';
+  if (!body) { show('The draft cannot be empty.'); return; }
+  const note = noteEl ? noteEl.value.trim() : '';
+  await patchSocialItem(projectId, itemId, {body, note});
+  closeModalById(`__social_edit_${itemId}`);
+  if (typeof showToast === 'function') showToast('Draft saved.');
 }
 
 async function releaseSocialItem(e, projectId, itemId) {
@@ -109,6 +191,8 @@ window.setSocialFilter = setSocialFilter;
 window.patchSocialItem = patchSocialItem;
 window.saveSocialBody = saveSocialBody;
 window.editSocialItem = editSocialItem;
+window.openSocialEditModal = openSocialEditModal;
+window.saveSocialEditModal = saveSocialEditModal;
 window.releaseSocialItem = releaseSocialItem;
 window.markSocialItemPosted = markSocialItemPosted;
 window.pushBackSocialItem = pushBackSocialItem;

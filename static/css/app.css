@@ -6499,12 +6499,13 @@
     display: block; font-size: 11px; letter-spacing: 0.8px;
     text-transform: uppercase; color: var(--text-faint); font-weight: 600; margin-bottom: 5px;
   }
-  .form-group input, .form-group select {
+  .form-group input, .form-group select, .form-group textarea {
     width: 100%; background: var(--bg); border: 1px solid var(--border);
     color: var(--text); font-family: 'Inter', sans-serif; font-size: 13px;
     padding: 8px 12px; border-radius: 5px; outline: none; transition: border-color 0.15s;
   }
-  .form-group input:focus, .form-group select:focus { border-color: var(--accent); }
+  .form-group textarea { line-height: 1.5; resize: vertical; }
+  .form-group input:focus, .form-group select:focus, .form-group textarea:focus { border-color: var(--accent); }
   .form-group input::placeholder { color: var(--text-faint); }
   .form-group .hint { font-size: 11px; color: var(--text-faint); margin-top: 3px; }
 
