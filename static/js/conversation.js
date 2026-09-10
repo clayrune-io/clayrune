@@ -799,7 +799,7 @@ function agentPanelHTML(p) {
         </div>
         <div class="mconv-search-wrap">
           <svg class="mconv-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? (_channelPersonFilter[p.id] ? 'Search conversations&hellip;' : 'Search people&hellip;') : 'Search conversations&hellip;'}"
+          <input type="text" class="mconv-search" id="mconv-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? 'Search people&hellip;' : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
         <div class="conv-list-scroll${_mode === 'topics' ? ' mconv-topics' : ''}${_mode === 'channel' ? ' mconv-channel' : ''}">${
@@ -1415,7 +1415,7 @@ function agentPanelHTML(p) {
         </div>
         <div class="agent-rail-search-wrap">
           <svg class="agent-rail-search-icon" width="15" height="15" viewBox="0 0 24 24" fill="none" aria-hidden="true"><circle cx="11" cy="11" r="7" stroke="currentColor" stroke-width="2"/><line x1="16.5" y1="16.5" x2="21" y2="21" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
-          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? (_channelPersonFilter[p.id] ? 'Search conversations&hellip;' : 'Search people&hellip;') : 'Search conversations&hellip;'}"
+          <input type="text" class="agent-rail-search" id="rail-search-${esc(p.id)}" placeholder="${_mode === 'topics' ? 'Search topics&hellip;' : _mode === 'channel' ? 'Search people&hellip;' : 'Search conversations&hellip;'}"
             spellcheck="false" value="${esc(_railQuery[p.id] || '')}" oninput="railSearch('${esc(p.id)}', this.value)">
         </div>
         <div class="agent-rail-list">${railRows}</div>
@@ -1547,7 +1547,17 @@ function _applyRailFilter(projectId) {
     const hay = row.dataset.search || (row.textContent || '').toLowerCase();
     const labelMatch = !q || hay.includes(q);
     const contentMatch = !!(contentSet && row.dataset.csid && contentSet.has(row.dataset.csid));
-    row.style.display = (labelMatch || contentMatch) ? '' : 'none';
+    const visible = labelMatch || contentMatch;
+    row.style.display = visible ? '' : 'none';
+    // Channel mode's search is "search people" — a roster row's expanded chat
+    // list is a SIBLING <div class="channel-expanded"> (never itself a
+    // .conv-row, so the walk above never selects it) and must hide/show in
+    // lockstep with the person row it belongs to, or a name the query filters
+    // out still leaves its open chat list behind with no row above it.
+    if (row.classList.contains('channel-row')) {
+      const exp = row.nextElementSibling;
+      if (exp && exp.classList.contains('channel-expanded')) exp.style.display = visible ? '' : 'none';
+    }
   });
   // The toggle is rendered once, but search runs on EVERY keystroke with no
   // re-render — so its count/visibility must be refreshed here or it goes stale
@@ -2210,10 +2220,15 @@ function _convCharFor(c) {
   return {};
 }
 
-// projectId -> "scope:name" of the roster row currently narrowing the rail to
-// one person's conversations, or absent for the full roster (spec §3/§10;
-// the real filtered STREAM is Phase 2 — see openChannelPerson below).
-let _channelPersonFilter = {};
+// projectId -> "scope:name" of the roster row currently expanded inline
+// (accordion — at most one open per project), or absent when every row is
+// collapsed. Ron, 2026-09-10: the old behaviour REPLACED the roster with one
+// person's chats behind a "← All people" back button; clicking a person now
+// expands their conversations beneath their own row while every other row
+// (and the group headers) stays visible, and expanding a different person
+// collapses the first — same one-key-at-a-time shape, just rendered inline
+// instead of swapping the whole rail.
+let _channelExpanded = {};
 
 // Group this project's attributed conversations into {inRoom, bench}.
 //   inRoom — persona has a session actively generating right now (status
@@ -2310,7 +2325,7 @@ function _channelRoster(projectId) {
 // data-char-key + data-ts-relative let updateRailRowStatus (MC-940) patch
 // this row's right slot in place from the SAME three SSE call sites it
 // already touches, without a second repaint path — see the extension there.
-function _channelRowHTML(p, r, inRoom) {
+function _channelRowHTML(p, r, inRoom, expanded) {
   const ch = r.char || {};
   const name = esc(ch.agent_name || ch.display_name || ch.name || '');
   const role = esc(ch.display_name || ch.name || '');
@@ -2340,7 +2355,8 @@ function _channelRowHTML(p, r, inRoom) {
     ? `<button class="conv-unhire" onclick="event.stopPropagation();unhireFromProject('${esc(p.id)}','${esc(r.key)}','${name}')"
         title="Remove from this project — conversation history stays" aria-label="Remove from project">&#10005;</button>`
     : '';
-  return `<div class="conv-row channel-row" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
+  return `<div class="conv-row channel-row${expanded ? ' expanded' : ''}" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
+      aria-expanded="${expanded ? 'true' : 'false'}"
       onclick="openChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
     <div class="conv-main">
@@ -2383,27 +2399,16 @@ function unhireFromProject(projectId, characterRef, displayName) {
 }
 window.unhireFromProject = unhireFromProject;
 
-// Roster view, or — when a person is selected — that person's conversations
-// and nothing else (reuses mobileUserConversationsHTML's own row renderer, so
-// a filtered row is a real chat row: live status, hide/split buttons, and
-// MC-940's in-place repaint all keep working unmodified).
+// Roster view. A row whose key matches _channelExpanded[p.id] renders its
+// conversations INLINE, directly beneath that row, while every other row and
+// both group headers stay put — an accordion, not a drill-down (Ron,
+// 2026-09-10: "all chats under that agent should just enhance… this keeps
+// them all at same level"). Reuses mobileUserConversationsHTML's own row
+// renderer for the expanded list, so a nested row is a real chat row: live
+// status, hide/split buttons, and MC-940's in-place repaint all keep working
+// unmodified — nesting from the spawner work (_topAncestor, worker rows under
+// their spawner) is internal to that renderer and survives untouched here.
 function _railChannelHTML(p) {
-  const filterKey = _channelPersonFilter[p.id] || null;
-  if (filterKey) {
-    const roster = _channelRoster(p.id);
-    const person = roster.inRoom.concat(roster.bench).find(r => r.key === filterKey);
-    const who = person ? esc(person.char.agent_name || person.char.display_name || person.char.name) : 'this agent';
-    // Same noise gate `_userInitiatedConvos` applies to the Chats tab — this
-    // path reads conversationsCache directly and never passed through it, so
-    // a dead 0-turn stub (no character, no spawner, no content) surfaced here
-    // as a "(empty)" row for whatever identity a characterless session
-    // resolves to (see _isNoiseConvoRow).
-    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === filterKey && !_isNoiseConvoRow(c));
-    const list = convos.length
-      ? mobileUserConversationsHTML(p, convos)
-      : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
-    return `<button class="channel-back" onclick="clearChannelPersonFilter('${esc(p.id)}')">&larr; All people</button>${list}`;
-  }
   const { inRoom, bench } = _channelRoster(p.id);
   if (!inRoom.length && !bench.length) {
     // Vanilla install (spec §8): default_character is null everywhere until
@@ -2415,23 +2420,43 @@ function _railChannelHTML(p) {
       <div class="channel-empty-sub">Pick a Persona in the &#43; New conversation composer to hire someone — every conversation with a named persona joins the roster here.</div>
     </div>`;
   }
+  const expandedKey = _channelExpanded[p.id] || null;
+  const renderGroup = (rows, inRoomFlag) => rows.map(r => {
+    const isExpanded = r.key === expandedKey;
+    const rowHTML = _channelRowHTML(p, r, inRoomFlag, isExpanded);
+    if (!isExpanded) return rowHTML;
+    const who = esc(r.char.agent_name || r.char.display_name || r.char.name);
+    // Same noise gate `_userInitiatedConvos` applies to the Chats tab — this
+    // path reads conversationsCache directly and never passed through it, so
+    // a dead 0-turn stub (no character, no spawner, no content) surfaced here
+    // as a "(empty)" row for whatever identity a characterless session
+    // resolves to (see _isNoiseConvoRow).
+    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
+    const list = convos.length
+      ? mobileUserConversationsHTML(p, convos)
+      : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
+    return rowHTML + `<div class="channel-expanded">${list}</div>`;
+  }).join('');
   const roomHTML = inRoom.length
     ? `<div class="channel-section-header">In the room<span class="channel-section-count">${inRoom.length}</span></div>
-       ${inRoom.map(r => _channelRowHTML(p, r, true)).join('')}`
+       ${renderGroup(inRoom, true)}`
     : '';
   const benchHTML = bench.length
     ? `<div class="channel-section-header">Bench<span class="channel-section-count">${bench.length}</span></div>
-       ${bench.map(r => _channelRowHTML(p, r, false)).join('')}`
+       ${renderGroup(bench, false)}`
     : '';
   return roomHTML + benchHTML;
 }
 
-// Clicking a roster row (spec §3/§4). Phase 2 makes this a real filtered
-// STREAM; for Phase 1 "shows that person's conversations and nothing else"
-// means: narrow the rail to their chats and open the most recent one, same
-// as clicking any other chat row would.
+// Clicking a roster row (spec §3/§4, accordion per 2026-09-10). Expands that
+// person's conversations inline — collapsing whichever other row was open,
+// since _channelExpanded holds at most one key — and keeps the existing side
+// effect of opening their most recent conversation, same as clicking any
+// other chat row would. Also the drop target `floor.js`'s drag-to-hire calls
+// directly once a hire lands, so a freshly hired character opens straight
+// into their (empty) expanded view.
 function openChannelPerson(projectId, key) {
-  _channelPersonFilter[projectId] = key;
+  _channelExpanded[projectId] = key;
   const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
   convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   if (convos.length) {
@@ -2444,13 +2469,6 @@ function openChannelPerson(projectId, key) {
   }
 }
 window.openChannelPerson = openChannelPerson;
-
-function clearChannelPersonFilter(projectId) {
-  delete _channelPersonFilter[projectId];
-  if (typeof refreshModalById === 'function') refreshModalById(projectId);
-  else refreshModal();
-}
-window.clearChannelPersonFilter = clearChannelPersonFilter;
 
 // ── Open Threads board (project-level) ──────────────────────────────────────
 // A full-width overlay that groups a project's OPEN conversations into three

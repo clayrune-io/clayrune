@@ -764,6 +764,17 @@ async function _hireCharacter(scope, name, projectId, hiredBy) {
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    // Write the server's roster straight into the local cache instead of
+    // waiting on the next Floor poll — _hireOpenChannel fires 500ms later and
+    // expands the hired character's Channel row immediately, which needs a
+    // matching roster entry to exist (_channelRoster) or the accordion has no
+    // row to expand under (it fell back to the "no one's on this channel yet"
+    // empty state, the exact gap channel-mode's drag-to-hire smoke test caught
+    // once the rail stopped rendering a filtered pane unconditionally).
+    if (data.roster) {
+      const p = (typeof allProjects !== 'undefined' ? allProjects : []).find((x) => x.id === projectId);
+      if (p) p.roster = data.roster;
+    }
     return data;
   } catch (e) {
     if (window.showToast) showToast('Could not hire: ' + e.message, 4000);
