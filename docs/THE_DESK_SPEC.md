@@ -166,9 +166,25 @@ Code: `mc/desk.py`, `mc/blueprints/desk_routes.py` (`/api/desk/*`), wired in
 `*.json` under `data/projects/` becomes a malformed project and 500s both
 restart endpoints. Nothing in either module publishes; two tests assert that.
 
-**Still to build:** the four surfaces (Board / Queue / Calendar / Ledger), the
-signal *producers* that feed the feed from commits/backlog/journals, and the
-drafting agent that turns a signal into a queued draft.
+**Also built 2026-09-09:**
+
+- **The producers** (`mc/desk_harvest.py`, `008f970`) — git log + shipped backlog
+  per project, idempotent by `ref` so a restore-point rollback cannot re-import
+  the world. Capped at 40 each per run: an uncapped first harvest pulled 899
+  items on this repo, and old history is not marketing material.
+- **The four surfaces** (`static/js/desk.js`, `55267d1` + `56bf4f1`) — sidebar
+  "Social" is now "The Desk". One hero figure, campaign cards leading with the
+  thesis, the story score as a meter.
+- **The writer** (`mc/desk_brief.py`, `291881b`) — a Draft button per voice
+  briefs Posy; her draft lands PENDING carrying its `signal_id` and `teaching`
+  block. The Desk briefs; it does not generate.
+- **The learning loop** — editing a draft body teaches that voice
+  (`update_social_queue_item` → `desk.record_edit`). This is the differentiator
+  the field scan could not verify in any surveyed product. Do not drop it.
+
+**Still to build:** the Publishing office (§1 — Release actually posting to X and
+LinkedIn, with a receipt), the mentor's reply-reading through the browser pane,
+the running curriculum on the Board, and the scheduler cadence.
 
 ### Signal feed (new)
 
