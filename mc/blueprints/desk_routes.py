@@ -47,7 +47,8 @@ load_project: Callable[[str], Optional[dict]] = None  # type: ignore[assignment]
 # of dispatch, and a cycle here would be a restart-time import error rather than
 # a runtime one. Same shape as automation_routes' bridge to the scheduler, and
 # for the same reason — one dispatch engine, not two.
-dispatch_agent: Optional[Callable[..., dict]] = None
+# Returns the new session id.
+dispatch_agent: Optional[Callable[..., str]] = None
 
 
 def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
@@ -337,6 +338,155 @@ def draft():
     return jsonify({'ok': True, 'signal_id': sig_id, 'voice': voice,
                     'platform': _brief.platform_for(voice),
                     'project_id': pid, 'session_id': session_id}), 202
+
+
+# ── Triage: Posy decides what is worth saying ────────────────────────────────
+
+def _running_campaign() -> dict | None:
+    running = [c for c in _desk.list_campaigns() if c.get('state') == 'running']
+    return running[0] if len(running) == 1 else None
+
+
+@bp.route('/api/desk/triage', methods=['POST'])
+def triage():
+    """Hand the unruled feed to Posy and ask which items deserve a post.
+
+    This is the seat `score_signal` was occupying. A keyword regex cannot tell a
+    shipped feature from a chore containing the word "shipped", and it cannot
+    explain itself — so the human ended up reading all 120 rows, which is the
+    thing this whole surface exists to avoid.
+
+    Signals the human has already ruled on are withheld, so a dismissal is not
+    re-offered next pass. Posy POSTs her picks to /api/desk/proposals.
+    """
+    d = request.get_json(silent=True) or {}
+    voices = _desk.voice_names()
+    if not voices:
+        return jsonify({'error': 'create a voice first'}), 409
+
+    pool = [s for s in _desk.list_signals(limit=400, unconsumed_only=True, sort='score')
+            if not _desk.signal_is_ruled_on(s['id'])][:_int_arg('pool', 60, hi=200)]
+    if not pool:
+        return jsonify({'ok': True, 'nothing_to_triage': True,
+                        'reason': 'every signal is already used or ruled on'}), 200
+
+    camp = _running_campaign()
+    brief = _brief.build_triage_brief(
+        pool, voices=voices, campaign=camp,
+        max_picks=max(1, min(10, int(d.get('max_picks') or 5))))
+
+    # Triage runs against a project only because dispatch needs one to live in.
+    # Its subject is every project's feed, which is the point of the Desk.
+    pid = d.get('project_id') or (pool[0].get('project_id') if pool else None)
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
+
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Triage {len(pool)} signals — what is worth posting?',
+            character='global:social-media-strategist',
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] triage dispatch failed: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+
+    return jsonify({'ok': True, 'considering': len(pool),
+                    'campaign': (camp or {}).get('title'),
+                    'session_id': session_id}), 202
+
+
+@bp.route('/api/desk/proposals', methods=['GET'])
+def list_proposals():
+    """?state=proposed|accepted|dismissed|all"""
+    state = request.args.get('state', 'proposed')
+    rows = _desk.list_proposals(None if state == 'all' else state)
+    # Join the signal in so the human can check the claim without a second call.
+    by_id = {s['id']: s for s in _desk.list_signals(limit=100000)}
+    for r in rows:
+        r['signal'] = by_id.get(r.get('signal_id'))
+    return jsonify(rows)
+
+
+@bp.route('/api/desk/proposals', methods=['POST'])
+def add_proposal():
+    """Posy calls this, once per pick."""
+    d = request.get_json(silent=True) or {}
+    if not d.get('signal_id') or not d.get('why'):
+        return jsonify({'error': 'signal_id and why are required'}), 400
+    voice = d.get('voice') or _desk.default_voice() or ''
+    if not _desk.is_voice(voice):
+        return jsonify({'error': f'unknown voice {voice!r}'}), 400
+    # A proposal must cite a REAL signal — the human checks the claim against it,
+    # and an invented id makes that impossible.
+    if not any(s['id'] == d['signal_id'] for s in _desk.list_signals(limit=100000)):
+        return jsonify({'error': 'no such signal'}), 404
+    camp = _running_campaign()
+    prop = _desk.add_proposal(d['signal_id'], voice, d['why'],
+                              campaign_id=(camp or {}).get('id'))
+    if prop is None:
+        return jsonify({'ok': True, 'skipped': True,
+                        'reason': 'already proposed or already ruled on'}), 200
+    return jsonify(prop), 201
+
+
+@bp.route('/api/desk/proposals/<proposal_id>/accept', methods=['POST'])
+def accept_proposal(proposal_id):
+    """Accepting IS the instruction to write. One gate, then the Queue's gate.
+
+    Two questions, asked in order and never merged: "is this worth saying"
+    (here) and "is this the right way to say it" (releasing the draft).
+    """
+    prop = _desk.get_proposal(proposal_id)
+    if not prop:
+        return jsonify({'error': 'proposal not found'}), 404
+    if prop.get('state') != 'proposed':
+        return jsonify({'error': f"already {prop['state']}"}), 409
+
+    signal = next((s for s in _desk.list_signals(limit=100000)
+                   if s['id'] == prop['signal_id']), None)
+    if signal is None:
+        return jsonify({'error': 'the signal it cites is gone'}), 404
+
+    pid = signal.get('project_id')
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+
+    camp = next((c for c in _desk.list_campaigns()
+                 if c['id'] == prop.get('campaign_id')), None)
+    brief = _brief.build_brief(signal, voice=prop['voice'], campaign=camp,
+                               project_name=project.get('name'))
+    if dispatch_agent is None:
+        return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
+    try:
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Draft a {_brief.platform_for(prop["voice"])} post: '
+                         f'{(signal.get("summary") or "")[:70]}',
+            character='global:social-media-strategist',
+            source='agent', strict_character=True)
+    except Exception as e:
+        _log(f'[desk] accept dispatch failed for {proposal_id}: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+
+    _desk.decide_proposal(proposal_id, 'accepted', draft_dispatch=session_id)
+    return jsonify({'ok': True, 'session_id': session_id,
+                    'platform': _brief.platform_for(prop['voice'])}), 202
+
+
+@bp.route('/api/desk/proposals/<proposal_id>/dismiss', methods=['POST'])
+def dismiss_proposal(proposal_id):
+    """A latched no. The signal is never proposed again — see desk.signal_is_ruled_on."""
+    prop = _desk.decide_proposal(proposal_id, 'dismissed')
+    if prop is None:
+        return jsonify({'error': 'proposal not found'}), 404
+    return jsonify({'ok': True, 'proposal': prop})
 
 
 @bp.route('/api/desk/brief', methods=['POST'])

@@ -117,6 +117,7 @@ def _empty_store() -> dict:
         'voices': {},
         'campaigns': {},
         'ledger': [],
+        'proposals': {},
         'voices_seeded': False,
     }
 
@@ -140,6 +141,7 @@ def _read_store() -> dict:
     data.setdefault('voices', {})
     data.setdefault('campaigns', {})
     data.setdefault('ledger', [])
+    data.setdefault('proposals', {})
     data.setdefault('voices_seeded', False)
     return data
 
@@ -503,6 +505,107 @@ def voice_brief(name: str, *, recent: int = 12) -> str:
 # carries a THESIS and an agenda note explaining why it is running now, so the
 # Board surface can answer "what is happening this month, and why" rather than
 # just listing pending items.
+
+# -- triage: what POSY thinks is worth saying ---------------------------------
+#
+# THE REGEX WAS IN THE WRONG SEAT. `score_signal` is a keyword heuristic, and
+# until now it was the only thing deciding what deserved a post — the human then
+# read every row and picked. Ron's expectation, and the spec's §2 Incubator
+# ("scores signal into candidate stories and DISCARDS MOST OF IT"), is that the
+# writer proposes and the human approves the SELECTION. With 120 signals in the
+# feed the difference is the whole product: reading 120 rows does not scale, and
+# the score cannot explain itself.
+#
+# So a proposal is Posy's argument for one post: which signal, which voice, and
+# WHY — in her words, checkable against the signal it names. Two gates follow,
+# and they ask different questions:
+#
+#   accept a proposal  -> "is this worth saying?"      -> triggers the draft
+#   release a draft    -> "is this the right way to say it?"  (the Queue, existing)
+#
+# DISMISSAL IS LATCHED, deliberately copying `automation_suggestions`: a "no"
+# that does not survive means the same suggestion returns next cycle and the
+# human learns to ignore the surface. The latch is keyed on the SIGNAL id, not
+# the proposal id — a fresh proposal for the same signal is the same ask wearing
+# a new id, which is exactly how `preference-1ba8d678` came back from the dead.
+PROPOSAL_STATES = ('proposed', 'accepted', 'dismissed')
+
+
+def add_proposal(signal_id: str, voice: str, why: str, *,
+                 campaign_id: str | None = None) -> dict | None:
+    """Record one of Posy's suggestions. Returns None if it was already ruled on."""
+    if not is_voice(voice):
+        raise ValueError(f'unknown voice {voice!r}; expected one of {voice_names()}')
+    with _store_lock:
+        store = _read_store()
+        props = store.setdefault('proposals', {})
+        # Never re-offer a signal the human has already ruled on, and never
+        # double-propose one that is already pending a decision.
+        for p in props.values():
+            if p.get('signal_id') == signal_id and p.get('state') != 'dismissed':
+                return None
+            if p.get('signal_id') == signal_id and p.get('state') == 'dismissed':
+                return None
+        prop = {
+            'id': _new_id('prop'),
+            'signal_id': signal_id,
+            'voice': voice,
+            'why': (why or '').strip(),
+            'campaign_id': campaign_id,
+            'state': 'proposed',
+            'created_at': now_iso(),
+            'decided_at': None,
+            'draft_dispatch': None,
+        }
+        props[prop['id']] = prop
+        _write_store(store)
+        return prop
+
+
+def list_proposals(state: str | None = 'proposed') -> list[dict]:
+    with _store_lock:
+        rows = list((_read_store().get('proposals') or {}).values())
+    if state:
+        rows = [r for r in rows if r.get('state') == state]
+    rows.sort(key=lambda r: r.get('created_at') or '', reverse=True)
+    return rows
+
+
+def get_proposal(proposal_id: str) -> dict | None:
+    with _store_lock:
+        return (_read_store().get('proposals') or {}).get(proposal_id)
+
+
+def decide_proposal(proposal_id: str, state: str, *,
+                    draft_dispatch: str | None = None) -> dict | None:
+    if state not in PROPOSAL_STATES:
+        raise ValueError(f'unknown proposal state {state!r}')
+    with _store_lock:
+        store = _read_store()
+        prop = (store.get('proposals') or {}).get(proposal_id)
+        if not prop:
+            return None
+        prop['state'] = state
+        prop['decided_at'] = now_iso()
+        if draft_dispatch:
+            prop['draft_dispatch'] = draft_dispatch
+        _write_store(store)
+        return prop
+
+
+def signal_is_ruled_on(signal_id: str) -> bool:
+    """True once the human has accepted or dismissed a proposal for this signal.
+
+    Consulted at PROPOSAL time so a dismissed signal never re-enters the list —
+    the same shape as `automation_suggestions.is_decided`, and for the same
+    reason: a "no" recorded only against a row id is not a "no" at all.
+    """
+    with _store_lock:
+        for p in (_read_store().get('proposals') or {}).values():
+            if p.get('signal_id') == signal_id and p.get('state') in ('accepted', 'dismissed'):
+                return True
+    return False
+
 
 CAMPAIGN_STATES = ('proposed', 'running', 'paused', 'done', 'dropped')
 

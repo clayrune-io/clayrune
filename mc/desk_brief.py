@@ -83,6 +83,92 @@ def platform_for(voice: str) -> str:
         return 'x'
 
 
+def build_triage_brief(signals: list[dict], *, voices: list[str],
+                       campaign: dict | None = None,
+                       max_picks: int = 5) -> str:
+    """Ask Posy WHICH signals are worth a post, and in which voice.
+
+    This is the judgement `score_signal` was standing in for. A keyword regex
+    cannot tell a shipped feature from a chore that happens to say "shipped", and
+    it cannot explain itself — so the human was left reading every row. With 120
+    signals in the feed that does not scale, which is the whole reason this
+    exists.
+
+    The instruction to DISCARD is the load-bearing part. The spec requires that a
+    period with nothing worth saying produces nothing, so the brief has to make
+    proposing fewer items the successful outcome rather than a failure to fill a
+    quota. An agent asked for "the best five" will always find five.
+    """
+    lines = [
+        'You are the Desk\'s editor for one pass. Read what happened across the '
+        'projects below and decide WHICH items deserve a post — and which voice '
+        'should carry each one.',
+        '',
+        'YOU ARE NOT WRITING POSTS IN THIS PASS. You are proposing. A human '
+        'accepts or dismisses each proposal, and only an accepted one gets '
+        'drafted. Keep each `why` to one or two sentences.',
+        '',
+        f'PICK AT MOST {max_picks}. Picking FEWER is the better answer whenever '
+        'the rest are not worth a reader\'s attention — a period with nothing '
+        'worth saying is required to produce nothing. Do not fill a quota. If '
+        'none of these deserve a post, say so in one line and propose nothing.',
+        '',
+        '── THE VOICES AVAILABLE ──',
+    ]
+    for v in voices:
+        try:
+            rec = _desk.get_voice(v) or {}
+        except ValueError:
+            continue
+        lines.append(f'  {v} -> posts to {rec.get("platform") or "?"}. '
+                     f'{rec.get("register") or ""}')
+    lines += ['', 'The platform comes with the voice. A story that suits both '
+              'gets proposed twice, once per voice, and will be WRITTEN twice '
+              'rather than cross-posted — the platforms demote a copy-paste.']
+
+    if campaign:
+        lines += [
+            '',
+            '── THE RUNNING CAMPAIGN ──',
+            f'Title: {campaign.get("title")}',
+            f'Thesis: {campaign.get("thesis")}',
+            f'Why it is running now: {campaign.get("agenda") or "(not stated)"}',
+            'Prefer items that ARGUE this thesis. An item that cannot be made to '
+            'serve it is usually not worth a post right now, however interesting.',
+        ]
+
+    recent = _desk.list_ledger(limit=10)
+    if recent:
+        lines += ['', '── WHAT WE HAVE ALREADY POSTED (do not repeat it) ──']
+        for p in recent:
+            lines.append(f'  ({p.get("published_at","")[:10]}, {p.get("platform")}) '
+                         f'{(p.get("body") or "")[:160]}')
+
+    lines += ['', f'── WHAT HAPPENED ({len(signals)} items, most will not be posts) ──']
+    for s in signals:
+        lines.append(
+            f'  [{s.get("id")}] {s.get("occurred_at","")[:10]} '
+            f'{s.get("project_id")} / {s.get("kind")}: {(s.get("summary") or "")[:200]}')
+
+    lines += [
+        '',
+        '── HOW TO DELIVER IT ──',
+        'POST each pick, one call per proposal:',
+        '  curl -s -X POST http://localhost:5199/api/desk/proposals \\',
+        "    -H 'Content-Type: application/json' \\",
+        '    -d \'{"signal_id":"<the [id] above>","voice":"<one of the voices>",'
+        '"why":"..."}\'',
+        '',
+        '`why` is read by a human deciding in about three seconds. Say what the '
+        'story IS and who it is for — not that the item "looks significant". '
+        'Name the angle, not the category.',
+        '',
+        'Do not invent signals. Every proposal must cite an id from the list '
+        'above, because the human checks the claim against it.',
+    ]
+    return '\n'.join(lines)
+
+
 def build_brief(signal: dict, *, voice: str | None = None,
                 campaign: dict | None = None,
                 project_name: str | None = None) -> str:

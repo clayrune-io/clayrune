@@ -37,6 +37,8 @@ let _deskSignals = [];
 let _deskLoading = false;
 let _deskHarvesting = false;
 let _deskDrafting = new Set();
+let _deskProposals = [];
+let _deskTriaging = false;
 
 // ── data ────────────────────────────────────────────────────────────────────
 
@@ -266,7 +268,7 @@ async function openDesk() {
     if (entry.minimized) restoreModal(DESK_MODAL_ID);
     focusModal(DESK_MODAL_ID);
     renderDesk();
-    _loadDesk(); _loadDeskSignals(); _hydrateAllSocial();
+    _loadDesk(); _loadDeskSignals(); _loadDeskProposals(); _hydrateAllSocial();
     return;
   }
 
@@ -300,6 +302,7 @@ async function openDesk() {
   renderDesk();
   _loadDesk();
   _loadDeskSignals();
+  _loadDeskProposals();
   _hydrateAllSocial();   // the Queue surface reads the same hydrated projects
 }
 
@@ -349,6 +352,10 @@ function renderDesk() {
       ${labels[t]}${t === 'queue' && pending ? ` <span class="desk-tab-badge">${pending}</span>` : ''}
     </button>`).join('') + `
     <span style="flex:1"></span>
+    <button class="desk-triage-btn" onclick="deskTriage()" ${_deskTriaging ? 'disabled' : ''}
+      title="Ask Posy which of these are worth posting, and in which voice">
+      ${_deskTriaging ? 'Weighing…' : "What's worth saying?"}
+    </button>
     <button class="desk-harvest-btn" onclick="deskHarvest()" ${_deskHarvesting ? 'disabled' : ''}
       title="Read every project's new commits and shipped backlog items into the feed">
       ${_deskHarvesting ? 'Reading the projects…' : 'Read the projects'}
@@ -362,6 +369,58 @@ function renderDesk() {
   else if (_deskTab === 'queue') _renderQueueInto(bodyEl);
   else if (_deskTab === 'calendar') bodyEl.innerHTML = _renderCalendar();
   else bodyEl.innerHTML = _renderLedger();
+}
+
+// TRIAGE — Posy decides what is worth saying, you approve the SELECTION.
+//
+// The feed can hold hundreds of signals. Reading them all to find the two worth
+// posting is exactly the work this surface exists to remove, and a keyword score
+// cannot do it — it cannot tell a shipped feature from a chore containing the
+// word "shipped", and it cannot explain itself. So Posy reads the feed and
+// proposes; each proposal cites its signal and says WHY in her words.
+async function deskTriage() {
+  if (_deskTriaging) return;
+  _deskTriaging = true;
+  renderDesk();
+  try {
+    const out = await _deskFetch('/api/desk/triage', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' }, body: '{}',
+    });
+    if (typeof showToast === 'function') {
+      showToast(out.nothing_to_triage
+        ? 'Nothing left to weigh — every signal is used or already ruled on.'
+        : `Posy is weighing ${out.considering} signals. Her picks land here.`);
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not start triage: ' + e.message, 4000);
+  } finally {
+    _deskTriaging = false;
+    await _loadDeskProposals();
+  }
+}
+
+async function _loadDeskProposals() {
+  try {
+    _deskProposals = await _deskFetch('/api/desk/proposals');
+  } catch (e) { _deskProposals = []; }
+  if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// Accepting IS the instruction to write — one gate here ("worth saying?"), then
+// the Queue's separate gate ("said right?"). Never merged.
+async function deskDecideProposal(id, decision) {
+  try {
+    const out = await _deskFetch(`/api/desk/proposals/${encodeURIComponent(id)}/${decision}`,
+                                 { method: 'POST' });
+    if (typeof showToast === 'function') {
+      showToast(decision === 'accept'
+        ? `Posy is drafting the ${out.platform} post — it lands in the Queue.`
+        : 'Dismissed. That signal will not be suggested again.');
+    }
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not record that: ' + e.message, 4000);
+  }
+  await Promise.all([_loadDeskProposals(), _loadDeskSignals()]);
 }
 
 // THIS IS WHAT A RUNNING CAMPAIGN ACTUALLY DOES. Until now it did nothing: the
@@ -506,7 +565,29 @@ function _renderBoard() {
       project's new commits and shipped backlog items in.
     </div>`;
 
+  // POSY'S PICKS sit ABOVE the raw feed, because they are the answer to the
+  // question the feed only poses. The feed stays visible underneath — nothing is
+  // hidden, and a human who disagrees with her can still go and look.
+  const propHTML = _deskProposals.length ? `
+    ${_deskSectionHTML('Posy suggests', `${_deskProposals.length} worth saying, out of everything below`)}
+    <div class="desk-proposals">${_deskProposals.map(p => `
+      <div class="desk-proposal">
+        <div class="desk-proposal-head">
+          <span class="desk-voice-chip">${esc(p.voice)}</span>
+          <span class="desk-platform">${esc((p.signal && p.signal.project_id) || '')}</span>
+          <span class="desk-proposal-signal">${esc((p.signal && p.signal.summary) || '(signal missing)')}</span>
+        </div>
+        <div class="desk-proposal-why">${esc(p.why)}</div>
+        <div class="desk-proposal-actions">
+          <button class="desk-prop-accept" onclick="deskDecideProposal('${esc(p.id)}','accept')"
+            title="Worth saying — Posy drafts it and it lands in the Queue">Draft it</button>
+          <button class="desk-prop-dismiss" onclick="deskDecideProposal('${esc(p.id)}','dismiss')"
+            title="Not worth saying. This signal will not be suggested again">Not this</button>
+        </div>
+      </div>`).join('')}</div>` : '';
+
   return kpiHTML
+    + propHTML
     + `<div class="desk-section">
          <span class="desk-section-label">Campaigns</span>
          ${camps.length ? '<span class="desk-section-hint">what we are arguing, and why now</span>' : ''}
@@ -592,6 +673,8 @@ window.openDesk = openDesk;
 window.deskTab = deskTab;
 window.deskHarvest = deskHarvest;
 window.deskDraft = deskDraft;
+window.deskTriage = deskTriage;
+window.deskDecideProposal = deskDecideProposal;
 window.deskNewCampaign = deskNewCampaign;
 window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
