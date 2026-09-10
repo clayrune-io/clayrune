@@ -35,7 +35,7 @@ def ctx(tmp_path, monkeypatch):
 
     sig = desk.append_signal('p', 'release', 'Shipped drag-to-hire', ref='abc123')
     project = {'id': 'p', 'social_queue': [{
-        'id': 'd1', 'project_id': 'p', 'platform': 'x', 'voice': 'ron',
+        'id': 'd1', 'project_id': 'p', 'platform': 'x', 'voice': 'personal',
         'body': 'Shipped drag-to-hire today. Three days, two rewrites.',
         'signal_id': sig['id'], 'status': 'approved', 'originated': False,
     }]}
@@ -61,7 +61,7 @@ def test_marking_posted_writes_a_ledger_row(ctx):
 
     rows = desk.list_ledger()
     assert len(rows) == 1
-    assert rows[0]['platform'] == 'x' and rows[0]['voice'] == 'ron'
+    assert rows[0]['platform'] == 'x' and rows[0]['voice'] == 'personal'
     assert rows[0]['url'] == 'https://x.com/RanLevi15/status/1'
     assert rows[0]['signal_id'] == ctx.signal_id
 

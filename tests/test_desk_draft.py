@@ -46,54 +46,54 @@ def _signal(store, **kw):
 
 
 def test_voice_implies_platform(store):
-    assert desk_brief.platform_for('ron') == 'x'
-    assert desk_brief.platform_for('clayrune') == 'linkedin'
+    assert desk_brief.platform_for('personal') == 'x'
+    assert desk_brief.platform_for('product') == 'linkedin'
 
 
 def test_brief_carries_the_ref_so_a_claim_is_checkable(store):
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'abc123' in b
     assert 'Shipped drag-to-hire' in b
 
 
 def test_brief_states_what_a_link_costs_on_x(store):
     """A writer who does not know a link costs 13x will add one every time."""
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert '$0.015' in b and '$0.200' in b
 
 
 def test_brief_warns_linkedin_about_slop_suppression(store):
-    b = desk_brief.build_brief(_signal(store), voice='clayrune')
+    b = desk_brief.build_brief(_signal(store), voice='product')
     assert 'Share on LinkedIn' in b
     assert '40%' in b, 'LinkedIn suppresses classifier-flagged AI content'
 
 
 def test_brief_carries_verbatim_rewrites_not_a_summary(store):
-    store.record_edit('ron',
+    store.record_edit('personal',
                       before='We are thrilled to leverage synergies',
                       after='I rewrote the scheduler and it came out slower.')
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'I rewrote the scheduler and it came out slower.' in b
 
 
 def test_brief_names_the_earlier_post_when_we_already_said_it(store):
     store.record_published(
-        platform='x', voice='ron',
+        platform='x', voice='personal',
         body='Shipped drag-to-hire, now live and it took three days')
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'ALREADY SAID' in b
     assert 'not worth a second post' in b
 
 
 def test_brief_argues_the_campaign_thesis_when_there_is_one(store):
     camp = store.create_campaign('Agent persistence', 'Clayrune keeps agents alive')
-    b = desk_brief.build_brief(_signal(store), voice='ron', campaign=camp)
+    b = desk_brief.build_brief(_signal(store), voice='personal', campaign=camp)
     assert 'Clayrune keeps agents alive' in b
     assert 'Do not merely report the event' in b
 
 
 def test_brief_demands_a_teaching_block_and_forbids_publishing(store):
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'teaching` is REQUIRED' in b
     assert 'You do not publish and you cannot' in b
     assert 'PENDING' in b
@@ -101,7 +101,7 @@ def test_brief_demands_a_teaching_block_and_forbids_publishing(store):
 
 def test_brief_permits_saying_nothing(store):
     """A period with nothing worth saying produces nothing — a requirement."""
-    b = desk_brief.build_brief(_signal(store), voice='ron')
+    b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'post nothing' in b
 
 
@@ -143,7 +143,7 @@ def _post_signal(client):
 
 def test_draft_dispatches_posy_not_the_default_agent(client):
     sig = _post_signal(client)
-    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'ron'})
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'personal'})
     assert r.status_code == 202
     assert r.get_json()['session_id'] == 'sess-123'
 
@@ -157,7 +157,7 @@ def test_draft_dispatches_posy_not_the_default_agent(client):
 
 def test_platform_follows_the_voice(client):
     sig = _post_signal(client)
-    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'clayrune'})
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'product'})
     assert r.get_json()['platform'] == 'linkedin'
 
 
@@ -225,7 +225,7 @@ def test_editing_a_draft_body_teaches_its_voice(store, monkeypatch, tmp_path):
     saved = {}
     project = {'id': 'p', 'social_queue': [{
         'id': 'd1', 'body': 'Excited to announce our game-changing feature!',
-        'voice': 'ron', 'platform': 'x', 'status': 'pending',
+        'voice': 'personal', 'platform': 'x', 'status': 'pending',
     }]}
     monkeypatch.setattr(project_routes, 'load_project', lambda pid: project)
     monkeypatch.setattr(project_routes, 'save_project',
@@ -238,7 +238,7 @@ def test_editing_a_draft_body_teaches_its_voice(store, monkeypatch, tmp_path):
         'body': 'Shipped drag-to-hire. Three days, two rewrites.'})
     assert r.status_code == 200
 
-    rewrites = store.get_voice('ron')['rewrites']
+    rewrites = store.get_voice('personal')['rewrites']
     assert len(rewrites) == 1
     assert rewrites[0]['before'].startswith('Excited to announce')
     assert rewrites[0]['after'].startswith('Shipped drag-to-hire')
@@ -259,8 +259,8 @@ def test_a_draft_with_no_voice_teaches_nothing(store, monkeypatch):
     app.register_blueprint(project_routes.bp)
     app.test_client().patch('/api/project/p/social/queue/d1',
                             json={'body': 'entirely different replacement text'})
-    assert store.get_voice('ron')['rewrites'] == []
-    assert store.get_voice('clayrune')['rewrites'] == []
+    assert store.get_voice('personal')['rewrites'] == []
+    assert store.get_voice('product')['rewrites'] == []
 
 
 def test_a_voice_store_failure_never_costs_the_edit(store, monkeypatch):
@@ -268,7 +268,7 @@ def test_a_voice_store_failure_never_costs_the_edit(store, monkeypatch):
     from mc.blueprints import project_routes
     saved = {}
     project = {'id': 'p', 'social_queue': [
-        {'id': 'd1', 'body': 'before text', 'voice': 'ron', 'status': 'pending'}]}
+        {'id': 'd1', 'body': 'before text', 'voice': 'personal', 'status': 'pending'}]}
     monkeypatch.setattr(project_routes, 'load_project', lambda pid: project)
     monkeypatch.setattr(project_routes, 'save_project',
                         lambda pid, d: saved.update({'d': d}))
@@ -298,10 +298,10 @@ def test_a_desk_draft_keeps_its_signal_and_teaching(monkeypatch):
     app.config['TESTING'] = True
     app.register_blueprint(project_routes.bp)
     r = app.test_client().post('/api/project/p/social/queue', json={
-        'body': 'Shipped drag-to-hire.', 'platform': 'x', 'voice': 'ron',
+        'body': 'Shipped drag-to-hire.', 'platform': 'x', 'voice': 'personal',
         'signal_id': 'sig-1', 'teaching': 'Ships-beat-promises angle; X rewards it.'})
     item = r.get_json()['item']
     assert item['signal_id'] == 'sig-1'
     assert item['teaching'].startswith('Ships-beat-promises')
-    assert item['voice'] == 'ron'
+    assert item['voice'] == 'personal'
     assert item['status'] == 'pending', 'a Desk draft always lands pending'

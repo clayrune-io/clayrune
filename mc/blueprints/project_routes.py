@@ -1416,7 +1416,7 @@ def mark_social_queue_item_posted(project_id, item_id):
         from mc import desk as _desk
         post = _desk.record_published(
             platform=item.get('platform') or 'unspecified',
-            voice=item.get('voice') or 'ron',
+            voice=item.get('voice') or _desk.default_voice() or '',
             body=item.get('body') or '',
             signal_id=item.get('signal_id'),
             project_id=project_id,

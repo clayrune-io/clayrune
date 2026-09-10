@@ -15,8 +15,9 @@ says already exists a dozen times over.
 The five stores, and who owns them:
 
   * SIGNAL FEED   (here, append-only jsonl) — what happened across all projects.
-  * VOICE PROFILES(here) — how `ron` and `clayrune` each sound, maintained by
-                            diffing every edit Ron makes to a draft.
+  * VOICE PROFILES(here) — how each voice sounds, maintained by diffing every
+                            edit the human makes to a draft. USER DATA, not a
+                            constant: see STARTER_VOICES below.
   * CAMPAIGNS     (here) — live arcs, each with a thesis and a reason to run now.
   * STORY LEDGER  (here) — what was published, so the Desk stops repeating itself.
   * DRAFT QUEUE   (NOT here) — stays `social_queue` on the project record, with
@@ -69,11 +70,31 @@ _signals_lock = threading.Lock()
 
 STORE_VERSION = 1
 
-# The two voices are fixed by Ron's 2026-09-09 decision and are NOT variants of
-# one another: `ron` is first person, a builder saying what he built and what it
-# cost him, and owns X. `clayrune` is the product speaking about itself, and
-# owns LinkedIn. Adding a third is a product decision, not a config change.
-VOICES = ('ron', 'clayrune')
+# VOICES ARE USER DATA, NOT SOURCE. This was `VOICES = ('ron', 'clayrune')` — one
+# operator's identity, hardcoded in a file that ships to strangers, which is
+# exactly what CLAUDE.md's "nothing operator-specific goes in the repo" rule
+# forbids. A fresh install would have handed someone a voice named after another
+# person. Caught 2026-09-10 by Ron, who asked the right question: what do other
+# users do, and can a voice be per-project?
+#
+# So the list now lives in the store and the seed below is neutral. The two
+# starter voices are ROLES rather than names, which is what was actually load-
+# bearing about the original pair: they hold different standing to make claims.
+# `personal` may say "I got this wrong for three weeks"; `product` may not say it
+# in the first person. That distinction is why a story gets written twice from
+# one signal rather than cross-posted, and it survives being renamed.
+#
+# An existing store keeps whatever voices it already has — see `_seed_voices`.
+STARTER_VOICES = (
+    {'name': 'personal', 'platform': 'x',
+     'register': 'First person. A builder saying what they built and what it cost them.'},
+    {'name': 'product', 'platform': 'linkedin',
+     'register': 'The product speaking about itself. Never first person.'},
+)
+
+# `scope` mirrors the secrets vault: 'global', or a project id. Cheap to carry in
+# the model now and expensive to retrofit later; the UI only offers global today.
+VOICE_SCOPE_GLOBAL = 'global'
 
 # How many published posts the repetition check looks back over. Not a cap on
 # the ledger — the ledger keeps everything — just the window that "have we said
@@ -96,6 +117,7 @@ def _empty_store() -> dict:
         'voices': {},
         'campaigns': {},
         'ledger': [],
+        'voices_seeded': False,
     }
 
 
@@ -118,6 +140,7 @@ def _read_store() -> dict:
     data.setdefault('voices', {})
     data.setdefault('campaigns', {})
     data.setdefault('ledger', [])
+    data.setdefault('voices_seeded', False)
     return data
 
 
@@ -283,9 +306,15 @@ def score_signal(kind: str, summary: str | None, detail: str | None = None) -> f
 # is IMPLICIT: inferred from post history, not something you can open and
 # correct. This one is an editable object, which is the whole differentiator.
 
-def _empty_voice(name: str) -> dict:
+_VOICE_NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
+
+
+def _empty_voice(name: str, *, platform: str = 'x',
+                 scope: str = VOICE_SCOPE_GLOBAL) -> dict:
     return {
         'name': name,
+        'platform': platform,  # which platform this voice posts to
+        'scope': scope,        # 'global' or a project id
         'register': '',
         'banned': [],          # words and constructions this voice will not use
         'never_claims': [],    # claims this voice will not make
@@ -295,23 +324,104 @@ def _empty_voice(name: str) -> dict:
     }
 
 
+def _seed_voices(store: dict) -> bool:
+    """Give a fresh install two starter voices. Returns True if it wrote any.
+
+    SEEDING IS GATED ON A FLAG, NOT ON EMPTINESS. Inferring "fresh" from "no
+    voices" cannot tell a new install apart from a user who deleted the starters
+    on purpose — that version resurrected them on the next read, which is a store
+    overruling a human's deletion. Caught by
+    `test_an_existing_store_is_never_reseeded`.
+    """
+    if store.get('voices_seeded') or store.get('voices'):
+        store['voices_seeded'] = True
+        return False
+    store['voices_seeded'] = True
+    for spec in STARTER_VOICES:
+        store.setdefault('voices', {})[spec['name']] = _empty_voice(
+            spec['name'], platform=spec['platform'])
+        store['voices'][spec['name']]['register'] = spec['register']
+    return True
+
+
+def voice_names(project_id: str | None = None) -> list[str]:
+    """Voices usable here: the global ones, plus any scoped to this project."""
+    with _store_lock:
+        store = _read_store()
+        # _seed_voices sets `voices_seeded` even when it writes no voices,
+        # so persist whenever the flag was not already on disk.
+        had_flag = store.get('voices_seeded')
+        _seed_voices(store)
+        if not had_flag:
+            _write_store(store)
+        out = []
+        for name, v in store['voices'].items():
+            scope = v.get('scope') or VOICE_SCOPE_GLOBAL
+            if scope == VOICE_SCOPE_GLOBAL or scope == project_id:
+                out.append(name)
+    return sorted(out)
+
+
+def is_voice(name: str, project_id: str | None = None) -> bool:
+    return name in voice_names(project_id)
+
+
+def default_voice(project_id: str | None = None) -> str | None:
+    """The first available voice. There is NO hardcoded fallback: a literal
+    default name was how one operator's identity leaked into five call sites."""
+    names = voice_names(project_id)
+    return names[0] if names else None
+
+
 def get_voice(name: str) -> dict:
-    if name not in VOICES:
-        raise ValueError(f'unknown voice {name!r}; expected one of {VOICES}')
+    if not is_voice(name):
+        raise ValueError(f'unknown voice {name!r}; expected one of {voice_names()}')
     with _store_lock:
         store = _read_store()
         return store['voices'].get(name) or _empty_voice(name)
 
 
-def list_voices() -> list[dict]:
-    return [get_voice(v) for v in VOICES]
+def list_voices(project_id: str | None = None) -> list[dict]:
+    return [get_voice(v) for v in voice_names(project_id)]
+
+
+def create_voice(name: str, *, platform: str = 'x', register: str = '',
+                 scope: str = VOICE_SCOPE_GLOBAL) -> dict:
+    """Add a voice. Names are slug-shaped because they appear in briefs and URLs."""
+    name = (name or '').strip().lower()
+    if not _VOICE_NAME.match(name):
+        raise ValueError('a voice name is 1-32 chars, lowercase letters, digits, - or _')
+    with _store_lock:
+        store = _read_store()
+        _seed_voices(store)
+        if name in store['voices']:
+            raise ValueError(f'a voice named {name!r} already exists')
+        v = _empty_voice(name, platform=platform, scope=scope or VOICE_SCOPE_GLOBAL)
+        v['register'] = register
+        v['updated_at'] = now_iso()
+        store['voices'][name] = v
+        _write_store(store)
+        return v
+
+
+def delete_voice(name: str) -> bool:
+    """Forget a voice AND everything it learned. Destructive on purpose — the
+    rewrites are the only copy of what the human taught it."""
+    with _store_lock:
+        store = _read_store()
+        if name not in (store.get('voices') or {}):
+            return False
+        del store['voices'][name]
+        _write_store(store)
+        return True
 
 
 def update_voice(name: str, patch: dict) -> dict:
     """Human-edited fields only. Rewrites are appended by record_edit()."""
-    if name not in VOICES:
-        raise ValueError(f'unknown voice {name!r}; expected one of {VOICES}')
-    allowed = {'register', 'banned', 'never_claims', 'product_refs'}
+    if not is_voice(name):
+        raise ValueError(f'unknown voice {name!r}; expected one of {voice_names()}')
+    allowed = {'register', 'banned', 'never_claims', 'product_refs',
+               'platform', 'scope'}
     with _store_lock:
         store = _read_store()
         voice = store['voices'].get(name) or _empty_voice(name)
@@ -334,8 +444,8 @@ def record_edit(name: str, before: str, after: str,
     and none of them could be verified. An edit is a better signal than a like
     anyway: it is the human saying, in their own words, what the right output was.
     """
-    if name not in VOICES:
-        raise ValueError(f'unknown voice {name!r}; expected one of {VOICES}')
+    if not is_voice(name):
+        raise ValueError(f'unknown voice {name!r}; expected one of {voice_names()}')
     before = (before or '').strip()
     after = (after or '').strip()
     if not before or not after or before == after:
@@ -406,17 +516,63 @@ def list_campaigns(state: str | None = None) -> list[dict]:
     return rows
 
 
-def create_campaign(title: str, thesis: str, *, voice: str = 'ron',
+def _normalise_voices(voices) -> list[str]:
+    """Accept a list, a single name, or nothing, and validate every entry."""
+    if not voices:
+        d = default_voice()
+        return [d] if d else []
+    if isinstance(voices, str):
+        voices = [voices]
+    out = []
+    for v in voices:
+        if not is_voice(v):
+            raise ValueError(f'unknown voice {v!r}; expected one of {voice_names()}')
+        if v not in out:
+            out.append(v)
+    return out
+
+
+def campaign_platforms(camp: dict) -> list[str]:
+    """Which platforms a campaign reaches — derived, never stored separately.
+
+    A campaign does NOT carry a platform of its own. Platform is a property of
+    the voice, so storing both would let them disagree; this reads them back.
+    """
+    seen = []
+    for name in camp.get('voices') or ([camp['voice']] if camp.get('voice') else []):
+        try:
+            p = (get_voice(name) or {}).get('platform') or ''
+        except ValueError:
+            continue
+        if p and p not in seen:
+            seen.append(p)
+    return seen
+
+
+def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
                     agenda: str = '', project_ids: Iterable[str] = (),
                     planned: Iterable[str] = ()) -> dict:
-    if voice not in VOICES:
-        raise ValueError(f'unknown voice {voice!r}; expected one of {VOICES}')
+    # A CAMPAIGN CARRIES A SET OF VOICES, NOT ONE. Ron asked whether a campaign
+    # should also pick a platform; the sharper version of his question is that a
+    # single-voice campaign can only ever reach ONE room, and a thesis usually
+    # deserves both. So the campaign is the ARGUMENT and the voices are how it is
+    # carried — the same claim written twice, once per voice, never cross-posted
+    # (which the platforms punish anyway).
+    #
+    # Platform stays derived from the voice. See `campaign_platforms`.
+    #
+    # `voice=` is still accepted so older callers and stored records keep working.
+    voices = _normalise_voices(voices or voice)
+    if not voices:
+        raise ValueError('no voices exist yet; create one before a campaign')
     camp = {
         'id': _new_id('camp'),
         'title': (title or '').strip(),
         'thesis': (thesis or '').strip(),
         'agenda': agenda,
-        'voice': voice,
+        'voices': voices,
+        # Kept in sync for anything still reading the singular field.
+        'voice': voices[0],
         'project_ids': list(project_ids),
         'planned': list(planned),   # intended posts, in order
         'state': 'proposed',
@@ -431,12 +587,27 @@ def create_campaign(title: str, thesis: str, *, voice: str = 'ron',
 
 
 def update_campaign(campaign_id: str, patch: dict) -> dict | None:
-    allowed = {'title', 'thesis', 'agenda', 'voice', 'project_ids',
+    allowed = {'title', 'thesis', 'agenda', 'voice', 'voices', 'project_ids',
                'planned', 'state'}
-    if 'state' in (patch or {}) and patch['state'] not in CAMPAIGN_STATES:
+    patch = dict(patch or {})
+    if 'state' in patch and patch['state'] not in CAMPAIGN_STATES:
         raise ValueError(f"unknown state {patch['state']!r}")
-    if 'voice' in (patch or {}) and patch['voice'] not in VOICES:
-        raise ValueError(f"unknown voice {patch['voice']!r}")
+    # Either field may arrive; both end up consistent so nothing downstream has
+    # to know which one the caller used.
+    if 'voices' in patch or 'voice' in patch:
+        # An EXPLICIT empty list is a request to have no voices, which is not a
+        # campaign — refuse it. Falling through to `_normalise_voices(None)` here
+        # silently substituted the default instead, so clearing the voices
+        # quietly reassigned the campaign to whichever voice happened to be
+        # first. Caught by `test_voices_can_be_changed_after_the_fact`.
+        raw = patch['voices'] if 'voices' in patch else patch.get('voice')
+        if raw is not None and not raw:
+            raise ValueError('a campaign needs at least one voice')
+        norm = _normalise_voices(raw)
+        if not norm:
+            raise ValueError('a campaign needs at least one voice')
+        patch['voices'] = norm
+        patch['voice'] = norm[0]
     with _store_lock:
         store = _read_store()
         camp = store['campaigns'].get(campaign_id)

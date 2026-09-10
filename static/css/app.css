@@ -7802,6 +7802,25 @@
   }
   .desk-empty b { color: var(--text); }
 
+  /* One row per voice, because the choice is "who says this" and each option
+     carries its own platform and register. A multi-select would hide both. */
+  .camp-voice-picks { display: flex; flex-direction: column; gap: 6px; }
+  .camp-voice-pick {
+    display: flex; align-items: center; gap: 8px; cursor: pointer;
+    padding: 7px 10px; border: 1px solid var(--border); border-radius: 6px;
+    background: var(--surface2); font-size: 12.5px;
+  }
+  .camp-voice-pick:hover { border-color: var(--border2); }
+  .camp-voice-pick:has(input:checked) {
+    border-color: var(--accent); background: var(--accent-dim);
+  }
+  .camp-voice-pick input { width: auto; margin: 0; accent-color: var(--accent); }
+  .camp-voice-name { font-weight: 700; color: var(--text); }
+  .camp-voice-reg {
+    flex: 1; min-width: 0; font-size: 11px; color: var(--text-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+
   .desk-new-campaign {
     flex-shrink: 0; background: transparent; border: 1px dashed var(--border2);
     color: var(--text-dim); font-size: 11px; font-weight: 700;

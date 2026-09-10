@@ -105,15 +105,82 @@ def test_no_signals_path_does_not_explode(monkeypatch):
 
 # -- voice profiles -----------------------------------------------------------
 
-def test_two_voices_and_only_two(store):
-    assert store.VOICES == ('ron', 'clayrune')
-    assert {v['name'] for v in store.list_voices()} == {'ron', 'clayrune'}
+def test_a_fresh_install_seeds_neutral_voices(store):
+    """VOICES USED TO BE A HARDCODED TUPLE containing one operator's name, in a
+    file that ships to strangers — the "nothing operator-specific goes in the
+    repo" rule in CLAUDE.md. A fresh install now gets ROLES, not names."""
+    assert {v['name'] for v in store.list_voices()} == {'personal', 'product'}
     with pytest.raises(ValueError):
         store.get_voice('marketing')
 
 
+def test_no_operator_name_ships_in_the_source():
+    """The rule made enforceable. If someone hardcodes a person's handle as a
+    voice again, this fails rather than shipping to every other install."""
+    for mod in ('mc/desk.py', 'mc/desk_brief.py', 'mc/blueprints/desk_routes.py'):
+        src = (PROJECT_ROOT / mod).read_text(encoding='utf-8')
+        code = '\n'.join(ln for ln in src.splitlines()
+                         if not ln.lstrip().startswith('#'))
+        assert "'ron'" not in code and '"ron"' not in code, f'{mod} names an operator'
+        assert "'clayrune'" not in code, f'{mod} hardcodes a brand as a voice'
+
+
+def test_the_two_starter_voices_hold_different_standing(store):
+    """The pair is not decoration: they own different platforms, which is why a
+    story gets written twice rather than cross-posted."""
+    by_name = {v['name']: v for v in store.list_voices()}
+    assert by_name['personal']['platform'] != by_name['product']['platform']
+
+
+def test_deleting_the_starters_does_not_resurrect_them(store):
+    """Someone who deletes the starters and names their own keeps that choice.
+
+    Seeding is gated on a FLAG, not on "the voices dict is empty" — the latter
+    cannot tell a fresh install from a user who cleared it on purpose, and
+    re-seeded on the next read, which is a store overruling a human.
+    """
+    assert store.voice_names()  # materialise the seed first
+    store.delete_voice('personal')
+    store.delete_voice('product')
+    store.create_voice('mine', platform='x')
+    assert [v['name'] for v in store.list_voices()] == ['mine']
+    assert store.voice_names() == ['mine'], 'a second read must not re-seed'
+
+
+def test_a_user_can_add_and_remove_a_voice(store):
+    v = store.create_voice('newsletter', platform='linkedin', register='plain')
+    assert v['platform'] == 'linkedin'
+    assert 'newsletter' in store.voice_names()
+    assert store.delete_voice('newsletter') is True
+    assert 'newsletter' not in store.voice_names()
+    assert store.delete_voice('newsletter') is False
+
+
+def test_voice_names_are_validated(store):
+    for bad in ('', 'Has Caps', 'has space', 'x' * 33, 'bad!char'):
+        with pytest.raises(ValueError):
+            store.create_voice(bad)
+    with pytest.raises(ValueError):
+        store.create_voice('personal')  # already exists
+
+
+def test_a_voice_can_be_scoped_to_one_project(store):
+    """Ron asked whether a voice could be per-project. It can."""
+    store.create_voice('sidegig', platform='x', scope='other_project')
+    assert 'sidegig' not in store.voice_names('mission_control')
+    assert 'sidegig' in store.voice_names('other_project')
+    assert 'personal' in store.voice_names('other_project'), 'globals stay available'
+
+
+def test_there_is_no_hardcoded_default_voice(store):
+    assert store.default_voice() in ('personal', 'product')
+    store.delete_voice('personal')
+    store.delete_voice('product')
+    assert store.default_voice() is None, 'no literal fallback name'
+
+
 def test_update_voice_ignores_unknown_fields(store):
-    v = store.update_voice('ron', {
+    v = store.update_voice('personal', {
         'register': 'first person, a builder',
         'banned': ['leverage', 'game-changing'],
         'rewrites': ['SHOULD BE IGNORED'],
@@ -125,33 +192,33 @@ def test_update_voice_ignores_unknown_fields(store):
 
 def test_record_edit_learns_from_a_real_edit(store):
     r = store.record_edit(
-        'ron',
+        'personal',
         before='Excited to announce our game-changing new feature!',
         after='Shipped drag-to-hire. Took three days and two rewrites.',
         draft_id='d-1')
     assert r is not None
     assert r['draft_id'] == 'd-1'
-    assert store.get_voice('ron')['rewrites'][-1]['after'].startswith('Shipped')
+    assert store.get_voice('personal')['rewrites'][-1]['after'].startswith('Shipped')
 
 
 def test_cosmetic_edit_teaches_nothing(store):
-    assert store.record_edit('ron', before='Shipped it.', after='Shipped it.') is None
-    assert store.record_edit('ron', before='', after='something') is None
+    assert store.record_edit('personal', before='Shipped it.', after='Shipped it.') is None
+    assert store.record_edit('personal', before='', after='something') is None
     # A single trailing character is noise, not voice.
     assert store.record_edit(
-        'ron',
+        'personal',
         before='Shipped drag-to-hire today and it took three days of rework',
         after='Shipped drag-to-hire today and it took three days of rework.') is None
-    assert store.get_voice('ron')['rewrites'] == []
+    assert store.get_voice('personal')['rewrites'] == []
 
 
 def test_voice_brief_carries_the_actual_rewrites(store):
-    store.update_voice('ron', {'register': 'first person', 'banned': ['leverage']})
-    store.record_edit('ron',
+    store.update_voice('personal', {'register': 'first person', 'banned': ['leverage']})
+    store.record_edit('personal',
                       before='We are thrilled to leverage synergies',
                       after='I rewrote the scheduler. It was slower than the old one.')
-    brief = store.voice_brief('ron')
-    assert 'VOICE: ron' in brief
+    brief = store.voice_brief('personal')
+    assert 'VOICE: personal' in brief
     assert 'leverage' in brief
     assert 'I rewrote the scheduler' in brief, \
         'the brief must carry verbatim rewrites, not a summary of them'
@@ -159,9 +226,9 @@ def test_voice_brief_carries_the_actual_rewrites(store):
 
 def test_voice_brief_shows_only_recent_rewrites(store):
     for i in range(20):
-        store.record_edit('ron', before=f'before number {i} here',
+        store.record_edit('personal', before=f'before number {i} here',
                           after=f'after number {i} entirely different text')
-    brief = store.voice_brief('ron', recent=3)
+    brief = store.voice_brief('personal', recent=3)
     assert 'after number 19' in brief
     assert 'after number 5' not in brief
 
@@ -170,7 +237,7 @@ def test_voice_brief_shows_only_recent_rewrites(store):
 
 def test_campaign_lifecycle(store):
     c = store.create_campaign('Agent persistence', 'Clayrune keeps agents alive',
-                              voice='clayrune', agenda='launch window')
+                              voice='product', agenda='launch window')
     assert c['state'] == 'proposed'
     assert store.update_campaign(c['id'], {'state': 'running'})['state'] == 'running'
     assert len(store.list_campaigns(state='running')) == 1
@@ -194,7 +261,7 @@ def test_update_missing_campaign_returns_none(store):
 # -- ledger + repetition ------------------------------------------------------
 
 def test_ledger_records_and_lists(store):
-    store.record_published(platform='x', voice='ron', body='Shipped the Desk',
+    store.record_published(platform='x', voice='personal', body='Shipped the Desk',
                            project_id='mission_control')
     rows = store.list_ledger()
     assert len(rows) == 1
@@ -204,7 +271,7 @@ def test_ledger_records_and_lists(store):
 
 def test_similar_published_catches_a_re_announcement(store):
     store.record_published(
-        platform='x', voice='ron',
+        platform='x', voice='personal',
         body='Shipped drag-to-hire today: grab an agent off the Floor '
              'and drop it on a project to hire it.')
     hits = store.similar_published(
@@ -217,19 +284,19 @@ def test_similar_published_catches_a_re_announcement(store):
 
 
 def test_a_different_post_is_not_flagged(store):
-    store.record_published(platform='x', voice='ron',
+    store.record_published(platform='x', voice='personal',
                            body='Shipped drag-to-hire today, it took three days')
     assert not store.already_said(
         'The backup restore points now keep ten snapshots plus anything pinned')
 
 
 def test_empty_body_is_never_a_repeat(store):
-    store.record_published(platform='x', voice='ron', body='anything at all here')
+    store.record_published(platform='x', voice='personal', body='anything at all here')
     assert store.similar_published('') == []
 
 
 def test_record_outcome(store):
-    p = store.record_published(platform='x', voice='ron', body='hello world post')
+    p = store.record_published(platform='x', voice='personal', body='hello world post')
     assert store.record_outcome(p['id'], {'likes': 4})['outcome'] == {'likes': 4}
     assert store.record_outcome('post-nope', {'likes': 1}) is None
 
@@ -267,3 +334,47 @@ def test_corrupt_store_degrades_to_empty_not_to_crash(store):
     assert store.list_campaigns() == []
     # And a write after corruption still works rather than raising.
     assert store.create_campaign('t2', 'thesis2')['title'] == 't2'
+
+
+# -- a campaign is an argument, and carries the voices that carry it ----------
+
+def test_a_campaign_can_run_in_more_than_one_voice(store):
+    """Ron's question: should a campaign set the platform? No — but a campaign
+    with only ONE voice can only ever reach one room, and a thesis usually
+    deserves both. So the campaign holds the argument and a SET of voices."""
+    c = store.create_campaign('Agent persistence', 'Clayrune keeps agents alive',
+                              voices=['personal', 'product'])
+    assert c['voices'] == ['personal', 'product']
+    assert set(store.campaign_platforms(c)) == {'x', 'linkedin'}
+
+
+def test_platform_is_derived_from_the_voice_never_stored(store):
+    """Storing both would let them disagree, and a first-person post in the
+    product's voice on the wrong network is the incoherence the split prevents."""
+    c = store.create_campaign('t', 'th', voices=['product'])
+    assert 'platform' not in c
+    assert store.campaign_platforms(c) == ['linkedin']
+
+
+def test_a_single_voice_still_works_and_is_normalised(store):
+    c = store.create_campaign('t', 'th', voice='personal')
+    assert c['voices'] == ['personal']
+    assert c['voice'] == 'personal', 'the singular field stays in sync'
+
+
+def test_duplicate_voices_collapse(store):
+    c = store.create_campaign('t', 'th', voices=['personal', 'personal'])
+    assert c['voices'] == ['personal']
+
+
+def test_a_campaign_rejects_an_unknown_voice_in_the_set(store):
+    with pytest.raises(ValueError):
+        store.create_campaign('t', 'th', voices=['personal', 'nope'])
+
+
+def test_voices_can_be_changed_after_the_fact(store):
+    c = store.create_campaign('t', 'th', voices=['personal'])
+    up = store.update_campaign(c['id'], {'voices': ['product']})
+    assert up['voices'] == ['product'] and up['voice'] == 'product'
+    with pytest.raises(ValueError):
+        store.update_campaign(c['id'], {'voices': []})

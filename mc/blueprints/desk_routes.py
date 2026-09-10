@@ -128,7 +128,7 @@ def add_signal():
 
 @bp.route('/api/desk/voices', methods=['GET'])
 def list_voices():
-    return jsonify(_desk.list_voices())
+    return jsonify(_desk.list_voices(request.args.get('project_id')))
 
 
 @bp.route('/api/desk/voices/<name>', methods=['GET'])
@@ -193,7 +193,8 @@ def create_campaign():
         return jsonify({'error': 'title and thesis are required'}), 400
     try:
         camp = _desk.create_campaign(
-            d['title'], d['thesis'], voice=d.get('voice') or 'ron',
+            d['title'], d['thesis'],
+            voices=d.get('voices') or d.get('voice'),
             agenda=d.get('agenda') or '', project_ids=d.get('project_ids') or [],
             planned=d.get('planned') or [])
     except ValueError as e:
@@ -235,8 +236,8 @@ def record_published():
     d = request.get_json(silent=True) or {}
     if not d.get('platform') or not d.get('body'):
         return jsonify({'error': 'platform and body are required'}), 400
-    voice = d.get('voice') or 'ron'
-    if voice not in _desk.VOICES:
+    voice = d.get('voice') or _desk.default_voice() or ''
+    if not _desk.is_voice(voice):
         return jsonify({'error': f'unknown voice {voice!r}'}), 400
     entry = _desk.record_published(
         platform=d['platform'], voice=voice, body=d['body'],
@@ -282,8 +283,8 @@ def draft():
     sig_id = d.get('signal_id')
     if not sig_id:
         return jsonify({'error': 'signal_id is required'}), 400
-    voice = d.get('voice') or 'ron'
-    if voice not in _desk.VOICES:
+    voice = d.get('voice') or _desk.default_voice() or ''
+    if not _desk.is_voice(voice):
         return jsonify({'error': f'unknown voice {voice!r}'}), 400
 
     signal = next((s for s in _desk.list_signals(limit=100000)
@@ -346,8 +347,8 @@ def preview_brief():
     system and it should never be a black box Ron cannot read.
     """
     d = request.get_json(silent=True) or {}
-    voice = d.get('voice') or 'ron'
-    if voice not in _desk.VOICES:
+    voice = d.get('voice') or _desk.default_voice() or ''
+    if not _desk.is_voice(voice):
         return jsonify({'error': f'unknown voice {voice!r}'}), 400
     signal = next((s for s in _desk.list_signals(limit=100000)
                    if s.get('id') == d.get('signal_id')), None)

@@ -41,10 +41,19 @@ from __future__ import annotations
 
 from mc import desk as _desk
 
-# The two identities, fixed by Ron's 2026-09-09 decision. They are not variants
-# of one another and they own different platforms, so the platform implies the
-# voice and a mismatch is a bug rather than a preference.
-VOICE_PLATFORM = {'ron': 'x', 'clayrune': 'linkedin'}
+# PLATFORM IS A PROPERTY OF THE VOICE, not a separate choice, and that is the
+# answer to "should a campaign set the platform too?" — no. A voice and a
+# platform are one decision: `personal` is first person and posts to X;
+# `product` speaks as the product and posts to LinkedIn. Letting a campaign pick
+# both would let them disagree, and a first-person post in the product's voice on
+# the wrong network is the exact incoherence the split exists to prevent.
+#
+# What a campaign DOES carry is a set of voices (see `voices` on the campaign
+# record), because a thesis often deserves both rooms — written twice, once per
+# voice, never cross-posted.
+#
+# This was a hardcoded {'ron': 'x', 'clayrune': 'linkedin'} dict. It is now read
+# off the voice record so a user-created voice picks its own platform.
 
 # Verified at docs.x.com/x-api/getting-started/pricing on 2026-09-09, and at
 # learn.microsoft.com for LinkedIn's Share on LinkedIn limits. These are in the
@@ -67,15 +76,20 @@ PLATFORM_NOTES = {
 
 
 def platform_for(voice: str) -> str:
-    return VOICE_PLATFORM.get(voice, 'x')
+    """The platform this voice posts to, read off the voice itself."""
+    try:
+        return (_desk.get_voice(voice) or {}).get('platform') or 'x'
+    except ValueError:
+        return 'x'
 
 
-def build_brief(signal: dict, *, voice: str = 'ron',
+def build_brief(signal: dict, *, voice: str | None = None,
                 campaign: dict | None = None,
                 project_name: str | None = None) -> str:
     """Assemble the task text for the drafting agent. Pure string work."""
-    if voice not in _desk.VOICES:
-        raise ValueError(f'unknown voice {voice!r}; expected one of {_desk.VOICES}')
+    voice = voice or _desk.default_voice() or ''
+    if not _desk.is_voice(voice):
+        raise ValueError(f'unknown voice {voice!r}; expected one of {_desk.voice_names()}')
     platform = platform_for(voice)
     pid = signal.get('project_id') or ''
 

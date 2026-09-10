@@ -170,14 +170,23 @@ async function deskNewCampaign() {
         <div class="hint">For your eyes only, on the Board.</div>
       </div>
       <div class="form-group">
-        <label>3. Voice</label>
-        <select id="camp-voice">
-          ${voices.map(v => `<option value="${esc(v.name)}">${esc(v.name)} — ${
-            v.name === 'clayrune' ? 'the product speaking, posts to LinkedIn'
-                                  : 'first person, a builder, posts to X'}</option>`).join('')}
-        </select>
-        <div class="hint">Two voices by decision, one per platform. They are not variants of
-          each other, so a story gets written twice rather than cross-posted.</div>
+        <label>3. Which voices carry it</label>
+        <div class="camp-voice-picks">
+          ${voices.map((v, i) => `
+            <label class="camp-voice-pick">
+              <input type="checkbox" class="camp-voice-cb" value="${esc(v.name)}" ${i === 0 ? 'checked' : ''}>
+              <span class="camp-voice-name">${esc(v.name)}</span>
+              <span class="desk-platform">${esc(v.platform || '')}</span>
+              ${v.register ? `<span class="camp-voice-reg">${esc(v.register)}</span>` : ''}
+            </label>`).join('')}
+        </div>
+        <!-- Pick MORE THAN ONE and the same argument gets written once per
+             voice, never cross-posted. The platform is not a separate choice
+             here: it belongs to the voice, and letting a campaign set both
+             would let them disagree. -->
+        <div class="hint">Pick more than one and the argument gets written once per voice,
+          in each voice's own register. The platform comes with the voice — these are not
+          variants of each other, which is why nothing is ever cross-posted.</div>
       </div>
       <div class="form-group">
         <label>4. Why now <span style="text-transform:none;font-weight:400">(optional)</span></label>
@@ -206,15 +215,17 @@ async function deskSubmitCampaign() {
   const thesis = (document.getElementById('camp-thesis') || {}).value?.trim() || '';
   const title = (document.getElementById('camp-title') || {}).value?.trim() || '';
   const agenda = (document.getElementById('camp-agenda') || {}).value?.trim() || '';
-  const voice = (document.getElementById('camp-voice') || {}).value || '';
+  const picked = Array.from(document.querySelectorAll('.camp-voice-cb'))
+    .filter(cb => cb.checked).map(cb => cb.value);
 
   if (!thesis) return show('The argument is required — without one this is a folder, not a campaign.');
   if (!title) return show('Give it a short name so you can find it on the Board.');
+  if (!picked.length) return show('Pick at least one voice — a campaign has to be spoken by someone.');
 
   try {
     await _deskFetch('/api/desk/campaigns', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ title, thesis, agenda, voice }),
+      body: JSON.stringify({ title, thesis, agenda, voices: picked }),
     });
   } catch (e) {
     // Stays open with everything still typed in it.
@@ -406,7 +417,7 @@ function _renderBoard() {
       <div class="desk-campaign-head">
         <span class="desk-campaign-title">${esc(c.title)}</span>
         <span class="desk-state-chip">${esc(c.state)}</span>
-        <span class="desk-voice-chip">${esc(c.voice)}</span>
+        ${(c.voices || (c.voice ? [c.voice] : [])).map(v => `<span class="desk-voice-chip">${esc(v)}</span>`).join('')}
       </div>
       <div class="desk-campaign-thesis">${esc(c.thesis)}</div>
       ${c.agenda ? `<div class="desk-campaign-agenda"><b>Why now:</b> ${esc(c.agenda)}</div>` : ''}

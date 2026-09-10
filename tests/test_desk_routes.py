@@ -74,9 +74,9 @@ def test_signal_filters(client):
 
 def test_voices_list_and_patch(client):
     names = [v['name'] for v in client.get('/api/desk/voices').get_json()]
-    assert names == ['ron', 'clayrune']
+    assert names == ['personal', 'product']
 
-    r = client.patch('/api/desk/voices/ron', json={'banned': ['leverage']})
+    r = client.patch('/api/desk/voices/personal', json={'banned': ['leverage']})
     assert r.status_code == 200 and r.get_json()['banned'] == ['leverage']
 
 
@@ -87,23 +87,23 @@ def test_unknown_voice_is_404(client):
 
 
 def test_edit_learns_and_reports_when_it_did_not(client):
-    r = client.post('/api/desk/voices/ron/edit', json={
+    r = client.post('/api/desk/voices/personal/edit', json={
         'before': 'Excited to announce our game-changing feature!',
         'after': 'Shipped drag-to-hire. Three days, two rewrites.',
         'draft_id': 'd-1'})
     assert r.status_code == 200 and r.get_json()['learned'] is True
 
     # A cosmetic edit is a real answer, not an error.
-    r2 = client.post('/api/desk/voices/ron/edit',
+    r2 = client.post('/api/desk/voices/personal/edit',
                      json={'before': 'same text', 'after': 'same text'})
     assert r2.status_code == 200 and r2.get_json()['learned'] is False
 
 
 def test_brief_carries_the_rewrite(client):
-    client.post('/api/desk/voices/ron/edit', json={
+    client.post('/api/desk/voices/personal/edit', json={
         'before': 'We are thrilled to leverage synergies across the stack',
         'after': 'I rewrote the scheduler and it came out slower.'})
-    brief = client.get('/api/desk/voices/ron/brief').get_json()['brief']
+    brief = client.get('/api/desk/voices/personal/brief').get_json()['brief']
     assert 'I rewrote the scheduler' in brief
 
 
@@ -112,7 +112,7 @@ def test_brief_carries_the_rewrite(client):
 def test_campaign_crud(client):
     r = client.post('/api/desk/campaigns', json={
         'title': 'Agent persistence', 'thesis': 'Clayrune keeps agents alive',
-        'voice': 'clayrune'})
+        'voice': 'product'})
     assert r.status_code == 201
     cid = r.get_json()['id']
 
@@ -152,7 +152,7 @@ def test_ledger_records_and_consumes_its_signal(client):
         'summary': 'Shipped the Desk'}).get_json()
 
     r = client.post('/api/desk/ledger', json={
-        'platform': 'x', 'voice': 'ron', 'body': 'Shipped the Desk today',
+        'platform': 'x', 'voice': 'personal', 'body': 'Shipped the Desk today',
         'signal_id': sig['id'], 'project_id': 'mission_control'})
     assert r.status_code == 201
 
@@ -200,7 +200,7 @@ def test_repeat_check_on_empty_body(client):
 def test_overview_sums_pending_across_projects(client):
     d = client.get('/api/desk/overview').get_json()
     assert d['pending_drafts'] == 3, 'the Desk is cross-project by construction'
-    assert d['voices'] == ['ron', 'clayrune']
+    assert d['voices'] == ['personal', 'product']
     assert d['running'] == 0
 
 
