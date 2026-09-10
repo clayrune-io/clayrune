@@ -652,9 +652,17 @@ def campaign_platforms(camp: dict) -> list[str]:
     return seen
 
 
+DEFAULT_VISUAL_REQUIREMENT = (
+    'a real screenshot of the product feature this campaign is about — not '
+    'generated art. LinkedIn suppresses AI-read content and this project has '
+    'already ruled that generated imagery hallucinates illegible UI, so the '
+    'default for anything depicting the product is a captured screenshot.'
+)
+
+
 def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
                     agenda: str = '', project_ids: Iterable[str] = (),
-                    planned: Iterable[str] = ()) -> dict:
+                    planned: Iterable[str] = (), visual: str | None = None) -> dict:
     # A CAMPAIGN CARRIES A SET OF VOICES, NOT ONE. Ron asked whether a campaign
     # should also pick a platform; the sharper version of his question is that a
     # single-voice campaign can only ever reach ONE room, and a thesis usually
@@ -678,6 +686,11 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
         'voice': voices[0],
         'project_ids': list(project_ids),
         'planned': list(planned),   # intended posts, in order
+        # What kind of visual this campaign's posts need. Defaults to a real
+        # product screenshot (docs/THE_DESK_SPEC.md standing position,
+        # 2026-09-10) rather than leaving the writer to skip the visual or
+        # invent one.
+        'visual': (visual or '').strip() or DEFAULT_VISUAL_REQUIREMENT,
         'state': 'proposed',
         'created_at': now_iso(),
         'updated_at': now_iso(),
@@ -691,7 +704,7 @@ def create_campaign(title: str, thesis: str, *, voice=None, voices=None,
 
 def update_campaign(campaign_id: str, patch: dict) -> dict | None:
     allowed = {'title', 'thesis', 'agenda', 'voice', 'voices', 'project_ids',
-               'planned', 'state'}
+               'planned', 'state', 'visual'}
     patch = dict(patch or {})
     if 'state' in patch and patch['state'] not in CAMPAIGN_STATES:
         raise ValueError(f"unknown state {patch['state']!r}")

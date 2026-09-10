@@ -145,6 +145,57 @@ def test_reject_takes_note_and_pushes_back(client):
     assert updated['decided_at']
 
 
+# ── media (visual) validation ────────────────────────────────────────────────
+# The `media` field has existed since Phase 1 (project_routes.py:1265/1328) but
+# nothing ever validated it, so a bad path would sit on a draft and only show
+# itself as a broken image when a human finally opened it. These pin the
+# write-time check against the same allowlist /api/serve-file renders from.
+
+def test_post_refuses_a_media_path_outside_the_allowlist(client):
+    _make_project(client)
+    outside = client.data_dir.parent / 'outside.png'
+    outside.write_bytes(b'\x89PNG')
+    res = client.post('/api/project/proj1/social/queue', json={
+        'platform': 'x', 'body': 'draft', 'media': [str(outside)],
+    })
+    assert res.status_code == 400
+    assert 'media path not allowed' in res.get_json()['error']
+    assert client.get('/api/project/proj1/social/queue').get_json() == []
+
+
+def test_post_and_patch_round_trip_a_valid_media_path(client):
+    _make_project(client)
+    media_dir = client.data_dir.parent / 'data' / 'media'
+    media_dir.mkdir(parents=True)
+    shot = media_dir / 'shot.png'
+    shot.write_bytes(b'\x89PNG')
+
+    item = client.post('/api/project/proj1/social/queue', json={
+        'platform': 'x', 'body': 'draft', 'media': [str(shot)],
+    }).get_json()['item']
+    assert item['media'] == [str(shot)]
+
+    shot2 = media_dir / 'shot2.png'
+    shot2.write_bytes(b'\x89PNG')
+    res = client.patch(f"/api/project/proj1/social/queue/{item['id']}",
+                       json={'media': [str(shot2)]})
+    assert res.status_code == 200
+    assert res.get_json()['item']['media'] == [str(shot2)]
+
+
+def test_patch_refuses_a_media_path_outside_the_allowlist(client):
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'x', 'body': 'draft'}).get_json()['item']
+    outside = client.data_dir.parent / 'outside.png'
+    outside.write_bytes(b'\x89PNG')
+    res = client.patch(f"/api/project/proj1/social/queue/{item['id']}",
+                       json={'media': [str(outside)]})
+    assert res.status_code == 400
+    still = client.get('/api/project/proj1/social/queue').get_json()[0]
+    assert still['media'] == []
+
+
 def test_no_post_endpoint_exists(client):
     """Phase 1 scope guard: there must be nothing outbound to call."""
     _make_project(client)

@@ -258,6 +258,22 @@ def test_update_missing_campaign_returns_none(store):
     assert store.delete_campaign('camp-nope') is False
 
 
+def test_campaign_visual_defaults_to_a_real_screenshot_and_can_be_overridden(store):
+    """A campaign without an explicit visual still carries one (a media-blank
+    draft is the dead-`media`-field bug this feature exists to close), and an
+    explicit request overrides the default rather than being ignored.
+    """
+    c = store.create_campaign('t', 'thesis')
+    assert c['visual'] == store.DEFAULT_VISUAL_REQUIREMENT
+    assert 'screenshot' in c['visual']
+
+    c2 = store.create_campaign('t2', 'thesis2', visual='a chart of weekly signups')
+    assert c2['visual'] == 'a chart of weekly signups'
+
+    updated = store.update_campaign(c['id'], {'visual': 'a before/after diff screenshot'})
+    assert updated['visual'] == 'a before/after diff screenshot'
+
+
 # -- ledger + repetition ------------------------------------------------------
 
 def test_ledger_records_and_lists(store):

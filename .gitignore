@@ -21,8 +21,10 @@ data/projects/*_agent_log.json
 # the CHANGELOG security entry. This subdir rule closes that gap.)
 data/projects/*/
 data/uploads/*
+data/media/*
 !data/projects/.gitkeep
 !data/uploads/.gitkeep
+!data/media/.gitkeep
 config.json
 data/settings.json
 data/grid_layout.json

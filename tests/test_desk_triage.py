@@ -102,6 +102,19 @@ def test_triage_carries_the_running_campaign(client):
     assert 'Clayrune keeps agents alive' in client.dispatch_calls[0]['task']
 
 
+def test_triage_carries_the_campaigns_visual_requirement(client):
+    """A campaign's visual requirement (mc/desk.py) must reach the brief text
+    the editor reads, not just live as a stored field nobody sees.
+    """
+    _sig(client)
+    c = client.post('/api/desk/campaigns', json={
+        'title': 'Agent persistence', 'thesis': 'Clayrune keeps agents alive'}).get_json()
+    assert c['visual']  # defaulted to a real-screenshot requirement
+    client.patch(f"/api/desk/campaigns/{c['id']}", json={'state': 'running'})
+    client.post('/api/desk/triage', json={})
+    assert c['visual'] in client.dispatch_calls[0]['task']
+
+
 def test_triage_with_an_empty_feed_says_so(client):
     r = client.post('/api/desk/triage', json={})
     assert r.status_code == 200 and r.get_json()['nothing_to_triage'] is True
