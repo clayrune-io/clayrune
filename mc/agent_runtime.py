@@ -833,6 +833,97 @@ def register_claude_hooks(*,
 _CLAUDE_HOME = Path.home() / '.claude' / 'projects'
 
 
+# ── Durable incognito marker (F7) ────────────────────────────────────────────
+#
+# Incognito status lives ONLY on the in-memory session dict (`session['incognito']`)
+# until now — nothing survived a server restart, so every reader that re-derives
+# state from disk (agent_log backfill, the Scribe reconcile pass, the "Recent
+# conversations" prompt block, the cold FTS index) had no way to tell an
+# incognito transcript apart from an ordinary one and re-ingested it whole.
+#
+# This is the durable signal: a claude_session_id -> ts map at
+# ~/.clayrune/incognito_sessions.json (operator state, outside the repo and
+# outside DATA_DIR — see CLAUDE.md "DATA_DIR pollution"). Written once, the
+# first time a dispatch marked incognito learns its csid (`_note_claude_sid`).
+# Every transcript-reading path in this module keys off `is_transcript_incognito`
+# instead of re-deriving the answer.
+_incognito_registry_lock = threading.RLock()
+
+
+def _incognito_registry_path() -> Path:
+    from mc.secrets_store import clayrune_home  # local import: keep this module leaf-level
+    return clayrune_home() / 'incognito_sessions.json'
+
+
+def mark_transcript_incognito(claude_session_id: str) -> None:
+    """Durably record that `claude_session_id` belongs to an incognito session.
+
+    Best-effort by design (matches every other incognito write path — a failure
+    here must not break the dispatch it's called from), but every failure is
+    logged: a marker that silently failed to write is indistinguishable from
+    "not incognito" to every reader below, which is the exact leak this closes.
+    """
+    if not claude_session_id:
+        return
+    from mc.core import _atomic_write_text, _log, now_iso
+    path = _incognito_registry_path()
+    with _incognito_registry_lock:
+        try:
+            data: Dict[str, Any] = {}
+            if path.exists():
+                try:
+                    loaded = json.loads(path.read_text(encoding='utf-8'))
+                    if isinstance(loaded, dict):
+                        data = loaded
+                except Exception:
+                    data = {}  # corrupt file — rebuild rather than lose the new mark
+            if claude_session_id in data:
+                return
+            data[claude_session_id] = now_iso()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            _atomic_write_text(path, json.dumps(data, indent=2, ensure_ascii=False))
+        except Exception as e:
+            _log(f"[incognito] failed to durably mark {claude_session_id[:12]}: {e}")
+
+
+def _load_incognito_registry() -> Optional[Dict[str, str]]:
+    """Read the whole incognito registry in one shot, for callers filtering a
+    batch of transcripts (avoids re-reading the file once per candidate).
+
+    Returns the registry dict — `{}` if the file has never been created (no
+    incognito session has ever run) — or `None` if it exists but cannot be
+    read/parsed. `None` is a fail-closed SENTINEL, not "empty": see
+    `is_transcript_incognito`.
+    """
+    path = _incognito_registry_path()
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None  # unreadable — fail closed
+    return data if isinstance(data, dict) else None  # corrupt shape — fail closed
+
+
+def is_transcript_incognito(claude_session_id: str) -> bool:
+    """True if `claude_session_id` is marked incognito, OR if the registry
+    cannot be read at all.
+
+    FAIL CLOSED on purpose: a reader here cannot distinguish "this csid was
+    never incognito" from "the registry is unreadable and I have no idea" —
+    so an unreadable registry answers every query True (do not ingest) rather
+    than the permissive False. A missing (never-created) registry is not the
+    same failure: no incognito session has ever run, so it correctly answers
+    False for everything without blocking ordinary ingestion.
+    """
+    if not claude_session_id:
+        return False
+    registry = _load_incognito_registry()
+    if registry is None:
+        return True
+    return claude_session_id in registry
+
+
 def iter_transcript_files_in_dir(dir_path: Path, seen_names: Optional[set] = None) -> List[Path]:
     """Every transcript `.jsonl` directly under `dir_path`, PLUS nested subagent
     transcripts: `*/subagents/**/*.jsonl` (a Task-tool dispatch) and
@@ -1419,6 +1510,19 @@ class ClaudeRuntime(AgentRuntime):
                         continue
             except OSError:
                 continue
+
+        # F7: never surface an incognito transcript through this scan — it
+        # feeds both the agent_log backfill and the "Recent conversations"
+        # prompt block, so a miss here is exactly the re-ingestion incognito
+        # exists to prevent. Loaded once per call, not per file. `None` means
+        # the registry couldn't be read at all — fail closed (drop everything
+        # rather than guess), see `_load_incognito_registry`.
+        _incog_registry = _load_incognito_registry()
+        if _incog_registry is None:
+            files = []
+        else:
+            files = [t for t in files if t[0].stem not in _incog_registry]
+
         files.sort(key=lambda x: x[1], reverse=True)
         if must_include_csids:
             must_keep = [t for t in files if t[0].stem in must_include_csids]

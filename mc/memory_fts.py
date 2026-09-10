@@ -176,9 +176,19 @@ def _index_transcript_file(conn: sqlite3.Connection, path: Path) -> Optional[int
     fp = _file_fingerprint(path)
     if fp is None:
         return None
+    session_id = path.stem
+    # F7: an incognito transcript must never enter the cold search index —
+    # `_agent_runtime.is_transcript_incognito` fails closed (an unreadable
+    # registry answers True), so an indexing failure here can only ever be
+    # "indexed too little," never "leaked an incognito chat." Any rows a
+    # PRIOR build already wrote for this file (before the marker existed, or
+    # before this check shipped) are purged rather than left stale.
+    if _agent_runtime.is_transcript_incognito(session_id):
+        conn.execute('DELETE FROM session_fts WHERE source_file = ?', (key,))
+        _record_indexed(conn, key, fp, 0)
+        return None
     if _already_indexed(conn, key, fp):
         return None
-    session_id = path.stem
     rt = _agent_runtime.get_runtime('claude')
     messages = rt.parse_transcript_file(path, max_messages=10**9)  # pyright: ignore[reportAttributeAccessIssue]
     conn.execute('DELETE FROM session_fts WHERE source_file = ?', (key,))
