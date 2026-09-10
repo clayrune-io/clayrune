@@ -4328,6 +4328,12 @@ def _note_claude_sid(session, sid):
     session['claude_session_id'] = sid
     if prev == sid:
         return
+    if session.get('incognito'):
+        # Durable F7 fix: the in-memory 'incognito' flag on `session` doesn't
+        # survive a restart. This is the first (and only) point every stream
+        # reader learns the csid, so it's where the durable marker gets
+        # written — every transcript reader downstream keys off it instead.
+        _agent_runtime.mark_transcript_incognito(sid)
     tt = session.get('trigger_type')
     if not tt or tt == 'manual':
         return
@@ -8520,6 +8526,12 @@ def search_global():
     out = []
     for p in load_projects():
         if not p.get('project_path'):
+            continue
+        # F7 link 5: the global incognito pseudo-project has a project_path
+        # like any other project, so it was full-text searchable from here —
+        # the one dedicated incognito workspace, reachable from the box that
+        # exists to promise nothing about incognito is ever searchable.
+        if p.get('_is_incognito_project') or p.get('id') == INCOGNITO_PROJECT_ID:
             continue
         try:
             hits = _search_project_transcripts(p, q, limit=8)  # cap per project
