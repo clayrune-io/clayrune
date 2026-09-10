@@ -145,6 +145,47 @@ def test_reject_takes_note_and_pushes_back(client):
     assert updated['decided_at']
 
 
+def test_reject_with_empty_note_is_refused_and_status_unchanged(client):
+    """The bug Ron hit live on mission_control queue item 9b8bb91e: pushing
+    back with note: '' tells the writer "wrong" and nothing else. The server
+    must refuse it, not just the UI — and the item must not move to
+    needs_changes when refused.
+    """
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'discord', 'body': 'draft', 'originated': False}).get_json()['item']
+
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/reject", json={'note': ''})
+    assert res.status_code == 400
+
+    res_missing = client.post(f"/api/project/proj1/social/queue/{item['id']}/reject", json={})
+    assert res_missing.status_code == 400
+
+    res_whitespace = client.post(f"/api/project/proj1/social/queue/{item['id']}/reject", json={'note': '   '})
+    assert res_whitespace.status_code == 400
+
+    still_pending = client.get('/api/project/proj1/social/queue').get_json()[0]
+    assert still_pending['status'] == 'pending'
+    assert still_pending.get('note', '') == ''
+
+
+def test_needs_changes_item_can_be_restored_to_pending(client):
+    """A pushed-back draft must not become unrecoverable: PATCH status back
+    to pending is the same route Ron used by hand to recover 9b8bb91e.
+    """
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'discord', 'body': 'draft', 'originated': False}).get_json()['item']
+    client.post(f"/api/project/proj1/social/queue/{item['id']}/reject", json={'note': 'try again'})
+
+    res = client.patch(f"/api/project/proj1/social/queue/{item['id']}", json={'status': 'pending'})
+    assert res.status_code == 200
+    assert res.get_json()['item']['status'] == 'pending'
+
+    listing = client.get('/api/project/proj1/social/queue').get_json()
+    assert listing[0]['status'] == 'pending'
+
+
 # ── media (visual) validation ────────────────────────────────────────────────
 # The `media` field has existed since Phase 1 (project_routes.py:1265/1328) but
 # nothing ever validated it, so a bad path would sit on a draft and only show

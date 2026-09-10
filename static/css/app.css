@@ -1461,8 +1461,10 @@
   }
   .status-badge.status-in_progress { background: var(--green-dim); color: var(--green-text); }
   .status-badge.status-blocked     { background: var(--red-dim);   color: var(--red-text); }
+  .status-badge.status-needs_changes { background: var(--amber-dim); color: var(--amber-text); }
   .backlog-item.status-in_progress { border-left-color: var(--green); }
   .backlog-item.status-blocked     { border-left-color: var(--red); }
+  .backlog-item.status-needs_changes { border-left-color: var(--amber); }
   .backlog-item.status-wontdo .backlog-text { text-decoration: line-through; }
 
   /* BACKLOG NUMBERS + LINKS */
@@ -1628,8 +1630,15 @@
     font-size: 11px; color: var(--red-text); background: var(--red-dim);
     border-radius: 3px; padding: 4px 7px; margin: 4px 0; line-height: 1.4;
   }
+  /* The instruction Posy will act on — shown on the card itself, not behind a
+     click, because a pushed-back draft is only useful if the note is the
+     first thing anyone reads. Same amber language as the badge/border above. */
+  .social-pushback-note {
+    font-size: 12px; color: var(--amber-text); background: var(--amber-dim);
+    border-radius: 3px; padding: 6px 8px; margin: 4px 0; line-height: 1.4;
+  }
   .social-item-actions { flex-direction: column; align-items: stretch; gap: 4px; }
-  .btn-social-edit, .btn-social-release, .btn-social-posted, .btn-social-pushback {
+  .btn-social-edit, .btn-social-release, .btn-social-posted, .btn-social-pushback, .btn-social-restore {
     font-size: 11px; padding: 3px 10px; border-radius: 3px; cursor: pointer;
     white-space: nowrap; font-weight: 600;
   }
@@ -1652,6 +1661,10 @@
     background: var(--red-dim); color: var(--red-text); border: 1px solid var(--red);
   }
   .btn-social-pushback:hover { opacity: 0.85; }
+  .btn-social-restore {
+    background: var(--amber-dim); color: var(--amber-text); border: 1px solid var(--amber);
+  }
+  .btn-social-restore:hover { opacity: 0.85; }
 
   /* TOAST NOTIFICATIONS */
   #toast-container {
