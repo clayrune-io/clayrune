@@ -401,6 +401,32 @@ try {
     fail(`expected one seed POST for "personal", got ${JSON.stringify(seedCalls)}`);
   }
 
+  // ── Typing survives a refresh ────────────────────────────────────────────
+  //
+  // Ron: "I try to add notes to Posy, but the cursor keeps jumping off that
+  // window." renderDesk() rebuilds the body with innerHTML, so a refresh while
+  // a field has focus destroys the element being typed into.
+  await page.click('.desk-tab:has-text("Queue")');
+  await page.waitForTimeout(200);
+  const searchBox = await page.$('#asl-search');
+  if (searchBox) {
+    await searchBox.click();
+    await page.keyboard.type('half-typed');
+    await page.evaluate(() => window.renderDesk && window.renderDesk());
+    await page.waitForTimeout(150);
+    const state = await page.evaluate(() => {
+      const el = document.getElementById('asl-search');
+      return { focused: document.activeElement === el, value: el ? el.value : null };
+    });
+    if (state.focused && state.value === 'half-typed') {
+      ok('a refresh mid-typing keeps focus and the typed text');
+    } else {
+      fail(`refresh destroyed the field being typed into: ${JSON.stringify(state)}`);
+    }
+  } else {
+    fail('#asl-search not found — cannot verify the typing guard');
+  }
+
   if (SHOT_DIR) {
     for (const t of ['Board', 'Queue', 'Calendar', 'Ledger']) {
       await page.click(`.desk-tab:has-text("${t}")`);

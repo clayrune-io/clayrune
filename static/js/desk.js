@@ -39,6 +39,7 @@ let _deskHarvesting = false;
 let _deskDrafting = new Set();
 let _deskProposals = [];
 let _deskWriting = [];
+let _deskWritingTimer = null;
 let _deskTriaging = false;
 
 // ── data ────────────────────────────────────────────────────────────────────
@@ -447,6 +448,13 @@ function renderDesk() {
   const bodyEl = document.getElementById('desk-body');
   if (!tabsEl || !bodyEl) return;
 
+  // Never repaint over a live cursor — see `deferRepaintWhileTyping` in
+  // cross-social.js for the full reasoning and the two reports behind it.
+  // Bridged through `window` because static/js/*.js are ES modules and a
+  // top-level name in another file is not visible here.
+  if (window.deferRepaintWhileTyping
+      && window.deferRepaintWhileTyping(bodyEl, renderDesk)) return;
+
   const pending = _deskPendingCount();
   const labels = {
     board: 'Board', queue: 'Queue', calendar: 'Calendar', ledger: 'Ledger',
@@ -531,7 +539,34 @@ async function _loadDeskProposals() {
     _deskWriting = (accepted || []).filter(
       p => !drafted.has((p.signal && p.signal.id) || p.signal_id));
   } catch (e) { _deskProposals = []; _deskWriting = []; }
+  _deskSyncWritingPoll();
   if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// THE DESK HAS NO POLLING AT ALL — verified 2026-09-10, there is not one
+// setInterval in this file. That is why Ron's draft "wasn't showing without the
+// refresh", and it also means the in-flight strip above would have sat there
+// forever claiming Posy was still writing, which is exactly the stuck state the
+// commit that added it said it could not reach. It could.
+//
+// So the poll exists ONLY while something is genuinely in flight, and stops the
+// moment nothing is: a Desk sitting idle costs nothing, and there is no timer to
+// leak when the modal closes. 6s is the writing timescale (an agent takes a
+// minute or two), not a UI-liveness timescale.
+function _deskSyncWritingPoll() {
+  const shouldPoll = _deskWriting.length > 0 && openModals.has(DESK_MODAL_ID);
+  if (shouldPoll && !_deskWritingTimer) {
+    _deskWritingTimer = setInterval(() => {
+      if (!openModals.has(DESK_MODAL_ID)) { _deskStopWritingPoll(); return; }
+      _loadDesk(); _hydrateAllSocial(); _loadDeskProposals();
+    }, 6000);
+  } else if (!shouldPoll && _deskWritingTimer) {
+    _deskStopWritingPoll();
+  }
+}
+
+function _deskStopWritingPoll() {
+  if (_deskWritingTimer) { clearInterval(_deskWritingTimer); _deskWritingTimer = null; }
 }
 
 // Signal ids that already have a draft on the queue, hydrated or not.

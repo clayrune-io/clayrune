@@ -85,10 +85,49 @@ async function openAllSocial() {
   _hydrateAllSocial();
 }
 
+// DO NOT REPAINT OVER A LIVE CURSOR — one implementation, used by every
+// surface that rebuilds rows with innerHTML.
+//
+// Ron, 2026-09-10, twice in a row: "the cursor keeps jumping off that window"
+// and "my note to agent is not kept, always disappears". Both are this: the
+// note field lives inside #asl-list, and `renderAllSocial()` replaces that
+// container wholesale. Any refresh mid-typing — the progressive hydration fill
+// at :34, the Desk's in-flight poll, a project poll — destroys the input being
+// typed into, taking its value, caret and selection with it.
+//
+// Same class as the drag-to-hire stall (a 5s poll rewrote the DOM mid-drag and
+// killed pointer capture). In a long-lived SPA, a repaint must yield to live
+// interaction rather than the other way round.
+//
+// Deferred, never dropped: the pending repaint runs once the field blurs, so
+// the list still catches up.
+function _typingInside(container) {
+  const el = document.activeElement;
+  return !!(el && container && container.contains(el)
+            && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA'
+                || el.isContentEditable));
+}
+
+const _deferredRepaints = new WeakSet();
+
+function deferRepaintWhileTyping(container, repaint) {
+  if (!_typingInside(container)) return false;
+  const el = document.activeElement;
+  if (!_deferredRepaints.has(el)) {
+    _deferredRepaints.add(el);
+    el.addEventListener('blur', () => {
+      _deferredRepaints.delete(el);
+      repaint();
+    }, { once: true });
+  }
+  return true;
+}
+
 function renderAllSocial() {
   const container = document.getElementById('asl-list');
   const countEl = document.getElementById('asl-count');
   if (!container) return;
+  if (deferRepaintWhileTyping(container, renderAllSocial)) return;
   const q = (_allSocialFilter.search || '').trim().toLowerCase();
   const rows = [];
   for (const p of allProjects) {
@@ -167,3 +206,7 @@ window._hydrateAllSocial = _hydrateAllSocial;
 window._allSocialFilter = _allSocialFilter;
 window.openAllSocial = openAllSocial;
 window.renderAllSocial = renderAllSocial;
+
+// Shared with desk.js — static/js/*.js are ES modules, so a top-level name is
+// not global; cross-file use needs an explicit window bridge.
+window.deferRepaintWhileTyping = deferRepaintWhileTyping;
