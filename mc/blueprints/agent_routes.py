@@ -68,6 +68,7 @@ from flask import Blueprint, Response, jsonify, request
 
 from mc import media as _media
 from mc import obs, state
+from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.core import _harden_secret_perms, _log, now_iso, time_ago
 from mc.state import (
@@ -4437,7 +4438,7 @@ def _last_reply_text(session):
 
 
 def _maybe_notify_spawner(session, summary):
-    """Fire the spawner callback at most once for this session.
+    """Fire the spawner/workflow callback at most once for this session.
 
     Called from TWO places because "the child is done" has two different
     meanings depending on runtime, and the first version only handled one:
@@ -4450,16 +4451,55 @@ def _maybe_notify_spawner(session, summary):
         2026-09-09: child d1f5942f0701 answered and went idle; no callback.
 
     Both paths can run for one session, hence the _notify_sent latch.
+
+    MC-871 Phase 1 generalises this to a SECOND kind of waiter: a workflow run
+    parked on an agent step (`_notify_workflow`, set at dispatch alongside
+    `_notify_session` -- see `_dispatch_agent_internal`). A session is spawned
+    by at most one of the two, never both, but both are checked under the same
+    latch so adding the workflow path cannot double-fire the existing spawner
+    notification or vice versa.
     """
-    sid = (session.get('_notify_session') or '').strip()
-    if not sid or sid == session.get('session_id'):
-        return
     if session.get('_notify_sent'):
         return
     if session.get('incognito'):
         return
+    notify_sid = (session.get('_notify_session') or '').strip()
+    has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
+    wf_wait = session.get('_notify_workflow') or None
+    has_workflow = bool(wf_wait) and bool(wf_wait.get('run_id'))
+    if not has_spawner and not has_workflow:
+        return
     session['_notify_sent'] = True
-    _notify_agent_spawner(session.get('project_id', ''), sid, session, summary)
+    if has_spawner:
+        _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary)
+    if has_workflow:
+        _notify_workflow_step(wf_wait, session, summary)
+
+
+def _notify_workflow_step(wf_wait, session, summary):
+    """Wake a workflow run parked on this session's agent step.
+
+    Thread + best-effort for the same reason `_notify_agent_spawner` is: a
+    dead or slow workflow advance must never break completion logging for the
+    child that just finished. `mc.workflows` is a leaf module (no Flask import,
+    wired to `_dispatch_agent_internal` from server.py rather than importing
+    this module) so calling it directly here carries no import-cycle risk.
+    """
+    def _send():
+        try:
+            _workflows.on_agent_step_complete(
+                run_id=wf_wait.get('run_id', ''),
+                step_name=wf_wait.get('step', ''),
+                project_id=session.get('project_id', ''),
+                session_id=session.get('session_id', ''),
+                status=session.get('status', 'unknown'),
+                summary=summary or '',
+            )
+        except Exception as e:
+            _log(f"[notify-workflow] step callback failed for run "
+                 f"{wf_wait.get('run_id','')[:12]}: {e}")
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 def _notify_agent_spawner(project_id, notify_sid, child, summary):
@@ -5586,7 +5626,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
                              model_override='', strict_character=False,
-                             notify_session=''):
+                             notify_session='', notify_workflow=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -5618,6 +5658,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     for the one case that IS a fresh, explicit ask: a caller (human or agent)
     naming a character THIS turn. Do not set it from scheduler/hivemind/revival
     call sites.
+
+    notify_workflow (MC-871 Phase 1): {'run_id', 'step'} when this dispatch is
+    a workflow agent step. Stored on the session as `_notify_workflow` and
+    read by `_maybe_notify_spawner` at the same two completion points
+    `_notify_session` already uses (Mode A exit, Mode B turn boundary) — the
+    SAME latch, generalised to wake a waiting workflow run instead of (or in
+    addition to) a spawning chat. See `mc/workflows.py:on_agent_step_complete`.
     """
     p = load_project(project_id)
     if not p:
@@ -5925,6 +5972,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # session id here lets _log_agent_completion deliver the
                 # result into that chat.
                 '_notify_session': notify_session,
+                # Workflow step callback (MC-871 Phase 1) -- see notify_session
+                # above for the sibling mechanism this generalises.
+                '_notify_workflow': notify_workflow,
                 'mode': 'B',
                 'stdin_lock': threading.Lock(),
                 'process_alive': True,
@@ -6034,6 +6084,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
                 '_notify_session': notify_session,  # MC-946, see Mode B note
+                '_notify_workflow': notify_workflow,  # MC-871 Phase 1, see Mode B note
                 'mode': 'A',
                 'last_output_time': _time.time(),
                 'last_status_change_time': _time.time(),
