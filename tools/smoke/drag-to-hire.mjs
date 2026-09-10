@@ -292,19 +292,81 @@ try {
   const armed = await page.evaluate((pid) => {
     const w = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
     const sel = w && w.querySelector('.composer-character-row .composer-provider-select');
+    const header = w && w.querySelector('.conv-thread-header');
+    const empty = w && w.querySelector('.composer-empty-state');
     return { pending: window.getPendingCharacter ? window.getPendingCharacter(pid) : '(no accessor)',
-             selectValue: sel ? sel.value : '(no persona select on screen)' };
+             selectValue: sel ? sel.value : '(no persona select on screen)',
+             headerName: header ? (header.querySelector('.conv-thread-name') || {}).textContent : '(no thread header)',
+             emptyHeading: empty ? (empty.querySelector('.ces-heading') || {}).textContent : '(no empty state)' };
   }, PID_TARGET);
   armed.pending === 'global:code-reviewer'
     ? ok('composer is armed with the dropped character — the next dispatch carries body.character')
     : fail(`pendingDispatchCharacter should be global:code-reviewer, got ${armed.pending}`);
-  armed.selectValue === 'global:code-reviewer'
-    ? ok('the Persona select shows the dropped agent (state and display agree)')
-    : fail(`the Persona select should read global:code-reviewer, got ${armed.selectValue}`);
+
+  // ── No-history landing reads as a conversation shell, not the generic +New
+  // screen (Ron, 2026-09-10: a drop with no history still landed on "What
+  // should Claude work on?" with PERSONA sitting in a dropdown). A fresh hire
+  // has no session to open, so the header + armed composer stand in for one —
+  // the Persona dropdown is deliberately gone here (the header IS the persona
+  // indicator); the empty-state heading names the thread, not the cold pitch.
+  armed.selectValue === '(no persona select on screen)'
+    ? ok('Persona dropdown is absent on the thread-shell landing — the header replaces it')
+    : fail(`expected no Persona select on the thread-shell landing, got ${armed.selectValue}`);
+  armed.headerName === 'Fenn'
+    ? ok('thread-shell header names the hired agent (Fenn), standing in for a real conversation header')
+    : fail(`thread-shell header should read Fenn, got ${armed.headerName}`);
+  armed.emptyHeading === 'No conversations yet'
+    ? ok('empty-state body reads "No conversations yet", not the generic cold-start pitch')
+    : fail(`empty-state heading should read "No conversations yet", got ${armed.emptyHeading}`);
 
   if (SHOT_DIR) {
     await page.screenshot({ path: resolve(SHOT_DIR, 'drag-to-hire-channel-view.png') });
     ok(`post-drop channel-view screenshot written to ${resolve(SHOT_DIR, 'drag-to-hire-channel-view.png')}`);
+  }
+
+  // ── The OTHER case: an agent that already HAS history opens the real
+  // thread, not the shell. Seed a session + conversation row for the same
+  // character key, then re-select the row — agentStatusCache/agentHistory/
+  // conversationsCache are classic-script globals declared in index.html
+  // (`let` at top level), so a bare reference inside page.evaluate resolves
+  // through the page's shared global scope, same as the existing
+  // `allProjects` access above.
+  await page.evaluate((pid) => {
+    const sid = 'sess-fenn-hist';
+    agentStatusCache[sid] = {
+      status: 'idle', task: 'reviewed a diff', projectId: pid,
+      claudeSessionId: 'csid-fenn-hist',
+      character: { name: 'code-reviewer', scope: 'global', agent_name: 'Fenn', display_name: 'code-reviewer' },
+    };
+    agentHistory.unshift({ projectId: pid, sessionId: sid, projectName: 'Target Project',
+      task: 'reviewed a diff', status: 'idle', startedAt: '2026-09-09T00:00:00Z', triggerType: 'manual' });
+    conversationsCache[pid] = (conversationsCache[pid] || []).concat([{
+      claude_session_id: 'csid-fenn-hist', mc_session_id: sid, mtime: Date.now() / 1000,
+      character: { name: 'code-reviewer', scope: 'global', agent_name: 'Fenn', display_name: 'code-reviewer' },
+      label: 'reviewed a diff', live: false,
+    }]);
+    openChannelPerson(pid, 'global:code-reviewer');
+  }, PID_TARGET);
+  // Desktop is the 3-pane view (no .agent-tab strip — that markup is mobile-only
+  // dead code here), so "opened the real session" reads on the output pane
+  // itself, keyed by the session id switchAgentTab armed.
+  await page.waitForSelector(`.modal-window[data-modal-id="${PID_TARGET}"] #agent-output-sess-fenn-hist`, { timeout: 3000, state: 'attached' })
+    .then(() => ok('a history hit opens the real session output pane (switchAgentTab), not the thread shell'),
+          () => fail('an agent with a matching conversation should switch to its session tab'));
+  const historyView = await page.evaluate((pid) => {
+    const w = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
+    return { hasShellHeader: !!w.querySelector('.conv-thread-header'),
+             activeTab: activeAgentTab[pid] || null };
+  }, PID_TARGET);
+  historyView.activeTab === 'sess-fenn-hist'
+    ? ok('activeAgentTab points at the resumed session, not the +New composer')
+    : fail(`activeAgentTab should be sess-fenn-hist, got ${historyView.activeTab}`);
+  !historyView.hasShellHeader
+    ? ok('no thread-shell header on a real session view — it only stands in when there is nothing to open')
+    : fail('thread-shell header leaked into a real, history-backed conversation view');
+  if (SHOT_DIR) {
+    await page.screenshot({ path: resolve(SHOT_DIR, 'drag-to-hire-history-view.png') });
+    ok(`with-history landing screenshot written to ${resolve(SHOT_DIR, 'drag-to-hire-history-view.png')}`);
   }
 
   // ── Bench merge (spec §3.2) + un-hire (spec §5) ───────────────────────────
