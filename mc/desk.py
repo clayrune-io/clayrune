@@ -172,8 +172,15 @@ def append_signal(project_id: str, kind: str, summary: str,
 
 def list_signals(project_id: str | None = None, *, limit: int = 200,
                  min_score: float | None = None,
-                 unconsumed_only: bool = False) -> list[dict]:
-    """Newest first. Reads the whole file; it is small and append-only."""
+                 unconsumed_only: bool = False,
+                 sort: str = 'recent') -> list[dict]:
+    """Reads the whole file; it is small and append-only.
+
+    `sort='recent'` (default) is what the feed wants — chronology is the story.
+    `sort='score'` is what the BOARD wants: the question there is "what is worth
+    saying", not "what happened last", and the two orderings disagree often
+    enough to matter. Score ties break by recency so the order stays stable.
+    """
     rows = _read_signals()
     if project_id:
         rows = [r for r in rows if r.get('project_id') == project_id]
@@ -181,7 +188,11 @@ def list_signals(project_id: str | None = None, *, limit: int = 200,
         rows = [r for r in rows if (r.get('story_score') or 0) >= min_score]
     if unconsumed_only:
         rows = [r for r in rows if not r.get('consumed_by')]
-    rows.sort(key=lambda r: r.get('occurred_at') or '', reverse=True)
+    if sort == 'score':
+        rows.sort(key=lambda r: ((r.get('story_score') or 0),
+                                 r.get('occurred_at') or ''), reverse=True)
+    else:
+        rows.sort(key=lambda r: r.get('occurred_at') or '', reverse=True)
     return rows[:limit]
 
 

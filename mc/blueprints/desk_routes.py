@@ -34,6 +34,7 @@ from typing import Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import desk as _desk
+from mc import desk_harvest as _harvest
 from mc.core import _log
 
 bp = Blueprint('desk_routes', __name__)
@@ -48,6 +49,7 @@ def wire(*, load_projects_fn=None, load_project_fn=None,
     global load_projects, load_project
     if load_projects_fn is not None:
         load_projects = load_projects_fn
+        _harvest.wire(load_projects_fn=load_projects_fn)
     if load_project_fn is not None:
         load_project = load_project_fn
     if store_path is not None:
@@ -78,7 +80,28 @@ def list_signals():
         limit=_int_arg('limit', 200),
         min_score=min_score_f,
         unconsumed_only=request.args.get('unconsumed') in ('1', 'true'),
+        sort='score' if request.args.get('sort') == 'score' else 'recent',
     ))
+
+
+@bp.route('/api/desk/signals/harvest', methods=['POST'])
+def harvest():
+    """Fill the feed from what the projects actually did — git log + shipped backlog.
+
+    Reads local state only; `tests/test_desk_harvest.py` asserts no network.
+    Idempotent by `ref`, so calling it twice does not duplicate the feed, and
+    calling it after a restore-point rollback does not re-import the world.
+    """
+    d = request.get_json(silent=True) or {}
+    pid = d.get('project_id')
+    if pid:
+        if load_project is None:
+            return jsonify({'error': 'not wired'}), 503
+        p = load_project(pid)
+        if not p:
+            return jsonify({'error': 'project not found'}), 404
+        return jsonify(_harvest.harvest_all([p]))
+    return jsonify(_harvest.harvest_all())
 
 
 @bp.route('/api/desk/signals', methods=['POST'])
@@ -255,8 +278,10 @@ def overview():
     except Exception as e:
         _log(f'[desk] overview could not count pending drafts: {e}')
         pending = 0
+    # Sorted by SCORE, not recency: the Board's question is "what is worth
+    # saying", and the newest thing that happened is often a chore.
     hot = _desk.list_signals(limit=20, min_score=_desk.STORY_SCORE_FLOOR,
-                             unconsumed_only=True)
+                             unconsumed_only=True, sort='score')
     return jsonify({
         'campaigns': _desk.list_campaigns(),
         'running': len(_desk.list_campaigns(state='running')),
