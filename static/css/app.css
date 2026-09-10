@@ -7686,102 +7686,267 @@
   }
   .conv-row .conv-unhire:hover { color: var(--red-text); }
 
+
   /* ── The Desk (docs/THE_DESK_SPEC.md) ─────────────────────────────────────
-     Four surfaces, and the visual split is load-bearing: only the QUEUE ever
-     demands anything, so only the Queue tab carries a count badge. The Board is
-     meant to be read, not actioned. */
+     This is the marketing surface, so it is allowed to look like one — but
+     every colour below is a THEME TOKEN, never a literal, so it reads correctly
+     in warm/cream, editorial and dark without a second design.
+
+     Two rules from the dataviz guidance shape the layout and are worth keeping:
+       * EXACTLY ONE hero figure per view. "Waiting on you" is it, because it is
+         the only number that should ever pull Ron out of what he was doing. The
+         other tiles are secondary by size, deliberately.
+       * A meter's fill carries magnitude and its track is a LIGHTER STEP OF THE
+         SAME HUE (--accent over --accent-dim), so the bar reads as one scale
+         rather than two colours competing.
+     Signal KIND is carried by a LABEL, not by a hue. Six cycled category colours
+     would be an unvalidated categorical palette for no gain; the label already
+     says "release" and the meter already says how much it matters. */
+
+  /* Tab bar — pills, not underlines. Only the Queue may nag. */
   .desk-tabs {
-    display: flex; align-items: center; gap: 4px; flex-wrap: wrap;
-    border-bottom: 1px solid var(--border); margin-bottom: 12px; padding-top: 4px;
+    display: flex; align-items: center; gap: 3px; flex-wrap: wrap;
+    margin: 2px 0 16px; padding-bottom: 12px;
+    border-bottom: 1px solid var(--border);
   }
   .desk-tab {
-    background: transparent; border: none; border-bottom: 2px solid transparent;
-    color: var(--text-faint); font-size: 12px; font-weight: 600;
-    padding: 7px 12px; cursor: pointer; border-radius: 3px 3px 0 0;
+    position: relative; background: transparent; border: 1px solid transparent;
+    color: var(--text-dim); font-size: 12.5px; font-weight: 650;
+    padding: 6px 14px; cursor: pointer; border-radius: 999px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
   }
   .desk-tab:hover { color: var(--text); background: var(--surface2); }
-  .desk-tab.active { color: var(--accent); border-bottom-color: var(--accent); }
+  .desk-tab.active {
+    color: var(--accent); background: var(--accent-dim);
+    border-color: color-mix(in srgb, var(--accent) 28%, transparent);
+  }
   .desk-tab-badge {
-    display: inline-block; min-width: 16px; padding: 0 4px; margin-left: 4px;
-    background: var(--accent); color: var(--bg); border-radius: 8px;
-    font-size: 10px; font-weight: 700; line-height: 16px; text-align: center;
+    display: inline-block; min-width: 17px; padding: 0 5px; margin-left: 6px;
+    background: var(--accent); color: var(--surface); border-radius: 999px;
+    font-size: 10.5px; font-weight: 800; line-height: 17px; text-align: center;
+    vertical-align: 1px;
   }
+
   .desk-harvest-btn {
-    background: var(--surface2); border: 1px solid var(--border); color: var(--text);
-    font-size: 11px; padding: 5px 11px; border-radius: 4px; cursor: pointer;
+    display: inline-flex; align-items: center; gap: 6px;
+    background: var(--accent); border: 1px solid var(--accent); color: var(--surface);
+    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
+    border-radius: 999px; cursor: pointer;
+    transition: filter 0.15s, opacity 0.15s;
   }
-  .desk-harvest-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
-  .desk-harvest-btn:disabled { opacity: 0.55; cursor: default; }
+  .desk-harvest-btn:hover:not(:disabled) { filter: brightness(1.08); }
+  .desk-harvest-btn:disabled { opacity: 0.5; cursor: default; }
 
-  .desk-section-label {
-    font-size: 11px; font-weight: 700; text-transform: uppercase;
-    letter-spacing: 0.06em; color: var(--text-faint); margin: 6px 0 8px;
+  /* ── KPI row ───────────────────────────────────────────────────────────── */
+  .desk-kpis {
+    display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr;
+    gap: 10px; margin-bottom: 20px;
   }
-  .desk-section-hint { font-weight: 400; text-transform: none; letter-spacing: 0; }
-  .desk-empty {
-    padding: 26px 14px; text-align: center; color: var(--text-faint);
-    font-size: 12px; line-height: 1.6; background: var(--surface2);
-    border-radius: 5px; border: 1px dashed var(--border);
-  }
-
-  /* A campaign leads with its THESIS, not its title — the Board's job is to
-     answer "why is this running now", and a title alone cannot. */
-  .desk-campaign {
+  .desk-kpi {
     background: var(--surface2); border: 1px solid var(--border);
-    border-left: 3px solid var(--border); border-radius: 5px;
-    padding: 10px 12px; margin-bottom: 8px;
+    border-radius: 10px; padding: 13px 15px 14px;
+    display: flex; flex-direction: column; gap: 3px; min-width: 0;
   }
-  .desk-campaign.state-running { border-left-color: var(--accent); }
-  .desk-campaign.state-paused, .desk-campaign.state-dropped { opacity: 0.6; }
-  .desk-campaign-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
-  .desk-campaign-title { font-size: 13px; font-weight: 700; color: var(--text); }
-  .desk-campaign-thesis { font-size: 12px; color: var(--text); line-height: 1.5; }
-  .desk-campaign-agenda { font-size: 11px; color: var(--text-faint); margin-top: 5px; font-style: italic; }
+  .desk-kpi-label {
+    font-size: 10.5px; font-weight: 700; letter-spacing: 0.055em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .desk-kpi-value {
+    font-size: 26px; font-weight: 750; line-height: 1.1; color: var(--text);
+    font-variant-numeric: tabular-nums;
+  }
+  .desk-kpi-note { font-size: 11px; color: var(--text-dim); line-height: 1.35; }
+
+  /* The one hero. Bigger, accent-washed, and the only tile with a call to
+     action — everything else on this surface is for reading. */
+  .desk-kpi.hero {
+    background: linear-gradient(135deg,
+      var(--accent-dim) 0%,
+      color-mix(in srgb, var(--accent-dim) 45%, var(--surface2)) 100%);
+    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
+  }
+  .desk-kpi.hero .desk-kpi-value { font-size: 48px; font-weight: 800; color: var(--accent); }
+  .desk-kpi.hero .desk-kpi-label { color: var(--accent-soft); }
+  .desk-kpi-cta {
+    align-self: flex-start; margin-top: 4px; background: transparent;
+    border: none; padding: 0; cursor: pointer;
+    color: var(--accent); font-size: 11.5px; font-weight: 700;
+    text-decoration: underline; text-underline-offset: 3px;
+  }
+  .desk-kpi.hero.clear { background: var(--surface2); border-color: var(--border); }
+  .desk-kpi.hero.clear .desk-kpi-value { color: var(--green-text); }
+  .desk-kpi.hero.clear .desk-kpi-label { color: var(--text-faint); }
+
+  /* ── Section headers ───────────────────────────────────────────────────── */
+  .desk-section {
+    display: flex; align-items: baseline; gap: 8px; margin: 4px 0 10px;
+  }
+  .desk-section-label {
+    font-size: 11px; font-weight: 800; text-transform: uppercase;
+    letter-spacing: 0.07em; color: var(--text-dim); white-space: nowrap;
+  }
+  .desk-section-hint { font-size: 11px; font-weight: 400; color: var(--text-faint); }
+  .desk-section-rule { flex: 1; height: 1px; background: var(--border); }
+
+  .desk-empty {
+    padding: 30px 20px; text-align: center; color: var(--text-dim);
+    font-size: 12.5px; line-height: 1.65; background: var(--surface2);
+    border-radius: 10px; border: 1px dashed var(--border2);
+  }
+  .desk-empty b { color: var(--text); }
+
+  /* ── Campaign cards ────────────────────────────────────────────────────── */
+  /* auto-fit, not `1fr 1fr`: with a single campaign a fixed 2-col grid leaves it
+     marooned in the left half, which reads as a rendering bug rather than a
+     one-campaign month. */
+  .desk-campaigns {
+    display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+    gap: 10px; margin-bottom: 22px;
+  }
+  .desk-campaign {
+    position: relative; overflow: hidden;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 16px 15px;
+    transition: border-color 0.15s, transform 0.15s;
+  }
+  .desk-campaign:hover { border-color: var(--border2); transform: translateY(-1px); }
+  /* A 3px spine, not a whole tinted card: state is secondary information and
+     should not compete with the thesis for attention. */
+  .desk-campaign::before {
+    content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 3px;
+    background: var(--border2);
+  }
+  .desk-campaign.state-running::before  { background: var(--green); }
+  .desk-campaign.state-proposed::before { background: var(--amber); }
+  .desk-campaign.state-paused::before,
+  .desk-campaign.state-dropped::before  { background: var(--text-faint); }
+  .desk-campaign.state-paused, .desk-campaign.state-dropped { opacity: 0.65; }
+
+  .desk-campaign-head {
+    display: flex; align-items: center; gap: 7px; margin-bottom: 7px; flex-wrap: wrap;
+  }
+  .desk-campaign-title { font-size: 13.5px; font-weight: 750; color: var(--text); }
+  /* The thesis is the point of a campaign, so it gets the readable size and the
+     title is the label above it — not the other way round. */
+  .desk-campaign-thesis { font-size: 13px; color: var(--text); line-height: 1.5; }
+  .desk-campaign-agenda {
+    font-size: 11.5px; color: var(--text-dim); margin-top: 8px;
+    padding-top: 8px; border-top: 1px dashed var(--border);
+  }
+  .desk-campaign-agenda b { color: var(--text-dim); font-weight: 700; }
+
+  .desk-state-chip {
+    font-size: 9.5px; font-weight: 800; letter-spacing: 0.05em; text-transform: uppercase;
+    padding: 2px 7px; border-radius: 999px;
+    background: var(--surface3); color: var(--text-dim);
+  }
+  .desk-campaign.state-running .desk-state-chip { background: var(--green-dim); color: var(--green-text); }
+  .desk-campaign.state-proposed .desk-state-chip { background: var(--amber-dim); color: var(--amber-text); }
+
+  /* Voice is an IDENTITY, and there are exactly two — a chip that reads as a
+     name, not a tag. */
   .desk-voice-chip {
-    font-size: 10px; font-weight: 700; padding: 1px 6px; border-radius: 3px;
-    background: var(--accent-dim); color: var(--accent); text-transform: lowercase;
+    display: inline-flex; align-items: center; gap: 4px;
+    font-size: 10.5px; font-weight: 700; padding: 2px 8px; border-radius: 999px;
+    background: var(--accent-dim); color: var(--accent-soft);
+  }
+  .desk-voice-chip::before {
+    content: ""; width: 5px; height: 5px; border-radius: 50%;
+    background: currentColor; opacity: 0.75;
   }
 
-  /* Signal rows are deliberately dense and low-contrast: most will never become
-     posts, so they must be scannable without competing with the Queue. */
+  /* ── Signal feed ───────────────────────────────────────────────────────── */
+  .desk-feed { border-radius: 10px; overflow: hidden; border: 1px solid var(--border); }
   .desk-signal {
-    display: flex; align-items: baseline; gap: 8px; padding: 5px 8px;
-    border-bottom: 1px solid var(--border); font-size: 12px;
+    display: flex; align-items: center; gap: 11px;
+    padding: 9px 13px; background: var(--surface);
+    border-bottom: 1px solid var(--border); font-size: 12.5px;
+    transition: background 0.12s;
   }
+  .desk-signal:last-child { border-bottom: none; }
   .desk-signal:hover { background: var(--surface2); }
-  .desk-signal-score {
-    flex-shrink: 0; width: 30px; font-variant-numeric: tabular-nums;
-    font-size: 11px; font-weight: 700; color: var(--accent);
+
+  /* Score meter: magnitude, so one hue light->dark. The track is --accent-dim,
+     a lighter step of the same ramp as the --accent-soft fill. */
+  .desk-meter {
+    flex-shrink: 0; width: 44px; height: 7px; border-radius: 999px;
+    background: var(--accent-dim); overflow: hidden;
+    box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--accent) 18%, transparent);
   }
-  .desk-signal-kind { flex-shrink: 0; text-transform: capitalize; }
-  .desk-signal-proj { flex-shrink: 0; font-size: 10px; color: var(--text-faint); }
+  /* display:block is LOAD-BEARING, not tidiness. Both of these are <span>s, and
+     an INLINE element ignores width/height — so the fill collapsed to a zero box
+     and every meter rendered as a bare full-length track regardless of score.
+     It looked plausible enough to ship and no assertion caught it; only
+     screenshotting it did. tools/smoke/desk.mjs now measures the widths.
+     min-width keeps a near-zero score visible as a nub, because an empty track
+     is ambiguous between "scored ~0" and "never scored".
+     --accent-soft over --accent: the darker step of the same ramp, so 0.9 and
+     0.45 read as different lengths rather than two similar pale bars. */
+  .desk-meter-fill {
+    display: block; height: 100%; min-width: 3px;
+    border-radius: 999px; background: var(--accent-soft);
+  }
+  /* Below the surfacing floor: it stays in the feed (nothing is hidden) but it
+     recedes, because most of what happens never becomes a post. */
+  .desk-signal.cold { opacity: 0.55; }
+  .desk-signal.cold .desk-meter-fill { background: var(--text-faint); }
+
+  .desk-signal-kind {
+    flex-shrink: 0; min-width: 62px;
+    font-size: 10px; font-weight: 700; letter-spacing: 0.04em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .desk-signal.hot .desk-signal-kind { color: var(--accent-soft); }
   .desk-signal-text {
     flex: 1; min-width: 0; color: var(--text);
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  .desk-signal-proj {
+    flex-shrink: 0; font-size: 10.5px; color: var(--text-faint);
+    max-width: 130px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .desk-signal-when {
-    flex-shrink: 0; font-size: 10px; color: var(--text-faint);
+    flex-shrink: 0; font-size: 10.5px; color: var(--text-faint);
     font-variant-numeric: tabular-nums;
   }
 
-  .desk-day { margin-bottom: 14px; }
+  /* ── Calendar ──────────────────────────────────────────────────────────── */
+  .desk-day { margin-bottom: 18px; }
   .desk-day-label {
-    font-size: 11px; font-weight: 700; color: var(--text-faint);
-    padding-bottom: 4px; border-bottom: 1px solid var(--border); margin-bottom: 6px;
+    display: flex; align-items: center; gap: 8px;
+    font-size: 11px; font-weight: 800; letter-spacing: 0.05em;
+    color: var(--text-dim); margin-bottom: 8px; text-transform: uppercase;
   }
-  .desk-post { display: flex; align-items: baseline; gap: 7px; padding: 4px 2px; font-size: 12px; }
-  .desk-platform { text-transform: capitalize; }
+  .desk-day-label::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .desk-post {
+    display: flex; align-items: center; gap: 8px; padding: 9px 13px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 8px; margin-bottom: 6px; font-size: 12.5px;
+  }
   .desk-post-body { flex: 1; min-width: 0; color: var(--text); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-
-  .desk-ledger-row {
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 5px; padding: 9px 11px; margin-bottom: 7px;
+  .desk-platform {
+    flex-shrink: 0; font-size: 10px; font-weight: 800; letter-spacing: 0.04em;
+    text-transform: uppercase; padding: 2px 8px; border-radius: 999px;
+    background: var(--surface3); color: var(--text-dim);
   }
-  .desk-ledger-head { display: flex; align-items: center; gap: 6px; margin-bottom: 5px; flex-wrap: wrap; }
-  .desk-ledger-body { font-size: 12px; color: var(--text); line-height: 1.5; white-space: pre-wrap; }
-  .desk-ledger-outcome { font-size: 11px; color: var(--text-faint); margin-top: 5px; }
+
+  /* ── Ledger ────────────────────────────────────────────────────────────── */
+  .desk-ledger-row {
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 13px 15px; margin-bottom: 9px;
+  }
+  .desk-ledger-head { display: flex; align-items: center; gap: 7px; margin-bottom: 8px; flex-wrap: wrap; }
+  .desk-ledger-body {
+    font-size: 13px; color: var(--text); line-height: 1.55; white-space: pre-wrap;
+    padding-left: 11px; border-left: 2px solid var(--border);
+  }
+  .desk-ledger-outcome { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
 
   @media (max-width: 960px) {
-    .desk-tab { padding: 7px 9px; font-size: 11px; }
+    .desk-kpis { grid-template-columns: 1fr 1fr; }
+    .desk-kpi.hero { grid-column: 1 / -1; }
+    .desk-kpi.hero .desk-kpi-value { font-size: 40px; }
+    .desk-campaigns { grid-template-columns: 1fr; }
+    .desk-tab { padding: 6px 10px; font-size: 11.5px; }
     .desk-signal-proj, .desk-signal-when { display: none; }
   }

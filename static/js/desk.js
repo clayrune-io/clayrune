@@ -169,7 +169,7 @@ function renderDesk() {
     <span style="flex:1"></span>
     <button class="desk-harvest-btn" onclick="deskHarvest()" ${_deskHarvesting ? 'disabled' : ''}
       title="Read every project's new commits and shipped backlog items into the feed">
-      ${_deskHarvesting ? 'Reading…' : 'Read the projects'}
+      ${_deskHarvesting ? 'Reading the projects…' : 'Read the projects'}
     </button>`;
 
   if (_deskData._error) {
@@ -182,48 +182,109 @@ function renderDesk() {
   else bodyEl.innerHTML = _renderLedger();
 }
 
+function _deskSectionHTML(label, hint) {
+  return `<div class="desk-section">
+    <span class="desk-section-label">${label}</span>
+    ${hint ? `<span class="desk-section-hint">${hint}</span>` : ''}
+    <span class="desk-section-rule"></span>
+  </div>`;
+}
+
+// Posts published in the last seven days. The Calendar answers "when", this
+// answers "are we actually shipping anything" — the number a marketing surface
+// should lead with alongside what it owes you.
+function _deskThisWeek() {
+  const cut = new Date(Date.now() - 7 * 864e5).toISOString();
+  return (_deskData.recent_posts || []).filter(p => (p.published_at || '') >= cut).length;
+}
+
 // BOARD — what is happening this month, and why.
 function _renderBoard() {
   const camps = _deskData.campaigns || [];
-  const hot = (_deskSignals.length ? _deskSignals : (_deskData.hot_signals || [])).slice(0, 25);
+  const all = _deskSignals.length ? _deskSignals : (_deskData.hot_signals || []);
+  const hot = all.slice(0, 25);
+  const pending = _deskPendingCount();
+  const running = camps.filter(c => c.state === 'running').length;
+  const week = _deskThisWeek();
+  const ideas = all.filter(s => !s.consumed_by && (s.story_score || 0) >= 0.35).length;
 
-  const campHTML = camps.length ? camps.map(c => `
+  // Exactly ONE hero figure, and it is what the Desk owes you — the only number
+  // here that should ever pull Ron out of what he was doing. Everything else on
+  // this surface is for reading, so it stays secondary by size on purpose.
+  const kpiHTML = `
+    <div class="desk-kpis">
+      <div class="desk-kpi hero${pending ? '' : ' clear'}">
+        <span class="desk-kpi-label">Waiting on you</span>
+        <span class="desk-kpi-value">${pending || 'None'}</span>
+        ${pending
+          ? `<button class="desk-kpi-cta" onclick="deskTab('queue')">Review ${pending === 1 ? 'it' : 'them'} →</button>`
+          : `<span class="desk-kpi-note">Nothing needs a decision.</span>`}
+      </div>
+      <div class="desk-kpi">
+        <span class="desk-kpi-label">Campaigns</span>
+        <span class="desk-kpi-value">${running}</span>
+        <span class="desk-kpi-note">${running === 1 ? 'running now' : 'running now'}${camps.length > running ? ` · ${camps.length - running} idle` : ''}</span>
+      </div>
+      <div class="desk-kpi">
+        <span class="desk-kpi-label">Went out</span>
+        <span class="desk-kpi-value">${week}</span>
+        <span class="desk-kpi-note">in the last 7 days</span>
+      </div>
+      <div class="desk-kpi">
+        <span class="desk-kpi-label">Story ideas</span>
+        <span class="desk-kpi-value">${ideas}</span>
+        <span class="desk-kpi-note">unused, worth a look</span>
+      </div>
+    </div>`;
+
+  const campHTML = camps.length ? `<div class="desk-campaigns">${camps.map(c => `
     <div class="desk-campaign state-${esc(c.state)}">
       <div class="desk-campaign-head">
         <span class="desk-campaign-title">${esc(c.title)}</span>
-        <span class="status-badge">${esc(c.state)}</span>
+        <span class="desk-state-chip">${esc(c.state)}</span>
         <span class="desk-voice-chip">${esc(c.voice)}</span>
       </div>
       <div class="desk-campaign-thesis">${esc(c.thesis)}</div>
-      ${c.agenda ? `<div class="desk-campaign-agenda">Why now: ${esc(c.agenda)}</div>` : ''}
-    </div>`).join('') : `
-    <div class="desk-empty">
+      ${c.agenda ? `<div class="desk-campaign-agenda"><b>Why now:</b> ${esc(c.agenda)}</div>` : ''}
+    </div>`).join('')}</div>` : `
+    <div class="desk-empty" style="margin-bottom:22px">
       No campaigns yet. A campaign carries a <b>thesis</b> and a reason it is
       running now — that is what makes this a plan rather than a list of drafts.
     </div>`;
 
   // The feed, sorted by story score. Most of these will never become posts, and
   // that is the design: the feed is the evidence, a campaign is the argument.
-  const sigHTML = hot.length ? hot.map(s => `
-    <div class="desk-signal">
-      <span class="desk-signal-score" title="Story score - a suggestion, not a verdict">${(s.story_score || 0).toFixed(2)}</span>
-      <span class="status-badge desk-signal-kind">${esc(s.kind)}</span>
-      <span class="desk-signal-proj">${esc(s.project_id || '')}</span>
+  //
+  // The score is a METER rather than a printed number: magnitude is what it
+  // encodes, and a bar is read at a glance where "0.05" has to be parsed. Kind
+  // stays a LABEL — six cycled category colours would be an unvalidated
+  // categorical palette for no gain. Low scorers dim rather than disappear;
+  // nothing is hidden from the feed, it just stops competing.
+  const sigHTML = hot.length ? `<div class="desk-feed">${hot.map(s => {
+    const score = Math.max(0, Math.min(1, s.story_score || 0));
+    const cold = score < 0.35;
+    return `
+    <div class="desk-signal ${cold ? 'cold' : 'hot'}">
+      <span class="desk-meter" title="Story value ${score.toFixed(2)} — a suggestion, not a verdict">
+        <span class="desk-meter-fill" style="width:${Math.round(score * 100)}%"></span>
+      </span>
+      <span class="desk-signal-kind">${esc(s.kind)}</span>
       <span class="desk-signal-text">${esc(s.summary || '')}</span>
+      <span class="desk-signal-proj">${esc(s.project_id || '')}</span>
       <span class="desk-signal-when">${esc((s.occurred_at || '').slice(0, 10))}</span>
-    </div>`).join('') : `
+    </div>`;
+  }).join('')}</div>` : `
     <div class="desk-empty">
       Nothing in the feed yet. Hit <b>Read the projects</b> — it pulls each
       project's new commits and shipped backlog items in.
     </div>`;
 
-  return `
-    <div class="desk-section-label">Campaigns</div>
-    ${campHTML}
-    <div class="desk-section-label" style="margin-top:18px">
-      What happened <span class="desk-section-hint">— highest story value first; most of it will never become a post</span>
-    </div>
-    ${sigHTML}`;
+  return kpiHTML
+    + _deskSectionHTML('Campaigns', camps.length ? 'what we are arguing, and why now' : '')
+    + campHTML
+    + _deskSectionHTML('What happened',
+        'highest story value first — most of it will never become a post')
+    + sigHTML;
 }
 
 // QUEUE — the only surface that ever demands anything of you.
@@ -254,12 +315,13 @@ function _renderCalendar() {
     const day = (p.published_at || '').slice(0, 10) || 'undated';
     (byDay[day] = byDay[day] || []).push(p);
   }
-  return Object.keys(byDay).sort().reverse().map(day => `
+  return _deskSectionHTML('What went out', 'newest first') +
+    Object.keys(byDay).sort().reverse().map(day => `
     <div class="desk-day">
       <div class="desk-day-label">${esc(day)}</div>
       ${byDay[day].map(p => `
         <div class="desk-post">
-          <span class="status-badge desk-platform">${esc(p.platform || '')}</span>
+          <span class="desk-platform">${esc(p.platform || '')}</span>
           <span class="desk-voice-chip">${esc(p.voice || '')}</span>
           <span class="desk-post-body">${esc((p.body || '').slice(0, 140))}</span>
         </div>`).join('')}
@@ -276,10 +338,12 @@ function _renderLedger() {
       re-announcing the same feature next month.
     </div>`;
   }
-  return posts.map(p => `
+  return _deskSectionHTML('Everything we have said',
+      'so the Desk does not re-announce it next month') +
+    posts.map(p => `
     <div class="desk-ledger-row">
       <div class="desk-ledger-head">
-        <span class="status-badge desk-platform">${esc(p.platform || '')}</span>
+        <span class="desk-platform">${esc(p.platform || '')}</span>
         <span class="desk-voice-chip">${esc(p.voice || '')}</span>
         ${p.project_id ? `<span class="desk-signal-proj">${esc(p.project_id)}</span>` : ''}
         <span class="desk-signal-when">${esc((p.published_at || '').slice(0, 10))}</span>

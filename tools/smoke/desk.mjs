@@ -67,9 +67,9 @@ const PROJECTS = [
 ];
 
 const QUEUE = [
-  { id: 'd1', platform: 'x', status: 'pending', body: 'Shipped drag-to-hire today.',
+  { id: 'd1', project_id: PID, platform: 'x', status: 'pending', body: 'Shipped drag-to-hire today.',
     originated: false, note: '', created_at: '2026-09-09T10:00:00Z' },
-  { id: 'd2', platform: 'linkedin', status: 'pending', body: 'Restore points now keep ten snapshots.',
+  { id: 'd2', project_id: PID, platform: 'linkedin', status: 'pending', body: 'Restore points now keep ten snapshots.',
     originated: false, note: '', created_at: '2026-09-09T09:00:00Z' },
 ];
 
@@ -89,12 +89,30 @@ const OVERVIEW = {
   voices: ['ron', 'clayrune'],
 };
 
+// A realistic feed, not two rows: the Board's density is part of what is being
+// checked. Mixed kinds and scores, because the point of the meter is that a
+// scannable eye finds the two stories among twenty chores.
 const SIGNALS = [
-  { id: 'sig-1', project_id: PID, kind: 'release', summary: 'Shipped drag-to-hire, now live',
-    ref: 'abc123', story_score: 0.9, occurred_at: '2026-09-09T08:00:00Z', consumed_by: null },
-  { id: 'sig-2', project_id: PID, kind: 'commit', summary: 'chore: bump the linter',
-    ref: 'def456', story_score: 0.05, occurred_at: '2026-09-09T09:00:00Z', consumed_by: null },
-];
+  { kind: 'release',  score: 0.90, txt: 'Shipped drag-to-hire, now live' },
+  { kind: 'backlog',  score: 0.85, txt: 'BACKUP PHASE 3 - restore points + checklist UI, shipped' },
+  { kind: 'backlog',  score: 0.70, txt: 'Provider quota must be visible before a run, not after it dies' },
+  { kind: 'journal',  score: 0.65, txt: 'Measured: an uncapped harvest pulled 899 items in one call' },
+  { kind: 'commit',   score: 0.65, txt: 'fix(floor): the Bench is draggable - it is where hireable agents are' },
+  { kind: 'commit',   score: 0.55, txt: 'fix(floor): a hire drag now outlives the board it started on' },
+  { kind: 'backlog',  score: 0.50, txt: 'Scheduler double-dispatch: one fire spawns two sessions' },
+  { kind: 'commit',   score: 0.45, txt: 'docs(desk): lock identity split and v1 platforms' },
+  { kind: 'journal',  score: 0.40, txt: 'X API went pay-per-use in Feb 2026; links cost 13x a plain post' },
+  { kind: 'commit',   score: 0.35, txt: 'feat(desk): harvest the feed from real project activity' },
+  { kind: 'run',      score: 0.25, txt: 'Night review completed, no blockers raised' },
+  { kind: 'commit',   score: 0.20, txt: 'refactor: extract _deskSectionHTML' },
+  { kind: 'commit',   score: 0.15, txt: 'test: cover the undateable-backlog-item case' },
+  { kind: 'commit',   score: 0.10, txt: 'chore: bump the linter' },
+  { kind: 'commit',   score: 0.05, txt: 'chore: whitespace in app.css' },
+].map((s, i) => ({
+  id: `sig-${i}`, project_id: PID, kind: s.kind, summary: s.txt,
+  ref: `ref-${i}`, story_score: s.score,
+  occurred_at: `2026-09-0${(i % 9) + 1}T08:00:00Z`, consumed_by: null,
+}));
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -171,11 +189,28 @@ try {
 
   // The feed is sorted by story value, so the chore must not lead.
   const sigOrder = await page.$$eval('.desk-signal .desk-signal-text', els => els.map(e => e.textContent.trim()));
-  if (sigOrder[0] && sigOrder[0].startsWith('Shipped drag-to-hire')) {
-    ok('feed leads with story value, not recency — the chore is below the shipped feature');
+  if (sigOrder[0] && sigOrder[0].startsWith('Shipped drag-to-hire')
+      && sigOrder[sigOrder.length - 1].startsWith('chore:')) {
+    ok(`feed leads with story value across ${sigOrder.length} rows — chores sink to the bottom`);
   } else {
-    fail(`feed ordering wrong, leads with: ${JSON.stringify(sigOrder[0])}`);
+    fail(`feed ordering wrong: leads with ${JSON.stringify(sigOrder[0])}, ends with ${JSON.stringify(sigOrder[sigOrder.length - 1])}`);
   }
+
+  // The meter must actually ENCODE the score. It is a <span>, so if it ever
+  // loses `display:block` the width is silently ignored and every bar renders
+  // identical — plausible enough to ship, invisible to every other assertion.
+  const widths = await page.$$eval('.desk-meter-fill', els =>
+    els.map(e => e.getBoundingClientRect().width));
+  if (widths.length > 2 && Math.max(...widths) - Math.min(...widths) > 10) {
+    ok(`meters encode score: widths span ${Math.min(...widths).toFixed(0)}-${Math.max(...widths).toFixed(0)}px`);
+  } else {
+    fail(`meter widths do not vary (${JSON.stringify(widths.slice(0, 4))}) — the fill is inline again`);
+  }
+
+  // Low scorers must DIM, not vanish — nothing is hidden from the feed.
+  const cold = await page.$$eval('.desk-signal.cold', els => els.length);
+  if (cold > 0) ok(`${cold} low-value signals recede rather than disappear`);
+  else fail('no signal was dimmed; the feed hides nothing, it de-emphasises');
 
   // ── QUEUE: hosts cross-social.js's REAL rows (the window bridge works) ────
   await page.click('.desk-tab:has-text("Queue")');
@@ -186,6 +221,10 @@ try {
   } else {
     fail(`Queue rows wrong: ${JSON.stringify(rows)}`);
   }
+  const badge = await page.textContent('#asl-list .social-project-badge');
+  if ((badge || '').includes('Desk Project')) ok('Queue rows name the project they belong to');
+  else fail(`project badge did not resolve: ${JSON.stringify(badge)}`);
+
   const hasActions = await page.$('#asl-list .btn-social-release');
   if (hasActions) ok('Queue rows keep their Release / Edit / Push-back actions');
   else fail('Queue rows lost their action buttons');
