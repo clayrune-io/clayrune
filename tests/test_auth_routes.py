@@ -416,9 +416,13 @@ class TestAuthRoutes:
 # that produces no output at all without a real TTY, so it correctly reports
 # remote_capable:False here rather than hanging or faking a URL.
 
+import os as _os
 import shutil as _shutil
 
 _HAS_CLAUDE_CLI = _shutil.which('claude') is not None
+# `claude auth login` opens an OAuth consent tab in the operator's real browser.
+# Unattended agents run the suite dozens of times a day, so this must be opt-in.
+_LIVE_AUTH_OK = _os.environ.get('MC_LIVE_AUTH_TESTS') == '1'
 
 
 class TestRemoteLogin:
@@ -512,7 +516,9 @@ class TestRemoteLogin:
         body = json.loads(resp.data)
         assert body == {'ok': False, 'remote_capable': False, 'error': 'boom'}
 
-    @pytest.mark.skipif(not _HAS_CLAUDE_CLI, reason='claude CLI not on PATH')
+    @pytest.mark.skipif(not (_HAS_CLAUDE_CLI and _LIVE_AUTH_OK),
+                        reason='needs claude CLI and MC_LIVE_AUTH_TESTS=1 '
+                               '(spawns a real login, opens a browser tab)')
     def test_remote_login_claude_captures_real_url(self):
         """End-to-end against the REAL claude binary (no mocking): spawns
         `claude auth login`, waits for the URL, submits a bogus code, and
