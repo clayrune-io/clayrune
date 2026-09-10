@@ -34,6 +34,7 @@ from typing import Callable, Optional
 from flask import Blueprint, jsonify, request
 
 from mc import desk as _desk
+from mc import desk_brief as _brief
 from mc import desk_harvest as _harvest
 from mc.core import _log
 
@@ -42,16 +43,23 @@ bp = Blueprint('desk_routes', __name__)
 # -- wired by server.py (see wire()) ------------------------------------------
 load_projects: Callable[[], list] = None  # type: ignore[assignment]
 load_project: Callable[[str], Optional[dict]] = None  # type: ignore[assignment]
+# Late-bound so this module never imports agent_routes: the Desk is downstream
+# of dispatch, and a cycle here would be a restart-time import error rather than
+# a runtime one. Same shape as automation_routes' bridge to the scheduler, and
+# for the same reason — one dispatch engine, not two.
+dispatch_agent: Optional[Callable[..., dict]] = None
 
 
-def wire(*, load_projects_fn=None, load_project_fn=None,
+def wire(*, load_projects_fn=None, load_project_fn=None, dispatch_fn=None,
          store_path=None, signals_path=None):
-    global load_projects, load_project
+    global load_projects, load_project, dispatch_agent
     if load_projects_fn is not None:
         load_projects = load_projects_fn
         _harvest.wire(load_projects_fn=load_projects_fn)
     if load_project_fn is not None:
         load_project = load_project_fn
+    if dispatch_fn is not None:
+        dispatch_agent = dispatch_fn
     if store_path is not None:
         _desk.STORE_PATH = store_path
     if signals_path is not None:
@@ -246,6 +254,108 @@ def record_outcome(post_id):
     if row is None:
         return jsonify({'error': 'post not found'}), 404
     return jsonify(row)
+
+
+# ── Drafting ─────────────────────────────────────────────────────────────────
+
+@bp.route('/api/desk/draft', methods=['POST'])
+def draft():
+    """Turn a signal into a PENDING draft, by dispatching the roster's writer.
+
+    `{signal_id, voice?, campaign_id?}` -> a real agent session for **Posy**
+    (`social-media-strategist`), briefed by `mc.desk_brief`, which POSTs its
+    draft onto the project's existing social queue.
+
+    Two things this route does NOT do, and both are deliberate:
+
+      * It does not generate. The Desk is the office, not a persona — Posy holds
+        the platform judgement, per the standing position of 2026-08-29 that
+        declined a separate marketing agent.
+      * It does not publish, and it cannot widen its own permission to. The
+        draft lands as `pending` and a human releases it. This is a platform
+        TERM, not our caution.
+
+    It DOES refuse up front when the signal has already been consumed, because
+    the cheapest re-announcement to prevent is the one that never gets drafted.
+    """
+    d = request.get_json(silent=True) or {}
+    sig_id = d.get('signal_id')
+    if not sig_id:
+        return jsonify({'error': 'signal_id is required'}), 400
+    voice = d.get('voice') or 'ron'
+    if voice not in _desk.VOICES:
+        return jsonify({'error': f'unknown voice {voice!r}'}), 400
+
+    signal = next((s for s in _desk.list_signals(limit=100000)
+                   if s.get('id') == sig_id), None)
+    if signal is None:
+        return jsonify({'error': 'signal not found'}), 404
+    if signal.get('consumed_by'):
+        # Already drafted from. Say so rather than quietly making a second one —
+        # duplicate drafts off one event is how the queue becomes noise.
+        return jsonify({'error': 'signal already used',
+                        'consumed_by': signal['consumed_by']}), 409
+
+    campaign = None
+    if d.get('campaign_id'):
+        campaign = next((c for c in _desk.list_campaigns()
+                         if c['id'] == d['campaign_id']), None)
+        if campaign is None:
+            return jsonify({'error': 'campaign not found'}), 404
+
+    pid = signal.get('project_id')
+    project = load_project(pid) if (load_project and pid) else None
+    if project is None:
+        return jsonify({'error': f'project {pid!r} not found'}), 404
+
+    brief = _brief.build_brief(signal, voice=voice, campaign=campaign,
+                               project_name=project.get('name'))
+    if dispatch_agent is None:
+        # Unwired (or a test): hand back the brief rather than pretending. A
+        # caller that believes a draft was requested when none was is exactly
+        # the substitution failure the agent rules forbid.
+        return jsonify({'error': 'dispatch not wired', 'brief': brief}), 503
+
+    try:
+        # strict_character: a fresh, explicit pick, so an unresolvable Posy must
+        # REFUSE rather than silently run personaless (MC-925). A draft written
+        # in the default agent's voice, landing on the queue looking like hers,
+        # is exactly the substitution the agent rules forbid.
+        session_id = dispatch_agent(
+            pid, brief, '',
+            display_task=f'Draft a {_brief.platform_for(voice)} post: '
+                         f'{(signal.get("summary") or "")[:70]}',
+            character='global:social-media-strategist',
+            source='agent', strict_character=True)
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+    except Exception as e:
+        _log(f'[desk] draft dispatch failed for {sig_id}: {e}')
+        return jsonify({'error': f'dispatch failed: {e}'}), 502
+
+    return jsonify({'ok': True, 'signal_id': sig_id, 'voice': voice,
+                    'platform': _brief.platform_for(voice),
+                    'project_id': pid, 'session_id': session_id}), 202
+
+
+@bp.route('/api/desk/brief', methods=['POST'])
+def preview_brief():
+    """The brief that WOULD be sent, without dispatching anything.
+
+    Exists so the brief is inspectable — it is the highest-leverage text in the
+    system and it should never be a black box Ron cannot read.
+    """
+    d = request.get_json(silent=True) or {}
+    voice = d.get('voice') or 'ron'
+    if voice not in _desk.VOICES:
+        return jsonify({'error': f'unknown voice {voice!r}'}), 400
+    signal = next((s for s in _desk.list_signals(limit=100000)
+                   if s.get('id') == d.get('signal_id')), None)
+    if signal is None:
+        return jsonify({'error': 'signal not found'}), 404
+    campaign = next((c for c in _desk.list_campaigns()
+                     if c['id'] == d.get('campaign_id')), None) if d.get('campaign_id') else None
+    return jsonify({'brief': _brief.build_brief(signal, voice=voice, campaign=campaign)})
 
 
 @bp.route('/api/desk/repeat-check', methods=['POST'])

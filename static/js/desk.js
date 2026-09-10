@@ -32,6 +32,7 @@ let _deskData = { campaigns: [], hot_signals: [], recent_posts: [], voices: [], 
 let _deskSignals = [];
 let _deskLoading = false;
 let _deskHarvesting = false;
+let _deskDrafting = new Set();
 
 // ── data ────────────────────────────────────────────────────────────────────
 
@@ -82,6 +83,33 @@ async function deskHarvest() {
   } finally {
     _deskHarvesting = false;
     await Promise.all([_loadDesk(), _loadDeskSignals()]);
+  }
+}
+
+// Ask the roster's writer (Posy) for a draft off one signal. The Desk does not
+// generate — it briefs. The draft lands PENDING on the Queue; nothing here can
+// publish it, and nothing here should ever grow the ability to.
+async function deskDraft(signalId, voice) {
+  if (_deskDrafting.has(signalId)) return;
+  _deskDrafting.add(signalId);
+  renderDesk();
+  try {
+    const out = await _deskFetch('/api/desk/draft', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ signal_id: signalId, voice }),
+    });
+    if (typeof showToast === 'function') {
+      showToast(`Posy is drafting a ${out.platform} post — it lands in the Queue.`);
+    }
+  } catch (e) {
+    // A 409 means the signal was already drafted from, which is a real answer
+    // and not a failure — say which, rather than a generic error.
+    const msg = /409/.test(e.message) ? 'Already drafted from that one.'
+                                      : 'Could not brief the writer: ' + e.message;
+    if (typeof showToast === 'function') showToast(msg);
+  } finally {
+    _deskDrafting.delete(signalId);
+    _loadDeskSignals();
   }
 }
 
@@ -272,6 +300,14 @@ function _renderBoard() {
       <span class="desk-signal-text">${esc(s.summary || '')}</span>
       <span class="desk-signal-proj">${esc(s.project_id || '')}</span>
       <span class="desk-signal-when">${esc((s.occurred_at || '').slice(0, 10))}</span>
+      ${s.consumed_by
+        ? `<span class="desk-signal-used" title="Already drafted from">used</span>`
+        : `<span class="desk-draft-actions">
+             <button class="desk-draft-btn" onclick="deskDraft('${esc(s.id)}','ron')"
+               title="Ask Posy for an X post in Ron's voice">X</button>
+             <button class="desk-draft-btn" onclick="deskDraft('${esc(s.id)}','clayrune')"
+               title="Ask Posy for a LinkedIn post in Clayrune's voice">in</button>
+           </span>`}
     </div>`;
   }).join('')}</div>` : `
     <div class="desk-empty">
@@ -358,4 +394,5 @@ function _renderLedger() {
 window.openDesk = openDesk;
 window.deskTab = deskTab;
 window.deskHarvest = deskHarvest;
+window.deskDraft = deskDraft;
 window.renderDesk = renderDesk;

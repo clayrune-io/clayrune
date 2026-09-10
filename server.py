@@ -1741,6 +1741,11 @@ from mc.blueprints import desk_routes as _bp_desk  # noqa: E402
 _bp_desk.wire(
     load_projects_fn=_bp_projects.load_projects,
     load_project_fn=_bp_projects.load_project,
+    # One dispatch engine, not two: /api/desk/draft goes through the same
+    # internal call /api/project/<id>/agent/dispatch does, so the Desk cannot
+    # acquire a private way to start an agent. Same reasoning as
+    # automation_routes.accept calling scheduler_routes' own create path.
+    dispatch_fn=_bp_agent._dispatch_agent_internal,
     store_path=DESK_STORE_PATH,
     signals_path=DESK_SIGNALS_PATH,
 )

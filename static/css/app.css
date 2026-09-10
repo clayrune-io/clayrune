@@ -7910,6 +7910,34 @@
     font-variant-numeric: tabular-nums;
   }
 
+  /* Draft buttons stay hidden until the row is hovered: every signal carries a
+     pair, and twenty always-on button pairs would turn a feed meant for
+     scanning into a control panel. */
+  .desk-draft-actions { flex-shrink: 0; display: flex; gap: 4px; width: 54px; justify-content: flex-end; }
+  .desk-draft-btn {
+    opacity: 0; background: var(--surface2); border: 1px solid var(--border2);
+    color: var(--text-dim); font-size: 10px; font-weight: 800;
+    padding: 2px 7px; border-radius: 999px; cursor: pointer;
+    transition: opacity 0.12s, color 0.12s, border-color 0.12s;
+  }
+  .desk-signal:hover .desk-draft-btn { opacity: 1; }
+  .desk-draft-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .desk-draft-btn:focus-visible { opacity: 1; outline: 2px solid var(--accent); }
+  .desk-signal-used {
+    flex-shrink: 0; width: 54px; text-align: right;
+    font-size: 10px; font-weight: 700; color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 0.04em;
+  }
+
+  /* The teaching block, on a draft row in BOTH queue surfaces. Quiet enough not
+     to be mistaken for the post itself, present enough to be read while
+     deciding — which is the only moment it teaches anything. */
+  .social-teaching {
+    font-size: 11.5px; line-height: 1.55; color: var(--text-dim);
+    background: var(--surface2); border-left: 2px solid var(--accent-soft);
+    border-radius: 0 5px 5px 0; padding: 7px 10px; margin: 6px 0 2px;
+  }
+
   /* ── Calendar ──────────────────────────────────────────────────────────── */
   .desk-day { margin-bottom: 18px; }
   .desk-day-label {

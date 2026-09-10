@@ -596,6 +596,7 @@ function modalContentHTML(p) {
         <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
           onblur="saveSocialBody(event,'${esc(p.id)}','${esc(item.id)}')"
         >${esc(item.body)}</div>
+        ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
         <div class="note-input-row">
           <input type="text" id="social-note-${esc(item.id)}" placeholder="Note back to the agent"

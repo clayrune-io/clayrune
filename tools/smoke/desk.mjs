@@ -68,7 +68,10 @@ const PROJECTS = [
 
 const QUEUE = [
   { id: 'd1', project_id: PID, platform: 'x', status: 'pending', body: 'Shipped drag-to-hire today.',
-    originated: false, note: '', created_at: '2026-09-09T10:00:00Z' },
+    originated: false, note: '', created_at: '2026-09-09T10:00:00Z',
+    voice: 'ron', signal_id: 'sig-0',
+    teaching: 'Ships-beat-promises angle. X rewards a concrete claim with a number; '
+      + 'it is competing against launch threads with no artifact behind them.' },
   { id: 'd2', project_id: PID, platform: 'linkedin', status: 'pending', body: 'Restore points now keep ten snapshots.',
     originated: false, note: '', created_at: '2026-09-09T09:00:00Z' },
 ];
@@ -127,6 +130,7 @@ try {
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
   let harvestCalls = 0;
+  const draftCalls = [];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -141,6 +145,10 @@ try {
     if (path.endsWith('/social/queue')) return J([]);
     if (path === '/api/desk/overview') return J(OVERVIEW);
     if (path === '/api/desk/signals') return J(SIGNALS);
+    if (path === '/api/desk/draft' && req.method() === 'POST') {
+      draftCalls.push(JSON.parse(req.postData() || '{}'));
+      return J({ ok: true, signal_id: 'sig-0', voice: 'ron', platform: 'x', session_id: 's1' });
+    }
     if (path === '/api/desk/signals/harvest' && req.method() === 'POST') {
       harvestCalls++;
       return J({ projects: [{ project_id: PID, commits: 3, backlog: 1 }], commits: 3, backlog: 1 });
@@ -225,6 +233,13 @@ try {
   if ((badge || '').includes('Desk Project')) ok('Queue rows name the project they belong to');
   else fail(`project badge did not resolve: ${JSON.stringify(badge)}`);
 
+  const teaching = await page.textContent('#asl-list .social-teaching');
+  if ((teaching || '').includes('Ships-beat-promises')) {
+    ok('the teaching block renders on the draft, where the decision is made');
+  } else {
+    fail(`teaching block missing from the queue row: ${JSON.stringify(teaching)}`);
+  }
+
   const hasActions = await page.$('#asl-list .btn-social-release');
   if (hasActions) ok('Queue rows keep their Release / Edit / Push-back actions');
   else fail('Queue rows lost their action buttons');
@@ -256,6 +271,23 @@ try {
   const ledText = await page.textContent('#desk-body');
   if (ledText.includes('Took four days')) ok('Ledger renders the full published body');
   else fail('Ledger did not render the post body');
+
+  // ── Drafting: the Desk briefs the writer, it does not generate ───────────
+  await page.click('.desk-tab:has-text("Board")');
+  await page.waitForSelector('.desk-signal .desk-draft-btn', { timeout: 8000 });
+  await page.click('.desk-signal:first-child .desk-draft-btn');
+  await page.waitForTimeout(500);
+  if (draftCalls.length === 1 && draftCalls[0].voice === 'ron') {
+    ok(`a signal's draft button briefs the writer (voice=${draftCalls[0].voice})`);
+  } else {
+    fail(`draft button did not POST /api/desk/draft: ${JSON.stringify(draftCalls)}`);
+  }
+
+  // Both voices are offered per signal, because the platform follows the voice.
+  const perRow = await page.$$eval('.desk-signal:first-child .desk-draft-btn',
+    els => els.map(e => e.textContent.trim()));
+  if (perRow.length === 2) ok(`both voices offered per signal: ${perRow.join(' / ')}`);
+  else fail(`expected two voice buttons, got ${JSON.stringify(perRow)}`);
 
   // ── Harvest is the one button that reaches out to the projects ───────────
   await page.click('.desk-tab:has-text("Board")');

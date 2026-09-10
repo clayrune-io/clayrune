@@ -1271,6 +1271,17 @@ def add_social_queue_item(project_id):
         'decided_by': None,
         'note': data.get('note', ''),
         'external_id': data.get('external_id'),
+        # The Desk's two additions (docs/THE_DESK_SPEC.md, "Draft queue"):
+        #   signal_id — what this claim came FROM, so Ron can check it before
+        #     releasing. Untraceable claims are the fastest way to lose trust in
+        #     the whole system, so a Desk-authored draft always carries one.
+        #   teaching  — why this angle, this platform, now. Read at the moment of
+        #     judgement, which is the only moment it teaches anything.
+        #   voice     — which of the two identities wrote it; also tells the PATCH
+        #     below which voice profile to teach when Ron edits the body.
+        'signal_id': data.get('signal_id'),
+        'teaching': data.get('teaching', ''),
+        'voice': data.get('voice'),
     }
     queue.insert(0, item)
     p['last_updated'] = now_iso()
@@ -1294,7 +1305,24 @@ def update_social_queue_item(project_id, item_id):
         return jsonify({'error': 'item not found'}), 404
 
     if 'body' in data:
-        item['body'] = data['body'].strip()
+        # THIS IS THE LEARNING LOOP, and it is the whole differentiator — do not
+        # quietly drop it in a refactor. The 2026-09-09 field scan could not
+        # verify a closed learning loop in ANY surveyed product; Typefully, the
+        # closest, INFERS voice from post history rather than exposing it. An
+        # edit is the human saying, in their own words, what the right output
+        # was, and until now it was discarded on save.
+        #
+        # Best-effort on purpose: a voice-store failure must never cost Ron the
+        # edit he just made. The body is saved either way.
+        before, after = item.get('body') or '', data['body'].strip()
+        voice = item.get('voice')
+        if voice and before != after:
+            try:
+                from mc import desk as _desk
+                _desk.record_edit(voice, before, after, draft_id=item['id'])
+            except Exception as e:
+                _log(f'[desk] could not learn from the edit to {item["id"]}: {e}')
+        item['body'] = after
     if 'platform' in data:
         item['platform'] = data['platform']
     if 'media' in data and isinstance(data['media'], list):

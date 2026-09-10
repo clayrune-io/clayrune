@@ -106,6 +106,11 @@ function renderAllSocial() {
     container.innerHTML = `<div style="padding:40px 12px;text-align:center;color:var(--text-faint);font-size:12px">${msg}</div>`;
     return;
   }
+  // The teaching block (docs/THE_DESK_SPEC.md, "Teacher") renders UNDER the body
+  // rather than in a tooltip or a detail view on purpose: Ron reads it while
+  // DECIDING, and that is the only moment at which it teaches anything. Absent
+  // on human-authored and pre-Desk drafts, which is why it is optional.
+  //
   // Same markup as a project modal's Social tab (render-core.js) — same
   // .backlog-item/.social-item classes, same edit/release/push-back actions,
   // each scoped to `p.id` so a row acts on the RIGHT project regardless of
@@ -123,6 +128,7 @@ function renderAllSocial() {
         <div class="backlog-text" id="social-body-${esc(item.id)}" contenteditable="true" spellcheck="true"
           onblur="saveSocialBody(event,'${esc(p.id)}','${esc(item.id)}')"
         >${esc(item.body)}</div>
+        ${item.teaching ? `<div class="social-teaching">${esc(item.teaching)}</div>` : ''}
         ${missingAttribution ? `<div class="social-attr-warn">Missing the line "${esc(SOCIAL_ATTRIBUTION_LINE)}" — Release will be refused until it's added.</div>` : ''}
         <div class="note-input-row">
           <input type="text" id="social-note-${esc(item.id)}" placeholder="Note back to the agent"
