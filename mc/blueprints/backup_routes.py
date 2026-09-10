@@ -114,6 +114,7 @@ from flask import Blueprint, jsonify, request
 from mc import backup as _backup
 from mc.core import _log
 from mc.state import agent_sessions
+from mc.unattended import is_unattended_caller
 
 bp = Blueprint('backup_routes', __name__)
 
@@ -232,44 +233,12 @@ def _run_backup_job(job_id, categories, label, dest_dir):
             })
 
 
-def _is_unattended(project_id: str | None = None) -> bool:
-    """Server-side unattended detection — same source of truth as MC-923's
-    with-secret.py / GET /api/session/trigger-type (agent_routes.py:3802):
-    the `trigger_type` MC itself recorded on a session at dispatch time, which
-    the calling agent process cannot rewrite. The previous version trusted an
-    `X-Clayrune-Trigger-Type` header nobody ever sent (self-reported, and
-    absent by default resolves the PERMISSIVE branch — that was the bug: every
-    unattended gate on this surface was silently off).
-
-    This never reads anything the caller sends. Instead it asks: is there a
-    LIVE session, currently mid-turn (`status == 'running'`), that could be
-    the one making this very HTTP call right now? A Bash-tool `curl` to this
-    route can only exist because some Claude CLI session is executing a tool
-    call at this instant, so if such a session is running and its recorded
-    trigger_type isn't `'manual'`, this request is presumed to be that
-    session's own tool call.
-
-    `project_id` scopes the check to sessions dispatched against that project
-    (export-project, rollback both operate on one project already named in
-    the URL). Routes with no project scope (restore, import) pass None and
-    every running session anywhere counts — conservative, same "one witness
-    taints the candidate" OR the learning-safety rails use elsewhere.
-
-    Fails CLOSED: a running session whose trigger_type is missing or blank
-    (e.g. a revived session — some revive paths don't carry it, see
-    `_note_claude_sid`) is treated as unattended, not as the lenient 'manual'
-    default the rest of this file uses for display. No running session found
-    at all (the common case for a human clicking Export in the SPA, which
-    isn't a Claude CLI session and has nothing to find) resolves attended.
-    """
-    for s in agent_sessions.values():
-        if s.get('status') != 'running':
-            continue
-        if project_id is not None and s.get('project_id') != project_id:
-            continue
-        if s.get('trigger_type') != 'manual':
-            return True
-    return False
+# Server-side unattended detection lives in mc/unattended.py — F5 of the
+# 2026-09-10 security review generalized this route's own gate (MC-923's
+# source of truth, same as with-secret.py / GET /api/session/trigger-type) to
+# every route that implements a human-only decision (secrets writes, skill
+# promotion, operator config). Keep the alias so call sites below don't churn.
+_is_unattended = is_unattended_caller
 
 
 @bp.route('/api/backup/size-preview')

@@ -30,12 +30,24 @@ from flask import Blueprint, jsonify, request
 from mc import secrets_store as vault
 from mc import totp as _totp
 from mc.core import _log
+from mc.unattended import is_unattended_caller
 
 bp = Blueprint('secrets_routes', __name__)
 
 
 def _err(e: Exception, code: int = 400):
     return jsonify({'error': str(e)}), code
+
+
+def _unattended_refusal():
+    """CLAUDE.md vault rule 3: 'Agents use credentials; only humans create
+    them. There is no agent-facing write path.' Was true only by convention —
+    see docs/_review/2026-09-10_security.md F3/F5. project_id=None: a secret
+    isn't necessarily project-scoped (global secrets exist), so any running
+    non-manual session anywhere refuses this call."""
+    return jsonify({'error': 'this action needs a human — an unattended agent '
+                             'session cannot create, edit, or delete a secret; '
+                             'ask the user to do it from the Settings UI'}), 403
 
 
 @bp.route('/api/secrets')
@@ -60,6 +72,8 @@ def api_secrets_list():
 
 @bp.route('/api/secrets', methods=['POST'])
 def api_secrets_set():
+    if is_unattended_caller():
+        return _unattended_refusal()
     data = request.get_json(silent=True) or {}
     name = (data.get('name') or '').strip()
     value = data.get('value')
@@ -90,6 +104,8 @@ def api_secrets_patch(name: str):
     Implemented as decrypt-and-reseal so there is exactly one write path into
     the store; the value never leaves this function.
     """
+    if is_unattended_caller():
+        return _unattended_refusal()
     data = request.get_json(silent=True) or {}
     try:
         current = {s['name']: s for s in vault.list_secrets()}.get(name)
@@ -121,6 +137,8 @@ def api_secrets_patch(name: str):
 
 @bp.route('/api/secrets/<name>', methods=['DELETE'])
 def api_secrets_delete(name: str):
+    if is_unattended_caller():
+        return _unattended_refusal()
     try:
         ok = vault.delete_secret(name)
     except vault.SecretsError as e:

@@ -54,6 +54,7 @@ from mc import state
 from mc.characters import clean_avatar
 from mc.core import _log
 from mc.state import agent_sessions
+from mc.unattended import is_unattended_caller
 
 bp = Blueprint('settings_routes', __name__)
 
@@ -212,6 +213,17 @@ def get_config():
 @bp.route('/api/config', methods=['PUT'])
 def update_config():
     """Update config keys and persist to config.json."""
+    if is_unattended_caller():
+        # _CONFIG_EDITABLE_KEYS is the Settings panel's own surface — every
+        # key on it (agent_permission_mode, exploration_readback_enabled,
+        # scheduler_paused, ...) is an operator knob, not something an agent
+        # session decides for itself. See docs/_review/2026-09-10_security.md
+        # F5. project_id=None: config is global, so any running non-manual
+        # session anywhere refuses this call.
+        return jsonify({'error': 'this action needs a human — an unattended '
+                                 'agent session cannot change settings; ask '
+                                 'the user to change it from the Settings UI'}
+                       ), 403
     data = request.get_json() or {}
     # Validated here, not just where it's drawn (same reasoning as
     # agent_avatar below): a bad backup_dest_dir persisted to config.json
