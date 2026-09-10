@@ -18,6 +18,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import state
 from mc.core import _log
+from mc.unattended import is_unattended_caller
 
 import mc.distiller as _distiller
 import mc.skills as _skills
@@ -120,6 +121,17 @@ def post_distiller_promote():
     or REFUSEs if there's no reusable procedure (returns 422). This is the
     ONLY sanctioned way to turn an exploration into a skill; installing the
     exploration body as-is was rejected 2026-06-06."""
+    if is_unattended_caller():
+        # CLAUDE.md learning rails: promotion is human-only. The steward
+        # fence blocks the `Write` tool under .claude/ but allows the `curl`
+        # that reaches this same install path — see
+        # docs/_review/2026-09-10_security.md F5. project_id=None: promotion
+        # isn't scoped to the project named in the body (it may not exist
+        # yet as a resolved path), so any running non-manual session refuses.
+        return jsonify({'ok': False, 'error':
+                        'this action needs a human — an unattended agent '
+                        'session cannot promote a proposed artifact into a '
+                        'skill; ask the user to promote it from the UI'}), 403
     body = request.get_json(silent=True) or {}
     directory = body.get('directory', '')
     scope = (body.get('scope') or 'project').strip()
