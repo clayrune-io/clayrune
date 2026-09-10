@@ -3074,6 +3074,17 @@ def _auto_snapshot_notes_on_turn(session):
                         continue
                     notes.append({'ts': now, 'agent_code': agent_code, 'text': summary})
                     if len(notes) > 50:
+                        # The 2026-08-15 BINDING fix made this cap OBSERVABLE
+                        # (CLAUDE.md: "both of which destroyed data in total
+                        # silence") — but it landed only on
+                        # `_append_note_to_backlog_item`
+                        # (project_routes.py:964). This is the second copy, and
+                        # it is the AUTOMATIC per-turn writer: the unattended
+                        # path the rule was actually written about, still
+                        # evicting without a word. Found 2026-09-10.
+                        _log(f"[backlog] note cap on {pid}/{it.get('id')}: evicting "
+                             f"{len(notes) - 50} oldest note(s), unrecoverable",
+                             flush=True)
                         it['notes'] = notes[-50:]
                     updated = True
             if updated:
