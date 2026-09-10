@@ -26,8 +26,10 @@
 
 const DESK_MODAL_ID = '__desk';
 const DESK_TABS = ['board', 'queue', 'calendar', 'ledger'];
-// Fixed by Ron's 2026-09-09 decision: ron owns X, clayrune owns LinkedIn.
-const DESK_VOICES = ['ron', 'clayrune'];
+// NOTE: there is deliberately no DESK_VOICES constant here. The voices are
+// defined ONCE, server-side, in `mc/desk.py` (VOICES) and read over
+// GET /api/desk/voices. A second copy in this file could drift from the server's
+// list silently, and nothing would have caught it.
 
 let _deskTab = 'board';
 let _deskData = { campaigns: [], hot_signals: [], recent_posts: [], voices: [], pending_drafts: 0 };
@@ -115,41 +117,111 @@ async function deskDraft(signalId, voice) {
   }
 }
 
-// Create a campaign. The THESIS is required by the API and that refusal is the
-// point — a campaign without one is a folder, and the Board's job is to answer
-// "why is this running now". The form asks for the thesis first for the same
-// reason, before the title.
+// Create a campaign.
+//
+// THIS WAS A CHAIN OF prompt() CALLS AND THAT WAS WRONG. Ron typed a voice the
+// API did not accept and lost the thesis, the title and the agenda he had
+// already written — a validation error that destroys prior input is never
+// acceptable, and `prompt()` cannot offer a picker, so it made an invalid value
+// possible in the first place. A real form fixes both at once: nothing is lost
+// on a bad value, and VOICE IS A SELECT, so a bad value cannot be entered.
+//
+// The voices come from GET /api/desk/voices — the server's own list — rather
+// than a constant duplicated in this file. There were two copies of that tuple
+// and the frontend one could silently drift from `mc/desk.py`.
+//
+// The thesis sits FIRST, before the title, because the API refuses without it
+// and the order should make that obvious rather than surfacing it as an error.
 async function deskNewCampaign() {
-  const thesis = (prompt(
-    'What is the argument?\n\n' +
-    'One sentence. Not the topic — the CLAIM you want a reader to end up ' +
-    'believing. This is what every draft in the campaign has to earn.') || '').trim();
-  if (!thesis) return;
-
-  const title = (prompt('Short name for it (for your eyes only):') || '').trim();
-  if (!title) return;
-
-  const agenda = (prompt(
-    'Why now? Optional, and it shows on the Board.\n\n' +
-    'e.g. "launch window opens in three weeks"') || '').trim();
-
-  const voice = (prompt(
-    'Which voice? Type "ron" for X (first person, a builder), ' +
-    'or "clayrune" for LinkedIn (the product speaking).', 'ron') || '').trim();
-  if (!DESK_VOICES.includes(voice)) {
-    if (typeof showToast === 'function') showToast(`"${voice}" is not a voice. Use ron or clayrune.`, 4000);
+  let voices = [];
+  try {
+    voices = await _deskFetch('/api/desk/voices');
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load the voices: ' + e.message, 4000);
     return;
   }
+
+  const modalId = '__desk_campaign';
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content';
+  _clampModalSize(content, 520);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">New campaign</h2>
+    </div>
+    <div style="padding:6px 28px 22px">
+      <div class="form-group">
+        <label>1. The argument</label>
+        <input type="text" id="camp-thesis" placeholder="Clayrune keeps agents alive between sessions">
+        <div class="hint">Not the topic — the claim you want a reader to end up believing.
+          Every draft in this campaign has to earn it.</div>
+      </div>
+      <div class="form-group">
+        <label>2. Short name</label>
+        <input type="text" id="camp-title" placeholder="Agent persistence">
+        <div class="hint">For your eyes only, on the Board.</div>
+      </div>
+      <div class="form-group">
+        <label>3. Voice</label>
+        <select id="camp-voice">
+          ${voices.map(v => `<option value="${esc(v.name)}">${esc(v.name)} — ${
+            v.name === 'clayrune' ? 'the product speaking, posts to LinkedIn'
+                                  : 'first person, a builder, posts to X'}</option>`).join('')}
+        </select>
+        <div class="hint">Two voices by decision, one per platform. They are not variants of
+          each other, so a story gets written twice rather than cross-posted.</div>
+      </div>
+      <div class="form-group">
+        <label>4. Why now <span style="text-transform:none;font-weight:400">(optional)</span></label>
+        <input type="text" id="camp-agenda" placeholder="launch window opens in three weeks">
+      </div>
+      <div id="camp-error" class="social-attr-warn" style="display:none"></div>
+      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSubmitCampaign()">Create campaign</button>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+  const first = document.getElementById('camp-thesis');
+  if (first) first.focus();
+}
+
+// Submit WITHOUT tearing the form down on failure — the whole point of replacing
+// the prompt chain. The modal only closes on success.
+async function deskSubmitCampaign() {
+  const err = document.getElementById('camp-error');
+  const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+
+  const thesis = (document.getElementById('camp-thesis') || {}).value?.trim() || '';
+  const title = (document.getElementById('camp-title') || {}).value?.trim() || '';
+  const agenda = (document.getElementById('camp-agenda') || {}).value?.trim() || '';
+  const voice = (document.getElementById('camp-voice') || {}).value || '';
+
+  if (!thesis) return show('The argument is required — without one this is a folder, not a campaign.');
+  if (!title) return show('Give it a short name so you can find it on the Board.');
 
   try {
     await _deskFetch('/api/desk/campaigns', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ title, thesis, agenda, voice }),
     });
-    if (typeof showToast === 'function') showToast(`Campaign "${title}" created.`);
   } catch (e) {
-    if (typeof showToast === 'function') showToast('Could not create it: ' + e.message, 4000);
+    // Stays open with everything still typed in it.
+    return show('Could not create it: ' + e.message);
   }
+  closeModalById('__desk_campaign');
+  if (typeof showToast === 'function') showToast(`Campaign "${title}" created.`);
   await _loadDesk();
 }
 
@@ -472,5 +544,6 @@ window.deskTab = deskTab;
 window.deskHarvest = deskHarvest;
 window.deskDraft = deskDraft;
 window.deskNewCampaign = deskNewCampaign;
+window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;
