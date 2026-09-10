@@ -183,6 +183,17 @@ def api_secrets_import_authenticator():
     if not data.get('commit'):
         return jsonify({'accounts': preview, 'count': len(preview)})
 
+    # THE COMMIT PATH IS A VAULT WRITE, so it is gated like every other one.
+    # Gated HERE rather than at the top of the route because the preview half
+    # (no `commit`) returns issuer/account only, never a seed, and decodes a URI
+    # the caller already holds — refusing that would break the human's own
+    # two-step import for nothing. `set_secret` below defaults
+    # allow_unattended=True, so an ungated commit was the F3 hole wearing a
+    # different route: plant a credential AND mark it usable unattended, in one
+    # call. Missed by the F3/F5 pass because it sits outside the cited range.
+    if is_unattended_caller():
+        return _unattended_refusal()
+
     scope = (data.get('scope') or 'global').strip() or 'global'
     allow_unattended = bool(data.get('allow_unattended', True))
     imported, skipped = [], []

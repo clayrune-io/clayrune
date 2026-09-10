@@ -108,3 +108,44 @@ def test_manual_session_and_no_session_at_all_still_succeed(client):
     assert res.status_code == 200
     res = client.delete('/api/secrets/a.b')
     assert res.status_code == 200
+
+
+# ── the route the F3/F5 pass missed ──────────────────────────────────────────
+#
+# `POST /api/secrets/import-authenticator` with `commit: true` calls
+# `vault.set_secret(...)` like every other write route — and `allow_unattended`
+# defaults to TRUE there, so an ungated commit was F3 wearing a different URL:
+# plant a credential AND mark it usable unattended, in one call. It sat outside
+# the line range the security report cited, which is exactly why a gate applied
+# route-by-route needs a test per route rather than one per surface.
+
+def _migration_uri():
+    """A real payload in Google Authenticator's export format.
+
+    Reuses the builder from tests/test_totp.py rather than a second copy — a
+    hand-rolled near-miss would 400 at the parser and the gate below would never
+    be reached, so the test would pass without testing anything.
+    """
+    from tests.test_totp import _make_migration_uri
+    return _make_migration_uri([(b'0123456789', 'me@example.com', 'Example', 2)])
+
+
+def test_unattended_authenticator_import_is_refused_and_stores_nothing(client):
+    _mark_unattended()
+    uri = _migration_uri()
+    payload = {'uri': uri or 'otpauth-migration://offline?data=x', 'commit': True}
+    res = client.post('/api/secrets/import-authenticator', json=payload)
+    # 403 is the gate. A 400 would mean the URI never parsed, so the gate was
+    # never reached and this test proves nothing — fail loudly rather than pass.
+    assert res.status_code == 403, f'expected the gate, got {res.status_code}'
+    from mc import secrets_store
+    assert secrets_store.list_secrets() == [], 'a secret was stored anyway'
+
+
+def test_the_preview_half_is_not_gated(client):
+    """Refusing the preview would break the human's own two-step import, and it
+    returns issuer/account only — never a seed."""
+    _mark_unattended()
+    res = client.post('/api/secrets/import-authenticator',
+                      json={'uri': _migration_uri() or 'otpauth-migration://offline?data=x'})
+    assert res.status_code != 403
