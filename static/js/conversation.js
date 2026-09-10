@@ -940,9 +940,13 @@ function agentPanelHTML(p) {
   // that same person (_hireOpenChannel sets both in the same drop). A manual
   // dropdown override away from the filtered person just falls back to the
   // ordinary composer — rare, not worth a second state.
-  const _threadShellKey = (noActiveTab && wantNew && !mobileMode && _mode === 'channel' && _channelPersonFilter[p.id]
-    && pendingDispatchCharacter[p.id] === _channelPersonFilter[p.id])
-    ? _channelPersonFilter[p.id] : null;
+  // _channelPersonFilter was renamed to _channelExpanded when the Channel rail
+  // became an accordion (same day, separate branch). This block was written
+  // against the old name and the merge took both sides cleanly, so the stale
+  // reference only surfaced as a runtime ReferenceError in drag-to-hire.mjs.
+  const _threadShellKey = (noActiveTab && wantNew && !mobileMode && _mode === 'channel' && _channelExpanded[p.id]
+    && pendingDispatchCharacter[p.id] === _channelExpanded[p.id])
+    ? _channelExpanded[p.id] : null;
   const _threadShellHeader = _threadShellKey ? _channelThreadHeaderHTML(p.id, _threadShellKey) : '';
 
   // Dispatch row (only shown on the +New screen, not when viewing an active session)
