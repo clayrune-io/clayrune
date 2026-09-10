@@ -51,6 +51,30 @@ function _msgAttrCharValid(ch) {
   return !!(ch && (ch.agent_name || ch.display_name || ch.name));
 }
 
+// Fresh-hire / no-history channel landing (Ron, 2026-09-10): a hire with no
+// transcript yet has no session to open, so there's no conversation to open
+// on drop — the "conversation view" is a shell instead: this agent's face and
+// name where a thread header would sit, an empty-state body under it, and the
+// composer already armed (pendingDispatchCharacter, set by _hireOpenChannel).
+// Resolves through characterCache the same way _channelRoster does; a cold
+// cache falls back to the bare name from the key so the header never blanks.
+function _channelThreadHeaderHTML(projectId, key) {
+  _ensureCharacters(projectId);
+  const i = key.indexOf(':');
+  const scope = key.slice(0, i), name = key.slice(i + 1);
+  const rec = (characterCache[projectId] || []).find(c => (c.scope || 'global') === scope && c.name === name);
+  const displayName = (rec && (rec.agent_name || rec.display_name || rec.name)) || name;
+  const role = (rec && (rec.display_name || rec.name)) || '';
+  const face = window.avatarHTML((rec && rec.avatar) || '', 32);
+  return `<div class="conv-thread-header">
+    <span class="conv-thread-face">${face}</span>
+    <div class="conv-thread-meta">
+      <span class="conv-thread-name">${esc(displayName)}</span>
+      ${role && role !== displayName ? `<span class="conv-thread-role">${esc(role)}</span>` : ''}
+    </div>
+  </div>`;
+}
+
 // Lazy-load a project's characters (project pool + globals) for the new-chat
 // composer picker. Re-renders once when the list arrives. Best-effort: a
 // failure just leaves the picker absent (no persona = today's behavior).
@@ -911,6 +935,16 @@ function agentPanelHTML(p) {
     return `<div class="resume-indicator">Resuming: ${esc(label)} <span class="ri-clear" onclick="selectResumeSession('${esc(p.id)}','')">clear</span></div>`;
   })() : '';
 
+  // Fresh-hire thread shell: landing on the +New composer while channel-
+  // filtered to a person with no history yet, and the composer is armed to
+  // that same person (_hireOpenChannel sets both in the same drop). A manual
+  // dropdown override away from the filtered person just falls back to the
+  // ordinary composer — rare, not worth a second state.
+  const _threadShellKey = (noActiveTab && wantNew && !mobileMode && _mode === 'channel' && _channelPersonFilter[p.id]
+    && pendingDispatchCharacter[p.id] === _channelPersonFilter[p.id])
+    ? _channelPersonFilter[p.id] : null;
+  const _threadShellHeader = _threadShellKey ? _channelThreadHeaderHTML(p.id, _threadShellKey) : '';
+
   // Dispatch row (only shown on the +New screen, not when viewing an active session)
   const dispatchPreviews = noActiveTab ? renderAgentImagePreviews(p.id) : '';
   // Search-past-chats box + the bottom pane that fills the dead space below the
@@ -940,10 +974,12 @@ function agentPanelHTML(p) {
   // textarea (never auto-send). Gated on !resumeId so they don't appear next to
   // the "Resuming: …" indicator. Read this.dataset.chipText to dodge quote-escaping.
   const showEmptyState = noActiveTab && !resumeId;
+  // Thread-shell landing: the header above already names the agent, so the
+  // empty state reads as "nothing said yet" rather than the cold-start pitch.
   const emptyStateHTML = showEmptyState ? `<div class="composer-empty-state">
-    <div class="ces-icon">&#128172;</div>
-    <div class="ces-heading">What should Claude work on?</div>
-    <div class="ces-sub">Describe a task in plain language.<br>The agent plans, edits files, and reports back.</div>
+    ${_threadShellKey ? '' : '<div class="ces-icon">&#128172;</div>'}
+    <div class="ces-heading">${_threadShellKey ? 'No conversations yet' : 'What should Claude work on?'}</div>
+    <div class="ces-sub">${_threadShellKey ? 'Say something to start the thread.' : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
     <div class="ces-chips">${STARTER_CHIPS.map(c =>
       `<button type="button" class="ces-chip" data-chip-text="${esc(c.label)}" onclick="fillStarterChip('${esc(p.id)}', this.dataset.chipText)">
         <span class="ces-chip-icon">${c.icon}</span>
@@ -968,9 +1004,12 @@ function agentPanelHTML(p) {
   // Desktop is now the 3-pane view — conversations + search live in the RAIL, so
   // the +New compose no longer carries the inline recents/search or resume picker.
   const _leadResume = '';
+  // Persona dropdown is redundant with the thread-shell header above (it would
+  // also invite switching away from the person the header just named) — the
+  // header IS the persona indicator in that state.
   const _trailControls = mobileMode
     ? _composerPlusStatusLineHTML(p, resumeId)
-    : `<div class="composer-controls-row">${_composerProviderPicker(p)}${_composerModelPicker(p, resumeId)}${_composerCharacterPicker(p, resumeId)}${incognitoChip}</div>`;
+    : `<div class="composer-controls-row">${_composerProviderPicker(p)}${_composerModelPicker(p, resumeId)}${_threadShellKey ? '' : _composerCharacterPicker(p, resumeId)}${incognitoChip}</div>`;
   const _trailSearchPane = `<div class="agent-search-pane" id="agent-search-pane-${esc(p.id)}">${searchPane}</div>`;
   const _mobileSheet = mobileMode ? _composerSheetHTML(p, resumeId) : '';
   // Item 1 (prev batch): on mobile the resume PREVIEW goes ABOVE the composer
@@ -1013,7 +1052,7 @@ function agentPanelHTML(p) {
             </div>
             ${_mobileSheet}
           </div>`
-        : `${_leadResume}${resumeIndicator}${emptyStateHTML}${_composerBlock}${_trailControls}${dispatchPreviews}${_trailSearchPaneBelow}`)
+        : `${_threadShellHeader}${_leadResume}${resumeIndicator}${emptyStateHTML}${_composerBlock}${_trailControls}${dispatchPreviews}${_trailSearchPaneBelow}`)
     : '';
 
   // Active tab content
