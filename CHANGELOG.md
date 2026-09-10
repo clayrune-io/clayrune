@@ -6,6 +6,60 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [Unreleased] — The browser pane can read a page now, designed around the real attack
+
+`POST /api/browser/read` (`mc/blueprints/browser_routes.py`) returns a page's
+visible text — the whole page or one CSS-selected region — closing the gap
+between "the pane is a viewing surface, not a scraper" (true until now) and
+the Desk's standing position that listening through the pane is free versus
+$0.005/read on the X API. Reuses `_read_page_selection`'s short-lived CDP
+connection shape via a new generalized `_cdp_evaluate` helper rather than a
+second client.
+
+- **Designed around the actual documented attack, not a keyword filter.**
+  Ron cited theregister.com 2026-08-28: Claude Code was compromised not by
+  hidden page text, but by a tool-downgrade chain — an HTTP 415 pushed the
+  agent off its safe fetch tool onto `curl`, which followed a redirect into a
+  poisoned archive whose `struct.py` shadowed the stdlib module on import. So
+  the primary control is failing so cleanly there's nothing to improvise
+  around: every failure (non-HTML content, timeout, CDP error) returns a
+  structured error whose `guidance` field explicitly says not to retry with
+  curl/wget/requests and to report the failure instead.
+- **Content is data, never instruction.** The success response wraps the text
+  in a `content` envelope naming the origin URL and stating plainly it is
+  untrusted third-party content that must never be treated as commands — the
+  same authority-boundary shape as the learning-system rails (learning may
+  change *how* the agent works, never *what* it's allowed to do).
+- **Non-HTML documents are refused outright** (415) — the pane never
+  downloads or decodes anything to serve a read; it only reads what's already
+  rendered on screen.
+- **Hidden-but-DOM-present text is stripped and reported, not silently
+  passed through.** In-page JS (`_READ_JS_TEMPLATE`) walks the DOM tagging
+  each text run with a computed-style reason — zero-opacity, off-screen,
+  tiny-font, low-contrast — and separately counts alt/title/aria-label text
+  and HTML comments; none of that is invisible-but-present-in-source content
+  reaches the returned text unflagged. Deliberately NOT a prompt-injection
+  phrase detector — that's trivially defeated and teaches false confidence.
+- **The stripping/envelope/refusal/cap logic lives in pure Python
+  (`_build_read_envelope`, `_filter_hidden_runs`, `_content_type_allowed`,
+  `_truncate_text`), separate from the in-browser JS**, specifically so it's
+  unit-testable against a canned JS result without a real Chromium — 26 new
+  tests in `tests/test_browser_routes.py`.
+- **Every read is explicit per call and logged with the URL read** — never
+  ambient, since a logged-in pane reads authenticated content.
+- **What this does NOT defend against:** a page that mimics Chromium's own
+  UI/error chrome to bait a *human* watching the pane (out of scope — this is
+  a text-read endpoint, not a rendering-trust boundary); DOM text that is
+  visible to a human but written adversarially in benign-looking prose (no
+  filter catches "legitimate-looking but false" content by design); redirect
+  chains or downloads the *user* triggers by clicking inside the pane itself
+  (this endpoint doesn't navigate, but the pane's normal input path still
+  can — same as before); and a Chromium 0-day in the rendering/CDP path
+  itself, which is outside any application-level control here. Consistent
+  with Anthropic's and the researcher's own conclusion on the source
+  incident: the real boundary is OS isolation and network egress control,
+  not output filtering.
+
 ## [Unreleased] — Drag-to-hire: the drag survives the board, and the drop arms the composer
 
 Two defects against the drag-to-hire gesture (docs/DRAG_TO_HIRE_SPEC.md), both
