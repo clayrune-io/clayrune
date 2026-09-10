@@ -263,6 +263,44 @@ def seed_voice(name):
                     'samples': len(samples), 'session_id': session_id}), 202
 
 
+# ── Platform rules ───────────────────────────────────────────────────────────
+#
+# The rules a writer is briefed with per platform — char limit, cost, what gets
+# demoted. Used to be `desk_brief.PLATFORM_NOTES`, a hardcoded dict with exactly
+# two keys; every other platform's brief got `.get(platform, '')`. Same shape
+# as the voice routes above, minus the closed-name validation: a platform is
+# not a fixed set Ron picks from, it is whatever he actually publishes to.
+
+@bp.route('/api/desk/platforms', methods=['GET'])
+def list_platform_rules():
+    return jsonify(_desk.list_platform_rules())
+
+
+@bp.route('/api/desk/platforms/<name>', methods=['GET'])
+def get_platform_rules(name):
+    rules = _desk.get_platform_rules(name)
+    if rules is None:
+        # Not a 404 — "no rules yet" is the true, expected state for an
+        # unseeded platform, and the UI needs the empty shape to render a form.
+        return jsonify({**_desk.empty_platform_rules(name), 'configured': False})
+    return jsonify({**rules, 'configured': True})
+
+
+@bp.route('/api/desk/platforms/<name>', methods=['PATCH'])
+def update_platform_rules(name):
+    try:
+        return jsonify(_desk.update_platform_rules(name, request.get_json(silent=True) or {}))
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@bp.route('/api/desk/platforms/<name>', methods=['DELETE'])
+def delete_platform_rules(name):
+    if not _desk.delete_platform_rules(name):
+        return jsonify({'error': 'no rules set for that platform'}), 404
+    return jsonify({'ok': True})
+
+
 # ── Campaign board ───────────────────────────────────────────────────────────
 
 @bp.route('/api/desk/campaigns', methods=['GET'])

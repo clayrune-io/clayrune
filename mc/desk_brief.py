@@ -55,24 +55,36 @@ from mc import desk as _desk
 # This was a hardcoded {'ron': 'x', 'clayrune': 'linkedin'} dict. It is now read
 # off the voice record so a user-created voice picks its own platform.
 
-# Verified at docs.x.com/x-api/getting-started/pricing on 2026-09-09, and at
-# learn.microsoft.com for LinkedIn's Share on LinkedIn limits. These are in the
-# brief because a writer who does not know a link costs 13x will add one every
-# time out of habit.
-PLATFORM_NOTES = {
-    'x': (
-        '280 characters. A plain post costs $0.015 to publish; a post CONTAINING '
-        'A LINK costs $0.200 — 13x. Include a URL only when the link is the '
-        'point, not as a reflex. Threads are fine; each part bills separately.'
-    ),
-    'linkedin': (
-        'Long-form is fine and rewarded. Published free via Share on LinkedIn, '
-        'capped at 150/day. LinkedIn suppressed reach on content its classifier '
-        'reads as AI slop by ~40% (its CPO Hari Srinivasan, 2026-08-21), and '
-        'external-link posts are demoted — put the link in a comment or omit it. '
-        'Specific, first-hand and concrete survives; generic summary does not.'
-    ),
-}
+# PLATFORM RULES ARE USER DATA — see mc/desk.py's "platform rules" section.
+# This used to be a hardcoded dict with exactly two keys, so every OTHER
+# platform got `.get(platform, '')`: an empty string where the char limit and
+# cost should have been. Measured 2026-09-10: an 837-char facebook draft and a
+# 2236-char discord draft, both briefed with nothing. `_platform_rules_text`
+# below is what replaced the `.get(platform, '')` lookup, and it never returns
+# a silent empty string — a platform with no rules says so, in the brief.
+
+
+def _platform_rules_text(platform: str) -> str:
+    rules = _desk.get_platform_rules(platform)
+    if rules is None:
+        return (
+            f'NO RULES ARE SET for "{platform}" yet — nobody has told this system '
+            'its character limit, cost, or behaviour on this platform. Keep the '
+            'post SHORT (a headline plus one supporting line) until someone does, '
+            f'and use your `teaching` field to say the {platform} rules need to be '
+            'set on the Desk before this platform is used again.'
+        )
+    parts = []
+    if rules.get('char_limit'):
+        parts.append(f"{rules['char_limit']} characters.")
+    if rules.get('text'):
+        parts.append(rules['text'])
+    if not parts:
+        return (
+            f'A rules record exists for "{platform}" but has no text yet — treat '
+            'it the same as no rules: keep the post short.'
+        )
+    return ' '.join(parts)
 
 
 def platform_for(voice: str) -> str:
@@ -190,7 +202,7 @@ def build_brief(signal: dict, *, voice: str | None = None,
         '',
         f'PLATFORM: {platform}',
         f'VOICE: {voice}',
-        PLATFORM_NOTES.get(platform, ''),
+        _platform_rules_text(platform),
         '',
         '── WHAT HAPPENED (this is your only source; do not invent beyond it) ──',
         f'Project: {project_name or pid}',

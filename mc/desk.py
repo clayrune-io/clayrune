@@ -119,6 +119,8 @@ def _empty_store() -> dict:
         'ledger': [],
         'proposals': {},
         'voices_seeded': False,
+        'platforms': {},
+        'platforms_seeded': False,
     }
 
 
@@ -143,6 +145,8 @@ def _read_store() -> dict:
     data.setdefault('ledger', [])
     data.setdefault('proposals', {})
     data.setdefault('voices_seeded', False)
+    data.setdefault('platforms', {})
+    data.setdefault('platforms_seeded', False)
     return data
 
 
@@ -497,6 +501,127 @@ def voice_brief(name: str, *, recent: int = 12) -> str:
         for r in rewrites:
             parts.append(f"  - was: {r['before']}\n    became: {r['after']}")
     return '\n'.join(parts)
+
+
+# -- platform rules ------------------------------------------------------------
+#
+# PLATFORM RULES ARE USER DATA, NOT SOURCE. `desk_brief.PLATFORM_NOTES` was a
+# hardcoded dict with exactly two keys, 'x' and 'linkedin' — every other
+# platform got `.get(platform, '')`, an empty string, where the char limit and
+# cost should have been. Measured 2026-09-10: clayrune_website's queue held an
+# 837-char facebook draft and a 2236-char discord draft, both briefed with
+# nothing, because nobody could reach the rules to set them. Ron asked the
+# right question: "where can I insert rules on the post types?" The answer was
+# nowhere — they were in the source. This is the same class of bug the
+# STARTER_VOICES fix above closed for voice names, and it uses the same
+# seeded-flag trick so a deleted seed does not resurrect itself.
+#
+# A platform with no rules is a REAL state, not a defect — an unseeded platform
+# (facebook, discord, anything Ron adds) starts with none, and `desk_brief`
+# must say so explicitly rather than handing the writer silence. See
+# `get_platform_rules` (returns None) and `desk_brief._platform_rules_text`.
+_PLATFORM_NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
+
+# Verified at docs.x.com/x-api/getting-started/pricing and learn.microsoft.com
+# on 2026-09-09 — the same two platforms `PLATFORM_NOTES` used to hardcode.
+# Nothing else is seeded: a limit or a cost invented for facebook/discord would
+# be exactly the kind of unverified claim this module exists to avoid.
+STARTER_PLATFORM_RULES = (
+    {'name': 'x', 'char_limit': 280, 'text': (
+        'A plain post costs $0.015 to publish; a post CONTAINING A LINK costs '
+        '$0.200 — 13x. Include a URL only when the link is the point, not as a '
+        'reflex. Threads are fine; each part bills separately.')},
+    {'name': 'linkedin', 'char_limit': None, 'text': (
+        'Long-form is fine and rewarded. Published free via Share on LinkedIn, '
+        'capped at 150/day. LinkedIn suppressed reach on content its classifier '
+        'reads as AI slop by ~40% (its CPO Hari Srinivasan, 2026-08-21), and '
+        'external-link posts are demoted — put the link in a comment or omit it. '
+        'Specific, first-hand and concrete survives; generic summary does not.')},
+)
+
+
+def _empty_platform_rules(name: str) -> dict:
+    return {'name': name, 'text': '', 'char_limit': None, 'updated_at': None}
+
+
+def _seed_platform_rules(store: dict) -> bool:
+    """Seed x/linkedin once. Gated on a flag, not on emptiness — same reasoning
+    as `_seed_voices`: inferring "fresh" from "no platforms" cannot tell a new
+    install apart from someone who deleted a seed on purpose."""
+    if store.get('platforms_seeded') or store.get('platforms'):
+        store['platforms_seeded'] = True
+        return False
+    store['platforms_seeded'] = True
+    for spec in STARTER_PLATFORM_RULES:
+        store.setdefault('platforms', {})[spec['name']] = {
+            'name': spec['name'], 'text': spec['text'],
+            'char_limit': spec.get('char_limit'), 'updated_at': None,
+        }
+    return True
+
+
+def _store_with_platforms_seeded() -> dict:
+    store = _read_store()
+    had_flag = store.get('platforms_seeded')
+    _seed_platform_rules(store)
+    if not had_flag:
+        _write_store(store)
+    return store
+
+
+def platform_rule_names() -> list[str]:
+    with _store_lock:
+        return sorted(_store_with_platforms_seeded().get('platforms', {}).keys())
+
+
+def list_platform_rules() -> list[dict]:
+    with _store_lock:
+        rows = list(_store_with_platforms_seeded().get('platforms', {}).values())
+    rows.sort(key=lambda r: r.get('name') or '')
+    return rows
+
+
+def get_platform_rules(name: str) -> dict | None:
+    """None means genuinely no rules are set — a real state, not a missing one.
+    `desk_brief` must handle it explicitly rather than treating it as ''."""
+    with _store_lock:
+        return _store_with_platforms_seeded().get('platforms', {}).get(name)
+
+
+def empty_platform_rules(name: str) -> dict:
+    """The shape a not-yet-configured platform has. Public so the routes layer
+    can hand the UI a form to fill in without reaching into a private."""
+    return _empty_platform_rules(name)
+
+
+def update_platform_rules(name: str, patch: dict) -> dict:
+    """Upsert: setting rules for a platform for the first time creates its
+    record. Unlike a voice, a platform name is not a closed set to validate
+    against — Ron can set rules for any platform he actually publishes to."""
+    name = (name or '').strip().lower()
+    if not _PLATFORM_NAME.match(name):
+        raise ValueError('a platform name is 1-32 chars, lowercase letters, digits, - or _')
+    allowed = {'text', 'char_limit'}
+    with _store_lock:
+        store = _store_with_platforms_seeded()
+        rules = store.setdefault('platforms', {}).get(name) or _empty_platform_rules(name)
+        for k, v in (patch or {}).items():
+            if k in allowed:
+                rules[k] = v
+        rules['updated_at'] = now_iso()
+        store['platforms'][name] = rules
+        _write_store(store)
+        return rules
+
+
+def delete_platform_rules(name: str) -> bool:
+    with _store_lock:
+        store = _store_with_platforms_seeded()
+        if name not in (store.get('platforms') or {}):
+            return False
+        del store['platforms'][name]
+        _write_store(store)
+        return True
 
 
 # -- campaign board -----------------------------------------------------------

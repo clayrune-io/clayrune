@@ -233,6 +233,59 @@ def test_voice_brief_shows_only_recent_rewrites(store):
     assert 'after number 5' not in brief
 
 
+# -- platform rules -------------------------------------------------------------
+#
+# `PLATFORM_NOTES` used to be a hardcoded dict with exactly two keys, and every
+# platform outside them got `desk_brief`'s `.get(platform, '')` — an empty
+# string where the char limit and cost should have been. Measured 2026-09-10:
+# an 837-char facebook draft and a 2236-char discord draft, both briefed with
+# nothing, because nobody could reach the rules to set them.
+
+def test_a_fresh_install_seeds_only_x_and_linkedin(store):
+    assert {r['name'] for r in store.list_platform_rules()} == {'x', 'linkedin'}
+    assert store.get_platform_rules('facebook') is None, \
+        'an unseeded platform has no rules — that is the truth, not a bug'
+
+
+def test_x_rules_carry_the_verified_char_limit_and_cost(store):
+    rules = store.get_platform_rules('x')
+    assert rules['char_limit'] == 280
+    assert '$0.015' in rules['text'] and '$0.200' in rules['text']
+
+
+def test_deleting_a_seeded_platforms_rules_does_not_resurrect_it(store):
+    """Same seeded-flag trick as the voices: emptiness must not be read as
+    'fresh install' or a deliberate deletion comes back on the next read."""
+    store.delete_platform_rules('x')
+    assert store.get_platform_rules('x') is None
+    assert 'x' not in {r['name'] for r in store.list_platform_rules()}
+
+
+def test_setting_rules_for_a_new_platform_creates_it(store):
+    """The whole point: Ron can set rules for a platform we never shipped
+    seed text for, and it sticks."""
+    assert store.get_platform_rules('facebook') is None
+    store.update_platform_rules('facebook', {'text': 'keep it under 500 chars', 'char_limit': 500})
+    rules = store.get_platform_rules('facebook')
+    assert rules['char_limit'] == 500
+    assert 'keep it under 500 chars' in rules['text']
+
+
+def test_platform_rules_reject_a_malformed_name(store):
+    with pytest.raises(ValueError):
+        store.update_platform_rules('Not Valid!', {'text': 'x'})
+
+
+def test_no_operator_platform_rule_text_ships_in_the_source():
+    """Mirrors test_no_operator_name_ships_in_the_source: the only platform
+    rule TEXT allowed in the repo is the verified x/linkedin seed. A rule for
+    facebook or discord is Ron's to type into the UI, never ours to commit."""
+    src = (PROJECT_ROOT / 'mc/desk.py').read_text(encoding='utf-8')
+    for name in ('facebook', 'discord', 'reddit', 'instagram', 'threads', 'bluesky'):
+        assert f"'{name}'" not in src and f'"{name}"' not in src, \
+            f'mc/desk.py hardcodes rule text for {name!r}, which is Ron\'s to author'
+
+
 # -- campaigns ----------------------------------------------------------------
 
 def test_campaign_lifecycle(store):

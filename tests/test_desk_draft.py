@@ -127,6 +127,34 @@ def test_brief_rejects_an_unknown_voice(store):
         desk_brief.build_brief(_signal(store), voice='marketing')
 
 
+# ── platform rules reach the brief ──────────────────────────────────────────
+#
+# THE BUG THIS SECTION GUARDS. `PLATFORM_NOTES.get(platform, '')` used to hand
+# the writer an empty string for any platform that was not 'x' or 'linkedin'.
+# Measured 2026-09-10 on clayrune_website's queue: an 837-char facebook draft
+# and a 2236-char discord draft, both briefed with nothing. The one outcome
+# this section forbids is a repeat of that silent empty string.
+
+def test_brief_says_so_when_a_platform_has_no_rules(store):
+    """The required behaviour: SAY SO in the brief text, not via a flag a
+    caller has to remember to check."""
+    store.create_voice('fb_test', platform='facebook')
+    b = desk_brief.build_brief(_signal(store), voice='fb_test')
+    assert 'NO RULES ARE SET' in b
+    assert 'facebook' in b
+    assert 'keep' in b.lower() and 'short' in b.lower()
+
+
+def test_rules_set_through_the_store_reach_the_brief(store):
+    store.create_voice('fb_test', platform='facebook')
+    store.update_platform_rules('facebook', {
+        'text': 'Never exceed one paragraph; links are fine.', 'char_limit': 500})
+    b = desk_brief.build_brief(_signal(store), voice='fb_test')
+    assert 'Never exceed one paragraph' in b
+    assert '500' in b
+    assert 'NO RULES ARE SET' not in b
+
+
 # ── the draft route ──────────────────────────────────────────────────────────
 
 @pytest.fixture
@@ -196,6 +224,37 @@ def test_draft_validation(client):
                        json={'signal_id': sig['id'], 'voice': 'marketing'}).status_code == 400
     assert client.post('/api/desk/draft',
                        json={'signal_id': sig['id'], 'campaign_id': 'nope'}).status_code == 404
+
+
+# ── platform rules routes ────────────────────────────────────────────────────
+
+def test_platform_rules_crud_reaches_the_draft_brief(client):
+    """Rules set through the API must reach build_brief for a draft on that
+    platform — the whole point of moving them out of a hardcoded dict."""
+    r = client.get('/api/desk/platforms/facebook')
+    assert r.status_code == 200
+    assert r.get_json()['configured'] is False
+
+    r = client.patch('/api/desk/platforms/facebook',
+                     json={'text': 'Keep it to one paragraph.', 'char_limit': 500})
+    assert r.status_code == 200
+    assert r.get_json()['char_limit'] == 500
+
+    assert desk.create_voice('fb_route_test', platform='facebook')
+    sig = _post_signal(client)
+    r = client.post('/api/desk/draft', json={'signal_id': sig['id'], 'voice': 'fb_route_test'})
+    assert r.status_code == 202
+    task = client.dispatch_calls[-1]['task']
+    assert 'Keep it to one paragraph.' in task, \
+        'the brief did not pick up the rules just set through the API'
+
+
+def test_platform_rules_list_and_delete(client):
+    assert {r['name'] for r in client.get('/api/desk/platforms').get_json()} == {'x', 'linkedin'}
+    client.patch('/api/desk/platforms/discord', json={'text': 'be concise'})
+    assert 'discord' in {r['name'] for r in client.get('/api/desk/platforms').get_json()}
+    assert client.delete('/api/desk/platforms/discord').status_code == 200
+    assert client.delete('/api/desk/platforms/discord').status_code == 404
 
 
 def test_unwired_dispatch_says_so_rather_than_pretending(tmp_path):
