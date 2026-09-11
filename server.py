@@ -639,6 +639,7 @@ from mc.blueprints import agent_routes as _bp_agent  # noqa: E402
 # Imported here (its _proc_identity/_persist_pid_ledger feed the _bp_agent.wire()
 # slots below); process_ledger.wire() runs after that stanza, once _bp_agent's
 # _pid_is_alive/_kill_pid exist. Leaf module (mc.state/mc.core only — no cycle).
+from mc import atomic_json as _atomic_json  # noqa: E402
 from mc import process_ledger  # noqa: E402
 
 # ── Memory / Scribe / Condense engine (mop-up: mc/memory.py) ─────────────────
@@ -972,7 +973,7 @@ def _migrate_agent_log_provider_field():
                     dirty = True
                     stamped += 1
             if dirty:
-                f.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding='utf-8')
+                _atomic_json.write_json_atomic(f, log, indent=2, ensure_ascii=False)
         except Exception:
             continue
     if stamped:

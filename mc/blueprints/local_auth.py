@@ -30,6 +30,7 @@ from typing import Callable
 
 from flask import Blueprint, jsonify, redirect, request
 
+from mc.atomic_json import write_json_atomic
 from mc.core import _harden_secret_perms, _is_loopback_request, _log
 
 bp = Blueprint('local_auth', __name__)
@@ -75,9 +76,7 @@ def _load_local_auth() -> dict:
 def _save_local_auth(d: dict) -> None:
     try:
         LOCAL_AUTH_PATH.parent.mkdir(parents=True, exist_ok=True)
-        tmp = LOCAL_AUTH_PATH.with_suffix('.json.tmp')
-        tmp.write_text(json.dumps(d, indent=2), encoding='utf-8')
-        tmp.replace(LOCAL_AUTH_PATH)
+        write_json_atomic(LOCAL_AUTH_PATH, d, indent=2)
         _harden_secret_perms(LOCAL_AUTH_PATH)
     except Exception as e:
         _log(f"[local-auth] save failed: {e}", flush=True)

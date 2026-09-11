@@ -34,6 +34,7 @@ hand-verified set, and the caller still gets a usable list.
 """
 from __future__ import annotations
 
+from mc.atomic_json import write_json_atomic
 import json
 import re
 import time
@@ -150,9 +151,7 @@ def _read_cache(cache_path: Path) -> Optional[Dict[str, Any]]:
 def _write_cache(cache_path: Path, payload: Dict[str, Any]) -> None:
     try:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
-        tmp = cache_path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(payload, indent=1), encoding='utf-8')
-        tmp.replace(cache_path)
+        write_json_atomic(cache_path, payload, indent=1)
     except Exception:
         pass  # best-effort: a missing cache only costs a re-scan
 
