@@ -202,6 +202,14 @@ try {
   if ((label || '').trim() === 'The Desk') ok('sidebar reads "The Desk"');
   else fail(`sidebar label is "${label}", expected "The Desk"`);
 
+  // The MOBILE drawer is a second, separate list in index.html — it kept saying
+  // "Social" for as long as the desktop sidebar said "The Desk", because the
+  // rename only touched one of them and only one had a check. Ron found it on
+  // his phone. Two nav lists, two assertions.
+  const mLabel = await page.textContent('.mobile-drawer-item[data-nav="social"] .mdi-label');
+  if ((mLabel || '').trim() === 'The Desk') ok('mobile drawer reads "The Desk" too');
+  else fail(`mobile drawer label is "${mLabel}", expected "The Desk"`);
+
   // ── Four surfaces, and only the Queue nags ───────────────────────────────
   const tabs = await page.$$eval('#desk-tabs .desk-tab', els => els.map(e => e.textContent.trim()));
   if (tabs.length === 4) ok(`four surfaces render: ${tabs.map(t => t.split(/\s+/)[0]).join(' / ')}`);
