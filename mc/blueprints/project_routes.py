@@ -43,6 +43,7 @@ from typing import Any, Callable
 from flask import Blueprint, abort, jsonify, request, send_file
 
 from mc import state
+from mc.atomic_json import write_json_atomic
 from mc.core import _log, file_type, now_iso, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -124,10 +125,26 @@ def _decorate_attachments(project):
 
 
 def load_project(project_id):
+    """The project record, or None when there isn't a usable one.
+
+    A corrupt record returns None rather than raising (MC-946). The file is
+    written by save_project, which used to truncate-then-write, so a kill
+    mid-write left JSON that no longer parses — and this function's bare
+    json.loads turned that into a 500 on every route that touches the
+    project. None is what a missing record already returns, so every caller
+    already handles it; a 500 nobody handles is strictly worse than a
+    project that reads as absent while the error sits in the log.
+    """
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
         return None
-    return _decorate_attachments(json.loads(filepath.read_text(encoding='utf-8')))
+    try:
+        raw = json.loads(filepath.read_text(encoding='utf-8'))
+    except Exception as e:
+        _log(f"[projects] CORRUPT RECORD {filepath.name}: {e} — reporting the "
+             f"project as absent; the file is NOT rewritten", level='error')
+        return None
+    return _decorate_attachments(raw)
 
 
 def save_project(project_id, data):
@@ -139,7 +156,11 @@ def save_project(project_id, data):
                 for k in _ATTACHMENT_RUNTIME_FIELDS:
                     att.pop(k, None)
     filepath = DATA_DIR / f'{project_id}.json'
-    filepath.write_text(json.dumps(data, indent=2, ensure_ascii=False), encoding='utf-8')
+    # Atomic (MC-946): this record reaches megabytes and is written by both
+    # processes during the restart overlap. A truncated one makes the whole
+    # project vanish from the dashboard — load_projects skips what it cannot
+    # parse — so it must never be observable half-written.
+    write_json_atomic(filepath, data, indent=2, ensure_ascii=False)
 
 
 # LOAD-BEARING: every per-project sidecar file MUST be listed here, OR be
@@ -224,7 +245,11 @@ def load_projects():
             _decorate_attachments(p)
             projects.append(p)
         except Exception as e:
-            _log(f"Error loading {f}: {e}")
+            # Skipping is right — one bad record must not 500 the whole
+            # dashboard — but it means the project silently DISAPPEARS, so
+            # say so at error level with the filename (MC-946).
+            _log(f"[projects] CORRUPT RECORD {f.name}: {e} — this project is "
+                 f"MISSING from the dashboard until it is repaired", level='error')
     # Two stable sorts, applied least-significant first: most-recently-updated
     # within a display_order group, then display_order. (There used to be a
     # third sort ahead of these on the composite key — dead work, since both
