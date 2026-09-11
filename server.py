@@ -1000,6 +1000,18 @@ def _backfill_agent_log_from_transcripts(project_id, project):
     if not pp or not Path(pp).is_dir():
         return 0
 
+    # MC-946. This function's whole premise is "the log doesn't know about
+    # this transcript" — which is only meaningful if we could READ the log.
+    # _load_agent_log returns [] for a corrupt file exactly as it does for a
+    # missing one, so a truncated log made every transcript look unknown,
+    # and the _save_agent_log below then replaced real history — personas,
+    # costs, statuses and all — with synthesized rows. One bad shutdown was
+    # enough. Never mass-overwrite a file we failed to read.
+    if not _agent_log_is_readable(project_id):
+        _log(f"[backfill] {project_id}: agent log exists but does not parse — "
+             f"REFUSING to backfill (would overwrite unread history)", level='error')
+        return 0
+
     max_n = int(CONFIG.get('agent_log_backfill_max_per_project', 200))
     max_age_days = int(CONFIG.get('agent_log_backfill_max_age_days', 60))
     cutoff_ts = _time.time() - max_age_days * 86400
@@ -1024,6 +1036,18 @@ def _backfill_agent_log_from_transcripts(project_id, project):
             ts_iso = now_iso()
         first_user = t.get('first_user', '') or ''
         last_user = t.get('last_user', '') or ''
+        # Give the row a face (MC-946 §B). `character` is normally written at
+        # dispatch and lives ONLY on the log row, so a synthesized row has
+        # none and _conversation_character_display falls back to the default
+        # agent — which is why every chat Ron ever had with a hired agent came
+        # back wearing the same face. The transcript still carries the persona
+        # marker MC injected, so read it back. None stays None: an unstamped
+        # row is honest, a wrongly-stamped one is not.
+        row_character = None
+        try:
+            row_character = memory.persona_ref_for_session(pp, csid)
+        except Exception as e:
+            _log(f"[backfill] persona lookup failed for {csid}: {e}")
         log.insert(0, {
             'ts': ts_iso,
             'task': first_user[:300],
@@ -1041,6 +1065,10 @@ def _backfill_agent_log_from_transcripts(project_id, project):
             'hivemind_role': '',
             'synthesized': True,
         })
+        if row_character:
+            # Only when it resolved — an absent key means "we don't know",
+            # which is what every pre-existing synthesized row already says.
+            log[0]['character'] = row_character
         added += 1
 
     if added:
@@ -1464,6 +1492,7 @@ _sync_todowrite_to_backlog = _bp_agent._sync_todowrite_to_backlog
 _dispatch_agent_internal = _bp_agent._dispatch_agent_internal
 _revive_from_agent_log = _bp_agent._revive_from_agent_log
 _load_agent_log = _bp_agent._load_agent_log
+_agent_log_is_readable = _bp_agent._agent_log_is_readable
 _save_agent_log = _bp_agent._save_agent_log
 _enrich_run_entries = _bp_agent._enrich_run_entries
 INCOGNITO_PROJECT_ID = _bp_agent.INCOGNITO_PROJECT_ID

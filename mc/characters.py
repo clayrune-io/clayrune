@@ -323,6 +323,37 @@ def read_character(scope: str, name: str, project_path: str | None = None,
     return _read_one(path, scope, project_id, include_body)
 
 
+def ref_by_agent_name(agent_name: str,
+                      project_path: str | None = None) -> dict[str, str] | None:
+    """Reverse the self-chosen name back to a `{'name', 'scope'}` reference.
+
+    The agent log stores a persona as scope + file stem; a TRANSCRIPT only
+    ever contains the name the agent goes by ("Your name is Dave."). MC-946
+    rebuilds the first from the second, so it has to go through the character
+    files — lowercasing the display name guesses a file stem that may not
+    exist, and would silently mis-attribute a chat rather than leave it
+    unattributed.
+
+    Project scope wins over a same-named global, matching list_characters'
+    shadowing order. Exact match first, then case-insensitive, since the name
+    is free text a model typed. Returns None when nothing claims it (a
+    persona since deleted or renamed) — the caller leaves the row unstamped.
+    """
+    wanted = clean_agent_name(agent_name)
+    if not wanted:
+        return None
+    try:
+        items = list_characters(project_path=project_path, include_body=False)
+    except Exception:
+        return None
+    for match in (lambda a: a == wanted,
+                  lambda a: a.casefold() == wanted.casefold()):
+        for rec in items:
+            if match(str(rec.get(AGENT_NAME_KEY) or '')):
+                return {'name': rec['name'], 'scope': rec['scope']}
+    return None
+
+
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,

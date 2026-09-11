@@ -70,6 +70,7 @@ from mc import media as _media
 from mc import obs, state
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
+from mc.atomic_json import write_json_atomic
 from mc.core import _harden_secret_perms, _log, now_iso, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -350,7 +351,7 @@ def _ensure_incognito_project():
         'last_updated': now_iso() if 'now_iso' in globals() else datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
     }
     try:
-        fp.write_text(json.dumps(rec, indent=2, ensure_ascii=False), encoding='utf-8')
+        write_json_atomic(fp, rec, indent=2, ensure_ascii=False)
     except Exception:
         pass
     return rec
@@ -3789,14 +3790,70 @@ def _auto_recover_failed_resume(session):
         _log(f"[dispatch] Fresh retry failed for {project_id}: {e}")
 
 
+def _agent_log_path(project_id):
+    return DATA_DIR / f'{project_id}_agent_log.json'
+
+
+def _agent_log_is_readable(project_id):
+    """True when the log is absent (no history yet) or parses. False ONLY
+    when the file exists and is corrupt.
+
+    This is the distinction `_load_agent_log` cannot make — it returns []
+    for both, and a caller that writes back over an empty read destroys the
+    history it failed to read. That is MC-946: a truncated log read as []
+    and the startup transcript backfill replaced 200 real rows, personas and
+    all, with synthesized ones. Any caller that REWRITES the log must gate on
+    this first. Read-only callers don't need it.
+
+    Deliberately does not quarantine — it is a question, not an action, so it
+    can be asked before deciding whether to touch the file at all.
+    """
+    filepath = _agent_log_path(project_id)
+    if not filepath.exists():
+        return True
+    try:
+        json.loads(filepath.read_text(encoding='utf-8'))
+        return True
+    except Exception:
+        return False
+
+
+def _quarantine_agent_log(filepath):
+    """Move an unparseable log aside as `<name>.corrupt-<utc>`.
+
+    Best-effort: if the rename fails the file stays where it is and every
+    read keeps refusing to trust it, which is the safe direction. Never
+    deletes — a truncated log still holds most of its rows, and a human (or
+    tools/repair-agent-log-personas.py) may want them.
+    """
+    dest = filepath.with_name(
+        f"{filepath.name}.corrupt-"
+        f"{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}")
+    try:
+        filepath.rename(dest)
+        _log(f"[agent-log] quarantined unreadable log to {dest.name}", level='error')
+    except Exception as e:
+        _log(f"[agent-log] could not quarantine {filepath.name}: {e}", level='error')
+
+
 def _load_agent_log(project_id):
-    """Load the agent summary log for a project."""
-    filepath = DATA_DIR / f'{project_id}_agent_log.json'
+    """Load the agent summary log for a project.
+
+    Returns [] for both "no history yet" and "the file is corrupt" — callers
+    that write the log back must therefore ask `_agent_log_is_readable()`
+    FIRST (see its docstring). A parse failure here is real data loss, so it
+    is logged at error level and the file is quarantined rather than left in
+    place to be silently overwritten by the next save.
+    """
+    filepath = _agent_log_path(project_id)
     if not filepath.exists():
         return []
     try:
         return json.loads(filepath.read_text(encoding='utf-8'))
-    except Exception:
+    except Exception as e:
+        _log(f"[agent-log] {filepath.name} failed to parse ({e}) — treating as "
+             f"EMPTY for this read, not as authority to overwrite", level='error')
+        _quarantine_agent_log(filepath)
         return []
 
 
@@ -3844,12 +3901,16 @@ def _save_agent_log(project_id, log):
     Entries are inserted at index 0 (newest first), so list[:N] keeps the newest.
     Cap is `agent_log_max_entries` in config.json (default 500). Set to 0 to
     disable trimming (keep everything — file grows unbounded).
+
+    Atomic (MC-946): a plain write_text truncates the target first, so a
+    restart-overlap kill mid-write left a partial file that read back as
+    "no history" and got replaced with synthesized rows on the next boot.
     """
-    filepath = DATA_DIR / f'{project_id}_agent_log.json'
+    filepath = _agent_log_path(project_id)
     cap = int(state.CONFIG.get('agent_log_max_entries', 500) or 0)
     if cap > 0 and len(log) > cap:
         log = log[:cap]
-    filepath.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(filepath, log, indent=2, ensure_ascii=False)
 
 def _session_usage_payload(session: dict) -> dict:
     """Build the usage/cost/turns slice of an SSE payload, gated on provider capabilities.
@@ -4976,7 +5037,7 @@ def _router_stat(project_id, requested_model, chosen_model, source, reason=''):
                 'reason': reason or 'unknown',
             }
         stats['_updated'] = now_iso()
-        fp.write_text(json.dumps(stats, indent=2), encoding='utf-8')
+        write_json_atomic(fp, stats, indent=2)
     except Exception:
         pass  # telemetry must never break dispatch
 
@@ -7630,7 +7691,7 @@ def delete_plans():
                                                if p not in deleted_paths]
                         changed = True
                 if changed:
-                    log_file.write_text(json.dumps(log, indent=2, ensure_ascii=False), encoding='utf-8')
+                    write_json_atomic(log_file, log, indent=2, ensure_ascii=False)
             except Exception:
                 pass
     return jsonify({'ok': True, 'deleted': deleted})
