@@ -8278,3 +8278,133 @@
     .desk-tab { padding: 6px 10px; font-size: 11.5px; }
     .desk-signal-proj, .desk-signal-when { display: none; }
   }
+
+  /* ── Workflow Builder (MC-871 Q7 — "a spine, not a graph") ────────────────
+     A vertical list of cards, CSS connectors down the spine, a Paths/Approval
+     node splitting into side-by-side CSS-grid columns. `wfb-` prefix — the
+     read-only fan-out viewer already owns the bare `wf-` class family
+     (`.wf-empty*`, static/js/agent-console.js), and these must never collide
+     with it. static/js/workflow-builder.js. */
+  .wfb-modal-body { padding: 4px 24px 24px; max-height: 76vh; overflow-y: auto; }
+  .wfb-meta { padding: 16px 0 4px; }
+  .wfb-meta label, .wfb-card-own label {
+    display: block; font-size: 10px; font-weight: 600; color: var(--text-faint);
+    text-transform: uppercase; letter-spacing: 0.4px; margin: 8px 0 3px;
+  }
+  .wfb-meta label:first-child, .wfb-card-own label:first-child { margin-top: 0; }
+  .wfb-meta input[type="text"], .wfb-meta input:not([type]), .wfb-meta textarea,
+  .wfb-card-own select, .wfb-card-own input[type="text"], .wfb-card-own input:not([type]),
+  .wfb-card-own textarea {
+    width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: 'Inter', sans-serif; font-size: 13px; padding: 7px 9px; border-radius: 5px;
+    outline: none; box-sizing: border-box;
+  }
+  .wfb-card-own textarea { resize: vertical; min-height: 52px; font-family: inherit; }
+  .wfb-meta input:focus, .wfb-meta textarea:focus,
+  .wfb-card-own select:focus, .wfb-card-own input:focus, .wfb-card-own textarea:focus { border-color: var(--accent); }
+
+  .wfb-trigger-card {
+    background: var(--surface); border: 1px dashed var(--border); border-radius: 8px;
+    padding: 12px 16px; margin: 14px 0 22px;
+  }
+  .wfb-trigger-title { font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.6px; margin-bottom: 8px; }
+  .wfb-trigger-row { display: flex; gap: 18px; flex-wrap: wrap; }
+  .wfb-trigger-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
+  .wfb-trigger-opt input { margin: 0; }
+  .wfb-trigger-disabled { color: var(--text-faint); cursor: not-allowed; }
+  .wfb-soon { font-size: 10px; color: var(--text-faint); font-style: italic; }
+
+  /* The spine itself: one vertical flex column per list, connectors drawn as
+     a short line above every card but the first. */
+  .wfb-list { display: flex; flex-direction: column; min-width: 0; }
+  .wfb-card-wrap { position: relative; }
+  .wfb-card-wrap:not(:first-child) { margin-top: 16px; }
+  .wfb-card-wrap:not(:first-child)::before {
+    content: ''; position: absolute; top: -16px; left: 19px; width: 2px; height: 16px;
+    background: var(--border);
+  }
+  .wfb-card-wrap.wfb-dragging { opacity: 0.55; }
+  .wfb-list-empty { font-size: 12px; color: var(--text-faint); font-style: italic; padding: 4px 0 10px; }
+  .wfb-list-footer { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 10px; }
+
+  .wfb-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+    padding: 10px 14px 14px;
+  }
+  .wfb-card-head { display: flex; align-items: center; gap: 8px; margin-bottom: 4px; }
+  .wfb-drag-handle {
+    cursor: grab; color: var(--text-faint); font-size: 14px; user-select: none;
+    touch-action: pan-y; padding: 2px 4px; margin: -2px -4px;
+  }
+  .wfb-card-wrap.wfb-dragging .wfb-drag-handle { cursor: grabbing; touch-action: none; }
+  .wfb-card-num {
+    font-size: 10px; font-weight: 700; color: var(--text-faint); background: var(--surface3);
+    border-radius: 50%; width: 18px; height: 18px; display: inline-flex; align-items: center;
+    justify-content: center; flex-shrink: 0;
+  }
+  .wfb-card-type {
+    font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); flex: 1;
+  }
+  .wfb-card-del {
+    background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+    font-size: 12px; padding: 2px 4px; line-height: 1;
+  }
+  .wfb-card-del:hover { color: var(--red-text); }
+
+  .wfb-add-btn {
+    padding: 5px 11px; font-size: 11px; font-weight: 600; border-radius: 5px;
+    border: 1px solid var(--border); background: transparent; color: var(--text-faint); cursor: pointer;
+  }
+  .wfb-add-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .wfb-add-branch { border-color: var(--purple, var(--accent)); color: var(--purple-text, var(--accent)); }
+
+  /* Paths / Approval: side-by-side columns, one per branch — a Paths node
+     splits the spine into a tree of lists (v1 has no rejoin, so plain CSS
+     grid is enough; no graph library). */
+  .wfb-branch-labels { margin: 8px 0 4px; }
+  .wfb-branch-label-row { display: flex; gap: 6px; align-items: center; margin-bottom: 6px; }
+  .wfb-branch-label-row input { flex: 1; }
+  .wfb-branch-del {
+    background: transparent; border: 1px solid var(--border); border-radius: 4px; color: var(--text-faint);
+    cursor: pointer; font-size: 11px; padding: 4px 7px; flex-shrink: 0;
+  }
+  .wfb-branch-del:hover { border-color: var(--red); color: var(--red-text); }
+  .wfb-branch-grid {
+    display: grid; grid-auto-flow: column; grid-auto-columns: minmax(240px, 1fr);
+    gap: 16px; overflow-x: auto; padding: 10px 2px 4px; margin-top: 6px;
+  }
+  .wfb-branch-col {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px;
+    min-width: 0;
+  }
+  .wfb-branch-col-title {
+    font-size: 11px; font-weight: 700; color: var(--text); margin-bottom: 8px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wfb-otherwise-col { border-style: dashed; }
+
+  .wfb-error {
+    margin-top: 14px; padding: 10px 14px; border: 1px solid var(--red); background: var(--red-dim, rgba(220,53,69,0.08));
+    color: var(--red-text); font-size: 12px; border-radius: 6px;
+  }
+  .wfb-actions { display: flex; gap: 8px; margin: 20px 0 4px; }
+
+  /* ── Clayrune-workflow list, top of the existing Workflows tab (Q6's
+     minimum: reachable + editable; run-history/calendar badge are later
+     phases). ── */
+  .wfb-list-row {
+    display: flex; align-items: center; gap: 10px; background: var(--surface);
+    border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;
+  }
+  .wfb-list-row.disabled { opacity: 0.5; }
+  .wfb-list-row-body { flex: 1; min-width: 0; }
+  .wfb-list-row-name { font-size: 13px; font-weight: 600; color: var(--text); }
+  .wfb-list-row-desc {
+    font-size: 11px; color: var(--text-faint); margin-top: 2px; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+
+  @media (max-width: 960px) {
+    .wfb-branch-grid { grid-auto-columns: minmax(80vw, 1fr); }
+    .wfb-modal-body { max-height: 82vh; }
+  }
