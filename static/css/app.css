@@ -8518,7 +8518,34 @@
     margin-top: 14px; padding: 10px 14px; border: 1px solid var(--red); background: var(--red-dim, rgba(220,53,69,0.08));
     color: var(--red-text); font-size: 12px; border-radius: 6px;
   }
-  .wfb-actions { display: flex; gap: 8px; margin: 20px 0 4px; }
+  .wfb-actions { display: flex; align-items: center; gap: 8px; margin: 20px 0 4px; }
+  .wfb-save-stamp { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+  .wfb-save-stamp-dirty { color: var(--amber-text); font-weight: 600; }
+
+  /* Step 5b: the Insert dropdown + read-only slot legend sitting under a
+     reused Phase-2 <textarea>/<input> (ground rule 3 forbids replacing them
+     with a contenteditable so real in-text chips could render). */
+  .wfb-insert-select {
+    margin: 4px 0 2px; background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
+    font-family: inherit; font-size: 11px; padding: 3px 6px; border-radius: 5px; outline: none; cursor: pointer;
+  }
+  .wfb-insert-select:hover, .wfb-insert-select:focus { border-color: var(--accent); color: var(--text); }
+  .wfb-slot-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px; }
+  .wfb-slot-chip {
+    font-family: var(--mono); font-size: 10px; background: var(--surface); border: 1px solid var(--border);
+    color: var(--text-dim, var(--text-faint)); border-radius: 4px; padding: 1px 6px;
+  }
+  .wfb-slot-chip-broken { border-color: var(--red); color: var(--red-text); text-decoration: line-through; }
+
+  /* Step 6: Run-now/Save surface a validation failure INLINE on the offending
+     card (brief §7), not only as a toast -- a persistent red outline plus a
+     banner at the top of that card's own editor, cleared the next time a
+     validate attempt succeeds (_wfApplyRunErrors / _wfSave / _wfRunNow). */
+  .wfb-node.wfb-node-error { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-dim, rgba(220,53,69,0.25)); }
+  .wfb-node-inline-error {
+    background: var(--red-dim, rgba(220,53,69,0.08)); border: 1px solid var(--red); color: var(--red-text);
+    font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
+  }
 
   /* ── Clayrune-workflow list, top of the existing Workflows tab (Q6's
      minimum: reachable + editable; run-history/calendar badge are later

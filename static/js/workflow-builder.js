@@ -261,7 +261,7 @@ async function openWorkflowBuilder(workflowId, hintProjectId) {
       <span style="font-size:16px;font-weight:700;color:var(--text)">Workflow Builder</span>
       <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
         <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
-        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+        <button class="modal-close" onclick="_wfRequestClose('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
     <div id="wfb-body" class="wfb-modal-body"></div>`;
@@ -270,6 +270,12 @@ async function openWorkflowBuilder(workflowId, hintProjectId) {
   const z = nextModalZ++;
   win.style.zIndex = z;
   openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z, _wf: null });
+  // Dirty-state watcher (UI brief §6/build-order step 6): delegated so it
+  // survives every _wfRender() rebuild of #wfb-body's children -- attached
+  // once, to the body element itself, not to anything _wfRender() replaces.
+  const wfBody = content.querySelector('#wfb-body');
+  wfBody.addEventListener('input', _wfMarkDirty);
+  wfBody.addEventListener('change', _wfMarkDirty);
   centerModalElement(win);
   focusModal(modalId);
 
@@ -289,9 +295,15 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
   // bench/benchLoaded/paletteSearch: the Bench roster backing the palette
   // (UI brief §2 — "the palette is the Bench, drag people not primitives"),
   // loaded once per modal open from the SAME endpoint the Floor/Bench reads.
+  // dirty/savedAt (build step 6): tracked session-side only -- the store has
+  // no updated_at/version field (confirmed against mc/workflows.py), so the
+  // stamp is "since this modal opened", not a durable last-modified. runErrors/
+  // scrollToNode carry a failed Save/Run-now's per-card messages (step 6,
+  // "inline on the offending card, not only a toast") to the next render.
   return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
            _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null,
-           hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '' };
+           hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '',
+           dirty: false, savedAt: null, runErrors: null, scrollToNode: null };
 }
 
 async function _wfLoadInto(entry, workflowId, hintProjectId) {
@@ -469,6 +481,105 @@ function _wfNewViolations(before, after) {
   return after.filter(a => !before.some(b => b.step === a.step && b.ref === a.ref));
 }
 
+// ── Step 5b: legal-slot Insert control + a read-only "chip" legend over the
+//    reused plain <textarea>/<input> fields. Ground rule 3 (reuse the Phase-2
+//    editors verbatim) rules out swapping them for a contenteditable so a
+//    real in-text chip could render; this is the "at minimum visually
+//    distinguishable" fallback the brief allows instead. Both the Insert
+//    dropdown and the chip legend's broken/valid read reuse the EXACT
+//    dominator fixpoint _wfFindBrokenSlotRefs already computes for the save
+//    guard (R2-D5), so what the dropdown offers and what the legend flags as
+//    broken can never disagree with each other or with the validator. ───────
+
+function _wfLegalInsertSlots(def, nodeName) {
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const names = nodes.map(n => n.name);
+  const order = _wfToposort(names, edges);
+  const parentsMap = _wfParentsMap(names, edges);
+  const dom = _wfDominators(order.length === names.length ? order : names, parentsMap);
+  const domSet = dom[nodeName] || new Set([nodeName]);
+  // Definition order, not dominator-fixpoint order -- a stable, scannable
+  // dropdown that doesn't reshuffle as the author wires more of the graph.
+  const ancestors = names.filter(n => n !== nodeName && domSet.has(n));
+  const parents = parentsMap[nodeName] || [];
+  return { ancestors, prevLegal: parents.length === 1 ? parents[0] : null };
+}
+
+function _wfInsertControlHTML(def, nodeName, fieldSelector) {
+  const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
+  const opts = [];
+  if (prevLegal) opts.push('{{prev.output}}');
+  ancestors.forEach(a => opts.push(`{{steps.${a}.output}}`));
+  opts.push('{{trigger.fired_at}}', '{{run.id}}');
+  return `<select class="wfb-insert-select" title="Insert a slot at the cursor"
+      onchange="_wfInsertSlot(event,'${_wfJsStrEsc(nodeName)}','${_wfJsStrEsc(fieldSelector)}')">
+    <option value="">Insert &#9662;</option>
+    ${opts.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}
+  </select>`;
+}
+
+const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
+
+function _wfSlotChipsHTML(def, nodeName, text) {
+  const refs = [];
+  _WF_SLOT_ANY_RE.lastIndex = 0;
+  let m;
+  while ((m = _WF_SLOT_ANY_RE.exec(text || ''))) refs.push(m[1]);
+  if (!refs.length) return '';
+  const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
+  const legalSteps = new Set(ancestors);
+  const chip = (ref) => {
+    let broken;
+    if (ref === 'prev.output') broken = !prevLegal;
+    else if (ref === 'trigger.fired_at' || ref === 'run.id') broken = false;
+    else {
+      const stepM = /^steps\.([a-zA-Z0-9_]+)\./.exec(ref);
+      broken = !stepM || !legalSteps.has(stepM[1]);
+    }
+    return `<span class="wfb-slot-chip${broken ? ' wfb-slot-chip-broken' : ''}"
+      title="${broken ? 'Not reachable on every path into this step' : 'Valid here'}">{{${esc(ref)}}}</span>`;
+  };
+  return `<div class="wfb-slot-chips">${refs.map(chip).join('')}</div>`;
+}
+
+// Writes at the field's caret, same "sync first" discipline every other
+// structural mutation follows (file header, FIELD SYNC): other cards' unsynced
+// edits are captured into the model before this one mutation is applied, so a
+// re-render never clobbers a prompt someone else is mid-typing.
+function _wfInsertSlot(e, nodeName, fieldSelector) {
+  const value = e.target.value;
+  e.target.value = '';
+  if (!value) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  nodeName = renameMap[nodeName] || nodeName;
+  const node = (entry._wf.def.nodes || []).find(n => n.name === nodeName);
+  if (!node) return;
+  const cardEl = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"]`);
+  const field = cardEl && cardEl.querySelector(fieldSelector);
+  if (!field) return;
+  const start = field.selectionStart != null ? field.selectionStart : field.value.length;
+  const end = field.selectionEnd != null ? field.selectionEnd : field.value.length;
+  const newText = field.value.slice(0, start) + value + field.value.slice(end);
+  const caret = start + value.length;
+  if (node.type === 'agent' && fieldSelector === '.wfb-prompt') {
+    node.prompt = newText;
+  } else {
+    const cfgMatch = /\[data-cfg-key="([^"]+)"\]/.exec(fieldSelector);
+    if (!cfgMatch) return;
+    node.config = node.config || {};
+    node.config[cfgMatch[1]] = newText;
+  }
+  _wfMarkDirty();
+  _wfRender();
+  const freshField = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"] ${fieldSelector}`);
+  if (freshField) {
+    freshField.focus({ preventScroll: true });
+    try { freshField.setSelectionRange(caret, caret); } catch (err) { /* not all input types support it */ }
+  }
+}
+
 // ── Field sync: DOM → in-memory def, at the moment of a structural action ────
 
 // Returns a `{oldName: newName}` map for every node renamed by this sync.
@@ -546,8 +657,32 @@ function _wfRender() {
   const st = entry._wf;
   body.innerHTML = _wfRenderBody(st);
   st._charLoads.forEach(({ seq, want }) => _wfReloadCharacters(seq, want));
+  // Run-now/Save set scrollToNode to the first offending card (step 6); pan
+  // it into view here, once, then clear the flag so it doesn't re-pan on
+  // every unrelated re-render that follows.
+  if (st.scrollToNode) {
+    const target = st.scrollToNode;
+    st.scrollToNode = null;
+    _wfPanToNode(st, target);
+  }
   _wfApplyViewport(st);
   _wfAttachCanvasGestures();
+}
+
+// Cards live on a pan/zoom CSS-transformed canvas, not inside a scrolling
+// container, so scrollIntoView() does nothing here -- centre the viewport on
+// the node instead. 260/... below are the node width/an estimated header+
+// first-field height (`.wfb-node` in app.css); exact centring isn't the
+// point, getting the flagged card on-screen is.
+function _wfPanToNode(st, nodeName) {
+  const node = (st.def.nodes || []).find(n => n.name === nodeName);
+  const vp = document.getElementById('wfb-canvas-viewport');
+  if (!node || !vp) return;
+  const rect = vp.getBoundingClientRect();
+  const cx = (node.x || 0) + 130;
+  const cy = (node.y || 0) + 80;
+  st.viewport.x = rect.width / 2 - cx * st.viewport.scale;
+  st.viewport.y = rect.height / 2 - cy * st.viewport.scale;
 }
 
 function _wfRenderBody(st) {
@@ -593,7 +728,10 @@ function _wfRenderBody(st) {
     ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}
     <div class="wfb-actions">
       <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
-      <button class="btn-sched-cancel" onclick="closeModalById('${WF_MODAL_ID}')">Close</button>
+      <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
+        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
+      <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
+      <button class="btn-sched-cancel" onclick="_wfRequestClose('${WF_MODAL_ID}')" style="margin-left:auto">Close</button>
     </div>`;
 }
 
@@ -666,7 +804,7 @@ function _wfRenderNode(st, node) {
   let own = '';
   if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
   else if (node.type === 'approval') own = _wfRenderApprovalOwn(node);
-  else if (node.type === 'action') own = _wfRenderActionOwn(node);
+  else if (node.type === 'action') own = _wfRenderActionOwn(st, node);
   else own = 'Unknown node type.';
   const edges = st.def.edges || [];
   const outPorts = _wfOutPorts(node);
@@ -692,12 +830,20 @@ function _wfRenderNode(st, node) {
          <span class="wfb-node-step-name">${esc(node.name || '')}</span>
        </span>`
     : `<span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>`;
-  return `<div class="wfb-node" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
+  // Step 6: Run-now (and a failed Save) surface INLINE on the offending card,
+  // not only as a toast (brief §7) -- st.runErrors is a {nodeName: message}
+  // map a validate attempt populates; _wfRender's caller pans the canvas to
+  // st.scrollToNode so the red-outlined card is the one already in view.
+  const runError = st.runErrors && st.runErrors[node.name];
+  return `<div class="wfb-node${runError ? ' wfb-node-error' : ''}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
       ${headHtml}
       <button class="wfb-node-del" title="Delete step" onclick="_wfDeleteNode('${_wfJsStrEsc(node.name)}')">&#10005;</button>
     </div>
-    <div class="wfb-node-own">${own}</div>
+    <div class="wfb-node-own">
+      ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
+      ${own}
+    </div>
     <span class="wfb-port wfb-port-in" data-node="${nameAttr}"><span class="wfb-port-dot"></span></span>
     <div class="wfb-ports-out">${portsHtml}</div>
   </div>`;
@@ -728,6 +874,8 @@ function _wfRenderAgentOwn(st, node) {
     </div>
     <label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>
     <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(node.prompt || '')}</textarea>
+    ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
+    ${_wfSlotChipsHTML(st.def, node.name, node.prompt || '')}
     <div class="wfb-branch-labels">
       <label>Outcomes <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(this step must end its reply naming one &mdash; each gets its own port below to wire up)</span></label>
       ${outcomes.map((label, oi) => `<div class="wfb-branch-label-row">
@@ -755,7 +903,7 @@ function _wfRenderApprovalOwn(node) {
 
 const _WF_ACTION_LABELS = { backlog_create: 'Create a backlog item', backlog_patch: 'Patch a backlog item', desk_harvest: 'Run a Desk harvest' };
 
-function _wfRenderActionOwn(node) {
+function _wfRenderActionOwn(st, node) {
   const action = node.action || 'backlog_create';
   return `
     <label>Name</label>
@@ -764,26 +912,35 @@ function _wfRenderActionOwn(node) {
     <select class="wfb-action-select" onchange="_wfRerenderActionFields(this)">
       ${Object.keys(_WF_ACTION_LABELS).map(a => `<option value="${a}"${a === action ? ' selected' : ''}>${esc(_WF_ACTION_LABELS[a])}</option>`).join('')}
     </select>
-    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {})}</div>`;
+    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {}, st.def, node.name)}</div>`;
 }
 
-function _wfActionFieldsHTML(action, cfg) {
+// def/nodeName (step 5b): "anywhere a slot is legal, e.g. the backlog
+// action's item-id field, offer an Insert control" (brief) -- every
+// data-cfg-key text input/textarea below gets its own Insert dropdown +
+// chip legend, keyed to that one field by its own `[data-cfg-key="…"]`
+// selector so each field's insert lands in the right place.
+function _wfActionFieldsHTML(action, cfg, def, nodeName) {
   const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter(p => p.project_path);
   const projOpts = (includeAny) => (includeAny ? '<option value="">(any project)</option>' : '')
     + projects.map(p => `<option value="${esc(p.id)}"${p.id === cfg.project_id ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
+  const slotField = (selector, text) => def && nodeName
+    ? `${_wfInsertControlHTML(def, nodeName, selector)}${_wfSlotChipsHTML(def, nodeName, text)}` : '';
   if (action === 'backlog_patch') {
     return `
       <label>Project</label>
       <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
       <label>Backlog item ID <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(can be a slot, e.g. <code>{{steps.triage.result.item_id}}</code>)</span></label>
       <input data-cfg-key="item_id" data-cfg-required="1" value="${esc(cfg.item_id || '')}">
+      ${slotField('[data-cfg-key="item_id"]', cfg.item_id || '')}
       <label>New status <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(blank = leave unchanged)</span></label>
       <select data-cfg-key="status">
         <option value=""${!cfg.status ? ' selected' : ''}>(unchanged)</option>
         ${['open', 'in_progress', 'blocked', 'done'].map(s => `<option value="${s}"${cfg.status === s ? ' selected' : ''}>${s}</option>`).join('')}
       </select>
       <label>New text <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(blank = leave unchanged)</span></label>
-      <textarea data-cfg-key="text" rows="2">${esc(cfg.text || '')}</textarea>`;
+      <textarea data-cfg-key="text" rows="2">${esc(cfg.text || '')}</textarea>
+      ${slotField('[data-cfg-key="text"]', cfg.text || '')}`;
   }
   if (action === 'desk_harvest') {
     return `
@@ -796,6 +953,7 @@ function _wfActionFieldsHTML(action, cfg) {
     <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
     <label>Text</label>
     <textarea data-cfg-key="text" data-cfg-required="1" rows="2" placeholder="What the item says">${esc(cfg.text || '')}</textarea>
+    ${slotField('[data-cfg-key="text"]', cfg.text || '')}
     <label>Priority</label>
     <select data-cfg-key="priority">
       ${['low', 'normal', 'high'].map(p => `<option value="${p}"${(cfg.priority || 'normal') === p ? ' selected' : ''}>${p}</option>`).join('')}
@@ -806,7 +964,11 @@ function _wfRerenderActionFields(selectEl) {
   const own = selectEl.closest('.wfb-node-own');
   const box = own && own.querySelector('.wfb-action-fields');
   if (!box) return;
-  box.innerHTML = _wfActionFieldsHTML(selectEl.value, {});
+  const entry = openModals.get(WF_MODAL_ID);
+  const nodeEl = selectEl.closest('.wfb-node');
+  const nodeName = nodeEl ? nodeEl.dataset.name : '';
+  const def = entry && entry._wf ? entry._wf.def : null;
+  box.innerHTML = _wfActionFieldsHTML(selectEl.value, {}, def, nodeName);
 }
 
 // ── Persona picker (mirrors scheduler.js's reloadSchedCharacters, per-node) ──
@@ -877,6 +1039,7 @@ function _wfSetTriggerType(t) {
   const st = entry._wf;
   st.def.trigger = { type: t };
   if (t === 'schedule' && !st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -937,7 +1100,7 @@ function _wfSchedTypeFieldsHTML(type, s) {
       <input type="time" id="wfb-sched-time" value="${esc(time)}">
       <label>Days</label>
       <div class="sched-days">
-        ${dayLabels.map((label, i) => { const d = i + 1; return `<button type="button" class="sched-day-btn${days.includes(d) ? ' active' : ''}" data-day="${d}" onclick="this.classList.toggle('active')">${label}</button>`; }).join('')}
+        ${dayLabels.map((label, i) => { const d = i + 1; return `<button type="button" class="sched-day-btn${days.includes(d) ? ' active' : ''}" data-day="${d}" onclick="this.classList.toggle('active');_wfMarkDirty()">${label}</button>`; }).join('')}
       </div>`;
   }
   if (type === 'interval') {
@@ -960,6 +1123,7 @@ function _wfSetSchedType(type) {
   const box = document.getElementById('wfb-sched-type-fields');
   if (box) box.innerHTML = _wfSchedTypeFieldsHTML(type, st.linkedSchedule);
   document.querySelectorAll('.wfb-sched-cadence .sched-type-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === type));
+  _wfMarkDirty();
 }
 
 function _wfToggleSchedEnabled() {
@@ -967,6 +1131,7 @@ function _wfToggleSchedEnabled() {
   const st = entry._wf;
   if (!st.linkedSchedule) return;
   st.linkedSchedule.enabled = !(st.linkedSchedule.enabled !== false);
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1005,6 +1170,7 @@ function _wfAddOutcome(name) {
   const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
   node.outcomes = node.outcomes || [];
   node.outcomes.push('outcome-' + (node.outcomes.length + 1));
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1028,6 +1194,7 @@ function _wfRemoveOutcome(name, idx) {
     return;
   }
   def.edges = newEdges;
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1038,6 +1205,7 @@ function _wfAddOption(name) {
   const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
   const n = (node.options || []).length + 1;
   node.options = (node.options || []).concat(['option-' + n]);
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1062,6 +1230,7 @@ function _wfRemoveOption(name, idx) {
     return;
   }
   def.edges = newEdges;
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1084,6 +1253,7 @@ function _wfDeleteNode(name) {
   def.nodes = newNodes;
   def.edges = newEdges;
   if (_wfSelectedEdge && (_wfSelectedEdge.from === name || _wfSelectedEdge.to === name)) _wfSelectedEdge = null;
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1113,6 +1283,7 @@ function _wfDeleteEdge(from, to, when) {
   }
   def.edges = newEdges;
   _wfSelectedEdge = null;
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1151,6 +1322,7 @@ function _wfTryAddEdge(from, to, when) {
     return;
   }
   def.edges = candidateEdges;
+  _wfMarkDirty();
   _wfRender();
 }
 
@@ -1387,6 +1559,7 @@ function _wfPlaceNodeAt(type, clientX, clientY, vp, scope, name) {
   const wy = (clientY - rect.top - v.y) / v.scale;
   const node = _wfMakeNode(st, type, scope, name, wx - 130, wy - 24);
   st.def.nodes = (st.def.nodes || []).concat([node]);
+  _wfMarkDirty();
   _wfRender();
   if (node.type === 'agent') _wfFocusPrompt(node.name);
 }
@@ -1413,6 +1586,7 @@ function _wfInsertAfter(entry, fromName, when, type, scope, name, opts) {
   const node = _wfMakeNode(st, type, scope, name, (fromNode.x || 0) + 320, (fromNode.y || 0) + idx * 150);
   def.nodes = (def.nodes || []).concat([node]);
   def.edges = (def.edges || []).concat([{ from: fromName, to: node.name, when: when || undefined }]);
+  _wfMarkDirty();
   _wfRender();
   if (node.type === 'agent') _wfFocusPrompt(node.name);
 }
@@ -1487,6 +1661,7 @@ function _wfNodeDragUp(e) {
     if (node) {
       node.x = parseFloat(st.nodeEl.style.left) || 0;
       node.y = parseFloat(st.nodeEl.style.top) || 0;
+      _wfMarkDirty();
     }
   }
   _wfNodeDragTeardown(st);
@@ -1736,6 +1911,17 @@ async function _wfSave() {
       st.linkedSchedule.schedule_type === 'weekly' && !(st.linkedSchedule.days || []).length) {
     showToast('Pick at least one day for a weekly schedule.', 4000); return;
   }
+  // Step 6, "the same validator that guards save": mirrors the checks
+  // mc/workflows.py::validate_workflow already hard-enforces (missing
+  // prompt/project, no options, cycles, broken slot scope) so a violation
+  // reads inline on its card before ever reaching the network, not only as a
+  // round-tripped 400. The server re-validates regardless (defence in depth).
+  const problems = _wfValidateGraph(def);
+  if (problems.length) {
+    _wfApplyRunErrors(st, problems);
+    showToast(problems[0].message, 5000);
+    return;
+  }
 
   st.saving = true; st.error = null;
   _wfRender();
@@ -1750,13 +1936,25 @@ async function _wfSave() {
     st.def = JSON.parse(JSON.stringify(data.workflow));
     await _wfSaveLinkedSchedule(st);
     st.saving = false;
+    st.dirty = false;
+    st.savedAt = Date.now();
+    st.runErrors = null;
     showToast('Workflow saved', 3000);
     _wfRender();
     if (window.refreshWorkflowsList) window.refreshWorkflowsList();
   } catch (e) {
     st.saving = false;
     st.error = 'Save failed: ' + e.message;
-    _wfRender();
+    // mc/workflows.py's error strings quote the offending node name in single
+    // quotes ("agent step 'draft' missing prompt"). Best-effort: if a node
+    // name from this graph appears quoted in the message, also surface it
+    // inline on that card (defence in depth for structural checks
+    // _wfValidateGraph doesn't mirror, e.g. a hand-edited store file) --
+    // _wfApplyRunErrors renders on its own, so skip the redundant call below.
+    const names = (def.nodes || []).map(n => n.name);
+    const hit = names.find(n => e.message.includes(`'${n}'`));
+    if (hit) _wfApplyRunErrors(st, [{ node: hit, message: e.message }]);
+    else _wfRender();
   }
 }
 
@@ -1797,6 +1995,156 @@ async function _wfSaveLinkedSchedule(st) {
   }
 }
 
+// ── Step 6: dirty state, Run-now inline errors, saved stamp ──────────────────
+//
+// No autosave timer. The store (mc/workflows.py) has no updated_at/version
+// field on a workflow record -- confirmed by reading create_workflow/
+// update_workflow, neither stamps one -- so there is no cheap way to detect
+// "another session already changed this since I loaded it" before an
+// autosave overwrites it. The brief's own escape hatch: implement dirty-
+// state + stamp + on-close warning and SAY the timer was left out rather
+// than ship a save that can silently clobber a concurrent edit.
+
+// Required fields per verb (mirrors validate_workflow's per-action checks,
+// mc/workflows.py lines ~408-410 dispatch into per-verb requirements the
+// route layer enforces on write). desk_harvest has none -- project_id is
+// optional there ("blank = every project").
+const _WF_ACTION_REQUIRED = {
+  backlog_create: ['project_id', 'text'],
+  backlog_patch: ['project_id', 'item_id'],
+  desk_harvest: [],
+};
+
+// Client mirror of mc/workflows.py::validate_workflow, scoped to what the
+// canvas can point a red outline at (brief §7: Run-now "selects and scrolls
+// to the offending card"). NOT a full reimplementation -- name/duplicate-name/
+// empty-graph/weekly-day checks stay in _wfSave as whole-form concerns with no
+// single card to blame, and the server re-validates everything regardless on
+// both save and run (R2-D3/D5 defence in depth). Reuses the exact toposort/
+// dominator/broken-slot helpers the save guard already computes, so this can
+// never disagree with what actually gets refused.
+function _wfValidateGraph(def) {
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const names = nodes.map(n => n.name);
+  const problems = []; // [{node, message}]
+  const add = (name, message) => problems.push({ node: name, message });
+
+  nodes.forEach((node) => {
+    if (node.type === 'agent') {
+      if (!node.project_id) add(node.name, 'Needs a project.');
+      if (!(node.prompt || '').trim()) add(node.name, 'Needs a prompt.');
+      const outcomes = node.outcomes || [];
+      if (outcomes.includes('otherwise')) add(node.name, '"otherwise" is reserved, not a usable outcome label.');
+      if (new Set(outcomes).size !== outcomes.length) add(node.name, 'Outcome labels must be unique.');
+    } else if (node.type === 'approval') {
+      const options = node.options || [];
+      if (!options.length) add(node.name, 'Needs at least one option.');
+      if (options.includes('otherwise')) add(node.name, '"otherwise" is reserved, not a usable option label.');
+      if (new Set(options).size !== options.length) add(node.name, 'Option labels must be unique.');
+    } else if (node.type === 'action') {
+      const required = _WF_ACTION_REQUIRED[node.action] || [];
+      const cfg = node.config || {};
+      const missing = required.filter(k => !String(cfg[k] || '').trim());
+      if (missing.length) add(node.name, `Needs ${missing.join(', ')}.`);
+    }
+  });
+
+  const order = _wfToposort(names, edges);
+  if (order.length !== names.length) {
+    names.filter(n => !order.includes(n)).forEach(n => add(n, "Part of a cycle -- this step can never run."));
+  }
+
+  _wfFindBrokenSlotRefs(nodes, edges).forEach(({ step, ref }) => {
+    add(step, `Uses {{steps.${ref}.*}}, but "${ref}" isn't guaranteed to have run first.`);
+  });
+
+  return problems;
+}
+
+// One message per node (first problem wins -- the card shows one banner, not
+// a list); pans the canvas to the first offender so Save/Run-now never leaves
+// the fix off-screen (brief §7: "never a modal alert").
+function _wfApplyRunErrors(st, problems) {
+  const map = {};
+  problems.forEach((p) => { if (!map[p.node]) map[p.node] = p.message; });
+  st.runErrors = map;
+  st.scrollToNode = problems[0].node;
+  _wfRender();
+}
+
+async function _wfRunNow() {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  _wfSyncDomToModel(entry);
+  const st = entry._wf;
+  if (!st.workflowId) { showToast('Save the workflow before running it.', 4000); return; }
+  const problems = _wfValidateGraph(st.def);
+  if (problems.length) {
+    _wfApplyRunErrors(st, problems);
+    showToast(problems[0].message, 5000);
+    return;
+  }
+  // Re-render if this clears a PREVIOUS failed attempt's red outline -- a
+  // validate-clean retry must not leave a stale error card on screen while
+  // the fetch is in flight.
+  if (st.runErrors) { st.runErrors = null; _wfRender(); }
+  try {
+    const res = await fetch(`${API_BASE}/api/workflows/${encodeURIComponent(st.workflowId)}/run`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      const msg = data.error || ('HTTP ' + res.status);
+      const names = (st.def.nodes || []).map(n => n.name);
+      const hit = names.find(n => msg.includes(`'${n}'`));
+      if (hit) _wfApplyRunErrors(st, [{ node: hit, message: msg }]);
+      showToast('Run failed: ' + msg, 6000);
+      return;
+    }
+    showToast('Run started.', 3000);
+  } catch (e) {
+    showToast('Run failed: ' + e.message, 6000);
+  }
+}
+
+// Marks the graph dirty the instant anything changes -- either the delegated
+// #wfb-body input/change listener (typing, dropdowns) or an explicit call
+// from a structural mutator whose action isn't a native input/change event
+// (a button click, a pointer drag). Idempotent and cheap enough to call from
+// both: it only touches the DOM directly (never a full _wfRender()) so a
+// keystroke marking the graph dirty can never clobber the field being typed
+// into, matching this file's existing FIELD SYNC discipline.
+function _wfMarkDirty() {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const st = entry._wf;
+  if (st.dirty) return;
+  st.dirty = true;
+  _wfPaintSaveStamp(st);
+}
+
+function _wfPaintSaveStamp(st) {
+  const el = document.getElementById('wfb-save-stamp');
+  if (!el) return;
+  el.textContent = st.dirty ? 'Unsaved changes' : _wfRelativeSavedLabel(st.savedAt);
+  el.classList.toggle('wfb-save-stamp-dirty', !!st.dirty);
+}
+
+function _wfRelativeSavedLabel(ts) {
+  if (!ts) return '';
+  const s = Math.max(0, Math.round((Date.now() - ts) / 1000));
+  if (s < 5) return 'saved just now';
+  if (s < 60) return `saved ${s}s ago`;
+  const m = Math.round(s / 60);
+  if (m < 60) return `saved ${m}m ago`;
+  return `saved ${Math.round(m / 60)}h ago`;
+}
+
+// The only close path this file renders (header X + the bottom Close button)
+// -- minimize is exempt, the modal entry (and its _wf state) survives that.
+function _wfRequestClose(modalId) {
+  const entry = openModals.get(modalId);
+  if (entry && entry._wf && entry._wf.dirty && !confirm('Discard unsaved changes to this workflow?')) return;
+  closeModalById(modalId);
+}
+
 // ── Interop: window accessors for onclick/onpointerdown targets + cross-
 //    module entry points (static/js/scheduler.js:626-650 is the pattern this
 //    file follows — every top-level declaration here is module-scoped).
@@ -1820,6 +2168,10 @@ window._wfAddOption = _wfAddOption;
 window._wfRemoveOption = _wfRemoveOption;
 window._wfReloadCharacters = _wfReloadCharacters;
 window._wfRerenderActionFields = _wfRerenderActionFields;
+window._wfInsertSlot = _wfInsertSlot;
 window._wfSave = _wfSave;
+window._wfRunNow = _wfRunNow;
+window._wfRequestClose = _wfRequestClose;
+window._wfMarkDirty = _wfMarkDirty;
 window._wfSetSchedType = _wfSetSchedType;
 window._wfToggleSchedEnabled = _wfToggleSchedEnabled;
