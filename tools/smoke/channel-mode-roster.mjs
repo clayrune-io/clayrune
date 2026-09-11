@@ -204,6 +204,52 @@ try {
   rosterAfterSwitch === 3 ? ok('switching the expanded person kept all 3 roster rows visible throughout')
                           : fail(`expected the roster still at 3 rows after switching, got ${rosterAfterSwitch}`);
 
+  // ── 5b. Clicking the SAME row again COLLAPSES it (Ron, mobile, 2026-09-10:
+  // "only when I select its name it will expand"). Before this there was no
+  // way to close a row at all except by opening a different one. Collapsing
+  // must be a pure view change — it opens no conversation on the way out.
+  const tabBefore = await page.evaluate((pid) => activeAgentTab[pid] || null, PID);
+  await page.click(`${scope}.channel-row[data-char-key="project:builder"]`);
+  await page.waitForTimeout(200);
+  const builderStillOpen = await page.$(`${scope}.channel-row[data-char-key="project:builder"].expanded`);
+  const anyExpanded = await page.$$eval(`${scope}.channel-row.expanded`, (els) => els.length);
+  (!builderStillOpen && anyExpanded === 0)
+    ? ok('clicking the already-expanded row collapsed it — nothing is open now')
+    : fail(`re-clicking the open row should collapse it, got stillOpen=${!!builderStillOpen} expandedCount=${anyExpanded}`);
+  const tabAfter = await page.evaluate((pid) => activeAgentTab[pid] || null, PID);
+  tabAfter === tabBefore
+    ? ok('collapsing opened no conversation — it is a view change, not a navigation')
+    : fail(`collapsing must not switch conversation: activeAgentTab went ${tabBefore} → ${tabAfter}`);
+
+  // ── 5c. An expanded row SURVIVES a re-render. The Floor/project poll
+  // repaints the rail every few seconds; the accordion key is module state
+  // read at render time, not DOM, so a repaint must not close what the user
+  // opened (same constraint the rest of the rail already carries).
+  await page.click(`${scope}.channel-row[data-char-key="project:code-reviewer"]`);
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="project:code-reviewer"].expanded`, { timeout: 3000 });
+  await page.evaluate((pid) => { refreshModalById(pid); }, PID);
+  await page.waitForTimeout(250);
+  const survivedRepaint = await page.$(`${scope}.channel-row[data-char-key="project:code-reviewer"].expanded`);
+  survivedRepaint
+    ? ok('an expanded row survives a modal repaint (the 5s poll cannot close it)')
+    : fail('a repaint collapsed the expanded row — the poll would fight the user');
+
+  // ── 5d. REOPENING the project starts with nothing expanded. _channelExpanded
+  // is session state that nothing used to clear, so one click early on left
+  // that row expanded on every later visit — which is what Ron read as "one is
+  // expanded by default". Close and reopen with a row still open above.
+  await page.evaluate((pid) => { closeModalById(pid); }, PID);
+  await page.waitForTimeout(150);
+  await page.evaluate((pid) => { openProjectModal(pid); }, PID);
+  await page.waitForSelector(`${scope}.agent-rail`, { timeout: 5000 });
+  await page.click(`${scope}.rail-mode-btn >> text=Channel`);
+  await page.waitForSelector(`${scope}.channel-row`, { timeout: 3000 });
+  const expandedOnReopen = await page.$$eval(`${scope}.channel-row.expanded`, (els) => els.length);
+  const rowsOnReopen = await page.$$eval(`${scope}.channel-row`, (els) => els.length);
+  (expandedOnReopen === 0 && rowsOnReopen === 3)
+    ? ok('reopening the project lands with every row COLLAPSED — the expansion does not stick across opens')
+    : fail(`reopen should show 3 collapsed rows, got expanded=${expandedOnReopen} rows=${rowsOnReopen}`);
+
   // ── 6. A vanilla / empty project shows the empty state, not a broken rail ─
   await page.evaluate(({ pid }) => { openProjectModal(pid); }, { pid: PID_EMPTY });
   await page.waitForSelector(`.modal-window[data-modal-id="${PID_EMPTY}"] .agent-rail`, { timeout: 5000 });

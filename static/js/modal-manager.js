@@ -233,6 +233,13 @@ function openProjectModal(projectId, restoreState) {
     delete activeAgentTab[projectId];
     delete agentConvNew[projectId];
   }
+  // Same "fresh open resets the view" rule for the Channel rail's accordion:
+  // land with nothing expanded (Ron, mobile, 2026-09-10). Past this point we
+  // are on the FRESH-open path only — an already-open modal returned above —
+  // so a refreshModal() during the session still leaves an expanded row alone.
+  // _channelExpanded lives in conversation.js's module scope; window accessor
+  // per the ES-module cross-boundary rule.
+  if (typeof window.collapseChannelRows === 'function') window.collapseChannelRows(projectId);
 
   const content = document.createElement('div');
   content.className = 'modal-content';
