@@ -126,3 +126,36 @@ def test_load_project_still_returns_a_good_record(data_dir):
 def test_save_project_round_trips_through_the_atomic_writer(data_dir):
     P.save_project('p', {'id': 'p', 'status': 'active', 'backlog': []})
     assert (P.load_project('p') or {}).get('status') == 'active'
+
+
+# ── the canary ──────────────────────────────────────────────────────────────
+
+def test_no_new_non_atomic_json_writers(repo_root):
+    """Fail when someone adds `path.write_text(json.dumps(...))` back.
+
+    This is the defect class, not one bug: MC-946 was caused by six of these,
+    and the previous restart lost a whole project record to a seventh. Every
+    JSON state write goes through mc.atomic_json.write_json_atomic. A grep is
+    the only thing that catches the NEXT one, because the failure is invisible
+    until a process dies at the wrong microsecond.
+
+    If you are adding a genuinely throwaway write (a scratch file nothing
+    reads back), put it outside mc/ or use a different call shape -- do not
+    add an exemption list here.
+    """
+    import re
+    offenders = []
+    pattern = re.compile(r'write_text\(\s*json\.dumps')
+    roots = [repo_root / 'mc', repo_root / 'server.py']
+    for root in roots:
+        files = [root] if root.is_file() else sorted(root.rglob('*.py'))
+        for f in files:
+            if f.name == 'atomic_json.py':
+                continue
+            for i, line in enumerate(
+                    f.read_text(encoding='utf-8').splitlines(), 1):
+                if pattern.search(line):
+                    offenders.append(f'{f.relative_to(repo_root)}:{i}')
+    assert not offenders, (
+        'non-atomic JSON writes found -- use mc.atomic_json.write_json_atomic:\n'
+        + '\n'.join(offenders))

@@ -69,6 +69,7 @@ from typing import Any, Callable, Optional
 from mc.blueprints.project_routes import EXCLUDED_SIDECAR_SUFFIXES
 from mc import secrets_store as _secrets_store
 from mc import state as _state
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.secrets_store import clayrune_home
 
@@ -1635,7 +1636,7 @@ def import_project(archive_path: Path, *,
                 rec = json.loads(rec_path.read_text(encoding='utf-8'))
                 rec['id'] = final_id
                 rec['project_path'] = new_path
-                rec_path.write_text(json.dumps(rec, indent=2, ensure_ascii=False), encoding='utf-8')
+                write_json_atomic(rec_path, rec, indent=2, ensure_ascii=False)
             except Exception as e:
                 report['warnings'].append(f'could not finalize project record {rec_path}: {e}')
         else:
@@ -1781,7 +1782,7 @@ def _create_restore_point_for(project: dict, *, label: Optional[str] = None, pin
         'git_remote': remote, 'git_head': head,
         'files': files_manifest, 'warnings': [w.__dict__ for w in warnings],
     }
-    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(root / 'manifest.json', manifest, indent=2, ensure_ascii=False)
 
     pruned = _enforce_retention(project['id'])
     return {'snap_id': snap_id, 'path': str(root), 'manifest': manifest,
@@ -1854,7 +1855,7 @@ def label_restore_point(project_id: str, snap_id: str, label: str) -> dict:
     manifest = _load_restore_point_manifest(paths, project_id, snap_id)
     manifest['label'] = label
     root = _restore_point_dir(paths, project_id, snap_id)
-    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(root / 'manifest.json', manifest, indent=2, ensure_ascii=False)
     return manifest
 
 
@@ -1863,7 +1864,7 @@ def pin_restore_point(project_id: str, snap_id: str, pinned: bool) -> dict:
     manifest = _load_restore_point_manifest(paths, project_id, snap_id)
     manifest['pinned'] = bool(pinned)
     root = _restore_point_dir(paths, project_id, snap_id)
-    (root / 'manifest.json').write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(root / 'manifest.json', manifest, indent=2, ensure_ascii=False)
     return manifest
 
 

@@ -47,6 +47,7 @@ from flask import Blueprint, Response, jsonify, request
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 from mc import obs, state
+from mc.atomic_json import write_json_atomic
 from mc.core import _log, now_iso, time_ago
 from mc.state import (
     _hivemind_orch_lock,
@@ -168,7 +169,7 @@ def _hm_load_manifest(hivemind_id):
 def _hm_save_manifest(hivemind_id, manifest):
     """Save a hivemind manifest."""
     p = _hm_dir(hivemind_id) / 'manifest.json'
-    p.write_text(json.dumps(manifest, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(p, manifest, indent=2, ensure_ascii=False)
 
 
 def _hm_load_workstream(hivemind_id, ws_id):
@@ -185,7 +186,7 @@ def _hm_load_workstream(hivemind_id, ws_id):
 def _hm_save_workstream(hivemind_id, ws_id, ws):
     """Save a workstream definition."""
     p = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}.json'
-    p.write_text(json.dumps(ws, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(p, ws, indent=2, ensure_ascii=False)
 
 
 def _hm_list_workstreams(hivemind_id):
@@ -1145,7 +1146,7 @@ def hivemind_workstream_handoff(hivemind_id, ws_id):
     # Record artifact if provided
     if data.get('artifact'):
         artifact_path = _hm_dir(hivemind_id) / 'workstreams' / f'{ws_id}_artifact.json'
-        artifact_path.write_text(json.dumps(data['artifact'], indent=2, ensure_ascii=False), encoding='utf-8')
+        write_json_atomic(artifact_path, data['artifact'], indent=2, ensure_ascii=False)
 
     _hm_push_sse(hivemind_id, {
         'type': 'hivemind_handoff',

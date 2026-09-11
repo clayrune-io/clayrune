@@ -27,6 +27,7 @@ from flask import Blueprint, jsonify, request
 import mc.agent_runtime as _agent_runtime
 from mc import obs, state
 from mc import slash_commands as slash_cmds
+from mc.atomic_json import write_json_atomic
 from mc.core import _atomic_write_text, _log, now_iso, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
@@ -804,7 +805,7 @@ def _append_restart_log(entry):
         if len(log) > 200:
             log = log[-200:]
         RESTART_LOG_PATH.parent.mkdir(parents=True, exist_ok=True)
-        RESTART_LOG_PATH.write_text(json.dumps(log, indent=2), encoding='utf-8')
+        write_json_atomic(RESTART_LOG_PATH, log, indent=2)
     except Exception as e:
         _log(f"[restart] failed to append log: {e}")
 
