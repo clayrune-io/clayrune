@@ -463,6 +463,67 @@ def draft():
                     'project_id': pid, 'session_id': session_id}), 202
 
 
+def dispatch_rework(project_id: str, item: dict, note: str) -> dict:
+    """Redraft a pushed-back queue item — the bridge `project_routes.reject_social_queue_item`
+    calls so a push-back is not the end of the story.
+
+    Never raises. Returns `{'dispatched': bool, 'session_id': str | None,
+    'reason': str | None}` — `reason` explains either why no rework was
+    started (not an error: pre-Desk draft, unknown voice, signal gone) or why
+    a dispatch attempt failed. Exactly one dispatch per item: a draft that
+    already carries a `rework_session_id` is reported back as already in
+    flight rather than dispatched a second time.
+
+    Deliberately called AFTER the caller has already saved the push-back
+    itself — a dispatch failure here must never cost the human's note.
+    """
+    if item.get('rework_session_id'):
+        return {'dispatched': False, 'session_id': item['rework_session_id'],
+                'reason': 'a rework is already in flight for this draft'}
+
+    sig_id = item.get('signal_id')
+    voice = item.get('voice')
+    if not sig_id or not voice:
+        return {'dispatched': False, 'session_id': None,
+                'reason': 'this draft has no signal_id/voice (a pre-Desk draft) '
+                          '— rework must be started by hand'}
+    if not _desk.is_voice(voice):
+        return {'dispatched': False, 'session_id': None,
+                'reason': f'voice {voice!r} no longer exists — rework must be '
+                          'started by hand'}
+
+    signal = next((s for s in _desk.list_signals(limit=100000) if s.get('id') == sig_id), None)
+    if signal is None:
+        return {'dispatched': False, 'session_id': None,
+                'reason': 'the signal this draft came from is gone — rework '
+                          'must be started by hand'}
+
+    project = load_project(project_id) if load_project else None
+    if project is None:
+        return {'dispatched': False, 'session_id': None,
+                'reason': f'project {project_id!r} not found'}
+
+    if dispatch_agent is None:
+        return {'dispatched': False, 'session_id': None,
+                'reason': 'dispatch not wired'}
+
+    brief = _brief.build_rework_brief(signal, item=item, note=note,
+                                      project_name=project.get('name'))
+    try:
+        session_id = dispatch_agent(
+            project_id, brief, '',
+            display_task=f'Rework a {item.get("platform") or "draft"} post '
+                         'after push-back',
+            character='global:social-media-strategist',
+            source='agent', strict_character=True)
+    except Exception as e:
+        _log(f'[desk] rework dispatch failed for {item.get("id")}: {e}')
+        return {'dispatched': False, 'session_id': None,
+                'reason': f'dispatch failed: {e}'}
+
+    return {'dispatched': True, 'session_id': session_id, 'reason': None}
+
+
 # ── Triage: Posy decides what is worth saying ────────────────────────────────
 
 def _running_campaign() -> dict | None:

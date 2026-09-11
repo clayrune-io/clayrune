@@ -300,3 +300,60 @@ def build_brief(signal: dict, *, voice: str | None = None,
         'requirement of this system, not a failure of it.',
     ]
     return '\n'.join(x for x in out if x is not None)
+
+
+def build_rework_brief(signal: dict, *, item: dict, note: str,
+                       campaign: dict | None = None,
+                       project_name: str | None = None) -> str:
+    """The brief for redrafting a pushed-back post — closes the loop Ron asked
+    for: a push-back puts the writer straight back to work, instead of sitting
+    on the queue until a human notices the row and retypes the handoff by hand.
+
+    Built on top of `build_brief` for the SAME signal the rejected draft came
+    from, with the rejected body and Ron's note spliced in ahead of the normal
+    delivery instructions, and a REPLACEMENT delivery block appended after —
+    the one from `build_brief` still applies except for the extra
+    `reworked_from` field, which is how the queue links the new draft back to
+    the one it supersedes.
+
+    The note is quoted VERBATIM, never paraphrased. It is the human's own
+    words about what was specifically wrong, and it is the highest-value
+    signal in the whole system — paraphrasing it is exactly how that value
+    gets lost on the way to the writer.
+    """
+    voice = item.get('voice') or ''
+    base = build_brief(signal, voice=voice, campaign=campaign,
+                       project_name=project_name)
+    platform = platform_for(voice)
+    out = [
+        'THIS IS A REWORK, NOT A FRESH DRAFT. A human already reviewed a draft '
+        'of this exact story and pushed it back for changes. Read the rejected '
+        'draft and the note below FIRST — everything after them is the normal '
+        'brief for the story, included so you have full context again.',
+        '',
+        '── THE DRAFT THAT WAS PUSHED BACK ──',
+        item.get('body') or '(empty)',
+        '',
+        '── THE NOTE, IN RON\'S OWN WORDS (do not paraphrase this away) ──',
+        note,
+        '',
+        'Write a new draft that actually fixes what the note says is wrong — '
+        'not a light reword of the same post.',
+        '',
+        base,
+        '',
+        '── THE DELIVERY INSTRUCTIONS ABOVE ARE SUPERSEDED BY THIS ONE ──',
+        'POST the new draft the same way, PLUS `reworked_from` so the queue '
+        'can show what this one replaces and keep the superseded draft '
+        'visible:',
+        f'  curl -s -X POST http://localhost:5199/api/project/{item.get("project_id")}/social/queue \\',
+        "    -H 'Content-Type: application/json' \\",
+        '    -d \'{"platform":"%s","voice":"%s","signal_id":"%s",'
+        '"reworked_from":"%s","body":"...","teaching":"...",'
+        '"media":["data/media/your-file.png"]}\''
+        % (platform, voice, signal.get('id'), item.get('id')),
+        '',
+        'The new draft lands as PENDING, exactly like any other. You do not '
+        'publish and you cannot.',
+    ]
+    return '\n'.join(x for x in out if x is not None)
