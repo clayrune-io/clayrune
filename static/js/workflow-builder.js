@@ -1,78 +1,146 @@
-// ── Workflow Builder (MC-871, Q7 — "a spine, not a graph") ──────────────────
+// ── Workflow Builder (MC-871, R2-D7 — "the canvas") ──────────────────────────
 //
-// The authoring surface on top of the already-merged runner + CRUD
-// (mc/workflows.py + mc/blueprints/workflow_routes.py, docs/WORKFLOW_BUILDER_SPEC.md).
-// Opens as its own modal (`openWorkflowBuilder`), same shape as `openScheduler`
-// — workflows are global cross-project objects, not owned by a project tab.
+// The authoring surface on top of the already-merged runner + CRUD + DAG store
+// (mc/workflows.py + mc/blueprints/workflow_routes.py, docs/WORKFLOW_BUILDER_SPEC.md,
+// Revision 2). Opens as its own modal (`openWorkflowBuilder`), same shape as
+// `openScheduler` — workflows are global cross-project objects, not owned by
+// a project tab.
 //
-// SPINE, NOT GRAPH (spec Q7, verbatim): a vertical list of ordinary-DOM cards
-// with CSS connectors, a Paths/Approval node splitting into side-by-side
-// CSS-grid columns (a tree of lists — v1 has no rejoin, so no graph library
-// is needed). No drag-to-connect edges, no free node positioning, no pan/zoom.
+// REPLACES THE SPINE (Q7 reversed by Ron on contact with the built result —
+// see the spec's Q7 banner). The definition is now `nodes` + `edges` (R2-D1),
+// not a nested tree, and this file is the free-canvas editor for that shape:
+// a palette docked left (a bottom sheet under the mobile breakpoint), drag a
+// block onto the canvas to place a node, drag from an output port to an
+// input port to connect two nodes. Node `x`/`y` persist per node; pan/zoom
+// (`_wfCanvasWheel`, `_wfCanvasTouchStart/Move/End`) is a CSS transform on
+// `#wfb-world` and is NOT persisted to the record (open item, R2-D7 — the
+// store has no viewport field; adding one is a backend change out of this
+// pass's scope, so a reopen starts centred rather than where you left it).
 //
-// REORDER SCOPE (Ron, 2026-09-11 — refines Q7, does not reverse it): cards
-// drag to reorder WITHIN one list only. A drag's pointermove only ever
-// compares against its OWN `.wfb-list` container's children (`_wfDragMove`),
-// so a card structurally cannot cross into a different branch's list — moving
-// a step to another branch means delete-and-re-add there, not a drag target.
-// That is a deliberate v1 boundary, not a missing feature: v1 has no rejoin
-// (spec "Scope"), so a step dragged across branches would need to invent
-// what "next" means in a tree that was never designed to reconnect.
+// NODE TYPES (R2-D6 — Paths is retired): `agent`, `approval`, `action`.
+// Branching is a property of the EDGE (`when`), not a node — an agent step's
+// `outcomes` array and an approval gate's `options` array are the declared
+// vocabulary; each label gets its own output port, plus a mandatory
+// `otherwise` port whenever that vocabulary is non-empty (R2-D6: "otherwise
+// survives as a PORT"). An agent with no declared outcomes, and every action
+// node, gets exactly one plain (unconditional, `when: null`) output port —
+// matching what `mc/workflows.py::validate_workflow` actually accepts.
 //
-// THE SLOT-ORDER GUARD (Ron's explicit ask: "think about what reordering
-// MEANS... do not silently produce a broken definition"): a step's prompt or
-// action config can name an earlier step by `{{steps.<name>.output}}` (spec
-// Q3). The backend does NOT validate this at authoring time — an unresolved
-// slot only fails LOUDLY at RUN time (`mc.workflows.render_template`). Ron
-// asked for a decision, made here: REFUSE the move/delete, don't warn-and-
-// allow and don't silently fix it. `_wfFindBrokenSlotRefs` walks the tree in
-// execution order threading forward the set of step names that have already
-// run; `_wfGuardedListMutate`-style callers (`_wfDeleteStep`, `_wfDragCommit`)
-// diff the violation set before/after a proposed structural change and revert
-// on any NEW violation, with a toast naming exactly which step's slot broke.
-// Chosen over "warn and let it through" because a silently-saved broken
-// workflow only surfaces its break hours later, mid-run, as a failed run a
-// human has to diagnose from a stack of JSON — refusing at the moment of the
-// drag is the cheapest possible place to catch it. NOT guarded: `{{prev.output}}`
-// — that shorthand is deliberately relative-to-whatever-ran-immediately-before
-// (spec Q3), so by design its meaning changes on ANY reorder, not just a
-// broken one; guarding it would mean refusing reorders that are perfectly
-// valid. Left as a known, documented limitation.
+// PHASE 2'S CARD EDITORS ARE REUSED VERBATIM (brief's explicit instruction):
+// `_wfRenderAgentOwn`'s project-select/persona-picker/prompt-textarea and
+// `_wfRenderActionOwn`/`_wfActionFieldsHTML`/`_wfRerenderActionFields` are
+// copied over unchanged from the spine build — only the surrounding layout
+// (free canvas position instead of a list item) and the branching editor
+// (outcomes/options as a flat array instead of nested branch lists) changed.
 //
-// TOUCH: drag handles use Pointer Events with a long-press activation and
-// `touch-action: pan-y` until a drag activates, mirroring floor.js's
-// drag-to-hire gesture shape exactly (`_wfHandleDown`/`_wfDragMove`) per the
-// brief's explicit precedent pointer. Unlike that gesture there is no ambient
-// poll to survive mid-drag here — this modal has no background refresh while
-// open, so the "poll rewrote the DOM mid-drag" trap floor.js hit does not
-// apply, and is not reproduced by anything in this file.
+// THE SLOT-BREAK GUARD (R2-D5, carried forward from the spine's slot-ORDER
+// guard, now graph-shaped): `{{steps.X.output}}` is valid in node N only if X
+// DOMINATES N — X is on every path from the trigger to N, so X can never be
+// skipped while N runs. `_wfFindBrokenSlotRefs` computes this with a ported
+// version of the backend's toposort + dominator fixpoint
+// (`mc/workflows.py::_toposort`/`_compute_dominators`) and every mutation
+// that can change dominance — add/remove an edge, delete a node, remove a
+// declared outcome/option (which implicitly drops the edge wired to it) —
+// diffs the violation set before/after and refuses on any NEW violation,
+// exactly the spine's "refuse, don't warn-and-allow, don't silently fix"
+// pattern, with the reference named in the toast. NOT guarded: a rename
+// (spine behaviour carried forward unchanged — this file only widens the
+// guard to cover edges, not new mutation classes) and `{{prev.output}}`
+// (valid only with exactly one parent — the backend's own rule, checked at
+// save; by design its meaning changes on any parent change, so guarding it
+// would refuse valid edits).
 //
-// FIELD SYNC: card fields (name/prompt/project/persona/branch labels/action
-// config) are NOT written into the in-memory `def` on every keystroke — like
-// `scheduler.js`'s form, they live in the DOM and are read back only at the
-// moment of a structural action (add/delete/reorder/save) via
-// `_wfSyncDomToModel`, so typing in one card is never clobbered by adding a
-// step in another. `.wfb-card-own` is the sync boundary: it wraps a card's
-// OWN fields and never contains a nested `.wfb-card`, so
-// `own.querySelector('.wfb-prompt')` can never reach into a Paths/Approval
-// node's branch children by accident.
+// CYCLE REFUSAL AT CONNECT (R2-D3 layer 1 — the layer that lives in the
+// canvas): before an edge is added, `_wfHasPath(edges, to, from)` checks
+// whether the target can already reach the source; if so the new edge would
+// close a loop and the drop is refused with a toast naming both nodes. Save
+// and run-start re-check server-side (`validate_workflow`/`compile_workflow`)
+// — this is defence-in-depth, not the only guard.
+//
+// TOUCH IS FIRST-CLASS (brief, "Ron uses this from his phone"): every drag —
+// place-from-palette, move-a-node, connect-a-port, pan-the-canvas — is one
+// pointer-event gesture family, mirroring `floor.js`'s drag-to-hire shape
+// (long-press activation on touch, 8px slop on mouse/pen). THE TRAP THAT BIT
+// drag-to-hire TWICE (`floor.js` comments, `.fl-hire-dragging`): a draggable
+// element's `touch-action` must default to something scrollable
+// (`pan-y`/`manipulation`) and switch to `none` ONLY via a class added at
+// drag ACTIVATION, never permanently — see `.wfb-node-head`/
+// `.wfb-palette-block` in app.css. Ports are small dedicated controls, not
+// scrollable list rows, so they carry `touch-action: none` unconditionally
+// (same posture as an ordinary button) and get a real 40x40px hit box
+// (`.wfb-port`) around a smaller visible dot, per the brief's "ports need
+// >= 40px hit targets". Pinch-zoom is native touchstart/touchmove tracking
+// (mirrors `mermaid.js`'s viewer-gesture pattern) — Pointer Events don't
+// aggregate multi-touch, so a 2-finger pinch cancels any single-pointer pan
+// in flight and takes over.
+//
+// NO BACKGROUND REFRESH while this modal is open (same as the spine build) —
+// the trap of a poll rewriting the DOM mid-drag (floor.js's Floor re-render)
+// does not apply here; every re-render (`_wfRender`) is the direct result of
+// a user action on this same modal, never an ambient timer.
+//
+// FIELD SYNC: node fields (name/prompt/project/persona/outcomes/options/
+// action config) are read from the DOM into the in-memory `def` only at the
+// moment of a structural action (`_wfSyncDomToModel`), not on every
+// keystroke — typing in one node's prompt is never clobbered by placing a
+// new block or dragging an edge elsewhere on the canvas.
 
 const WF_MODAL_ID = '__workflow_builder';
 let _wfNameSeq = 0;
 const _wfCharCache = new Map();
-let _wfDrag = null; // one drag in flight at a time, same shape as floor.js's _hireDrag
 
 function _wfNewName(prefix) {
   _wfNameSeq += 1;
   return `${prefix}-${_wfNameSeq}`;
 }
 
-function _wfPathAttr(path) {
-  return esc(JSON.stringify(path));
+// HTML-safe (`esc`) is for literal markup. These two are for the OTHER two
+// contexts a node name flows through: a dynamically-built CSS attribute
+// selector (`_wfAttrEsc`, used when matching `[data-node="…"]` from JS) and a
+// single-quoted inline-JS string literal inside an onclick/onpointerdown
+// attribute (`_wfJsStrEsc`). Conflating either with `esc()` would leave an
+// attacker- or just apostrophe-carrying node name able to break out of the
+// selector or the attribute.
+function _wfAttrEsc(s) {
+  return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/"/g, '\\"');
+}
+function _wfJsStrEsc(s) {
+  return String(s == null ? '' : s).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
 }
 
 function _wfBlankDef() {
-  return { name: '', description: '', enabled: true, trigger: { type: 'manual' }, steps: [] };
+  return { name: '', description: '', enabled: true, trigger: { type: 'manual' }, nodes: [], edges: [] };
+}
+
+function _wfTypeLabel(t) {
+  return { agent: 'AGENT STEP', approval: 'APPROVAL GATE', action: 'CLAYRUNE ACTION' }[t] || String(t || '').toUpperCase();
+}
+
+function _wfBlankNode(type, x, y) {
+  const name = _wfNewName(type);
+  const base = { type, name, x: Math.round(x), y: Math.round(y) };
+  if (type === 'agent') return { ...base, project_id: '', character: '', prompt: '', outcomes: [] };
+  if (type === 'approval') return { ...base, options: ['approve', 'reject'] };
+  if (type === 'action') return { ...base, action: 'backlog_create', config: {} };
+  return base;
+}
+
+// The declared branching vocabulary a node's outgoing edges may name in
+// `when` (mc/workflows.py `_declared_vocab`, mirrored here).
+function _wfVocab(node) {
+  if (node.type === 'agent') return node.outcomes || [];
+  if (node.type === 'approval') return node.options || [];
+  return [];
+}
+
+// Ports actually drawn on the node. R2-D6: a non-empty vocabulary always
+// gets a trailing `otherwise` port; an empty vocabulary (a plain agent step,
+// or any action node — action steps cannot have conditional edges at all,
+// `validate_workflow`) gets exactly one plain unconditional port.
+function _wfOutPorts(node) {
+  const vocab = _wfVocab(node);
+  if (node.type === 'action' || !vocab.length) return [{ when: null, label: '' }];
+  return vocab.map(w => ({ when: w, label: w })).concat([{ when: 'otherwise', label: 'otherwise' }]);
 }
 
 // ── Modal open / load ────────────────────────────────────────────────────────
@@ -93,7 +161,7 @@ async function openWorkflowBuilder(workflowId) {
   win.dataset.modalId = modalId;
   const content = document.createElement('div');
   content.className = 'modal-content';
-  _clampModalSize(content, 900);
+  _clampModalSize(content, 1180);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">Workflow Builder</span>
@@ -116,50 +184,106 @@ async function openWorkflowBuilder(workflowId) {
   _wfRender();
 }
 
+function _wfFreshState(def, workflowId, error) {
+  return { def, workflowId, saving: false, error: error || null, _cardSeq: 0, _charLoads: [], viewport: { x: 60, y: 40, scale: 1 } };
+}
+
 async function _wfLoadInto(entry, workflowId) {
   if (!workflowId) {
-    entry._wf = { def: _wfBlankDef(), workflowId: null, saving: false, error: null, _cardSeq: 0, _charLoads: [] };
+    entry._wf = _wfFreshState(_wfBlankDef(), null, null);
     return;
   }
   try {
     const res = await fetch(API_BASE + '/api/workflows');
     const list = await res.json();
     const found = (list || []).find(w => w.id === workflowId);
-    entry._wf = {
-      def: found ? JSON.parse(JSON.stringify(found)) : _wfBlankDef(),
-      workflowId: found ? found.id : null,
-      saving: false, error: found ? null : 'Workflow not found', _cardSeq: 0, _charLoads: [],
-    };
+    entry._wf = _wfFreshState(
+      found ? JSON.parse(JSON.stringify(found)) : _wfBlankDef(),
+      found ? found.id : null,
+      found ? null : 'Workflow not found');
   } catch (e) {
-    entry._wf = { def: _wfBlankDef(), workflowId: null, saving: false, error: 'Failed to load workflow', _cardSeq: 0, _charLoads: [] };
+    entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow');
   }
 }
 
-// ── Tree helpers ─────────────────────────────────────────────────────────────
-// A `path` is an array of keys walking from `def.steps` down to either a LIST
-// (e.g. `[]` for top-level, `[2,'branches','worth_drafting']`, `[2,'otherwise']`)
-// or a NODE (a list-path with one more numeric index appended). Both array
-// indices and object keys resolve through the same `cur[k]` bracket lookup, so
-// one walker serves both.
-function _wfResolve(def, path) {
-  let cur = def.steps;
-  for (const k of path) cur = cur[k];
-  return cur;
+// ── Graph helpers, ported from mc/workflows.py so the builder can enforce
+//    the same rules the store re-validates on save ───────────────────────────
+
+// Kahn's algorithm. Ties broken by `names`' own order (mirrors the backend).
+// Returns a partial order if the graph is cyclic (shorter than `names`) —
+// callers that care about cycles use `_wfHasPath` instead, which answers the
+// question directly rather than inferring it from a short toposort.
+function _wfToposort(names, edges) {
+  const indeg = {}; const children = {};
+  names.forEach(n => { indeg[n] = 0; children[n] = []; });
+  edges.forEach(e => { if (children[e.from] && indeg[e.to] !== undefined) { children[e.from].push(e.to); indeg[e.to] += 1; } });
+  const queue = names.filter(n => indeg[n] === 0);
+  const order = [];
+  for (let i = 0; i < queue.length; i++) {
+    const n = queue[i];
+    order.push(n);
+    for (const c of children[n]) { indeg[c] -= 1; if (indeg[c] === 0) queue.push(c); }
+  }
+  return order;
 }
 
-function _wfBlankNode(type) {
-  const name = _wfNewName(type);
-  if (type === 'agent') return { type: 'agent', name, project_id: '', character: '', prompt: '' };
-  if (type === 'approval') return { type: 'approval', name, options: ['approve', 'reject'], branches: { approve: [], reject: [] } };
-  if (type === 'action') return { type: 'action', name, action: 'backlog_create', config: {} };
-  return { type, name };
+function _wfParentsMap(names, edges) {
+  const m = {};
+  names.forEach(n => { m[n] = []; });
+  edges.forEach(e => { if (m[e.to]) m[e.to].push(e.from); });
+  return m;
 }
 
-function _wfTypeLabel(t) {
-  return { agent: 'AGENT STEP', paths: 'PATHS', approval: 'APPROVAL GATE', action: 'CLAYRUNE ACTION' }[t] || String(t || '').toUpperCase();
+function _wfSetEq(a, b) {
+  if (a.size !== b.size) return false;
+  for (const x of a) if (!b.has(x)) return false;
+  return true;
 }
 
-// ── The slot-order guard ──────────────────────────────────────────────────────
+// Standard iterative dominator fixpoint (mc/workflows.py `_compute_dominators`).
+function _wfDominators(order, parentsMap) {
+  const allNames = new Set(order);
+  const roots = new Set(order.filter(n => !(parentsMap[n] || []).length));
+  const dom = {};
+  order.forEach(n => { dom[n] = roots.has(n) ? new Set([n]) : new Set(allNames); });
+  let changed = true;
+  while (changed) {
+    changed = false;
+    for (const n of order) {
+      if (roots.has(n)) continue;
+      const preds = parentsMap[n] || [];
+      if (!preds.length) continue;
+      let inter = null;
+      for (const p of preds) {
+        const dp = dom[p] || new Set();
+        inter = inter === null ? new Set(dp) : new Set([...inter].filter(x => dp.has(x)));
+      }
+      inter = inter || new Set();
+      inter.add(n);
+      if (!_wfSetEq(inter, dom[n])) { dom[n] = inter; changed = true; }
+    }
+  }
+  return dom;
+}
+
+// Does a path already exist from `from` to `to` over ALL edges, regardless of
+// `when`? (Cycle detection ignores branch labels — same as the backend's
+// toposort, which builds adjacency from every edge unconditionally.)
+function _wfHasPath(edges, from, to) {
+  if (from === to) return true;
+  const children = {};
+  edges.forEach(e => { (children[e.from] = children[e.from] || []).push(e.to); });
+  const seen = new Set([from]);
+  const stack = [from];
+  while (stack.length) {
+    const n = stack.pop();
+    for (const c of (children[n] || [])) {
+      if (c === to) return true;
+      if (!seen.has(c)) { seen.add(c); stack.push(c); }
+    }
+  }
+  return false;
+}
 
 const _WF_SLOT_STEP_RE = /\{\{\s*steps\.([a-zA-Z0-9_]+)\.[a-zA-Z0-9_.]+\s*\}\}/g;
 
@@ -170,33 +294,28 @@ function _wfCollectStepText(node) {
   return parts;
 }
 
-// Walks in execution order, threading forward the set of step names that have
-// already run by the time each node is reached. Paths node names are NOT
-// addable to `available` — the backend never gives a Paths node its own
-// nodes_by_name entry (mc/workflows.py `_compile_list`: a paths node is
-// absorbed into the preceding agent's `_next`, never independently
-// referenceable), so a `{{steps.<pathsName>...}}` reference would already be
-// dead on arrival regardless of order.
-function _wfFindBrokenSlotRefs(steps, availableIn) {
-  const available = new Set(availableIn || []);
+// R2-D5: a `{{steps.X.*}}` reference in node N is broken unless X exists AND
+// X dominates N (X is on every trigger→N path, so X can never be skipped
+// while N runs). Cyclic input (should not reach here — connect-time refuses
+// cycles outright) falls back to treating every node as a root so this never
+// throws; it is defence-in-depth, not the primary cycle guard.
+function _wfFindBrokenSlotRefs(nodes, edges) {
+  const names = nodes.map(n => n.name);
+  const order = _wfToposort(names, edges);
+  const parentsMap = _wfParentsMap(names, edges);
+  const dom = _wfDominators(order.length === names.length ? order : names, parentsMap);
   const problems = [];
-  for (const node of steps || []) {
-    if (!node || !node.type) continue;
+  for (const node of nodes) {
     for (const text of _wfCollectStepText(node)) {
       _WF_SLOT_STEP_RE.lastIndex = 0;
       let m;
       while ((m = _WF_SLOT_STEP_RE.exec(text))) {
-        if (!available.has(m[1])) problems.push({ step: node.name || '(unnamed)', ref: m[1] });
+        const ref = m[1];
+        if (ref === node.name) continue; // backend flags self-reference separately at save
+        if (!names.includes(ref)) { problems.push({ step: node.name, ref }); continue; }
+        const domSet = dom[node.name];
+        if (!domSet || !domSet.has(ref)) problems.push({ step: node.name, ref });
       }
-    }
-    if (node.type !== 'paths' && node.name) available.add(node.name);
-    if (node.type === 'paths') {
-      const branches = node.branches || {};
-      for (const label of Object.keys(branches)) problems.push(..._wfFindBrokenSlotRefs(branches[label], available));
-      problems.push(..._wfFindBrokenSlotRefs(node.otherwise || [], available));
-    } else if (node.type === 'approval') {
-      const branches = node.branches || {};
-      for (const label of Object.keys(branches)) problems.push(..._wfFindBrokenSlotRefs(branches[label], available));
     }
   }
   return problems;
@@ -208,6 +327,13 @@ function _wfNewViolations(before, after) {
 
 // ── Field sync: DOM → in-memory def, at the moment of a structural action ────
 
+// Returns a `{oldName: newName}` map for every node renamed by this sync.
+// EVERY caller that identifies a node/edge by a name baked into an onclick/
+// onpointerdown attribute at the LAST render must remap through this before
+// using that name — sync can rename the very node the caller is about to
+// act on (the user typed a new name, then clicked "+ Add outcome" or a
+// port on that same still-unrendered card), and a name baked into markup
+// two renders ago is not the same string as the model's name right now.
 function _wfSyncDomToModel(entry) {
   const def = entry._wf.def;
   const nameEl = document.getElementById('wfb-name');
@@ -216,19 +342,31 @@ function _wfSyncDomToModel(entry) {
   if (descEl) def.description = descEl.value;
   const enabledEl = document.getElementById('wfb-enabled');
   if (enabledEl) def.enabled = !!enabledEl.checked;
-  document.querySelectorAll('.wfb-card').forEach((cardEl) => {
-    let nodePath;
-    try { nodePath = JSON.parse(cardEl.dataset.nodepath); } catch (e) { return; }
-    const node = _wfResolve(def, nodePath);
-    const own = cardEl.querySelector(':scope > .wfb-card-own');
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const renameMap = {};
+  document.querySelectorAll('.wfb-node').forEach((nodeEl) => {
+    const oldName = nodeEl.dataset.name;
+    const node = nodes.find(n => n.name === oldName);
+    const own = nodeEl.querySelector('.wfb-node-own');
     if (!node || !own) return;
-    _wfSyncOwn(node, own);
+    _wfSyncNodeOwn(node, own);
+    if (node.name && node.name !== oldName) {
+      // Renames aren't guarded against breaking a TEXT slot reference
+      // elsewhere (spine behaviour, carried forward — see file header), but
+      // a rename WOULD silently orphan this node's own edges if they
+      // weren't repointed, which is new breakage this file would be
+      // introducing, not inheriting. Repoint them.
+      edges.forEach(e => { if (e.from === oldName) e.from = node.name; if (e.to === oldName) e.to = node.name; });
+      renameMap[oldName] = node.name;
+    }
   });
+  return renameMap;
 }
 
-function _wfSyncOwn(node, own) {
+function _wfSyncNodeOwn(node, own) {
   const nameEl = own.querySelector('.wfb-name');
-  if (nameEl) node.name = nameEl.value.trim();
+  if (nameEl) node.name = nameEl.value.trim() || node.name;
   if (node.type === 'agent') {
     const projEl = own.querySelector('.wfb-project');
     const persEl = own.querySelector('.wfb-persona');
@@ -236,25 +374,9 @@ function _wfSyncOwn(node, own) {
     if (projEl) node.project_id = projEl.value;
     if (persEl) node.character = persEl.value;
     if (promptEl) node.prompt = promptEl.value;
-  } else if (node.type === 'paths') {
-    const newBranches = {};
-    own.querySelectorAll('.wfb-branch-label-input').forEach((inp) => {
-      const oldKey = inp.dataset.branchKey;
-      const newKey = inp.value.trim() || oldKey;
-      newBranches[newKey] = (node.branches && node.branches[oldKey]) || [];
-    });
-    node.branches = newBranches;
+    node.outcomes = [...own.querySelectorAll('.wfb-outcome-input')].map(i => i.value.trim()).filter(Boolean);
   } else if (node.type === 'approval') {
-    const newOptions = [];
-    const newBranches = {};
-    own.querySelectorAll('.wfb-approval-option-input').forEach((inp) => {
-      const oldKey = inp.dataset.optionKey;
-      const newKey = inp.value.trim() || oldKey;
-      newOptions.push(newKey);
-      newBranches[newKey] = (node.branches && node.branches[oldKey]) || [];
-    });
-    node.options = newOptions;
-    node.branches = newBranches;
+    node.options = [...own.querySelectorAll('.wfb-option-input')].map(i => i.value.trim()).filter(Boolean);
   } else if (node.type === 'action') {
     const selEl = own.querySelector('.wfb-action-select');
     if (selEl) node.action = selEl.value;
@@ -276,15 +398,19 @@ function _wfRender() {
   const body = document.getElementById('wfb-body');
   if (!body) return;
   const st = entry._wf;
-  st._cardSeq = 0;
-  st._charLoads = [];
   body.innerHTML = _wfRenderBody(st);
   st._charLoads.forEach(({ seq, want }) => _wfReloadCharacters(seq, want));
+  _wfApplyViewport(st);
+  _wfAttachCanvasGestures();
 }
 
 function _wfRenderBody(st) {
   const def = st.def;
+  st._cardSeq = 0;
+  st._charLoads = [];
   const triggerType = (def.trigger && def.trigger.type) || 'manual';
+  const nodes = def.nodes || [];
+  const nodesHtml = nodes.map(n => _wfRenderNode(st, n)).join('');
   return `
     <div class="wfb-meta">
       <label>Name</label>
@@ -309,8 +435,19 @@ function _wfRenderBody(st) {
         </label>
       </div>
     </div>
-    <div class="wfb-spine">
-      ${_wfRenderList(st, def.steps || [], [])}
+    <div class="wfb-builder">
+      <div class="wfb-palette">
+        <div class="wfb-palette-title">Drag onto canvas</div>
+        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'agent')"><span class="wfb-palette-dot"></span>Agent step</div>
+        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')"><span class="wfb-palette-dot"></span>Approval gate</div>
+        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')"><span class="wfb-palette-dot"></span>Clayrune action</div>
+        <div class="wfb-palette-hint">Drag a step onto the canvas, then drag an output port to another step's input port to connect them and set the order. Click a connection to select it, Delete to remove.</div>
+      </div>
+      <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
+        <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
+        <div id="wfb-world" class="wfb-canvas-world">${nodesHtml}</div>
+        ${nodes.length ? '' : '<div class="wfb-canvas-empty">Drag a block from the left onto the canvas to start.</div>'}
+      </div>
     </div>
     ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}
     <div class="wfb-actions">
@@ -319,53 +456,46 @@ function _wfRenderBody(st) {
     </div>`;
 }
 
-function _wfRenderList(st, list, listPath) {
-  const cards = (list || []).map((node, i) => _wfRenderCard(st, node, listPath, i)).join('');
-  const lastIsAgent = list && list.length && list[list.length - 1].type === 'agent';
-  const pathAttr = _wfPathAttr(listPath);
-  return `<div class="wfb-list" data-listpath="${pathAttr}">
-    ${cards || '<div class="wfb-list-empty">No steps yet.</div>'}
-    <div class="wfb-list-footer">
-      <button class="wfb-add-btn" onclick="_wfAddStep('${pathAttr}','agent')">+ Agent step</button>
-      <button class="wfb-add-btn" onclick="_wfAddStep('${pathAttr}','approval')">+ Approval gate</button>
-      <button class="wfb-add-btn" onclick="_wfAddStep('${pathAttr}','action')">+ Clayrune action</button>
-      ${lastIsAgent ? `<button class="wfb-add-btn wfb-add-branch" onclick="_wfAddBranching('${pathAttr}')">+ Split into paths</button>` : ''}
-    </div>
-  </div>`;
-}
-
-function _wfRenderCard(st, node, listPath, i) {
-  const nodePath = listPath.concat([i]);
-  const nodePathAttr = _wfPathAttr(nodePath);
+function _wfRenderNode(st, node) {
+  const nameAttr = esc(node.name || '');
   let own = '';
-  let children = '';
   if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
-  else if (node.type === 'paths') { own = _wfRenderPathsOwn(node, nodePath); children = _wfRenderPathsChildren(st, node, nodePath); }
-  else if (node.type === 'approval') { own = _wfRenderApprovalOwn(node, nodePath); children = _wfRenderApprovalChildren(st, node, nodePath); }
+  else if (node.type === 'approval') own = _wfRenderApprovalOwn(node);
   else if (node.type === 'action') own = _wfRenderActionOwn(node);
-  else own = '<div class="wfb-card-own">Unknown node type.</div>';
-
-  return `<div class="wfb-card-wrap">
-    <div class="wfb-card" data-nodepath="${nodePathAttr}" data-type="${esc(node.type)}">
-      <div class="wfb-card-head">
-        <span class="wfb-card-num">${i + 1}</span>
-        <span class="wfb-drag-handle" title="Drag to reorder within this list"
-              onpointerdown="_wfHandleDown(event,'${nodePathAttr}')">&#9776;</span>
-        <span class="wfb-card-type">${_wfTypeLabel(node.type)}</span>
-        <button class="wfb-card-del" title="Delete step" onclick="_wfDeleteStep('${nodePathAttr}')">&#10005;</button>
-      </div>
-      ${own}
-      ${children}
+  else own = 'Unknown node type.';
+  const edges = st.def.edges || [];
+  const outPorts = _wfOutPorts(node);
+  const portsHtml = outPorts.map((p) => {
+    const connected = edges.some(e => e.from === node.name && (e.when || null) === (p.when || null));
+    return `<div class="wfb-port-row${p.when === 'otherwise' ? ' wfb-port-otherwise' : ''}${connected ? '' : ' wfb-port-unconnected'}">
+      ${p.label ? `<span class="wfb-port-label">${esc(p.label)}</span>` : ''}
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(p.when || '')}" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      ${connected ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>`;
+  }).join('');
+  return `<div class="wfb-node" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
+    <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
+      <span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>
+      <button class="wfb-node-del" title="Delete step" onclick="_wfDeleteNode('${_wfJsStrEsc(node.name)}')">&#10005;</button>
     </div>
+    <div class="wfb-node-own">${own}</div>
+    <span class="wfb-port wfb-port-in" data-node="${nameAttr}"><span class="wfb-port-dot"></span></span>
+    <div class="wfb-ports-out">${portsHtml}</div>
   </div>`;
 }
 
+// Verbatim from the Phase 2 spine (static/js/workflow-builder.js pre-canvas):
+// project select, persona picker with its face + caching, prompt textarea.
+// Only the branching editor below the prompt changed (a flat `outcomes`
+// array instead of nested branch lists, since branching is now edge `when`
+// labels, not a child node — R2-D6).
 function _wfRenderAgentOwn(st, node) {
   const seq = ++st._cardSeq;
   const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter(p => p.project_path);
   const pid = node.project_id || (projects[0] && projects[0].id) || '';
   st._charLoads.push({ seq, want: node.character || '' });
-  return `<div class="wfb-card-own">
+  const outcomes = node.outcomes || [];
+  return `
     <label>Name <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(referenced as <code>{{steps.NAME.output}}</code>)</span></label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="step-name">
     <label>Project</label>
@@ -379,82 +509,43 @@ function _wfRenderAgentOwn(st, node) {
     </div>
     <label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>
     <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(node.prompt || '')}</textarea>
-  </div>`;
-}
-
-function _wfRenderPathsOwn(node, nodePath) {
-  const nodePathAttr = _wfPathAttr(nodePath);
-  const branches = node.branches || {};
-  const labels = Object.keys(branches);
-  return `<div class="wfb-card-own">
-    <label>Name <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(label only &mdash; not slot-referenceable)</span></label>
-    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="branch point">
     <div class="wfb-branch-labels">
-      <label>Branches <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(the agent step above must end its reply naming one of these as its outcome)</span></label>
-      ${labels.map((label, bi) => `<div class="wfb-branch-label-row">
-        <input class="wfb-branch-label-input" value="${esc(label)}" data-branch-key="${esc(label)}">
-        <button class="wfb-branch-del" title="Remove branch" onclick="_wfRemoveBranch('${nodePathAttr}',${bi})">&#10005;</button>
+      <label>Outcomes <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(this step must end its reply naming one &mdash; each gets its own port below to wire up)</span></label>
+      ${outcomes.map((label, oi) => `<div class="wfb-branch-label-row">
+        <input class="wfb-outcome-input" value="${esc(label)}">
+        <button class="wfb-branch-del" title="Remove outcome" onclick="_wfRemoveOutcome('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
       </div>`).join('')}
-      <button class="wfb-add-btn" onclick="_wfAddBranch('${nodePathAttr}')">+ Add branch</button>
-    </div>
-  </div>`;
+      <button class="wfb-add-btn" onclick="_wfAddOutcome('${_wfJsStrEsc(node.name)}')">+ Add outcome</button>
+    </div>`;
 }
 
-function _wfRenderPathsChildren(st, node, nodePath) {
-  const branches = node.branches || {};
-  const labels = Object.keys(branches);
-  return `<div class="wfb-branch-grid">
-    ${labels.map(label => `<div class="wfb-branch-col">
-      <div class="wfb-branch-col-title">${esc(label)}</div>
-      ${_wfRenderList(st, branches[label] || [], nodePath.concat(['branches', label]))}
-    </div>`).join('')}
-    <div class="wfb-branch-col wfb-otherwise-col">
-      <div class="wfb-branch-col-title">otherwise <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(no / unparseable outcome &mdash; mandatory, fail-closed)</span></div>
-      ${_wfRenderList(st, node.otherwise || [], nodePath.concat(['otherwise']))}
-    </div>
-  </div>`;
-}
-
-function _wfRenderApprovalOwn(node, nodePath) {
-  const nodePathAttr = _wfPathAttr(nodePath);
+function _wfRenderApprovalOwn(node) {
   const options = node.options || [];
-  return `<div class="wfb-card-own">
+  return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="approval-name">
     <div class="wfb-branch-labels">
-      <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; delivered over the question channel)</span></label>
+      <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; delivered over the question channel; each gets its own port)</span></label>
       ${options.map((label, oi) => `<div class="wfb-branch-label-row">
-        <input class="wfb-approval-option-input" value="${esc(label)}" data-option-key="${esc(label)}">
-        <button class="wfb-branch-del" title="Remove option" onclick="_wfRemoveOption('${nodePathAttr}',${oi})">&#10005;</button>
+        <input class="wfb-option-input" value="${esc(label)}">
+        <button class="wfb-branch-del" title="Remove option" onclick="_wfRemoveOption('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
       </div>`).join('')}
-      <button class="wfb-add-btn" onclick="_wfAddOption('${nodePathAttr}')">+ Add option</button>
-    </div>
-  </div>`;
-}
-
-function _wfRenderApprovalChildren(st, node, nodePath) {
-  const options = node.options || [];
-  return `<div class="wfb-branch-grid">
-    ${options.map(label => `<div class="wfb-branch-col">
-      <div class="wfb-branch-col-title">${esc(label)}</div>
-      ${_wfRenderList(st, (node.branches || {})[label] || [], nodePath.concat(['branches', label]))}
-    </div>`).join('')}
-  </div>`;
+      <button class="wfb-add-btn" onclick="_wfAddOption('${_wfJsStrEsc(node.name)}')">+ Add option</button>
+    </div>`;
 }
 
 const _WF_ACTION_LABELS = { backlog_create: 'Create a backlog item', backlog_patch: 'Patch a backlog item', desk_harvest: 'Run a Desk harvest' };
 
 function _wfRenderActionOwn(node) {
   const action = node.action || 'backlog_create';
-  return `<div class="wfb-card-own">
+  return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="action-name">
     <label>Action</label>
     <select class="wfb-action-select" onchange="_wfRerenderActionFields(this)">
       ${Object.keys(_WF_ACTION_LABELS).map(a => `<option value="${a}"${a === action ? ' selected' : ''}>${esc(_WF_ACTION_LABELS[a])}</option>`).join('')}
     </select>
-    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {})}</div>
-  </div>`;
+    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {})}</div>`;
 }
 
 function _wfActionFieldsHTML(action, cfg) {
@@ -493,13 +584,13 @@ function _wfActionFieldsHTML(action, cfg) {
 }
 
 function _wfRerenderActionFields(selectEl) {
-  const own = selectEl.closest('.wfb-card-own');
+  const own = selectEl.closest('.wfb-node-own');
   const box = own && own.querySelector('.wfb-action-fields');
   if (!box) return;
   box.innerHTML = _wfActionFieldsHTML(selectEl.value, {});
 }
 
-// ── Persona picker (mirrors scheduler.js's reloadSchedCharacters, per-card) ──
+// ── Persona picker (mirrors scheduler.js's reloadSchedCharacters, per-node) ──
 
 async function _wfCharactersFor(pid) {
   if (_wfCharCache.has(pid)) return _wfCharCache.get(pid);
@@ -568,210 +659,552 @@ function _wfSetTriggerType(t) {
   _wfRender();
 }
 
-function _wfAddStep(listPathAttr, type) {
+function _wfAddOutcome(name) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const listPath = JSON.parse(listPathAttr);
-  const list = _wfResolve(entry._wf.def, listPath);
-  list.push(_wfBlankNode(type));
+  const renameMap = _wfSyncDomToModel(entry);
+  name = renameMap[name] || name;
+  const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
+  node.outcomes = node.outcomes || [];
+  node.outcomes.push('outcome-' + (node.outcomes.length + 1));
   _wfRender();
 }
 
-function _wfAddBranching(listPathAttr) {
+function _wfRemoveOutcome(name, idx) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const listPath = JSON.parse(listPathAttr);
-  const list = _wfResolve(entry._wf.def, listPath);
-  if (!list.length || list[list.length - 1].type !== 'agent') {
-    showToast('A Paths node must directly follow an agent step.', 4000);
+  const renameMap = _wfSyncDomToModel(entry);
+  name = renameMap[name] || name;
+  const def = entry._wf.def;
+  const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
+  const label = (node.outcomes || [])[idx];
+  if (label === undefined) return;
+  const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
+  const savedOutcomes = node.outcomes;
+  node.outcomes = node.outcomes.filter((_, i) => i !== idx);
+  const newEdges = (def.edges || []).filter(e => !(e.from === name && e.when === label));
+  const after = _wfFindBrokenSlotRefs(def.nodes, newEdges);
+  const newOnes = _wfNewViolations(before, after);
+  if (newOnes.length) {
+    node.outcomes = savedOutcomes;
+    showToast(`Can't remove outcome "${label}" — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs the edge on that port.`, 6000);
     return;
   }
-  list.push({ type: 'paths', name: '', branches: { 'branch-1': [] }, otherwise: [] });
+  def.edges = newEdges;
   _wfRender();
 }
 
-function _wfAddBranch(nodePathAttr) {
+function _wfAddOption(name) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const node = _wfResolve(entry._wf.def, JSON.parse(nodePathAttr));
-  node.branches = node.branches || {};
-  const n = Object.keys(node.branches).length + 1;
-  node.branches['branch-' + n] = [];
-  _wfRender();
-}
-
-function _wfRemoveBranch(nodePathAttr, branchIdx) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const node = _wfResolve(entry._wf.def, JSON.parse(nodePathAttr));
-  const labels = Object.keys(node.branches || {});
-  const label = labels[branchIdx];
-  if (label === undefined) return;
-  if (labels.length <= 1) { showToast('A Paths node needs at least one branch besides otherwise.', 4000); return; }
-  delete node.branches[label];
-  _wfRender();
-}
-
-function _wfAddOption(nodePathAttr) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const node = _wfResolve(entry._wf.def, JSON.parse(nodePathAttr));
+  const renameMap = _wfSyncDomToModel(entry);
+  name = renameMap[name] || name;
+  const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
   const n = (node.options || []).length + 1;
-  const label = 'option-' + n;
-  node.options = (node.options || []).concat([label]);
-  node.branches = node.branches || {};
-  node.branches[label] = [];
+  node.options = (node.options || []).concat(['option-' + n]);
   _wfRender();
 }
 
-function _wfRemoveOption(nodePathAttr, idx) {
+function _wfRemoveOption(name, idx) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const node = _wfResolve(entry._wf.def, JSON.parse(nodePathAttr));
+  const renameMap = _wfSyncDomToModel(entry);
+  name = renameMap[name] || name;
+  const def = entry._wf.def;
+  const node = (def.nodes || []).find(n => n.name === name); if (!node) return;
   const label = (node.options || [])[idx];
   if (label === undefined) return;
   if ((node.options || []).length <= 1) { showToast('An approval gate needs at least one option.', 4000); return; }
+  const before = _wfFindBrokenSlotRefs(def.nodes, def.edges || []);
+  const savedOptions = node.options;
   node.options = node.options.filter((_, i) => i !== idx);
-  if (node.branches) delete node.branches[label];
-  _wfRender();
-}
-
-function _wfDeleteStep(nodePathAttr) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry);
-  const def = entry._wf.def;
-  const nodePath = JSON.parse(nodePathAttr);
-  const listPath = nodePath.slice(0, -1);
-  const idx = nodePath[nodePath.length - 1];
-  const list = _wfResolve(def, listPath);
-  const before = _wfFindBrokenSlotRefs(def.steps, []);
-  const removed = list.splice(idx, 1);
-  const after = _wfFindBrokenSlotRefs(def.steps, []);
+  const newEdges = (def.edges || []).filter(e => !(e.from === name && e.when === label));
+  const after = _wfFindBrokenSlotRefs(def.nodes, newEdges);
   const newOnes = _wfNewViolations(before, after);
   if (newOnes.length) {
-    list.splice(idx, 0, removed[0]);
-    showToast(`Can't delete "${removed[0].name || 'this step'}" — step "${newOnes[0].step}" still reads {{steps.${newOnes[0].ref}.…}}.`, 6000);
+    node.options = savedOptions;
+    showToast(`Can't remove option "${label}" — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs the edge on that port.`, 6000);
     return;
   }
+  def.edges = newEdges;
   _wfRender();
 }
 
-// ── Drag-to-reorder (pointer events, floor.js drag-to-hire's gesture shape,
-//    scoped to reordering within ONE `.wfb-list` container — see file header) ─
+function _wfDeleteNode(name) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  name = renameMap[name] || name;
+  const def = entry._wf.def;
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const before = _wfFindBrokenSlotRefs(nodes, edges);
+  const newNodes = nodes.filter(n => n.name !== name);
+  const newEdges = edges.filter(e => e.from !== name && e.to !== name);
+  const after = _wfFindBrokenSlotRefs(newNodes, newEdges);
+  const newOnes = _wfNewViolations(before, after);
+  if (newOnes.length) {
+    showToast(`Can't delete "${name}" — "${newOnes[0].step}" still reads {{steps.${newOnes[0].ref}.…}}.`, 6000);
+    return;
+  }
+  def.nodes = newNodes;
+  def.edges = newEdges;
+  if (_wfSelectedEdge && (_wfSelectedEdge.from === name || _wfSelectedEdge.to === name)) _wfSelectedEdge = null;
+  _wfRender();
+}
+
+let _wfSelectedEdge = null; // { from, to, when } | null
+
+function _wfEdgeClick(e, from, to, when) {
+  e.stopPropagation();
+  _wfSelectedEdge = { from, to, when: when || null };
+  _wfRedrawEdges();
+}
+
+function _wfDeleteEdge(from, to, when) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  from = renameMap[from] || from;
+  to = renameMap[to] || to;
+  const def = entry._wf.def;
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const before = _wfFindBrokenSlotRefs(nodes, edges);
+  const newEdges = edges.filter(e => !(e.from === from && e.to === to && (e.when || null) === (when || null)));
+  const after = _wfFindBrokenSlotRefs(nodes, newEdges);
+  const newOnes = _wfNewViolations(before, after);
+  if (newOnes.length) {
+    showToast(`Can't remove that connection — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs it to stay reachable.`, 6000);
+    return;
+  }
+  def.edges = newEdges;
+  _wfSelectedEdge = null;
+  _wfRender();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (!openModals.has(WF_MODAL_ID) || !_wfSelectedEdge) return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  if (e.key === 'Delete' || e.key === 'Backspace') {
+    _wfDeleteEdge(_wfSelectedEdge.from, _wfSelectedEdge.to, _wfSelectedEdge.when);
+  } else if (e.key === 'Escape') {
+    _wfSelectedEdge = null;
+    _wfRedrawEdges();
+  }
+});
+
+function _wfTryAddEdge(from, to, when) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  from = renameMap[from] || from;
+  to = renameMap[to] || to;
+  const def = entry._wf.def;
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  if (edges.some(e => e.from === from && e.to === to && (e.when || null) === (when || null))) return;
+  // R2-D3 layer 1: the drag that would close a cycle is refused at drop.
+  if (_wfHasPath(edges, to, from)) {
+    showToast(`${from} → ${to} would create a loop (${to} already reaches ${from}).`, 5000);
+    return;
+  }
+  const before = _wfFindBrokenSlotRefs(nodes, edges);
+  const candidateEdges = edges.concat([{ from, to, when: when || undefined }]);
+  const after = _wfFindBrokenSlotRefs(nodes, candidateEdges);
+  const newOnes = _wfNewViolations(before, after);
+  if (newOnes.length) {
+    showToast(`Can't connect ${from} → ${to} — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which this would make skippable.`, 6000);
+    return;
+  }
+  def.edges = candidateEdges;
+  _wfRender();
+}
+
+// ── Canvas: pan + zoom (viewport is session-only, see file header) ──────────
+
+function _wfApplyViewport(st) {
+  const world = document.getElementById('wfb-world');
+  if (world) world.style.transform = `translate(${st.viewport.x}px, ${st.viewport.y}px) scale(${st.viewport.scale})`;
+  _wfRedrawEdges();
+}
+
+function _wfZoomAt(st, screenX, screenY, newScaleRaw) {
+  const newScale = Math.min(2.5, Math.max(0.25, newScaleRaw));
+  const v = st.viewport;
+  const wx = (screenX - v.x) / v.scale;
+  const wy = (screenY - v.y) / v.scale;
+  v.x = screenX - wx * newScale;
+  v.y = screenY - wy * newScale;
+  v.scale = newScale;
+  _wfApplyViewport(st);
+}
+
+function _wfCanvasWheel(e) {
+  e.preventDefault();
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const rect = e.currentTarget.getBoundingClientRect();
+  const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
+  const factor = Math.exp(-e.deltaY * 0.0015);
+  _wfZoomAt(entry._wf, cx, cy, entry._wf.viewport.scale * factor);
+}
+
+let _wfPan = null;
+
+function _wfViewportDown(e) {
+  if (e.target.closest('.wfb-node, .wfb-port')) return;
+  if (typeof e.button === 'number' && e.button !== 0) return;
+  if (_wfPan || _wfNodeDrag || _wfPlaceDrag || _wfConnectDrag) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const vp = e.currentTarget;
+  _wfPan = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, vx: entry._wf.viewport.x, vy: entry._wf.viewport.y, vp };
+  vp.classList.add('wfb-panning');
+  try { vp.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  vp.addEventListener('pointermove', _wfViewportMove);
+  vp.addEventListener('pointerup', _wfViewportUp);
+  vp.addEventListener('pointercancel', _wfViewportUp);
+}
+
+function _wfViewportMove(e) {
+  if (!_wfPan || e.pointerId !== _wfPan.pointerId) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  entry._wf.viewport.x = _wfPan.vx + (e.clientX - _wfPan.startX);
+  entry._wf.viewport.y = _wfPan.vy + (e.clientY - _wfPan.startY);
+  _wfApplyViewport(entry._wf);
+}
+
+function _wfViewportUp(e) {
+  if (!_wfPan || (e.pointerId !== undefined && e.pointerId !== _wfPan.pointerId)) return;
+  const st = _wfPan;
+  st.vp.classList.remove('wfb-panning');
+  try { st.vp.releasePointerCapture(st.pointerId); } catch (err) { /* already released */ }
+  st.vp.removeEventListener('pointermove', _wfViewportMove);
+  st.vp.removeEventListener('pointerup', _wfViewportUp);
+  st.vp.removeEventListener('pointercancel', _wfViewportUp);
+  _wfPan = null;
+}
+
+// Native touch listeners for 2-finger pinch — Pointer Events don't aggregate
+// multi-touch, so this mirrors mermaid.js's viewer-gesture pinch handling
+// rather than extending the pointer-based pan above.
+let _wfPinch = null;
+
+function _wfTouchDist(t) { return Math.hypot(t[0].clientX - t[1].clientX, t[0].clientY - t[1].clientY); }
+function _wfTouchMid(t) { return { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0].clientY + t[1].clientY) / 2 }; }
+
+function _wfCanvasTouchStart(e) {
+  if (e.touches.length !== 2) return;
+  if (_wfPan) _wfViewportUp({ pointerId: _wfPan.pointerId });
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  _wfPinch = { d: _wfTouchDist(e.touches) || 1, scale: entry._wf.viewport.scale, vp: e.currentTarget };
+  e.preventDefault();
+}
+
+function _wfCanvasTouchMove(e) {
+  if (!_wfPinch || e.touches.length !== 2) return;
+  e.preventDefault();
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const rect = _wfPinch.vp.getBoundingClientRect();
+  const mid = _wfTouchMid(e.touches);
+  _wfZoomAt(entry._wf, mid.x - rect.left, mid.y - rect.top, _wfPinch.scale * (_wfTouchDist(e.touches) / _wfPinch.d));
+}
+
+function _wfCanvasTouchEnd(e) {
+  if (_wfPinch && e.touches.length < 2) _wfPinch = null;
+}
+
+function _wfAttachCanvasGestures() {
+  const vp = document.getElementById('wfb-canvas-viewport');
+  if (!vp) return;
+  vp.addEventListener('wheel', _wfCanvasWheel, { passive: false });
+  vp.addEventListener('touchstart', _wfCanvasTouchStart, { passive: false });
+  vp.addEventListener('touchmove', _wfCanvasTouchMove, { passive: false });
+  vp.addEventListener('touchend', _wfCanvasTouchEnd);
+  vp.addEventListener('touchcancel', _wfCanvasTouchEnd);
+}
+
+// ── Drag-to-place: palette block → new node on the canvas ────────────────────
+// Same pointer-event gesture shape as floor.js's drag-to-hire: long-press
+// activation on touch, 8px slop on mouse/pen, a ghost that follows the
+// pointer, dropped only if released over the canvas viewport.
 
 const WFB_LONG_PRESS_MS = 400;
 const WFB_DRAG_SLOP_PX = 8;
 
-function _wfHandleDown(e, nodePathAttr) {
+let _wfPlaceDrag = null;
+
+function _wfPointInRect(x, y, r) { return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; }
+
+function _wfPaletteDown(e, type) {
   if (typeof e.button === 'number' && e.button !== 0) return;
-  if (_wfDrag) return;
-  const wrap = e.currentTarget.closest('.wfb-card-wrap');
-  const list = wrap && wrap.parentElement;
-  if (!wrap || !list || !list.classList.contains('wfb-list')) return;
+  if (_wfPlaceDrag || _wfNodeDrag || _wfPan || _wfConnectDrag) return;
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
-    startX: e.clientX, startY: e.clientY,
-    active: false, handle: e.currentTarget, wrap, list, nodePathAttr, longPressTimer: null,
+    startX: e.clientX, startY: e.clientY, active: false, type, el: e.currentTarget, ghost: null, longPressTimer: null,
   };
-  _wfDrag = st;
+  _wfPlaceDrag = st;
   if (st.pointerType === 'touch') {
-    st.longPressTimer = setTimeout(() => { if (_wfDrag === st && !st.active) _wfDragActivate(st); }, WFB_LONG_PRESS_MS);
+    st.longPressTimer = setTimeout(() => { if (_wfPlaceDrag === st && !st.active) _wfPlaceActivate(st, st.startX, st.startY); }, WFB_LONG_PRESS_MS);
   }
-  try { st.handle.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
-  window.addEventListener('pointermove', _wfDragMove);
-  window.addEventListener('pointerup', _wfDragUp);
-  window.addEventListener('pointercancel', _wfDragCancel);
-  window.addEventListener('blur', _wfDragCancel);
+  try { st.el.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  window.addEventListener('pointermove', _wfPlaceMove);
+  window.addEventListener('pointerup', _wfPlaceUp);
+  window.addEventListener('pointercancel', _wfPlaceCancel);
+  window.addEventListener('blur', _wfPlaceCancel);
 }
 
-function _wfDragActivate(st) {
+function _wfPlaceActivate(st, x, y) {
   st.active = true;
   clearTimeout(st.longPressTimer);
-  st.wrap.classList.add('wfb-dragging');
+  st.el.classList.add('wfb-palette-dragging');
+  const ghost = document.createElement('div');
+  ghost.className = 'wfb-place-ghost';
+  ghost.textContent = _wfTypeLabel(st.type);
+  ghost.style.left = x + 'px';
+  ghost.style.top = y + 'px';
+  document.body.appendChild(ghost);
+  st.ghost = ghost;
 }
 
-function _wfDragMove(e) {
-  const st = _wfDrag;
+function _wfPlaceMove(e) {
+  const st = _wfPlaceDrag;
   if (!st || e.pointerId !== st.pointerId) return;
   const dx = e.clientX - st.startX, dy = e.clientY - st.startY;
   if (!st.active) {
-    if (st.pointerType !== 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX) _wfDragActivate(st);
-    else if (st.pointerType === 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX * 1.5) {
-      clearTimeout(st.longPressTimer);
-      _wfDragTeardown(st);
-    }
+    if (st.pointerType !== 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX) _wfPlaceActivate(st, e.clientX, e.clientY);
+    else if (st.pointerType === 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX * 1.5) { clearTimeout(st.longPressTimer); _wfPlaceTeardown(st); }
     return;
   }
   e.preventDefault();
-  // Compare only against THIS list's own siblings — a card cannot cross into
-  // another branch's `.wfb-list`, by construction (see file header).
-  const siblings = [...st.list.children].filter(c => c.classList.contains('wfb-card-wrap') && c !== st.wrap);
-  let target = null, before = true;
-  for (const sib of siblings) {
-    const r = sib.getBoundingClientRect();
-    if (e.clientY < r.top + r.height / 2) { target = sib; before = true; break; }
-    target = sib; before = false;
-  }
-  if (target) {
-    if (before) st.list.insertBefore(st.wrap, target);
-    else st.list.insertBefore(st.wrap, target.nextSibling);
-  }
+  if (st.ghost) { st.ghost.style.left = e.clientX + 'px'; st.ghost.style.top = e.clientY + 'px'; }
+  const vp = document.getElementById('wfb-canvas-viewport');
+  if (vp) vp.classList.toggle('wfb-drop-target', _wfPointInRect(e.clientX, e.clientY, vp.getBoundingClientRect()));
 }
 
-function _wfDragUp(e) {
-  const st = _wfDrag;
+function _wfPlaceUp(e) {
+  const st = _wfPlaceDrag;
   if (!st || e.pointerId !== st.pointerId) return;
   clearTimeout(st.longPressTimer);
-  if (!st.active) { _wfDragTeardown(st); return; }
-  _wfDragCommit(st);
-  _wfDragTeardown(st);
-}
-
-function _wfDragCommit(st) {
-  const entry = openModals.get(WF_MODAL_ID);
-  if (!entry) return;
-  _wfSyncDomToModel(entry); // capture any typed edits before the structural change
-  const def = entry._wf.def;
-  const listPath = JSON.parse(st.list.dataset.listpath);
-  const list = _wfResolve(def, listPath);
-  const newOrderPaths = [...st.list.children]
-    .filter(c => c.classList.contains('wfb-card-wrap'))
-    .map(c => JSON.parse(c.querySelector(':scope > .wfb-card').dataset.nodepath));
-  const orig = list.slice();
-  const before = _wfFindBrokenSlotRefs(def.steps, []);
-  const reordered = newOrderPaths.map(p => list[p[p.length - 1]]);
-  list.length = 0; list.push(...reordered);
-  const after = _wfFindBrokenSlotRefs(def.steps, []);
-  const newOnes = _wfNewViolations(before, after);
-  if (newOnes.length) {
-    list.length = 0; list.push(...orig);
-    showToast(`Can't move that — step "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs to run first.`, 6000);
+  if (st.active) {
+    const vp = document.getElementById('wfb-canvas-viewport');
+    if (vp && _wfPointInRect(e.clientX, e.clientY, vp.getBoundingClientRect())) {
+      _wfPlaceNodeAt(st.type, e.clientX, e.clientY, vp);
+    }
   }
-  _wfRender(); // one render either way: commits the new order, or restores the old one
+  _wfPlaceTeardown(st);
 }
 
-function _wfDragCancel(e) {
-  const st = _wfDrag;
+function _wfPlaceCancel(e) {
+  const st = _wfPlaceDrag;
   if (!st) return;
   if (e && e.pointerId !== undefined && e.pointerId !== st.pointerId) return;
   clearTimeout(st.longPressTimer);
-  if (st.active) _wfRender(); // the model was never touched mid-drag — a fresh render restores DOM order
-  _wfDragTeardown(st);
+  _wfPlaceTeardown(st);
 }
 
-function _wfDragTeardown(st) {
-  if (st.wrap) st.wrap.classList.remove('wfb-dragging');
-  window.removeEventListener('pointermove', _wfDragMove);
-  window.removeEventListener('pointerup', _wfDragUp);
-  window.removeEventListener('pointercancel', _wfDragCancel);
-  window.removeEventListener('blur', _wfDragCancel);
-  try { st.handle.releasePointerCapture(st.pointerId); } catch (e) { /* already released, or gone */ }
-  _wfDrag = null;
+function _wfPlaceTeardown(st) {
+  st.el.classList.remove('wfb-palette-dragging');
+  const vp = document.getElementById('wfb-canvas-viewport');
+  if (vp) vp.classList.remove('wfb-drop-target');
+  if (st.ghost) { st.ghost.remove(); st.ghost = null; }
+  document.querySelectorAll('.wfb-place-ghost').forEach(g => g.remove());
+  window.removeEventListener('pointermove', _wfPlaceMove);
+  window.removeEventListener('pointerup', _wfPlaceUp);
+  window.removeEventListener('pointercancel', _wfPlaceCancel);
+  window.removeEventListener('blur', _wfPlaceCancel);
+  try { st.el.releasePointerCapture(st.pointerId); } catch (e) { /* already released */ }
+  _wfPlaceDrag = null;
+}
+
+function _wfPlaceNodeAt(type, clientX, clientY, vp) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  _wfSyncDomToModel(entry); // capture any typed edits elsewhere before this re-render
+  const rect = vp.getBoundingClientRect();
+  const v = entry._wf.viewport;
+  const wx = (clientX - rect.left - v.x) / v.scale;
+  const wy = (clientY - rect.top - v.y) / v.scale;
+  entry._wf.def.nodes = entry._wf.def.nodes || [];
+  entry._wf.def.nodes.push(_wfBlankNode(type, wx - 130, wy - 24));
+  _wfRender();
+}
+
+// ── Drag to move an existing node ─────────────────────────────────────────────
+
+let _wfNodeDrag = null;
+
+function _wfNodeDragDown(e) {
+  if (typeof e.button === 'number' && e.button !== 0) return;
+  if (_wfNodeDrag || _wfPan || _wfPlaceDrag || _wfConnectDrag) return;
+  const nodeEl = e.currentTarget.closest('.wfb-node');
+  const entry = openModals.get(WF_MODAL_ID);
+  if (!nodeEl || !entry) return;
+  const st = {
+    pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
+    startX: e.clientX, startY: e.clientY, active: false, nodeEl,
+    scale: entry._wf.viewport.scale,
+    origX: parseFloat(nodeEl.style.left) || 0, origY: parseFloat(nodeEl.style.top) || 0,
+    longPressTimer: null,
+  };
+  _wfNodeDrag = st;
+  if (st.pointerType === 'touch') {
+    st.longPressTimer = setTimeout(() => { if (_wfNodeDrag === st && !st.active) _wfNodeDragActivate(st); }, WFB_LONG_PRESS_MS);
+  }
+  try { e.currentTarget.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  window.addEventListener('pointermove', _wfNodeDragMove);
+  window.addEventListener('pointerup', _wfNodeDragUp);
+  window.addEventListener('pointercancel', _wfNodeDragCancel);
+  window.addEventListener('blur', _wfNodeDragCancel);
+}
+
+function _wfNodeDragActivate(st) {
+  st.active = true;
+  clearTimeout(st.longPressTimer);
+  st.nodeEl.classList.add('wfb-node-dragging');
+}
+
+function _wfNodeDragMove(e) {
+  const st = _wfNodeDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  const dx = e.clientX - st.startX, dy = e.clientY - st.startY;
+  if (!st.active) {
+    if (st.pointerType !== 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX) _wfNodeDragActivate(st);
+    else if (st.pointerType === 'touch' && Math.hypot(dx, dy) > WFB_DRAG_SLOP_PX * 1.5) { clearTimeout(st.longPressTimer); _wfNodeDragTeardown(st); }
+    return;
+  }
+  e.preventDefault();
+  st.nodeEl.style.left = (st.origX + dx / st.scale) + 'px';
+  st.nodeEl.style.top = (st.origY + dy / st.scale) + 'px';
+  _wfRedrawEdges();
+}
+
+function _wfNodeDragUp(e) {
+  const st = _wfNodeDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  clearTimeout(st.longPressTimer);
+  if (st.active) {
+    const entry = openModals.get(WF_MODAL_ID);
+    const node = entry && (entry._wf.def.nodes || []).find(n => n.name === st.nodeEl.dataset.name);
+    if (node) {
+      node.x = parseFloat(st.nodeEl.style.left) || 0;
+      node.y = parseFloat(st.nodeEl.style.top) || 0;
+    }
+  }
+  _wfNodeDragTeardown(st);
+}
+
+function _wfNodeDragCancel(e) {
+  const st = _wfNodeDrag;
+  if (!st) return;
+  if (e && e.pointerId !== undefined && e.pointerId !== st.pointerId) return;
+  clearTimeout(st.longPressTimer);
+  if (st.active) { st.nodeEl.style.left = st.origX + 'px'; st.nodeEl.style.top = st.origY + 'px'; _wfRedrawEdges(); }
+  _wfNodeDragTeardown(st);
+}
+
+function _wfNodeDragTeardown(st) {
+  st.nodeEl.classList.remove('wfb-node-dragging');
+  window.removeEventListener('pointermove', _wfNodeDragMove);
+  window.removeEventListener('pointerup', _wfNodeDragUp);
+  window.removeEventListener('pointercancel', _wfNodeDragCancel);
+  window.removeEventListener('blur', _wfNodeDragCancel);
+  try { st.nodeEl.releasePointerCapture(st.pointerId); } catch (e) { /* already released */ }
+  _wfNodeDrag = null;
+}
+
+// ── Drag to connect: output port → input port ────────────────────────────────
+
+let _wfConnectDrag = null;
+
+function _wfPortDown(e) {
+  e.stopPropagation();
+  if (typeof e.button === 'number' && e.button !== 0) return;
+  if (_wfConnectDrag || _wfNodeDrag || _wfPan || _wfPlaceDrag) return;
+  const portEl = e.currentTarget;
+  const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: portEl.dataset.when || null, portEl, curX: e.clientX, curY: e.clientY };
+  _wfConnectDrag = st;
+  try { portEl.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  window.addEventListener('pointermove', _wfConnectMove);
+  window.addEventListener('pointerup', _wfConnectUp);
+  window.addEventListener('pointercancel', _wfConnectCancel);
+  window.addEventListener('blur', _wfConnectCancel);
+  _wfRedrawEdges();
+}
+
+function _wfConnectMove(e) {
+  const st = _wfConnectDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  e.preventDefault();
+  st.curX = e.clientX; st.curY = e.clientY;
+  const target = document.elementFromPoint(e.clientX, e.clientY);
+  const portIn = target && target.closest && target.closest('.wfb-port-in');
+  document.querySelectorAll('.wfb-port-in.wfb-port-target').forEach(p => { if (p !== portIn) p.classList.remove('wfb-port-target'); });
+  if (portIn && portIn.dataset.node !== st.fromNode) portIn.classList.add('wfb-port-target');
+  _wfRedrawEdges();
+}
+
+function _wfConnectUp(e) {
+  const st = _wfConnectDrag;
+  if (!st || e.pointerId !== st.pointerId) return;
+  const target = document.elementFromPoint(e.clientX, e.clientY);
+  const portIn = target && target.closest && target.closest('.wfb-port-in');
+  _wfConnectTeardown(st);
+  if (portIn && portIn.dataset.node && portIn.dataset.node !== st.fromNode) {
+    _wfTryAddEdge(st.fromNode, portIn.dataset.node, st.when);
+  }
+}
+
+function _wfConnectCancel(e) {
+  const st = _wfConnectDrag;
+  if (!st) return;
+  if (e && e.pointerId !== undefined && e.pointerId !== st.pointerId) return;
+  _wfConnectTeardown(st);
+}
+
+function _wfConnectTeardown(st) {
+  document.querySelectorAll('.wfb-port-in.wfb-port-target').forEach(p => p.classList.remove('wfb-port-target'));
+  window.removeEventListener('pointermove', _wfConnectMove);
+  window.removeEventListener('pointerup', _wfConnectUp);
+  window.removeEventListener('pointercancel', _wfConnectCancel);
+  window.removeEventListener('blur', _wfConnectCancel);
+  try { st.portEl.releasePointerCapture(st.pointerId); } catch (e) { /* already released */ }
+  _wfConnectDrag = null;
+  _wfRedrawEdges();
 }
 
 document.addEventListener('keydown', (e) => {
-  if (e.key === 'Escape' && _wfDrag) _wfDragCancel(e);
+  if (e.key === 'Escape' && _wfConnectDrag) _wfConnectCancel(null);
 });
+
+// ── Edge overlay: one absolutely-positioned SVG, cubic paths between the
+//    real port DOM elements' current screen positions (R2-D7: "an
+//    absolutely-positioned SVG overlay drawing cubic paths between port
+//    coordinates"). Recomputed on every pan/zoom tick and node-drag frame,
+//    plus whenever the node/edge list changes shape via `_wfRender`. ────────
+
+function _wfRedrawEdges() {
+  const svg = document.getElementById('wfb-canvas-svg');
+  const vp = document.getElementById('wfb-canvas-viewport');
+  const entry = openModals.get(WF_MODAL_ID);
+  if (!svg || !vp || !entry || !entry._wf) return;
+  const rect = vp.getBoundingClientRect();
+  const ptOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2 - rect.left, y: r.top + r.height / 2 - rect.top }; };
+  const edges = entry._wf.def.edges || [];
+  const bezier = (p1, p2) => {
+    const dx = Math.max(50, Math.abs(p2.x - p1.x) * 0.5);
+    return `M ${p1.x},${p1.y} C ${p1.x + dx},${p1.y} ${p2.x - dx},${p2.y} ${p2.x},${p2.y}`;
+  };
+  let html = '';
+  for (const e of edges) {
+    const fromEl = vp.querySelector(`.wfb-port-out[data-node="${_wfAttrEsc(e.from)}"][data-when="${_wfAttrEsc(e.when || '')}"]`);
+    const toEl = vp.querySelector(`.wfb-port-in[data-node="${_wfAttrEsc(e.to)}"]`);
+    if (!fromEl || !toEl) continue;
+    const selected = _wfSelectedEdge && _wfSelectedEdge.from === e.from && _wfSelectedEdge.to === e.to && (_wfSelectedEdge.when || null) === (e.when || null);
+    html += `<path class="wfb-edge-path${selected ? ' wfb-edge-selected' : ''}" d="${bezier(ptOf(fromEl), ptOf(toEl))}"
+      onpointerdown="_wfEdgeClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')"></path>`;
+  }
+  if (_wfConnectDrag) {
+    const fromEl = vp.querySelector(`.wfb-port-out[data-node="${_wfAttrEsc(_wfConnectDrag.fromNode)}"][data-when="${_wfAttrEsc(_wfConnectDrag.when || '')}"]`);
+    if (fromEl) {
+      const p2 = { x: _wfConnectDrag.curX - rect.left, y: _wfConnectDrag.curY - rect.top };
+      html += `<path class="wfb-edge-temp" d="${bezier(ptOf(fromEl), p2)}"></path>`;
+    }
+  }
+  svg.innerHTML = html;
+}
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 
@@ -781,11 +1214,15 @@ async function _wfSave() {
   const st = entry._wf;
   const def = st.def;
   if (!(def.name || '').trim()) { showToast('Name the workflow before saving.', 4000); return; }
-  if (!def.steps || !def.steps.length) { showToast('Add at least one step before saving.', 4000); return; }
+  const nodes = def.nodes || [];
+  if (!nodes.length) { showToast('Drag at least one block onto the canvas before saving.', 4000); return; }
+  const names = nodes.map(n => n.name);
+  const dupe = names.find((n, i) => names.indexOf(n) !== i);
+  if (dupe) { showToast(`Duplicate step name "${dupe}" — names must be unique.`, 5000); return; }
 
   st.saving = true; st.error = null;
   _wfRender();
-  const body = { name: def.name, description: def.description, enabled: def.enabled !== false, trigger: def.trigger, steps: def.steps };
+  const body = { name: def.name, description: def.description, enabled: def.enabled !== false, trigger: def.trigger, nodes: def.nodes, edges: def.edges || [] };
   try {
     const url = st.workflowId ? `${API_BASE}/api/workflows/${st.workflowId}` : `${API_BASE}/api/workflows`;
     const method = st.workflowId ? 'PUT' : 'POST';
@@ -805,18 +1242,21 @@ async function _wfSave() {
   }
 }
 
-// ── Interop: window accessors for onclick/onchange targets + cross-module
-//    entry points (static/js/scheduler.js:626-650 is the pattern this follows).
+// ── Interop: window accessors for onclick/onpointerdown targets + cross-
+//    module entry points (static/js/scheduler.js:626-650 is the pattern this
+//    file follows — every top-level declaration here is module-scoped).
 window.openWorkflowBuilder = openWorkflowBuilder;
 window._wfSetTriggerType = _wfSetTriggerType;
-window._wfAddStep = _wfAddStep;
-window._wfAddBranching = _wfAddBranching;
-window._wfAddBranch = _wfAddBranch;
-window._wfRemoveBranch = _wfRemoveBranch;
+window._wfPaletteDown = _wfPaletteDown;
+window._wfViewportDown = _wfViewportDown;
+window._wfNodeDragDown = _wfNodeDragDown;
+window._wfPortDown = _wfPortDown;
+window._wfEdgeClick = _wfEdgeClick;
+window._wfDeleteNode = _wfDeleteNode;
+window._wfAddOutcome = _wfAddOutcome;
+window._wfRemoveOutcome = _wfRemoveOutcome;
 window._wfAddOption = _wfAddOption;
 window._wfRemoveOption = _wfRemoveOption;
-window._wfDeleteStep = _wfDeleteStep;
-window._wfHandleDown = _wfHandleDown;
 window._wfReloadCharacters = _wfReloadCharacters;
 window._wfRerenderActionFields = _wfRerenderActionFields;
 window._wfSave = _wfSave;

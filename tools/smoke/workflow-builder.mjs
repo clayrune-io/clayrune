@@ -1,12 +1,16 @@
 #!/usr/bin/env node
 /**
- * MC-871 Q7 — the workflow builder modal (static/js/workflow-builder.js).
+ * MC-871 R2-D7 — the workflow CANVAS (static/js/workflow-builder.js).
  * Real headless boot (real index.html + real static/js/*.js, no network),
  * same hermetic shape as channel-mode-roster.mjs / drag-to-hire.mjs.
  *
- * Covers, per the brief: add a step, reorder by drag (both the plain case and
- * the slot-order guard refusing an unsafe move), a Paths branch, and save
- * round-tripping through the API.
+ * Replaces the old spine-driven smoke (Phase 2, drag-to-reorder-a-list):
+ * that suite drove a UI this file deletes. This suite drives the free
+ * canvas instead: drag a block from the palette onto the canvas, connect two
+ * nodes port-to-port, a refused cycle, a refused slot break, save
+ * round-tripping to `format: 2`, and a touch-context case that would catch
+ * the mobile scroll-lock trap (`touch-action: none` applied permanently
+ * instead of only during an active drag).
  *
  * RUN
  *   cd tools/smoke && node workflow-builder.mjs
@@ -53,15 +57,6 @@ const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
-// `page.fill()` calls Playwright's own scrollIntoViewIfNeeded, which — for a
-// field inside this modal's OWN `overflow-y:auto` body — scrolled the outer
-// document instead of the modal's internal scroll container, sliding the
-// modal up under the app's fixed top toolbar and hiding the drag handle from
-// later pointer coordinates (elementFromPoint at the handle's old position
-// returned the toolbar, not the handle). A harness artifact of `.fill()`,
-// not a real interaction path (nothing in real use calls scrollIntoView
-// explicitly) — set the value directly and dispatch the same `input` event
-// the real typing path fires, which is all `_wfSyncDomToModel` reads anyway.
 async function setValue(page, selector, value) {
   await page.evaluate(({ selector, value }) => {
     const el = document.querySelector(selector);
@@ -71,19 +66,42 @@ async function setValue(page, selector, value) {
   }, { selector, value });
 }
 
-// Click a button by its exact visible text, scoped under a container selector
-// — avoids CSS-quoting a `data-listpath="[]"` attribute value inside an
-// onclick-attribute selector.
-async function clickByText(page, containerSel, text) {
-  const clicked = await page.evaluate(({ containerSel, text }) => {
-    const container = document.querySelector(containerSel);
-    if (!container) return false;
-    const btn = [...container.querySelectorAll('button')].find(b => b.textContent.trim() === text);
-    if (!btn) return false;
-    btn.click();
-    return true;
-  }, { containerSel, text });
-  if (!clicked) throw new Error(`button "${text}" not found in ${containerSel}`);
+// A palette-drag → canvas drop, expressed as raw mouse events so it exercises
+// the SAME pointerdown/pointermove/pointerup handlers a real drag fires
+// (Playwright's page.mouse.* dispatches real pointer events, unlike
+// page.dragAndDrop which is HTML5 DnD — the wrong gesture family per the
+// spec's explicit "never HTML5 drag-and-drop" precedent, floor.js).
+async function dragPaletteBlockTo(page, blockText, targetX, targetY) {
+  const block = await page.evaluateHandle((text) => {
+    return [...document.querySelectorAll('.wfb-palette-block')].find(b => b.textContent.trim() === text);
+  }, blockText);
+  const box = await block.asElement().boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 40, { steps: 4 }); // clear the 8px slop
+  await page.mouse.move(targetX, targetY, { steps: 8 });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+}
+
+async function portCenter(page, selector) {
+  const el = await page.$(selector);
+  if (!el) return null;
+  const box = await el.boundingBox();
+  if (!box) return null;
+  return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+async function dragPortTo(page, fromSel, toSel) {
+  const p1 = await portCenter(page, fromSel);
+  const p2 = await portCenter(page, toSel);
+  if (!p1 || !p2) throw new Error(`dragPortTo: missing endpoint (${fromSel}=${!!p1}, ${toSel}=${!!p2})`);
+  await page.mouse.move(p1.x, p1.y);
+  await page.mouse.down();
+  await page.mouse.move((p1.x + p2.x) / 2, (p1.y + p2.y) / 2, { steps: 6 });
+  await page.mouse.move(p2.x, p2.y, { steps: 6 });
+  await page.mouse.up();
+  await page.waitForTimeout(120);
 }
 
 let browser, exitCode = 1;
@@ -108,7 +126,7 @@ try {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts.push(body);
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: true, workflow: { ...body, id: 'wf-smoke1', created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
+        ok: true, workflow: { ...body, id: 'wf-smoke1', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
       }) });
     }
     return route.abort();
@@ -126,126 +144,208 @@ try {
   });
 
   await page.evaluate(() => { window.openWorkflowBuilder(); });
-  await page.waitForSelector('#wfb-body .wfb-spine', { timeout: 5000 });
-  ok('builder modal opened blank (new workflow)');
+  await page.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  ok('builder modal opened blank (new workflow) — canvas viewport present');
 
-  // ── Add a step ───────────────────────────────────────────────────────────
-  await clickByText(page, '.wfb-list[data-listpath="[]"]', '+ Agent step');
-  let topNames = await page.$$eval('.wfb-list[data-listpath="[]"] > .wfb-card-wrap > .wfb-card > .wfb-card-own > .wfb-name', els => els.map(e => e.value));
-  topNames.length === 1 ? ok(`"+ Agent step" appended a card (name defaulted to "${topNames[0]}")`)
-                        : fail(`expected 1 top-level card after add, got ${topNames.length}`);
+  // ── Drag a palette block onto the canvas ─────────────────────────────────
+  const vpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPaletteBlockTo(page, 'Agent step', vpBox.x + 140, vpBox.y + 120);
+  let nodeCount = await page.$$eval('.wfb-node', els => els.length);
+  nodeCount === 1 ? ok('drag from palette placed one node on the canvas')
+                  : fail(`expected 1 node after the palette drag, got ${nodeCount}`);
+  // Field edits sync into the model (and `data-name` with them) only at the
+  // moment of the NEXT structural action, not on every keystroke (file
+  // header: "typing in one node's prompt is never clobbered by placing a new
+  // block or dragging an edge elsewhere") — so the rename below won't be
+  // reflected in `data-name` until the connect drag triggers a sync+render.
+  // Capture the auto-generated name now, for that first drag's selector.
+  const autoName1 = await page.$eval('.wfb-node', el => el.dataset.name);
+  await setValue(page, '.wfb-node .wfb-name', 'triage');
+  await setValue(page, '.wfb-node .wfb-prompt', 'Decide whether this is worth drafting.');
 
-  // Name it, and set its prompt.
-  await setValue(page, '.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(1) .wfb-name', 'first');
-  await setValue(page, '.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(1) .wfb-prompt', 'Do the first thing.');
+  await dragPaletteBlockTo(page, 'Agent step', vpBox.x + 460, vpBox.y + 120);
+  nodeCount = await page.$$eval('.wfb-node', els => els.length);
+  nodeCount === 2 ? ok('a second palette drag placed a second, independent node')
+                  : fail(`expected 2 nodes, got ${nodeCount}`);
+  // Placing the second block synced the model (per `_wfPlaceNodeAt`), so the
+  // first node's typed rename has already landed and `data-name` reflects it.
+  const renamedOk = await page.$eval(`.wfb-node[data-name="triage"]`, () => true).catch(() => false);
+  renamedOk ? ok('a typed rename in one node survives placing a second, independent block (no clobber)')
+            : fail('placing a second block clobbered an unsynced rename in the first node');
+  const autoName2 = await page.$eval('.wfb-node:not([data-name="triage"])', el => el.dataset.name);
+  await setValue(page, `.wfb-node[data-name="${autoName2}"] .wfb-name`, 'draft');
+  await setValue(page, `.wfb-node[data-name="${autoName2}"] .wfb-prompt`, 'Draft a post from {{steps.triage.output}}.');
 
-  // ── A second, independent step — the plain reorder case ──────────────────
-  await clickByText(page, '.wfb-list[data-listpath="[]"]', '+ Agent step');
-  await setValue(page, '.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(2) .wfb-name', 'second');
-  await setValue(page, '.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(2) .wfb-prompt', 'Do the second thing, unrelated to the first.');
-  topNames = await page.$$eval('.wfb-list[data-listpath="[]"] > .wfb-card-wrap > .wfb-card > .wfb-card-own > .wfb-name', els => els.map(e => e.value));
-  topNames.join(',') === 'first,second' ? ok('two independent top-level steps in order: first, second')
-                                        : fail(`expected [first,second], got [${topNames.join(',')}]`);
+  // ── Connect: drag triage's (single, unconditional) output port to draft's
+  // input port. "draft" hasn't synced yet at this exact moment, so address it
+  // by its still-current auto-generated name — the drag's own sync (inside
+  // _wfTryAddEdge) is what commits the rename and repoints the new edge to
+  // the post-rename name. ──────────────────────────────────────────────────
+  await dragPortTo(page,
+    '.wfb-node[data-name="triage"] .wfb-port-out',
+    `.wfb-node[data-name="${autoName2}"] .wfb-port-in`);
+  let edgeCount = await page.$$eval('.wfb-edge-path', els => els.length);
+  edgeCount === 1 ? ok('drag from an output port to an input port drew one edge')
+                  : fail(`expected 1 edge after connecting, got ${edgeCount}`);
+  const draftRenamedOk = await page.$eval('.wfb-node[data-name="draft"]', () => true).catch(() => false);
+  draftRenamedOk ? ok('the second node\'s rename landed too, and the new edge points at its post-rename name')
+                 : fail('the connect drag did not sync/repoint the second node\'s rename');
 
-  // ── Reorder by drag: drag "second" above "first" (no cross-reference —
-  // must succeed) ────────────────────────────────────────────────────────
-  const handle2 = await page.$('.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(2) .wfb-drag-handle');
-  const box2 = await handle2.boundingBox();
-  const wrap1 = await page.$('.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(1)');
-  const box1 = await wrap1.boundingBox();
-  await page.mouse.move(box2.x + box2.width / 2, box2.y + box2.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(box2.x + box2.width / 2, box1.y + 4, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForTimeout(150);
-  topNames = await page.$$eval('.wfb-list[data-listpath="[]"] > .wfb-card-wrap > .wfb-card > .wfb-card-own > .wfb-name', els => els.map(e => e.value));
-  topNames.join(',') === 'second,first' ? ok('drag reordered the two independent steps to [second, first]')
-                                        : fail(`expected [second,first] after the drag, got [${topNames.join(',')}]`);
+  // ── A refused cycle: draft → triage would close a loop ───────────────────
+  const toastsBeforeCycle = (await page.evaluate(() => window.__toasts)).length;
+  await dragPortTo(page,
+    '.wfb-node[data-name="draft"] .wfb-port-out',
+    '.wfb-node[data-name="triage"] .wfb-port-in');
+  edgeCount = await page.$$eval('.wfb-edge-path', els => els.length);
+  edgeCount === 1 ? ok('the cycle-closing connection was REFUSED — edge count still 1')
+                  : fail(`a cyclic connect should have been refused, edge count is now ${edgeCount}`);
+  const cycleToasts = (await page.evaluate(() => window.__toasts)).slice(toastsBeforeCycle);
+  cycleToasts.some(t => /loop/i.test(t)) ? ok(`a toast named the refused cycle: "${cycleToasts.find(t => /loop/i.test(t))}"`)
+                                         : fail(`expected a toast naming the refused loop, got ${JSON.stringify(cycleToasts)}`);
 
-  // ── The slot-order guard: give "first" (now 2nd) a prompt that reads
-  // {{steps.second.output}} — "second" now runs BEFORE "first" after the
-  // reorder above, so this reference is currently valid. Then try to drag
-  // "second" to AFTER "first", which would break it — must be refused. ────
-  await setValue(page, '.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(2) .wfb-prompt', 'Reads {{steps.second.output}} from the step before it.');
-  const handleFirst = await page.$('.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(1) .wfb-drag-handle');
-  const boxFirstBefore = await handleFirst.boundingBox();
-  const wrap2 = await page.$('.wfb-list[data-listpath="[]"] > .wfb-card-wrap:nth-child(2)');
-  const box2b = await wrap2.boundingBox();
-  // Drag "second" (currently card 1) DOWN past "first" (card 2) — would put
-  // first's dependency (second) after it.
-  await page.mouse.move(boxFirstBefore.x + boxFirstBefore.width / 2, boxFirstBefore.y + boxFirstBefore.height / 2);
-  await page.mouse.down();
-  await page.mouse.move(boxFirstBefore.x + boxFirstBefore.width / 2, box2b.y + box2b.height - 4, { steps: 8 });
-  await page.mouse.up();
-  await page.waitForTimeout(150);
-  const namesAfterGuard = await page.$$eval('.wfb-list[data-listpath="[]"] > .wfb-card-wrap > .wfb-card > .wfb-card-own > .wfb-name', els => els.map(e => e.value));
-  namesAfterGuard.join(',') === 'second,first' ? ok('slot-order guard REFUSED the move that would break {{steps.second.output}} — order unchanged')
-                                               : fail(`guard should have kept [second,first], got [${namesAfterGuard.join(',')}]`);
-  const toasts = await page.evaluate(() => window.__toasts);
-  toasts.some(t => /steps\.second/.test(t)) ? ok(`a toast named the broken reference: "${toasts.find(t => /steps\.second/.test(t))}"`)
-                                            : fail(`expected a toast naming the broken {{steps.second...}} reference, got ${JSON.stringify(toasts)}`);
+  // ── A refused slot break: disconnect triage → draft, which "draft"'s
+  // prompt depends on via {{steps.triage.output}} ─────────────────────────
+  await page.click('.wfb-edge-path'); // select the (only) real edge
+  await page.keyboard.press('Delete');
+  await page.waitForTimeout(120);
+  edgeCount = await page.$$eval('.wfb-edge-path', els => els.length);
+  edgeCount === 1 ? ok('the slot-break guard REFUSED deleting the edge {{steps.triage.output}} depends on')
+                  : fail(`expected the guard to keep the edge (count 1), got ${edgeCount}`);
+  const breakToasts = await page.evaluate(() => window.__toasts);
+  breakToasts.some(t => /steps\.triage/.test(t)) ? ok(`a toast named the broken reference: "${breakToasts.find(t => /steps\.triage/.test(t))}"`)
+                                                  : fail(`expected a toast naming {{steps.triage...}}, got ${JSON.stringify(breakToasts)}`);
 
-  // ── A Paths branch ────────────────────────────────────────────────────────
-  // "first" is now card 1 (an agent step); split it into paths.
-  await clickByText(page, '.wfb-list[data-listpath="[]"]', '+ Split into paths');
-  await page.waitForSelector('.wfb-branch-grid', { timeout: 3000 }).then(
-    () => ok('Paths node added — branch grid rendered'),
-    () => fail('Paths node did not render a branch grid'));
-  const colTitles = await page.$$eval('.wfb-branch-col-title', els => els.map(e => e.textContent.trim()));
-  (colTitles.includes('branch-1') && colTitles.some(t => t.startsWith('otherwise')))
-    ? ok(`branch columns present: ${JSON.stringify(colTitles)}`)
-    : fail(`expected a "branch-1" column and an "otherwise" column, got ${JSON.stringify(colTitles)}`);
+  // ── A Clayrune action block, dragged in separately (not wired to
+  // anything) — exercises the third palette block + the unconnected-port
+  // "stop stub" render path (R2-D6). ───────────────────────────────────────
+  await dragPaletteBlockTo(page, 'Clayrune action', vpBox.x + 300, vpBox.y + 320);
+  nodeCount = await page.$$eval('.wfb-node', els => els.length);
+  nodeCount === 3 ? ok('Clayrune action block placed from the palette')
+                  : fail(`expected 3 nodes after placing the action block, got ${nodeCount}`);
+  const stubCount = await page.$$eval('.wfb-port-row.wfb-port-unconnected', els => els.length);
+  stubCount > 0 ? ok(`${stubCount} unconnected port(s) render a stop stub`)
+                : fail('expected at least one unconnected port to render a stop stub');
 
-  // Add a step inside the branch-1 column specifically (nested listpath).
-  const branchListPath = await page.$$eval('.wfb-branch-col', cols => {
-    const col = cols.find(c => c.querySelector('.wfb-branch-col-title').textContent.trim() === 'branch-1');
-    const list = col && col.querySelector('.wfb-list');
-    return list ? list.getAttribute('data-listpath') : null;
+  // ── Touch-context: the drag handles must not carry touch-action:none
+  // PERMANENTLY (the mobile scroll-lock trap) — only while a drag is
+  // actually active, via a dynamically-applied class. ─────────────────────
+  const touchActionAtRest = await page.evaluate(() => {
+    const head = document.querySelector('.wfb-node-head');
+    const block = document.querySelector('.wfb-palette-block');
+    return {
+      head: getComputedStyle(head).touchAction,
+      block: getComputedStyle(block).touchAction,
+    };
   });
-  branchListPath && branchListPath !== '[]' ? ok(`branch-1's own list has a nested listpath: ${branchListPath}`)
-                                            : fail(`branch-1 list should have a nested (non-top-level) listpath, got ${branchListPath}`);
-  await clickByText(page, `.wfb-list[data-listpath='${branchListPath}']`, '+ Agent step');
-  const nestedCard = await page.$(`.wfb-list[data-listpath='${branchListPath}'] > .wfb-card-wrap > .wfb-card`);
-  const nestedPath = nestedCard ? JSON.parse(await nestedCard.getAttribute('data-nodepath')) : null;
-  (nestedPath && nestedPath.length === 4 && nestedPath[1] === 'branches' && nestedPath[2] === 'branch-1')
-    ? ok(`step added inside the branch nests at the right path: ${JSON.stringify(nestedPath)}`)
-    : fail(`expected a nodepath like [idx,"branches","branch-1",0], got ${JSON.stringify(nestedPath)}`);
+  (touchActionAtRest.head !== 'none' && touchActionAtRest.block !== 'none')
+    ? ok(`at rest, drag handles stay scrollable (node-head: ${touchActionAtRest.head}, palette-block: ${touchActionAtRest.block}) — no permanent scroll lock`)
+    : fail(`a drag handle is touch-action:none at rest — this is the mobile scroll-lock trap: ${JSON.stringify(touchActionAtRest)}`);
+  const touchActionDuringDrag = await page.evaluate(() => {
+    document.querySelector('.wfb-node').classList.add('wfb-node-dragging');
+    const v = getComputedStyle(document.querySelector('.wfb-node-head')).touchAction;
+    document.querySelector('.wfb-node').classList.remove('wfb-node-dragging');
+    return v;
+  });
+  touchActionDuringDrag === 'none' ? ok('DURING an active drag, the node head correctly switches to touch-action:none')
+                                   : fail(`expected touch-action:none while .wfb-node-dragging is active, got "${touchActionDuringDrag}"`);
+  const portTouchAction = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-port')).touchAction);
+  portTouchAction === 'none' ? ok('a port (a dedicated control, not a scrollable list item) is touch-action:none unconditionally')
+                             : fail(`expected a port to be touch-action:none always, got "${portTouchAction}"`);
 
-  // ── Save round-trips through the API ─────────────────────────────────────
-  await setValue(page, '#wfb-name', 'Smoke test workflow');
-  await setValue(page, '#wfb-desc', 'Exercises the builder end to end.');
-  await clickByText(page, '.wfb-actions', 'Create');
-  await page.waitForTimeout(250);
-  workflowPosts.length === 1 ? ok('POST /api/workflows fired exactly once on Save')
-                             : fail(`expected exactly 1 POST /api/workflows, got ${workflowPosts.length}`);
-  const posted = workflowPosts[0] || {};
+  // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
+  await ctx.close();
+  const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
+  const mpage = await mctx.newPage();
+  const mPageErrors = [];
+  mpage.on('pageerror', (e) => mPageErrors.push(e.message || String(e)));
+  await mpage.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    return route.abort();
+  });
+  await mpage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await mpage.waitForSelector('#projects-col .card, .mc-chat-row', { timeout: 15000 });
+  await mpage.evaluate(() => { window.openWorkflowBuilder(); });
+  await mpage.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  const paletteFlow = await mpage.evaluate(() => {
+    const builder = document.querySelector('.wfb-builder');
+    const palette = document.querySelector('.wfb-palette');
+    return { builderDir: getComputedStyle(builder).flexDirection, paletteDir: getComputedStyle(palette).flexDirection };
+  });
+  (paletteFlow.builderDir === 'column-reverse' && paletteFlow.paletteDir === 'row')
+    ? ok(`at a phone width, the palette lays out as a bottom sheet (builder: ${paletteFlow.builderDir}, palette row: ${paletteFlow.paletteDir})`)
+    : fail(`expected the palette to become a horizontal bottom sheet at 390px, got ${JSON.stringify(paletteFlow)}`);
+  if (mPageErrors.length) mPageErrors.forEach((e) => fail('uncaught page error on mobile boot: ' + e));
+  else ok('mobile viewport booted the builder clean, no uncaught exceptions');
+  await mctx.close();
+
+  // Reopen a desktop context for the save round-trip (mobile context above
+  // was closed to keep viewport switching hermetic).
+  const ctx2 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page2 = await ctx2.newPage();
+  const page2Errors = [];
+  page2.on('pageerror', (e) => page2Errors.push(e.message || String(e)));
+  const workflowPosts2 = [];
+  await page2.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/workflows' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      workflowPosts2.push(body);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, workflow: { ...body, id: 'wf-smoke2', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
+      }) });
+    }
+    return route.abort();
+  });
+  await page2.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page2.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page2.evaluate(() => { window.openWorkflowBuilder(); });
+  await page2.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPaletteBlockTo(page2, 'Agent step', vpBox2.x + 140, vpBox2.y + 120);
+  await setValue(page2, '.wfb-node .wfb-name', 'harvest-triage');
+  await setValue(page2, '.wfb-node .wfb-prompt', 'Score the signals.');
+  await setValue(page2, '#wfb-name', 'Smoke test workflow');
+  await setValue(page2, '#wfb-desc', 'Exercises the canvas end to end.');
+  await page2.click('.wfb-actions .btn-sched-save');
+  await page2.waitForTimeout(250);
+  workflowPosts2.length === 1 ? ok('POST /api/workflows fired exactly once on Save')
+                              : fail(`expected exactly 1 POST /api/workflows, got ${workflowPosts2.length}`);
+  const posted = workflowPosts2[0] || {};
   posted.name === 'Smoke test workflow' ? ok('posted body carries the name field')
                                         : fail(`posted name should be "Smoke test workflow", got ${JSON.stringify(posted.name)}`);
-  // Top level is [second, first, paths]: the earlier drags left order
-  // [second, first], and "+ Split into paths" appends after the LAST step
-  // (first) — both "second" and "first" are real agent steps, so the paths
-  // node is the third top-level node, not the second.
-  const postedTop = (posted.steps || []).map(s => s.type);
-  postedTop.join(',') === 'agent,agent,paths' ? ok(`posted steps round-trip the tree shape: [${postedTop.join(',')}]`)
-                                              : fail(`expected posted top-level types [agent,agent,paths], got [${postedTop.join(',')}]`);
-  const postedPaths = (posted.steps || []).find(s => s.type === 'paths');
-  (postedPaths && postedPaths.branches && Array.isArray(postedPaths.branches['branch-1']) && postedPaths.branches['branch-1'].length === 1
-    && Array.isArray(postedPaths.otherwise))
-    ? ok('posted Paths node carries branch-1 (with the nested step) + a mandatory otherwise array')
-    : fail(`posted Paths node malformed: ${JSON.stringify(postedPaths)}`);
-
-  await page.waitForFunction(() => {
+  (Array.isArray(posted.nodes) && posted.nodes.length === 1 && posted.nodes[0].name === 'harvest-triage'
+    && typeof posted.nodes[0].x === 'number' && typeof posted.nodes[0].y === 'number')
+    ? ok(`posted body is format-2 shaped: one node ("harvest-triage") carrying x/y (${posted.nodes[0].x},${posted.nodes[0].y})`)
+    : fail(`posted nodes malformed: ${JSON.stringify(posted.nodes)}`);
+  Array.isArray(posted.edges) ? ok('posted body carries an edges array (format 2)')
+                              : fail(`expected an edges array in the posted body, got ${JSON.stringify(posted.edges)}`);
+  await page2.waitForFunction(() => {
     const btn = document.querySelector('.wfb-actions .btn-sched-save');
     return btn && btn.textContent.trim() === 'Update';
   }, { timeout: 3000 }).then(() => ok('after a successful save, the button relabels to "Update" (workflowId adopted)'),
                             () => fail('save button never relabeled to "Update" after a successful save'));
 
-  const uncaught = pageErrors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  const uncaught = page2Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
+  await ctx2.close();
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — add-step, drag-reorder (plain + slot-order-guarded), a Paths branch, and save all round-trip correctly.'
+    ? '\n✅ PASS — palette drag-to-place, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, and save (format 2) all behave correctly.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
