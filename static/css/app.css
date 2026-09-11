@@ -8406,6 +8406,24 @@
   .wfb-edge-path:hover, .wfb-edge-path.wfb-edge-selected { stroke: var(--accent); stroke-width: 2.5; }
   .wfb-edge-temp { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
 
+  /* The Trigger box (MC-871 Change 2) -- its own shape on the canvas, not a
+     `.wfb-node` (it isn't one: no ports, no card editor, not in `nodes[]`).
+     Shares the node-drag class (`.wfb-node-dragging`) so the drag path's
+     touch-action guard applies here too without a second CSS rule. */
+  .wfb-trigger-box {
+    position: absolute; width: 160px; background: var(--surface); border: 1px solid var(--accent);
+    border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+  }
+  .wfb-trigger-box.wfb-node-dragging { box-shadow: 0 6px 18px rgba(0,0,0,0.22); z-index: 5; }
+  .wfb-trigger-box-head {
+    display: flex; align-items: center; gap: 6px; padding: 8px 10px; cursor: grab;
+    touch-action: pan-y;
+  }
+  .wfb-trigger-box.wfb-node-dragging .wfb-trigger-box-head { cursor: grabbing; touch-action: none; }
+  .wfb-trigger-box-icon { color: var(--accent); font-size: 10px; }
+  .wfb-trigger-box-title { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); }
+  .wfb-trigger-box-sub { font-size: 11px; color: var(--text-faint); padding: 0 10px 8px; }
+
   .wfb-node {
     position: absolute; width: 260px; background: var(--surface); border: 1px solid var(--border);
     border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); padding: 0 0 10px;
@@ -8547,19 +8565,19 @@
     font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
   }
 
-  /* ── Clayrune-workflow list, top of the existing Workflows tab (Q6's
-     minimum: reachable + editable; run-history/calendar badge are later
-     phases). ── */
-  .wfb-list-row {
-    display: flex; align-items: center; gap: 10px; background: var(--surface);
-    border: 1px solid var(--border); border-radius: 6px; padding: 10px 14px; margin-bottom: 8px;
+  /* ── Workflow tabs row, top of the Workflows tab (MC-871 Q7 re-reversed:
+     the canvas hosts inline here, one tab per workflow touching this
+     project, plus "+ New Workflow"). ── */
+  .wfb-tabs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .wfb-tab {
+    background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
+    padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer;
   }
-  .wfb-list-row.disabled { opacity: 0.5; }
-  .wfb-list-row-body { flex: 1; min-width: 0; }
-  .wfb-list-row-name { font-size: 13px; font-weight: 600; color: var(--text); }
-  .wfb-list-row-desc {
-    font-size: 11px; color: var(--text-faint); margin-top: 2px; overflow: hidden;
-    text-overflow: ellipsis; white-space: nowrap;
+  .wfb-tab:hover { border-color: var(--accent); }
+  .wfb-tab.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim, rgba(0,0,0,0.04)); }
+  .wfb-tab-new { color: var(--accent); border-style: dashed; }
+  .wfb-canvas-idle {
+    font-size: 12px; color: var(--text-faint); font-style: italic; padding: 16px 4px;
   }
 
   @media (max-width: 960px) {

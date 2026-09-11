@@ -2,12 +2,36 @@
 //
 // The authoring surface on top of the already-merged runner + CRUD + DAG store
 // (mc/workflows.py + mc/blueprints/workflow_routes.py, docs/WORKFLOW_BUILDER_SPEC.md,
-// Revision 2). Opens as its own modal (`openWorkflowBuilder`), same shape as
-// `openScheduler` — workflows are global cross-project objects, not owned by
-// a project tab.
+// Revision 2).
 //
-// REPLACES THE SPINE (Q7 reversed by Ron on contact with the built result —
-// see the spec's Q7 banner). The definition is now `nodes` + `edges` (R2-D1),
+// REHOSTED INLINE (Q7 re-reversed, Ron on seeing the shipped tab: "instead of
+// opening yet another window, can we open the canvas on the same page we use
+// for the overall workflow menu? If there's more than one, present the
+// selection tabs at the top"). There is no floating modal any more — the ONE
+// canvas implementation below mounts into whichever project's Workflows tab
+// last claimed it (`_wfState`, a singleton exactly like the old modal was:
+// only one workflow can be under edit at a time). agent-console.js's
+// `loadWorkflows`/`_wfRenderClayruneSection`-successor builds a tabs row (one
+// per workflow touching that project, plus "+ New Workflow") into
+// `#wfb-clayrune-section-<projectId>` and an empty `#wfb-inline-host-<projectId>`
+// div; `openWorkflowBuilder(workflowId, projectId)` is the one function that
+// still loads a workflow and mounts the canvas into that host — called by a
+// tab click, by "+ New Workflow", and (still) directly, e.g. from a test.
+// `window._wfSyncTabsForProject(projectId, list)` is the entry point that
+// decides whether the tabs row (and, on a real change, the mounted canvas)
+// need rebuilding at all — see its own header for why that has to be
+// carefully idempotent (a 3s CC-fan-out poll calls into this same path).
+//
+// A second load-bearing reason the modal had to go: `refreshModalById`
+// (static/index.html) rebuilds the ENTIRE project modal's innerHTML on every
+// SSE turn event for that project. A canvas embedded in that DOM would be
+// wiped mid-edit exactly like agent-output streaming text would be, so
+// `refreshModalById` now detaches and reattaches the whole
+// `#workflows-body-<pid>` subtree around that rebuild — see its own comment
+// there. That preservation, not anything in this file, is what makes "live"
+// hosting safe.
+//
+// The definition is now `nodes` + `edges` (R2-D1),
 // not a nested tree, and this file is the free-canvas editor for that shape:
 // a palette docked left (a bottom sheet under the mobile breakpoint), drag a
 // block onto the canvas to place a node, drag from an output port to an
@@ -85,7 +109,14 @@
 // keystroke — typing in one node's prompt is never clobbered by placing a
 // new block or dragging an edge elsewhere on the canvas.
 
-const WF_MODAL_ID = '__workflow_builder';
+// The one mounted canvas -- singleton, same discipline the old modal had
+// (only one workflow can be under edit at a time). `{ projectId, _wf }` where
+// `_wf` is exactly the state shape `_wfFreshState` always returned; kept
+// nested under `_wf` (rather than flattened) so every existing call site
+// below that read `entry._wf.*` needed no further change once `_wfEntry()`
+// stood in for `openModals.get(WF_MODAL_ID)`.
+let _wfState = null;
+function _wfEntry() { return _wfState; }
 let _wfNameSeq = 0;
 const _wfCharCache = new Map();
 
@@ -237,50 +268,66 @@ function _wfMakeNode(st, type, scope, name, x, y) {
   };
 }
 
-// ── Modal open / load ────────────────────────────────────────────────────────
+// ── Inline host: mount / load ────────────────────────────────────────────────
+//
+// `#wfb-inline-host-<projectId>` is built by agent-console.js's `loadWorkflows`
+// (via `_wfSyncTabsForProject` below) the moment a project's Workflows tab is
+// opened. This function loads a workflow (or starts a blank one) and mounts
+// the SAME canvas markup `_wfRender` has always produced into that host --
+// there is no other render path.
+
+// True if it's safe to discard whatever is currently mounted -- not dirty, or
+// the user confirmed discarding it. The inline equivalent of the old modal's
+// close confirm (`_wfRequestClose`), now also the gate every tab switch and
+// re-mount goes through (UI brief: "switching tabs with unsaved changes must
+// hit the same dirty-state warning that closing did").
+function _wfConfirmDiscardIfDirty() {
+  if (!_wfState || !_wfState._wf || !_wfState._wf.dirty) return true;
+  return confirm('Discard unsaved changes to this workflow?');
+}
+
+// Another project's Workflows tab just stole the singleton canvas. Its host
+// div is still live DOM in a still-open modal -- leaving it wired to
+// event handlers that now resolve against a DIFFERENT project's `_wfState`
+// would let a stray click there corrupt that other workflow. Reset it to an
+// inert placeholder instead of leaving stale interactive markup behind.
+function _wfRenderIdleHost(projectId) {
+  const host = document.getElementById('wfb-inline-host-' + projectId);
+  if (host) host.innerHTML = '<div class="wfb-canvas-idle">Editing moved to another project — pick a tab to resume here.</div>';
+}
 
 async function openWorkflowBuilder(workflowId, hintProjectId) {
-  const modalId = WF_MODAL_ID;
-  if (openModals.has(modalId)) {
-    const entry = openModals.get(modalId);
-    if (entry.minimized) restoreModal(modalId);
-    focusModal(modalId);
-    await _wfLoadInto(entry, workflowId || null, hintProjectId || '');
-    _wfRender();
-    return;
-  }
+  const projectId = hintProjectId || (_wfState && _wfState.projectId) || '';
+  const host = document.getElementById('wfb-inline-host-' + projectId);
+  if (!host) { console.warn('[workflow-builder] no inline host mounted for project', projectId); return; }
+  if (!_wfConfirmDiscardIfDirty()) return;
+  if (_wfState && _wfState.projectId && _wfState.projectId !== projectId) _wfRenderIdleHost(_wfState.projectId);
 
-  const win = document.createElement('div');
-  win.className = 'modal-window';
-  win.dataset.modalId = modalId;
-  const content = document.createElement('div');
-  content.className = 'modal-content';
-  _clampModalSize(content, 1180);
-  content.innerHTML = `
-    <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
-      <span style="font-size:16px;font-weight:700;color:var(--text)">Workflow Builder</span>
-      <div class="modal-window-controls" style="position:static;display:flex;gap:4px">
-        <button class="modal-minimize" onclick="minimizeModal('${modalId}')" title="Minimize">&#x2015;</button>
-        <button class="modal-close" onclick="_wfRequestClose('${modalId}')" title="Close">&#10005;</button>
-      </div>
-    </div>
-    <div id="wfb-body" class="wfb-modal-body"></div>`;
-  win.appendChild(content);
-  document.getElementById('modal-layer').appendChild(win);
-  const z = nextModalZ++;
-  win.style.zIndex = z;
-  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z, _wf: null });
+  host.innerHTML = '<div id="wfb-body" class="wfb-modal-body"></div>';
   // Dirty-state watcher (UI brief §6/build-order step 6): delegated so it
   // survives every _wfRender() rebuild of #wfb-body's children -- attached
   // once, to the body element itself, not to anything _wfRender() replaces.
-  const wfBody = content.querySelector('#wfb-body');
+  const wfBody = host.querySelector('#wfb-body');
   wfBody.addEventListener('input', _wfMarkDirty);
   wfBody.addEventListener('change', _wfMarkDirty);
-  centerModalElement(win);
-  focusModal(modalId);
 
-  const entry = openModals.get(modalId);
-  await _wfLoadInto(entry, workflowId || null, hintProjectId || '');
+  _wfState = { projectId, _wf: null };
+  await _wfLoadInto(_wfState, workflowId || null, projectId);
+  _wfRender();
+}
+
+// Re-mount the ALREADY-LOADED state into a freshly (re)built host div -- no
+// network refetch. Used when `_wfSyncTabsForProject` has to rebuild the tabs
+// row (the workflow set changed) but the workflow already mounted for this
+// project is still in that set: the in-memory edit survives, only the DOM
+// wrapper around it is rebuilt.
+function _wfRemountDom(projectId) {
+  const host = document.getElementById('wfb-inline-host-' + projectId);
+  if (!host || !_wfState || _wfState.projectId !== projectId) return;
+  host.innerHTML = '<div id="wfb-body" class="wfb-modal-body"></div>';
+  const wfBody = host.querySelector('#wfb-body');
+  wfBody.addEventListener('input', _wfMarkDirty);
+  wfBody.addEventListener('change', _wfMarkDirty);
   _wfRender();
 }
 
@@ -343,6 +390,68 @@ async function _wfLoadBench(st) {
   }
   st.benchLoaded = true;
 }
+
+// ── Tabs row: "one per workflow that involves this project" ─────────────────
+//
+// Called by agent-console.js's `loadWorkflows` every time it re-fetches
+// `/api/workflows` -- including the 3s poll that exists only to track an
+// unrelated Claude Code fan-out. `_wfTabsSig` makes that safe: the tabs row
+// (and, more importantly, the mounted canvas) are only touched when the SET
+// of workflow ids touching this project actually changed, never on a poll
+// that reconfirms the same set.
+const _wfTabsSig = {}; // projectId -> last-seen "id,id,id" signature
+
+function _wfTabsRowHTML(projectId, list, selectedId) {
+  const tabs = list.map(w => `<button type="button" class="wfb-tab${w.id === selectedId ? ' active' : ''}"
+      onclick="_wfTabClick('${_wfJsStrEsc(projectId)}','${_wfJsStrEsc(w.id)}')">${esc(w.name || 'Untitled workflow')}</button>`).join('');
+  return `<div class="wfb-tabs-row">${tabs}
+    <button type="button" class="wfb-tab wfb-tab-new" onclick="_wfNewWorkflowClick('${_wfJsStrEsc(projectId)}')">+ New Workflow</button>
+  </div>`;
+}
+
+function _wfEmptyStateHTML() {
+  return '<div style="color:var(--text-faint);font-style:italic;font-size:12px;padding:4px 0 2px">No workflows involve this project yet.</div>';
+}
+
+function _wfTabClick(projectId, workflowId) {
+  if (_wfState && _wfState.projectId === projectId && _wfState._wf && _wfState._wf.workflowId === workflowId) return;
+  if (!_wfConfirmDiscardIfDirty()) return;
+  openWorkflowBuilder(workflowId, projectId);
+}
+window._wfTabClick = _wfTabClick;
+
+function _wfNewWorkflowClick(projectId) {
+  if (!_wfConfirmDiscardIfDirty()) return;
+  openWorkflowBuilder(null, projectId);
+}
+window._wfNewWorkflowClick = _wfNewWorkflowClick;
+
+function _wfSyncTabsForProject(projectId, list) {
+  const section = document.getElementById('wfb-clayrune-section-' + projectId);
+  if (!section) return;
+  const sig = list.map(w => w.id).sort().join(',');
+  if (section.dataset.wfBuilt === '1' && _wfTabsSig[projectId] === sig) return; // nothing changed -- leave the canvas alone
+  _wfTabsSig[projectId] = sig;
+  section.dataset.wfBuilt = '1';
+
+  const mountedId = (_wfState && _wfState.projectId === projectId && _wfState._wf) ? _wfState._wf.workflowId : undefined;
+  const stillMounted = list.some(w => w.id === mountedId);
+  const selected = stillMounted ? mountedId : (list[0] ? list[0].id : null);
+
+  // "+ New Workflow" is always present, even with zero workflows (UI brief:
+  // "zero = the canvas area shows the existing empty-state line plus the
+  // new-workflow action") -- `_wfTabsRowHTML` renders it unconditionally and
+  // simply has no per-workflow tabs alongside it when `list` is empty.
+  section.innerHTML = _wfTabsRowHTML(projectId, list, selected)
+    + (list.length ? '' : _wfEmptyStateHTML())
+    + `<div id="wfb-inline-host-${esc(projectId)}"></div>`;
+
+  if (selected == null) return;
+  if (stillMounted) _wfRemountDom(projectId);      // already loaded in memory -- just rebuild the DOM around it
+  else openWorkflowBuilder(selected, projectId);   // a different/new workflow -- load it for real
+}
+window._wfSyncTabsForProject = _wfSyncTabsForProject;
+window._wfConfirmDiscardIfDirty = _wfConfirmDiscardIfDirty;
 
 // The schedule store is the single source of truth for cadence (spec Q4);
 // this just finds the one row (if any) pointing back at this workflow.
@@ -551,7 +660,7 @@ function _wfInsertSlot(e, nodeName, fieldSelector) {
   const value = e.target.value;
   e.target.value = '';
   if (!value) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   nodeName = renameMap[nodeName] || nodeName;
   const node = (entry._wf.def.nodes || []).find(n => n.name === nodeName);
@@ -649,7 +758,7 @@ function _wfSyncNodeOwn(node, own) {
 // ── Rendering ─────────────────────────────────────────────────────────────────
 
 function _wfRender() {
-  const entry = openModals.get(WF_MODAL_ID);
+  const entry = _wfEntry();
   if (!entry || !entry._wf) return;
   _wfClosePortPopover(); // its anchor port is about to be replaced
   const body = document.getElementById('wfb-body');
@@ -683,6 +792,55 @@ function _wfPanToNode(st, nodeName) {
   const cy = (node.y || 0) + 80;
   st.viewport.x = rect.width / 2 - cx * st.viewport.scale;
   st.viewport.y = rect.height / 2 - cy * st.viewport.scale;
+}
+
+// ── The Trigger box (MC-871 Change 2, canvas) ────────────────────────────────
+//
+// Ron: "Needs the Trigger box to exist on the canvas as first point" -- chosen
+// deliberately as its OWN shape, not a real node: it is never a member of
+// `def.nodes`, never in NODE_TYPES, has no card editor, and the actual
+// manual/schedule form above (`.wfb-trigger-card`) is unchanged and still owns
+// `def.trigger.type`. This box is a positioned, draggable marker for it on
+// the free canvas -- `trigger.x`/`trigger.y` are additive keys on the same
+// dict (verified round-tripping through mc/workflows.py: `doc.get('trigger')`
+// is stored and returned verbatim, no key allowlist).
+//
+// NO input port (nothing can feed a trigger) and NO output port either: every
+// output port on a real node is wired through `_wfTryAddEdge`, which the
+// dominator/broken-slot fixpoint (`_wfToposort`/`_wfDominators`) walks by
+// iterating `def.nodes` -- the trigger isn't in that array, so an edge
+// touching it would need those functions (and the stored edge shape) to learn
+// a node that isn't a node. Out of scope per the brief ("if wiring would mean
+// touching the edge model or stored format, DON'T"), so it stays visually
+// unconnected.
+// Above the root node, not to its left: a root's `x` is wherever the user
+// actually dropped it (usually near the canvas's default viewport origin),
+// so subtracting a further fixed offset from that can walk the trigger off
+// the LEFT edge of the default {x:60,y:40,scale:1} viewport on the very
+// first node placed -- exactly the case a brand-new workflow hits. Sitting
+// above keeps its x anchored to a point already known to be visible.
+function _wfTriggerDefaultPos(def) {
+  const nodes = def.nodes || [];
+  if (!nodes.length) return { x: 40, y: 40 };
+  const edges = def.edges || [];
+  const targets = new Set(edges.map(e => e.to));
+  const root = nodes.find(n => !targets.has(n.name)) || nodes[0];
+  return { x: root.x || 0, y: (root.y || 0) - 110 };
+}
+
+function _wfRenderTriggerBox(st) {
+  const def = st.def;
+  const trigger = def.trigger || (def.trigger = { type: 'manual' });
+  const hasPos = typeof trigger.x === 'number' && typeof trigger.y === 'number';
+  const pos = hasPos ? { x: trigger.x, y: trigger.y } : _wfTriggerDefaultPos(def);
+  const label = trigger.type === 'schedule' ? 'On a schedule' : 'Manual';
+  return `<div class="wfb-trigger-box" data-name="__trigger__" style="left:${pos.x}px;top:${pos.y}px">
+    <div class="wfb-trigger-box-head" onpointerdown="_wfNodeDragDown(event)">
+      <span class="wfb-trigger-box-icon">&#9654;</span>
+      <span class="wfb-trigger-box-title">Trigger</span>
+    </div>
+    <div class="wfb-trigger-box-sub">${esc(label)}</div>
+  </div>`;
 }
 
 function _wfRenderBody(st) {
@@ -721,7 +879,7 @@ function _wfRenderBody(st) {
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
-        <div id="wfb-world" class="wfb-canvas-world">${nodesHtml}</div>
+        <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
         ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag a port to connect &middot; + on a port adds &amp; wires the next step</div>'}
       </div>
     </div>
@@ -731,7 +889,6 @@ function _wfRenderBody(st) {
       <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
         title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
       <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
-      <button class="btn-sched-cancel" onclick="_wfRequestClose('${WF_MODAL_ID}')" style="margin-left:auto">Close</button>
     </div>`;
 }
 
@@ -784,7 +941,7 @@ function _wfRenderPalette(st) {
 // the canvas (that would blow away an unsynced prompt the user is typing in a
 // card, and reset the viewport mid-search).
 function _wfPaletteSearch(value) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
   entry._wf.paletteSearch = value;
   const box = document.getElementById('wfb-palette');
   if (!box) return;
@@ -964,7 +1121,7 @@ function _wfRerenderActionFields(selectEl) {
   const own = selectEl.closest('.wfb-node-own');
   const box = own && own.querySelector('.wfb-action-fields');
   if (!box) return;
-  const entry = openModals.get(WF_MODAL_ID);
+  const entry = _wfEntry();
   const nodeEl = selectEl.closest('.wfb-node');
   const nodeName = nodeEl ? nodeEl.dataset.name : '';
   const def = entry && entry._wf ? entry._wf.def : null;
@@ -1034,10 +1191,14 @@ async function _wfReloadCharacters(seq, want) {
 // ── Structural mutations ──────────────────────────────────────────────────────
 
 function _wfSetTriggerType(t) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfSyncDomToModel(entry);
   const st = entry._wf;
-  st.def.trigger = { type: t };
+  // Keep x/y (MC-871 Change 2): they're the canvas box's dragged position,
+  // unrelated to which radio is picked -- a fresh `{type: t}` here would snap
+  // the box back to its default spot every time the trigger type changes.
+  const { x, y } = st.def.trigger || {};
+  st.def.trigger = (typeof x === 'number' && typeof y === 'number') ? { type: t, x, y } : { type: t };
   if (t === 'schedule' && !st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
   _wfMarkDirty();
   _wfRender();
@@ -1116,7 +1277,7 @@ function _wfSchedTypeFieldsHTML(type, s) {
 }
 
 function _wfSetSchedType(type) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const st = entry._wf;
   _wfSyncScheduleFormToState(st);
   st.linkedSchedule.schedule_type = type;
@@ -1127,7 +1288,7 @@ function _wfSetSchedType(type) {
 }
 
 function _wfToggleSchedEnabled() {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const st = entry._wf;
   if (!st.linkedSchedule) return;
   st.linkedSchedule.enabled = !(st.linkedSchedule.enabled !== false);
@@ -1164,7 +1325,7 @@ function _wfSyncScheduleFormToState(st) {
 }
 
 function _wfAddOutcome(name) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
@@ -1175,7 +1336,7 @@ function _wfAddOutcome(name) {
 }
 
 function _wfRemoveOutcome(name, idx) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
@@ -1199,7 +1360,7 @@ function _wfRemoveOutcome(name, idx) {
 }
 
 function _wfAddOption(name) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const node = (entry._wf.def.nodes || []).find(n => n.name === name); if (!node) return;
@@ -1210,7 +1371,7 @@ function _wfAddOption(name) {
 }
 
 function _wfRemoveOption(name, idx) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
@@ -1235,7 +1396,7 @@ function _wfRemoveOption(name, idx) {
 }
 
 function _wfDeleteNode(name) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   name = renameMap[name] || name;
   const def = entry._wf.def;
@@ -1266,7 +1427,7 @@ function _wfEdgeClick(e, from, to, when) {
 }
 
 function _wfDeleteEdge(from, to, when) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   from = renameMap[from] || from;
   to = renameMap[to] || to;
@@ -1288,7 +1449,7 @@ function _wfDeleteEdge(from, to, when) {
 }
 
 document.addEventListener('keydown', (e) => {
-  if (!openModals.has(WF_MODAL_ID) || !_wfSelectedEdge) return;
+  if (!_wfState || !_wfSelectedEdge) return;
   const tag = document.activeElement && document.activeElement.tagName;
   if (tag === 'INPUT' || tag === 'TEXTAREA') return;
   if (e.key === 'Delete' || e.key === 'Backspace') {
@@ -1300,7 +1461,7 @@ document.addEventListener('keydown', (e) => {
 });
 
 function _wfTryAddEdge(from, to, when) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
   from = renameMap[from] || from;
   to = renameMap[to] || to;
@@ -1347,7 +1508,7 @@ function _wfZoomAt(st, screenX, screenY, newScaleRaw) {
 
 function _wfCanvasWheel(e) {
   e.preventDefault();
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const rect = e.currentTarget.getBoundingClientRect();
   const cx = e.clientX - rect.left, cy = e.clientY - rect.top;
   const factor = Math.exp(-e.deltaY * 0.0015);
@@ -1360,7 +1521,7 @@ function _wfViewportDown(e) {
   if (e.target.closest('.wfb-node, .wfb-port')) return;
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPan || _wfNodeDrag || _wfPlaceDrag || _wfConnectDrag) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const vp = e.currentTarget;
   _wfPan = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, vx: entry._wf.viewport.x, vy: entry._wf.viewport.y, vp };
   vp.classList.add('wfb-panning');
@@ -1372,7 +1533,7 @@ function _wfViewportDown(e) {
 
 function _wfViewportMove(e) {
   if (!_wfPan || e.pointerId !== _wfPan.pointerId) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   entry._wf.viewport.x = _wfPan.vx + (e.clientX - _wfPan.startX);
   entry._wf.viewport.y = _wfPan.vy + (e.clientY - _wfPan.startY);
   _wfApplyViewport(entry._wf);
@@ -1400,7 +1561,7 @@ function _wfTouchMid(t) { return { x: (t[0].clientX + t[1].clientX) / 2, y: (t[0
 function _wfCanvasTouchStart(e) {
   if (e.touches.length !== 2) return;
   if (_wfPan) _wfViewportUp({ pointerId: _wfPan.pointerId });
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfPinch = { d: _wfTouchDist(e.touches) || 1, scale: entry._wf.viewport.scale, vp: e.currentTarget };
   e.preventDefault();
 }
@@ -1408,7 +1569,7 @@ function _wfCanvasTouchStart(e) {
 function _wfCanvasTouchMove(e) {
   if (!_wfPinch || e.touches.length !== 2) return;
   e.preventDefault();
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   const rect = _wfPinch.vp.getBoundingClientRect();
   const mid = _wfTouchMid(e.touches);
   _wfZoomAt(entry._wf, mid.x - rect.left, mid.y - rect.top, _wfPinch.scale * (_wfTouchDist(e.touches) / _wfPinch.d));
@@ -1471,8 +1632,8 @@ function _wfPlaceActivate(st, x, y) {
   const ghost = document.createElement('div');
   ghost.className = 'wfb-place-ghost';
   ghost.textContent = st.type === 'person'
-    ? (((openModals.get(WF_MODAL_ID) || {})._wf
-        && (_wfBenchLookup(openModals.get(WF_MODAL_ID)._wf, st.scope, st.name) || {}).display) || st.name)
+    ? (((_wfEntry() || {})._wf
+        && (_wfBenchLookup(_wfEntry()._wf, st.scope, st.name) || {}).display) || st.name)
     : _wfTypeLabel(st.type);
   ghost.style.left = x + 'px';
   ghost.style.top = y + 'px';
@@ -1531,7 +1692,7 @@ function _wfPlaceTeardown(st) {
 }
 
 function _wfPlaceNodeAt(type, clientX, clientY, vp, scope, name) {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   // Sync first: a drop re-renders, and the sync can RENAME the very card being
   // dropped onto, so resolve the target's name only after it has run.
   const renameMap = _wfSyncDomToModel(entry);
@@ -1609,8 +1770,13 @@ let _wfNodeDrag = null;
 function _wfNodeDragDown(e) {
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfNodeDrag || _wfPan || _wfPlaceDrag || _wfConnectDrag) return;
-  const nodeEl = e.currentTarget.closest('.wfb-node');
-  const entry = openModals.get(WF_MODAL_ID);
+  // The Trigger box (MC-871 Change 2) is deliberately NOT a node -- not in
+  // `nodes[]`, no card markup -- but Ron wants it draggable on the same
+  // canvas via the same gesture, so it shares this one drag path rather than
+  // getting a second implementation. `_wfNodeDragUp` below is the only place
+  // that branches on which kind of element this turned out to be.
+  const nodeEl = e.currentTarget.closest('.wfb-node, .wfb-trigger-box');
+  const entry = _wfEntry();
   if (!nodeEl || !entry) return;
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
@@ -1656,12 +1822,18 @@ function _wfNodeDragUp(e) {
   if (!st || e.pointerId !== st.pointerId) return;
   clearTimeout(st.longPressTimer);
   if (st.active) {
-    const entry = openModals.get(WF_MODAL_ID);
-    const node = entry && (entry._wf.def.nodes || []).find(n => n.name === st.nodeEl.dataset.name);
-    if (node) {
-      node.x = parseFloat(st.nodeEl.style.left) || 0;
-      node.y = parseFloat(st.nodeEl.style.top) || 0;
+    const entry = _wfEntry();
+    if (entry && st.nodeEl.dataset.name === '__trigger__') {
+      entry._wf.def.trigger.x = parseFloat(st.nodeEl.style.left) || 0;
+      entry._wf.def.trigger.y = parseFloat(st.nodeEl.style.top) || 0;
       _wfMarkDirty();
+    } else {
+      const node = entry && (entry._wf.def.nodes || []).find(n => n.name === st.nodeEl.dataset.name);
+      if (node) {
+        node.x = parseFloat(st.nodeEl.style.left) || 0;
+        node.y = parseFloat(st.nodeEl.style.top) || 0;
+        _wfMarkDirty();
+      }
     }
   }
   _wfNodeDragTeardown(st);
@@ -1759,7 +1931,7 @@ document.addEventListener('keydown', (e) => {
 function _wfRedrawEdges() {
   const svg = document.getElementById('wfb-canvas-svg');
   const vp = document.getElementById('wfb-canvas-viewport');
-  const entry = openModals.get(WF_MODAL_ID);
+  const entry = _wfEntry();
   if (!svg || !vp || !entry || !entry._wf) return;
   const rect = vp.getBoundingClientRect();
   const ptOf = (el) => { const r = el.getBoundingClientRect(); return { x: r.left + r.width / 2 - rect.left, y: r.top + r.height / 2 - rect.top }; };
@@ -1802,7 +1974,7 @@ let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
 
 function _wfPortPlusClick(e, fromNode, when) {
   e.stopPropagation();
-  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const already = _wfPortPopover
     && _wfPortPopover.fromNode === fromNode
     && (_wfPortPopover.when || '') === (when || '');
@@ -1825,7 +1997,7 @@ function _wfPopoverPeopleHTML(st, search) {
 
 function _wfRenderPortPopover() {
   const p = _wfPortPopover; if (!p) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const box = document.createElement('div');
   box.className = 'wfb-port-popover';
   box.id = 'wfb-port-popover';
@@ -1870,7 +2042,7 @@ function _wfPopoverOutsideDown(e) {
 function _wfPopoverSearch(value) {
   if (!_wfPortPopover) return;
   _wfPortPopover.search = value;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const box = document.getElementById('wfb-port-popover');
   const list = box && box.querySelector('.wfb-popover-people');
   if (list) list.innerHTML = _wfPopoverPeopleHTML(entry._wf, value);
@@ -1878,14 +2050,14 @@ function _wfPopoverSearch(value) {
 
 function _wfPopoverPick(type) {
   const p = _wfPortPopover; if (!p) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfClosePortPopover();
   _wfInsertAfter(entry, p.fromNode, p.when, type, null, null);
 }
 
 function _wfPopoverPickPerson(scope, name) {
   const p = _wfPortPopover; if (!p) return;
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfClosePortPopover();
   _wfInsertAfter(entry, p.fromNode, p.when, 'person', scope, name);
 }
@@ -1897,7 +2069,7 @@ document.addEventListener('keydown', (e) => {
 // ── Save ──────────────────────────────────────────────────────────────────────
 
 async function _wfSave() {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfSyncDomToModel(entry);
   const st = entry._wf;
   const def = st.def;
@@ -2074,7 +2246,7 @@ function _wfApplyRunErrors(st, problems) {
 }
 
 async function _wfRunNow() {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const entry = _wfEntry(); if (!entry) return;
   _wfSyncDomToModel(entry);
   const st = entry._wf;
   if (!st.workflowId) { showToast('Save the workflow before running it.', 4000); return; }
@@ -2113,7 +2285,7 @@ async function _wfRunNow() {
 // keystroke marking the graph dirty can never clobber the field being typed
 // into, matching this file's existing FIELD SYNC discipline.
 function _wfMarkDirty() {
-  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
   const st = entry._wf;
   if (st.dirty) return;
   st.dirty = true;
@@ -2137,18 +2309,11 @@ function _wfRelativeSavedLabel(ts) {
   return `saved ${Math.round(m / 60)}h ago`;
 }
 
-// The only close path this file renders (header X + the bottom Close button)
-// -- minimize is exempt, the modal entry (and its _wf state) survives that.
-function _wfRequestClose(modalId) {
-  const entry = openModals.get(modalId);
-  if (entry && entry._wf && entry._wf.dirty && !confirm('Discard unsaved changes to this workflow?')) return;
-  closeModalById(modalId);
-}
-
 // ── Interop: window accessors for onclick/onpointerdown targets + cross-
 //    module entry points (static/js/scheduler.js:626-650 is the pattern this
 //    file follows — every top-level declaration here is module-scoped).
 window.openWorkflowBuilder = openWorkflowBuilder;
+window._wfEntry = _wfEntry; // test/debug introspection of the mounted singleton
 window._wfSetTriggerType = _wfSetTriggerType;
 window._wfPaletteDown = _wfPaletteDown;
 window._wfPaletteSearch = _wfPaletteSearch;
@@ -2171,7 +2336,6 @@ window._wfRerenderActionFields = _wfRerenderActionFields;
 window._wfInsertSlot = _wfInsertSlot;
 window._wfSave = _wfSave;
 window._wfRunNow = _wfRunNow;
-window._wfRequestClose = _wfRequestClose;
 window._wfMarkDirty = _wfMarkDirty;
 window._wfSetSchedType = _wfSetSchedType;
 window._wfToggleSchedEnabled = _wfToggleSchedEnabled;

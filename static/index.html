@@ -1966,8 +1966,29 @@ function refreshModalById(modalId) {
     }
   }
 
+  // Preserve the inline workflow canvas (MC-871 rehost): its pan/zoom
+  // transform, in-flight node-drag positions, and any unsynced typing live
+  // only in the DOM until the next structural action syncs them into memory
+  // (workflow-builder.js's FIELD SYNC discipline) — an innerHTML wipe here
+  // would silently discard them exactly like an agent-output rebuild would
+  // discard streaming text. Detach the whole host subtree (tabs row included,
+  // so the active-tab selection doesn't flicker) and swap it back in below.
+  let _savedWfHost = null;
+  if (curTab === 'workflows') {
+    const existingWfHost = document.getElementById(`workflows-body-${entry.projectId}`);
+    if (existingWfHost && existingWfHost.querySelector('#wfb-canvas-viewport')) {
+      _savedWfHost = existingWfHost;
+      existingWfHost.remove();
+    }
+  }
+
   content.innerHTML = modalContentHTML(p);
   _skipAgentOutputSids = new Set();
+
+  if (_savedWfHost) {
+    const freshWfHost = document.getElementById(`workflows-body-${entry.projectId}`);
+    if (freshWfHost) freshWfHost.replaceWith(_savedWfHost);
+  }
 
   // Restore the resume-preview's inner scroll (only when the same conversation
   // is still selected; loadConvPreview repopulates content asynchronously).

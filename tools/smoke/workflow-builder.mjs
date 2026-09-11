@@ -183,6 +183,37 @@ async function dragPortTo(page, fromSel, toSel) {
   await page.waitForTimeout(120);
 }
 
+// MC-871 inline rehost: there is no floating builder modal any more. The
+// canvas mounts into a project's OWN Workflows tab (`#wfb-inline-host-<pid>`,
+// built by agent-console.js's loadWorkflows -> window._wfSyncTabsForProject),
+// so every case below opens the project modal and switches to that tab
+// first, exactly the real click path (openProjectModal -> "Workflows" tab).
+async function openWorkflowsTab(page, pid) {
+  await page.evaluate((pid) => { openProjectModal(pid); }, pid);
+  await page.waitForTimeout(150);
+  // The project modal defaults to 700px (`.modal-content` in app.css) -- far
+  // narrower than the free canvas needs. A real user drags the existing
+  // resize handles wider once and it's remembered (mc_modal_prefs); this
+  // mirrors that so drop coordinates below land on the visible canvas rather
+  // than past its right edge.
+  await page.evaluate((pid) => {
+    const win = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
+    const content = win && win.querySelector('.modal-content');
+    if (content) content.style.width = '1180px';
+  }, pid);
+  await page.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, pid);
+  await page.waitForSelector(`#wfb-clayrune-section-${pid}`, { timeout: 5000 });
+  await page.waitForTimeout(150); // let the tabs-row fetch (/api/workflows) land
+}
+
+// "+ New Workflow" (the tabs-row action window._wfNewWorkflowClick backs) —
+// the inline equivalent of the old bare window.openWorkflowBuilder() call.
+async function newWorkflow(page, pid) {
+  await openWorkflowsTab(page, pid);
+  await page.evaluate((pid) => { window._wfNewWorkflowClick(pid); }, pid);
+  await page.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+}
+
 let browser, exitCode = 1;
 try {
   browser = await chromium.launch();
@@ -203,6 +234,11 @@ try {
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    // GET /api/workflows feeds the Workflows tab's tab row (MC-871 inline
+    // rehost, window._wfSyncTabsForProject) -- empty here since this context
+    // only ever authors a brand-new workflow.
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts.push(body);
@@ -224,9 +260,8 @@ try {
     window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
   });
 
-  await page.evaluate(() => { window.openWorkflowBuilder(); });
-  await page.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
-  ok('builder modal opened blank (new workflow) — canvas viewport present');
+  await newWorkflow(page, PID);
+  ok('opened the Workflows tab and "+ New Workflow" mounted the canvas inline — canvas viewport present');
 
   // ── The palette IS the Bench (UI brief §2) ────────────────────────────────
   await page.waitForSelector('.wfb-palette-person', { timeout: 5000 });
@@ -307,7 +342,7 @@ try {
   // The whole point of dragging a person: the persona is already chosen, and
   // the card leads with their face rather than a generic type label.
   const preset = await page.evaluate(() => {
-    const n = openModals.get('__workflow_builder')._wf.def.nodes[0];
+    const n = window._wfEntry()._wf.def.nodes[0];
     return { character: n.character, project_id: n.project_id };
   });
   preset.character === 'global:builder'
@@ -398,7 +433,7 @@ try {
     ? ok('picking from the + popover placed the new card AND wired the edge — no arrow drawn by hand')
     : fail(`expected +1 node and +1 edge from the popover pick, got nodes ${nodesBeforePlus}->${nodesAfterPlus}, edges ${edgesBeforePlus}->${edgesAfterPlus}`);
   const wiredFromDraft = await page.evaluate(() => {
-    const def = openModals.get('__workflow_builder')._wf.def;
+    const def = window._wfEntry()._wf.def;
     const e = def.edges[def.edges.length - 1];
     return { from: e.from, toType: (def.nodes.find(n => n.name === e.to) || {}).type };
   });
@@ -420,7 +455,7 @@ try {
   // Brief §8c rule 1: a dropped person defaults its project to that persona's
   // HOME ROOM, not to whatever project happens to be first in the list.
   const homed = await page.evaluate(() => {
-    const def = openModals.get('__workflow_builder')._wf.def;
+    const def = window._wfEntry()._wf.def;
     return def.nodes.find(n => n.character === 'project:homed') || null;
   });
   (homed && homed.project_id === 'smoke_wf')
@@ -483,12 +518,13 @@ try {
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     return route.abort();
   });
   await mpage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await mpage.waitForSelector('#projects-col .card, .mc-chat-row', { timeout: 15000 });
-  await mpage.evaluate(() => { window.openWorkflowBuilder(); });
-  await mpage.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  await newWorkflow(mpage, PID);
   const paletteFlow = await mpage.evaluate(() => {
     const builder = document.querySelector('.wfb-builder');
     const palette = document.querySelector('.wfb-palette');
@@ -497,7 +533,12 @@ try {
   (paletteFlow.builderDir === 'column-reverse' && paletteFlow.paletteDir === 'row')
     ? ok(`at a phone width, the palette lays out as a bottom sheet (builder: ${paletteFlow.builderDir}, palette row: ${paletteFlow.paletteDir})`)
     : fail(`expected the palette to become a horizontal bottom sheet at 390px, got ${JSON.stringify(paletteFlow)}`);
-  if (mPageErrors.length) mPageErrors.forEach((e) => fail('uncaught page error on mobile boot: ' + e));
+  // Same noise filter every other context in this suite (and boot-smoke.mjs)
+  // applies: opening a real project modal lazy-loads mermaid.js, whose CDN
+  // import this hermetic run always aborts (no network) -- expected, not a
+  // regression this file introduced.
+  const mUncaught = mPageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (mUncaught.length) mUncaught.forEach((e) => fail('uncaught page error on mobile boot: ' + e));
   else ok('mobile viewport booted the builder clean, no uncaught exceptions');
   await mctx.close();
 
@@ -508,6 +549,7 @@ try {
   const page2Errors = [];
   page2.on('pageerror', (e) => page2Errors.push(e.message || String(e)));
   const workflowPosts2 = [];
+  const savedWorkflows2 = [];
   await page2.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -519,25 +561,52 @@ try {
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    // GET reflects whatever's been saved so far -- lets the tabs-row
+    // assertion below confirm a save makes the workflow's tab appear.
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflows2) });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts2.push(body);
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
-        ok: true, workflow: { ...body, id: 'wf-smoke2', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
-      }) });
+      const workflow = { ...body, id: 'wf-smoke2', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' };
+      savedWorkflows2.push(workflow);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow }) });
     }
     return route.abort();
   });
   await page2.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page2.waitForSelector('#projects-col .card', { timeout: 15000 });
-  await page2.evaluate(() => { window.openWorkflowBuilder(); });
-  await page2.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  await newWorkflow(page2, PID);
   const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
   await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 120);
   await setValue(page2, '.wfb-node .wfb-name', 'harvest-triage');
   await setValue(page2, '.wfb-node .wfb-prompt', 'Score the signals.');
   await setValue(page2, '#wfb-name', 'Smoke test workflow');
   await setValue(page2, '#wfb-desc', 'Exercises the canvas end to end.');
+
+  // ── MC-871 Change 2: the Trigger box lives on the canvas, first in the
+  // flow, and is draggable via the SAME node-drag pointer path. ────────────
+  const triggerVisible = await page2.$eval('.wfb-trigger-box', () => true).catch(() => false);
+  triggerVisible ? ok('the Trigger box renders on the canvas alongside the nodes')
+                 : fail('no .wfb-trigger-box found on the canvas');
+  const triggerBeforeDrag = await page2.evaluate(() => window._wfEntry()._wf.def.trigger);
+  (triggerBeforeDrag && typeof triggerBeforeDrag.x !== 'number')
+    ? ok('an untouched trigger has no x/y yet — it renders at a computed default, not a stored one')
+    : fail(`expected no trigger.x/y before any drag, got ${JSON.stringify(triggerBeforeDrag)}`);
+  const triggerHeadBox = await (await page2.$('.wfb-trigger-box-head')).boundingBox();
+  await page2.mouse.move(triggerHeadBox.x + triggerHeadBox.width / 2, triggerHeadBox.y + triggerHeadBox.height / 2);
+  await page2.mouse.down();
+  await page2.mouse.move(triggerHeadBox.x + 60, triggerHeadBox.y + 40, { steps: 6 });
+  await page2.mouse.up();
+  await page2.waitForTimeout(120);
+  const triggerAfterDrag = await page2.evaluate(() => window._wfEntry()._wf.def.trigger);
+  (triggerAfterDrag && typeof triggerAfterDrag.x === 'number' && typeof triggerAfterDrag.y === 'number')
+    ? ok(`dragging the Trigger box's head wrote trigger.x/y into the model (${triggerAfterDrag.x},${triggerAfterDrag.y})`)
+    : fail(`dragging the Trigger box did not persist a position: ${JSON.stringify(triggerAfterDrag)}`);
+  const triggerHasNoPorts = await page2.$$eval('.wfb-trigger-box .wfb-port', els => els.length === 0);
+  triggerHasNoPorts ? ok('the Trigger box has no ports — left unconnected, as specified')
+                    : fail('the Trigger box unexpectedly renders a port');
+
   await page2.click('.wfb-actions .btn-sched-save');
   await page2.waitForTimeout(250);
   workflowPosts2.length === 1 ? ok('POST /api/workflows fired exactly once on Save')
@@ -551,11 +620,27 @@ try {
     : fail(`posted nodes malformed: ${JSON.stringify(posted.nodes)}`);
   Array.isArray(posted.edges) ? ok('posted body carries an edges array (format 2)')
                               : fail(`expected an edges array in the posted body, got ${JSON.stringify(posted.edges)}`);
+  (posted.trigger && typeof posted.trigger.x === 'number' && typeof posted.trigger.y === 'number')
+    ? ok(`the dragged trigger.x/y round-tripped into the SAVED body (${posted.trigger.x},${posted.trigger.y})`)
+    : fail(`expected trigger.x/y in the posted body, got ${JSON.stringify(posted.trigger)}`);
   await page2.waitForFunction(() => {
     const btn = document.querySelector('.wfb-actions .btn-sched-save');
     return btn && btn.textContent.trim() === 'Update';
   }, { timeout: 3000 }).then(() => ok('after a successful save, the button relabels to "Update" (workflowId adopted)'),
                             () => fail('save button never relabeled to "Update" after a successful save'));
+
+  // ── MC-871 Change 1: the tabs row picks up the newly-saved workflow
+  // (_wfSave's refreshWorkflowsList -> loadWorkflows -> window._wfSyncTabsForProject)
+  // WITHOUT losing the canvas that's still mounted showing it. ────────────
+  await page2.waitForFunction(() => document.querySelectorAll('.wfb-tab:not(.wfb-tab-new)').length === 1,
+    { timeout: 3000 }).then(() => ok('a tab for the newly-saved workflow appeared in the tabs row'),
+                            () => fail('no workflow tab appeared after saving'));
+  const tabLabel = await page2.$eval('.wfb-tab.active:not(.wfb-tab-new)', el => el.textContent.trim()).catch(() => null);
+  tabLabel === 'Smoke test workflow' ? ok(`the new tab is marked active and named "${tabLabel}"`)
+                                     : fail(`expected the active tab to read "Smoke test workflow", got ${JSON.stringify(tabLabel)}`);
+  const canvasSurvivedTabRebuild = await page2.$eval('.wfb-node[data-name="harvest-triage"]', () => true).catch(() => false);
+  canvasSurvivedTabRebuild ? ok('the tabs-row rebuild did not clobber the still-mounted canvas (same node still there)')
+                           : fail('the tabs-row rebuild after save lost the mounted canvas');
 
   const uncaught = page2Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
@@ -607,6 +692,7 @@ try {
       savedSchedule3 = { ...savedSchedule3, ...body };
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
     }
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
     return route.abort();
   });
   await page3.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -616,8 +702,7 @@ try {
     const orig = window.showToast;
     window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
   });
-  await page3.evaluate(() => { window.openWorkflowBuilder(); });
-  await page3.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  await newWorkflow(page3, PID);
 
   await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
   const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
@@ -659,7 +744,13 @@ try {
     fieldsOk ? ok(`"${label}"'s sub-fields rendered correctly`)
              : fail(`"${label}"'s sub-fields did not render as expected`);
   }
-  if (page3Errors.length) { page3Errors.forEach((e) => fail('uncaught page error while switching cadence type: ' + e)); page3Errors.length = 0; }
+  {
+    // Same CDN-import noise as the mobile check above (mermaid.js, aborted --
+    // no network in this hermetic run).
+    const cadenceUncaught = page3Errors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+    if (cadenceUncaught.length) cadenceUncaught.forEach((e) => fail('uncaught page error while switching cadence type: ' + e));
+    page3Errors.length = 0;
+  }
 
   // Weekly with no day picked must refuse to save — before this fix the day
   // row was unreachable at all, so "saved empty" wasn't even the failure
@@ -695,10 +786,11 @@ try {
     ? ok('the saved schedule carries days:[3] (Wednesday)')
     : fail(`expected days [3], got ${JSON.stringify(savedSchedule3 && savedSchedule3.days)}`);
 
-  // Close and reopen the SAME workflow — confirm the cadence round-trips.
-  await page3.click('.wfb-actions button:text-is("Close")');
-  await page3.waitForTimeout(80);
-  await page3.evaluate((id) => { window.openWorkflowBuilder(id); }, savedWorkflow3.id);
+  // Reopen the SAME workflow FROM THE SERVER (no floating modal to close any
+  // more -- openWorkflowBuilder re-fetches and remounts, which is what
+  // actually exercises the round trip; the save just above left nothing
+  // dirty, so this doesn't hit the discard-changes confirm).
+  await page3.evaluate(({ id, pid }) => { window.openWorkflowBuilder(id, pid); }, { id: savedWorkflow3.id, pid: PID });
   await page3.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
   await page3.waitForSelector('.sched-type-btn.active', { timeout: 3000 });
 
