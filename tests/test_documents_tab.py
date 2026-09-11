@@ -175,6 +175,75 @@ def test_an_unchanged_transcript_is_not_reparsed(env, monkeypatch):
     assert second == first
 
 
+def test_more_transcripts_than_the_cache_cap_still_hit_the_cache(env, monkeypatch):
+    """Regression, measured 2026-09-11 (Ron: "the documents menu started being
+    very slow to respond").
+
+    The cache was bounded at 512 entries and evicted the oldest 25% whenever it
+    filled. A single sequential pass over N > cap transcripts is the
+    pathological case for that policy: every entry is evicted before the next
+    pass reaches it, so the hit rate is not degraded but ZERO. mission_control
+    had 640 transcripts (its own dir plus 148 per-agent worktree dirs) and was
+    re-reading all 850 MB of them on EVERY Documents-tab open — 2.7 s per
+    request — while the cache reported a healthy 512 live entries throughout.
+
+    Cap is shrunk here rather than seeding 513 transcripts; the failure is
+    about the ratio, not the absolute number.
+    """
+    monkeypatch.setattr(env.art, '_DOC_WRITE_CACHE_MAX', 4)
+    for i in range(10):
+        _seed_written_doc(env, session_id=f'csid{i}', rel=f'docs/S{i}.md')
+    rt = env.art.get_runtime('claude')
+    first = rt.list_written_markdown(str(env.project_path))
+    assert len(first) == 10
+
+    def _boom(*a, **k):
+        raise AssertionError('parse_event called on an unchanged transcript')
+    monkeypatch.setattr(rt, 'parse_event', _boom)
+    assert sorted(h['path'] for h in rt.list_written_markdown(str(env.project_path))) ==         sorted(h['path'] for h in first)
+
+
+def test_trim_never_evicts_this_passs_own_working_set(env, monkeypatch):
+    """A pass whose working set alone exceeds the cap leaves the cache OVER
+    the bound rather than thrashed to a 0% hit rate. The overshoot is bounded
+    by one project's transcript count; re-parsing its whole history on every
+    request is not bounded by anything."""
+    monkeypatch.setattr(env.art, '_DOC_WRITE_CACHE_MAX', 4)
+    for i in range(10):
+        _seed_written_doc(env, session_id=f'csid{i}', rel=f'docs/S{i}.md')
+    env.art.get_runtime('claude').list_written_markdown(str(env.project_path))
+    assert len(env.art._DOC_WRITE_CACHE) == 10
+
+
+def test_trim_drops_untouched_entries_down_to_the_cap(env):
+    """The bound is still real for entries no live scan wants — e.g. another
+    project's transcripts, or a deleted session's."""
+    cache = {f'k{i}': (0.0, 0, []) for i in range(10)}
+    env.art._trim_scan_cache(cache, 4, {'k7', 'k8', 'k9'})
+    assert len(cache) == 4
+    assert {'k7', 'k8', 'k9'} <= set(cache)      # touched survive
+    assert 'k0' not in cache                     # oldest untouched went first
+
+
+def test_a_write_is_still_found_among_lines_without_a_file_path(env):
+    """The scan pre-filters on the literal 'file_path' before json.loads (the
+    cold-start cost is parsing every line of every transcript). The filter is
+    only sound if it is a strict superset of what can hit."""
+    target = env.project_path / 'docs' / 'SPEC.md'
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text('# Spec', encoding='utf-8')
+    d = _transcript_dir_for(env)
+    _write_transcript(d / 'csid1.jsonl', [
+        ('2026-09-01T00:00:00Z', [{'type': 'text', 'text': 'thinking about .md files'}]),
+        ('2026-09-01T00:01:00Z', [{'type': 'tool_use', 'name': 'Bash', 'id': 'b1',
+                                   'input': {'command': 'ls docs/SPEC.md'}}]),
+        ('2026-09-01T00:02:00Z', [{'type': 'tool_use', 'name': 'Write', 'id': 't1',
+                                   'input': {'file_path': str(target), 'content': '# Spec'}}]),
+    ])
+    hits = env.art.get_runtime('claude').list_written_markdown(str(env.project_path))
+    assert [h['path'] for h in hits] == [str(target)]
+
+
 def test_finds_a_write_from_a_dispatched_subagents_own_transcript(env):
     """The real gap found verifying MC-939 against docs/CHANNEL_MODEL_SPEC.md:
     a Task-tool subagent's Write call lives ONLY in its own nested transcript

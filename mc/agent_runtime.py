@@ -975,8 +975,39 @@ _SESSION_ROW_CACHE_MAX = 512
 
 # Same shape and rationale, for list_written_markdown() (MC-939 Documents tab):
 # path → (mtime, size, [{'path','ts','tool','session_id'}, ...]).
+#
+# The bound MUST stay comfortably above one project's transcript count, and the
+# eviction MUST NOT drop an entry the in-flight scan is about to want again.
+# Measured 2026-09-11 (Ron: "the documents menu started being very slow"):
+# mission_control had 640 transcripts (its own dir plus 148 per-agent worktree
+# dirs) against a cap of 512 with FIFO-evict-25%. A single sequential pass over
+# N > cap files is the pathological case for that policy — every entry is
+# evicted before the next pass reaches it — so the hit rate was not degraded,
+# it was ZERO: 640 files and 850 MB of JSONL re-read and re-parsed on every
+# single Documents-tab open, 2.7 s, with the cache reporting a healthy 512
+# entries throughout. Nothing errored; it just silently stopped caching the day
+# the worktree count crossed the cap.
 _DOC_WRITE_CACHE: Dict[str, Any] = {}
-_DOC_WRITE_CACHE_MAX = 512
+_DOC_WRITE_CACHE_MAX = 4096
+
+
+def _trim_scan_cache(cache: Dict[str, Any], max_entries: int, touched: set) -> None:
+    """Evict from a transcript-scan cache AFTER a pass, never during one.
+
+    Drops only entries this pass did NOT touch, oldest-inserted first. If the
+    pass's own working set alone exceeds `max_entries`, the cache is left
+    OVER the bound rather than thrashed to a 0% hit rate — a bounded overshoot
+    (one project's transcript count, ~175 bytes/entry) is cheap; re-parsing
+    the whole history on every request is not.
+    """
+    if len(cache) <= max_entries:
+        return
+    for k in list(cache):
+        if len(cache) <= max_entries:
+            break
+        if k in touched:
+            continue
+        cache.pop(k, None)
 
 # Same shape and rationale again, for ClaudeRuntime.list_running_subagents()
 # (MC-937 Phase 4 — live subagent visibility): path → (mtime, size, row).
@@ -1650,6 +1681,7 @@ class ClaudeRuntime(AgentRuntime):
             files.extend(iter_transcript_files_in_dir(d, seen_names))
 
         by_path: Dict[str, Dict[str, Any]] = {}
+        touched: set = set()
         for f in files:
             try:
                 st = f.stat()
@@ -1657,6 +1689,7 @@ class ClaudeRuntime(AgentRuntime):
             except OSError:
                 continue
             ckey = str(f)
+            touched.add(ckey)
             cached = _DOC_WRITE_CACHE.get(ckey)
             if cached and cached[0] == mtime and cached[1] == fsize:
                 hits = cached[2]
@@ -1665,6 +1698,15 @@ class ClaudeRuntime(AgentRuntime):
                 try:
                     with open(f, 'r', encoding='utf-8', errors='replace') as fh:
                         for raw_line in fh:
+                            # Strict superset pre-filter: the only lines that can
+                            # produce a hit carry a Write/Edit tool_use whose input
+                            # has a "file_path" key, so a line without that literal
+                            # substring cannot match — and json.loads on every line
+                            # of 850 MB is the whole cold-start cost. Measured
+                            # 2026-09-11: 163,115 lines → 10,213 parsed, 2.33 s →
+                            # 1.15 s, identical 611 hits.
+                            if 'file_path' not in raw_line:
+                                continue
                             ev = self.parse_event(raw_line)
                             if ev is None or ev.type != EventType.TOOL_USE:
                                 continue
@@ -1682,14 +1724,12 @@ class ClaudeRuntime(AgentRuntime):
                                                 'session_id': f.stem})
                 except Exception:
                     hits = []
-                if len(_DOC_WRITE_CACHE) >= _DOC_WRITE_CACHE_MAX:
-                    for k in list(_DOC_WRITE_CACHE)[:_DOC_WRITE_CACHE_MAX // 4]:
-                        _DOC_WRITE_CACHE.pop(k, None)
                 _DOC_WRITE_CACHE[ckey] = (mtime, fsize, hits)
             for h in hits:
                 prev = by_path.get(h['path'])
                 if not prev or (h.get('ts') or '') >= (prev.get('ts') or ''):
                     by_path[h['path']] = h
+        _trim_scan_cache(_DOC_WRITE_CACHE, _DOC_WRITE_CACHE_MAX, touched)
         return list(by_path.values())
 
     def list_running_subagents(self, project_path: str,
