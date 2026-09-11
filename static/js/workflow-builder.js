@@ -185,7 +185,12 @@ async function openWorkflowBuilder(workflowId) {
 }
 
 function _wfFreshState(def, workflowId, error) {
-  return { def, workflowId, saving: false, error: error || null, _cardSeq: 0, _charLoads: [], viewport: { x: 60, y: 40, scale: 1 } };
+  // linkedSchedule: the schedule record whose workflow_id points at this
+  // workflow (MC-871 Q4 -- "one store, two views"). null until loaded/created;
+  // the CADENCE lives there, never duplicated onto def.trigger, which stays
+  // a bare `{type: 'schedule'}` marker.
+  return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
+           _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null };
 }
 
 async function _wfLoadInto(entry, workflowId) {
@@ -201,9 +206,28 @@ async function _wfLoadInto(entry, workflowId) {
       found ? JSON.parse(JSON.stringify(found)) : _wfBlankDef(),
       found ? found.id : null,
       found ? null : 'Workflow not found');
+    if (found) await _wfLoadLinkedSchedule(entry._wf);
   } catch (e) {
     entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow');
   }
+}
+
+// The schedule store is the single source of truth for cadence (spec Q4);
+// this just finds the one row (if any) pointing back at this workflow.
+async function _wfLoadLinkedSchedule(st) {
+  if (!st.workflowId) return;
+  try {
+    const res = await fetch(API_BASE + '/api/schedules');
+    const list = await res.json();
+    st.linkedSchedule = (list || []).find(s => s.workflow_id === st.workflowId) || null;
+  } catch (e) {
+    st.linkedSchedule = null;
+  }
+}
+
+function _wfDraftSchedule() {
+  return { schedule_type: 'daily', time: '09:00', days: [1, 2, 3, 4, 5],
+           interval_minutes: 60, run_at: '', cron_expr: '' };
 }
 
 // ── Graph helpers, ported from mc/workflows.py so the builder can enforce
@@ -342,6 +366,7 @@ function _wfSyncDomToModel(entry) {
   if (descEl) def.description = descEl.value;
   const enabledEl = document.getElementById('wfb-enabled');
   if (enabledEl) def.enabled = !!enabledEl.checked;
+  if (def.trigger && def.trigger.type === 'schedule') _wfSyncScheduleFormToState(entry._wf);
   const nodes = def.nodes || [];
   const edges = def.edges || [];
   const renameMap = {};
@@ -429,11 +454,12 @@ function _wfRenderBody(st) {
           <input type="radio" name="wfb-trigger" value="manual" ${triggerType !== 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('manual')">
           Manual &mdash; Run Now or the API
         </label>
-        <label class="wfb-trigger-opt wfb-trigger-disabled" title="Scheduler linkage (a schedule record's workflow_id) is a later build-order pass, not wired yet">
-          <input type="radio" name="wfb-trigger" value="schedule" disabled>
-          On a schedule <span class="wfb-soon">(coming soon)</span>
+        <label class="wfb-trigger-opt">
+          <input type="radio" name="wfb-trigger" value="schedule" ${triggerType === 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('schedule')">
+          On a schedule
         </label>
       </div>
+      ${triggerType === 'schedule' ? _wfRenderScheduleCadence(st) : ''}
     </div>
     <div class="wfb-builder">
       <div class="wfb-palette">
@@ -655,8 +681,123 @@ async function _wfReloadCharacters(seq, want) {
 function _wfSetTriggerType(t) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
   _wfSyncDomToModel(entry);
-  entry._wf.def.trigger = { type: t };
+  const st = entry._wf;
+  st.def.trigger = { type: t };
+  if (t === 'schedule' && !st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
   _wfRender();
+}
+
+// ── Trigger card: schedule cadence sub-form ──────────────────────────────────
+// The cadence itself lives on the linked SCHEDULE record (spec Q4 -- "one
+// store, two views"), never duplicated onto def.trigger. This mirrors
+// scheduler.js's own type-fields form but under a distinct `wfb-sched-*`
+// namespace so the two forms can never collide if both modals are open.
+
+function _wfRenderScheduleCadence(st) {
+  const s = st.linkedSchedule || _wfDraftSchedule();
+  const missing = !!(st.def.trigger && st.def.trigger.type === 'schedule' && st.linkedSchedule === null && st.workflowId);
+  return `
+    <div class="wfb-sched-cadence">
+      ${missing ? '<div class="memory-hint" style="margin:0 0 8px">No schedule found for this trigger yet &mdash; save to create one.</div>' : ''}
+      <div class="sched-type-row">
+        ${['daily', 'interval', 'once', 'cron'].map(t => `<button type="button" class="sched-type-btn${s.schedule_type === t ? ' active' : ''}" onclick="_wfSetSchedType('${t}')">${t[0].toUpperCase()}${t.slice(1)}</button>`).join('')}
+      </div>
+      <div id="wfb-sched-type-fields">${_wfSchedTypeFieldsHTML(s.schedule_type, s)}</div>
+      ${st.linkedSchedule && st.linkedSchedule.id ? `
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-weight:normal;margin-top:8px">
+        <span class="schedule-toggle ${st.linkedSchedule.enabled !== false ? 'on' : ''}" onclick="_wfToggleSchedEnabled()"></span>
+        <span>${st.linkedSchedule.enabled !== false ? 'Enabled' : 'Disabled'}</span>
+      </label>` : ''}
+    </div>`;
+}
+
+// Deliberately separate from scheduler.js's renderSchedTypeFields (different
+// element ids under wfb-sched-*) rather than shared, to avoid two forms
+// fighting over one #sched-type-fields if the Scheduler modal is ALSO open.
+// <input type="datetime-local"> speaks local wall time with no zone attached
+// -- inlined rather than imported, since scheduler.js's own `_schedLocalInputValue`
+// is module-private (ES modules don't leak top-level bindings; see this
+// file's header on window accessors).
+function _wfLocalInputValue(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const p = n => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}T${p(d.getHours())}:${p(d.getMinutes())}`;
+}
+
+function _wfSchedTypeFieldsHTML(type, s) {
+  const time = s.time || '09:00';
+  const days = s.days || [1, 2, 3, 4, 5];
+  const interval = s.interval_minutes || 60;
+  const runAt = _wfLocalInputValue(s.run_at);
+  const cronExpr = s.cron_expr || '';
+  if (type === 'daily') {
+    const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+    return `
+      <label>Time</label>
+      <input type="time" id="wfb-sched-time" value="${esc(time)}">
+      <label>Days</label>
+      <div class="sched-days">
+        ${dayLabels.map((label, i) => { const d = i + 1; return `<button type="button" class="sched-day-btn${days.includes(d) ? ' active' : ''}" data-day="${d}" onclick="this.classList.toggle('active')">${label}</button>`; }).join('')}
+      </div>`;
+  }
+  if (type === 'interval') {
+    return `<label>Interval (minutes)</label><input type="number" id="wfb-sched-interval" value="${interval}" min="1" step="1">`;
+  }
+  if (type === 'once') {
+    return `<label>Run At</label><input type="datetime-local" id="wfb-sched-runat" value="${esc(runAt)}">`;
+  }
+  if (type === 'cron') {
+    return `<label>Cron Expression</label><input type="text" id="wfb-sched-cron" value="${esc(cronExpr)}" placeholder="*/15 * * * *" spellcheck="false" style="font-family:var(--mono)">`;
+  }
+  return '';
+}
+
+function _wfSetSchedType(type) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const st = entry._wf;
+  _wfSyncScheduleFormToState(st);
+  st.linkedSchedule.schedule_type = type;
+  const box = document.getElementById('wfb-sched-type-fields');
+  if (box) box.innerHTML = _wfSchedTypeFieldsHTML(type, st.linkedSchedule);
+  document.querySelectorAll('.wfb-sched-cadence .sched-type-btn').forEach(b => b.classList.toggle('active', b.textContent.toLowerCase() === type));
+}
+
+function _wfToggleSchedEnabled() {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  const st = entry._wf;
+  if (!st.linkedSchedule) return;
+  st.linkedSchedule.enabled = !(st.linkedSchedule.enabled !== false);
+  _wfRender();
+}
+
+// Reads the cadence sub-form's live DOM values back into st.linkedSchedule.
+// Called before anything that might re-render the card (switching type) or
+// save, mirroring _wfSyncDomToModel's "sync at the moment of a structural
+// action" rule -- typing in the cron field is never clobbered by that.
+function _wfSyncScheduleFormToState(st) {
+  if (!st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
+  const s = st.linkedSchedule;
+  const timeEl = document.getElementById('wfb-sched-time');
+  if (timeEl) s.time = timeEl.value;
+  const daysEls = document.querySelectorAll('.wfb-sched-cadence .sched-day-btn.active');
+  if (daysEls.length || document.getElementById('wfb-sched-time')) {
+    s.days = [...daysEls].map(b => parseInt(b.dataset.day, 10));
+  }
+  const intervalEl = document.getElementById('wfb-sched-interval');
+  if (intervalEl) s.interval_minutes = parseInt(intervalEl.value, 10) || 60;
+  const runAtEl = document.getElementById('wfb-sched-runat');
+  if (runAtEl && runAtEl.value) {
+    // <input type="datetime-local"> is local wall time with no zone attached
+    // -- convert through Date the same way scheduler.js's saveSchedule does,
+    // never a raw string round-trip (that shifted a one-shot's fire time by
+    // the host's UTC offset).
+    const d = new Date(runAtEl.value);
+    if (!isNaN(d.getTime())) s.run_at = d.toISOString();
+  }
+  const cronEl = document.getElementById('wfb-sched-cron');
+  if (cronEl) s.cron_expr = cronEl.value;
 }
 
 function _wfAddOutcome(name) {
@@ -1231,6 +1372,7 @@ async function _wfSave() {
     if (!res.ok || !data.ok) throw new Error(data.error || ('HTTP ' + res.status));
     st.workflowId = data.workflow.id;
     st.def = JSON.parse(JSON.stringify(data.workflow));
+    await _wfSaveLinkedSchedule(st);
     st.saving = false;
     showToast('Workflow saved', 3000);
     _wfRender();
@@ -1239,6 +1381,43 @@ async function _wfSave() {
     st.saving = false;
     st.error = 'Save failed: ' + e.message;
     _wfRender();
+  }
+}
+
+// The authoring face of MC-871 Q4: "choosing 'on a schedule' creates or edits
+// the linked schedule record through the EXISTING CRUD. One store, two
+// views." Runs AFTER the workflow itself is saved, so a brand-new workflow
+// has a real id to point workflow_id at. Reverting to Manual deletes the
+// linked schedule outright -- a disabled-but-lingering row pointing at a
+// workflow whose author no longer wants a cadence is exactly the dangling
+// state the deleted-workflow guard on the OTHER side exists to avoid.
+async function _wfSaveLinkedSchedule(st) {
+  const isSchedule = st.def.trigger && st.def.trigger.type === 'schedule';
+  if (!isSchedule) {
+    if (st.linkedSchedule && st.linkedSchedule.id) {
+      try { await fetch(`${API_BASE}/api/schedules/${encodeURIComponent(st.linkedSchedule.id)}`, { method: 'DELETE' }); } catch (e) {}
+      st.linkedSchedule = null;
+    }
+    return;
+  }
+  const s = st.linkedSchedule || _wfDraftSchedule();
+  const body = {
+    workflow_id: st.workflowId,
+    task: '', project_id: '',
+    enabled: s.enabled !== false,
+    schedule_type: s.schedule_type || 'daily',
+    time: s.time, days: s.days, interval_minutes: s.interval_minutes,
+    run_at: s.run_at, cron_expr: s.cron_expr,
+  };
+  try {
+    const url = s.id ? `${API_BASE}/api/schedules/${encodeURIComponent(s.id)}` : `${API_BASE}/api/schedules`;
+    const method = s.id ? 'PUT' : 'POST';
+    const res = await fetch(url, { method, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    st.linkedSchedule = data;
+  } catch (e) {
+    showToast('Workflow saved, but the schedule failed: ' + e.message, 6000);
   }
 }
 

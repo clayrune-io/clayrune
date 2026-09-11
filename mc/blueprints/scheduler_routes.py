@@ -62,6 +62,7 @@ from mc.state import (
 import mc.github_sync as _gh_sync
 import mc.project_sync as _proj_sync
 import mc.distiller as _distiller           # exploration read-floor (steward cycle refresh)
+from mc import workflows as _wf             # MC-871 Q4: a schedule may invoke a workflow run
 from mc import memory as _mem            # memory read-floor (steward cycle refresh)
 from steward import core as _steward_core  # cycle-task builder + skills delta
 # NOTE: `steward.core` is a leaf (no Flask, no blueprint imports), so this does
@@ -609,86 +610,112 @@ def _scheduler_loop():
                         sched['next_run'] = _compute_next_run(sched)
                         changed = True
                         continue
-                    pid = sched.get('project_id', '')
-                    task = sched.get('task', '')
-                    steward_respawn = False
-                    if sched.get('steward') and pid:
-                        # A steward's task was FROZEN into the schedule row at
-                        # enable time and re-dispatched verbatim forever, so a
-                        # long-running steward could never see anything learned
-                        # after it was switched on. Rebuild the prompt each fire
-                        # with the delta since its last cycle. Must ride in the
-                        # task text: `claude -r` restores the ORIGINAL system
-                        # prompt and ignores --append-system-prompt, so the user
-                        # turn is the only channel that survives a resume.
+                    workflow_id = sched.get('workflow_id', '')
+                    if workflow_id:
+                        # MC-871 Q4: a workflow is a thing a schedule invokes —
+                        # no second scheduler, no workflow clock. `start_run`
+                        # already carries the deleted-workflow (KeyError),
+                        # disabled-workflow (ValueError) and one-live-run-per-
+                        # workflow (RuntimeError) guards; a fire that hits any
+                        # of them is skipped and logged, exactly the shape the
+                        # busy/steward skips just above already use — never a
+                        # silently dropped tick.
                         try:
-                            refreshed = _steward_cycle_task(pid)
-                            if refreshed:
-                                task, steward_respawn = refreshed
+                            run = _wf.start_run(workflow_id, trigger_type='schedule')
+                            _log(f"[scheduler] Started workflow run {run.get('id')} "
+                                 f"for schedule {sched.get('id')} ({workflow_id})")
+                        except KeyError:
+                            _log(f"[scheduler] Skipped for schedule {sched.get('id')}: "
+                                 f"workflow {workflow_id!r} no longer exists")
+                        except RuntimeError:
+                            _log(f"[scheduler] Skipped for schedule {sched.get('id')}: "
+                                 f"a run of workflow {workflow_id!r} is already live")
+                        except ValueError as e:
+                            _log(f"[scheduler] Skipped for schedule {sched.get('id')}: {e}")
                         except Exception as e:
-                            _log(f"[steward] cycle-task refresh failed for {pid}: "
-                                 f"{e}; falling back to the stored task")
-                    if pid and task:
-                        sched_id = sched.get('id', '')
-                        cont = sched.get('continue_session', True)
-                        try:
-                            outcome = None
-                            # steward_respawn: a new skill landed since the last
-                            # cycle, and a live process only reads the skills dir
-                            # at spawn. Skip the stdin-append path so we take the
-                            # cold `-r` respawn below — same conversation, fresh
-                            # process, skills actually loaded. _scheduled_continue
-                            # is also what guards against overlapping cycles, so
-                            # keep its busy check on this path too.
-                            if steward_respawn and _steward_cycle_running(pid):
-                                _log(f"[steward] Skipped for {pid}: prior cycle "
-                                     f"still running (respawn deferred)")
-                                sched['last_run'] = now_iso()
-                                sched['next_run'] = _compute_next_run(sched)
-                                changed = True
-                                continue
-                            if cont and not steward_respawn:
-                                prev_sid = _latest_session_id_for_schedule(pid, sched_id)
-                                if prev_sid:
-                                    pp_ = load_project(pid)
-                                    if pp_:
-                                        # Continued thread: stamp a local-time
-                                        # header so the long single transcript
-                                        # reads as a time series.
-                                        outcome = _scheduled_continue(
-                                            pp_, pid, prev_sid,
-                                            _scheduled_run_marker() + task)
-                            if outcome == 'busy':
-                                _log(f"[scheduler] Skipped for {pid}: prior run of "
-                                     f"{sched_id} still active -> session {prev_sid}")
-                            elif outcome in ('appended', 'revived'):
-                                _log(f"[scheduler] Continued ({outcome}) for {pid}: "
-                                     f"{task[:60]} -> session {prev_sid}")
-                            else:
-                                # First run, or nothing continuable — fresh dispatch.
-                                resume_id = ''
-                                if cont:
-                                    resume_id = _latest_claude_sid_for_schedule(pid, sched_id)
-                                # Resuming the same Claude convo by cold respawn:
-                                # reuse the prior run's MC row + mark the turn,
-                                # so continued fires stay one thread / one tab /
-                                # one resolvable transcript instead of orphaning
-                                # a csid-less row per cadence tick.
-                                reuse_sid = ''
-                                dispatch_task = task
-                                if resume_id:
-                                    reuse_sid = _newest_run_session_id_for_schedule(pid, sched_id)
-                                    dispatch_task = _scheduled_run_marker() + task
-                                sid = _dispatch_agent_internal(pid, dispatch_task,
-                                                              resume_id=resume_id,
-                                                              trigger_type='schedule',
-                                                              trigger_id=sched_id,
-                                                              reuse_session_id=reuse_sid,
-                                                              character=sched.get('character') or '')
-                                tag = ' (resumed)' if resume_id else ''
-                                _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
-                        except Exception as e:
-                            _log(f"[scheduler] Failed to dispatch for {pid}: {e}")
+                            _log(f"[scheduler] Failed to start workflow run for "
+                                 f"schedule {sched.get('id')}: {e}")
+                    else:
+                        pid = sched.get('project_id', '')
+                        task = sched.get('task', '')
+                        steward_respawn = False
+                        if sched.get('steward') and pid:
+                            # A steward's task was FROZEN into the schedule row at
+                            # enable time and re-dispatched verbatim forever, so a
+                            # long-running steward could never see anything learned
+                            # after it was switched on. Rebuild the prompt each fire
+                            # with the delta since its last cycle. Must ride in the
+                            # task text: `claude -r` restores the ORIGINAL system
+                            # prompt and ignores --append-system-prompt, so the user
+                            # turn is the only channel that survives a resume.
+                            try:
+                                refreshed = _steward_cycle_task(pid)
+                                if refreshed:
+                                    task, steward_respawn = refreshed
+                            except Exception as e:
+                                _log(f"[steward] cycle-task refresh failed for {pid}: "
+                                     f"{e}; falling back to the stored task")
+                        if pid and task:
+                            sched_id = sched.get('id', '')
+                            cont = sched.get('continue_session', True)
+                            try:
+                                outcome = None
+                                # steward_respawn: a new skill landed since the last
+                                # cycle, and a live process only reads the skills dir
+                                # at spawn. Skip the stdin-append path so we take the
+                                # cold `-r` respawn below — same conversation, fresh
+                                # process, skills actually loaded. _scheduled_continue
+                                # is also what guards against overlapping cycles, so
+                                # keep its busy check on this path too.
+                                if steward_respawn and _steward_cycle_running(pid):
+                                    _log(f"[steward] Skipped for {pid}: prior cycle "
+                                         f"still running (respawn deferred)")
+                                    sched['last_run'] = now_iso()
+                                    sched['next_run'] = _compute_next_run(sched)
+                                    changed = True
+                                    continue
+                                if cont and not steward_respawn:
+                                    prev_sid = _latest_session_id_for_schedule(pid, sched_id)
+                                    if prev_sid:
+                                        pp_ = load_project(pid)
+                                        if pp_:
+                                            # Continued thread: stamp a local-time
+                                            # header so the long single transcript
+                                            # reads as a time series.
+                                            outcome = _scheduled_continue(
+                                                pp_, pid, prev_sid,
+                                                _scheduled_run_marker() + task)
+                                if outcome == 'busy':
+                                    _log(f"[scheduler] Skipped for {pid}: prior run of "
+                                         f"{sched_id} still active -> session {prev_sid}")
+                                elif outcome in ('appended', 'revived'):
+                                    _log(f"[scheduler] Continued ({outcome}) for {pid}: "
+                                         f"{task[:60]} -> session {prev_sid}")
+                                else:
+                                    # First run, or nothing continuable — fresh dispatch.
+                                    resume_id = ''
+                                    if cont:
+                                        resume_id = _latest_claude_sid_for_schedule(pid, sched_id)
+                                    # Resuming the same Claude convo by cold respawn:
+                                    # reuse the prior run's MC row + mark the turn,
+                                    # so continued fires stay one thread / one tab /
+                                    # one resolvable transcript instead of orphaning
+                                    # a csid-less row per cadence tick.
+                                    reuse_sid = ''
+                                    dispatch_task = task
+                                    if resume_id:
+                                        reuse_sid = _newest_run_session_id_for_schedule(pid, sched_id)
+                                        dispatch_task = _scheduled_run_marker() + task
+                                    sid = _dispatch_agent_internal(pid, dispatch_task,
+                                                                  resume_id=resume_id,
+                                                                  trigger_type='schedule',
+                                                                  trigger_id=sched_id,
+                                                                  reuse_session_id=reuse_sid,
+                                                                  character=sched.get('character') or '')
+                                    tag = ' (resumed)' if resume_id else ''
+                                    _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
+                            except Exception as e:
+                                _log(f"[scheduler] Failed to dispatch for {pid}: {e}")
                     sched['last_run'] = now_iso()
                     if sched.get('schedule_type') == 'once':
                         if sched.get('delete_after_run'):
@@ -1009,7 +1036,27 @@ def get_schedules():
         # first time one is renamed.
         s['character_display'] = _schedule_character_display(
             s.get('character') or '', by_id.get(s['project_id']))
+        # Same treatment for the OTHER thing a schedule can point at (MC-871
+        # Q4): a workflow can be deleted out from under a schedule, and
+        # nothing downstream should have to re-derive that -- see the
+        # `character_display.missing` precedent just above.
+        s['workflow_display'] = _schedule_workflow_display(s.get('workflow_id') or '')
     return jsonify(schedules)
+
+
+def _schedule_workflow_display(workflow_id):
+    """{id, name, enabled, missing} for the workflow a schedule invokes, or
+    None when the schedule targets a task instead. Mirrors
+    `_schedule_character_display`'s missing-badge convention rather than
+    inventing a second one: a dangling id must say so, not render as nothing
+    or (worse) silently fire a broken run at the next tick."""
+    if not workflow_id:
+        return None
+    wf = _wf.get_workflow(workflow_id)
+    if not wf:
+        return {'id': workflow_id, 'name': workflow_id, 'enabled': False, 'missing': True}
+    return {'id': workflow_id, 'name': wf.get('name') or workflow_id,
+            'enabled': wf.get('enabled', True), 'missing': False}
 
 
 def _schedule_character_display(character, project):
@@ -1111,9 +1158,19 @@ def create_schedule_from_spec(data: dict):
     """
     pid = (data.get('project_id') or '').strip()
     task = (data.get('task') or '').strip()
+    workflow_id = (data.get('workflow_id') or '').strip()
     stype = data.get('schedule_type', 'daily')
-    if not pid or not task:
+    # MC-871 Q4: a schedule invokes EITHER a raw task OR a workflow, never
+    # both and never neither -- a row that could mean two things is a row
+    # that fires as whichever branch happened to be checked first.
+    if bool(task) == bool(workflow_id):
+        return None, (jsonify({
+            'error': 'exactly one of task or workflow_id is required'}), 400)
+    if task and not pid:
         return None, (jsonify({'error': 'project_id and task required'}), 400)
+    if workflow_id and not _wf.get_workflow(workflow_id):
+        return None, (jsonify({
+            'error': f'workflow {workflow_id!r} not found'}), 400)
     # Fail loudly here rather than at fire time. A row with a type nobody
     # computes a next_run for stores fine, returns 201 and reads `enabled` —
     # and never runs. That is how 'weekly' stayed broken: accepted, enabled,
@@ -1122,15 +1179,22 @@ def create_schedule_from_spec(data: dict):
     if stype not in SCHEDULE_TYPES:
         return None, (jsonify({'error': f'unknown schedule_type {stype!r}; '
                                f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400)
-    character, cerr = _validated_schedule_character(data.get('character'), pid)
-    if cerr:
-        return None, cerr
+    # A workflow's steps each carry their own persona -- a schedule-level
+    # character pick has no meaning here and would silently go unused, so
+    # skip the (project-scoped) persona lookup rather than validate a field
+    # that a workflow-targeted row has no business setting.
+    character = ''
+    if not workflow_id:
+        character, cerr = _validated_schedule_character(data.get('character'), pid)
+        if cerr:
+            return None, cerr
 
     sched = {
         'id': uuid.uuid4().hex[:8],
         'enabled': True,
         'project_id': pid,
         'task': task,
+        'workflow_id': workflow_id,
         # Who runs it. "" inherits the project's default_character, exactly as
         # a manual dispatch does — a schedule should not be the one surface
         # where a project's persona silently stops applying.
@@ -1178,10 +1242,23 @@ def update_schedule(schedule_id):
         return jsonify({'error': f'unknown schedule_type {data["schedule_type"]!r}; '
                                  f'expected one of {sorted(SCHEDULE_TYPES)}'}), 400
 
+    # MC-871 Q4: same mutual-exclusion rule as create, checked against the
+    # MERGED result -- an edit that clears `task` while leaving a stale
+    # `workflow_id` in place (or vice versa) is just as invalid as sending
+    # both at create time.
+    target_task = (data.get('task', sched.get('task', '')) or '').strip()
+    target_workflow_id = (data.get('workflow_id', sched.get('workflow_id', '')) or '').strip()
+    if bool(target_task) == bool(target_workflow_id):
+        return jsonify({
+            'error': 'exactly one of task or workflow_id is required'}), 400
+    if target_workflow_id and not _wf.get_workflow(target_workflow_id):
+        return jsonify({'error': f'workflow {target_workflow_id!r} not found'}), 400
+
     # Re-validate against the project this row will END UP on: moving a
     # schedule to another project can orphan a project-scoped persona, and the
-    # PUT is the last moment anything can say so.
-    if 'character' in data or 'project_id' in data:
+    # PUT is the last moment anything can say so. Not applicable to a
+    # workflow-targeted row -- see create_schedule_from_spec's reasoning.
+    if not target_workflow_id and ('character' in data or 'project_id' in data):
         target_pid = data.get('project_id', sched.get('project_id', ''))
         raw = data.get('character', sched.get('character', ''))
         character, cerr = _validated_schedule_character(raw, target_pid)
@@ -1189,7 +1266,7 @@ def update_schedule(schedule_id):
             return cerr
         sched['character'] = character
 
-    for key in ('project_id', 'task', 'description', 'continue_session',
+    for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
                 'interval_minutes', 'enabled', 'run_at', 'cron_expr',
                 'delete_after_run'):
@@ -1224,6 +1301,22 @@ def schedule_run_now(schedule_id):
     sched = next((s for s in schedules if s.get('id') == schedule_id), None)
     if not sched:
         return jsonify({'error': 'schedule not found'}), 404
+    workflow_id = sched.get('workflow_id', '')
+    if workflow_id:
+        # Same branch the cadence fire takes (MC-871 Q4) — "Run Now" is an
+        # extra dispatch, not a different code path, so it inherits the same
+        # deleted/disabled/busy guards for free.
+        try:
+            run = _wf.start_run(workflow_id, trigger_type='schedule')
+        except KeyError:
+            return jsonify({'error': f'workflow {workflow_id!r} not found'}), 404
+        except RuntimeError as e:
+            return jsonify({'ok': False, 'busy': True, 'error': str(e)}), 409
+        except ValueError as e:
+            return jsonify({'error': str(e)}), 400
+        sched['last_run'] = now_iso()
+        _save_schedules(schedules)
+        return jsonify({'ok': True, 'run': run})
     pid = sched.get('project_id', '')
     task = sched.get('task', '')
     if not pid or not task:
@@ -1301,6 +1394,21 @@ def schedule_runs(schedule_id):
     sched = next((s for s in schedules if s.get('id') == schedule_id), None)
     if not sched:
         return jsonify({'error': 'schedule not found'}), 404
+    workflow_id = sched.get('workflow_id', '')
+    if workflow_id:
+        # A workflow run record has a different shape from an agent_log entry
+        # (steps/status/trigger, not session_id) — `kind` lets the frontend
+        # pick the right renderer instead of guessing from field presence.
+        runs = _wf.list_runs(workflow_id, limit=1000)
+        total = len(runs)
+        page = runs[offset:offset + limit]
+        return jsonify({
+            'kind': 'workflow',
+            'runs': page,
+            'total': total,
+            'offset': offset,
+            'limit': limit,
+        })
     pid = sched.get('project_id', '')
     if not pid:
         return jsonify({'runs': [], 'total': 0, 'offset': 0, 'limit': limit})

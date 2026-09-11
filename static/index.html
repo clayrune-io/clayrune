@@ -2792,8 +2792,37 @@ function _runStatusIcon(status) {
   if (status === 'completed') return '<span style="color:#22c55e">&#x2714;</span>';
   if (status === 'error' || status === 'failed') return '<span style="color:#ef4444">&#x26A0;</span>';
   if (status === 'interrupted' || status === 'stopped') return '<span style="color:#f59e0b">&#x25A0;</span>';
+  if (status === 'waiting') return '<span style="color:#f59e0b">&#x23F8;</span>';
   if (status === 'running' || status === 'idle' || status === 'in_progress') return '<span style="color:var(--accent)">&#x25CF;</span>';
   return '<span style="color:var(--text-faint)">&#x25CB;</span>';
+}
+
+// A workflow run record (mc/workflows.py) has a different shape from an
+// agent_log entry -- no session_id/claude_session_id, so it can't reuse
+// renderRunRows' click-to-open-transcript behaviour (there is no single
+// transcript; a run is N step dispatches). No dedicated run-detail viewer
+// exists yet (MC-871 Q6, a later pass), so a click surfaces what the record
+// already has -- per-step status and the run's own error -- as a toast
+// rather than pretending a transcript exists.
+function renderWorkflowRunRows(runs) {
+  if (!runs || !runs.length) {
+    return '<div class="runs-empty">No runs yet.</div>';
+  }
+  return runs.map(r => {
+    const ts = r.created || '';
+    const steps = r.steps || {};
+    const stepNames = Object.keys(steps);
+    const doneCount = stepNames.filter(n => ['completed', 'skipped'].includes(steps[n].status)).length;
+    const summary = r.error ? r.error : `${doneCount}/${stepNames.length} steps`;
+    const detail = (stepNames.map(n => `${n}: ${steps[n].status}`).join(' | ') + (r.error ? ` | error: ${r.error}` : ''))
+      .replace(/\s+/g, ' ');
+    const detailJs = esc(detail).replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<div class="run-row" onclick="showToast('${detailJs}', 6000)" title="${esc(detail)}">
+      <span class="run-row-ts">${esc(ts)}</span>
+      <span class="run-row-status">${_runStatusIcon(r.status)}</span>
+      <span class="run-row-summary">${esc(r.status)} &mdash; ${esc(summary)}</span>
+    </div>`;
+  }).join('');
 }
 
 // Build the pagination footer ("‹ Prev | Page X of Y (N total) | Next › | Last »").

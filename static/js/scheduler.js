@@ -194,18 +194,31 @@ async function refreshScheduleList() {
                cd.missing ? '<span class="sched-who-tag">missing</span>'
                : cd.inherited ? '<span class="sched-who-tag">default</span>' : ''}</span>`
         : '';
+      // A workflow-invoking schedule has no task/persona/continue-session of
+      // its own -- those live per-step inside the workflow. Show what it DOES
+      // point at instead, with the same missing-badge convention agentPill
+      // already uses (MC-871 Q4).
+      const wd = s.workflow_display;
+      const targetLine = wd
+        ? `<div class="schedule-card-task" title="${esc(wd.name)}">
+             <span class="sched-who${wd.missing ? ' missing' : ''}" title="${esc(wd.missing
+               ? `Workflow "${wd.name}" no longer exists — this schedule can never fire`
+               : `Runs the "${wd.name}" workflow`)}">&#x1F500; ${esc(wd.name)}${
+               wd.missing ? '<span class="sched-who-tag">missing</span>' : ''}</span>
+           </div>`
+        : `<div class="schedule-card-task" title="${esc(s.task)}">${esc(s.task)}</div>`;
       return `<div class="schedule-card-wrap">
         <div class="schedule-card${cardClass}">
           <div class="schedule-card-body">
             <div class="schedule-card-project" style="color:${_schedProjectColor(s.project_id)}">${
               esc(s.project_name || s.project_id)}${agentPill}</div>
             ${descLine}
-            <div class="schedule-card-task" title="${esc(s.task)}">${esc(s.task)}</div>
+            ${targetLine}
             <div class="schedule-card-meta">
               <span>${desc}</span>
               <span>Last: ${lastRun}</span>
               <span>Next: ${nextRun}</span>
-              ${continueBadge}
+              ${wd ? '' : continueBadge}
             </div>
           </div>
           <div class="schedule-card-actions">
@@ -267,7 +280,10 @@ async function loadScheduleRunsPage(scheduleId, projectId, offset) {
     const runs = data.runs || [];
     const total = data.total || 0;
     const pageFnTemplate = `loadScheduleRunsPage('${esc(scheduleId)}','${esc(projectId)}',$OFFSET)`;
-    panel.innerHTML = renderRunRows(runs, projectId)
+    // A workflow-invoking schedule's runs are workflow run records, not
+    // agent_log entries (MC-871 Q4) -- different shape, different renderer.
+    const rows = data.kind === 'workflow' ? renderWorkflowRunRows(runs) : renderRunRows(runs, projectId);
+    panel.innerHTML = rows
                     + renderRunsPagination(total, data.offset || 0, data.limit || limit, pageFnTemplate);
   } catch(e) {
     panel.innerHTML = '<div class="runs-empty">Failed to load runs.</div>';
@@ -602,7 +618,16 @@ async function editSchedule(id) {
     const res = await fetch(API_BASE + '/api/schedules');
     const schedules = await res.json();
     const sched = schedules.find(s => s.id === id);
-    if (sched) showScheduleForm(sched);
+    if (!sched) return;
+    // A workflow-invoking schedule has no task box to edit here -- the
+    // Workflow Builder's trigger card IS the authoring face for its cadence
+    // (spec Q4: "one store, two views"). Editing it here would either show a
+    // blank task form or let someone type a task that never runs.
+    if (sched.workflow_id) {
+      if (typeof window.openWorkflowBuilder === 'function') window.openWorkflowBuilder(sched.workflow_id);
+      return;
+    }
+    showScheduleForm(sched);
   } catch(e) {}
 }
 

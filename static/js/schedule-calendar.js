@@ -265,6 +265,9 @@ function _scalWillRun(s) { return !!s.enabled && !_scalPaused(); }
 function _scalTitle(s) {
   const d = (s.description || '').trim();
   if (d) return d.length > 60 ? d.slice(0, 57) + '…' : d;
+  // A workflow-invoking schedule has no task text -- its own name IS the
+  // title (MC-871 Q4: "a workflow badge and the workflow's name").
+  if (s.workflow_display) return s.workflow_display.name;
   const first = (s.task || '').trim().split(/\r?\n/)[0].trim();
   if (!first) return s.id;
   return first.length > 60 ? first.slice(0, 57) + '…' : first;
@@ -337,6 +340,16 @@ function _scalWhoHTML(s) {
   return `<span class="scal-block-who">${window.avatarHTML(cd.avatar, 13)}</span>`;
 }
 
+// The workflow badge (MC-871 Q4) — same slot _scalWhoHTML fills for "who runs
+// it", for the OTHER thing a chip can point at. `missing` renders even
+// though the schedule can never fire: a struck-through/dead chip already
+// says "won't run"; this says WHY.
+function _scalWorkflowBadgeHTML(s) {
+  const wd = s && s.workflow_display;
+  if (!wd) return '';
+  return `<span class="scal-block-who" title="${wd.missing ? 'Workflow deleted' : 'Runs a workflow'}">&#x1F500;${wd.missing ? ' &#x26A0;' : ''}</span>`;
+}
+
 function _scalBlockHTML(p, range) {
   const { it, mins, col, total } = p;
   const s = it.s;
@@ -351,7 +364,7 @@ function _scalBlockHTML(p, range) {
       title="${esc(_scalTitle(s))} — ${esc(_scalHhmm(it.when))}${
         s.character_display ? ' — runs as ' + esc(s.character_display.name) : ''}">
     <span class="scal-block-time">${esc(_scalHhmm(it.when))}</span>
-    ${_scalWhoHTML(s)}
+    ${_scalWhoHTML(s)}${_scalWorkflowBadgeHTML(s)}
     <span class="scal-block-title">${esc(_scalTitle(s))}</span>
   </div>`;
 }
@@ -367,7 +380,7 @@ function _scalAllDayChipHTML(s) {
   return `<div class="scal-allday-chip${live ? '' : ' dead'}"
       style="--scal-color:${_scalProjectColor(s.project_id)}"
       onclick="scalOpenDetail('${esc(s.id)}')"
-      title="${esc(_scalTitle(s))}${every ? ' — ' + esc(every) : ''}">${esc(_scalTitle(s))}</div>`;
+      title="${esc(_scalTitle(s))}${every ? ' — ' + esc(every) : ''}">${_scalWorkflowBadgeHTML(s)}${esc(_scalTitle(s))}</div>`;
 }
 
 function _scalAllDayHTML(days, always, cssCols) {
@@ -629,10 +642,14 @@ function scalOpenDetail(id) {
       <div class="scal-detail-meta">
         <span>Next: <b>${esc(nextRun)}</b></span>
         <span>Last: <b>${esc(lastRun)}</b></span>
-        <span>${s.continue_session === false ? 'Fresh session each run' : 'Continues prior session'}</span>
+        ${s.workflow_display ? '' : `<span>${s.continue_session === false ? 'Fresh session each run' : 'Continues prior session'}</span>`}
       </div>
-      <div class="scal-detail-label">Prompt sent to the agent</div>
-      <div class="scal-detail-task">${esc(s.task || '(no task)')}</div>
+      ${s.workflow_display
+        ? `<div class="scal-detail-label">Workflow</div>
+           <div class="scal-detail-task">${esc(s.workflow_display.name)}${
+             s.workflow_display.missing ? ' — deleted, this schedule can never fire' : ''}</div>`
+        : `<div class="scal-detail-label">Prompt sent to the agent</div>
+           <div class="scal-detail-task">${esc(s.task || '(no task)')}</div>`}
       <div class="scal-detail-actions">
         <span class="scal-detail-toggle">
           <span class="schedule-toggle ${s.enabled ? 'on' : ''}"
@@ -642,9 +659,23 @@ function scalOpenDetail(id) {
         </span>
         <button class="btn-header-action" onclick="scalRunNow('${esc(s.id)}')"
                 title="Dispatch this task now">&#x25B6; Run Now</button>
+        ${s.workflow_display
+          ? `<button class="btn-header-action" onclick="scalOpenRuns('${esc(s.id)}','${esc(s.project_id || '')}')">Runs</button>`
+          : ''}
         <button class="btn-header-action" onclick="scalEdit('${esc(s.id)}')">Edit</button>
       </div>
     </div>`;
+}
+
+// MC-871 Q4: "clicking its chip opens the workflow's run history rather than
+// the schedule form's task box" -- there is no task box for a workflow
+// schedule to begin with (see the detail body above), so this is the
+// explicit route to the same "Runs" affordance the card list already has,
+// reusing that panel rather than building a second run-history view.
+function scalOpenRuns(id, projectId) {
+  scalCloseDetail();
+  if (typeof window.openScheduler === 'function') window.openScheduler();
+  setTimeout(() => { if (typeof toggleScheduleRuns === 'function') toggleScheduleRuns(id, projectId); }, 250);
 }
 
 function scalCloseDetail() {

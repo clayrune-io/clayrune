@@ -8312,8 +8312,13 @@
   .wfb-trigger-row { display: flex; gap: 18px; flex-wrap: wrap; }
   .wfb-trigger-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
   .wfb-trigger-opt input { margin: 0; }
-  .wfb-trigger-disabled { color: var(--text-faint); cursor: not-allowed; }
-  .wfb-soon { font-size: 10px; color: var(--text-faint); font-style: italic; }
+  .wfb-sched-cadence { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
+  .wfb-sched-cadence label { display: block; font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.4px; margin: 8px 0 4px; text-transform: uppercase; }
+  .wfb-sched-cadence label:first-of-type { margin-top: 0; }
+  .wfb-sched-cadence input, .wfb-sched-cadence select {
+    width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 13px; padding: 6px 9px; border-radius: 5px; outline: none; box-sizing: border-box;
+  }
 
   /* ── The canvas (R2-D7): palette docked left (a bottom sheet under the
      mobile breakpoint), free-positioned nodes, one absolutely-positioned SVG
