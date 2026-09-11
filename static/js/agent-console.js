@@ -542,43 +542,86 @@ function _wfStartPolling(projectId) {
     loadWorkflows(projectId);
   }, 3000);
 }
+// ── Clayrune workflows (MC-871 Q6's minimum: reachable + editable from this
+// tab). "any workflow with a step in this project" per spec — the CRUD list
+// isn't project-scoped (workflows are global objects), so this filters
+// client-side by walking each definition's node tree for a matching
+// project_id. Run history / calendar badge / next-fire are later phases
+// (spec build order: "... -> tab list -> builder modal"); this pass only
+// makes the authoring surface (the builder modal, MC-871 Q7) reachable.
+function _wfStepHasProject(node, projectId) {
+  if (!node) return false;
+  if (node.project_id === projectId) return true;
+  if (node.type === 'paths') {
+    const branches = node.branches || {};
+    if (Object.values(branches).some(list => (list || []).some(n => _wfStepHasProject(n, projectId)))) return true;
+    return (node.otherwise || []).some(n => _wfStepHasProject(n, projectId));
+  }
+  if (node.type === 'approval') {
+    const branches = node.branches || {};
+    return Object.values(branches).some(list => (list || []).some(n => _wfStepHasProject(n, projectId)));
+  }
+  return false;
+}
+function _wfClayruneWorkflowsFor(projectId, list) {
+  return (list || []).filter(w => (w.steps || []).some(s => _wfStepHasProject(s, projectId)));
+}
+function _wfRenderClayruneSection(projectId, list) {
+  const mine = _wfClayruneWorkflowsFor(projectId, list);
+  const rows = mine.map(w => `
+    <div class="wfb-list-row${w.enabled === false ? ' disabled' : ''}">
+      <div class="wfb-list-row-body">
+        <div class="wfb-list-row-name">${esc(w.name || 'Untitled workflow')}</div>
+        ${w.description ? `<div class="wfb-list-row-desc" title="${esc(w.description)}">${esc(w.description)}</div>` : ''}
+      </div>
+      <button class="btn-header-action" style="padding:3px 10px;font-size:11px" onclick="openWorkflowBuilder('${esc(w.id)}')">Edit</button>
+    </div>`).join('');
+  return `<div class="card-section" style="margin-bottom:14px">
+    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
+      <span>Workflows</span>
+      <button class="btn-add" style="padding:5px 12px;font-size:11px" onclick="openWorkflowBuilder()">+ New Workflow</button>
+    </div>
+    ${rows || '<div style="color:var(--text-faint);font-style:italic;font-size:12px;padding:4px 0 2px">No workflows involve this project yet.</div>'}
+  </div>`;
+}
+// Re-fetched after a save in the builder modal so a newly created/edited
+// workflow shows up here without a manual tab switch.
+async function refreshWorkflowsList() {
+  document.querySelectorAll('[id^="workflows-body-"]').forEach(el => {
+    const pid = el.id.slice('workflows-body-'.length);
+    if ((modalActiveTab[pid] || 'agent') === 'workflows') loadWorkflows(pid);
+  });
+}
+window.refreshWorkflowsList = refreshWorkflowsList;
+
 async function loadWorkflows(projectId) {
   const el = document.getElementById('workflows-body-' + projectId);
   if (!el) return;
+  let clayruneSection = '';
+  try {
+    const wfRes = await fetch(API_BASE + '/api/workflows');
+    if (wfRes.ok) clayruneSection = _wfRenderClayruneSection(projectId, await wfRes.json());
+  } catch (e) { /* the CC fan-out section below still renders on its own */ }
+
   try {
     const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/workflows`);
     if (!res.ok) {
-      el.innerHTML = '<div style="color:var(--text-faint);font-style:italic">Could not load workflows.</div>';
+      el.innerHTML = clayruneSection + '<div style="color:var(--text-faint);font-style:italic">Could not load Claude Code fan-outs.</div>';
       _wfStopPolling(projectId);
       return;
     }
     const data = await res.json();
     const wfs = data.workflows || [];
+    // Q6: the CC fan-out section is a transient 24h reconstruction — "when
+    // none exist the section is absent, not empty." The Clayrune list above
+    // is the tab's real home now, so the old empty-state pitch (which only
+    // ever explained the CC feature) is gone with it.
     if (!wfs.length) {
-      // WAS A DEAD SENTENCE. Ron, 2026-09-10: "its not really clear what it
-      // means, the menu needs to be more interactive." The old copy named a
-      // magic phrase and left the user to retype it into another tab — it
-      // explained neither what a workflow IS nor why anyone would want one,
-      // and the only call to action was manual transcription.
-      //
-      // So: say what it does in one line, then DO the tab switch and pre-fill
-      // the composer, leaving the cursor after the phrase so the user types
-      // the actual goal. The authoring canvas is specced but unbuilt, so the
-      // composer is still the real entry point — this just stops pretending
-      // the user should know that.
-      el.innerHTML = `
-        <div class="wf-empty">
-          <div class="wf-empty-title">No workflows have run here in the last 24h.</div>
-          <div class="wf-empty-body">A workflow runs several agents against one goal in a
-            fixed order — each step's output feeds the next, without you retyping the
-            handoff. Worth it for work that repeats or splits cleanly into parts.</div>
-          <button class="btn-add wf-empty-cta"
-            onclick="wfStartFromEmptyState('${projectId}')">Start a workflow</button>
-        </div>`;
+      el.innerHTML = clayruneSection;
       _wfStopPolling(projectId);
       return;
     }
-    el.innerHTML = wfs.map(w => {
+    const fanoutRows = wfs.map(w => {
       const badge = w.running
         ? '<span style="color:var(--amber,#d98a00);font-weight:600">● running</span>'
         : '<span style="color:var(--green,#2e7d32);font-weight:600">✓ complete</span>';
@@ -589,10 +632,13 @@ async function loadWorkflows(projectId) {
         <pre style="white-space:pre;overflow-x:auto;font-size:12px;line-height:1.45;font-family:var(--mono,monospace);margin:6px 0 0">${esc(w.ascii || '')}</pre>
       </div>`;
     }).join('');
+    el.innerHTML = clayruneSection
+      + '<div class="section-title" style="margin-bottom:4px">Claude Code fan-outs (live)</div>'
+      + fanoutRows;
     if (wfs.some(w => w.running)) _wfStartPolling(projectId);
     else _wfStopPolling(projectId);
   } catch (e) {
-    el.innerHTML = '<div style="color:var(--text-faint);font-style:italic">Failed to load workflows.</div>';
+    el.innerHTML = clayruneSection + '<div style="color:var(--text-faint);font-style:italic">Failed to load Claude Code fan-outs.</div>';
     _wfStopPolling(projectId);
   }
 }
@@ -668,24 +714,6 @@ window.openMemoryModal = openMemoryModal;
 window._mcMenuClose = _mcMenuClose;
 window._mcMenuSwitchTab = _mcMenuSwitchTab;
 window.switchModalTab = switchModalTab;
-
-// Drop the user into the one place a workflow can actually be started, with the
-// phrase already typed. Named on `window` because it is called from an inline
-// onclick and static/js/*.js are ES modules.
-function wfStartFromEmptyState(projectId) {
-  switchModalTab(projectId, 'agent');
-  setTimeout(() => {
-    const box = document.getElementById(`agent-task-${projectId}`);
-    if (!box) return;
-    const seed = 'use a workflow to ';
-    if (!box.value.trim()) box.value = seed;
-    box.focus();
-    // Cursor AFTER the phrase, so the next keystroke is the goal itself.
-    box.setSelectionRange(box.value.length, box.value.length);
-    box.dispatchEvent(new Event('input', { bubbles: true }));  // let autosize run
-  }, 60);
-}
-window.wfStartFromEmptyState = wfStartFromEmptyState;
 
 window.applyTabFilter = applyTabFilter;
 window.clearTabSearch = clearTabSearch;
