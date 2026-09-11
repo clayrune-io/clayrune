@@ -550,4 +550,193 @@ passes with fewer node types than v1 needed.
 
 ---
 
-*Spec only, both revisions. No implementation in this change.*
+# Revision 3 (2026-09-11) — the full vocabulary: actions, nodes, triggers, failure
+
+Ron's ask: map the whole action surface — "think of all possible scenarios."
+This section does the enumeration honestly and then cuts it, because an
+allowlist that mirrors the API is not an allowlist. Every candidate below is
+derived from what the server can already do (`data/agent_reference/
+CLAYRUNE_API.md`, the blueprints), not imagined. Every recommendation is
+marked; every rejection carries its reason.
+
+**The test an action must pass, restated:** an action node runs with NO agent
+in the loop, unattended. So it must be (a) deterministic — same inputs, same
+call, no judgement; (b) inward-facing or gated (§R3-2); (c) incapable of
+widening what workflows can do (§R3-3); (d) clean on data ownership
+(DATA_DIR, Scribe) and secrets (no credential parameters, ever — a template
+slot that could carry a token is a transcript leak by construction).
+
+## R3-1 — The candidate table, complete
+
+Verdicts: **IN** (v2 allowlist) · **GATED** (allowlisted only behind a
+mandatory approval dominator, §R3-2) · **OUT** (excluded, reason given).
+
+| Candidate action | Maps to | Deterministic? | v2 | Why |
+|---|---|---|---|---|
+| `backlog_create` | `POST /api/project/<pid>/backlog` | yes | **IN** (ships today) | Inward record write; the Desk and any triage pipeline files follow-ups with it. |
+| `backlog_patch` (status/text) | `PATCH …/backlog/<id>` | yes | **IN** (ships today) | State change on an item is always allowed, even unattended (AGENT_RULES). |
+| `desk_harvest` | `POST /api/desk/signals/harvest` | yes | **IN** (ships today) | Deterministic scan; first phase of the acceptance pipeline. |
+| `journal_append` | module fn: append to `docs/_journal/<item>-<slug>.md` (small helper in `mc/workflows.py`; no HTTP route exists or is needed) | yes | **IN** (new) | The sanctioned unattended log path. A pipeline that runs on a cadence needs a durable record of what each run did, and backlog notes are forbidden to unattended machinery — this is the replacement the 2026-08-15 rule itself names. |
+| `notify_operator` | `mc/question_channel.py` email path — the channel approval gates already use; recipient fixed by server config, **not a node parameter** | yes | **IN** (new) | "Tell Ron X happened" without parking the run. Deterministic send to one authored-nowhere recipient. This is not general mail (see `mail_send` below); the recipient not being authorable is what keeps it inward-facing — it is the operator's own interrupt channel, and it answers the separately-raised alerting ask together with §R3-6. |
+| `restore_point_create` | `POST /api/backup/restore-point/<pid>` | yes | **IN** (new) | Cheap, reversible, inward. A pipeline about to mutate project records snapshots first — the reversibility rule practiced, not just obeyed. |
+| `backlog_note` | `POST …/backlog/<id>/note` | yes | **OUT** | BINDING 2026-08-15: unattended machinery never writes backlog notes. A workflow run is unattended machinery. `journal_append` is the sanctioned equivalent. |
+| `backlog_link` / attachments | `POST …/links`, `…/attachments` | yes | **OUT** | Deterministic and harmless, but no pipeline needs them. The allowlist grows on demonstrated need, not on harmlessness. |
+| `desk_triage` | `POST /api/desk/triage` | **no** — dispatches Posy (`desk_routes.py:534`) | **OUT** | Not an action at all: the route spawns an agent. In a workflow this is an **agent step**; wrapping it as an action would fire an unwitnessed agent outside the completion latch, breaking R2-D4's serial, witnessed model. |
+| `desk_draft` | `POST /api/desk/draft` | **no** — dispatches Posy (`desk_routes.py:386`) | **OUT** | Same reason, same remedy: agent step. |
+| `desk_publish` | does not exist yet (THE_DESK_SPEC "Still to build") | yes when built | **GATED** (future) | The first outward-facing action. Enters the allowlist only with the `gated` flag; see §R3-2 for why gated rather than excluded. |
+| `desk_ledger_record` | `POST /api/desk/ledger` | yes | **OUT** (until publish) | Bookkeeping for a publish; ships as part of the `desk_publish` action when that exists, not separately. |
+| `mail_send` (arbitrary recipient/subject) | `tools/night-review/send_mail.py` / SMTP | yes mechanically | **OUT** | Outward-facing with an authorable recipient — that is publishing, and a template slot feeding a recipient field is an exfiltration primitive. `notify_operator` covers the only legitimate case. |
+| `memory_append` (session log) | `POST /api/project/<pid>/memory/append` | yes | **OUT** | MEMORY.md is Scribe-owned; and the 413-over-budget response demands trim-and-retry judgement no deterministic node has. Line 3 of the brief, applied. |
+| `memory_position` | `POST …/memory/positions` | yes mechanically | **OUT** | A position is a ruling that outranks notes in every future prompt. Writing one requires the judgement that a question is *settled* — agent work at minimum, arguably human work. Machinery must not author rulings. |
+| `browser_read` | `POST /api/browser/read` | **no** — live web | **OUT** | Untrusted third-party text piped by template into a later agent's prompt with no judgement between: a prompt-injection relay. An agent step reads the browser under the envelope discipline; an action never does. |
+| `agent_dispatch` (fire-and-forget) | `POST …/agent/dispatch` | no | **OUT** | The agent node IS this, with a completion latch. An unlatch(ed) dispatch is a run the workflow cannot witness. |
+| `hivemind_create`/`start` | `/api/hivemind/*` | no | **OUT** | Unattended agent fan-out with no gate — the burn-rate rule, and not deterministic work. |
+| `schedule_create`/`edit`/`pause` | `/api/schedules` CRUD | yes | **OUT — authority guard** | A schedule can invoke a workflow (Q4). Machinery that writes schedules writes triggers — self-scheduling is self-expansion. Rejected whole: even pause-only blurs the line for one marginal convenience. |
+| `workflow_*` CRUD, sub-run via API | `/api/workflows*` | yes | **OUT — authority guard** | The position (`position_whetheranagentsession…`) refuses this to agents at the route layer; an action doing it would be the same violation with fewer keystrokes. A workflow must not author what workflows can do. |
+| `skill_*`, `mcp_*`, roster/character writes | `/api/skills`, `/api/mcp`, roster routes | yes | **OUT — authority guard** | Each one changes what future agents can do or who they are. The constitutional bright line (`_authority_violation`), verbatim. |
+| `terminal_launch` | `POST /api/terminal/launch` | runs arbitrary command | **OUT — authority guard** | A code/eval node through the side door — Q2 banned it by name. |
+| `github_sync` | `POST …/github/sync` | yes | **OUT** | Writes to an external service. No pipeline needs it; if one ever does, it enters as GATED, not IN. |
+| `system_restart`/`update`, `process_kill` | `/api/system/*`, `/api/processes/*` | yes | **OUT** | Restart requires explicit human approval (standing rule); killing PIDs is the process-hygiene incident waiting to recur. |
+| `backup_rollback` | `POST /api/backup/rollback/…` | yes | **OUT** | Destructive overwrite of current state. Creating a restore point is reversible; using one is not. Human-only. |
+| `config_patch` | `PUT /api/config` | yes | **OUT — authority guard** | Config includes the flags that govern agents and workflows themselves. |
+
+**v2 allowlist, final: `backlog_create`, `backlog_patch`, `desk_harvest`,
+`journal_append`, `notify_operator`, `restore_point_create`.** Six verbs,
+zero gated entries until `desk_publish` exists. Growing the list remains a
+spec change, not a config change (Q2, unchanged).
+
+## R3-2 — Outward-facing actions: gated, not excluded — and the gate is structural
+
+The brief's question: is outward-facing (publish, mail, push, pay) excluded
+entirely, or gated behind a mandatory approval node?
+
+**Decision: gated — because exclusion would break the acceptance test, and
+the gate can be made structural rather than conventional.** The Desk's
+publish phase is the reason this feature exists; excluding outward actions
+forever means the pipeline's last step is permanently manual retyping, the
+exact failure the reopen condition names. SHARED_RULES' reversibility rule
+does not say "never take irreversible steps" — it says they happen only on
+Ron's go-ahead, emailed when unattended. An approval gate delivered over the
+question channel IS that go-ahead, on the sanctioned channel, recorded on
+the run.
+
+The mechanism, so it cannot rot into convention: each allowlist entry
+carries a `gated` flag. `validate_workflow` refuses to save — and
+`compile_workflow` refuses to run — any graph where a gated action is not
+**dominated** by an approval gate (every path from the trigger to the action
+passes through one). The dominator machinery already exists (R2-D5); this
+reuses it. An author cannot wire publish around the human even by hand-editing
+the store file, and the runner still cannot answer the gate (Q5, the
+position). One gate can dominate several gated actions — approving "release"
+once covers the publish and its ledger write.
+
+What stays excluded even with a gate: anything with an authorable external
+recipient or target (`mail_send`, `github_sync` today, payment forever). A
+gate proves a human said "go"; it does not sanitize where the action points.
+Gated entries must point somewhere the server already owns.
+
+## R3-3 — The authority guard, applied to the vocabulary
+
+Rejected on this basis alone, enumerated so nobody re-litigates them one at
+a time: workflow CRUD, schedule CRUD (including pause), skills CRUD, MCP
+CRUD, roster/character writes, config writes, terminal launch. The common
+shape: each writes something that governs what agents or workflows can do or
+be. A workflow that can write triggers, definitions, skills, or tools is a
+workflow that can widen workflows — self-expansion wearing a new costume,
+same as the position's reasoning for the CRUD refusal. This holds even
+though a human authored the workflow: the human authored *this* pipeline,
+not the pipeline it could author for itself.
+
+## R3-4 — Node types: the palette does not grow in v2
+
+Evaluated, per the brief. The runner is serial, single-live-run, frontier +
+skip-propagation, advancing only on callbacks — it has no clock. That fact
+prices everything here.
+
+- **Wait/delay — OUT.** A delay needs a timer that survives restart: a new
+  persistence shape, a new adoption path, for a runner that today only wakes
+  on completion callbacks and decisions. The trigger's schedule already owns
+  cadence; "continue tomorrow" is two workflows on two schedules, or one
+  schedule at the later hour. The Desk never waits mid-run — it waits
+  between runs. Reopen if a pipeline genuinely needs an intra-run delay.
+- **Notify — an ACTION, not a node.** It completes instantly and parks
+  nothing; nodes that deserve types are the ones with distinct runtime
+  behaviour (park, dispatch, branch). `notify_operator` (R3-1) covers it.
+- **Sub-workflow call — DEFER.** Costs: run-in-run state the adoption scan
+  doesn't model, one-live-run semantics ambiguous across parent and child,
+  cycle detection across definitions instead of within one. Buys: reuse no
+  second pipeline yet demands — the Desk is one graph. Reopen when two real
+  workflows share a real sub-graph.
+- **Foreach — OUT.** The handoff moves prose plus a small result dict
+  (Q3); there is no list type to iterate. Per-item fan-out of agent work is
+  Hivemind's job, and a foreach over agent steps inside a serial runner is
+  a hidden loop — Q2's no-cycles rule approached from behind.
+
+## R3-5 — Triggers: `manual` and `schedule` stand; events are named, not built
+
+An event trigger (backlog item changed, agent finished, file landed, queue
+item approved) is real only when three things exist, none of which do:
+
+1. **Emit points** — a single `emit_event(type, payload)` called at the
+   mutation sites (backlog PATCH, the completion callback, Desk queue
+   transitions). The completion latch (`_maybe_notify_spawner`) is the one
+   near-real candidate; file-landed would additionally need a watcher
+   process, which is a new resident cost.
+2. **A trigger record** — `{event_type, filter}` on the workflow, with
+   defined matching semantics.
+3. **Self-trigger suppression** — a workflow whose own `backlog_patch`
+   action re-fires its own backlog trigger is an infinite loop the DAG
+   rules cannot see, because it crosses run boundaries. One-live-run blunts
+   the storm but does not prevent the cycle.
+
+**Decision: defer the whole class.** Manual + schedule expresses the Desk
+and every named second pipeline. When an event trigger is built, it starts
+with `agent_finished` (the latch exists) and ships suppression on day one.
+
+## R3-6 — Failure is a first-class path: `on_failure` edges, and the runner tells someone
+
+`otherwise` is not error handling and was never claimed to be: it routes an
+agent that *answered without declaring a valid outcome*. A step that
+**fails** — dispatch refused, agent errored, action HTTP error, unresolvable
+slot — currently kills the run with a log line (`_fail_run`, workflows.py:733)
+and tells no one. Ron has separately asked for alerting on failures; the
+vocabulary should express this, and the runner should backstop it.
+
+**Decision, two layers:**
+
+1. **A reserved `on_failure` edge label**, alongside `otherwise`. Any node —
+   including an action node — may have outgoing edges with `when:
+   "on_failure"`; they fire when that step fails, and the step's error text
+   is exposed as `{{steps.<name>.error}}`. This does not violate the
+   no-conditional-edges-on-actions rule, because that rule exists to keep
+   actions out of the *judgement* business — an outcome is judged, a failure
+   is a fact the runner already holds. Skip-propagation handles both
+   directions for free: on success the failure branch dies, on failure the
+   success branch dies (R2-D2, unchanged). No `on_failure` edge → the run
+   fails exactly as today. The canonical use: failure edge → `notify_operator`
+   → end. The builder renders the port red; it is never mandatory.
+2. **A runner backstop, not authored:** when a run ends `failed` or
+   `interrupted` and no `on_failure` edge consumed the failure, the runner
+   sends one operator-channel notification naming the workflow, the step,
+   and the error. Config-gated (`workflow_failure_notify`, default ON),
+   deliberately not a node — an author forgetting to wire error handling
+   must not mean silence, and the email-brevity rule shapes the message.
+   Per-failure, never per-cycle, so it does not train the inbox-ignoring
+   failure mode PushNotification warns about.
+
+`on_failure` joins `otherwise` as the only reserved `when` values; the
+validator refuses either as an authored outcome label.
+
+## Acceptance, re-walked once more
+
+Harvest (action) → triage (Posy, agent) —`worth_drafting`→ draft (Posy,
+agent) → approval gate —`release`→ publish (**future gated action**, its
+gate the dominator R3-2 requires) → ledger write (folded into publish) →
+measure (agent, next cadence). Failure on any step: `on_failure` →
+`notify_operator`, or the runner backstop. Every phase maps; the pipeline's
+log lands in `journal_append`, not backlog notes. The acceptance test still
+passes, now including the phase v1 could not express.
+
+---
+
+*Spec only, all three revisions. No implementation in this change.*
