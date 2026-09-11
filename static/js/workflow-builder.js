@@ -932,7 +932,7 @@ function _wfRenderPalette(st) {
     <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')">
       <span class="wfb-palette-icon">&#9881;</span>
       <span class="wfb-palette-block-info"><span>Action</span>
-        <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_LABELS).length} verbs &middot; no agent</span></span>
+        <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent</span></span>
     </div>
     <div class="wfb-palette-hint">Drop a person on the canvas, or on a card to run after it. Every port's + adds and wires the next step.</div>`;
 }
@@ -956,25 +956,37 @@ function _wfHireSomeone() {
   if (typeof window.floorHire === 'function') window.floorHire();
 }
 
+// Icon shown in the header of a non-agent card (UI brief mockup: a small
+// glyph + the type in dimmed caps). Agent cards lead with the face instead
+// (below) so they carry no icon of their own.
+function _wfTypeIcon(t) {
+  return { approval: '&#9995;', action: '&#9881;' }[t] || '';
+}
+
 function _wfRenderNode(st, node) {
   const nameAttr = esc(node.name || '');
   let own = '';
   if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
-  else if (node.type === 'approval') own = _wfRenderApprovalOwn(node);
+  else if (node.type === 'approval') own = _wfRenderApprovalOwn(st, node);
   else if (node.type === 'action') own = _wfRenderActionOwn(st, node);
   else own = 'Unknown node type.';
   const edges = st.def.edges || [];
-  const outPorts = _wfOutPorts(node);
-  const portsHtml = outPorts.map((p) => {
-    const connected = edges.some(e => e.from === node.name && (e.when || null) === (p.when || null));
-    return `<div class="wfb-port-row${p.when === 'otherwise' ? ' wfb-port-otherwise' : ''}${connected ? '' : ' wfb-port-unconnected'}">
-      ${p.label ? `<span class="wfb-port-label">${esc(p.label)}</span>` : ''}
-      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(p.when || '')}" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
-      <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(p.label || 'this step')}&rdquo;, run&hellip;"
-        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(p.when || '')}')">&#43;</button>
+  // A declared vocabulary (agent outcomes / approval options) renders its
+  // ports as pills INSIDE the card body (see _wfRenderVocabRows, called from
+  // _wfRenderAgentOwn/_wfRenderApprovalOwn) -- there is nothing left for the
+  // card-edge ports column to draw. Only the plain, single, unconditional
+  // port (a no-outcome agent step or any action node -- action steps cannot
+  // have conditional edges, validate_workflow) still uses it.
+  const vocabPresent = _wfVocab(node).length > 0;
+  const portsHtml = vocabPresent ? '' : (() => {
+    const connected = edges.some(e => e.from === node.name && (e.when || null) === null);
+    return `<div class="wfb-port-row${connected ? '' : ' wfb-port-unconnected'}">
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <button type="button" class="wfb-port-plus" title="After this step, run&hellip;"
+        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','')">&#43;</button>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
-  }).join('');
+  })();
   // An agent card leads with WHO, not with a type label — the persona was
   // chosen by the drag itself (UI brief §3), so the face is the identity and
   // the step name is the subtitle it is referenced by in slots.
@@ -986,7 +998,7 @@ function _wfRenderNode(st, node) {
          <span class="wfb-node-step-sep">&middot;</span>
          <span class="wfb-node-step-name">${esc(node.name || '')}</span>
        </span>`
-    : `<span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>`;
+    : `<span class="wfb-node-type-icon">${_wfTypeIcon(node.type)}</span><span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>`;
   // Step 6: Run-now (and a failed Save) surface INLINE on the offending card,
   // not only as a toast (brief §7) -- st.runErrors is a {nodeName: message}
   // map a validate attempt populates; _wfRender's caller pans the canvas to
@@ -995,14 +1007,14 @@ function _wfRenderNode(st, node) {
   return `<div class="wfb-node${runError ? ' wfb-node-error' : ''}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
       ${headHtml}
-      <button class="wfb-node-del" title="Delete step" onclick="_wfDeleteNode('${_wfJsStrEsc(node.name)}')">&#10005;</button>
+      <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
     </div>
     <div class="wfb-node-own">
       ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
       ${own}
     </div>
     <span class="wfb-port wfb-port-in" data-node="${nameAttr}"><span class="wfb-port-dot"></span></span>
-    <div class="wfb-ports-out">${portsHtml}</div>
+    ${vocabPresent ? '' : `<div class="wfb-ports-out">${portsHtml}</div>`}
   </div>`;
 }
 
@@ -1011,64 +1023,123 @@ function _wfRenderNode(st, node) {
 // Only the branching editor below the prompt changed (a flat `outcomes`
 // array instead of nested branch lists, since branching is now edge `when`
 // labels, not a child node — R2-D6).
+// Outcome/option rows AND their ports, unified into one card-body section
+// (UI brief mockup: each outcome is a pill carrying its own port dot on the
+// card's right edge, a dashed "+ outcome" pill last, "otherwise" beneath in
+// dimmed italic with a hollow port). Shared by the agent/approval editors
+// below since both are just _wfVocab(node) with a different field name and
+// mutator pair.
+function _wfRenderVocabRows(st, node, kind) {
+  const vocab = kind === 'outcome' ? (node.outcomes || []) : (node.options || []);
+  const edges = st.def.edges || [];
+  const nameAttr = esc(node.name || '');
+  const removeFn = kind === 'outcome' ? '_wfRemoveOutcome' : '_wfRemoveOption';
+  const addFn = kind === 'outcome' ? '_wfAddOutcome' : '_wfAddOption';
+  const inputCls = kind === 'outcome' ? 'wfb-outcome-input' : 'wfb-option-input';
+  const rows = vocab.map((label, oi) => {
+    const connected = edges.some(e => e.from === node.name && (e.when || null) === label);
+    return `<div class="wfb-vocab-row">
+      <input class="${inputCls} wfb-vocab-pill" value="${esc(label)}">
+      <button class="wfb-branch-del" title="Remove ${kind}" onclick="${removeFn}('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
+      <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
+        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(label)}')">&#43;</button>
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      ${connected ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>`;
+  }).join('');
+  const otherwiseRow = vocab.length ? (() => {
+    const otherConnected = edges.some(e => e.from === node.name && (e.when || null) === 'otherwise');
+    return `<div class="wfb-otherwise-row">
+      <em>otherwise</em>
+      <span class="wfb-port wfb-port-out wfb-port-otherwise" data-node="${nameAttr}" data-when="otherwise" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      ${otherConnected ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>`;
+  })() : '';
+  return `${rows}<button class="wfb-add-btn wfb-vocab-add" onclick="${addFn}('${_wfJsStrEsc(node.name)}')">+ ${kind}</button>${otherwiseRow}`;
+}
+
 function _wfRenderAgentOwn(st, node) {
   const seq = ++st._cardSeq;
   const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter(p => p.project_path);
   const pid = node.project_id || (projects[0] && projects[0].id) || '';
   st._charLoads.push({ seq, want: node.character || '' });
-  const outcomes = node.outcomes || [];
   return `
     <label>Name <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(referenced as <code>{{steps.NAME.output}}</code>)</span></label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="step-name">
-    <label>Project</label>
-    <select id="wfb-proj-${seq}" class="wfb-project" onchange="_wfReloadCharacters(${seq})">
-      ${projects.map(p => `<option value="${esc(p.id)}"${p.id === pid ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
-    </select>
+    <div class="wfb-project-row">
+      <span class="wfb-project-icon" aria-hidden="true">&#128193;</span>
+      <select id="wfb-proj-${seq}" class="wfb-project" onchange="_wfReloadCharacters(${seq})">
+        ${projects.map(p => `<option value="${esc(p.id)}"${p.id === pid ? ' selected' : ''}>${esc(p.name)}</option>`).join('')}
+      </select>
+    </div>
     <label>Agent</label>
     <div class="sched-agent-row">
       <span id="wfb-face-${seq}" class="sched-agent-face"></span>
       <select id="wfb-persona-${seq}" class="wfb-persona"><option value="">Loading…</option></select>
     </div>
     <label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>
-    <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(node.prompt || '')}</textarea>
-    ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
-    ${_wfSlotChipsHTML(st.def, node.name, node.prompt || '')}
+    <div class="wfb-prompt-inset">
+      <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(node.prompt || '')}</textarea>
+      ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
+      ${_wfSlotChipsHTML(st.def, node.name, node.prompt || '')}
+    </div>
     <div class="wfb-branch-labels">
       <label>Outcomes <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(this step must end its reply naming one &mdash; each gets its own port below to wire up)</span></label>
-      ${outcomes.map((label, oi) => `<div class="wfb-branch-label-row">
-        <input class="wfb-outcome-input" value="${esc(label)}">
-        <button class="wfb-branch-del" title="Remove outcome" onclick="_wfRemoveOutcome('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
-      </div>`).join('')}
-      <button class="wfb-add-btn" onclick="_wfAddOutcome('${_wfJsStrEsc(node.name)}')">+ Add outcome</button>
+      ${_wfRenderVocabRows(st, node, 'outcome')}
     </div>`;
 }
 
-function _wfRenderApprovalOwn(node) {
-  const options = node.options || [];
+function _wfRenderApprovalOwn(st, node) {
   return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="approval-name">
     <div class="wfb-branch-labels">
       <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; delivered over the question channel; each gets its own port)</span></label>
-      ${options.map((label, oi) => `<div class="wfb-branch-label-row">
-        <input class="wfb-option-input" value="${esc(label)}">
-        <button class="wfb-branch-del" title="Remove option" onclick="_wfRemoveOption('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
-      </div>`).join('')}
-      <button class="wfb-add-btn" onclick="_wfAddOption('${_wfJsStrEsc(node.name)}')">+ Add option</button>
+      ${_wfRenderVocabRows(st, node, 'option')}
     </div>`;
 }
 
-const _WF_ACTION_LABELS = { backlog_create: 'Create a backlog item', backlog_patch: 'Patch a backlog item', desk_harvest: 'Run a Desk harvest' };
+// Plain-English labels over the internal ACTION_ALLOWLIST identifiers (Ron,
+// looking at the raw verbs: "this is unintuitive, I don't think anyone will
+// understand these actions"). Stored values / mc/workflows.py are untouched —
+// this is a label/description layer only, kept in ONE lookup so R3-1's three
+// approved-but-unimplemented verbs (journal_append, notify_operator,
+// restore_point_create) are a data edit later, not a code change. Do NOT add
+// them here now — they are not in ACTION_ALLOWLIST and must not appear in the
+// palette or this select.
+const _WF_ACTION_META = {
+  backlog_create: { label: 'Add a backlog item', desc: 'Adds a new item to the project backlog. No agent involved.', group: 'Backlog' },
+  backlog_patch:  { label: 'Update a backlog item', desc: "Changes an existing backlog item's status or text. No agent involved.", group: 'Backlog' },
+  desk_harvest:   { label: 'Run a Desk harvest', desc: 'Scans signal sources. No agent involved.', group: 'The Desk' },
+};
+const _WF_ACTION_GROUP_ORDER = ['Backlog', 'The Desk'];
+
+function _wfActionSelectHTML(action) {
+  const groups = {};
+  Object.keys(_WF_ACTION_META).forEach(id => {
+    const g = _WF_ACTION_META[id].group;
+    (groups[g] = groups[g] || []).push(id);
+  });
+  // Never render a heading whose group is empty -- matters once R3-1's verbs
+  // start landing in the lookup one at a time.
+  const order = _WF_ACTION_GROUP_ORDER.filter(g => groups[g] && groups[g].length);
+  return `<select class="wfb-action-select" onchange="_wfRerenderActionFields(this)">
+    ${order.map(g => `<optgroup label="${esc(g)}">
+      ${groups[g].map(id => `<option value="${id}"${id === action ? ' selected' : ''}>${esc(_WF_ACTION_META[id].label)}</option>`).join('')}
+    </optgroup>`).join('')}
+  </select>`;
+}
 
 function _wfRenderActionOwn(st, node) {
   const action = node.action || 'backlog_create';
+  const meta = _WF_ACTION_META[action] || {};
   return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="action-name">
     <label>Action</label>
-    <select class="wfb-action-select" onchange="_wfRerenderActionFields(this)">
-      ${Object.keys(_WF_ACTION_LABELS).map(a => `<option value="${a}"${a === action ? ' selected' : ''}>${esc(_WF_ACTION_LABELS[a])}</option>`).join('')}
-    </select>
+    ${_wfActionSelectHTML(action)}
+    <div class="wfb-action-desc">${esc(meta.desc || '')}</div>
+    <div class="wfb-action-id" title="The stored identifier -- validation errors refer to this">${esc(action)}</div>
     <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {}, st.def, node.name)}</div>`;
 }
 
@@ -1121,6 +1192,11 @@ function _wfRerenderActionFields(selectEl) {
   const own = selectEl.closest('.wfb-node-own');
   const box = own && own.querySelector('.wfb-action-fields');
   if (!box) return;
+  const meta = _WF_ACTION_META[selectEl.value] || {};
+  const descEl = own.querySelector('.wfb-action-desc');
+  const idEl = own.querySelector('.wfb-action-id');
+  if (descEl) descEl.textContent = meta.desc || '';
+  if (idEl) idEl.textContent = selectEl.value;
   const entry = _wfEntry();
   const nodeEl = selectEl.closest('.wfb-node');
   const nodeName = nodeEl ? nodeEl.dataset.name : '';
@@ -2064,7 +2140,47 @@ function _wfPopoverPickPerson(scope, name) {
 
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape' && _wfPortPopover) _wfClosePortPopover();
+  if (e.key === 'Escape' && _wfNodeMenuOpenFor) _wfCloseNodeMenu();
 });
+
+// ── Node overflow menu (the header's "…", UI brief mockup) — one action for
+// now (Delete step), same body-appended/outside-click-closes shape as the
+// port "+" popover above. ────────────────────────────────────────────────────
+let _wfNodeMenuOpenFor = null; // node name string | null
+
+function _wfNodeMenuToggle(e, name) {
+  e.stopPropagation();
+  if (_wfNodeMenuOpenFor === name) { _wfCloseNodeMenu(); return; }
+  _wfCloseNodeMenu();
+  _wfNodeMenuOpenFor = name;
+  const btn = e.currentTarget;
+  const r = btn.getBoundingClientRect();
+  const box = document.createElement('div');
+  box.className = 'wfb-node-menu';
+  box.id = 'wfb-node-menu';
+  box.innerHTML = `<div class="wfb-node-menu-delete" onclick="_wfDeleteNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Delete step</div>`;
+  document.body.appendChild(box);
+  let left = r.right - box.offsetWidth;
+  if (left < 8) left = 8;
+  let top = r.bottom + 4;
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  // Deferred for the same reason the port popover's listener is: this click
+  // is still propagating and would otherwise close what it just opened.
+  setTimeout(() => document.addEventListener('pointerdown', _wfNodeMenuOutsideDown, true), 0);
+}
+
+function _wfCloseNodeMenu() {
+  const el = document.getElementById('wfb-node-menu');
+  if (el) el.remove();
+  document.removeEventListener('pointerdown', _wfNodeMenuOutsideDown, true);
+  _wfNodeMenuOpenFor = null;
+}
+
+function _wfNodeMenuOutsideDown(e) {
+  const el = document.getElementById('wfb-node-menu');
+  if (el && !el.contains(e.target)) _wfCloseNodeMenu();
+}
 
 // ── Save ──────────────────────────────────────────────────────────────────────
 
@@ -2327,6 +2443,8 @@ window._wfNodeDragDown = _wfNodeDragDown;
 window._wfPortDown = _wfPortDown;
 window._wfEdgeClick = _wfEdgeClick;
 window._wfDeleteNode = _wfDeleteNode;
+window._wfNodeMenuToggle = _wfNodeMenuToggle;
+window._wfCloseNodeMenu = _wfCloseNodeMenu;
 window._wfAddOutcome = _wfAddOutcome;
 window._wfRemoveOutcome = _wfRemoveOutcome;
 window._wfAddOption = _wfAddOption;
