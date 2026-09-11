@@ -739,4 +739,309 @@ passes, now including the phase v1 could not express.
 
 ---
 
-*Spec only, all three revisions. No implementation in this change.*
+# Revision 4 (2026-09-11) — UI iteration after first real use
+
+Ron used the shipped canvas (spec through Revision 3) and filed a batch of
+corrections in one sitting. This section records what shipped, what was
+corrected mid-flight (including a self-correction), and one open item
+deliberately left unimplemented for review. Implementation:
+`static/js/workflow-builder.js`, `static/css/app.css`,
+`static/js/render-core.js`, `static/js/agent-console.js`,
+`tools/smoke/workflow-builder.mjs`.
+
+## R4-1 — Chrome above the canvas collapses to one toolbar row
+
+`.wfb-meta` (name/description/enabled) and the permanent `.wfb-trigger-card`
+(TRIGGER radios + cadence form) are gone. One `.wfb-toolbar` row now holds:
+the workflow name (inline, borderless input), a description disclosure
+(`.wfb-toolbar-desc-toggle`, open by default only when the loaded def already
+has a description — never hides existing content), an Enabled pill (reusing
+the scheduler's `.schedule-toggle`), Undo/Redo/Reset (R4-3), and Save/Run
+now/the save-stamp (moved up from the old `.wfb-actions`, which no longer
+exists). The TRIGGER form moved into a popover (R4-2), not this row.
+
+**Canvas fill (Ron's amendment to the same ask):** `.wfb-canvas-viewport`'s
+fixed `height: 520px` is gone — the whole chain from `.modal-scroll-body`
+down through the tab body to the viewport is one flex column
+(`.wfb-fill-col` marks each wrapper: `#workflows-body-<pid>`,
+`#wfb-clayrune-section-<pid>`, `#wfb-inline-host-<pid>`), gated to desktop
+(`@media (min-width: 961px)`) so mobile keeps its own bounded/scrolling
+treatment unchanged. Measured regression during the build: the generic tab
+chrome this tab inherits (`.card-section`'s own padding, the redundant
+"Workflows" `.section-title`, `.wfb-tabs-row`) totalled enough that the
+flex-fill canvas came out SMALLER than the 520px stub it replaced — fixed by
+hiding the section title on this tab specifically (`.modal-scroll-body.wf-tab-active .card-section.wfb-fill-col > .section-title { display: none; }`)
+and trimming margins/padding on the tabs row and toolbar. `.wfb-builder`/
+`.wfb-canvas-viewport` carry a `min-height: 360px` floor for short windows.
+Verified at 1400×900 and a maximised-but-shorter 2000×780 (screenshots taken
+during the build, not committed).
+
+## R4-2 — The trigger's config moves into a popover on the tile
+
+`_wfRenderTriggerBox` no longer renders a permanent form; clicking the
+trigger tile opens `#wfb-trigger-popover`, reusing `.wfb-trigger-row`/
+`.wfb-trigger-opt`/`.wfb-sched-cadence` VERBATIM from the old permanent card
+(`_wfTriggerPopoverHTML`). Click-vs-drag on the tile is distinguished by the
+existing drag-activation flag (`st.active` in `_wfNodeDragDown`'s shared
+drag path) — a real drag never opens the popover, a plain click always does.
+Every mutator the popover drives (`_wfSetTriggerType`, `_wfSetSchedType`,
+`_wfToggleSchedEnabled`, …) is unchanged; `_wfRender()` refreshes the
+popover's content if it's open, so it stays live through every interaction
+without teaching each mutator about it.
+
+**A real bug this caught:** the popover closes on any outside click
+(`_wfTriggerPopoverOutsideDown`, capturing phase) — including the Save
+button click itself, which fires BEFORE Save's own click handler runs. The
+cadence sub-form only syncs into the model at "the next structural action"
+(this file's long-standing FIELD SYNC discipline), so a just-toggled day
+selection could be silently lost — gone from the DOM before `_wfSave()`'s
+sync ever ran. Fixed by syncing the schedule form in `_wfCloseTriggerPopover`
+itself, before removing the popover's DOM.
+
+## R4-3 — Undo / Redo / Reset; confirms only survive if undo can't cover them
+
+Snapshot = `{def, linkedSchedule}`, JSON round-tripped, cap 50. The choke
+point is `_wfRender()` itself (`_wfCheckpointForUndo`), not the ~30 individual
+mutators: every structural mutation already ends in `_wfRender()`, and
+keystrokes never call it (they only mark dirty), so this is exactly one undo
+step per structural action and zero per keystroke with no call added at any
+of those ~30 sites. Ctrl+Z / Ctrl+Shift+Z work while the Workflows tab is
+showing and no text field has focus.
+
+**Confirms removed where undo already covers the action** (Ron: "no need to
+ask if I'm certain ... we have the undo button" — a confirm and an undo are
+redundant, and undo is strictly better). `_wfResetCanvas`'s confirm dialog is
+gone; it pushes its own undo entry before reverting, same as everything else.
+Delete step / delete edge / disconnect never had a confirm and already push a
+proper undo entry via the same `_wfRender()` checkpoint (verified, not
+assumed). `_wfConfirmDiscardIfDirty` (loading a different/new workflow over a
+dirty canvas) KEEPS its confirm — undo cannot cover it, because loading a
+different workflow replaces the in-memory state and its undo stack together;
+the edits are genuinely gone, not just off-screen. Worded as replacing, not
+discarding ("You have unsaved changes to X. Open Y anyway?").
+
+**Tab switch away (including "← Back to conversation") no longer prompts at
+all** — `_wfState` is an in-memory singleton independent of the tab's DOM,
+and re-opening the tab re-mounts the same state (`_wfSyncTabsForProject` →
+`_wfRemountDom`). The one real gap this depended on: a field just typed into
+but not yet synced would be silently dropped when the tab's DOM is torn down.
+`_wfSyncBeforeLeave` (called from `agent-console.js`'s `switchModalTab`,
+before the teardown) flushes it first — no confirm needed BECAUSE nothing is
+discarded, not despite it. It also closes every popover this file owns
+(trigger/port/node-menu), none of which live inside the tab's own DOM subtree
+and would otherwise keep floating over whatever the user switches to next.
+
+## R4-4 — The trigger gets a real output port, corrected once for over-eager auto-wire
+
+**First cut (matching the original Change 4 ask):** the trigger tile gets one
+output port (`.wfb-trigger-port-row`), the same `.wfb-port`/`+` affordances a
+card has. No `__trigger__` edge is ever persisted — `mc/workflows.py:421`
+refuses any edge whose `from` isn't a real node, and `:656` already defines a
+ROOT (no incoming edges) as "ready the moment the run starts", so the port
+is a view over that, driving `_wfInsertRootAfterTrigger` (the trigger's own
+`+`/drop target) and `_wfMakeRoot` (dragging FROM the trigger port onto an
+existing card, which drops that card's incoming edges).
+
+**Correction (Ron, next session): a fresh drop must not auto-wire.** The
+first cut drew the implied trigger→node line to EVERY root, and a brand-new
+standalone drop is a root by definition — so every new card looked wired to
+the trigger with zero action taken. Fixed by adding `def.trigger.entry`, a
+plain array of node names, additive on the same already-schema-free `trigger`
+dict `x`/`y` already used (confirmed: `create_workflow`/`update_workflow`
+store `doc.get('trigger')` whole; `validate_workflow` checks only `.type`).
+Only two gestures write to it — the trigger's own `+`/drop-on-tile
+(`_wfInsertRootAfterTrigger`) and dragging FROM the trigger port onto a card
+(`_wfMakeRoot`) — both touch the tile directly, unlike an ordinary canvas
+drop. `_wfRedrawEdges` draws the implied line only for `entry` members that
+are STILL roots (an entry that later gained an incoming edge elsewhere is no
+longer "ready at start", so a line to it would be exactly the silent lie
+R2-D6's stop-stub convention exists to prevent). Deleting or renaming a node
+prunes/repoints `entry` the same way `def.edges` already is.
+
+**The trap this doesn't paper over:** the RUNNER starts every root
+regardless of `entry` (`mc/workflows.py:656`) — `entry` is a canvas-only
+concept the backend has never heard of. So a root Ron did NOT explicitly wire
+still executes at run time; the frontend fix stops the CANVAS from claiming
+otherwise, it cannot change what the runner does (a backend change, out of
+this pass's authorized scope). Mitigated, not hidden: any root not in
+`trigger.entry` carries a visible `⚠` badge on its card
+(`.wfb-node-unwired-badge`, title text names the behaviour explicitly). Open
+for a product call: whether the runner should someday be taught to respect
+`entry` (skip an un-wired root) rather than the canvas being the only place
+this is legible.
+
+## R4-5 — Connect gesture: forgiving drop, visible in-port, whole-card highlight
+
+`_wfConnectUp`/`_wfConnectMove` now resolve the drop target via
+`_wfConnectResolveTarget`, which accepts a drop ANYWHERE on `.wfb-node`
+(`.closest('.wfb-node')`), not only the 40px in-port hit box — the exact gap
+Ron hit ("no way to connect a tile to another unless triggered by the small
+plus icon"). The whole candidate card highlights (`.wfb-connect-target`)
+while a connect-drag hovers it. The in-port's hollow, low-contrast ring
+(`--text-faint` border, barely legible per Ron's screenshot) is now a light
+`--accent-dim` fill at rest — reads as a socket without going as loud as a
+solid output dot. `_wfTryAddEdge`'s cycle/slot-break guards are untouched;
+self-connection is still refused (a node can't be its own drop target).
+
+## R4-6 — Outcome/option ports move to the card's right edge
+
+`_wfRenderVocabRows` (an agent's outcomes, an approval gate's options)
+renders its pills in normal card-body flow, but the port DOT itself now sits
+on `.wfb-node`'s true right border, one per row — Ron's screenshot showed
+every dot sitting inside the tile. `position: relative` on
+`.wfb-vocab-row`/`.wfb-otherwise-row`, the port `position: absolute; right:
+-32px` (compensating for `.wfb-node-own`'s 12px padding, landing the dot's
+center exactly on the card edge — the same math the single-port case's
+`.wfb-ports-out { right: -20px }` already uses). `_wfRedrawEdges` measures
+real `getBoundingClientRect()`s at draw time, so the connecting curve follows
+with no JS change, at any zoom level.
+
+## R4-7 — The node menu: fixed dead, then given real options
+
+**6a, diagnosed live, not guessed:** the "..." button never opened
+(Playwright event trace: `pointerdown` reached both the button and its
+ancestor `.wfb-node-head`, but only `head:pointerup`/`head:click` fired — the
+button's own `pointerup`/`click` never did). Root cause: `_wfNodeDragDown`
+(bound to the head) calls `setPointerCapture` on itself, which retargets
+subsequent pointer/mouse events — including the button's own click — to the
+capturing head. Fixed by having `_wfNodeDragDown` ignore any pointerdown that
+originated on `.wfb-node-menu-btn`, so the drag path (and its capture) never
+starts from the button in the first place.
+
+**6b:** the menu now offers Duplicate (copies a node's own config under a
+fresh unique name, offset in position, copies NO edges — R2-D1: a branch is a
+property of the connection, so a duplicate starts unwired) and Disconnect
+(drops every edge into/out of the node, including its `trigger.entry`
+membership if present, leaving the card in place — the undo for a mis-drop
+now that dropping onto a card auto-wires it) alongside the existing Delete
+step. All three are undoable for free via R4-3's checkpoint hook.
+
+## R4-8 — Edge delete ×, and the SVG fill regression it exposed
+
+Each real edge (never the implied trigger→root line) gets a small × at its
+midpoint (`<g class="wfb-edge-del">`, a `t=0.5` point — provably the segment
+midpoint for this file's symmetric cubic control-point layout, no curve
+sampling needed), quiet at rest and revealed on hover of the edge or while
+selected (`.wfb-edge-group:hover`). Clicking it calls the existing
+`_wfDeleteEdge` — a second way to reach it, not a second implementation, so
+the slot-break refusal + toast still applies. The keyboard path (select,
+Delete/Backspace) is unchanged and still works.
+
+**Regression caught by screenshot, not by any assertion:** the new
+`.wfb-edge-implied` path had no `fill: none`, so the browser's SVG default
+(`fill: black`) painted the area between each implied curve and its chord —
+the "huge black wedges" in Ron's screenshot. Its two sibling rules
+(`.wfb-edge-path`, `.wfb-edge-temp`) both set `fill: none`; the new one
+didn't. Fixed, and a smoke assertion now checks every `<path>` in the edge
+layer computes `fill: none` — this class of bug is invisible to a
+DOM-structure or count-based assertion.
+
+## R4-9 — Text selection during pan/drag
+
+`_wfViewportDown` (canvas pan), `_wfNodeDragDown` (card/trigger drag), and
+`_wfPaletteDown`/`_wfPortDown` (place/connect drags) now call
+`preventDefault()` once a drag actually starts, and `.wfb-canvas-viewport`/
+`.wfb-palette` are `user-select: none` — Ron: dragging across cards was
+selecting and highlighting their text. Real editable content (`.wfb-node-own
+input/textarea/select`, the `{{steps.NAME.output}}`-style `<code>` hints,
+`.wfb-slot-chip`) is explicitly put back to `user-select: text`, so typing
+and in-field selection are untouched.
+
+## R4-10 — Palette: "+ N more" actually shows the rest of the bench
+
+The old single button's text ("+ N more · Hire someone new") always called
+the hire flow regardless of which half was clicked — the capped-off bench
+people were unreachable by any path. Now two buttons: "+ N more" toggles
+`paletteExpanded` and re-renders only the palette box (same pattern
+`_wfPaletteSearch` already uses, so an unsynced prompt elsewhere is never
+touched); "Hire someone new" is unchanged. Cap raised 8 → 12: the canvas fill
+(R4-1) gives the palette real height to grow into. A search still bypasses
+the cap and shows every match regardless of expanded state.
+
+## Open — Change 11 (Ron's third pass at "Action"), a proposal awaiting review
+
+Two earlier calls on the Action palette block were both superseded before
+landing: first "rename it", then "remove it from the palette entirely,
+reachable only as a per-step side effect via the port `+` popover" (which
+DID ship as the port-popover behaviour — unaffected by this reversal, since
+the popover's Action option predates and is independent of the palette tile).
+Ron's final call, verbatim: *"no action is still needed. It should be a free
+text field allowing the user to write what the action should be. Once the
+user saves or test the flow, that action instruction should be translated to
+how this action takes place. It could be an instruction to the agent who is
+connected to the action and taken care on same pass, but the role here is to
+clearly and visually show what is expected to happen."*
+
+**NOT implemented in this pass** — deliberately. The palette tile and the
+action card editor (`_wfRenderActionOwn`, `_WF_ACTION_META`, the
+`backlog_create`/`backlog_patch`/`desk_harvest` dropdown) are exactly as they
+were before either 10 or 11 was raised. This is a genuine schema-touching
+design change (`ACTION_ALLOWLIST` in `mc/workflows.py:101` and
+`validate_workflow` at `:409` refuse anything outside the three fixed verbs
+today), and the standing rule against agent-authored schema changes without
+review applies here too — the proposal below is for Ron's decision, not a
+commit.
+
+**Proposed resolution, for review, not decided:**
+
+1. **Card shape:** the action node's `config` gains one new field,
+   `instruction` (free text, Ron's own words, never derived/summarized —
+   his explicit requirement: "the card always shows RON'S OWN WORDS,
+   verbatim, they are the label, not a derived summary"). The existing
+   `action` field (one of the three allowlisted verbs) becomes OPTIONAL and,
+   when present, is the RESOLVED mechanism — not something the author picks
+   from a dropdown up front.
+2. **Resolution point:** at Save or Run (not on every keystroke — resolving
+   free text to a mechanism is exactly the kind of judgement call this file's
+   "sync at the moment of a structural action" discipline already reserves
+   for those moments, never a live-as-you-type inference). A resolution call
+   reads `instruction` and returns EITHER one of the three allowlisted verbs
+   with its config filled in, OR "hand this instruction to the agent
+   connected to this step, in the same pass" (Ron's own second option), OR
+   "unresolvable."
+3. **Who resolves it:** this needs a judgement call a deterministic action
+   node cannot make by definition (R3's own "action node runs with NO agent
+   in the loop, unattended" test) — so resolution is NOT the action node
+   executing itself. Two shapes were considered: (a) a small server-side
+   classifier/heuristic keyed to the three known verbs' trigger phrases
+   ("add ... to the backlog", "update ... status", "harvest signals"), cheap
+   and fully deterministic but brittle to phrasing; (b) Ron's own second
+   option taken literally — an instruction addressed to the agent CONNECTED
+   to this step (the card whose port feeds this action, or that this action
+   feeds) is appended to that agent's own prompt/context for the SAME
+   dispatch, and the action step itself becomes a thin wrapper that reads
+   what that agent's turn declared it did (mirroring the existing
+   `wf:result` fenced-block mechanism, Q3) rather than a standalone
+   unattended verb. (b) is a bigger shape change — it means an "action" node
+   is no longer always agent-free, which R3-1/R3-3's authority-guard
+   reasoning was written against ("no agent in the loop" was the TEST an
+   action had to pass). This needs Ron's call on whether that test still
+   holds, or whether it only held for the three FIXED verbs and a free-text
+   action is a genuinely different node shape wearing the same name.
+4. **Visible resolution, never silent (Ron's explicit requirement):** the
+   card shows, under the free-text instruction, a resolved-state line: "This
+   will run as: [add a backlog item]" / "This will run as: an instruction to
+   Posy" / "Unresolvable — [reason], edit the instruction or wire it to a
+   step." The THIRD state is a first-class, reportable outcome — the card
+   must say so and refuse to guess, not silently fall through to a default
+   verb. This is a schema addition (`node.config.resolved` — the mechanism,
+   or null) so the resolved state can be SHOWN without re-running resolution
+   on every render.
+5. **Existing verbs, unaffected:** `action: 'backlog_create'` etc. keep
+   loading/editing/saving/running exactly as today — `instruction` is
+   additive, and a node that already resolved to a fixed verb (whether typed
+   by a human under v1's dropdown or resolved from free text under this
+   proposal) is indistinguishable to the runner. No runner change is implied
+   by options 1, 2, 4, 5; option 3(b) is the one that would touch the runner
+   if chosen.
+
+**Explicitly not decided here:** which of 3(a)/3(b) Ron wants, whether
+resolution is synchronous (blocks Save) or the card can save
+"unresolved-pending" and resolve on next Run, and whether "Unresolvable"
+should have its own persisted state or is always recomputed. Report only —
+no backend or schema change has been made.
+
+---
+
+*Spec only, all four revisions. Implementation for R4-1 through R4-10 has
+shipped (this pass); R4's "Open" section (Change 11) is proposal-only.*

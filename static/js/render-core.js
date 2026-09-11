@@ -889,7 +889,7 @@ function modalContentHTML(p) {
         >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
       </div>` : ''}
     </div>
-    <div class="modal-scroll-body${activeTab==='agent'?' agent-active':''}">
+    <div class="modal-scroll-body${activeTab==='agent'?' agent-active':''}${activeTab==='workflows'?' wf-tab-active':''}">
       <button type="button" class="modal-back-to-chat" onclick="switchModalTab('${esc(p.id)}','agent')" title="Back to the conversation">&#8592; Back to conversation</button>
       <div class="modal-tab-content ${activeTab==='backlog'?'active':''}" data-tab="backlog">
         ${!tabOn('backlog') ? '' : `
@@ -972,9 +972,9 @@ function modalContentHTML(p) {
       </div>
       <div class="modal-tab-content ${activeTab==='workflows'?'active':''}" data-tab="workflows">
         ${!tabOn('workflows') ? '' : `
-        <div class="card-section">
-          <div class="section-title">Workflows</div>
-          <div id="workflows-body-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
+        <div class="card-section wfb-fill-col">
+          <div class="section-title" style="flex-shrink:0">Workflows</div>
+          <div id="workflows-body-${esc(p.id)}" class="wfb-fill-col"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
         </div>`}
       </div>
     </div>`;

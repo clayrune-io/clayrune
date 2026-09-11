@@ -8319,16 +8319,25 @@
      the read-only fan-out viewer already owns the bare `wf-` class family
      (`.wf-empty*`, static/js/agent-console.js), and these must never collide
      with it. static/js/workflow-builder.js. The field-input rules below
-     (`.wfb-meta`, `.wfb-node-own`) are unchanged from the Phase 2 spine —
-     Phase 2's card editors are reused verbatim inside canvas nodes. */
-  .wfb-modal-body { padding: 4px 24px 24px; max-height: 82vh; overflow-y: auto; }
-  .wfb-meta { padding: 16px 0 4px; }
-  .wfb-meta label, .wfb-node-own label {
+     (`.wfb-node-own`) are unchanged from the Phase 2 spine — Phase 2's card
+     editors are reused verbatim inside canvas nodes.
+
+     Change 1 (+ Ron's amendment "the canvas is the dominant element"): the
+     old permanently-stacked chrome above the canvas (.wfb-meta name/
+     description/enabled, .wfb-trigger-card TRIGGER radios+cadence) is GONE —
+     collapsed into one .wfb-toolbar row (below) plus an optional one-line
+     description row. .wfb-trigger-row/.wfb-trigger-opt/.wfb-sched-cadence
+     are KEPT (Change 2 reuses that exact markup verbatim, just mounted
+     inside a popover instead of a permanent card — see .wfb-trigger-popover
+     further down and _wfTriggerPopoverHTML). The old bottom .wfb-actions row
+     (Save/Run now/save-stamp) moved INTO .wfb-toolbar; nothing is left below
+     the canvas any more. */
+  .wfb-modal-body { padding: 4px 24px 12px; display: flex; flex-direction: column; flex: 1; min-height: 0; }
+  .wfb-node-own label {
     display: block; font-size: 10px; font-weight: 600; color: var(--text-faint);
     text-transform: uppercase; letter-spacing: 0.4px; margin: 8px 0 3px;
   }
-  .wfb-meta label:first-child, .wfb-node-own label:first-child { margin-top: 0; }
-  .wfb-meta input[type="text"], .wfb-meta input:not([type]), .wfb-meta textarea,
+  .wfb-node-own label:first-child { margin-top: 0; }
   .wfb-node-own select, .wfb-node-own input[type="text"], .wfb-node-own input:not([type]),
   .wfb-node-own textarea {
     width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
@@ -8336,14 +8345,51 @@
     outline: none; box-sizing: border-box;
   }
   .wfb-node-own textarea { resize: vertical; min-height: 52px; font-family: inherit; }
-  .wfb-meta input:focus, .wfb-meta textarea:focus,
   .wfb-node-own select:focus, .wfb-node-own input:focus, .wfb-node-own textarea:focus { border-color: var(--accent); }
 
-  .wfb-trigger-card {
-    background: var(--surface); border: 1px dashed var(--border); border-radius: 8px;
-    padding: 12px 16px; margin: 14px 0 22px;
+  /* The one toolbar row (Change 1). flex-shrink:0 — it never gives up height
+     to the canvas below it, however tall the modal gets. */
+  .wfb-toolbar {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; flex-shrink: 0;
+    padding: 6px 0 6px;
   }
-  .wfb-trigger-title { font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.6px; margin-bottom: 8px; }
+  .wfb-toolbar-name {
+    flex: 1 1 180px; min-width: 120px; background: transparent; border: 1px solid transparent;
+    color: var(--text); font-family: 'Inter', sans-serif; font-size: 15px; font-weight: 700;
+    padding: 5px 7px; border-radius: 5px; outline: none; box-sizing: border-box;
+  }
+  .wfb-toolbar-name:hover { border-color: var(--border); }
+  .wfb-toolbar-name:focus { border-color: var(--accent); background: var(--surface); }
+  .wfb-toolbar-name::placeholder { color: var(--text-faint); font-weight: 600; }
+  .wfb-toolbar-desc-toggle {
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-faint); font-size: 11.5px; font-weight: 600; padding: 5px 9px;
+    cursor: pointer; white-space: nowrap;
+  }
+  .wfb-toolbar-desc-toggle:hover, .wfb-toolbar-desc-toggle.active { border-color: var(--accent); color: var(--accent); }
+  .wfb-toolbar-enabled {
+    display: flex; align-items: center; gap: 7px; cursor: pointer; font-size: 12px;
+    font-weight: 600; color: var(--text-dim); white-space: nowrap;
+  }
+  .wfb-toolbar-spacer { flex: 1 1 auto; }
+  .wfb-toolbar-btn {
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-dim); font-size: 11.5px; font-weight: 600; padding: 5px 9px;
+    cursor: pointer; white-space: nowrap; font-family: inherit;
+  }
+  .wfb-toolbar-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .wfb-toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+  .wfb-toolbar-desc-row { flex-shrink: 0; padding-bottom: 8px; }
+  .wfb-toolbar-desc-row textarea {
+    width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
+    font-family: 'Inter', sans-serif; font-size: 12.5px; padding: 7px 9px; border-radius: 6px;
+    outline: none; box-sizing: border-box; resize: vertical; min-height: 30px;
+  }
+  .wfb-toolbar-desc-row textarea:focus { border-color: var(--accent); }
+
+  /* .wfb-trigger-row/.wfb-trigger-opt/.wfb-sched-cadence: KEPT verbatim from
+     the old permanent .wfb-trigger-card (Change 2 reuses this exact markup
+     inside the popover below). */
   .wfb-trigger-row { display: flex; gap: 18px; flex-wrap: wrap; }
   .wfb-trigger-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
   .wfb-trigger-opt input { margin: 0; }
@@ -8354,6 +8400,10 @@
     width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
     font-family: inherit; font-size: 13px; padding: 6px 9px; border-radius: 5px; outline: none; box-sizing: border-box;
   }
+  /* The trigger popover is wider than the plain port "+" popover (it hosts
+     the whole cadence form, not three rows) — extends .wfb-port-popover
+     rather than duplicating its box/position/z-index rules. */
+  .wfb-trigger-popover { width: 260px; max-height: 70vh; overflow-y: auto; }
 
   /* ── The canvas (R2-D7): palette docked left (a bottom sheet under the
      mobile breakpoint), free-positioned nodes, one absolutely-positioned SVG
@@ -8361,11 +8411,17 @@
      length (pointer-drag already exists, edges are cubic paths between port
      coordinates, pan/zoom is a CSS transform); see the spec's R2-D7. */
   .wfb-builder {
-    display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 4px;
+    display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden;
+    /* Change 1 amendment ("the canvas is the dominant element"): grows to
+       fill whatever's left of .wfb-modal-body's real height instead of
+       sizing to its fixed-height children; ~360px floor so a short window
+       still works. */
+    flex: 1; min-height: 360px;
   }
   .wfb-palette {
     width: 200px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
     padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
+    user-select: none; /* Change 8 — a drag-out starts over a row's own text */
   }
   .wfb-palette-title, .wfb-palette-tools-title {
     font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.5px;
@@ -8375,7 +8431,7 @@
   .wfb-palette-search {
     width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
     font-family: inherit; font-size: 12px; padding: 6px 9px; border-radius: 6px; outline: none;
-    box-sizing: border-box;
+    box-sizing: border-box; user-select: text;
   }
   .wfb-palette-search:focus { border-color: var(--accent); }
   /* ── People — the palette IS the Bench (MC-871 UI brief §2): dragging a
@@ -8425,9 +8481,13 @@
   }
 
   .wfb-canvas-viewport {
-    position: relative; flex: 1; min-width: 0; height: 520px; overflow: hidden;
+    /* Change 1 amendment: no fixed height — fills .wfb-builder (itself now
+       flex:1 down to a 360px floor). Mobile (~8730 below) overrides back to
+       an explicit height, unchanged. */
+    position: relative; flex: 1; min-width: 0; min-height: 360px; height: auto; overflow: hidden;
     background-color: var(--bg); background-image: radial-gradient(var(--border) 1px, transparent 1px);
     background-size: 22px 22px; touch-action: none; cursor: grab;
+    user-select: none; /* Change 8 — a pan/drag starting here must never select card text */
   }
   .wfb-canvas-viewport.wfb-panning { cursor: grabbing; }
   .wfb-canvas-viewport.wfb-drop-target { outline: 2px dashed var(--accent); outline-offset: -2px; }
@@ -8440,14 +8500,39 @@
   .wfb-edge-path { fill: none; stroke: var(--text-faint); stroke-width: 2; pointer-events: stroke; cursor: pointer; }
   .wfb-edge-path:hover, .wfb-edge-path.wfb-edge-selected { stroke: var(--accent); stroke-width: 2.5; }
   .wfb-edge-temp { fill: none; stroke: var(--accent); stroke-width: 2; stroke-dasharray: 5 4; pointer-events: none; }
+  /* Change 4a: the implied trigger->root line — a read of "no incoming
+     edges" (mc/workflows.py:656), never a stored edge, so it is dashed +
+     dimmer than a real connection and carries no click handler at all. */
+  .wfb-edge-implied { fill: none; stroke: var(--text-faint); stroke-width: 1.5; stroke-dasharray: 3 4; opacity: 0.6; pointer-events: none; cursor: default; }
+
+  /* Change 7: the delete × at an edge's midpoint. Quiet at rest (opacity 0,
+     pointer-events none so it never steals a click meant for the path
+     underneath); revealed on hover of the edge itself or while selected —
+     hovering .wfb-edge-path (the only child with pointer-events enabled)
+     is what triggers :hover on the parent .wfb-edge-group, so "hovering the
+     path reveals its own ×" holds without a separate hit area. */
+  .wfb-edge-del { opacity: 0; pointer-events: none; transition: opacity 0.1s; }
+  .wfb-edge-group:hover .wfb-edge-del, .wfb-edge-group-selected .wfb-edge-del { opacity: 1; pointer-events: auto; }
+  .wfb-edge-del-hit { fill: transparent; pointer-events: all; cursor: pointer; }
+  .wfb-edge-del-bg { fill: var(--surface3, var(--surface)); stroke: var(--border2, var(--border)); stroke-width: 1; }
+  .wfb-edge-del:hover .wfb-edge-del-bg { fill: var(--red-dim, rgba(220,53,69,0.12)); stroke: var(--red); }
+  .wfb-edge-del-glyph { font-size: 10px; fill: var(--red-text); pointer-events: none; font-family: 'Inter', sans-serif; }
 
   /* The Trigger box (MC-871 Change 2) -- its own shape on the canvas, not a
-     `.wfb-node` (it isn't one: no ports, no card editor, not in `nodes[]`).
+     `.wfb-node` (it isn't one: no card editor, not in `nodes[]`; Change 4a
+     gives it one output port, see .wfb-trigger-port-row below).
      Shares the node-drag class (`.wfb-node-dragging`) so the drag path's
-     touch-action guard applies here too without a second CSS rule. */
+     touch-action guard applies here too without a second CSS rule.
+     z-index:2 (Change 4b): at rest the trigger paints ABOVE ordinary nodes —
+     `.wfb-trigger-box` renders before the node list in `_wfRenderBody`, so
+     without this a node that ends up visually overlapping it (dragged there,
+     or placed near it) would win hit-testing and make the trigger
+     ungrabbable underneath — Ron: "if I ... grab the start tile, the agent
+     tile moves along with it". A node being actively dragged still floats
+     above everything momentarily (.wfb-node-dragging is z-index:5). */
   .wfb-trigger-box {
     position: absolute; width: 160px; background: var(--surface); border: 1px solid var(--accent);
-    border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.12);
+    border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); z-index: 2; user-select: none;
   }
   .wfb-trigger-box.wfb-node-dragging { box-shadow: 0 6px 18px rgba(0,0,0,0.22); z-index: 5; }
   .wfb-trigger-box-head {
@@ -8458,6 +8543,11 @@
   .wfb-trigger-box-icon { color: var(--accent); font-size: 10px; }
   .wfb-trigger-box-title { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); }
   .wfb-trigger-box-sub { font-size: 11px; color: var(--text-faint); padding: 0 10px 8px; }
+  /* Change 4a's port row: the trigger is narrower than a card (160px vs
+     260px) and only ever has the one plain port, so this sits in normal flow
+     under the sub-label rather than reusing the node's absolutely-positioned
+     `.wfb-ports-out` column. */
+  .wfb-trigger-port-row { display: flex; align-items: center; gap: 6px; padding: 0 10px 10px; }
 
   .wfb-node {
     position: absolute; width: 260px; background: var(--surface); border: 1px solid var(--border);
@@ -8473,6 +8563,10 @@
      brief mockup) -- not accent-colored, unlike the old type label, so it
      reads as chrome rather than as the card's identity (the agent card's
      face plays that role there). */
+  /* Change 12a's honesty half: a root not explicitly wired to the trigger
+     still runs at start (mc/workflows.py:656) -- this says so, rather than
+     letting "no line reaches it" read as "won't run". */
+  .wfb-node-unwired-badge { font-size: 11px; color: var(--amber-text); flex-shrink: 0; cursor: help; line-height: 1; }
   .wfb-node-type-icon { font-size: 11px; color: var(--text-faint); flex-shrink: 0; line-height: 1; }
   .wfb-node-type { font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-faint); flex: 1; }
   /* Agent-step header (UI brief §3): avatar + persona name, not a generic
@@ -8494,12 +8588,25 @@
     border: 1px solid var(--border2, var(--border)); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
     padding: 4px; font-family: 'Inter', sans-serif;
   }
+  /* Change 6b: Duplicate + Disconnect join Delete step. */
+  .wfb-node-menu-item {
+    font-size: 12px; font-weight: 600; color: var(--text); padding: 6px 8px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .wfb-node-menu-item:hover { background: var(--surface2); }
+  .wfb-node-menu-sep { border-top: 1px solid var(--border); margin: 3px 2px; }
   .wfb-node-menu-delete {
     font-size: 12px; font-weight: 600; color: var(--red-text); padding: 6px 8px;
     border-radius: 6px; cursor: pointer;
   }
   .wfb-node-menu-delete:hover { background: var(--red-dim, rgba(220,53,69,0.08)); }
   .wfb-node-own { padding: 8px 12px 0; }
+  /* Change 8: canvas-wide user-select:none (.wfb-canvas-viewport) inherits
+     down into every card's static text AND its form fields — put real text
+     selection/editing back for the fields themselves and the copyable
+     `{{steps.NAME.output}}`-style reference hints, nowhere else. */
+  .wfb-node-own input, .wfb-node-own textarea, .wfb-node-own select,
+  .wfb-node-own code, .wfb-slot-chip { user-select: text; }
   /* The project row (agent card): a folder glyph reads faster than the
      all-caps "Project" micro-label used everywhere else, so the label is
      dropped here specifically (brief mockup). */
@@ -8527,14 +8634,24 @@
     display: flex; align-items: center; justify-content: center; cursor: crosshair;
     background: transparent; border: none; touch-action: none; padding: 0;
   }
-  /* Hollow ring by default (an input, or a fallback port like "otherwise");
-     an output that will actually fire is filled (UI brief mockup). */
+  /* Hollow ring by default (a fallback port like "otherwise"); an output
+     that will actually fire is filled (UI brief mockup). */
   .wfb-port-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--text-faint); pointer-events: none; }
   .wfb-port-out .wfb-port-dot { background: var(--accent); border-color: var(--accent); }
   .wfb-port-otherwise .wfb-port-dot { background: var(--surface); border-color: var(--text-faint); }
+  /* Change 5, part 2: the IN-port read as a bare gray ring half-off the
+     card's left edge — legible only once you already knew it was a target
+     (Ron's screenshot: "nothing legible on the left"). A light accent tint
+     reads as a socket at rest, in both dark and cream, without going as loud
+     as a solid output dot (no christmas-tree effect across a graph). */
+  .wfb-port-in .wfb-port-dot { background: var(--accent-dim); border-color: var(--accent); }
   .wfb-port:hover .wfb-port-dot, .wfb-port.wfb-port-target .wfb-port-dot { border-color: var(--accent); background: var(--accent); }
   .wfb-port-in { left: 0; top: 34px; }
   .wfb-port-out { position: static; margin: 0; }
+  /* Change 5, part 1: "forgiving drop" — a connect-drag highlights the WHOLE
+     candidate card, not just its 40px in-port, so it's obvious mid-gesture
+     where a wire can land (_wfConnectMove/_wfConnectResolveTarget). */
+  .wfb-node.wfb-connect-target { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim), 0 6px 18px rgba(0,0,0,0.18); }
   /* Only reached by a node with NO declared vocabulary (a no-outcome agent
      step, or any action node) -- always exactly one plain port now that a
      declared vocabulary renders its ports as in-card pills instead
@@ -8616,22 +8733,38 @@
   }
   .wfb-branch-del:hover { border-color: var(--red); color: var(--red-text); }
 
-  /* Outcome/option pill rows (UI brief mockup): each one carries its own
-     port dot at the row's right edge, in the card's normal flow -- unlike
-     the old below-the-fold text-input list, the port you'd wire up sits
-     right next to the label you're editing. */
-  .wfb-vocab-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+  /* Outcome/option pill rows (UI brief mockup): the label/delete/+ controls
+     stay in the card's normal flow, right next to the label you're editing,
+     but the port DOT itself moves onto the card's right BORDER (Change 12b —
+     Ron's screenshot showed every dot sitting inside the tile, indistinguish-
+     able from decoration). `position:relative` on the row gives each port a
+     per-row anchor so multiple outcomes/options still stack one dot per row
+     down the edge, each tied to its own label, rather than colliding into
+     one spot; `right:-32px` compensates for `.wfb-node-own`'s 12px padding
+     so the dot's CENTER lands exactly on `.wfb-node`'s true edge — the same
+     place the single-port case's `.wfb-ports-out{right:-20px}` already
+     lands (12px inset + 20px offset = 32px). `_wfRedrawEdges` measures the
+     dot's real `getBoundingClientRect()` at draw time, so the connecting
+     curve follows automatically at any pan/zoom, no JS change needed. */
+  .wfb-vocab-row, .wfb-otherwise-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; position: relative; }
+  .wfb-otherwise-row { margin: 0 0 4px; }
   .wfb-vocab-pill { flex: 1; }
   .wfb-vocab-add { align-self: flex-start; border-style: dashed; margin: 2px 0 8px; }
-  .wfb-otherwise-row { display: flex; align-items: center; gap: 4px; margin: 0 0 4px; }
   .wfb-otherwise-row em { font-style: italic; font-size: 11.5px; color: var(--text-faint); flex: 1; }
+  .wfb-vocab-row .wfb-port, .wfb-otherwise-row .wfb-port {
+    position: absolute; left: auto; right: -32px; top: 50%; margin: -20px 0 0 0;
+  }
+  .wfb-vocab-row .wfb-port-stub, .wfb-otherwise-row .wfb-port-stub {
+    position: absolute; left: auto; right: -12px; top: 50%; margin: -1px 0 0 0;
+  }
 
   .wfb-error {
-    margin-top: 14px; padding: 10px 14px; border: 1px solid var(--red); background: var(--red-dim, rgba(220,53,69,0.08));
+    margin-top: 8px; flex-shrink: 0; padding: 10px 14px; border: 1px solid var(--red); background: var(--red-dim, rgba(220,53,69,0.08));
     color: var(--red-text); font-size: 12px; border-radius: 6px;
   }
-  .wfb-actions { display: flex; align-items: center; gap: 8px; margin: 20px 0 4px; }
-  .wfb-save-stamp { font-size: 11px; color: var(--text-faint); font-family: var(--mono); }
+  /* .wfb-actions is gone (Change 1 — Save/Run now/save-stamp moved into
+     .wfb-toolbar); .wfb-save-stamp itself is unchanged and still used there. */
+  .wfb-save-stamp { font-size: 11px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .wfb-save-stamp-dirty { color: var(--amber-text); font-weight: 600; }
 
   /* Step 5b: the Insert dropdown + read-only slot legend sitting under a
@@ -8662,7 +8795,7 @@
   /* ── Workflow tabs row, top of the Workflows tab (MC-871 Q7 re-reversed:
      the canvas hosts inline here, one tab per workflow touching this
      project, plus "+ New Workflow"). ── */
-  .wfb-tabs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 10px; }
+  .wfb-tabs-row { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; margin-bottom: 6px; flex-shrink: 0; }
   .wfb-tab {
     background: var(--surface); border: 1px solid var(--border); border-radius: 6px;
     padding: 6px 12px; font-size: 12px; font-weight: 600; color: var(--text); cursor: pointer;
@@ -8697,5 +8830,40 @@
        `flex: none` let the explicit `height` win as the item's own size
        again. Caught by the canvas smoke's mobile-viewport case. */
     .wfb-canvas-viewport { flex: none; height: 58vh; }
-    .wfb-modal-body { max-height: 88vh; }
+    /* Mobile keeps its OWN bounded, scrolling treatment rather than
+       inheriting the desktop flex-fill (Change 1 amendment's explicit
+       instruction) — opts back out of `flex:1;display:flex` (app.css
+       ~8354) to the block-that-scrolls-itself shape this already was. */
+    .wfb-modal-body { display: block; flex: none; max-height: 88vh; overflow-y: auto; }
+  }
+
+  /* ── Change 1 amendment, desktop only: the Workflows tab body becomes ONE
+     flex column from the modal's own scroller down to the canvas, so the
+     canvas fills real height instead of the page scrolling around a
+     520px-tall stub. `.wfb-fill-col` marks every wrapper in that chain
+     (#workflows-body-<pid>, #wfb-clayrune-section-<pid> in loadWorkflows,
+     #wfb-inline-host-<pid> in _wfSyncTabsForProject — render-core.js /
+     agent-console.js / workflow-builder.js); `.wfb-modal-body` itself is
+     already flex:1 in its own base rule above, so it doesn't need the marker
+     class. Gated to desktop so mobile — which already has its own bounded/
+     scrolling treatment via the block above — is untouched. */
+  @media (min-width: 961px) {
+    .modal-scroll-body.wf-tab-active { display: flex; flex-direction: column; overflow: hidden; }
+    .modal-scroll-body.wf-tab-active > .modal-back-to-chat { flex-shrink: 0; margin: 10px 16px 2px; padding: 5px 10px; }
+    .modal-scroll-body.wf-tab-active > .modal-tab-content.active[data-tab="workflows"] {
+      flex: 1; min-height: 0; display: flex; flex-direction: column; overflow: hidden;
+    }
+    .wfb-fill-col { display: flex; flex-direction: column; flex: 1; min-height: 0; }
+    /* Measured (headless, 1280x900, modal 720px tall): the generic tab
+       chrome this tab inherits (.card-section's own padding, the "Workflows"
+       .section-title, .wfb-tabs-row) totalled ~180px before the canvas even
+       started, on TOP of the modal-header/back-to-chat bar — leaving the
+       flex-fill canvas SMALLER (392px) than the old fixed 520px stub it was
+       supposed to replace, the opposite of "the canvas is the dominant
+       element". The tabs row + toolbar (which now carries the workflow's own
+       name) already say what this section is; the generic heading is
+       redundant here specifically, so it's dropped only on this tab rather
+       than touched globally (every other tab still gets it). */
+    .modal-scroll-body.wf-tab-active .card-section.wfb-fill-col { padding-top: 2px; }
+    .modal-scroll-body.wf-tab-active .card-section.wfb-fill-col > .section-title { display: none; }
   }

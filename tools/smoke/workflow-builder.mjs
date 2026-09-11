@@ -154,7 +154,10 @@ async function emptyCanvasPoint(page) {
     for (let y = r.bottom - 30; y > r.top + 25; y -= 20) {
       for (let x = r.right - 30; x > r.left + 25; x -= 20) {
         const el = document.elementFromPoint(x, y);
-        if (el && vp.contains(el) && !el.closest('.wfb-node')) return { x, y };
+        // MC-871 Change 12a: also excludes the trigger tile — a "plain drop"
+        // used for the no-auto-wire test must land somewhere that resolves
+        // to the ordinary free-placement branch, not the trigger drop target.
+        if (el && vp.contains(el) && !el.closest('.wfb-node') && !el.closest('.wfb-trigger-box')) return { x, y };
       }
     }
     return null;
@@ -169,6 +172,49 @@ async function portCenter(page, selector) {
   const box = await el.boundingBox();
   if (!box) return null;
   return { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+}
+
+// Click an edge to SELECT it, away from its midpoint — Change 7 reveals a
+// delete × exactly at the midpoint on hover (which a click also triggers),
+// so a plain center-click (an SVG path's bounding-box center, or a fixed
+// pixel offset guessed from a corner) can land on the × instead of the wire
+// itself, and a curved path's bbox corner often isn't even ON the visible
+// stroke. This reads the path's own cubic control points and tries several
+// on-curve points, picking the first one `elementFromPoint` confirms is
+// actually on the path itself — a short edge between two adjacent cards can
+// put t=0.3 (or any single fixed fraction) inside the SOURCE card's own
+// `.wfb-port-row` instead of on the open stroke, since the curve leaves the
+// port at a shallow angle; trying a spread avoids depending on curve length/
+// shape. Coordinates are converted from the SVG's viewport-relative space
+// (_wfRedrawEdges measures everything relative to #wfb-canvas-viewport's own
+// rect) to a real page coordinate.
+async function clickEdgeOffCenter(page, selector) {
+  const vp = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  const candidates = await page.$eval(selector, (el) => {
+    const d = el.getAttribute('d') || '';
+    const m = /M\s*([\d.-]+),([\d.-]+)\s*C\s*([\d.-]+),([\d.-]+)\s*([\d.-]+),([\d.-]+)\s*([\d.-]+),([\d.-]+)/.exec(d);
+    if (!m) return [];
+    const [, x0, y0, x1, y1, x2, y2, x3, y3] = m.map(Number);
+    const at = (t) => {
+      const mt = 1 - t;
+      return {
+        x: mt ** 3 * x0 + 3 * mt ** 2 * t * x1 + 3 * mt * t ** 2 * x2 + t ** 3 * x3,
+        y: mt ** 3 * y0 + 3 * mt ** 2 * t * y1 + 3 * mt * t ** 2 * y2 + t ** 3 * y3,
+      };
+    };
+    // Spread away from both t=0/1 (source/target ports+cards) and t=0.5
+    // (the delete × on hover).
+    return [0.35, 0.65, 0.25, 0.75, 0.2, 0.8].map(at);
+  });
+  for (const pt of candidates) {
+    const px = vp.x + pt.x, py = vp.y + pt.y;
+    const onTarget = await page.evaluate(({ px, py, selector }) => {
+      const el = document.elementFromPoint(px, py);
+      return !!(el && el.closest(selector));
+    }, { px, py, selector });
+    if (onTarget) { await page.mouse.click(px, py); return; }
+  }
+  throw new Error(`clickEdgeOffCenter: no candidate point along the curve resolved to ${selector} via elementFromPoint`);
 }
 
 async function dragPortTo(page, fromSel, toSel) {
@@ -321,7 +367,7 @@ try {
 
   // ── Drag a palette block onto the canvas ─────────────────────────────────
   const vpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page, 'Tobin', vpBox.x + 140, vpBox.y + 120);
+  await dragPalettePersonTo(page, 'Tobin', vpBox.x + 140, vpBox.y + 240);
   let nodeCount = await page.$$eval('.wfb-node', els => els.length);
   nodeCount === 1 ? ok('dragging a PERSON from the palette placed one agent step on the canvas')
                   : fail(`expected 1 node after the palette drag, got ${nodeCount}`);
@@ -393,7 +439,12 @@ try {
 
   // ── A refused slot break: disconnect triage → draft, which "draft"'s
   // prompt depends on via {{steps.triage.output}} ─────────────────────────
-  await page.click('.wfb-edge-path'); // select the (only) real edge
+  // Click near a CORNER of the path's bounding box, not dead center: Change 7
+  // reveals a delete × exactly at the edge's midpoint on hover, and a plain
+  // center-click (Playwright's default) would now land on that × instead of
+  // selecting the path underneath it — clicking off-center exercises the
+  // ordinary "select the wire" gesture the way a user's cursor usually does.
+  await clickEdgeOffCenter(page, '.wfb-edge-path'); // select the (only) real edge
   await page.keyboard.press('Delete');
   await page.waitForTimeout(120);
   edgeCount = await page.$$eval('.wfb-edge-path', els => els.length);
@@ -442,6 +493,62 @@ try {
     : fail(`expected an edge draft -> approval, got ${JSON.stringify(wiredFromDraft)}`);
   await page.evaluate(() => { document.getElementById('wfb-port-popover')?.remove(); });
 
+  // ── MC-871 Change 12b — declared-vocabulary ports (an approval gate's
+  // options, an agent's outcomes) render as pills INSIDE the card body, but
+  // the PORT DOT itself must sit on the card's right BORDER, not inside it
+  // (Ron's screenshot: every dot sat inside the tile, indistinguishable from
+  // decoration). Uses the approval gate node the popover pick just made,
+  // which ships with two default options ("approve"/"reject") out of the box. ─
+  const approvalNodeName = wiredFromDraft && (await page.evaluate((toType) => {
+    const def = window._wfEntry()._wf.def;
+    return (def.nodes.find(n => n.type === toType) || {}).name;
+  }, 'approval'));
+  const c12bCardBox = await (await page.$(`.wfb-node[data-name="${approvalNodeName}"]`)).boundingBox();
+  const c12bPortBox = await (await page.$(`.wfb-node[data-name="${approvalNodeName}"] .wfb-vocab-row .wfb-port`)).boundingBox();
+  const c12bPortCenterX = c12bPortBox.x + c12bPortBox.width / 2;
+  // "On the edge" = the dot's center sits close to the card's own right
+  // border, not buried well inside its content width.
+  const c12bDistFromEdge = Math.abs(c12bPortCenterX - (c12bCardBox.x + c12bCardBox.width));
+  c12bDistFromEdge < 12
+    ? ok(`an outcome/option port dot sits on the card's right edge (${c12bDistFromEdge.toFixed(1)}px from it), not inside the tile`)
+    : fail(`expected the port dot within ~12px of the card's right edge, got ${c12bDistFromEdge.toFixed(1)}px away (card right=${c12bCardBox.x + c12bCardBox.width}, dot center=${c12bPortCenterX})`);
+  // Edges still land on the dot after the move, INCLUDING off default zoom —
+  // _wfRedrawEdges measures real getBoundingClientRect()s at draw time, so a
+  // real zoom gesture (mouse wheel -> _wfCanvasWheel) should carry the curve
+  // with no JS change needed for this fix.
+  const c12bEdgesBeforeZoom = await page.$$eval('.wfb-edge-path', els => els.length);
+  const c12bVpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  await page.mouse.move(c12bVpBox.x + c12bVpBox.width / 2, c12bVpBox.y + c12bVpBox.height / 2);
+  await page.mouse.wheel(0, -400); // zoom in (negative deltaY per _wfCanvasWheel's exp(-deltaY*k))
+  await page.waitForTimeout(120);
+  const c12bScaleAfter = await page.evaluate(() => window._wfEntry()._wf.viewport.scale);
+  const c12bPortBoxZoomed = await (await page.$(`.wfb-node[data-name="${approvalNodeName}"] .wfb-vocab-row .wfb-port`)).boundingBox();
+  const c12bEdgeAtZoom = await page.$$eval('g.wfb-edge-group path.wfb-edge-path', (els, target) => {
+    return els.some((el) => {
+      const d = el.getAttribute('d') || '';
+      const m = /M\s*([\d.-]+),([\d.-]+)/.exec(d);
+      if (!m) return false;
+      // The edge starts (M) at its own from-port; just confirm SOME edge
+      // still resolves to a real path string near the viewport (non-empty,
+      // finite) post-zoom -- a stale/mis-measured port would produce NaN.
+      return Number.isFinite(parseFloat(m[1])) && Number.isFinite(parseFloat(m[2]));
+    });
+  }, null);
+  (c12bScaleAfter !== 1 && c12bPortBoxZoomed && c12bEdgeAtZoom && await page.$$eval('.wfb-edge-path', els => els.length) === c12bEdgesBeforeZoom)
+    ? ok(`zoom changed to scale ${c12bScaleAfter.toFixed(2)} and the edge layer still redraws with valid, finite coordinates (edge count unchanged: ${c12bEdgesBeforeZoom})`)
+    : fail(`edge layer broke under zoom: scale=${c12bScaleAfter}, portBox=${JSON.stringify(c12bPortBoxZoomed)}, edgeValid=${c12bEdgeAtZoom}`);
+  // Reset the zoom this check just changed -- every drop/drag test AFTER
+  // this point computes its target coordinates assuming scale 1, same as
+  // when they were written; leaving the canvas zoomed in ~1.8x would silently
+  // break their geometry (cards ~1.8x bigger on screen, drop points landing
+  // somewhere else entirely).
+  await page.mouse.wheel(0, 400);
+  await page.waitForTimeout(80);
+  const c12bScaleReset = await page.evaluate(() => window._wfEntry()._wf.viewport.scale);
+  Math.abs(c12bScaleReset - 1) < 0.05
+    ? ok(`zoom reset back to ~1.0 (${c12bScaleReset.toFixed(2)}) before the remaining drop/drag geometry tests`)
+    : fail(`zoom did not reset to 1.0, got ${c12bScaleReset.toFixed(2)} — later coordinate-based tests will be unreliable`);
+
   // ── Dropping a person ONTO a card = the same thing as that card's + ──────
   const nodesBeforeDrop = await page.$$eval('.wfb-node', els => els.length);
   const edgesBeforeDrop = await page.$$eval('.wfb-edge-path', els => els.length);
@@ -475,6 +582,232 @@ try {
   stubCount > 0 ? ok(`${stubCount} unconnected port(s) render a stop stub`)
                 : fail('expected at least one unconnected port to render a stop stub');
 
+  // ── MC-871 Change 8: panning/dragging must never select card text ───────
+  const selectionBefore = await page.evaluate(() => (window.getSelection() || {}).toString());
+  const vpForPan = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  await page.mouse.move(vpForPan.x + 30, vpForPan.y + 30);
+  await page.mouse.down();
+  await page.mouse.move(vpForPan.x + 200, vpForPan.y + 150, { steps: 10 }); // sweeps across card text
+  await page.mouse.up();
+  await page.waitForTimeout(80);
+  const selectionAfterPan = await page.evaluate(() => (window.getSelection() || {}).toString());
+  (!selectionAfterPan || selectionAfterPan === selectionBefore)
+    ? ok('panning the canvas across card text selects nothing')
+    : fail(`panning selected text: "${selectionAfterPan}"`);
+  const canvasUserSelect = await page.evaluate(() => getComputedStyle(document.getElementById('wfb-canvas-viewport')).userSelect);
+  canvasUserSelect === 'none' ? ok('the canvas viewport is user-select:none at rest')
+                              : fail(`expected the canvas viewport to be user-select:none, got "${canvasUserSelect}"`);
+  const promptUserSelect = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-node .wfb-prompt')).userSelect);
+  (promptUserSelect === 'text' || promptUserSelect === 'auto')
+    ? ok(`a card's own prompt textarea stays selectable/editable (user-select: ${promptUserSelect})`)
+    : fail(`expected the prompt textarea to allow selection, got "${promptUserSelect}"`);
+  // Selecting actual text INSIDE a field must still work (Change 8's other
+  // explicit requirement — don't blanket-kill selection in form fields).
+  await page.click('.wfb-node .wfb-prompt');
+  await page.keyboard.press(process.platform === 'darwin' ? 'Meta+A' : 'Control+A');
+  const fieldSelectionLen = await page.evaluate(() => {
+    const el = document.activeElement;
+    return el && typeof el.selectionStart === 'number' ? (el.selectionEnd - el.selectionStart) : -1;
+  });
+  fieldSelectionLen > 0 ? ok('selecting text WITHIN a prompt field still works (Ctrl/Cmd+A selected it)')
+                        : fail(`expected a non-empty in-field selection, got length ${fieldSelectionLen}`);
+
+  // ── MC-871 Change 5 — "forgiving drop": a connect-drag completes on a drop
+  // anywhere on the target CARD, not only its 40px in-port hit box. ────────
+  // Places the pair directly in the model rather than via emptyCanvasPoint's
+  // bottom-right scan: the canvas already carries 5 cards at 260x512 each by
+  // this point, and a scan that only checks the single DROP PIXEL is free
+  // (not the whole eventual card footprint) can still land two new 512px-tall
+  // cards overlapping each other or their neighbours -- exactly the kind of
+  // ambiguous geometry this test needs to NOT have, since it's testing the
+  // CONNECT gesture, not placement (already covered above). A real
+  // _wfMarkDirty()+render() follows so the drag below exercises real DOM/
+  // pointer handling, not a synthetic state.
+  const preC5Names = await page.evaluate(() => window._wfEntry()._wf.def.nodes.map(n => n.name));
+  const c5Pair = await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    const a = { type: 'agent', name: 'c5-a', x: -900, y: -900, project_id: '', character: '', prompt: '', outcomes: [] };
+    const b = { type: 'agent', name: 'c5-b', x: -560, y: -900, project_id: '', character: '', prompt: '', outcomes: [] };
+    st.def.nodes = (st.def.nodes || []).concat([a, b]);
+    // Pan the new pair into view, placed far off in world space (-900) so
+    // they can't possibly overlap the crowded cluster of existing cards.
+    // Cards render ~512px tall (agent card, Insert dropdown + slot chips +
+    // outcomes) -- TALLER than the canvas viewport itself at this window
+    // size (~440-460px) -- so centering on the card's MIDPOINT puts its own
+    // top (and the head this test drags to) in the clipped region above the
+    // viewport (overflow:hidden), landing on .wfb-toolbar instead of the
+    // card. Center on the HEAD near the card's top instead (a small offset,
+    // not half the card height), which is the only part this test needs
+    // on-screen.
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const rect = vp.getBoundingClientRect();
+    st.viewport.x = rect.width / 2 - (a.x + 260) * st.viewport.scale;
+    st.viewport.y = rect.height / 2 - (a.y + 60) * st.viewport.scale;
+    window._wfMarkDirty();
+    // No direct "just render" export exists; _wfSetTriggerType is a real,
+    // idempotent (same value in/out) exported mutator that ends in the one
+    // _wfRender() every structural change here goes through, including
+    // applying the viewport.x/y set just above -- reused rather than adding
+    // a render-only export for test convenience alone.
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+    return ['c5-a', 'c5-b'];
+  });
+  await page.waitForTimeout(100);
+  c5Pair.length === 2 ? ok(`placed a fresh, well-separated unconnected pair for the forgiving-drop test: ${JSON.stringify(c5Pair)}`)
+                       : fail(`expected 2 fresh nodes, got ${JSON.stringify(c5Pair)}`);
+  const [c5From, c5To] = c5Pair;
+  const c5EdgesBefore = await page.evaluate(() => window._wfEntry()._wf.def.edges.length);
+  // Drop on the target's HEAD (its name/face), never its in-port — the exact
+  // gap Ron hit ("no way to connect a tile to another unless triggered by
+  // the small plus icon").
+  const c5FromPort = await portCenter(page, `.wfb-node[data-name="${c5From}"] .wfb-port-out`);
+  const c5ToHead = await (await page.$(`.wfb-node[data-name="${c5To}"] .wfb-node-head`)).boundingBox();
+  await page.mouse.move(c5FromPort.x, c5FromPort.y);
+  await page.mouse.down();
+  await page.mouse.move((c5FromPort.x + c5ToHead.x) / 2, (c5FromPort.y + c5ToHead.y) / 2, { steps: 6 });
+  await page.mouse.move(c5ToHead.x + c5ToHead.width / 2, c5ToHead.y + c5ToHead.height / 2, { steps: 6 });
+  const c5Highlighted = await page.evaluate((to) => document.querySelector(`.wfb-node[data-name="${to}"]`).classList.contains('wfb-connect-target'), c5To);
+  c5Highlighted ? ok('the whole target card highlights while a connect-drag hovers it, not just the in-port')
+                : fail('the target card did not highlight as a drop target mid-drag');
+  await page.mouse.up();
+  await page.waitForTimeout(120);
+  const c5EdgesAfter = await page.evaluate(() => window._wfEntry()._wf.def.edges);
+  const c5NewEdge = c5EdgesAfter.find(e => e.from === c5From && e.to === c5To);
+  (c5EdgesAfter.length === c5EdgesBefore + 1 && c5NewEdge)
+    ? ok(`dropping on the card BODY (not the in-port) connected ${c5From} -> ${c5To} — edge landed in def.edges`)
+    : fail(`forgiving drop did not add the edge: before=${c5EdgesBefore} after=${c5EdgesAfter.length} found=${JSON.stringify(c5NewEdge)}`);
+
+  // ── MC-871 Change 7 — the delete × at an edge's midpoint (reusing the
+  // c5From -> c5To edge the forgiving-drop test just made). ────────────────
+  const c7GroupSel = `g.wfb-edge-group:has(path[onpointerdown*="_wfEdgeClick(event,'${c5From}','${c5To}'"])`;
+  // page.hover() fails its own actionability check here: the moment the
+  // mouse arrives, the × (correctly) becomes the topmost element AT that
+  // exact point, and Playwright treats its own hover target being covered as
+  // "intercepted" and keeps retrying forever — a real user's hover just
+  // reveals the ×, nothing is actually blocked. page.mouse.move() to the
+  // path's own midpoint sidesteps Playwright's locator-action interception
+  // check while still exercising the same real :hover CSS state.
+  const c7PathBox = await (await page.$(`${c7GroupSel} path.wfb-edge-path`)).boundingBox();
+  await page.mouse.move(c7PathBox.x + c7PathBox.width / 2, c7PathBox.y + c7PathBox.height / 2);
+  await page.waitForTimeout(80);
+  const c7XOpacity = await page.$eval(`${c7GroupSel} .wfb-edge-del`, el => getComputedStyle(el).opacity);
+  parseFloat(c7XOpacity) > 0 ? ok('hovering an edge reveals its delete ×')
+                             : fail(`expected the × to be visible on hover, opacity was "${c7XOpacity}"`);
+  const c7EdgesBefore = await page.$$eval('.wfb-edge-path', els => els.length);
+  // Click the BG circle, not the (larger, invisible) hit circle underneath
+  // it: both sit inside the same <g class="wfb-edge-del"> whose onpointerdown
+  // handles either via bubbling, but .wfb-edge-del-bg paints on top at this
+  // exact point and Playwright's own actionability check insists on hitting
+  // whichever element is actually topmost there.
+  await page.click(`${c7GroupSel} .wfb-edge-del-bg`);
+  await page.waitForTimeout(100);
+  const c7EdgesAfter = await page.$$eval('.wfb-edge-path', els => els.length);
+  c7EdgesAfter === c7EdgesBefore - 1 ? ok('clicking the delete × removed that one edge')
+                                     : fail(`expected edge count to drop by 1, got ${c7EdgesBefore} -> ${c7EdgesAfter}`);
+  // Change 5's forgiving-drop test panned the viewport off to world (-900,
+  // -900) to reach the c5-a/c5-b pair it created there, and nothing since
+  // has panned back — the ORIGINAL cluster (triage/draft/the approval gate)
+  // is still off-screen (clipped by .wfb-canvas-viewport's overflow:hidden),
+  // so a click computed against its real on-screen coordinates would land
+  // outside the visible canvas entirely. Reset to the default pan before the
+  // keyboard-delete test below, which operates back on that original cluster.
+  await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    st.viewport.x = 60; st.viewport.y = 40; st.viewport.scale = 1;
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+  });
+  await page.waitForTimeout(80);
+  // The keyboard path (select, then Delete/Backspace) must still work too —
+  // the × is a SECOND way to reach _wfDeleteEdge, not a replacement.
+  const c7KeyboardEdge = await page.evaluate(() => {
+    const def = window._wfEntry()._wf.def;
+    const e = def.edges.find(e => e.from === 'draft' && (def.nodes.find(n => n.name === e.to) || {}).type === 'approval');
+    return e ? { from: e.from, to: e.to } : null;
+  });
+  if (c7KeyboardEdge) {
+    // Change 6's Duplicate test (above) auto-focuses the new copy's prompt
+    // textarea (_wfFocusPrompt) and never blurs it — the SAME guard that
+    // makes Delete/Backspace not hijack text editing in a field would then
+    // swallow this Delete keypress too, since it checks
+    // document.activeElement's tagName. Explicitly blur first, same as a
+    // user clicking away from the field would.
+    await page.evaluate(() => document.activeElement && document.activeElement.blur());
+    const c7KbSel = `g.wfb-edge-group path[onpointerdown*="_wfEdgeClick(event,'${c7KeyboardEdge.from}','${c7KeyboardEdge.to}'"]`;
+    const c7KbCountBefore = await page.$$eval('.wfb-edge-path', els => els.length);
+    await clickEdgeOffCenter(page, c7KbSel); // off-center — see the note above on the delete × sitting at the midpoint
+    await page.keyboard.press('Delete');
+    await page.waitForTimeout(100);
+    const c7KbCountAfter = await page.$$eval('.wfb-edge-path', els => els.length);
+    c7KbCountAfter === c7KbCountBefore - 1 ? ok('the keyboard path (select edge, press Delete) still removes an edge')
+                                            : fail(`keyboard edge delete regressed: ${c7KbCountBefore} -> ${c7KbCountAfter}`);
+  } else {
+    fail('could not find the draft->approval edge to exercise the keyboard delete path');
+  }
+
+  // ── MC-871 Change 6 — the "..." menu must open (it silently didn't:
+  // pointer capture on .wfb-node-head retargeted its click away — see
+  // _wfNodeDragDown's guard) and offer Duplicate / Disconnect / Delete step. ─
+  const preMenuNames = await page.evaluate(() => window._wfEntry()._wf.def.nodes.map(n => n.name));
+  await dragPalettePersonTo(page, 'Nomask', () => emptyCanvasPoint(page));
+  await page.waitForTimeout(100);
+  const menuNodeName = await page.evaluate((before) => window._wfEntry()._wf.def.nodes.map(n => n.name).find(n => !before.includes(n)), preMenuNames);
+  await page.click(`.wfb-node[data-name="${menuNodeName}"] .wfb-node-menu-btn`);
+  await page.waitForSelector('#wfb-node-menu', { timeout: 3000 })
+    .then(() => ok('clicking a card\'s "..." button opens its menu'))
+    .catch(() => fail('the node menu did NOT open on click — the dead-button regression is back'));
+  const menuItemLabels = await page.$$eval('#wfb-node-menu > div', els => els.map(e => e.textContent.trim()));
+  (menuItemLabels.includes('Duplicate') && menuItemLabels.includes('Disconnect') && menuItemLabels.includes('Delete step'))
+    ? ok(`the menu offers Duplicate / Disconnect / Delete step: ${JSON.stringify(menuItemLabels)}`)
+    : fail(`expected Duplicate/Disconnect/Delete step, got ${JSON.stringify(menuItemLabels)}`);
+
+  // Duplicate: a distinctly-named node, zero copied edges.
+  const preDupNames = await page.evaluate(() => window._wfEntry()._wf.def.nodes.map(n => n.name));
+  const menuItemEls = await page.$$('#wfb-node-menu > div');
+  await menuItemEls[0].click(); // Duplicate is first
+  await page.waitForTimeout(100);
+  const dupResult = await page.evaluate((before) => {
+    const def = window._wfEntry()._wf.def;
+    const newName = def.nodes.map(n => n.name).find(n => !before.includes(n));
+    return { newName, edgesTouching: newName ? def.edges.filter(e => e.from === newName || e.to === newName).length : -1 };
+  }, preDupNames);
+  (dupResult.newName && dupResult.newName !== menuNodeName && dupResult.edgesTouching === 0)
+    ? ok(`Duplicate added "${dupResult.newName}" — a distinct name, 0 copied edges`)
+    : fail(`Duplicate did not behave as expected: ${JSON.stringify(dupResult)}`);
+
+  // Disconnect: drop every edge into/out of a node that already has one
+  // (the drop-onto-card auto-wire from earlier), leaving the card in place.
+  const homerName = await page.evaluate(() => (window._wfEntry()._wf.def.nodes.find(n => n.character === 'project:homed') || {}).name);
+  const homerEdgesBefore = await page.evaluate((n) => window._wfEntry()._wf.def.edges.filter(e => e.from === n || e.to === n).length, homerName);
+  homerEdgesBefore > 0 ? ok(`"${homerName}" already carries ${homerEdgesBefore} edge(s) — a real case for Disconnect`)
+                        : fail('expected the drop-onto-card node to already carry an edge before testing Disconnect');
+  await page.click(`.wfb-node[data-name="${homerName}"] .wfb-node-menu-btn`);
+  await page.waitForSelector('#wfb-node-menu', { timeout: 3000 });
+  const homerMenuEls = await page.$$('#wfb-node-menu > div');
+  await homerMenuEls[1].click(); // Disconnect is second
+  await page.waitForTimeout(100);
+  const afterDisconnect = await page.evaluate((n) => {
+    const def = window._wfEntry()._wf.def;
+    return { stillThere: def.nodes.some(x => x.name === n), edges: def.edges.filter(e => e.from === n || e.to === n).length };
+  }, homerName);
+  (afterDisconnect.stillThere && afterDisconnect.edges === 0)
+    ? ok(`Disconnect dropped all of "${homerName}"'s edges and left the card in place`)
+    : fail(`Disconnect did not behave as expected: ${JSON.stringify(afterDisconnect)}`);
+
+  // Delete step: removes the node (via the menu, not just the old dead
+  // button) — use the duplicate from above so nothing else depends on it.
+  const preDelCount = await page.evaluate(() => window._wfEntry()._wf.def.nodes.length);
+  await page.click(`.wfb-node[data-name="${dupResult.newName}"] .wfb-node-menu-btn`);
+  await page.waitForSelector('#wfb-node-menu', { timeout: 3000 });
+  await page.click('#wfb-node-menu .wfb-node-menu-delete');
+  await page.waitForTimeout(100);
+  const afterMenuDelete = await page.evaluate((n) => {
+    const def = window._wfEntry()._wf.def;
+    return { gone: !def.nodes.some(x => x.name === n), count: def.nodes.length };
+  }, dupResult.newName);
+  (afterMenuDelete.gone && afterMenuDelete.count === preDelCount - 1)
+    ? ok('Delete step (via the menu) removed the node')
+    : fail(`Delete step via the menu did not remove the node: ${JSON.stringify(afterMenuDelete)}`);
+
   // ── Touch-context: the drag handles must not carry touch-action:none
   // PERMANENTLY (the mobile scroll-lock trap) — only while a drag is
   // actually active, via a dynamically-applied class. ─────────────────────
@@ -500,6 +833,64 @@ try {
   const portTouchAction = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-port')).touchAction);
   portTouchAction === 'none' ? ok('a port (a dedicated control, not a scrollable list item) is touch-action:none unconditionally')
                              : fail(`expected a port to be touch-action:none always, got "${portTouchAction}"`);
+
+  // ── MC-871 Change 9 — "+ N more" reveals hidden bench people (previously
+  // a single button whose text prefix lied: clicking it ALWAYS opened the
+  // Claydo hire dialog, with no way to see the capped-off people at all).
+  // Injects a 15-person bench directly (cap is now 12) rather than opening a
+  // whole new browser context — _wfPaletteSearch('') already re-renders ONLY
+  // the palette box from st.bench, which is exactly the code path
+  // _wfPaletteToggleExpand also uses. This runs LAST in this context: it
+  // replaces the bench wholesale, so nothing after it may assume the
+  // original 5-person roster. ────────────────────────────────────────────
+  await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    st.bench = Array.from({ length: 15 }, (_, i) => ({
+      name: 'filler' + i, scope: 'global', display: 'Filler ' + i, avatar: '',
+      description: '', skills: [], provider: 'claude', model: '', effort: '',
+      project_id: '', project_name: '', rooms: [],
+    }));
+    st.paletteExpanded = false;
+    window._wfPaletteSearch('');
+  });
+  await page.waitForTimeout(80);
+  const c9Shown = await page.$$eval('.wfb-palette-person-name', els => els.length);
+  c9Shown === 12 ? ok(`palette caps at 12 people by default (raised from 8 — Change 9, more room now the canvas fills the tab)`)
+                 : fail(`expected 12 people shown before expanding, got ${c9Shown}`);
+  const c9MoreBtn = await page.$eval('.wfb-palette-more', el => el.textContent.trim()).catch(() => null);
+  c9MoreBtn === '+ 3 more' ? ok(`"+ 3 more" is its OWN button, separate from Hire someone new`)
+                           : fail(`expected a "+ 3 more" button, got ${JSON.stringify(c9MoreBtn)}`);
+  await page.click('.wfb-palette-more');
+  await page.waitForTimeout(80);
+  const c9ShownAfter = await page.$$eval('.wfb-palette-person-name', els => els.length);
+  const c9HireOpened = await page.evaluate(() => !!window.__hireDialogOpened); // sanity: nothing wired this, see below
+  c9ShownAfter === 15 ? ok(`clicking "+ N more" revealed all 15 people (was clicking it opening the hire dialog instead — the whole bench was unreachable)`)
+                       : fail(`expected all 15 people after expanding, got ${c9ShownAfter}`);
+  // "+ N more" must not be the hire flow: guard floorHire itself, since
+  // nothing else in this harness defines it.
+  const c9HireGuard = await page.evaluate(() => {
+    let called = false;
+    window.floorHire = () => { called = true; };
+    document.querySelector('.wfb-palette-more').click(); // now reads "Show fewer" post-expand
+    return called;
+  });
+  c9HireGuard ? fail('"+ N more"/"Show fewer" incorrectly triggered the hire flow')
+              : ok('"+ N more"/"Show fewer" never calls the hire flow');
+  const c9HireBtn = await page.$$eval('button.wfb-palette-more', els => els.find(b => /Hire someone new/.test(b.textContent)));
+  c9HireBtn ? ok('"Hire someone new" remains its own separate button') : fail('"Hire someone new" button is missing');
+  const c9HireCalled = await page.evaluate(() => {
+    let called = false;
+    window.floorHire = () => { called = true; };
+    [...document.querySelectorAll('button.wfb-palette-more')].find(b => /Hire someone new/.test(b.textContent)).click();
+    return called;
+  });
+  c9HireCalled ? ok('"Hire someone new" still calls the hire flow') : fail('"Hire someone new" no longer calls the hire flow');
+  await setValue(page, '.wfb-palette-search', 'filler1');
+  await page.waitForTimeout(80);
+  const c9SearchCount = await page.$$eval('.wfb-palette-person-name', els => els.length);
+  // "filler1","filler10".."filler14" all match the substring "filler1"
+  c9SearchCount === 6 ? ok(`a search still shows every match regardless of expanded state (${c9SearchCount} matches for "filler1")`)
+                       : fail(`expected 6 matches for "filler1", got ${c9SearchCount}`);
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();
@@ -578,10 +969,14 @@ try {
   await page2.waitForSelector('#projects-col .card', { timeout: 15000 });
   await newWorkflow(page2, PID);
   const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 120);
+  await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 240);
   await setValue(page2, '.wfb-node .wfb-name', 'harvest-triage');
   await setValue(page2, '.wfb-node .wfb-prompt', 'Score the signals.');
   await setValue(page2, '#wfb-name', 'Smoke test workflow');
+  // #wfb-desc only exists once the description disclosure is open (Change 1
+  // — collapsed by default unless the loaded def already has one).
+  await page2.click('.wfb-toolbar-desc-toggle');
+  await page2.waitForSelector('#wfb-desc', { timeout: 3000 });
   await setValue(page2, '#wfb-desc', 'Exercises the canvas end to end.');
 
   // ── MC-871 Change 2: the Trigger box lives on the canvas, first in the
@@ -603,11 +998,84 @@ try {
   (triggerAfterDrag && typeof triggerAfterDrag.x === 'number' && typeof triggerAfterDrag.y === 'number')
     ? ok(`dragging the Trigger box's head wrote trigger.x/y into the model (${triggerAfterDrag.x},${triggerAfterDrag.y})`)
     : fail(`dragging the Trigger box did not persist a position: ${JSON.stringify(triggerAfterDrag)}`);
-  const triggerHasNoPorts = await page2.$$eval('.wfb-trigger-box .wfb-port', els => els.length === 0);
-  triggerHasNoPorts ? ok('the Trigger box has no ports — left unconnected, as specified')
-                    : fail('the Trigger box unexpectedly renders a port');
+  // A real drag must NOT also open the config popover (Change 2's click-vs-
+  // drag distinguishing test).
+  const popoverAfterDrag = await page2.$('#wfb-trigger-popover');
+  popoverAfterDrag ? fail('dragging the Trigger tile incorrectly opened its popover too')
+                    : ok('dragging the Trigger tile does not also open its popover');
 
-  await page2.click('.wfb-actions .btn-sched-save');
+  // ── MC-871 Change 4a — REVERSED from the original spec text this smoke
+  // used to assert ("the Trigger box has no ports, left unconnected, as
+  // specified"): Ron asked for a real connection point, so the trigger now
+  // carries exactly one output port. ────────────────────────────────────────
+  const triggerPortCount = await page2.$$eval('.wfb-trigger-box .wfb-port', els => els.length);
+  triggerPortCount === 1 ? ok('the Trigger box now renders exactly one output port (Change 4a reversal)')
+                         : fail(`expected exactly 1 port on the Trigger box, got ${triggerPortCount}`);
+
+  // A plain CLICK (no drag) on the trigger head opens the popover.
+  await page2.click('.wfb-trigger-box-head');
+  await page2.waitForSelector('#wfb-trigger-popover', { timeout: 3000 })
+    .then(() => ok('a plain click on the Trigger tile opens its config popover'))
+    .catch(() => fail('clicking the Trigger tile did not open a popover'));
+  await page2.click('.wfb-trigger-box-head'); // a second click closes it (real toggle path, not a raw DOM removal)
+  await page2.waitForTimeout(80);
+
+  // ── MC-871 Change 12a — a fresh drop must NOT auto-wire to the trigger.
+  // The first cut of 4a drew a trigger line to every ROOT node, so any
+  // standalone drop (which starts with no incoming edges) instantly looked
+  // wired with zero action from Ron. Confirms the correction: an ordinary
+  // drop leaves `def.trigger.entry` untouched and draws no implied line. ───
+  const namesBeforeC12a = await page2.evaluate(() => window._wfEntry()._wf.def.nodes.map(n => n.name));
+  await dragPalettePersonTo(page2, 'Tobin', () => emptyCanvasPoint(page2));
+  await page2.waitForTimeout(100);
+  const c12aNewName = await page2.evaluate((before) => window._wfEntry()._wf.def.nodes.map(n => n.name).find(n => !before.includes(n)), namesBeforeC12a);
+  const c12aEntryAfterPlainDrop = await page2.evaluate(() => { const t = window._wfEntry()._wf.def.trigger; return (t && t.entry) || []; });
+  !c12aEntryAfterPlainDrop.includes(c12aNewName)
+    ? ok(`a plain drop on empty canvas ("${c12aNewName}") is a root but is NOT auto-added to trigger.entry`)
+    : fail(`a plain drop was incorrectly auto-wired to the trigger: entry=${JSON.stringify(c12aEntryAfterPlainDrop)}`);
+  const c12aImpliedCount = await page2.$$eval('.wfb-edge-implied', els => els.length);
+  const c12aUnwiredBadge = await page2.$(`.wfb-node[data-name="${c12aNewName}"] .wfb-node-unwired-badge`);
+  c12aUnwiredBadge ? ok(`the un-wired root "${c12aNewName}" carries the honesty badge (it will still run at start)`)
+                   : fail('expected the unwired-root badge on a fresh standalone root');
+
+  // Dragging FROM the trigger's port ONTO an existing card (the honest
+  // inverse) DOES explicitly wire it — this is the one gesture that's
+  // supposed to add to trigger.entry.
+  const triggerPortPt = await portCenter(page2, '.wfb-trigger-box .wfb-port-out');
+  const c12aTargetHead = await (await page2.$(`.wfb-node[data-name="${c12aNewName}"] .wfb-node-head`)).boundingBox();
+  await page2.mouse.move(triggerPortPt.x, triggerPortPt.y);
+  await page2.mouse.down();
+  await page2.mouse.move((triggerPortPt.x + c12aTargetHead.x) / 2, (triggerPortPt.y + c12aTargetHead.y) / 2, { steps: 6 });
+  await page2.mouse.move(c12aTargetHead.x + c12aTargetHead.width / 2, c12aTargetHead.y + c12aTargetHead.height / 2, { steps: 6 });
+  await page2.mouse.up();
+  await page2.waitForTimeout(120);
+  const c12aEntryAfterDrag = await page2.evaluate(() => (window._wfEntry()._wf.def.trigger.entry || []));
+  c12aEntryAfterDrag.includes(c12aNewName)
+    ? ok(`dragging FROM the trigger port ONTO the card explicitly wired "${c12aNewName}" (trigger.entry)`)
+    : fail(`expected "${c12aNewName}" in trigger.entry after the explicit drag, got ${JSON.stringify(c12aEntryAfterDrag)}`);
+  const c12aBadgeGone = await page2.$(`.wfb-node[data-name="${c12aNewName}"] .wfb-node-unwired-badge`);
+  c12aBadgeGone ? fail('the unwired-root badge should have cleared after explicit trigger-wiring')
+                : ok('the unwired-root badge clears once the node is explicitly wired');
+
+  // A path with fill other than none is invisible-bug class (Ron's screenshot:
+  // huge black wedges from a missing `fill:none` on a new SVG <path>) —
+  // guard every path in the edge layer, not just the ones this suite already
+  // knew to check.
+  const badFills = await page2.$$eval('#wfb-canvas-svg path', els => els
+    .map(el => ({ cls: el.getAttribute('class'), fill: getComputedStyle(el).fill }))
+    .filter(x => x.fill !== 'none'));
+  badFills.length === 0 ? ok('every SVG edge <path> computes fill:none (no black-wedge regression)')
+                        : fail(`found path(s) without fill:none: ${JSON.stringify(badFills)}`);
+
+  // The 12a/4a test node above (c12aNewName, dropped bare with no prompt or
+  // project set — it only needed to exist to prove trigger-wiring behaviour)
+  // would otherwise fail _wfValidateGraph's "needs a project"/"needs a
+  // prompt" checks and silently block the Save this section tests next.
+  // Remove it now that its own assertions are done.
+  await page2.evaluate((n) => window._wfDeleteNode(n), c12aNewName);
+  await page2.waitForTimeout(80);
+
+  await page2.click('.wfb-toolbar .btn-sched-save');
   await page2.waitForTimeout(250);
   workflowPosts2.length === 1 ? ok('POST /api/workflows fired exactly once on Save')
                               : fail(`expected exactly 1 POST /api/workflows, got ${workflowPosts2.length}`);
@@ -624,7 +1092,7 @@ try {
     ? ok(`the dragged trigger.x/y round-tripped into the SAVED body (${posted.trigger.x},${posted.trigger.y})`)
     : fail(`expected trigger.x/y in the posted body, got ${JSON.stringify(posted.trigger)}`);
   await page2.waitForFunction(() => {
-    const btn = document.querySelector('.wfb-actions .btn-sched-save');
+    const btn = document.querySelector('.wfb-toolbar .btn-sched-save');
     return btn && btn.textContent.trim() === 'Update';
   }, { timeout: 3000 }).then(() => ok('after a successful save, the button relabels to "Update" (workflowId adopted)'),
                             () => fail('save button never relabeled to "Update" after a successful save'));
@@ -706,13 +1174,23 @@ try {
 
   await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
   const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPalettePersonTo(page3, 'Tobin', vpBox3.x + 140, vpBox3.y + 120);
+  await dragPalettePersonTo(page3, 'Tobin', vpBox3.x + 140, vpBox3.y + 240);
   await setValue(page3, '.wfb-node .wfb-name', 'step-one');
   await setValue(page3, '.wfb-node .wfb-prompt', 'Do the thing.');
 
-  await page3.click('input[name="wfb-trigger"][value="schedule"]');
-  await page3.waitForSelector('.wfb-sched-cadence', { timeout: 3000 });
-  ok('selecting "On a schedule" renders the cadence sub-form');
+  // MC-871 Change 2: the TRIGGER radios/cadence form no longer sit in a
+  // permanent card above the canvas — they're reused verbatim inside a
+  // popover opened by clicking the Trigger tile. Open it once; every mutator
+  // below (_wfSetSchedType etc.) already ends in the shared _wfRender(),
+  // which keeps #wfb-trigger-popover's content in sync while it's open, so
+  // the rest of this sequence is unchanged from before the rehost.
+  await page3.click('.wfb-trigger-box-head');
+  await page3.waitForSelector('#wfb-trigger-popover', { timeout: 3000 })
+    .then(() => ok('clicking the Trigger tile opens its config popover'))
+    .catch(() => fail('the Trigger tile did not open a popover on click'));
+  await page3.click('#wfb-trigger-popover input[name="wfb-trigger"][value="schedule"]');
+  await page3.waitForSelector('#wfb-trigger-popover .wfb-sched-cadence', { timeout: 3000 });
+  ok('selecting "On a schedule" (inside the popover) renders the cadence sub-form');
 
   const defaultType = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim());
   defaultType === 'Daily' ? ok('cadence defaults to Daily')
@@ -758,7 +1236,7 @@ try {
   await page3.click('.sched-type-btn:text-is("Weekly")');
   await page3.waitForTimeout(80);
   const toastsBeforeEmpty = (await page3.evaluate(() => (window.__toasts || []).length));
-  await page3.click('.wfb-actions .btn-sched-save');
+  await page3.click('.wfb-toolbar .btn-sched-save');
   await page3.waitForTimeout(150);
   const newToasts = (await page3.evaluate(() => window.__toasts || [])).slice(toastsBeforeEmpty);
   newToasts.some((t) => /day/i.test(t)) ? ok(`saving Weekly with no days picked was refused: "${newToasts.find((t) => /day/i.test(t))}"`)
@@ -766,11 +1244,17 @@ try {
   savedWorkflow3 === null ? ok('the empty-days guard fired before the workflow POST — nothing saved')
                           : fail('a workflow was posted despite an empty weekly day set');
 
-  // Pick Wednesday and save for real.
+  // Pick Wednesday and save for real. Clicking Save is itself a click
+  // OUTSIDE the popover, which closes it via the same outside-click handler
+  // the port "+" popover already uses — correct, expected behaviour, not a
+  // bug (see _wfTriggerPopoverOutsideDown) — so it needs reopening here to
+  // keep editing the cadence.
+  await page3.click('.wfb-trigger-box-head');
+  await page3.waitForSelector('.sched-day-btn[data-day="3"]', { timeout: 3000 });
   await page3.click('.sched-day-btn[data-day="3"]');
-  await page3.click('.wfb-actions .btn-sched-save');
+  await page3.click('.wfb-toolbar .btn-sched-save');
   await page3.waitForFunction(() => {
-    const btn = document.querySelector('.wfb-actions .btn-sched-save');
+    const btn = document.querySelector('.wfb-toolbar .btn-sched-save');
     return btn && btn.textContent.trim() === 'Update';
   }, { timeout: 3000 }).catch(() => {});
   await page3.waitForTimeout(200);
@@ -792,6 +1276,10 @@ try {
   // dirty, so this doesn't hit the discard-changes confirm).
   await page3.evaluate(({ id, pid }) => { window.openWorkflowBuilder(id, pid); }, { id: savedWorkflow3.id, pid: PID });
   await page3.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  // A reload closes any previously-open trigger popover (openWorkflowBuilder
+  // now does this explicitly — its old content would otherwise point at a
+  // stale load). Reopen it to inspect the reloaded cadence.
+  await page3.click('.wfb-trigger-box-head');
   await page3.waitForSelector('.sched-type-btn.active', { timeout: 3000 });
 
   const reopenActiveType = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim());
