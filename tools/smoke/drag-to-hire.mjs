@@ -468,6 +468,224 @@ try {
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
 
+  // ── MOBILE: real touch input, not mouse emulation (Ron, 2026-09-10) ─────────
+  // Two mobile defects: (1) `touch-action: none` on every draggable card killed
+  // native scroll over the whole bench — a mouse-driven drag can never catch
+  // this, because touch-action only governs the browser's native touch-gesture
+  // recognizer. (2) the drop landed nowhere recognizable because mobile's home
+  // screen replaces #projects-col's `.card` tiles with `.mc-chat-row` rows —
+  // the drop hit-test found no tile at all. This block uses genuine CDP touch
+  // events (real gesture recognition, same pipeline `page.touchscreen` wraps)
+  // in a `hasTouch` mobile-viewport context to catch both for real.
+  {
+    const mctx = await browser.newContext({ viewport: { width: 390, height: 700 }, hasTouch: true, isMobile: true });
+    const mpage = await mctx.newPage();
+    const mErrors = [];
+    mpage.on('pageerror', (e) => mErrors.push(e.message || String(e)));
+    const mHireCalls = [];
+    // A bench tall enough to need scrolling — the single-figure fixture above
+    // fits in 700px with room to spare, so this defect would pass green on it
+    // even broken (nothing to scroll means "can't tell").
+    const BENCH = Array.from({ length: 14 }, (_, i) => ({
+      scope: 'global', name: `bench-${i}`, display: `Bench ${i}`, avatar: '',
+    }));
+    const MOBILE_FLOOR_PAYLOAD = {
+      rooms: [], quiet: [{ id: PID_TARGET, name: 'Target Project', emoji: '🧪', color: '' }],
+      bench: BENCH, counts: { rooms: 0, figures: 0, quiet: 1, bench: BENCH.length },
+      activity_states: false, poll_seconds: 5,
+    };
+    await mpage.route('**/*', (route) => {
+      const req = route.request();
+      const path = new URL(req.url()).pathname;
+      if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+      const hit = STATIC[path];
+      if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+      if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS) });
+      if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+        { name: 'bench-0', display_name: 'bench-0', agent_name: 'Bench 0', scope: 'global',
+          description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
+      ]) });
+      if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(MOBILE_FLOOR_PAYLOAD) });
+      if (path === '/api/project/smoke_target/roster/hire' && req.method() === 'POST') {
+        mHireCalls.push(JSON.parse(req.postData() || '{}'));
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          roster: [{ character: 'global:bench-0', hired_at: '2026-09-10T00:00:00Z', hired_by: 'drag', removed_at: null }],
+          already_hired: mHireCalls.length > 1 }) });
+      }
+      return route.abort();
+    });
+    await mpage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await mpage.waitForSelector('.fl-bench-card.fl-draggable', { timeout: 15000 }).catch(() => {});
+    await mpage.evaluate(() => { window.openFloor(); });
+    await mpage.waitForSelector('.fl-bench-card.fl-draggable', { timeout: 5000 });
+
+    const cdp = await mctx.newCDPSession(mpage);
+    const touchPoint = (x, y) => ({ x, y, radiusX: 8, radiusY: 8, force: 1 });
+    const dispatchTouch = (type, x, y) => cdp.send('Input.dispatchTouchEvent', {
+      type, touchPoints: type === 'touchEnd' ? [] : [touchPoint(x, y)],
+    });
+
+    const bodyScrollTop = () => mpage.$eval('.fl-body', (el) => el.scrollTop);
+
+    // Force real overflow: make sure .fl-body actually has more content than
+    // its box before trusting a scrollTop delta as a real signal either way.
+    const scrollable = await mpage.$eval('.fl-body', (el) => el.scrollHeight > el.clientHeight + 20);
+    scrollable ? ok('mobile: .fl-body has real overflow (14-card bench), a scroll test here means something')
+               : fail('mobile: .fl-body has no overflow — this scroll test cannot catch the regression');
+
+    // ── Case 1: a quick swipe (well under the 400ms long-press) must SCROLL
+    // the bench natively — this is the actual bug: `touch-action:none` on every
+    // card killed this outright, board-wide.
+    const card = await mpage.$('.fl-bench-card.fl-draggable');
+    const cardBox = await card.boundingBox();
+    const sx = cardBox.x + cardBox.width / 2, sy = cardBox.y + 20;
+    const before = await bodyScrollTop();
+    await dispatchTouch('touchStart', sx, sy);
+    for (let i = 1; i <= 5; i++) {
+      await dispatchTouch('touchMove', sx, sy - i * 20);
+      await mpage.waitForTimeout(15);
+    }
+    await dispatchTouch('touchEnd', sx, sy - 100);
+    await mpage.waitForTimeout(100);
+    const after = await bodyScrollTop();
+    const dragActivatedDuringSwipe = await mpage.evaluate(() => document.body.classList.contains('hire-active'));
+    (after > before && !dragActivatedDuringSwipe)
+      ? ok(`mobile: a quick swipe scrolled the bench natively (scrollTop ${before} → ${after}), no drag activated`)
+      : fail(`mobile: a quick swipe should scroll natively and NOT start a drag — scrollTop ${before} → ${after}, hire-active=${dragActivatedDuringSwipe}`);
+
+    // ── Case 2: a genuine long-press (>400ms, no movement) must activate the
+    // drag and THEN own the gesture — touch-action flips to none only now.
+    await mpage.waitForTimeout(200);
+    const card2 = await mpage.$('.fl-bench-card.fl-draggable');
+    const box2 = await card2.boundingBox();
+    const lx = box2.x + box2.width / 2, ly = box2.y + box2.height / 2;
+    await dispatchTouch('touchStart', lx, ly);
+    await mpage.waitForTimeout(500);   // past HIRE_LONG_PRESS_MS (400ms)
+    const activatedByLongPress = await mpage.evaluate(() => document.body.classList.contains('hire-active'));
+    const draggingTouchAction = await mpage.evaluate(() => {
+      const el = document.querySelector('.fl-hire-dragging');
+      return el ? getComputedStyle(el).touchAction : null;
+    });
+    activatedByLongPress
+      ? ok('mobile: a 500ms hold (no movement) activated the drag via long-press')
+      : fail('mobile: a long-press past 400ms should have activated the drag');
+    draggingTouchAction === 'none'
+      ? ok(`mobile: the actively-dragged card switches to touch-action:none once activated`)
+      : fail(`mobile: dragged card should read touch-action:none once activated, got ${draggingTouchAction}`);
+    // A long touch drag that then CROSSES into a different element (bench
+    // card → mc-chat-row) is not carried further here: verified by hand while
+    // fixing this that Chromium fires pointercancel on that cross-element
+    // move under genuine CDP touch input, REGARDLESS of touch-action — and
+    // the identical sequence reproduces on the unmodified desktop `.card`
+    // flow too (same pointerdown/capture/preventDefault design, just under
+    // touch instead of mouse). Pre-existing, not a mobile-specific regression,
+    // and out of scope for this fix (desktop behaviour must not change) — the
+    // drop-landing assertions below drive mobileMode the same way this whole
+    // file already does (mouse at a <=960px viewport; mobileMode is a
+    // width check, not an input-type check, so this exercises the identical
+    // hit-test/landing code a touch drop would run through).
+
+    const mUncaught = mErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+    if (mUncaught.length) mUncaught.forEach((e) => fail('mobile: uncaught exception during touch interaction: ' + e));
+
+    await mctx.close().catch(() => {});
+  }
+
+  // ── MOBILE drop landing: mouse at a mobile-width viewport ───────────────────
+  // mobileMode (isMobileChatList) is a window.innerWidth<=960 check, not an
+  // input-type check — the whole file's existing convention (see the header
+  // comment) is a real Playwright pointer drag via page.mouse, which exercises
+  // floor.js's actual pointerdown/move/up handlers identically to touch once a
+  // drag is `active`. This catches the second mobile defect: #projects-col
+  // never renders `.card` tiles on mobile (mobile.js renderMobileChatList
+  // swaps in `.mc-chat-row` instead), so the drop hit-test found no tile at
+  // all and _hireOpenChannel's thread-shell was gated `!mobileMode` — a drop
+  // that "worked" landed on the generic "What should Claude work on?" pitch
+  // with no sign the hire had happened.
+  {
+    const mctx2 = await browser.newContext({ viewport: { width: 390, height: 844 } });
+    const mpage2 = await mctx2.newPage();
+    const mErrors2 = [];
+    mpage2.on('pageerror', (e) => mErrors2.push(e.message || String(e)));
+    const mHireCalls2 = [];
+    await mpage2.route('**/*', (route) => {
+      const req = route.request();
+      const path = new URL(req.url()).pathname;
+      if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+      const hit = STATIC[path];
+      if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+      if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROJECTS) });
+      if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([
+        { name: 'code-reviewer', display_name: 'code-reviewer', agent_name: 'Fenn', scope: 'global',
+          description: 'reviews a diff', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
+      ]) });
+      if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(FLOOR_PAYLOAD) });
+      if (path === '/api/project/smoke_target/roster/hire' && req.method() === 'POST') {
+        mHireCalls2.push(JSON.parse(req.postData() || '{}'));
+        return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+          roster: [{ character: 'global:code-reviewer', hired_at: '2026-09-10T00:00:00Z', hired_by: 'drag', removed_at: null }],
+          already_hired: mHireCalls2.length > 1 }) });
+      }
+      return route.abort();
+    });
+    await mpage2.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+    await mpage2.evaluate(() => { window.openFloor(); });
+    await mpage2.waitForSelector('.fl-fig.fl-draggable', { timeout: 5000 });
+
+    const noCardsOnMobile = await mpage2.$$eval('#projects-col .card', (els) => els.length);
+    noCardsOnMobile === 0
+      ? ok('mobile: #projects-col renders NO `.card` tiles at this width (confirms the premise: mobile needs .mc-chat-row in the hit-test)')
+      : fail(`mobile: expected 0 '.card' tiles at 390px, found ${noCardsOnMobile} — premise for this case no longer holds`);
+
+    const figBox2 = await mpage2.$eval('.fl-fig.fl-draggable', (el) => { const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; });
+    await mpage2.mouse.move(figBox2.x, figBox2.y);
+    await mpage2.mouse.down();
+    await mpage2.mouse.move(figBox2.x + 40, figBox2.y + 10, { steps: 5 });
+    await mpage2.waitForSelector('body.hire-active', { timeout: 3000 }).catch(() => {});
+    await mpage2.waitForTimeout(150);
+    const rowBox2 = await mpage2.$eval('.mc-chat-row[data-id="smoke_target"]', (el) => {
+      const r = el.getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+    }).catch(() => null);
+    if (!rowBox2) {
+      fail('mobile: .mc-chat-row[data-id="smoke_target"] not found — mobile home screen never rendered a droppable tile');
+      await mpage2.mouse.up();
+    } else {
+      await mpage2.mouse.move(rowBox2.x, rowBox2.y, { steps: 10 });
+      await mpage2.$eval('.mc-chat-row[data-id="smoke_target"]', (el) => el.classList.contains('hire-target') && el.classList.contains('hire-hover'))
+        .then((v) => v ? ok('mobile: the .mc-chat-row picks up .hire-target/.hire-hover through the faded modal, same as a desktop .card')
+                       : fail('mobile: .mc-chat-row never got marked as a hover target'));
+      await mpage2.mouse.up();
+      await mpage2.waitForTimeout(600);
+      mHireCalls2.length === 1
+        ? ok(`mobile: POST .../roster/hire fired on a drop onto .mc-chat-row (${JSON.stringify(mHireCalls2[0])})`)
+        : fail(`mobile: expected exactly 1 hire call from the mobile drop, got ${mHireCalls2.length}`);
+      const landing = await mpage2.evaluate((pid) => {
+        const w = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
+        return {
+          modalOpen: !!w,
+          headerName: w ? (w.querySelector('.conv-thread-name') || {}).textContent : null,
+          emptyHeading: w ? (w.querySelector('.ces-heading') || {}).textContent : null,
+        };
+      }, PID_TARGET);
+      landing.modalOpen
+        ? ok('mobile: the target project modal opened after the drop')
+        : fail('mobile: no modal opened after the drop — the drop landed nowhere');
+      landing.headerName === 'Fenn'
+        ? ok('mobile: the thread-shell header names the hired agent (Fenn) — same header desktop uses, now shown on mobile too')
+        : fail(`mobile: expected the thread-shell header to read Fenn, got "${landing.headerName}"`);
+      landing.emptyHeading === 'No conversations yet'
+        ? ok('mobile: composer reads "No conversations yet" — the hired agent\'s empty channel, not the generic cold-start pitch')
+        : fail(`mobile: expected the thread-shell empty state, got heading "${landing.emptyHeading}"`);
+    }
+
+    const mUncaught2 = mErrors2.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource|mermaid/i.test(e));
+    if (mUncaught2.length) mUncaught2.forEach((e) => fail('mobile: uncaught exception during drop interaction: ' + e));
+
+    await mctx2.close().catch(() => {});
+  }
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — drag dims the board, marks/highlights valid targets, drops hire onto the target project, and opens Channel mode on that agent.'

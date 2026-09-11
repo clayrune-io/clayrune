@@ -944,7 +944,12 @@ function agentPanelHTML(p) {
   // became an accordion (same day, separate branch). This block was written
   // against the old name and the merge took both sides cleanly, so the stale
   // reference only surfaced as a runtime ReferenceError in drag-to-hire.mjs.
-  const _threadShellKey = (noActiveTab && wantNew && !mobileMode && _mode === 'channel' && _channelExpanded[p.id]
+  // NOT gated on !mobileMode (Ron, mobile, 2026-09-10): a mobile drop used to
+  // land on the generic "What should Claude work on?" cold-start pitch with no
+  // sign the hire even landed — _channelThreadHeaderHTML is a compact
+  // avatar+name+role block with no tab-strip dependency, so it renders fine
+  // inside the mobile compose-scroll area too (wired in below).
+  const _threadShellKey = (noActiveTab && wantNew && _mode === 'channel' && _channelExpanded[p.id]
     && pendingDispatchCharacter[p.id] === _channelExpanded[p.id])
     ? _channelExpanded[p.id] : null;
   const _threadShellHeader = _threadShellKey ? _channelThreadHeaderHTML(p.id, _threadShellKey) : '';
@@ -1047,7 +1052,7 @@ function agentPanelHTML(p) {
   const dispatchRow = (noActiveTab && !_mobileListMode)
     ? (mobileMode
         ? `<div class="mobile-compose-view">
-            <div class="compose-scroll">${_mobilePreviewAbove}${emptyStateHTML}${_mobileResumeSection}</div>
+            <div class="compose-scroll">${_threadShellHeader}${_mobilePreviewAbove}${emptyStateHTML}${_mobileResumeSection}</div>
             <div class="compose-bottom">
               ${resumeIndicator}
               ${_composerBlock}
@@ -2400,7 +2405,7 @@ function _channelRowHTML(p, r, inRoom, expanded) {
     : '';
   return `<div class="conv-row channel-row${expanded ? ' expanded' : ''}" data-search="${esc(search)}" data-char-key="${esc(r.key)}" data-ts-relative="${esc(r.tsRelative || '')}"
       aria-expanded="${expanded ? 'true' : 'false'}"
-      onclick="openChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
+      onclick="toggleChannelPerson('${esc(p.id)}','${esc(r.key)}')" title="${name}${ch.deleted ? ' (persona since deleted)' : ''}">
     <span class="conv-face">${face}</span>
     <div class="conv-main">
       <div class="conv-top">
@@ -2512,6 +2517,34 @@ function openChannelPerson(projectId, key) {
   }
 }
 window.openChannelPerson = openChannelPerson;
+
+// Clicking the SAME row again collapses it (Ron, mobile, 2026-09-10: "only
+// when I select its name it will expand"). openChannelPerson is deliberately
+// NOT a toggle — floor.js's drag-to-hire calls it directly to land a fresh
+// hire on its expanded (empty) view, and a hire must always end up EXPANDED
+// regardless of what was open before. So the toggle lives here, on the click
+// path only. Collapsing opens nothing: it is a pure view change, so it must
+// not yank the reader into some conversation on the way out.
+function toggleChannelPerson(projectId, key) {
+  if (_channelExpanded[projectId] === key) {
+    delete _channelExpanded[projectId];
+    if (typeof refreshModalById === 'function') refreshModalById(projectId);
+    else refreshModal();
+    return;
+  }
+  openChannelPerson(projectId, key);
+}
+window.toggleChannelPerson = toggleChannelPerson;
+
+// Reset the accordion to "nothing open". _channelExpanded is a module-level
+// `let`, so modal-manager.js (a separate ES module) cannot reach it directly
+// — hence the window accessor, per the ES-module cross-boundary rule. It is
+// state, not DOM, which is why an expanded row survives the 5s poll re-render:
+// only these explicit calls clear it, never a render.
+function collapseChannelRows(projectId) {
+  delete _channelExpanded[projectId];
+}
+window.collapseChannelRows = collapseChannelRows;
 
 // ── Open Threads board (project-level) ──────────────────────────────────────
 // A full-width overlay that groups a project's OPEN conversations into three
@@ -2640,6 +2673,14 @@ const _railModeOverride = {};
 
 function setRailMode(pid, mode) {
   _railModeOverride[pid] = (mode === 'topics' || mode === 'channel') ? mode : 'chats';
+  // Arriving on the Channel rail starts with NOTHING expanded (Ron, mobile,
+  // 2026-09-10). The accordion key is session state that nothing used to
+  // clear, so one click early in the session left that row expanded on every
+  // later visit — indistinguishable from "one is expanded by default".
+  // Ordering matters for drag-to-hire: floor.js calls setRailMode('channel')
+  // and THEN openChannelPerson, so the hire's expansion is written after this
+  // clear and survives it.
+  if (_railModeOverride[pid] === 'channel') delete _channelExpanded[pid];
   try { localStorage.setItem('mc_rail_mode', _railModeOverride[pid]); } catch (e) {}
   // Pull the cached digest on first switch — cheap (a JSON read), and without
   // it the rail would show "no digest" for a project that has one.
