@@ -1322,6 +1322,10 @@ def add_social_queue_item(project_id):
         'signal_id': data.get('signal_id'),
         'teaching': data.get('teaching', ''),
         'voice': data.get('voice'),
+        # Set only when this draft is a REWORK of a pushed-back one — links the
+        # new draft back to the one it supersedes so Ron can see what changed.
+        # See reject_social_queue_item / mc.blueprints.desk_routes.dispatch_rework.
+        'reworked_from': data.get('reworked_from'),
     }
     queue.insert(0, item)
     p['last_updated'] = now_iso()
@@ -1522,7 +1526,26 @@ def reject_social_queue_item(project_id, item_id):
     item['decided_by'] = data.get('decided_by', 'user')
     p['last_updated'] = now_iso()
     save_project(project_id, p)
-    return jsonify({'ok': True, 'item': item})
+
+    # Close the push-back loop (Ron, 2026-09-11): a push-back should put the
+    # writer straight back on the story instead of sitting on the queue until
+    # a human notices the row and re-dispatches by hand. The push-back above
+    # is already saved — everything from here is best-effort ON TOP of it, so
+    # a dispatch failure (agent unavailable, project missing) never costs the
+    # note that was just recorded. See mc.blueprints.desk_routes.dispatch_rework
+    # for why some drafts (no signal_id/voice — pre-Desk drafts) can't be
+    # reworked automatically; those still succeed here, just without a rework.
+    from mc.blueprints import desk_routes as _desk_routes
+    rework = _desk_routes.dispatch_rework(project_id, item, note)
+    if rework['dispatched']:
+        item['rework_session_id'] = rework['session_id']
+        item['rework_dispatched_at'] = now_iso()
+        save_project(project_id, p)
+
+    return jsonify({'ok': True, 'item': item,
+                    'rework_dispatched': rework['dispatched'],
+                    'rework_session_id': rework['session_id'],
+                    'rework_reason': rework['reason']})
 
 
 # ── GitHub sync endpoints ────────────────────────────────────────────────────
