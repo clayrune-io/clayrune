@@ -501,6 +501,14 @@ function _mcMenuSwitchTab(projectId, tab) {
 }
 
 function switchModalTab(projectId, tab) {
+  // Leaving the Workflows tab with an unsaved canvas edit is the inline
+  // equivalent of closing the old floating builder modal — same dirty-state
+  // warning (MC-871 rehost, UI brief: "switching tabs with unsaved changes
+  // must hit the same dirty-state warning that closing did").
+  if (tab !== 'workflows' && modalActiveTab[projectId] === 'workflows'
+      && typeof window._wfConfirmDiscardIfDirty === 'function' && !window._wfConfirmDiscardIfDirty()) {
+    return;
+  }
   modalActiveTab[projectId] = tab;
   if (tab === 'agent-log') {
     loadAgentLog(projectId);
@@ -542,50 +550,40 @@ function _wfStartPolling(projectId) {
     loadWorkflows(projectId);
   }, 3000);
 }
-// ── Clayrune workflows (MC-871 Q6's minimum: reachable + editable from this
-// tab). "any workflow with a step in this project" per spec — the CRUD list
-// isn't project-scoped (workflows are global objects), so this filters
-// client-side by walking each definition's node tree for a matching
-// project_id. Run history / calendar badge / next-fire are later phases
-// (spec build order: "... -> tab list -> builder modal"); this pass only
-// makes the authoring surface (the builder modal, MC-871 Q7) reachable.
-function _wfStepHasProject(node, projectId) {
+// ── Clayrune workflows (MC-871 Q7 reversed — Ron, on seeing the tab: "can we
+// open the canvas on the same page we use for the overall workflow menu?
+// ... present the selection tabs at the top"). "any workflow with a node in
+// this project" per spec — the CRUD list isn't project-scoped (workflows are
+// global objects), so this filters client-side by walking each definition's
+// flat `nodes` array for a matching project_id.
+//
+// FIXED BUG while doing this: this filter previously walked `w.steps` /
+// `node.type === 'paths'` / `node.branches` — the pre-R2 nested-tree spine
+// shape. Every real workflow in the store has been `format: 2` (flat `nodes`
+// + `edges`, node types `agent`/`approval`/`action` — see
+// static/js/workflow-builder.js's own header) since that rewrite landed;
+// `mc/workflows.py::_migrate_v1_doc` rewrites any older record to that shape
+// the moment it's read. So `w.steps` was always undefined on every payload
+// this ever saw, and `_wfClayruneWorkflowsFor` always returned `[]` — the
+// "Workflows" section could never have shown a real workflow. Rewritten below
+// against the actual R2 shape: an `agent` node's project lives at
+// `node.project_id`; an `action` node's lives at `node.config.project_id`
+// (backlog_create/backlog_patch/desk_harvest all key it that way — see
+// `_wfActionFieldsHTML`); `approval` nodes carry no project at all.
+function _wfNodeHasProject(node, projectId) {
   if (!node) return false;
-  if (node.project_id === projectId) return true;
-  if (node.type === 'paths') {
-    const branches = node.branches || {};
-    if (Object.values(branches).some(list => (list || []).some(n => _wfStepHasProject(n, projectId)))) return true;
-    return (node.otherwise || []).some(n => _wfStepHasProject(n, projectId));
-  }
-  if (node.type === 'approval') {
-    const branches = node.branches || {};
-    return Object.values(branches).some(list => (list || []).some(n => _wfStepHasProject(n, projectId)));
-  }
+  if (node.type === 'agent') return node.project_id === projectId;
+  if (node.type === 'action') return (node.config || {}).project_id === projectId;
   return false;
 }
 function _wfClayruneWorkflowsFor(projectId, list) {
-  return (list || []).filter(w => (w.steps || []).some(s => _wfStepHasProject(s, projectId)));
-}
-function _wfRenderClayruneSection(projectId, list) {
-  const mine = _wfClayruneWorkflowsFor(projectId, list);
-  const rows = mine.map(w => `
-    <div class="wfb-list-row${w.enabled === false ? ' disabled' : ''}">
-      <div class="wfb-list-row-body">
-        <div class="wfb-list-row-name">${esc(w.name || 'Untitled workflow')}</div>
-        ${w.description ? `<div class="wfb-list-row-desc" title="${esc(w.description)}">${esc(w.description)}</div>` : ''}
-      </div>
-      <button class="btn-header-action" style="padding:3px 10px;font-size:11px" onclick="openWorkflowBuilder('${esc(w.id)}','${esc(projectId)}')">Edit</button>
-    </div>`).join('');
-  return `<div class="card-section" style="margin-bottom:14px">
-    <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
-      <span>Workflows</span>
-      <button class="btn-add" style="padding:5px 12px;font-size:11px" onclick="openWorkflowBuilder(null,'${esc(projectId)}')">+ New Workflow</button>
-    </div>
-    ${rows || '<div style="color:var(--text-faint);font-style:italic;font-size:12px;padding:4px 0 2px">No workflows involve this project yet.</div>'}
-  </div>`;
+  return (list || []).filter(w => (w.nodes || []).some(n => _wfNodeHasProject(n, projectId)));
 }
 // Re-fetched after a save in the builder modal so a newly created/edited
-// workflow shows up here without a manual tab switch.
+// workflow shows up here without a manual tab switch. workflow-builder.js
+// owns whether that actually touches the mounted canvas (window._wfSyncTabsForProject
+// no-ops when the workflow id set hasn't changed, so an in-progress edit is
+// never clobbered by this).
 async function refreshWorkflowsList() {
   document.querySelectorAll('[id^="workflows-body-"]').forEach(el => {
     const pid = el.id.slice('workflows-body-'.length);
@@ -594,30 +592,45 @@ async function refreshWorkflowsList() {
 }
 window.refreshWorkflowsList = refreshWorkflowsList;
 
+// Skeleton built ONCE per tab-open: a tabs+canvas section workflow-builder.js
+// owns (`#wfb-clayrune-section-<pid>`) and a separate CC fan-out section this
+// file owns (`#wfb-fanout-section-<pid>`). Kept as two siblings, never one
+// innerHTML blob, because `_wfStartPolling` re-runs this every 3s while a CC
+// fan-out is live — a single blob would remount (and reset the pan/zoom/dirty
+// state of) the live canvas every 3 seconds for a completely unrelated
+// feature. The canvas section is rebuilt only when the set of workflows
+// touching this project actually changes (window._wfSyncTabsForProject's own
+// signature check); the fan-out section is cheap and stateless, so it is
+// simply replaced every poll as before.
 async function loadWorkflows(projectId) {
   const el = document.getElementById('workflows-body-' + projectId);
   if (!el) return;
-  let clayruneSection = '';
+  if (!document.getElementById('wfb-clayrune-section-' + projectId)) {
+    el.innerHTML = `<div id="wfb-clayrune-section-${esc(projectId)}" style="margin-bottom:14px"></div>`
+      + `<div id="wfb-fanout-section-${esc(projectId)}"></div>`;
+  }
+
   try {
     const wfRes = await fetch(API_BASE + '/api/workflows');
-    if (wfRes.ok) clayruneSection = _wfRenderClayruneSection(projectId, await wfRes.json());
+    const mine = wfRes.ok ? _wfClayruneWorkflowsFor(projectId, await wfRes.json()) : [];
+    if (typeof window._wfSyncTabsForProject === 'function') window._wfSyncTabsForProject(projectId, mine);
   } catch (e) { /* the CC fan-out section below still renders on its own */ }
 
+  const fanoutEl = document.getElementById('wfb-fanout-section-' + projectId);
+  if (!fanoutEl) return;
   try {
     const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/workflows`);
     if (!res.ok) {
-      el.innerHTML = clayruneSection + '<div style="color:var(--text-faint);font-style:italic">Could not load Claude Code fan-outs.</div>';
+      fanoutEl.innerHTML = '<div style="color:var(--text-faint);font-style:italic">Could not load Claude Code fan-outs.</div>';
       _wfStopPolling(projectId);
       return;
     }
     const data = await res.json();
     const wfs = data.workflows || [];
     // Q6: the CC fan-out section is a transient 24h reconstruction — "when
-    // none exist the section is absent, not empty." The Clayrune list above
-    // is the tab's real home now, so the old empty-state pitch (which only
-    // ever explained the CC feature) is gone with it.
+    // none exist the section is absent, not empty."
     if (!wfs.length) {
-      el.innerHTML = clayruneSection;
+      fanoutEl.innerHTML = '';
       _wfStopPolling(projectId);
       return;
     }
@@ -632,13 +645,11 @@ async function loadWorkflows(projectId) {
         <pre style="white-space:pre;overflow-x:auto;font-size:12px;line-height:1.45;font-family:var(--mono,monospace);margin:6px 0 0">${esc(w.ascii || '')}</pre>
       </div>`;
     }).join('');
-    el.innerHTML = clayruneSection
-      + '<div class="section-title" style="margin-bottom:4px">Claude Code fan-outs (live)</div>'
-      + fanoutRows;
+    fanoutEl.innerHTML = '<div class="section-title" style="margin-bottom:4px">Claude Code fan-outs (live)</div>' + fanoutRows;
     if (wfs.some(w => w.running)) _wfStartPolling(projectId);
     else _wfStopPolling(projectId);
   } catch (e) {
-    el.innerHTML = clayruneSection + '<div style="color:var(--text-faint);font-style:italic">Failed to load Claude Code fan-outs.</div>';
+    fanoutEl.innerHTML = '<div style="color:var(--text-faint);font-style:italic">Failed to load Claude Code fan-outs.</div>';
     _wfStopPolling(projectId);
   }
 }
