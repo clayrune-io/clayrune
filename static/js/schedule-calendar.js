@@ -989,3 +989,4 @@ window._scalTitle = _scalTitle;
 window._scalBindSwipe = _scalBindSwipe;   // exercised by the smoke guard
 window._scalBindNewAt = _scalBindNewAt;   // exercised by the smoke guard
 window.scalNewAt = scalNewAt;
+window.scalOpenRuns = scalOpenRuns;

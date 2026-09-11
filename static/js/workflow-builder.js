@@ -700,7 +700,7 @@ function _wfRenderScheduleCadence(st) {
     <div class="wfb-sched-cadence">
       ${missing ? '<div class="memory-hint" style="margin:0 0 8px">No schedule found for this trigger yet &mdash; save to create one.</div>' : ''}
       <div class="sched-type-row">
-        ${['daily', 'interval', 'once', 'cron'].map(t => `<button type="button" class="sched-type-btn${s.schedule_type === t ? ' active' : ''}" onclick="_wfSetSchedType('${t}')">${t[0].toUpperCase()}${t.slice(1)}</button>`).join('')}
+        ${['daily', 'weekly', 'interval', 'once', 'cron'].map(t => `<button type="button" class="sched-type-btn${s.schedule_type === t ? ' active' : ''}" onclick="_wfSetSchedType('${t}')">${t[0].toUpperCase()}${t.slice(1)}</button>`).join('')}
       </div>
       <div id="wfb-sched-type-fields">${_wfSchedTypeFieldsHTML(s.schedule_type, s)}</div>
       ${st.linkedSchedule && st.linkedSchedule.id ? `
@@ -733,6 +733,11 @@ function _wfSchedTypeFieldsHTML(type, s) {
   const runAt = _wfLocalInputValue(s.run_at);
   const cronExpr = s.cron_expr || '';
   if (type === 'daily') {
+    return `
+      <label>Time</label>
+      <input type="time" id="wfb-sched-time" value="${esc(time)}">`;
+  }
+  if (type === 'weekly') {
     const dayLabels = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     return `
       <label>Time</label>
@@ -1360,6 +1365,10 @@ async function _wfSave() {
   const names = nodes.map(n => n.name);
   const dupe = names.find((n, i) => names.indexOf(n) !== i);
   if (dupe) { showToast(`Duplicate step name "${dupe}" — names must be unique.`, 5000); return; }
+  if (def.trigger && def.trigger.type === 'schedule' && st.linkedSchedule &&
+      st.linkedSchedule.schedule_type === 'weekly' && !(st.linkedSchedule.days || []).length) {
+    showToast('Pick at least one day for a weekly schedule.', 4000); return;
+  }
 
   st.saving = true; st.error = null;
   _wfRender();
@@ -1439,3 +1448,5 @@ window._wfRemoveOption = _wfRemoveOption;
 window._wfReloadCharacters = _wfReloadCharacters;
 window._wfRerenderActionFields = _wfRerenderActionFields;
 window._wfSave = _wfSave;
+window._wfSetSchedType = _wfSetSchedType;
+window._wfToggleSchedEnabled = _wfToggleSchedEnabled;

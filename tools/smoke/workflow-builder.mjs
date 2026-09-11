@@ -343,9 +343,160 @@ try {
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
   await ctx2.close();
 
+  // ── Trigger card: schedule cadence ───────────────────────────────────────
+  // This is the coverage gap that shipped two defects unnoticed: clicking a
+  // cadence type button threw a ReferenceError because _wfSetSchedType was
+  // never bridged onto window (inline handlers resolve against the global
+  // object — see inline-handler-scope-check.mjs), and 'weekly' was absent
+  // from the type list, so its day picker had no way to render. Exercises
+  // "On a schedule", every cadence type, weekly day-picking, the
+  // cannot-save-empty guard, and a save/close/reopen round-trip.
+  const ctx3 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page3 = await ctx3.newPage();
+  const page3Errors = [];
+  page3.on('pageerror', (e) => page3Errors.push(e.message || String(e)));
+  let savedWorkflow3 = null;
+  let savedSchedule3 = null;
+  await page3.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/workflows' && req.method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflow3 ? [savedWorkflow3] : []) });
+    }
+    if (path === '/api/workflows' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      savedWorkflow3 = { ...body, id: 'wf-smoke3', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, workflow: savedWorkflow3 }) });
+    }
+    if (path === '/api/schedules' && req.method() === 'GET') {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3 ? [savedSchedule3] : []) });
+    }
+    if (path === '/api/schedules' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      savedSchedule3 = { ...body, id: 'sched-smoke3' };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
+    }
+    if (path.startsWith('/api/schedules/') && req.method() === 'PUT') {
+      const body = JSON.parse(req.postData() || '{}');
+      savedSchedule3 = { ...savedSchedule3, ...body };
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedSchedule3) });
+    }
+    return route.abort();
+  });
+  await page3.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page3.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page3.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
+  });
+  await page3.evaluate(() => { window.openWorkflowBuilder(); });
+  await page3.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+
+  await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
+  const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPaletteBlockTo(page3, 'Agent step', vpBox3.x + 140, vpBox3.y + 120);
+  await setValue(page3, '.wfb-node .wfb-name', 'step-one');
+  await setValue(page3, '.wfb-node .wfb-prompt', 'Do the thing.');
+
+  await page3.click('input[name="wfb-trigger"][value="schedule"]');
+  await page3.waitForSelector('.wfb-sched-cadence', { timeout: 3000 });
+  ok('selecting "On a schedule" renders the cadence sub-form');
+
+  const defaultType = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim());
+  defaultType === 'Daily' ? ok('cadence defaults to Daily')
+                          : fail(`expected Daily to default-active, got "${defaultType}"`);
+  const dailyDayCount = await page3.$$eval('.sched-day-btn', els => els.length);
+  dailyDayCount === 0 ? ok('Daily renders no day picker (days belong to Weekly only)')
+                      : fail(`expected no day buttons under Daily, got ${dailyDayCount}`);
+
+  // Click through every cadence type. This is exactly what defect 1 broke:
+  // the click fired an inline handler naming a module-scoped function that
+  // was never bridged onto window, threw a silent ReferenceError, and the
+  // sub-form never re-rendered.
+  const typeChecks = [
+    ['Weekly', async () => {
+      const days = await page3.$$eval('.sched-day-btn', els => els.length);
+      return days === 7 && !!(await page3.$('#wfb-sched-time'));
+    }],
+    ['Interval', async () => !!(await page3.$('#wfb-sched-interval'))],
+    ['Once', async () => !!(await page3.$('#wfb-sched-runat'))],
+    ['Cron', async () => !!(await page3.$('#wfb-sched-cron'))],
+  ];
+  for (const [label, assertFields] of typeChecks) {
+    await page3.click(`.sched-type-btn:text-is("${label}")`);
+    await page3.waitForTimeout(80);
+    const nowActive = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim()).catch(() => null);
+    nowActive === label ? ok(`clicking "${label}" activates it (handler reachable, no ReferenceError)`)
+                         : fail(`clicking "${label}" did not activate it — got "${nowActive}"`);
+    const fieldsOk = await assertFields();
+    fieldsOk ? ok(`"${label}"'s sub-fields rendered correctly`)
+             : fail(`"${label}"'s sub-fields did not render as expected`);
+  }
+  if (page3Errors.length) { page3Errors.forEach((e) => fail('uncaught page error while switching cadence type: ' + e)); page3Errors.length = 0; }
+
+  // Weekly with no day picked must refuse to save — before this fix the day
+  // row was unreachable at all, so "saved empty" wasn't even the failure
+  // mode; now that it's reachable, confirm the empty set is still refused.
+  await page3.click('.sched-type-btn:text-is("Weekly")');
+  await page3.waitForTimeout(80);
+  const toastsBeforeEmpty = (await page3.evaluate(() => (window.__toasts || []).length));
+  await page3.click('.wfb-actions .btn-sched-save');
+  await page3.waitForTimeout(150);
+  const newToasts = (await page3.evaluate(() => window.__toasts || [])).slice(toastsBeforeEmpty);
+  newToasts.some((t) => /day/i.test(t)) ? ok(`saving Weekly with no days picked was refused: "${newToasts.find((t) => /day/i.test(t))}"`)
+                                        : fail(`expected a toast refusing an empty weekly day set, got ${JSON.stringify(newToasts)}`);
+  savedWorkflow3 === null ? ok('the empty-days guard fired before the workflow POST — nothing saved')
+                          : fail('a workflow was posted despite an empty weekly day set');
+
+  // Pick Wednesday and save for real.
+  await page3.click('.sched-day-btn[data-day="3"]');
+  await page3.click('.wfb-actions .btn-sched-save');
+  await page3.waitForFunction(() => {
+    const btn = document.querySelector('.wfb-actions .btn-sched-save');
+    return btn && btn.textContent.trim() === 'Update';
+  }, { timeout: 3000 }).catch(() => {});
+  await page3.waitForTimeout(200);
+
+  savedWorkflow3 ? ok('POST /api/workflows fired once a day was picked')
+                 : fail('workflow was not saved even after picking a day');
+  savedSchedule3 ? ok('the linked schedule was created via POST /api/schedules')
+                 : fail('no schedule was created for the "on a schedule" trigger');
+  (savedSchedule3 && savedSchedule3.schedule_type === 'weekly')
+    ? ok('the saved schedule carries schedule_type "weekly"')
+    : fail(`expected schedule_type "weekly", got ${JSON.stringify(savedSchedule3 && savedSchedule3.schedule_type)}`);
+  (savedSchedule3 && Array.isArray(savedSchedule3.days) && savedSchedule3.days.length === 1 && savedSchedule3.days[0] === 3)
+    ? ok('the saved schedule carries days:[3] (Wednesday)')
+    : fail(`expected days [3], got ${JSON.stringify(savedSchedule3 && savedSchedule3.days)}`);
+
+  // Close and reopen the SAME workflow — confirm the cadence round-trips.
+  await page3.click('.wfb-actions button:text-is("Close")');
+  await page3.waitForTimeout(80);
+  await page3.evaluate((id) => { window.openWorkflowBuilder(id); }, savedWorkflow3.id);
+  await page3.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
+  await page3.waitForSelector('.sched-type-btn.active', { timeout: 3000 });
+
+  const reopenActiveType = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim());
+  reopenActiveType === 'Weekly' ? ok('reopening the workflow shows Weekly as the active cadence type')
+                                : fail(`expected Weekly active on reopen, got "${reopenActiveType}"`);
+  const reopenActiveDays = await page3.$$eval('.sched-day-btn.active', els => els.map((e) => e.dataset.day));
+  (reopenActiveDays.length === 1 && reopenActiveDays[0] === '3')
+    ? ok('reopening highlights the previously-picked day (Wed) and no others')
+    : fail(`expected only day 3 highlighted on reopen, got ${JSON.stringify(reopenActiveDays)}`);
+
+  const uncaught3 = page3Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught3.length) uncaught3.forEach((e) => fail('uncaught exception in the cadence trigger flow: ' + e));
+  await ctx3.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — palette drag-to-place, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, and save (format 2) all behave correctly.'
+    ? '\n✅ PASS — palette drag-to-place, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form (type switching, weekly day-picking, empty-day guard, save/reopen round-trip) all behave correctly.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
