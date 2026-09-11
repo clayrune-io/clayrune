@@ -63,10 +63,15 @@ def ctx(tmp_path, monkeypatch):
     Patches the blueprint's wired globals ON THE MODULE (test-port rule):
     SCHEDULES_PATH -> tmp file; load_project(s) -> simple fakes; the
     agent-dispatch + agent-log seams -> recorders. Restores everything after.
+
+    Also patches `mc.workflows` (MC-871 Q4: a schedule may invoke a workflow
+    run) -- `scheduler_routes._wf` is the SAME module object, so patching it
+    here covers both call sites with one set of tmp paths.
     """
     import server  # noqa: F401  (registers the blueprint + runs wire() on import)
     from mc.blueprints import local_auth as la
     from mc.blueprints import scheduler_routes as sr
+    from mc import workflows as wfm
 
     # Deterministic gate: no LAN passcode this run (loopback exempt, LAN 401).
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
@@ -91,6 +96,13 @@ def ctx(tmp_path, monkeypatch):
     monkeypatch.setattr(sr, '_enrich_run_entries', lambda entries: entries)
     monkeypatch.setattr(sr, '_log_agent_activity', lambda *a, **k: None)
 
+    # Workflow store -> isolated tmp files; workflow-step dispatch -> the SAME
+    # recorder (a workflow step's dispatch is indistinguishable from a raw
+    # scheduled dispatch as far as these tests care).
+    monkeypatch.setattr(wfm, 'WORKFLOWS_PATH', tmp_path / 'workflows.json')
+    monkeypatch.setattr(wfm, 'WORKFLOW_RUNS_DIR', tmp_path / 'workflow_runs')
+    monkeypatch.setattr(wfm, '_dispatch_agent_internal', dispatch)
+
     server.app.config['TESTING'] = True
 
     class Ctx:
@@ -98,10 +110,26 @@ def ctx(tmp_path, monkeypatch):
     c = Ctx()
     c.client = server.app.test_client()
     c.sr = sr
+    c.wfm = wfm
     c.sched_path = sched_path
     c.dispatch = dispatch
     c.projects = projects
     return c
+
+
+def _seed_workflow(ctx, **over):
+    """Create a minimal, valid, enabled workflow via the real store path and
+    return its record. One agent step with no branches -- run mechanics
+    aren't what these scheduler tests are checking."""
+    doc = {
+        'name': 'Nightly digest',
+        'trigger': {'type': 'manual'},
+        'nodes': [{'type': 'agent', 'name': 'only', 'project_id': 'p1',
+                   'character': '', 'prompt': 'do the thing', 'x': 0, 'y': 0}],
+        'edges': [],
+    }
+    doc.update(over)
+    return ctx.wfm.create_workflow(doc)
 
 
 def _seed_schedules(ctx, schedules):
@@ -620,3 +648,254 @@ def test_purge_falls_back_to_started_at_when_no_activity_timestamp_recorded(ctx,
     finally:
         ctx.sr.agent_sessions.pop(sid, None)
         ctx.sr.get_manager('p1').remove_session(sid)
+
+
+# ── MC-871 Q4: a schedule can invoke a workflow instead of a task ────────────
+#
+# "A schedule record gains ONE optional field, workflow_id, mutually exclusive
+# with task." (WORKFLOW_BUILDER_SPEC.md Q4). These pin: the exclusivity
+# validation at create/update, fire-time branching into `_wf.start_run`
+# instead of `_dispatch_agent_internal`, the deleted-workflow case (never a
+# dangling id firing a broken run), and the one-live-run-per-workflow overlap
+# rule surfacing as a skip, not a silent drop or a second run.
+
+def test_create_schedule_with_workflow_id(ctx):
+    wf = _seed_workflow(ctx)
+    resp = ctx.client.post('/api/schedules', json={
+        'workflow_id': wf['id'], 'schedule_type': 'daily', 'time': '03:00'})
+    assert resp.status_code == 201
+    body = resp.get_json()
+    assert body['workflow_id'] == wf['id']
+    assert body['task'] == ''
+    assert body['next_run'], 'a workflow schedule must compute a next_run same as any other'
+    assert len(ctx.dispatch.calls) == 0, 'creating the schedule must not fire it'
+
+
+def test_create_schedule_rejects_both_task_and_workflow_id(ctx):
+    wf = _seed_workflow(ctx)
+    resp = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 'do x', 'workflow_id': wf['id']})
+    assert resp.status_code == 400
+    assert 'exactly one' in resp.get_json()['error']
+
+
+def test_create_schedule_rejects_neither_task_nor_workflow_id(ctx):
+    resp = ctx.client.post('/api/schedules', json={'project_id': 'p1'})
+    assert resp.status_code == 400
+    assert 'exactly one' in resp.get_json()['error']
+
+
+def test_create_schedule_rejects_unknown_workflow_id(ctx):
+    resp = ctx.client.post('/api/schedules', json={'workflow_id': 'wf-nope'})
+    assert resp.status_code == 400
+    assert 'wf-nope' in resp.get_json()['error']
+    assert not ctx.sched_path.exists() or json.loads(ctx.sched_path.read_text()) == []
+
+
+def test_update_schedule_switch_task_to_workflow(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': 'p1', 'task': 'old', 'enabled': True,
+         'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.put('/api/schedules/s1', json={'task': '', 'workflow_id': wf['id']})
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['workflow_id'] == wf['id']
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert saved[0]['workflow_id'] == wf['id']
+
+
+def test_update_schedule_leaving_dangling_workflow_id_rejected(ctx):
+    """Clearing `task` on a task-only row while `workflow_id` is still absent
+    (never set) must not silently produce a row that satisfies neither -- and
+    clearing task without supplying a workflow_id is exactly that."""
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': 'p1', 'task': 'old', 'enabled': True,
+         'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.put('/api/schedules/s1', json={'task': ''})
+    assert resp.status_code == 400
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert saved[0]['task'] == 'old', 'the invalid edit must not have been persisted'
+
+
+def test_update_schedule_rejects_unknown_workflow_id(ctx):
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': 'p1', 'task': '', 'workflow_id': 'wf-real',
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.put('/api/schedules/s1', json={'workflow_id': 'wf-ghost'})
+    assert resp.status_code == 400
+
+
+def test_get_schedules_workflow_display_missing_badge(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+        {'id': 's2', 'project_id': '', 'task': '', 'workflow_id': 'wf-ghost',
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    body = ctx.client.get('/api/schedules').get_json()
+    by_id = {s['id']: s for s in body}
+    assert by_id['s1']['workflow_display'] == {
+        'id': wf['id'], 'name': wf['name'], 'enabled': True, 'missing': False}
+    assert by_id['s2']['workflow_display']['missing'] is True
+
+
+# ── fire-time branching ───────────────────────────────────────────────────────
+
+def _due_workflow_row(workflow_id, **over):
+    row = {
+        'id': 's1', 'project_id': '', 'task': '', 'workflow_id': workflow_id,
+        'enabled': True, 'schedule_type': 'cron', 'cron_expr': '*/5 * * * *',
+        'next_run': '2020-01-01T00:00:00Z',   # long overdue
+    }
+    row.update(over)
+    return row
+
+
+def test_fire_starts_a_workflow_run_not_a_raw_dispatch(ctx, monkeypatch):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [_due_workflow_row(wf['id'])])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    # The workflow's own step dispatched through the shared recorder...
+    assert len(ctx.dispatch.calls) == 1
+    assert ctx.dispatch.calls[0]['project_id'] == 'p1'
+    # ...as a WORKFLOW step, never tagged trigger_type='schedule' the way a
+    # plain task dispatch is -- see mc/workflows.py's on_agent_step_complete
+    # wiring (trigger_type='workflow').
+    assert ctx.dispatch.calls[0].get('trigger_type') == 'workflow'
+    runs = ctx.wfm.list_runs(wf['id'])
+    assert len(runs) == 1 and runs[0]['status'] == 'running'
+    assert rows[0]['next_run'] != '2020-01-01T00:00:00Z'
+    assert rows[0]['last_run']
+
+
+def test_fire_master_switch_still_blocks_workflow_schedules(ctx, monkeypatch):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [_due_workflow_row(wf['id'])])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=True)
+    assert ctx.dispatch.calls == []
+    assert ctx.wfm.list_runs(wf['id']) == []
+
+
+def test_fire_deleted_workflow_skips_and_rolls_next_run_forward(ctx, monkeypatch):
+    """A dangling workflow_id (the workflow was deleted after the schedule was
+    created) must never fire a broken run -- it is skipped, logged, and the
+    slot still advances so the row doesn't spin on the same instant forever."""
+    _seed_schedules(ctx, [_due_workflow_row('wf-does-not-exist')])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert ctx.dispatch.calls == []
+    assert rows[0]['next_run'] != '2020-01-01T00:00:00Z'
+    assert rows[0]['last_run']
+
+
+def test_fire_overlapping_run_is_skipped_not_queued_or_dropped_twice(ctx, monkeypatch):
+    """One live run per workflow (spec Q5). A second fire while the first is
+    still in flight must not start a concurrent run -- and must still roll
+    the schedule's own next_run forward so the tick isn't silently stuck."""
+    wf = _seed_workflow(ctx)
+    first = ctx.wfm.start_run(wf['id'], trigger_type='manual')
+    assert first['status'] == 'running'
+    assert len(ctx.dispatch.calls) == 1
+
+    _seed_schedules(ctx, [_due_workflow_row(wf['id'])])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+
+    assert len(ctx.dispatch.calls) == 1, 'the overlapping fire must not dispatch a second step'
+    assert len(ctx.wfm.list_runs(wf['id'])) == 1, 'no second run record was created'
+    assert rows[0]['next_run'] != '2020-01-01T00:00:00Z', 'the tick still advances'
+
+
+# ── POST /api/schedule/<id>/run-now — workflow branch ─────────────────────────
+
+def test_run_now_workflow_schedule_starts_a_run(ctx):
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['ok'] is True
+    assert body['run']['workflow_id'] == wf['id']
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert saved[0]['last_run']
+
+
+def test_run_now_workflow_schedule_busy_409(ctx):
+    wf = _seed_workflow(ctx)
+    ctx.wfm.start_run(wf['id'], trigger_type='manual')
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 409
+    assert resp.get_json()['busy'] is True
+
+
+def test_run_now_workflow_schedule_deleted_workflow_404(ctx):
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': 'wf-ghost',
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 404
+
+
+# ── GET /api/schedule/<id>/runs — workflow branch ─────────────────────────────
+
+def test_schedule_runs_workflow_branch_returns_run_records(ctx):
+    wf = _seed_workflow(ctx)
+    run = ctx.wfm.start_run(wf['id'], trigger_type='manual')
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    resp = ctx.client.get('/api/schedule/s1/runs')
+    assert resp.status_code == 200
+    body = resp.get_json()
+    assert body['kind'] == 'workflow'
+    assert body['total'] == 1
+    assert body['runs'][0]['id'] == run['id']
+
+
+def test_schedule_runs_workflow_branch_never_falls_back_to_agent_log(ctx):
+    """A workflow schedule's runs come from the workflow store, never from
+    agent_log filtering by trigger_id -- the two ID spaces (schedule ids vs
+    run ids) are not interchangeable."""
+    wf = _seed_workflow(ctx)
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': '', 'task': '', 'workflow_id': wf['id'],
+         'enabled': True, 'schedule_type': 'daily', 'time': '09:00'},
+    ])
+    ctx.sr._load_agent_log = lambda pid: (_ for _ in ()).throw(
+        AssertionError('agent_log must not be consulted for a workflow schedule'))
+    resp = ctx.client.get('/api/schedule/s1/runs')
+    assert resp.status_code == 200
+    assert resp.get_json()['total'] == 0
+
+
+# ── authority guard: workflow_id on a schedule is not a definition backdoor ──
+
+def test_agent_caller_can_point_a_schedule_at_an_existing_workflow(ctx):
+    """Schedules are agent-manageable today (unlike workflow definition CRUD,
+    which _refuse_if_agent_caller blocks). Letting an agent pick an EXISTING,
+    human-authored workflow_id is no more capability than it already has via
+    `character` (pick any existing persona) or `task` (dispatch anything, as
+    anyone, anywhere) -- it cannot create, edit or rewire the workflow itself."""
+    wf = _seed_workflow(ctx)
+    resp = ctx.client.post('/api/schedules', json={'workflow_id': wf['id']})  # no Origin header
+    assert resp.status_code == 201
+
+
+def test_agent_caller_cannot_conjure_a_workflow_via_the_schedule_route(ctx):
+    """The workflow must already exist -- a schedule route call can reference
+    one, never author one."""
+    resp = ctx.client.post('/api/schedules', json={'workflow_id': 'wf-invented'})
+    assert resp.status_code == 400
+    assert ctx.wfm.list_workflows() == []
