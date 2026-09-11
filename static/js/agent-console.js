@@ -555,7 +555,26 @@ async function loadWorkflows(projectId) {
     const data = await res.json();
     const wfs = data.workflows || [];
     if (!wfs.length) {
-      el.innerHTML = '<div style="color:var(--text-faint);font-style:italic">No workflows in the last 24h. Launch one with "use a workflow to …" in the Agent tab.</div>';
+      // WAS A DEAD SENTENCE. Ron, 2026-09-10: "its not really clear what it
+      // means, the menu needs to be more interactive." The old copy named a
+      // magic phrase and left the user to retype it into another tab — it
+      // explained neither what a workflow IS nor why anyone would want one,
+      // and the only call to action was manual transcription.
+      //
+      // So: say what it does in one line, then DO the tab switch and pre-fill
+      // the composer, leaving the cursor after the phrase so the user types
+      // the actual goal. The authoring canvas is specced but unbuilt, so the
+      // composer is still the real entry point — this just stops pretending
+      // the user should know that.
+      el.innerHTML = `
+        <div class="wf-empty">
+          <div class="wf-empty-title">No workflows have run here in the last 24h.</div>
+          <div class="wf-empty-body">A workflow runs several agents against one goal in a
+            fixed order — each step's output feeds the next, without you retyping the
+            handoff. Worth it for work that repeats or splits cleanly into parts.</div>
+          <button class="btn-add wf-empty-cta"
+            onclick="wfStartFromEmptyState('${projectId}')">Start a workflow</button>
+        </div>`;
       _wfStopPolling(projectId);
       return;
     }
@@ -649,6 +668,25 @@ window.openMemoryModal = openMemoryModal;
 window._mcMenuClose = _mcMenuClose;
 window._mcMenuSwitchTab = _mcMenuSwitchTab;
 window.switchModalTab = switchModalTab;
+
+// Drop the user into the one place a workflow can actually be started, with the
+// phrase already typed. Named on `window` because it is called from an inline
+// onclick and static/js/*.js are ES modules.
+function wfStartFromEmptyState(projectId) {
+  switchModalTab(projectId, 'agent');
+  setTimeout(() => {
+    const box = document.getElementById(`agent-task-${projectId}`);
+    if (!box) return;
+    const seed = 'use a workflow to ';
+    if (!box.value.trim()) box.value = seed;
+    box.focus();
+    // Cursor AFTER the phrase, so the next keystroke is the goal itself.
+    box.setSelectionRange(box.value.length, box.value.length);
+    box.dispatchEvent(new Event('input', { bubbles: true }));  // let autosize run
+  }, 60);
+}
+window.wfStartFromEmptyState = wfStartFromEmptyState;
+
 window.applyTabFilter = applyTabFilter;
 window.clearTabSearch = clearTabSearch;
 window.saveMemory = saveMemory;

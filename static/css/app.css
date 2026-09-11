@@ -1186,13 +1186,34 @@
      the project menu (Backlog · Plans · Agent Log · Memory · Settings) on both
      breakpoints — it must stay visible on mobile. (Reverts the earlier hide,
      which assumed the bottom-bar "More" covered it.) */
+  /* The menu grew past the viewport and had NO way to scroll — `overflow:
+     hidden` with no height cap meant the bottom rows (Memory, Code Sync) were
+     simply unreachable on a short screen. Ron hit it 2026-09-10.
+
+     `overflow-y: auto` is safe here specifically because the expandable rows
+     (Change Status, Appearance, Advanced, the Sync pair) render as INLINE
+     `.modal-menu-sub` blocks inside this same box rather than as flyouts — a
+     flyout would have been clipped, since CSS cannot combine visible-x with
+     auto-y. If a submenu is ever changed to a flyout, this cap has to move. */
   .modal-menu-dropdown {
     display: none; position: absolute; top: 36px; right: 0;
     background: var(--surface); border: 1px solid var(--border);
     border-radius: 8px; min-width: 200px; z-index: 50;
-    box-shadow: 0 8px 24px rgba(0,0,0,0.4); overflow: hidden;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.4);
+    overflow-x: hidden; overflow-y: auto;
+    max-height: calc(100vh - 96px);
+    overscroll-behavior: contain;   /* don't scroll the page behind it */
   }
   .modal-menu-dropdown.open { display: block; }
+  /* The Workflows empty state. It has to teach, because a user who has never
+     run one has no idea what the tab is for. */
+  .wf-empty { padding: 4px 2px; max-width: 460px; }
+  .wf-empty-title { font-size: 13px; font-weight: 700; color: var(--text); margin-bottom: 6px; }
+  .wf-empty-body {
+    font-size: 12px; line-height: 1.5; color: var(--text-dim); margin-bottom: 12px;
+  }
+  .wf-empty-cta { font-size: 12px; padding: 6px 14px; }
+
   .modal-menu-item {
     display: flex; align-items: center; gap: 10px;
     padding: 10px 16px; cursor: pointer; font-size: 13px;
