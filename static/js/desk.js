@@ -158,15 +158,96 @@ function _deskCadenceChipHTML() {
   const sched = _deskCadenceSchedule;
   if (!sched) {
     return `<button class="desk-cadence-chip desk-cadence-unset"
-      onclick="openWorkflowBuilder(null,'')" title="No workflow harvests the feed yet">
+      onclick="_deskOpenCadenceWorkflow()" title="No workflow harvests the feed yet">
       Set a cadence ›</button>`;
   }
   const paused = !sched.enabled;
   return `<button class="desk-cadence-chip${paused ? ' paused' : ''}"
-    onclick="openWorkflowBuilder('${esc(sched.workflow_id)}','')"
+    onclick="_deskOpenCadenceWorkflow()"
     title="${paused ? 'Paused — click to open the workflow' : 'Click to open the workflow that runs this'}">
     <span class="desk-cadence-dot"></span>${esc(_deskCadenceText(sched))}<span class="desk-cadence-arrow"> workflow ›</span>
   </button>`;
+}
+
+// The builder is an inline host mounted inside a project modal's Workflows
+// tab now, not a floating modal (MC-871 rehost) — `openWorkflowBuilder` no-ops
+// with just a console warning when no `#wfb-inline-host-<projectId>` exists,
+// which is exactly what silently broke this chip when it called it with ''
+// from the Desk (a project-less global modal). This gets a real project id
+// and lands on that tab first.
+//
+// "The workflow's own project" isn't a field that exists on the record: a
+// desk_harvest node's project is commonly BLANK by design ("blank = every
+// project", workflow-builder.js's own field editor), so the schedule/other
+// nodes are checked too, in order, before giving up and using whichever
+// project modal the user already has open -- never an arbitrary pick among
+// projects nobody is looking at.
+function _deskWorkflowProjectId(wf, sched) {
+  if (sched && sched.project_id) return sched.project_id;
+  for (const n of (wf && wf.nodes) || []) {
+    if (!n) continue;
+    if (n.type === 'agent' && n.project_id) return n.project_id;
+    if (n.type === 'action' && n.config && n.config.project_id) return n.config.project_id;
+  }
+  return '';
+}
+
+function _deskFallbackProjectId() {
+  let best = null;
+  for (const [id, entry] of openModals) {
+    if (String(id).startsWith('__') || entry.minimized) continue;
+    if (!best || entry.zIndex > best.zIndex) best = entry;
+  }
+  if (best) return best.projectId;
+  return allProjects.length === 1 ? allProjects[0].id : '';
+}
+
+async function _deskOpenCadenceWorkflow() {
+  const sched = _deskCadenceSchedule;
+  const workflowId = sched ? sched.workflow_id : null;
+  let wf = null;
+  if (sched && !sched.project_id) {
+    try {
+      const workflows = await _deskFetch('/api/workflows');
+      wf = (workflows || []).find(w => w.id === sched.workflow_id) || null;
+    } catch (e) { wf = null; }
+  }
+  const projectId = (sched ? _deskWorkflowProjectId(wf, sched) : '') || _deskFallbackProjectId();
+  if (!projectId) {
+    if (typeof showToast === 'function') {
+      showToast('Open a project first — the workflow builder needs one to host it in.', 4000);
+    }
+    console.warn('[desk] cadence chip: no project available to open the workflow builder in');
+    return;
+  }
+  openProjectModal(projectId);
+  switchModalTab(projectId, 'workflows');
+  await _deskMountWorkflowBuilder(projectId, workflowId);
+}
+
+// A freshly opened project modal fires its own lazy loads (agent status,
+// backlog, terminal status, social queue -- modal-manager.js's post-open
+// Promise.all), each of which calls refreshModalById the moment it lands.
+// That rebuild preserves an ALREADY-MOUNTED canvas (index.html's
+// `_savedWfHost` guard, keyed on `#wfb-canvas-viewport` existing) but not the
+// still-empty `#wfb-clayrune-section-<projectId>` loadWorkflows puts there a
+// moment earlier -- whichever finishes first wins the DOM, and a lazy load
+// landing between our loadWorkflows() and openWorkflowBuilder() wipes the
+// host out from under us. There's no promise to await instead (openProjectModal
+// doesn't hand one back), so verify and retry the mount rather than silently
+// no-op like the pre-fix chip did.
+async function _deskMountWorkflowBuilder(projectId, workflowId, attempt) {
+  await loadWorkflows(projectId);
+  if (document.getElementById('wfb-inline-host-' + projectId)) {
+    await openWorkflowBuilder(workflowId, projectId);
+    return;
+  }
+  if ((attempt || 0) >= 3) {
+    console.warn('[desk] cadence chip: workflow builder host never stabilized for project', projectId);
+    return;
+  }
+  await new Promise(r => setTimeout(r, 120));
+  await _deskMountWorkflowBuilder(projectId, workflowId, (attempt || 0) + 1);
 }
 
 // ACCOUNTS — the spec's "account inventory" (which platforms are connected,
@@ -1305,3 +1386,4 @@ window.renderDesk = renderDesk;
 window.deskAccountsInfo = deskAccountsInfo;
 window.deskReplyToPosy = deskReplyToPosy;
 window.deskToggleSeeAll = deskToggleSeeAll;
+window._deskOpenCadenceWorkflow = _deskOpenCadenceWorkflow;

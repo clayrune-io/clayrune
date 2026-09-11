@@ -144,7 +144,7 @@ const WORKFLOWS = [{
 }];
 const SCHEDULES = [{
   id: 'sch-desk1', workflow_id: 'wf-desk1', enabled: true,
-  schedule_type: 'daily', time: '07:00', days: [1],
+  schedule_type: 'daily', time: '07:00', days: [1], project_id: PID,
 }];
 const FLOOR = {
   rooms: [], quiet: [], counts: {},
@@ -276,12 +276,23 @@ try {
   } else {
     fail(`cadence chip did not resolve the linked schedule: ${JSON.stringify(cadenceText)}`);
   }
+  // MC-871 rehost: the builder is an INLINE host in the project modal's
+  // Workflows tab now, not a floating `__workflow_builder` modal — the chip
+  // must resolve the schedule's project_id, open THAT project's modal, land
+  // on its Workflows tab, and mount the linked workflow there.
   await page.click('.desk-cadence-chip');
-  await page.waitForSelector('.modal-window[data-modal-id="__workflow_builder"]', { timeout: 8000 }).catch(() => {});
-  const wfOpen = await page.$('.modal-window[data-modal-id="__workflow_builder"]');
-  if (wfOpen) ok('clicking the cadence chip opens the workflow builder on that workflow');
-  else fail('cadence chip did not open the workflow builder');
-  await page.click('.modal-window[data-modal-id="__workflow_builder"] .modal-close', { timeout: 2000 }).catch(() => {});
+  await page.waitForSelector(`.modal-window[data-modal-id="${PID}"] .wfb-node[data-name="harvest"]`,
+    { timeout: 8000 }).catch(() => {});
+  const wfProjectModalOpen = await page.$(`.modal-window[data-modal-id="${PID}"]`);
+  const wfTabActive = await page.textContent(`.modal-window[data-modal-id="${PID}"] .modal-tab.active`).catch(() => null);
+  const wfNodeMounted = await page.$(`#wfb-inline-host-${PID} .wfb-node[data-name="harvest"]`);
+  if (wfProjectModalOpen && (wfTabActive || '').trim() === 'Workflows' && wfNodeMounted) {
+    ok('clicking the cadence chip opens the linked project\'s Workflows tab with that workflow mounted');
+  } else {
+    fail(`cadence chip did not open the workflow builder: modalOpen=${!!wfProjectModalOpen}, `
+      + `activeTab=${JSON.stringify(wfTabActive)}, nodeMounted=${!!wfNodeMounted}`);
+  }
+  await page.click(`.modal-window[data-modal-id="${PID}"] .modal-close`, { timeout: 2000 }).catch(() => {});
 
   const voicesChip = await page.$('.desk-voices-chip');
   const accountsChip = await page.textContent('.desk-accounts-chip').catch(() => null);
@@ -598,7 +609,13 @@ try {
     }
   }
 
-  if (pageErrors.length) pageErrors.forEach((e) => fail('uncaught page error: ' + e));
+  // Same noise filter every other context in this suite (and boot-smoke.mjs,
+  // workflow-builder.mjs) applies: the cadence-chip fix now opens a real
+  // project modal, whose first refreshModal() lazy-loads mermaid.js -- a CDN
+  // import this hermetic run always aborts (no network). Expected, not a
+  // regression this file introduced.
+  const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught.length) uncaught.forEach((e) => fail('uncaught page error: ' + e));
   exitCode = bad ? 1 : 0;
 } catch (e) {
   console.error('❌ FAIL — smoke harness error: ' + (e && e.message ? e.message : e));
