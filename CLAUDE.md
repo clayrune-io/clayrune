@@ -214,6 +214,15 @@ BEFORE merging the next one. Merging two and testing once tells you something
 broke but not which merge did it. `tools/smoke/*.mjs` is seconds; a bisect
 across two merges is not.
 
+**If Playwright looks missing, you are in a worktree — do not install it.**
+`tools/smoke/node_modules/` and the Chromium cache live in the MAIN checkout
+and are gitignored, so every `.clayrune/agents/<id>/` worktree starts without
+them. An agent that reads "playwright not installed" as a machine-level gap
+and runs `npm install` downloads a browser into a throwaway directory that is
+deleted when the session ends. Link the main checkout's `node_modules` in
+instead, run the smoke, and remove the link before committing. Measured
+2026-09-11: four Chromium builds already cached on this box.
+
 ## Exception-swallowing policy (added 2026-06-09)
 
 When touching any function containing `except Exception: pass`, decide: if the
