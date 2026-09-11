@@ -7712,13 +7712,35 @@
   .fl-fig-top .fl-hire-to { padding: 1px 4px; font-size: 11px; }
   .fl-bench-card:hover .fl-hire-to, .fl-fig:hover .fl-hire-to { border-color: var(--border); }
   .fl-hire-to:hover { color: var(--accent); border-color: var(--accent); }
-  .fl-fig.fl-draggable, .fl-bench-card.fl-draggable { touch-action: none; }
+  /* pan-y, not none: the card IS most of the scrollable Floor surface, so
+     `none` here killed native scroll over the whole bench (Ron, mobile,
+     2026-09-10). Native vertical panning must stay live until a drag actually
+     activates (long-press fires, or mouse crosses the slop) — only then does
+     `.fl-hire-dragging` (set in _floorHireActivate, cleared in
+     _floorHireTeardown) switch this element to `none` so the drag owns the
+     gesture. Precedent: pan-y at :1684, pan-x pan-y at :4544. */
+  .fl-fig.fl-draggable, .fl-bench-card.fl-draggable { touch-action: pan-y; }
+  .fl-fig.fl-draggable.fl-hire-dragging, .fl-bench-card.fl-draggable.fl-hire-dragging { touch-action: none; }
 
   body.hire-active #projects-col .card,
+  body.hire-active #projects-col .mc-chat-row,
   body.hire-active .sidebar,
   body.hire-active .header {
     opacity: 0.35; pointer-events: none; transition: opacity 0.15s ease;
   }
+  /* touch-action is NOT solved by the dragged card's own `.fl-hire-dragging`
+     rule above (app.css :7715) — that only governs the finger's STARTING
+     element. The moment a long-press drag crosses off that card and over
+     whatever it's fading (here, `#projects-col`'s `.mc-chat-row`/`.card`
+     tiles), Chromium hit-tests THROUGH the pointer-events:none modal to that
+     tile, sees its default `touch-action:auto`, and reclaims the gesture as a
+     native pan — firing pointercancel and silently killing the drag mid-flight
+     (caught by the touch-context smoke case, not by mouse emulation: a mouse
+     drag has no native-pan competitor to lose to). touch-action is not
+     inherited, but the spec has the UA take the INTERSECTION of touch-action
+     up the ancestor chain from the hit element to the root, so `none` on the
+     container alone is enough — no need to touch every tile class. */
+  body.hire-active #projects-col { touch-action: none; }
   /* The board has to GET OUT OF THE WAY, not just dim behind glass. Every open
      modal — the Floor itself, a project chat left open beside it — is a
      `.modal-window` in `#modal-layer` painted over `#projects-col`, and
@@ -7732,15 +7754,18 @@
      fully opaque. */
   body.hire-active .modal-layer { opacity: 0.16; transition: opacity 0.15s ease; }
   body.hire-active .modal-window { pointer-events: none; }
-  body.hire-active #projects-col .card.hire-target {
+  body.hire-active #projects-col .card.hire-target,
+  body.hire-active #projects-col .mc-chat-row.hire-target {
     opacity: 1; pointer-events: auto;
     box-shadow: 0 0 0 2px var(--accent); border-radius: 10px;
     transition: opacity 0.15s ease, transform 0.1s ease, filter 0.1s ease;
   }
-  body.hire-active #projects-col .card.hire-target.hire-hover {
+  body.hire-active #projects-col .card.hire-target.hire-hover,
+  body.hire-active #projects-col .mc-chat-row.hire-target.hire-hover {
     transform: scale(1.03); filter: brightness(1.08);
   }
-  body.hire-active #projects-col .card.hire-refused { cursor: not-allowed; }
+  body.hire-active #projects-col .card.hire-refused,
+  body.hire-active #projects-col .mc-chat-row.hire-refused { cursor: not-allowed; }
   .hire-ghost {
     position: fixed; z-index: 99999; opacity: 0.85; pointer-events: none;
     transform: translate(-50%, -50%);

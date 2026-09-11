@@ -617,6 +617,21 @@ let _lastHireDragEnd = 0;
 const HIRE_LONG_PRESS_MS = 400;   // spec §8: "long-press (~400ms)"
 const HIRE_DRAG_SLOP_PX = 8;      // spec §9.3: "a real drag (8px pointer travel)"
 
+// The drop target markup differs by layout: desktop renders `.card` tiles
+// into #projects-col, mobile (isMobileChatList, <=960px) replaces the whole
+// grid with `.mc-chat-row` rows (mobile.js renderMobileChatList) — same
+// container, disjoint child class, never both at once. Every hit-test/marker
+// query below has to reach whichever one is actually on screen, or a mobile
+// drag finds no tile at all: it activates, drags, and every release reads as
+// "off every tile" (Ron, mobile, 2026-09-10 — the drop silently did nothing).
+const HIRE_TILE_SEL = '#projects-col .card, #projects-col .mc-chat-row';
+// Same idea, with an extra class/state appended to EACH branch — string-
+// concatenating a suffix onto HIRE_TILE_SEL as a whole would only land it on
+// the second selector in the comma list.
+function _hireTileSel(suffix) {
+  return '#projects-col .card' + suffix + ', #projects-col .mc-chat-row' + suffix;
+}
+
 function floorFigDown(e, pid, scope, name, display, avatar) {
   if (typeof e.button === 'number' && e.button !== 0) return;   // left/primary only
   // A second pointer going down mid-drag (a stray second finger) must not
@@ -676,6 +691,10 @@ function _floorHireActivate(st, x, y) {
   clearTimeout(st.longPressTimer);
   if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* not every device */ } }
   document.body.classList.add('hire-active');
+  // Only NOW does the card stop panning (app.css :7715) — before activation
+  // the card must stay a plain scrollable list item so a touch that isn't a
+  // long-press still scrolls the bench (Ron, mobile, 2026-09-10).
+  st.el.classList.add('fl-hire-dragging');
   const ghost = document.createElement('div');
   ghost.className = 'hire-ghost';
   ghost.innerHTML = _floorAvatarHTML(st.avatar, FLOOR_FACE_PX);
@@ -687,7 +706,7 @@ function _floorHireActivate(st, x, y) {
   // front — "dead targets look dead before the drop, not after" (§7). A
   // project-scoped character can only ever hire into its own project; a
   // global one can hire into any of them.
-  document.querySelectorAll('#projects-col .card').forEach((card) => {
+  document.querySelectorAll(HIRE_TILE_SEL).forEach((card) => {
     const ok = st.scope !== 'project' || card.dataset.id === st.pid;
     card.classList.toggle('hire-target', ok);
     card.classList.toggle('hire-refused', !ok);
@@ -696,8 +715,8 @@ function _floorHireActivate(st, x, y) {
 
 function _floorHireHoverAt(x, y) {
   const el = document.elementFromPoint(x, y);
-  const card = el && el.closest && el.closest('#projects-col .card.hire-target');
-  document.querySelectorAll('#projects-col .card.hire-hover').forEach((c) => {
+  const card = el && el.closest && el.closest(_hireTileSel('.hire-target'));
+  document.querySelectorAll(_hireTileSel('.hire-hover')).forEach((c) => {
     if (c !== card) c.classList.remove('hire-hover');
   });
   if (card) card.classList.add('hire-hover');
@@ -709,7 +728,7 @@ function _floorHireUp(e) {
   clearTimeout(st.longPressTimer);
   if (!st.active) { _floorHireTeardown(st, false); return; }
   const el = document.elementFromPoint(e.clientX, e.clientY);
-  const card = el && el.closest && el.closest('#projects-col .card');
+  const card = el && el.closest && el.closest(HIRE_TILE_SEL);
   const allowed = !!(card && (st.scope !== 'project' || card.dataset.id === st.pid));
   _floorHireTeardown(st, true);
   if (allowed) _hireDrop(card.dataset.id, st);
@@ -729,7 +748,8 @@ function _floorHireCancel(e) {
 
 function _floorHireTeardown(st, wasDrag) {
   document.body.classList.remove('hire-active');
-  document.querySelectorAll('#projects-col .card.hire-target,#projects-col .card.hire-refused,#projects-col .card.hire-hover')
+  st.el.classList.remove('fl-hire-dragging');
+  document.querySelectorAll(_hireTileSel('.hire-target') + ',' + _hireTileSel('.hire-refused') + ',' + _hireTileSel('.hire-hover'))
     .forEach((c) => c.classList.remove('hire-target', 'hire-refused', 'hire-hover'));
   if (st.ghost) { st.ghost.remove(); st.ghost = null; }
   // Belt as well as braces: the ghost is appended to <body>, so a stale one
