@@ -125,6 +125,21 @@ def test_no_operator_name_ships_in_the_source():
         assert "'clayrune'" not in code, f'{mod} hardcodes a brand as a voice'
 
 
+def test_no_account_identifier_ships_in_the_source():
+    """Mirrors test_no_operator_name_ships_in_the_source: a destination is which
+    ACCOUNT a voice publishes to, and it is Ron's to type, never ours to seed.
+    No profile URL, handle, or page id may ship as a default."""
+    for mod in ('mc/desk.py', 'mc/desk_brief.py', 'mc/blueprints/desk_routes.py'):
+        src = (PROJECT_ROOT / mod).read_text(encoding='utf-8')
+        code = '\n'.join(ln for ln in src.splitlines()
+                         if not ln.lstrip().startswith('#'))
+        for needle in ('linkedin.com/in/', 'linkedin.com/company/', 'x.com/i/',
+                       '@RanLevi15', 'leviran1@gmail.com'):
+            assert needle not in code, f'{mod} hardcodes an account identifier {needle!r}'
+    assert desk._empty_voice('probe')['destination'] == '', \
+        'the default destination must be blank, not a seeded account'
+
+
 def test_the_two_starter_voices_hold_different_standing(store):
     """The pair is not decoration: they own different platforms, which is why a
     story gets written twice rather than cross-posted."""
@@ -154,6 +169,23 @@ def test_a_user_can_add_and_remove_a_voice(store):
     assert store.delete_voice('newsletter') is True
     assert 'newsletter' not in store.voice_names()
     assert store.delete_voice('newsletter') is False
+
+
+def test_a_voice_can_be_given_a_destination(store):
+    """The account this voice publishes to — distinct from its platform, so two
+    voices on the same platform (two LinkedIn voices) can still resolve to
+    different accounts."""
+    v = store.create_voice('newsletter', platform='linkedin', destination='page-a')
+    assert v['destination'] == 'page-a'
+    v = store.update_voice('newsletter', {'destination': 'page-b'})
+    assert v['destination'] == 'page-b'
+
+
+def test_a_voice_with_no_destination_defaults_to_empty(store):
+    """Empty means 'the platform's default account' — an existing install that
+    never set this must keep working unchanged."""
+    v = store.create_voice('newsletter', platform='linkedin')
+    assert v['destination'] == ''
 
 
 def test_voice_names_are_validated(store):
