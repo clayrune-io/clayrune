@@ -50,6 +50,46 @@ def test_voice_implies_platform(store):
     assert desk_brief.platform_for('product') == 'linkedin'
 
 
+# ── destination: an account, distinct from the platform ─────────────────────
+#
+# Two voices can share a platform (two LinkedIn voices — a personal profile and
+# a company page) and still need to publish to different accounts. Platform
+# stays a property of the voice (mc/desk_brief.py's header comment); destination
+# is the same kind of thing, added alongside it, never inferred by a campaign.
+
+def test_a_voice_with_no_destination_behaves_exactly_as_before(store):
+    """An existing install never set this — it must keep working unchanged."""
+    assert desk_brief.destination_for('personal') == ''
+    b = desk_brief.build_brief(_signal(store), voice='personal')
+    assert 'DESTINATION: the platform default account (none set)' in b
+
+
+def test_two_voices_share_a_platform_but_resolve_different_destinations(store):
+    store.create_voice('personal_alt', platform='linkedin', destination='acct-one')
+    store.update_voice('product', {'destination': 'acct-two'})
+    assert desk_brief.platform_for('personal_alt') == desk_brief.platform_for('product') == 'linkedin'
+    assert desk_brief.destination_for('personal_alt') == 'acct-one'
+    assert desk_brief.destination_for('product') == 'acct-two'
+
+    b1 = desk_brief.build_brief(_signal(store), voice='personal_alt')
+    b2 = desk_brief.build_brief(_signal(store), voice='product')
+    assert 'DESTINATION: acct-one' in b1
+    assert 'DESTINATION: acct-two' in b2
+    # Both still resolve LinkedIn's own platform rules (char limit, suppression).
+    assert '40%' in b1 and '40%' in b2
+
+
+def test_destination_does_not_invent_a_rule_for_the_writer(store):
+    """The brief must surface the destination and defer to the voice's own
+    register for what standing it holds — it must not assert what a personal
+    profile or a company page may or may not say."""
+    store.update_voice('product', {'destination': 'a company page'})
+    b = desk_brief.build_brief(_signal(store), voice='product')
+    assert 'DESTINATION: a company page' in b
+    assert 'may not' not in b.lower()
+    assert "voice's own Register" in b or 'own Register' in b
+
+
 def test_brief_carries_the_ref_so_a_claim_is_checkable(store):
     b = desk_brief.build_brief(_signal(store), voice='personal')
     assert 'abc123' in b

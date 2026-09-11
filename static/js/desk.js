@@ -301,6 +301,8 @@ async function deskVoices() {
             <span class="camp-voice-name">${esc(v.name)}</span>
             <button class="desk-platform desk-platform-btn" onclick="deskPlatformRules('${esc(v.platform || '')}')"
               title="This voice's platform rules — the brief the writer gets">${esc(v.platform || '')}</button>
+            <button class="desk-platform desk-destination-btn" onclick="deskVoiceDestination('${esc(v.name)}')"
+              title="Which account this voice publishes to — distinct from the platform">${esc(v.destination || 'default account')}</button>
             <span class="desk-voice-learned${(v.rewrites || []).length ? '' : ' cold'}">
               ${(v.rewrites || []).length} edit${(v.rewrites || []).length === 1 ? '' : 's'} learned
             </span>
@@ -349,6 +351,77 @@ async function deskSeedVoice(name) {
     show('Could not start it: ' + e.message);
     if (btn) { btn.disabled = false; btn.textContent = 'Learn from how I write'; }
   }
+}
+
+// VOICE DESTINATION — which account a voice publishes to, distinct from the
+// platform. Two voices can share a platform (two LinkedIn voices, say) and
+// still need different destinations, so this cannot be folded into the
+// platform badge next to it. Empty means "the platform's default account" —
+// deliberately not filled in here: an account name/handle/URL is Ron's to
+// type, never ours to seed (same rule as the platform-rules text below).
+async function deskVoiceDestination(name) {
+  let v = null;
+  try {
+    v = await _deskFetch(`/api/desk/voices/${encodeURIComponent(name)}`);
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not load the voice: ' + e.message, 4000);
+    return;
+  }
+
+  const modalId = '__desk_destination_' + name;
+  if (openModals.has(modalId)) { focusModal(modalId); return; }
+
+  const win = document.createElement('div');
+  win.className = 'modal-window';
+  win.dataset.modalId = modalId;
+  const content = document.createElement('div');
+  content.className = 'modal-content modal-fit';
+  _clampModalSize(content, 460);
+  content.innerHTML = `
+    <div class="modal-header" style="padding:18px 24px 10px 28px">
+      <div class="modal-window-controls" style="position:absolute;top:14px;right:16px;display:flex;gap:4px">
+        <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
+      </div>
+      <h2 style="margin:0;font-size:17px;font-weight:700;color:var(--text)">${esc(name)}'s destination</h2>
+    </div>
+    <div style="padding:6px 28px 22px;overflow-y:auto">
+      <div class="hint" style="margin-bottom:14px">Which account on ${esc(v.platform || 'the platform')}
+        this voice publishes to. Leave blank to mean the platform's default account.</div>
+      <div class="form-group">
+        <label>Destination</label>
+        <input type="text" id="dest-value" value="${esc(v.destination || '')}"
+          placeholder="e.g. a profile URL or account name">
+      </div>
+      <div id="dest-error" class="social-attr-warn" style="display:none"></div>
+      <button class="btn-add" style="width:100%;margin-top:4px" onclick="deskSaveVoiceDestination('${esc(name)}')">Save</button>
+    </div>`;
+  win.appendChild(content);
+  document.getElementById('modal-layer').appendChild(win);
+  const z = nextModalZ++;
+  win.style.zIndex = z;
+  openModals.set(modalId, { projectId: null, element: win, minimized: false, zIndex: z });
+  centerModalElement(win);
+  focusModal(modalId);
+}
+
+async function deskSaveVoiceDestination(name) {
+  const modalId = '__desk_destination_' + name;
+  const err = document.getElementById('dest-error');
+  const show = (m) => { if (err) { err.textContent = m; err.style.display = 'block'; } };
+  const destination = ((document.getElementById('dest-value') || {}).value || '').trim();
+
+  try {
+    await _deskFetch(`/api/desk/voices/${encodeURIComponent(name)}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ destination }),
+    });
+  } catch (e) {
+    return show('Could not save: ' + e.message);
+  }
+  closeModalById(modalId);
+  closeModalById('__desk_voices');
+  deskVoices();
+  if (typeof showToast === 'function') showToast(`Saved ${name}'s destination.`);
 }
 
 // PLATFORM RULES — the brief a writer gets per platform, and what closes the
@@ -945,6 +1018,8 @@ window.deskVoices = deskVoices;
 window.deskSeedVoice = deskSeedVoice;
 window.deskPlatformRules = deskPlatformRules;
 window.deskSavePlatformRules = deskSavePlatformRules;
+window.deskVoiceDestination = deskVoiceDestination;
+window.deskSaveVoiceDestination = deskSaveVoiceDestination;
 window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;

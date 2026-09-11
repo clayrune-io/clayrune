@@ -95,6 +95,19 @@ def platform_for(voice: str) -> str:
         return 'x'
 
 
+def destination_for(voice: str) -> str:
+    """The account this voice publishes to, read off the voice itself.
+
+    Distinct from platform: two voices can share a platform (two LinkedIn
+    voices, say) and still need to publish to different accounts. Empty means
+    the platform's default account — the only meaning that keeps an existing
+    install, which never set this, working unchanged."""
+    try:
+        return (_desk.get_voice(voice) or {}).get('destination') or ''
+    except ValueError:
+        return ''
+
+
 def build_triage_brief(signals: list[dict], *, voices: list[str],
                        campaign: dict | None = None,
                        max_picks: int = 5) -> str:
@@ -190,6 +203,7 @@ def build_brief(signal: dict, *, voice: str | None = None,
     if not _desk.is_voice(voice):
         raise ValueError(f'unknown voice {voice!r}; expected one of {_desk.voice_names()}')
     platform = platform_for(voice)
+    destination = destination_for(voice)
     pid = signal.get('project_id') or ''
 
     # Run the repetition check on the SIGNAL's own words before a line is
@@ -202,6 +216,11 @@ def build_brief(signal: dict, *, voice: str | None = None,
         '',
         f'PLATFORM: {platform}',
         f'VOICE: {voice}',
+        f'DESTINATION: {destination or "the platform default account (none set)"} '
+        '— this changes what you may say. What standing this destination '
+        "holds (first person or not, and what it may claim) is the voice's "
+        'own Register below; do not assume a standing from the destination '
+        'name itself.',
         _platform_rules_text(platform),
         '',
         '── WHAT HAPPENED (this is your only source; do not invent beyond it) ──',

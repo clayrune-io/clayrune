@@ -315,11 +315,18 @@ def score_signal(kind: str, summary: str | None, detail: str | None = None) -> f
 _VOICE_NAME = re.compile(r'^[a-z0-9][a-z0-9_-]{0,31}$')
 
 
-def _empty_voice(name: str, *, platform: str = 'x',
+def _empty_voice(name: str, *, platform: str = 'x', destination: str = '',
                  scope: str = VOICE_SCOPE_GLOBAL) -> dict:
     return {
         'name': name,
         'platform': platform,  # which platform this voice posts to
+        # Which ACCOUNT on that platform — distinct from platform, because two
+        # voices can share a platform (two LinkedIn voices) and still need to
+        # publish to different places. Empty means "the platform's default
+        # account", so an existing install with no destination set is
+        # unchanged. Never a rule-generator: what a destination MAY say is
+        # carried by the voice's own `register`, not inferred here.
+        'destination': destination,
         'scope': scope,        # 'global' or a project id
         'register': '',
         'banned': [],          # words and constructions this voice will not use
@@ -391,8 +398,8 @@ def list_voices(project_id: str | None = None) -> list[dict]:
     return [get_voice(v) for v in voice_names(project_id)]
 
 
-def create_voice(name: str, *, platform: str = 'x', register: str = '',
-                 scope: str = VOICE_SCOPE_GLOBAL) -> dict:
+def create_voice(name: str, *, platform: str = 'x', destination: str = '',
+                 register: str = '', scope: str = VOICE_SCOPE_GLOBAL) -> dict:
     """Add a voice. Names are slug-shaped because they appear in briefs and URLs."""
     name = (name or '').strip().lower()
     if not _VOICE_NAME.match(name):
@@ -402,7 +409,8 @@ def create_voice(name: str, *, platform: str = 'x', register: str = '',
         _seed_voices(store)
         if name in store['voices']:
             raise ValueError(f'a voice named {name!r} already exists')
-        v = _empty_voice(name, platform=platform, scope=scope or VOICE_SCOPE_GLOBAL)
+        v = _empty_voice(name, platform=platform, destination=destination,
+                         scope=scope or VOICE_SCOPE_GLOBAL)
         v['register'] = register
         v['updated_at'] = now_iso()
         store['voices'][name] = v
@@ -427,7 +435,7 @@ def update_voice(name: str, patch: dict) -> dict:
     if not is_voice(name):
         raise ValueError(f'unknown voice {name!r}; expected one of {voice_names()}')
     allowed = {'register', 'banned', 'never_claims', 'product_refs',
-               'platform', 'scope'}
+               'platform', 'destination', 'scope'}
     with _store_lock:
         store = _read_store()
         voice = store['voices'].get(name) or _empty_voice(name)
