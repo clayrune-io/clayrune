@@ -132,6 +132,34 @@ const SIGNALS = [
   occurred_at: `2026-09-0${(i % 9) + 1}T08:00:00Z`, consumed_by: null,
 }));
 
+// Header cluster fixtures (UI brief §1) — a real Desk-linked workflow +
+// schedule, so the cadence chip exercises the actual lookup (a workflow
+// containing a `desk_harvest` action node, joined to the schedule whose
+// workflow_id points at it) rather than always falling through to the
+// unset "Set a cadence ›" state.
+const WORKFLOWS = [{
+  id: 'wf-desk1', name: 'The Desk — weekly', enabled: true,
+  nodes: [{ type: 'action', action: 'desk_harvest', name: 'harvest', x: 60, y: 60, config: {} }],
+  edges: [],
+}];
+const SCHEDULES = [{
+  id: 'sch-desk1', workflow_id: 'wf-desk1', enabled: true,
+  schedule_type: 'daily', time: '07:00', days: [1],
+}];
+const FLOOR = {
+  rooms: [], quiet: [], counts: {},
+  bench: [{ scope: 'global', name: 'social-media-strategist', avatar: '🧵', display: 'Posy' }],
+};
+// A second ledger pull wider than the overview's 10-row preview (Board §2's
+// "last 30 days" panel), with one row tagged to the running campaign so its
+// progress bar has a real "out" count.
+const LEDGER = [
+  { id: 'post-1', platform: 'x', voice: 'ron', body: 'Shipped the Desk. Took four days.',
+    project_id: PID, published_at: '2026-09-08T12:00:00Z', campaign_id: null, outcome: null },
+  { id: 'post-2', platform: 'linkedin', voice: 'clayrune', body: 'Restore points now keep ten snapshots.',
+    project_id: PID, published_at: '2026-09-07T12:00:00Z', campaign_id: 'camp-1', outcome: null },
+];
+
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -185,6 +213,10 @@ try {
       harvestCalls++;
       return J({ projects: [{ project_id: PID, commits: 3, backlog: 1 }], commits: 3, backlog: 1 });
     }
+    if (path === '/api/workflows') return J(WORKFLOWS);
+    if (path === '/api/schedules') return J(SCHEDULES);
+    if (path === '/api/floor') return J(FLOOR);
+    if (path === '/api/desk/ledger') return J(LEDGER);
     return route.abort();
   });
 
@@ -228,6 +260,49 @@ try {
     fail(`expected exactly one badge on Queue, got ${JSON.stringify(nagging)}`);
   }
 
+  // ── Header cluster (UI brief §1): cadence chip, Voices, Accounts — and the
+  // OLD "What's worth saying?" / "Read the projects" buttons must be gone;
+  // harvest runs on the cadence now, never a second trigger in the header. ──
+  const oldButtons = await page.$$('.desk-harvest-btn, .desk-triage-btn');
+  if (oldButtons.length === 0) {
+    ok('the old "Read the projects" / "What\'s worth saying?" header buttons are gone');
+  } else {
+    fail(`${oldButtons.length} old header trigger button(s) still render`);
+  }
+  const cadenceText = await page.textContent('.desk-cadence-chip').catch(() => null);
+  const cadencePaused = await page.$('.desk-cadence-chip.paused');
+  if (cadenceText && cadenceText.includes('Runs weekly') && cadenceText.includes('07:00') && !cadencePaused) {
+    ok(`the cadence chip reads the schedule linked to the Desk workflow: "${cadenceText.trim()}"`);
+  } else {
+    fail(`cadence chip did not resolve the linked schedule: ${JSON.stringify(cadenceText)}`);
+  }
+  await page.click('.desk-cadence-chip');
+  await page.waitForSelector('.modal-window[data-modal-id="__workflow_builder"]', { timeout: 8000 }).catch(() => {});
+  const wfOpen = await page.$('.modal-window[data-modal-id="__workflow_builder"]');
+  if (wfOpen) ok('clicking the cadence chip opens the workflow builder on that workflow');
+  else fail('cadence chip did not open the workflow builder');
+  await page.click('.modal-window[data-modal-id="__workflow_builder"] .modal-close', { timeout: 2000 }).catch(() => {});
+
+  const voicesChip = await page.$('.desk-voices-chip');
+  const accountsChip = await page.textContent('.desk-accounts-chip').catch(() => null);
+  if (voicesChip) ok('the Voices entry point renders in the header cluster');
+  else fail('no Voices chip in the header cluster');
+  if (accountsChip && accountsChip.includes('—')) {
+    ok('Accounts renders honestly (em dash) — no account-inventory store exists yet');
+  } else {
+    fail(`Accounts chip did not render the honest placeholder: ${JSON.stringify(accountsChip)}`);
+  }
+
+  // ── BOARD: Posy's note is a real chat bubble with her roster avatar ──────
+  await page.waitForSelector('.desk-note-bubble', { timeout: 8000 });
+  const noteText = await page.textContent('.desk-note-bubble');
+  const noteAvatar = await page.$('.desk-note-avatar .av');
+  if (/draft/i.test(noteText || '') && noteAvatar) {
+    ok('Posy\'s note bubble renders with a real avatar and real pending-draft count');
+  } else {
+    fail(`Posy's note did not render as expected: text=${JSON.stringify(noteText)}, avatar=${!!noteAvatar}`);
+  }
+
   // ── BOARD: a campaign leads with its thesis and its reason to run now ─────
   const boardText = await page.textContent('#desk-body');
   if (boardText.includes('Clayrune keeps agents alive')) ok('Board renders the campaign THESIS, not just its title');
@@ -235,13 +310,32 @@ try {
   if (boardText.includes('launch window opens')) ok('Board renders "why now" (the agenda note)');
   else fail('Board did not render the agenda note');
 
-  // The feed is sorted by story value, so the chore must not lead.
-  const sigOrder = await page.$$eval('.desk-signal .desk-signal-text', els => els.map(e => e.textContent.trim()));
-  if (sigOrder[0] && sigOrder[0].startsWith('Shipped drag-to-hire')
-      && sigOrder[sigOrder.length - 1].startsWith('chore:')) {
-    ok(`feed leads with story value across ${sigOrder.length} rows — chores sink to the bottom`);
+  // WORTH A STORY leads with the top few by score, not the whole 15-row feed —
+  // the raw feed moved behind "See all N ›" (UI brief §2).
+  const storyTitles = await page.$$eval('.desk-story .desk-story-title', els => els.map(e => e.textContent.trim()));
+  if (storyTitles.length > 0 && storyTitles.length <= 5 && storyTitles[0].startsWith('Shipped drag-to-hire')) {
+    ok(`Worth a story shows ${storyTitles.length} top picks, leading with the highest score`);
   } else {
-    fail(`feed ordering wrong: leads with ${JSON.stringify(sigOrder[0])}, ends with ${JSON.stringify(sigOrder[sigOrder.length - 1])}`);
+    fail(`Worth a story cards wrong: ${JSON.stringify(storyTitles)}`);
+  }
+  const seeAllBtn = await page.textContent('.desk-see-all');
+  if ((seeAllBtn || '').includes(`See all ${SIGNALS.length}`)) {
+    ok(`"See all ${SIGNALS.length} ›" offers the full feed as a secondary view`);
+  } else {
+    fail(`"See all" control missing or wrong count: ${JSON.stringify(seeAllBtn)}`);
+  }
+
+  // Open it — the full feed is sorted by story value, so the chore must not
+  // lead, and this is also what exercises the same .desk-signal row markup
+  // the OLD Board used to render inline (now reused, not forked, by "See all").
+  await page.click('.desk-see-all');
+  await page.waitForSelector('.desk-signal', { timeout: 8000 });
+  const sigOrder = await page.$$eval('.desk-signal .desk-signal-text', els => els.map(e => e.textContent.trim()));
+  if (sigOrder.length === SIGNALS.length && sigOrder[0].startsWith('Shipped drag-to-hire')
+      && sigOrder[sigOrder.length - 1].startsWith('chore:')) {
+    ok(`"See all" leads with story value across ${sigOrder.length} rows — chores sink to the bottom`);
+  } else {
+    fail(`feed ordering wrong: ${sigOrder.length} rows, leads with ${JSON.stringify(sigOrder[0])}, ends with ${JSON.stringify(sigOrder[sigOrder.length - 1])}`);
   }
 
   // The meter must actually ENCODE the score. It is a <span>, so if it ever
@@ -259,6 +353,8 @@ try {
   const cold = await page.$$eval('.desk-signal.cold', els => els.length);
   if (cold > 0) ok(`${cold} low-value signals recede rather than disappear`);
   else fail('no signal was dimmed; the feed hides nothing, it de-emphasises');
+
+  await page.click('.desk-see-all');  // collapse it back — later Board assertions target the top picks again
 
   // ── QUEUE: hosts cross-social.js's REAL rows (the window bridge works) ────
   await page.click('.desk-tab:has-text("Queue")');
@@ -392,9 +488,12 @@ try {
   else fail('a campaign has no state actions on the Board');
 
   // ── Drafting: the Desk briefs the writer, it does not generate ───────────
+  // (WORTH A STORY card, not the raw .desk-signal feed row — that moved
+  // behind "See all" above; both share _deskDraftButtons, so this exercises
+  // the same dispatch either way.)
   await page.click('.desk-tab:has-text("Board")');
-  await page.waitForSelector('.desk-signal .desk-draft-btn', { timeout: 8000 });
-  await page.click('.desk-signal:first-child .desk-draft-btn');
+  await page.waitForSelector('.desk-story .desk-draft-btn', { timeout: 8000 });
+  await page.click('.desk-story:first-child .desk-draft-btn');
   await page.waitForTimeout(500);
   if (draftCalls.length === 1 && draftCalls[0].campaign_id === 'camp-1') {
     ok(`a draft carries the RUNNING campaign (voice=${draftCalls[0].voice}, `
@@ -404,18 +503,21 @@ try {
   }
 
   // Both voices are offered per signal, because the platform follows the voice.
-  const perRow = await page.$$eval('.desk-signal:first-child .desk-draft-btn',
+  const perRow = await page.$$eval('.desk-story:first-child .desk-draft-btn',
     els => els.map(e => e.textContent.trim()));
   if (perRow.length === 2) ok(`the campaign's voices are the buttons: ${perRow.join(' / ')}`);
   else fail(`expected one button per campaign voice, got ${JSON.stringify(perRow)}`);
 
-  // ── Harvest is the one button that reaches out to the projects ───────────
-  await page.click('.desk-tab:has-text("Board")');
-  await page.click('.desk-harvest-btn');
-  await page.waitForFunction(() => true, null, { timeout: 500 }).catch(() => {});
-  await page.waitForTimeout(600);
-  if (harvestCalls >= 1) ok(`"Read the projects" POSTs to /api/desk/signals/harvest (${harvestCalls}x)`);
-  else fail('harvest button did not call the harvest endpoint');
+  // ── Harvest no longer has a header trigger to click (asserted absent,
+  // above) — it runs on the cadence workflow's own Run now, server-side, via
+  // mc/workflows.py's `desk_harvest` action, outside this UI entirely. What
+  // stays testable here is the negative: nothing on the Board fires it on its
+  // own. ──
+  if (harvestCalls === 0) {
+    ok('no hidden auto-harvest fires from the Board — the trigger genuinely moved to the workflow');
+  } else {
+    fail(`harvest fired ${harvestCalls}x with no button to cause it`);
+  }
 
   // ── And nothing in the whole surface offers to publish ───────────────────
   const bodyAll = await page.textContent('.modal-window[data-modal-id="__desk"]');
@@ -432,7 +534,7 @@ try {
   // A voice with no learned edits is GUESSING, and the panel has to say so next
   // to the button that fixes it — otherwise the honest status lives only in a
   // brief nobody reads.
-  await page.click('.desk-voices-btn');
+  await page.click('.desk-voices-chip');
   await page.waitForSelector('.modal-window[data-modal-id="__desk_voices"]', { timeout: 8000 });
   const voiceRows = await page.$$eval('.desk-voice-row', els => els.map(e => ({
     voice: e.dataset.voice,

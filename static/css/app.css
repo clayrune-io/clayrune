@@ -7842,56 +7842,6 @@
     vertical-align: 1px;
   }
 
-  .desk-harvest-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: var(--accent); border: 1px solid var(--accent); color: var(--surface);
-    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
-    border-radius: 999px; cursor: pointer;
-    transition: filter 0.15s, opacity 0.15s;
-  }
-  .desk-harvest-btn:hover:not(:disabled) { filter: brightness(1.08); }
-  .desk-harvest-btn:disabled { opacity: 0.5; cursor: default; }
-
-  /* ── KPI row ───────────────────────────────────────────────────────────── */
-  .desk-kpis {
-    display: grid; grid-template-columns: 1.5fr 1fr 1fr 1fr;
-    gap: 10px; margin-bottom: 20px;
-  }
-  .desk-kpi {
-    background: var(--surface2); border: 1px solid var(--border);
-    border-radius: 10px; padding: 13px 15px 14px;
-    display: flex; flex-direction: column; gap: 3px; min-width: 0;
-  }
-  .desk-kpi-label {
-    font-size: 10.5px; font-weight: 700; letter-spacing: 0.055em;
-    text-transform: uppercase; color: var(--text-faint);
-  }
-  .desk-kpi-value {
-    font-size: 26px; font-weight: 750; line-height: 1.1; color: var(--text);
-    font-variant-numeric: tabular-nums;
-  }
-  .desk-kpi-note { font-size: 11px; color: var(--text-dim); line-height: 1.35; }
-
-  /* The one hero. Bigger, accent-washed, and the only tile with a call to
-     action — everything else on this surface is for reading. */
-  .desk-kpi.hero {
-    background: linear-gradient(135deg,
-      var(--accent-dim) 0%,
-      color-mix(in srgb, var(--accent-dim) 45%, var(--surface2)) 100%);
-    border-color: color-mix(in srgb, var(--accent) 30%, transparent);
-  }
-  .desk-kpi.hero .desk-kpi-value { font-size: 48px; font-weight: 800; color: var(--accent); }
-  .desk-kpi.hero .desk-kpi-label { color: var(--accent-soft); }
-  .desk-kpi-cta {
-    align-self: flex-start; margin-top: 4px; background: transparent;
-    border: none; padding: 0; cursor: pointer;
-    color: var(--accent); font-size: 11.5px; font-weight: 700;
-    text-decoration: underline; text-underline-offset: 3px;
-  }
-  .desk-kpi.hero.clear { background: var(--surface2); border-color: var(--border); }
-  .desk-kpi.hero.clear .desk-kpi-value { color: var(--green-text); }
-  .desk-kpi.hero.clear .desk-kpi-label { color: var(--text-faint); }
-
   /* ── Section headers ───────────────────────────────────────────────────── */
   .desk-section {
     display: flex; align-items: baseline; gap: 8px; margin: 4px 0 10px;
@@ -7952,49 +7902,6 @@
     font-weight: 400;
   }
 
-  /* Posy's picks. Accent-washed and ABOVE the feed, because they are the answer
-     to the question the feed only poses — but the feed stays visible under them,
-     so disagreeing with her costs a scroll rather than a setting. */
-  .desk-proposals { display: flex; flex-direction: column; gap: 8px; margin-bottom: 22px; }
-  .desk-proposal {
-    background: linear-gradient(135deg, var(--accent-dim) 0%,
-      color-mix(in srgb, var(--accent-dim) 40%, var(--surface2)) 100%);
-    border: 1px solid color-mix(in srgb, var(--accent) 28%, transparent);
-    border-radius: 10px; padding: 12px 14px;
-  }
-  .desk-proposal-head {
-    display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; margin-bottom: 6px;
-  }
-  .desk-proposal-signal {
-    flex: 1; min-width: 0; font-size: 12.5px; font-weight: 700; color: var(--text);
-  }
-  /* Her reasoning is the point of the row — it is what the human reads in three
-     seconds to decide, so it gets the readable size, not a footnote's. */
-  .desk-proposal-why { font-size: 12.5px; line-height: 1.55; color: var(--text); }
-  .desk-proposal-actions { display: flex; gap: 6px; margin-top: 10px; }
-  .desk-prop-accept, .desk-prop-dismiss {
-    font-size: 11px; font-weight: 700; padding: 4px 12px;
-    border-radius: 999px; cursor: pointer;
-  }
-  .desk-prop-accept {
-    background: var(--accent); border: 1px solid var(--accent); color: var(--surface);
-  }
-  .desk-prop-accept:hover { filter: brightness(1.08); }
-  .desk-prop-dismiss {
-    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
-  }
-  .desk-prop-dismiss:hover { border-color: var(--red); color: var(--red-text); }
-
-  .desk-triage-btn {
-    display: inline-flex; align-items: center; gap: 6px;
-    background: transparent; border: 1px solid var(--accent); color: var(--accent);
-    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
-    border-radius: 999px; cursor: pointer; margin-right: 6px;
-    transition: background 0.15s, opacity 0.15s;
-  }
-  .desk-triage-btn:hover:not(:disabled) { background: var(--accent-dim); }
-  .desk-triage-btn:disabled { opacity: 0.5; cursor: default; }
-
   /* Quieter than triage and harvest: this is a settings-shaped action you take
      once, not the thing you came to the Desk to do. */
   /* "Nothing is happening" was the complaint, and this is the answer: a row
@@ -8017,15 +7924,6 @@
     0%, 100% { opacity: 0.25; }
     50%      { opacity: 1; }
   }
-
-  .desk-voices-btn {
-    display: inline-flex; align-items: center;
-    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
-    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
-    border-radius: 999px; cursor: pointer; margin-right: 6px;
-    transition: color 0.15s, border-color 0.15s;
-  }
-  .desk-voices-btn:hover { color: var(--accent); border-color: var(--accent); }
 
   .desk-voice-row {
     display: flex; flex-direction: column; gap: 5px;
@@ -8270,10 +8168,147 @@
   }
   .desk-ledger-outcome { font-size: 11px; color: var(--text-dim); margin-top: 8px; }
 
+  /* ── Header cluster chips (UI brief §1) — cadence / voices / accounts ────── */
+  .desk-cadence-chip, .desk-voices-chip, .desk-accounts-chip {
+    display: inline-flex; align-items: center; gap: 6px;
+    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+    font-size: 11.5px; font-weight: 700; padding: 6px 14px;
+    border-radius: 999px; cursor: pointer; white-space: nowrap;
+    transition: color 0.15s, border-color 0.15s;
+  }
+  .desk-cadence-chip:hover, .desk-voices-chip:hover, .desk-accounts-chip:hover {
+    color: var(--accent); border-color: var(--accent);
+  }
+  .desk-cadence-chip { color: var(--text); }
+  .desk-cadence-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--green); flex-shrink: 0;
+  }
+  .desk-cadence-chip.paused .desk-cadence-dot { background: var(--text-faint); }
+  .desk-cadence-chip.paused { text-decoration: line-through; color: var(--text-faint); }
+  .desk-cadence-arrow { color: var(--text-faint); font-weight: 400; }
+  .desk-cadence-chip.desk-cadence-unset { color: var(--accent); border-color: var(--accent); }
+
+  /* ── Board — two-column grid (UI brief §2), stacks on phone ──────────────── */
+  .desk-board-grid {
+    display: grid; grid-template-columns: minmax(0, 1fr) 340px; gap: 18px; align-items: start;
+  }
+  .desk-board-main { min-width: 0; }
+  .desk-board-side { display: flex; flex-direction: column; gap: 14px; min-width: 0; }
+
+  /* Posy's note — a chat bubble reusing .agent-output/.agent-line verbatim
+     (conversation redesign, app.css:4024+) rather than forking bubble CSS.
+     `.desk-note-output` overrides only the CONTAINER's own chrome (it is not a
+     scrolling chat pane here); `.agent-line` inside it is untouched. */
+  .desk-note-row { display: flex; gap: 10px; margin-bottom: 20px; }
+  .desk-note-avatar { flex-shrink: 0; }
+  .desk-note-body { flex: 1; min-width: 0; }
+  .desk-note-head { display: flex; align-items: baseline; gap: 8px; margin-bottom: 4px; }
+  .desk-note-name { font-size: 12.5px; font-weight: 800; color: var(--text); }
+  .desk-note-stamp { font-size: 10.5px; color: var(--text-faint); }
+  .desk-note-output.agent-output {
+    background: transparent; padding: 0; display: block; min-height: 0; overflow: visible;
+  }
+  .desk-note-bubble.agent-line {
+    max-width: 100%; font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    font-size: 13px; line-height: 1.55;
+  }
+  .desk-note-actions { display: flex; gap: 8px; margin-top: 10px; }
+
+  /* Campaign progress bar — segments carry real state, never a fabricated one:
+     "in queue" has no store yet (a draft doesn't record which campaign briefed
+     it), so it renders as a tooltipped dash rather than a guessed slice. */
+  .desk-campaign-thesis b, .desk-campaign-agenda b { color: var(--text-dim); font-weight: 700; }
+  .desk-campaign-progress { margin-top: 10px; }
+  .desk-progress-bar {
+    display: flex; height: 6px; border-radius: 3px; overflow: hidden;
+    background: var(--surface3); margin-bottom: 5px;
+  }
+  .desk-progress-seg { height: 100%; }
+  .desk-progress-out { background: var(--green); }
+  .desk-progress-planned { background: var(--text-faint); opacity: 0.5; }
+  .desk-progress-label {
+    font-size: 10.5px; color: var(--text-faint); font-variant-numeric: tabular-nums;
+  }
+  .desk-progress-label [title] { text-decoration: underline dotted; cursor: help; }
+  .desk-campaign-open {
+    margin-top: 10px; background: transparent; border: 1px solid var(--border2);
+    color: var(--text-dim); font-size: 11px; font-weight: 700; padding: 4px 12px;
+    border-radius: 999px; cursor: not-allowed; opacity: 0.55;
+  }
+
+  /* ── Worth a story — story cards, restyled from the raw .desk-signal feed
+     row (kept below for "See all", so both share the meter/draft-button
+     markup rather than forking it). ── */
+  .desk-see-all {
+    background: transparent; border: none; color: var(--accent);
+    font-size: 11.5px; font-weight: 700; cursor: pointer;
+  }
+  .desk-see-all:hover { text-decoration: underline; }
+  .desk-stories { display: flex; flex-direction: column; gap: 8px; margin-bottom: 10px; }
+  .desk-story {
+    display: flex; align-items: flex-start; gap: 10px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: 10px; padding: 11px 13px;
+  }
+  .desk-story.cold { opacity: 0.6; }
+  .desk-story.cold .desk-meter-fill { background: var(--text-faint); }
+  .desk-story .desk-meter { margin-top: 3px; }
+  .desk-story-main { flex: 1; min-width: 0; }
+  .desk-story-title { font-size: 13px; font-weight: 700; color: var(--text); line-height: 1.4; }
+  .desk-story-meta {
+    font-size: 10.5px; color: var(--text-faint); text-transform: uppercase;
+    letter-spacing: 0.03em; margin-top: 2px;
+  }
+  .desk-story-angle {
+    font-size: 12px; font-style: italic; color: var(--text-dim); margin-top: 5px;
+  }
+  .desk-story-actions { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-top: 4px; }
+  .desk-story-skip { font-size: 10.5px; color: var(--text-faint); font-style: italic; }
+  .desk-draft-anyway {
+    background: transparent; border: 1px solid var(--border2); color: var(--text-dim);
+    font-size: 10.5px; font-weight: 700; padding: 3px 10px; border-radius: 999px; cursor: pointer;
+    flex-shrink: 0;
+  }
+  .desk-story.cold:not(.expanded) .desk-draft-actions { display: none; }
+  .desk-story.cold.expanded .desk-draft-anyway { display: none; }
+  /* The card action, not a hover reveal: .desk-draft-btn's base opacity:0
+     (above) exists for the dense raw-feed ROW, where a button per line would
+     be noisy at rest. A story CARD is spaced enough that the buttons are the
+     point — Draft-as-voice is the card's primary action, so it must render
+     visible without a hover, or it silently never appears (caught in a visual
+     check: the buttons were present in the DOM, clickable, and 100% invisible). */
+  .desk-story .desk-draft-actions { width: auto; }
+  .desk-story .desk-draft-btn { opacity: 1; padding: 4px 10px; font-size: 10.5px; }
+
+  /* ── Side column cards (UI brief §2) ──────────────────────────────────────
+     Exactly ONE hero number on the whole Board — "waiting on you" — same
+     dataviz rule the old KPI row followed, now living here instead. */
+  .desk-side-card {
+    background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 10px; padding: 14px 15px;
+  }
+  .desk-side-label {
+    display: block; font-size: 10.5px; font-weight: 800; letter-spacing: 0.06em;
+    text-transform: uppercase; color: var(--text-faint); margin-bottom: 8px;
+  }
+  .desk-waiting-card { background: var(--accent-dim); border-color: color-mix(in srgb, var(--accent) 28%, transparent); }
+  .desk-waiting-card .desk-side-label { color: var(--accent-soft); }
+  .desk-side-hero { display: block; font-size: 40px; font-weight: 800; line-height: 1.1; color: var(--accent); }
+  .desk-side-sub { display: block; font-size: 11.5px; color: var(--text-dim); margin: 4px 0 10px; }
+  .desk-stat-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; margin-bottom: 8px; }
+  .desk-stat { display: flex; flex-direction: column; gap: 2px; }
+  .desk-stat-val {
+    font-size: 20px; font-weight: 750; color: var(--text); font-variant-numeric: tabular-nums;
+  }
+  .desk-stat-val[title] { text-decoration: underline dotted; cursor: help; color: var(--text-faint); }
+  .desk-stat-lbl { font-size: 10.5px; color: var(--text-faint); }
+  .desk-side-note { font-size: 11px; line-height: 1.5; color: var(--text-dim); }
+  .desk-curriculum-card { background: var(--amber-dim); border-color: color-mix(in srgb, var(--amber) 28%, transparent); }
+  .desk-curriculum-card .desk-side-label { color: var(--amber-text); }
+  .desk-curriculum-card .desk-empty { background: transparent; border: none; padding: 4px 0; text-align: left; }
+
   @media (max-width: 960px) {
-    .desk-kpis { grid-template-columns: 1fr 1fr; }
-    .desk-kpi.hero { grid-column: 1 / -1; }
-    .desk-kpi.hero .desk-kpi-value { font-size: 40px; }
+    .desk-board-grid { grid-template-columns: 1fr; }
     .desk-campaigns { grid-template-columns: 1fr; }
     .desk-tab { padding: 6px 10px; font-size: 11.5px; }
     .desk-signal-proj, .desk-signal-when { display: none; }

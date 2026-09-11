@@ -41,6 +41,17 @@ let _deskProposals = [];
 let _deskWriting = [];
 let _deskWritingTimer = null;
 let _deskTriaging = false;
+let _deskSeeAllOpen = false;
+
+// ── Shell state (UI brief §1) — cadence chip, roster avatar, full voice
+// records. Loaded ONCE per open, separately from _loadDesk()'s overview
+// poll: none of this changes turn-to-turn the way pending drafts do, and the
+// cadence lookup crosses two other stores (workflows + schedules) that the
+// Desk's own overview route has no reason to join.
+let _deskCadenceSchedule = null;   // the schedule whose workflow_id runs desk_harvest, or null
+let _deskAllVoices = [];           // full /api/desk/voices records (platform, register, rewrites)
+let _deskPosyAvatar = '';          // Posy's roster avatar value, resolved via /api/floor's bench
+let _deskLedger30 = null;          // wider ledger pull for the 30-day panel (overview only ships 10)
 
 // ── data ────────────────────────────────────────────────────────────────────
 
@@ -70,6 +81,111 @@ async function _loadDeskSignals() {
     _deskSignals = await _deskFetch('/api/desk/signals?limit=120&sort=score');
   } catch (e) { _deskSignals = []; }
   if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// SHELL — the header cluster's own data. Two lookups the cadence chip needs
+// that no existing route joins for us:
+//   1. Which workflow is "the Desk's"? There is no name/tag for that — the
+//      only real signal is a workflow containing a `desk_harvest` action node
+//      (mc/workflows.py ACTION_ALLOWLIST), so that is what we search for.
+//   2. Which schedule points at it, and is that schedule enabled or paused?
+// No such workflow existing yet is a REAL, common state (spec: "still to
+// build ... the scheduler cadence") — the chip renders "Set a cadence ›" for
+// it, not an error.
+async function _loadDeskShell() {
+  try {
+    const [workflows, schedules, voices] = await Promise.all([
+      _deskFetch('/api/workflows'),
+      _deskFetch('/api/schedules'),
+      _deskFetch('/api/desk/voices'),
+    ]);
+    _deskAllVoices = voices || [];
+    const deskWf = (workflows || []).find(w =>
+      (w.nodes || []).some(n => n && n.action === 'desk_harvest'));
+    _deskCadenceSchedule = deskWf
+      ? (schedules || []).find(s => s.workflow_id === deskWf.id) || null
+      : null;
+  } catch (e) {
+    _deskCadenceSchedule = null;
+  }
+  // Posy's face, from the SAME resolution path the Floor uses — never a
+  // second copy of the avatar rule. A bench miss (no global
+  // social-media-strategist type) leaves this '' and avatarHTML renders the
+  // neutral dot, never a placeholder letter.
+  try {
+    const floor = await _deskFetch('/api/floor');
+    const posy = (floor.bench || []).find(
+      b => (b.scope || 'global') === 'global' && b.name === 'social-media-strategist');
+    _deskPosyAvatar = posy ? (posy.avatar || '') : '';
+  } catch (e) { _deskPosyAvatar = ''; }
+  if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// The Board's "last 30 days" needs more than the overview's 10-row preview,
+// so it gets its own pull rather than inflating what every other caller of
+// /api/desk/overview has to pay for.
+async function _loadDeskLedgerWindow() {
+  try { _deskLedger30 = await _deskFetch('/api/desk/ledger?limit=200'); }
+  catch (e) { _deskLedger30 = []; }
+  if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+const _DESK_DAY_NAMES = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
+
+function _deskCadenceText(sched) {
+  const t = sched.schedule_type;
+  const time = sched.time || '09:00';
+  if (t === 'daily') {
+    const days = sched.days || [];
+    if (days.length === 1) return `Runs weekly · ${_DESK_DAY_NAMES[days[0]] || '?'} ${time}`;
+    if (days.length > 1) return `Runs ${days.length}x/week · ${time}`;
+    return `Runs daily · ${time}`;
+  }
+  if (t === 'interval') {
+    const m = sched.interval_minutes || 60;
+    return `Runs every ${m >= 60 && m % 60 === 0 ? (m / 60) + 'h' : m + 'm'}`;
+  }
+  if (t === 'cron') return 'Runs on cron';
+  if (t === 'once') return 'Runs once';
+  return 'Runs';
+}
+
+// Click opens the workflow builder ON that workflow (UI brief §1) — never a
+// second cadence editor here. No workflow yet -> opens the builder fresh;
+// there is no "Desk template" to seed it with, so this is honest about
+// starting blank rather than pretending one exists.
+function _deskCadenceChipHTML() {
+  const sched = _deskCadenceSchedule;
+  if (!sched) {
+    return `<button class="desk-cadence-chip desk-cadence-unset"
+      onclick="openWorkflowBuilder(null,'')" title="No workflow harvests the feed yet">
+      Set a cadence ›</button>`;
+  }
+  const paused = !sched.enabled;
+  return `<button class="desk-cadence-chip${paused ? ' paused' : ''}"
+    onclick="openWorkflowBuilder('${esc(sched.workflow_id)}','')"
+    title="${paused ? 'Paused — click to open the workflow' : 'Click to open the workflow that runs this'}">
+    <span class="desk-cadence-dot"></span>${esc(_deskCadenceText(sched))}<span class="desk-cadence-arrow"> workflow ›</span>
+  </button>`;
+}
+
+// ACCOUNTS — the spec's "account inventory" (which platforms are connected,
+// authenticated, stale) has no store yet; only the publishing office (spec
+// §1, "still to build") would populate one. Rendered honestly rather than
+// guessed from vault secret names, which could easily be wrong.
+function deskAccountsInfo() {
+  if (typeof showToast === 'function') {
+    showToast('No account inventory yet — this fills in with the publishing office.', 4000);
+  }
+}
+
+// REPLY TO POSY — the Board's note is not backed by a real thread yet (that
+// lands with the Queue's pushback composer, UI brief build order step 4).
+// Says so rather than opening a composer that goes nowhere.
+function deskReplyToPosy() {
+  if (typeof showToast === 'function') {
+    showToast('Threaded replies to Posy land with the Queue pass — not wired yet.', 4000);
+  }
 }
 
 // Harvest is idempotent by `ref` (mc/desk_harvest.py), so a double-click costs
@@ -529,6 +645,7 @@ async function openDesk() {
     focusModal(DESK_MODAL_ID);
     renderDesk();
     _loadDesk(); _loadDeskSignals(); _loadDeskProposals(); _hydrateAllSocial();
+    _loadDeskShell(); _loadDeskLedgerWindow();
     return;
   }
 
@@ -537,7 +654,9 @@ async function openDesk() {
   win.dataset.modalId = DESK_MODAL_ID;
   const content = document.createElement('div');
   content.className = 'modal-content';
-  _clampModalSize(content, 940);
+  // Wider than the old 940: the Board is a two-column grid (main + a fixed
+  // 340px side column, UI brief §2), not a single stacked list.
+  _clampModalSize(content, 1080);
   content.innerHTML = `
     <div class="modal-header" style="display:flex;align-items:center;justify-content:space-between;padding:16px 24px 12px 28px">
       <span style="font-size:16px;font-weight:700;color:var(--text)">The Desk</span>
@@ -564,6 +683,8 @@ async function openDesk() {
   _loadDeskSignals();
   _loadDeskProposals();
   _hydrateAllSocial();   // the Queue surface reads the same hydrated projects
+  _loadDeskShell();
+  _loadDeskLedgerWindow();
 }
 
 function deskTab(tab) {
@@ -614,23 +735,22 @@ function renderDesk() {
   const labels = {
     board: 'Board', queue: 'Queue', calendar: 'Calendar', ledger: 'Ledger',
   };
+  // The old "What's worth saying?" / "Read the projects" buttons are gone
+  // (UI brief §1): harvest runs on the cadence now, or from the workflow's
+  // own Run now — never a second trigger living here. `deskTriage`/
+  // `deskHarvest` stay defined (and window-bridged) since nothing else in
+  // this pass removed the routes they call; they are simply not offered as
+  // header controls any more.
   tabsEl.innerHTML = DESK_TABS.map(t => `
     <button class="desk-tab${t === _deskTab ? ' active' : ''}" onclick="deskTab('${t}')">
       ${labels[t]}${t === 'queue' && pending ? ` <span class="desk-tab-badge">${pending}</span>` : ''}
     </button>`).join('') + `
     <span style="flex:1"></span>
-    <button class="desk-triage-btn" onclick="deskTriage()" ${_deskTriaging ? 'disabled' : ''}
-      title="Ask Posy which of these are worth posting, and in which voice">
-      ${_deskTriaging ? 'Weighing…' : "What's worth saying?"}
-    </button>
-    <button class="desk-voices-btn" onclick="deskVoices()"
-      title="Your voices — and what each one has learned">
-      Voices
-    </button>
-    <button class="desk-harvest-btn" onclick="deskHarvest()" ${_deskHarvesting ? 'disabled' : ''}
-      title="Read every project's new commits and shipped backlog items into the feed">
-      ${_deskHarvesting ? 'Reading the projects…' : 'Read the projects'}
-    </button>`;
+    ${_deskCadenceChipHTML()}
+    <button class="desk-voices-chip" onclick="deskVoices()"
+      title="Your voices — and what each one has learned">Voices ▾</button>
+    <button class="desk-accounts-chip" onclick="deskAccountsInfo()"
+      title="Account inventory — not built yet">Accounts · —</button>`;
 
   if (_deskData._error) {
     bodyEl.innerHTML = `<div class="desk-empty">Could not reach the Desk: ${esc(_deskData._error)}</div>`;
@@ -793,89 +913,157 @@ function _deskSectionHTML(label, hint) {
   </div>`;
 }
 
-// Posts published in the last seven days. The Calendar answers "when", this
-// answers "are we actually shipping anything" — the number a marketing surface
-// should lead with alongside what it owes you.
-function _deskThisWeek() {
-  const cut = new Date(Date.now() - 7 * 864e5).toISOString();
-  return (_deskData.recent_posts || []).filter(p => (p.published_at || '') >= cut).length;
+// A signal's raw `summary` is a commit subject or a backlog item's own text
+// (mc/desk_harvest.py) — sometimes genuinely shouted (backlog items get
+// written in caps). There is no per-signal "Posy rewrite" store yet (UI brief
+// §2 wants one); this is a cheap, honest mitigation for the specific failure
+// the brief calls out — sentence-case a mostly-uppercase string — not a
+// substitute for one. Ordinary mixed-case text passes through untouched.
+function _deskHumanizeTitle(text) {
+  const t = (text || '').trim();
+  const letters = t.replace(/[^a-zA-Z]/g, '');
+  const upper = t.replace(/[^A-Z]/g, '');
+  if (letters.length > 6 && upper.length / letters.length > 0.7) {
+    const lower = t.toLowerCase();
+    return lower.charAt(0).toUpperCase() + lower.slice(1);
+  }
+  return t;
 }
 
-// BOARD — what is happening this month, and why.
-function _renderBoard() {
-  const camps = _deskData.campaigns || [];
-  const all = _deskSignals.length ? _deskSignals : (_deskData.hot_signals || []);
-  const hot = all.slice(0, 25);
-  const pending = _deskPendingCount();
-  const running = camps.filter(c => c.state === 'running').length;
-  const week = _deskThisWeek();
-  const ideas = all.filter(s => !s.consumed_by && (s.story_score || 0) >= 0.35).length;
+// WAITING ON YOU — real numbers only. `n` matches the Queue tab's own badge
+// count (_deskPendingCount) so the two never disagree. The age/voice
+// breakdown needs the actual rows, which only exist once _hydrateAllSocial
+// has fetched every project that HAS pending work — exactly the condition
+// _deskPendingCount's own fallback branch already documents. `hydrated: false`
+// means "still loading", not "empty": the caller renders a dash rather than a
+// wrong zero.
+function _deskWaitingStats() {
+  const rows = [];
+  for (const p of (typeof allProjects !== 'undefined' ? allProjects : [])) {
+    if (p._socialQueueFull && Array.isArray(p.social_queue)) {
+      for (const item of p.social_queue) {
+        if (item.status === 'pending' || item.status === 'approved') rows.push(item);
+      }
+    }
+  }
+  const n = _deskPendingCount();
+  const hydrated = rows.length >= n;
+  let oldestDays = null;
+  if (rows.length) {
+    const oldest = rows.reduce((a, b) => ((a.created_at || '') < (b.created_at || '') ? a : b));
+    oldestDays = Math.max(0, Math.floor((Date.now() - new Date(oldest.created_at).getTime()) / 864e5));
+  }
+  const byVoice = {};
+  for (const r of rows) {
+    const v = r.voice || 'unassigned';
+    byVoice[v] = (byVoice[v] || 0) + 1;
+  }
+  return { n, hydrated, oldestDays, byVoice };
+}
 
-  // Exactly ONE hero figure, and it is what the Desk owes you — the only number
-  // here that should ever pull Ron out of what he was doing. Everything else on
-  // this surface is for reading, so it stays secondary by size on purpose.
-  const kpiHTML = `
-    <div class="desk-kpis">
-      <div class="desk-kpi hero${pending ? '' : ' clear'}">
-        <span class="desk-kpi-label">Waiting on you</span>
-        <span class="desk-kpi-value">${pending || 'None'}</span>
-        ${pending
-          ? `<button class="desk-kpi-cta" onclick="deskTab('queue')">Review ${pending === 1 ? 'it' : 'them'} →</button>`
-          : `<span class="desk-kpi-note">Nothing needs a decision.</span>`}
-      </div>
-      <div class="desk-kpi">
-        <span class="desk-kpi-label">Campaigns</span>
-        <span class="desk-kpi-value">${running}</span>
-        <span class="desk-kpi-note">${running === 1 ? 'running now' : 'running now'}${camps.length > running ? ` · ${camps.length - running} idle` : ''}</span>
-      </div>
-      <div class="desk-kpi">
-        <span class="desk-kpi-label">Went out</span>
-        <span class="desk-kpi-value">${week}</span>
-        <span class="desk-kpi-note">in the last 7 days</span>
-      </div>
-      <div class="desk-kpi">
-        <span class="desk-kpi-label">Story ideas</span>
-        <span class="desk-kpi-value">${ideas}</span>
-        <span class="desk-kpi-note">unused, worth a look</span>
-      </div>
-    </div>`;
+// LAST 30 DAYS — "went out" is real (the ledger). The other three the brief
+// asks for have no store behind them yet, and are reported as such at the end
+// of the build rather than guessed:
+//   killed by you    — reject_social_queue_item only ever pushes BACK
+//                       (needs_changes); a hard kill IS reachable via
+//                       PATCH {status:"rejected"} but there is no cross-project
+//                       aggregate of it, and _hydrateAllSocial only fetches
+//                       projects that currently HAVE a pending item, so a
+//                       project with zero pending but some killed drafts would
+//                       silently undercount rather than error.
+//   released edited   — the ledger record (mc/desk.py record_published) has
+//                       no edited/released_unedited field; that is Queue-pass
+//                       wiring (UI brief §3's soft lock), not built yet.
+//   X API spend       — no per-post cost field on the ledger either.
+function _deskLast30() {
+  const cut = Date.now() - 30 * 864e5;
+  const rows = _deskLedger30 || _deskData.recent_posts || [];
+  const went = rows.filter(p => new Date(p.published_at || 0).getTime() >= cut).length;
+  return { went };
+}
 
-  const campHTML = camps.length ? `<div class="desk-campaigns">${camps.map(c => `
+// A campaign's progress bar (UI brief §2's 5-segment bar). "out" is real
+// (ledger rows tagged with this campaign_id, mc/desk.py record_published).
+// "planned" is real (camp.planned, the intended-posts list). "in queue" is
+// NOT trackable: a queue item never records which campaign briefed it
+// (mc/blueprints/desk_routes.py draft() only inlines the campaign into the
+// BRIEF TEXT sent to Posy, nothing structured survives on the queue item) —
+// rendered as a tooltipped dash rather than invented. Campaigns also have no
+// end-date field, so "ends <date>" from the mockup is left off entirely
+// rather than fabricated.
+function _deskCampaignProgress(c) {
+  const rows = _deskLedger30 || _deskData.recent_posts || [];
+  const out = rows.filter(p => p.campaign_id === c.id).length;
+  const planned = (c.planned || []).length;
+  const total = Math.max(1, out + planned);
+  return { out, planned, outPct: Math.round(out / total * 100) };
+}
+
+function _deskCampaignCardHTML(c) {
+  const prog = _deskCampaignProgress(c);
+  return `
     <div class="desk-campaign state-${esc(c.state)}">
       <div class="desk-campaign-head">
         <span class="desk-campaign-title">${esc(c.title)}</span>
         <span class="desk-state-chip">${esc(c.state)}</span>
         ${(c.voices || (c.voice ? [c.voice] : [])).map(v => `<span class="desk-voice-chip">${esc(v)}</span>`).join('')}
       </div>
-      <div class="desk-campaign-thesis">${esc(c.thesis)}</div>
+      <div class="desk-campaign-thesis"><b>Thesis:</b> ${esc(c.thesis)}</div>
       ${c.agenda ? `<div class="desk-campaign-agenda"><b>Why now:</b> ${esc(c.agenda)}</div>` : ''}
-      ${c.state === 'running' ? `<div class="desk-campaign-next">
-        Drafting from the feed below now argues this. Hover any row and pick a voice —
-        the draft lands in the Queue for you to release.</div>` : ''}
+      <div class="desk-campaign-progress">
+        <span class="desk-progress-bar">
+          <span class="desk-progress-seg desk-progress-out" style="width:${prog.outPct}%"></span>
+          <span class="desk-progress-seg desk-progress-planned" style="width:${100 - prog.outPct}%"></span>
+        </span>
+        <span class="desk-progress-label">${prog.out} out · <span
+          title="A draft doesn't record which campaign briefed it yet">— in queue</span> · ${prog.planned} planned</span>
+      </div>
       <div class="desk-campaign-actions">
         ${c.state === 'proposed' ? `<button onclick="deskCampaignState('${esc(c.id)}','running')">Start it</button>` : ''}
         ${c.state === 'running' ? `<button onclick="deskCampaignState('${esc(c.id)}','paused')">Pause</button>` : ''}
         ${c.state === 'paused' ? `<button onclick="deskCampaignState('${esc(c.id)}','running')">Resume</button>` : ''}
         ${c.state !== 'done' && c.state !== 'dropped' ? `<button onclick="deskCampaignState('${esc(c.id)}','done')">Finish</button>` : ''}
       </div>
-    </div>`).join('')}</div>` : `
-    <div class="desk-empty" style="margin-bottom:22px">
-      No campaigns yet. A campaign carries a <b>thesis</b> and a reason it is
-      running now — that is what makes this a plan rather than a list of drafts.
+      <button class="desk-campaign-open" disabled title="No campaign detail screen yet">Open ›</button>
     </div>`;
+}
 
-  // The feed, sorted by story score. Most of these will never become posts, and
-  // that is the design: the feed is the evidence, a campaign is the argument.
-  //
-  // The score is a METER rather than a printed number: magnitude is what it
-  // encodes, and a bar is read at a glance where "0.05" has to be parsed. Kind
-  // stays a LABEL — six cycled category colours would be an unvalidated
-  // categorical palette for no gain. Low scorers dim rather than disappear;
-  // nothing is hidden from the feed, it just stops competing.
-  const sigHTML = hot.length ? `<div class="desk-feed">${hot.map(s => {
-    const score = Math.max(0, Math.min(1, s.story_score || 0));
-    const cold = score < 0.35;
-    return `
+// WORTH A STORY — Posy's top picks, by score. Reuses the exact meter/kind/
+// draft-button machinery the raw feed row already has (_deskDraftButtons),
+// restyled into a card per the mockup. The italic "angle" line is real only
+// when a triage proposal already exists for this signal (proposal.why is
+// authored by Posy); most signals have none yet, so the line is simply
+// omitted rather than invented — there is no per-signal angle store.
+function _deskStoryCardHTML(s) {
+  const score = Math.max(0, Math.min(1, s.story_score || 0));
+  const cold = score < 0.35;
+  const title = _deskHumanizeTitle(s.summary || '');
+  const prop = (_deskProposals || []).find(p => (p.signal_id || (p.signal && p.signal.id)) === s.id);
+  return `
+    <div class="desk-story${cold ? ' cold' : ''}">
+      <span class="desk-meter" title="Story value ${score.toFixed(2)} — a suggestion, not a verdict">
+        <span class="desk-meter-fill" style="width:${Math.round(score * 100)}%"></span>
+      </span>
+      <div class="desk-story-main">
+        <div class="desk-story-title">${esc(title)}</div>
+        <div class="desk-story-meta">${esc(s.kind)} · ${esc(s.project_id || '')} · ${esc((s.occurred_at || '').slice(0, 10))}</div>
+        ${prop ? `<div class="desk-story-angle">"${esc(prop.why)}"</div>` : ''}
+      </div>
+      ${cold ? `
+        <span class="desk-story-skip" title="No skip reason recorded yet">below the story bar</span>
+        <button class="desk-draft-anyway" onclick="this.closest('.desk-story').classList.add('expanded')">Draft anyway ▾</button>` : ''}
+      <span class="desk-draft-actions">${_deskDraftButtons(s)}</span>
+    </div>`;
+}
+
+// The raw feed row — UNCHANGED from the old Board's "What happened" section.
+// Kept verbatim (not restyled) because it now backs "See all N ›" (UI brief
+// §2), a secondary view of the exact same 120-row list the story cards above
+// are picked from, not a new surface.
+function _deskFeedRowHTML(s) {
+  const score = Math.max(0, Math.min(1, s.story_score || 0));
+  const cold = score < 0.35;
+  return `
     <div class="desk-signal ${cold ? 'cold' : 'hot'}">
       <span class="desk-meter" title="Story value ${score.toFixed(2)} — a suggestion, not a verdict">
         <span class="desk-meter-fill" style="width:${Math.round(score * 100)}%"></span>
@@ -888,15 +1076,100 @@ function _renderBoard() {
         ? `<span class="desk-signal-used" title="Already drafted from">used</span>`
         : `<span class="desk-draft-actions">${_deskDraftButtons(s)}</span>`}
     </div>`;
-  }).join('')}</div>` : `
-    <div class="desk-empty">
-      Nothing in the feed yet. Hit <b>Read the projects</b> — it pulls each
-      project's new commits and shipped backlog items in.
+}
+
+function deskToggleSeeAll() {
+  _deskSeeAllOpen = !_deskSeeAllOpen;
+  renderDesk();
+}
+
+// POSY'S NOTE — a chat bubble (UI brief §2), not a generated mentor note: the
+// spec files the mentor's actual period-focus generation under "still to
+// build" (docs/THE_DESK_SPEC.md). This composes an honest status line from
+// REAL numbers (pending count, feed size) rather than inventing the
+// curriculum observation / "why now" opinion Posy has not actually made yet —
+// including the quiet-week case the brief names explicitly ("never empty
+// tiles").
+function _deskPosyNoteHTML(pending, feedCount) {
+  const avatar = (typeof window.avatarHTML === 'function') ? window.avatarHTML(_deskPosyAvatar, 36) : '';
+  const now = new Date();
+  const stamp = `this week's note · ${now.toLocaleDateString(undefined, { weekday: 'short' })} `
+    + `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  let body;
+  if (pending > 0) {
+    body = `${pending} draft${pending === 1 ? '' : 's'} waiting for you`
+      + (feedCount ? `, out of ${feedCount} signal${feedCount === 1 ? '' : 's'} in the feed.` : '.');
+  } else if (feedCount > 0) {
+    body = `Nothing waiting on you right now. ${feedCount} signal${feedCount === 1 ? '' : 's'} `
+      + `in the feed — worth a look under "Worth a story" below.`;
+  } else {
+    body = `Nothing worth saying this week — the feed is empty. Run the harvest `
+      + `from the cadence workflow to pull in what shipped.`;
+  }
+  return `<div class="desk-note-row">
+    <span class="desk-note-avatar">${avatar}</span>
+    <div class="desk-note-body">
+      <div class="desk-note-head">
+        <span class="desk-note-name">Posy</span><span class="desk-note-stamp">${esc(stamp)}</span>
+      </div>
+      <div class="agent-output desk-note-output"><div class="agent-line desk-note-bubble">${esc(body)}</div></div>
+      <div class="desk-note-actions">
+        ${pending ? `<button class="btn-header-action" onclick="deskTab('queue')">Review the ${pending} draft${pending === 1 ? '' : 's'}</button>` : ''}
+        <button class="btn-header-action" onclick="deskReplyToPosy()">Reply to Posy</button>
+      </div>
+    </div>
+  </div>`;
+}
+
+function _deskSideColumnHTML() {
+  const w = _deskWaitingStats();
+  const last30 = _deskLast30();
+  const voiceBits = Object.entries(w.byVoice).map(([v, n]) => `${n} for ${esc(v)}`).join(' · ');
+
+  const waitingCard = `
+    <div class="desk-side-card desk-waiting-card">
+      <span class="desk-side-label">Waiting on you</span>
+      <span class="desk-side-hero">${w.n || 'None'}</span>
+      ${w.n ? `
+        <span class="desk-side-sub">${w.hydrated && w.oldestDays !== null ? `oldest ${w.oldestDays}d` : 'loading…'}${voiceBits ? ' · ' + voiceBits : ''}</span>
+        <button class="btn-header-action" onclick="deskTab('queue')">Review them →</button>`
+        : `<span class="desk-side-sub">Nothing needs a decision.</span>`}
     </div>`;
 
-  // POSY'S PICKS sit ABOVE the raw feed, because they are the answer to the
-  // question the feed only poses. The feed stays visible underneath — nothing is
-  // hidden, and a human who disagrees with her can still go and look.
+  const last30Card = `
+    <div class="desk-side-card">
+      <span class="desk-side-label">Last 30 days</span>
+      <div class="desk-stat-grid">
+        <div class="desk-stat"><span class="desk-stat-val">${last30.went}</span><span class="desk-stat-lbl">went out</span></div>
+        <div class="desk-stat"><span class="desk-stat-val" title="No cross-project aggregate for kills yet">—</span><span class="desk-stat-lbl">killed by you</span></div>
+        <div class="desk-stat"><span class="desk-stat-val" title="Release does not record edited-vs-unedited yet">—</span><span class="desk-stat-lbl">released edited</span></div>
+        <div class="desk-stat"><span class="desk-stat-val" title="The ledger has no per-post cost field yet">—</span><span class="desk-stat-lbl">X API spend</span></div>
+      </div>
+      <div class="desk-side-note">Edit rate is the detection defense. If it drops under 50% Posy will say so — once it is tracked.</div>
+    </div>`;
+
+  const curriculumCard = `
+    <div class="desk-side-card desk-curriculum-card">
+      <span class="desk-side-label">What you keep changing</span>
+      <div class="desk-empty">Posy hasn't drawn any lessons from your edits yet — this fills in as she reads more of them.</div>
+    </div>`;
+
+  return waitingCard + last30Card + curriculumCard;
+}
+
+// BOARD — what is happening this month, and why (UI brief §2).
+function _renderBoard() {
+  const camps = _deskData.campaigns || [];
+  const rawFeed = _deskSignals.length ? _deskSignals : (_deskData.hot_signals || []);
+  const top = rawFeed.filter(s => !s.consumed_by).slice(0, 5);
+  const pending = _deskPendingCount();
+
+  const noteHTML = _deskPosyNoteHTML(pending, rawFeed.length);
+
+  // Posy's in-flight writing status still needs to be visible even with the
+  // manual triage trigger gone from the header (UI brief §1) — a campaign
+  // fires it via the workflow now, but "nothing says a draft is coming" is
+  // the same silent-feeling gap either way.
   const writingHTML = _deskWriting.length ? `
     <div class="desk-writing">
       <span class="desk-writing-dot"></span>
@@ -905,27 +1178,23 @@ function _renderBoard() {
       <span class="desk-writing-hint">it lands in the Queue when she is done.</span>
     </div>` : '';
 
-  const propHTML = _deskProposals.length ? `
-    ${_deskSectionHTML('Posy suggests', `${_deskProposals.length} worth saying, out of everything below`)}
-    <div class="desk-proposals">${_deskProposals.map(p => `
-      <div class="desk-proposal">
-        <div class="desk-proposal-head">
-          <span class="desk-voice-chip">${esc(p.voice)}</span>
-          <span class="desk-platform">${esc((p.signal && p.signal.project_id) || '')}</span>
-          <span class="desk-proposal-signal">${esc((p.signal && p.signal.summary) || '(signal missing)')}</span>
-        </div>
-        <div class="desk-proposal-why">${esc(p.why)}</div>
-        <div class="desk-proposal-actions">
-          <button class="desk-prop-accept" onclick="deskDecideProposal('${esc(p.id)}','accept')"
-            title="Worth saying — Posy drafts it and it lands in the Queue">Draft it</button>
-          <button class="desk-prop-dismiss" onclick="deskDecideProposal('${esc(p.id)}','dismiss')"
-            title="Not worth saying. This signal will not be suggested again">Not this</button>
-        </div>
-      </div>`).join('')}</div>` : '';
+  const campHTML = camps.length
+    ? `<div class="desk-campaigns">${camps.map(_deskCampaignCardHTML).join('')}</div>`
+    : `<div class="desk-empty" style="margin-bottom:22px">
+         No campaigns yet. A campaign carries a <b>thesis</b> and a reason it is
+         running now — that is what makes this a plan rather than a list of drafts.
+       </div>`;
 
-  return kpiHTML
+  const storyHTML = top.length
+    ? `<div class="desk-stories">${top.map(_deskStoryCardHTML).join('')}</div>`
+    : `<div class="desk-empty">Nothing in the feed yet — it fills in on the next cadence run.</div>`;
+
+  const seeAllHTML = _deskSeeAllOpen
+    ? `<div class="desk-feed">${rawFeed.map(_deskFeedRowHTML).join('')}</div>`
+    : '';
+
+  const mainCol = noteHTML
     + writingHTML
-    + propHTML
     + `<div class="desk-section">
          <span class="desk-section-label">Campaigns</span>
          ${camps.length ? '<span class="desk-section-hint">what we are arguing, and why now</span>' : ''}
@@ -934,9 +1203,19 @@ function _renderBoard() {
            title="A campaign carries a thesis and a reason to run now">+ New campaign</button>
        </div>`
     + campHTML
-    + _deskSectionHTML('What happened',
-        'highest story value first — most of it will never become a post')
-    + sigHTML;
+    + `<div class="desk-section">
+         <span class="desk-section-label">Worth a story</span>
+         <span class="desk-section-hint">Posy's top picks from ${rawFeed.length} signals — most will never become a post</span>
+         <span class="desk-section-rule"></span>
+         <button class="desk-see-all" onclick="deskToggleSeeAll()">${_deskSeeAllOpen ? 'Hide ↑' : `See all ${rawFeed.length} ›`}</button>
+       </div>`
+    + storyHTML
+    + seeAllHTML;
+
+  return `<div class="desk-board-grid">
+    <div class="desk-board-main">${mainCol}</div>
+    <div class="desk-board-side">${_deskSideColumnHTML()}</div>
+  </div>`;
 }
 
 // QUEUE — the only surface that ever demands anything of you.
@@ -1023,3 +1302,6 @@ window.deskSaveVoiceDestination = deskSaveVoiceDestination;
 window.deskSubmitCampaign = deskSubmitCampaign;
 window.deskCampaignState = deskCampaignState;
 window.renderDesk = renderDesk;
+window.deskAccountsInfo = deskAccountsInfo;
+window.deskReplyToPosy = deskReplyToPosy;
+window.deskToggleSeeAll = deskToggleSeeAll;
