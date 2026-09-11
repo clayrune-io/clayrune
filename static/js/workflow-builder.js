@@ -143,15 +143,109 @@ function _wfOutPorts(node) {
   return vocab.map(w => ({ when: w, label: w })).concat([{ when: 'otherwise', label: 'otherwise' }]);
 }
 
+// ── The Bench, as the palette (UI brief §2) ─────────────────────────────────
+//
+// "Drag people, not primitives." A palette row IS a hired agent; dropping one
+// creates an agent step with that persona already chosen, so there is no
+// "add an Agent step, then pick a persona" detour. Rows come from the SAME
+// endpoint the Floor's bench reads (`/api/floor` → `bench`), so a type hired
+// on the Floor is draggable here without a second roster concept.
+
+// FACES: one resolution path, the Floor's. `avatarHTML` (render-core.js) is
+// the only implementation — `fig:<name>` becomes the real figure image, a
+// renderable emoji becomes a glyph. This is the guarded call shape
+// `_floorAvatarHTML` uses: window.avatarHTML is a cross-module global and a
+// module-load-order race would otherwise throw mid-render (floor.js, ws001
+// Finding 1).
+//
+// TEST THE CLEANED VALUE, NOT THE RAW ONE. `avatarIsFigure`/`avatarIsRenderable`
+// normalise (trim, then `fig:` prefix or "at least one codepoint above U+007F")
+// exactly as `characters.clean_avatar` does server-side, and they are the same
+// predicates `avatarHTML` itself branches on — so the usability verdict and the
+// render can never disagree. That disagreement is the bug `_figure_avatar`
+// documents: a `??` (an emoji flattened by a Windows console codepage) tested
+// as present, rendered as nothing, and outranked the real face underneath it.
+// An avatar that is neither a known figure nor a real emoji therefore falls
+// THROUGH to the initial mark below — it is never echoed into the DOM as text.
+function _wfAvatarHTML(person, size) {
+  const v = (person && person.avatar) || '';
+  const usable = (typeof window.avatarIsFigure === 'function' && window.avatarIsFigure(v))
+    || (typeof window.avatarIsRenderable === 'function' && window.avatarIsRenderable(v));
+  if (usable && typeof window.avatarHTML === 'function') return window.avatarHTML(v, size);
+  // Genuinely faceless: the name's own initial, never a random face and never
+  // the raw unusable string (Ron, 2026-09-11 — the mock's letter bubbles are
+  // the FALLBACK here, not the default).
+  return `<span class="wfb-face-initial" style="width:${size}px;height:${size}px;font-size:${Math.round(size * 0.44)}px"
+    >${esc(_wfInitial(person))}</span>`;
+}
+
+function _wfInitial(person) {
+  const s = String((person && (person.display || person.name)) || '').trim();
+  return s ? s[0].toUpperCase() : '·';
+}
+
+function _wfBenchLookup(st, scope, name) {
+  return (st.bench || []).find(b => (b.scope || 'global') === (scope || 'global') && b.name === name) || null;
+}
+
+// A node stores its persona as the persona picker's own value shape,
+// `<scope>:<name>` (see `_wfReloadCharacters`), so the card header can find
+// the bench row that owns the face.
+function _wfPersonFromCharacter(st, character) {
+  const s = String(character || '');
+  const i = s.indexOf(':');
+  if (i < 0) return null;
+  return _wfBenchLookup(st, s.slice(0, i), s.slice(i + 1));
+}
+
+function _wfBenchFiltered(st, search) {
+  const q = String(search || '').trim().toLowerCase();
+  const list = st.bench || [];
+  if (!q) return list;
+  return list.filter(b => String(b.display || '').toLowerCase().includes(q)
+    || String(b.name || '').toLowerCase().includes(q));
+}
+
+function _wfSlug(s) {
+  return String(s || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'step';
+}
+
+function _wfUniqueNodeName(st, base) {
+  const taken = new Set(((st.def && st.def.nodes) || []).map(n => n.name));
+  if (!taken.has(base)) return base;
+  let i = 2;
+  while (taken.has(`${base}-${i}`)) i += 1;
+  return `${base}-${i}`;
+}
+
+// The palette's two tool tiles make a bare node; a PERSON makes an agent step
+// with its persona and project already resolved. Brief §8c rule 1: a dropped
+// person defaults its project to that persona's home room (`project_id` on the
+// bench card — the "only in <project>" pin), else the project the builder was
+// opened from, so nothing else needs picking.
+function _wfMakeNode(st, type, scope, name, x, y) {
+  if (type !== 'person') return _wfBlankNode(type, x, y);
+  const person = _wfBenchLookup(st, scope, name)
+    || { scope: scope || 'global', name, display: name, avatar: '', project_id: '' };
+  return {
+    type: 'agent',
+    name: _wfUniqueNodeName(st, _wfSlug(person.name || person.display)),
+    x: Math.round(x), y: Math.round(y),
+    project_id: person.project_id || st.hintProjectId || '',
+    character: (person.scope || 'global') + ':' + person.name,
+    prompt: '', outcomes: [],
+  };
+}
+
 // ── Modal open / load ────────────────────────────────────────────────────────
 
-async function openWorkflowBuilder(workflowId) {
+async function openWorkflowBuilder(workflowId, hintProjectId) {
   const modalId = WF_MODAL_ID;
   if (openModals.has(modalId)) {
     const entry = openModals.get(modalId);
     if (entry.minimized) restoreModal(modalId);
     focusModal(modalId);
-    await _wfLoadInto(entry, workflowId || null);
+    await _wfLoadInto(entry, workflowId || null, hintProjectId || '');
     _wfRender();
     return;
   }
@@ -180,22 +274,30 @@ async function openWorkflowBuilder(workflowId) {
   focusModal(modalId);
 
   const entry = openModals.get(modalId);
-  await _wfLoadInto(entry, workflowId || null);
+  await _wfLoadInto(entry, workflowId || null, hintProjectId || '');
   _wfRender();
 }
 
-function _wfFreshState(def, workflowId, error) {
+function _wfFreshState(def, workflowId, error, hintProjectId) {
   // linkedSchedule: the schedule record whose workflow_id points at this
   // workflow (MC-871 Q4 -- "one store, two views"). null until loaded/created;
   // the CADENCE lives there, never duplicated onto def.trigger, which stays
   // a bare `{type: 'schedule'}` marker.
+  // hintProjectId: the project the builder was opened FROM (the tab's own
+  // project, when known). Fallback target for a dropped person with no home
+  // room of their own (UI brief §2: "if none, the current project").
+  // bench/benchLoaded/paletteSearch: the Bench roster backing the palette
+  // (UI brief §2 — "the palette is the Bench, drag people not primitives"),
+  // loaded once per modal open from the SAME endpoint the Floor/Bench reads.
   return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
-           _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null };
+           _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null,
+           hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '' };
 }
 
-async function _wfLoadInto(entry, workflowId) {
+async function _wfLoadInto(entry, workflowId, hintProjectId) {
   if (!workflowId) {
-    entry._wf = _wfFreshState(_wfBlankDef(), null, null);
+    entry._wf = _wfFreshState(_wfBlankDef(), null, null, hintProjectId);
+    await _wfLoadBench(entry._wf);
     return;
   }
   try {
@@ -205,11 +307,29 @@ async function _wfLoadInto(entry, workflowId) {
     entry._wf = _wfFreshState(
       found ? JSON.parse(JSON.stringify(found)) : _wfBlankDef(),
       found ? found.id : null,
-      found ? null : 'Workflow not found');
+      found ? null : 'Workflow not found',
+      hintProjectId);
     if (found) await _wfLoadLinkedSchedule(entry._wf);
   } catch (e) {
-    entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow');
+    entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow', hintProjectId);
   }
+  await _wfLoadBench(entry._wf);
+}
+
+// Same data source as the Floor/Bench (UI brief §2, "Palette data source: the
+// same roster the Floor/Bench reads"). Best-effort: a failed fetch leaves the
+// palette showing an empty-bench message rather than blocking the modal —
+// the builder is still usable with the Approval gate / Action tools.
+async function _wfLoadBench(st) {
+  try {
+    const res = await fetch(API_BASE + '/api/floor');
+    const data = await res.json();
+    st.bench = data.bench || [];
+  } catch (e) {
+    console.warn('[workflow-builder] bench unavailable:', e);
+    st.bench = [];
+  }
+  st.benchLoaded = true;
 }
 
 // The schedule store is the single source of truth for cadence (spec Q4);
@@ -420,6 +540,7 @@ function _wfSyncNodeOwn(node, own) {
 function _wfRender() {
   const entry = openModals.get(WF_MODAL_ID);
   if (!entry || !entry._wf) return;
+  _wfClosePortPopover(); // its anchor port is about to be replaced
   const body = document.getElementById('wfb-body');
   if (!body) return;
   const st = entry._wf;
@@ -462,17 +583,11 @@ function _wfRenderBody(st) {
       ${triggerType === 'schedule' ? _wfRenderScheduleCadence(st) : ''}
     </div>
     <div class="wfb-builder">
-      <div class="wfb-palette">
-        <div class="wfb-palette-title">Drag onto canvas</div>
-        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'agent')"><span class="wfb-palette-dot"></span>Agent step</div>
-        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')"><span class="wfb-palette-dot"></span>Approval gate</div>
-        <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')"><span class="wfb-palette-dot"></span>Clayrune action</div>
-        <div class="wfb-palette-hint">Drag a step onto the canvas, then drag an output port to another step's input port to connect them and set the order. Click a connection to select it, Delete to remove.</div>
-      </div>
+      <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
         <div id="wfb-world" class="wfb-canvas-world">${nodesHtml}</div>
-        ${nodes.length ? '' : '<div class="wfb-canvas-empty">Drag a block from the left onto the canvas to start.</div>'}
+        ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag a port to connect &middot; + on a port adds &amp; wires the next step</div>'}
       </div>
     </div>
     ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}
@@ -480,6 +595,70 @@ function _wfRenderBody(st) {
       <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
       <button class="btn-sched-cancel" onclick="closeModalById('${WF_MODAL_ID}')">Close</button>
     </div>`;
+}
+
+// The palette is the Bench plus exactly two tools (UI brief §2). People are
+// listed first because they are the common case; the tools sit under a rule so
+// the eye lands on a face, not on a primitive.
+const WFB_PALETTE_PEOPLE_CAP = 8;
+
+function _wfRenderPalette(st) {
+  const bench = _wfBenchFiltered(st, st.paletteSearch);
+  // A search has already narrowed the list, so it shows every match; the
+  // unfiltered list caps and offers the rest behind "+ N more".
+  const shown = st.paletteSearch ? bench : bench.slice(0, WFB_PALETTE_PEOPLE_CAP);
+  const hidden = bench.length - shown.length;
+  const rows = shown.map(b => `<div class="wfb-palette-person"
+      onpointerdown="_wfPaletteDown(event,'person','${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
+      title="${esc(b.description || b.name)}">
+      <span class="wfb-palette-avatar">${_wfAvatarHTML(b, 28)}</span>
+      <span class="wfb-palette-person-info">
+        <span class="wfb-palette-person-name">${esc(b.display || b.name)}</span>
+        <span class="wfb-palette-person-role">${esc(b.name)}</span>
+      </span>
+    </div>`).join('');
+  const empty = st.benchLoaded
+    ? (st.paletteSearch ? 'No one matches.' : 'You have not hired anyone yet.')
+    : 'Loading the bench&hellip;';
+  return `
+    <div class="wfb-palette-title">People &middot; drag onto canvas</div>
+    <input class="wfb-palette-search" id="wfb-palette-search" placeholder="Search bench&hellip;"
+      value="${esc(st.paletteSearch || '')}" oninput="_wfPaletteSearch(this.value)">
+    <div class="wfb-palette-people">${rows || `<div class="wfb-palette-empty">${empty}</div>`}</div>
+    <button type="button" class="wfb-palette-more" onclick="_wfHireSomeone()"
+      >${hidden > 0 ? `+ ${hidden} more &middot; ` : ''}Hire someone new</button>
+    <div class="wfb-palette-divider"></div>
+    <div class="wfb-palette-tools-title">Tools</div>
+    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')">
+      <span class="wfb-palette-icon">&#9995;</span>
+      <span class="wfb-palette-block-info"><span>Approval gate</span>
+        <span class="wfb-palette-block-sub">a human decides</span></span>
+    </div>
+    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')">
+      <span class="wfb-palette-icon">&#9881;</span>
+      <span class="wfb-palette-block-info"><span>Action</span>
+        <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_LABELS).length} verbs &middot; no agent</span></span>
+    </div>
+    <div class="wfb-palette-hint">Drop a person on the canvas, or on a card to run after it. Every port's + adds and wires the next step.</div>`;
+}
+
+// Re-renders ONLY the palette: a keystroke in the search box must not rebuild
+// the canvas (that would blow away an unsynced prompt the user is typing in a
+// card, and reset the viewport mid-search).
+function _wfPaletteSearch(value) {
+  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  entry._wf.paletteSearch = value;
+  const box = document.getElementById('wfb-palette');
+  if (!box) return;
+  box.innerHTML = _wfRenderPalette(entry._wf);
+  const input = document.getElementById('wfb-palette-search');
+  if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+}
+
+// Claydo's character mode, the one creation flow (floor.js `floorHire`) — not
+// a second one. Guarded the same way: it is a cross-module global.
+function _wfHireSomeone() {
+  if (typeof window.floorHire === 'function') window.floorHire();
 }
 
 function _wfRenderNode(st, node) {
@@ -496,12 +675,26 @@ function _wfRenderNode(st, node) {
     return `<div class="wfb-port-row${p.when === 'otherwise' ? ' wfb-port-otherwise' : ''}${connected ? '' : ' wfb-port-unconnected'}">
       ${p.label ? `<span class="wfb-port-label">${esc(p.label)}</span>` : ''}
       <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(p.when || '')}" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(p.label || 'this step')}&rdquo;, run&hellip;"
+        onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(p.when || '')}')">&#43;</button>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
   }).join('');
+  // An agent card leads with WHO, not with a type label — the persona was
+  // chosen by the drag itself (UI brief §3), so the face is the identity and
+  // the step name is the subtitle it is referenced by in slots.
+  const person = node.type === 'agent' ? _wfPersonFromCharacter(st, node.character) : null;
+  const headHtml = node.type === 'agent'
+    ? `<span class="wfb-node-avatar">${_wfAvatarHTML(person, 22)}</span>
+       <span class="wfb-node-title">
+         <span class="wfb-node-persona">${esc(person ? (person.display || person.name) : 'No persona yet')}</span>
+         <span class="wfb-node-step-sep">&middot;</span>
+         <span class="wfb-node-step-name">${esc(node.name || '')}</span>
+       </span>`
+    : `<span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>`;
   return `<div class="wfb-node" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
-      <span class="wfb-node-type">${_wfTypeLabel(node.type)}</span>
+      ${headHtml}
       <button class="wfb-node-del" title="Delete step" onclick="_wfDeleteNode('${_wfJsStrEsc(node.name)}')">&#10005;</button>
     </div>
     <div class="wfb-node-own">${own}</div>
@@ -1075,12 +1268,18 @@ let _wfPlaceDrag = null;
 
 function _wfPointInRect(x, y, r) { return x >= r.left && x <= r.right && y >= r.top && y <= r.bottom; }
 
-function _wfPaletteDown(e, type) {
+// `type` is 'person' | 'approval' | 'action'. A person carries its bench
+// identity (scope + name) through the drag so the drop can build an agent step
+// with that persona already set — the whole point of the palette being the
+// Bench (UI brief §2).
+function _wfPaletteDown(e, type, scope, name) {
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPlaceDrag || _wfNodeDrag || _wfPan || _wfConnectDrag) return;
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
-    startX: e.clientX, startY: e.clientY, active: false, type, el: e.currentTarget, ghost: null, longPressTimer: null,
+    startX: e.clientX, startY: e.clientY, active: false, type,
+    scope: scope || '', name: name || '',
+    el: e.currentTarget, ghost: null, longPressTimer: null,
   };
   _wfPlaceDrag = st;
   if (st.pointerType === 'touch') {
@@ -1099,7 +1298,10 @@ function _wfPlaceActivate(st, x, y) {
   st.el.classList.add('wfb-palette-dragging');
   const ghost = document.createElement('div');
   ghost.className = 'wfb-place-ghost';
-  ghost.textContent = _wfTypeLabel(st.type);
+  ghost.textContent = st.type === 'person'
+    ? (((openModals.get(WF_MODAL_ID) || {})._wf
+        && (_wfBenchLookup(openModals.get(WF_MODAL_ID)._wf, st.scope, st.name) || {}).display) || st.name)
+    : _wfTypeLabel(st.type);
   ghost.style.left = x + 'px';
   ghost.style.top = y + 'px';
   document.body.appendChild(ghost);
@@ -1128,7 +1330,7 @@ function _wfPlaceUp(e) {
   if (st.active) {
     const vp = document.getElementById('wfb-canvas-viewport');
     if (vp && _wfPointInRect(e.clientX, e.clientY, vp.getBoundingClientRect())) {
-      _wfPlaceNodeAt(st.type, e.clientX, e.clientY, vp);
+      _wfPlaceNodeAt(st.type, e.clientX, e.clientY, vp, st.scope, st.name);
     }
   }
   _wfPlaceTeardown(st);
@@ -1156,16 +1358,74 @@ function _wfPlaceTeardown(st) {
   _wfPlaceDrag = null;
 }
 
-function _wfPlaceNodeAt(type, clientX, clientY, vp) {
+function _wfPlaceNodeAt(type, clientX, clientY, vp, scope, name) {
   const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
-  _wfSyncDomToModel(entry); // capture any typed edits elsewhere before this re-render
+  // Sync first: a drop re-renders, and the sync can RENAME the very card being
+  // dropped onto, so resolve the target's name only after it has run.
+  const renameMap = _wfSyncDomToModel(entry);
+  const st = entry._wf;
+
+  // Dropped ONTO an existing card = the same thing as that card's `+`: place
+  // after it and wire the edge (UI brief §4). Which port: the one actually
+  // under the pointer if there is one, else the card's first output port.
+  const under = document.elementFromPoint(clientX, clientY);
+  const cardEl = under && under.closest ? under.closest('.wfb-node') : null;
+  if (cardEl && cardEl.dataset.name) {
+    const fromName = renameMap[cardEl.dataset.name] || cardEl.dataset.name;
+    const portEl = under.closest('.wfb-port-out');
+    const fromNode = (st.def.nodes || []).find(n => n.name === fromName);
+    if (fromNode) {
+      const when = portEl ? (portEl.dataset.when || null) : ((_wfOutPorts(fromNode)[0] || {}).when || null);
+      _wfInsertAfter(entry, fromName, when, type, scope, name, { synced: true });
+      return;
+    }
+  }
+
   const rect = vp.getBoundingClientRect();
-  const v = entry._wf.viewport;
+  const v = st.viewport;
   const wx = (clientX - rect.left - v.x) / v.scale;
   const wy = (clientY - rect.top - v.y) / v.scale;
-  entry._wf.def.nodes = entry._wf.def.nodes || [];
-  entry._wf.def.nodes.push(_wfBlankNode(type, wx - 130, wy - 24));
+  const node = _wfMakeNode(st, type, scope, name, wx - 130, wy - 24);
+  st.def.nodes = (st.def.nodes || []).concat([node]);
   _wfRender();
+  if (node.type === 'agent') _wfFocusPrompt(node.name);
+}
+
+// Place a new node after `fromName`'s `when` port and wire the edge. The one
+// path every auto-place uses — the port `+` popover and drop-onto-card both
+// land here, so "added and wired" means one thing.
+//
+// No cycle check is needed: the node is brand new, so nothing can already
+// reach it. No slot-break check either — this only ADDS an edge and a node,
+// and `_wfFindBrokenSlotRefs` violations come from removing reachability.
+function _wfInsertAfter(entry, fromName, when, type, scope, name, opts) {
+  if (!(opts && opts.synced)) {
+    const renameMap = _wfSyncDomToModel(entry);
+    fromName = renameMap[fromName] || fromName;
+  }
+  const st = entry._wf;
+  const def = st.def;
+  const fromNode = (def.nodes || []).find(n => n.name === fromName);
+  if (!fromNode) return;
+  // Desktop places the new card to the right of its parent and stacks
+  // branches downward, one row per port (UI brief §5).
+  const idx = Math.max(0, _wfOutPorts(fromNode).findIndex(p => (p.when || null) === (when || null)));
+  const node = _wfMakeNode(st, type, scope, name, (fromNode.x || 0) + 320, (fromNode.y || 0) + idx * 150);
+  def.nodes = (def.nodes || []).concat([node]);
+  def.edges = (def.edges || []).concat([{ from: fromName, to: node.name, when: when || undefined }]);
+  _wfRender();
+  if (node.type === 'agent') _wfFocusPrompt(node.name);
+}
+
+// The prompt is the one place the author actually types (UI brief §2 — "prompt
+// focuses"), so a freshly-dropped person hands them the caret.
+function _wfFocusPrompt(nodeName) {
+  const el = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"] .wfb-prompt`);
+  // preventScroll is load-bearing, not a nicety: the modal body is an
+  // overflow:auto scroller, so a plain focus() scrolls the freshly-dropped
+  // card into view and drags the whole canvas out from under the pointer —
+  // the card you just placed jumps, and the next drop lands somewhere else.
+  if (el) el.focus({ preventScroll: true });
 }
 
 // ── Drag to move an existing node ─────────────────────────────────────────────
@@ -1352,6 +1612,113 @@ function _wfRedrawEdges() {
   svg.innerHTML = html;
 }
 
+// ── The port `+` popover: "After <label>, run…" ─────────────────────────────
+//
+// The 80% path (UI brief §4): every output port carries a `+` that offers what
+// can come next — an Action, an Approval gate, or a PERSON — and auto-places
+// and wires the pick. Drawing an arrow by hand is for REWIRING, never a
+// requirement, so a whole pipeline can be built without one.
+//
+// Lives on <body>, not inside the modal: the modal body is an overflow:auto
+// scroller and a popover anchored to a port near its edge would be clipped by
+// it. Position is therefore fixed/screen-space, clamped into the viewport.
+
+let _wfPortPopover = null; // { fromNode, when, search, anchorX, anchorY }
+
+function _wfPortPlusClick(e, fromNode, when) {
+  e.stopPropagation();
+  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const already = _wfPortPopover
+    && _wfPortPopover.fromNode === fromNode
+    && (_wfPortPopover.when || '') === (when || '');
+  const rect = e.currentTarget.getBoundingClientRect();
+  _wfClosePortPopover();
+  if (already) return; // a second click on the same + closes it
+  _wfPortPopover = { fromNode, when: when || null, search: '', anchorX: rect.right, anchorY: rect.top };
+  _wfRenderPortPopover();
+}
+
+function _wfPopoverPeopleHTML(st, search) {
+  const people = _wfBenchFiltered(st, search);
+  if (!people.length) return '<div class="wfb-popover-empty">No one matches.</div>';
+  return people.map(b => `<div class="wfb-popover-person"
+    onclick="_wfPopoverPickPerson('${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')">
+    <span class="wfb-popover-avatar">${_wfAvatarHTML(b, 20)}</span>
+    <span class="wfb-popover-person-name">${esc(b.display || b.name)}</span>
+  </div>`).join('');
+}
+
+function _wfRenderPortPopover() {
+  const p = _wfPortPopover; if (!p) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const box = document.createElement('div');
+  box.className = 'wfb-port-popover';
+  box.id = 'wfb-port-popover';
+  box.innerHTML = `
+    <div class="wfb-popover-title">After <em>${esc(p.when || 'this step')}</em>, run&hellip;</div>
+    <div class="wfb-popover-row" onclick="_wfPopoverPick('action')">
+      <span class="wfb-popover-icon">&#9881;</span> Action <span class="wfb-popover-caret">&#9662;</span></div>
+    <div class="wfb-popover-row" onclick="_wfPopoverPick('approval')">
+      <span class="wfb-popover-icon">&#9995;</span> Approval gate</div>
+    <div class="wfb-popover-people-title">People</div>
+    <input class="wfb-popover-search" placeholder="Search bench&hellip;" value="${esc(p.search || '')}"
+      oninput="_wfPopoverSearch(this.value)">
+    <div class="wfb-popover-people">${_wfPopoverPeopleHTML(entry._wf, p.search)}</div>`;
+  document.body.appendChild(box);
+  // Clamp into the viewport AFTER layout, so the measured size is real.
+  let left = p.anchorX + 8;
+  let top = p.anchorY - 8;
+  if (left + box.offsetWidth > window.innerWidth - 8) left = Math.max(8, window.innerWidth - box.offsetWidth - 8);
+  if (top + box.offsetHeight > window.innerHeight - 8) top = Math.max(8, window.innerHeight - box.offsetHeight - 8);
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  // Deferred: this handler is installed during a click that is still
+  // propagating, and would otherwise close the popover it just opened.
+  setTimeout(() => document.addEventListener('pointerdown', _wfPopoverOutsideDown, true), 0);
+  const input = box.querySelector('.wfb-popover-search');
+  if (input) input.focus();
+}
+
+function _wfClosePortPopover() {
+  const el = document.getElementById('wfb-port-popover');
+  if (el) el.remove();
+  document.removeEventListener('pointerdown', _wfPopoverOutsideDown, true);
+  _wfPortPopover = null;
+}
+
+function _wfPopoverOutsideDown(e) {
+  const el = document.getElementById('wfb-port-popover');
+  if (el && !el.contains(e.target)) _wfClosePortPopover();
+}
+
+// Only the people list is rebuilt, so the caret stays where it is as you type.
+function _wfPopoverSearch(value) {
+  if (!_wfPortPopover) return;
+  _wfPortPopover.search = value;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry || !entry._wf) return;
+  const box = document.getElementById('wfb-port-popover');
+  const list = box && box.querySelector('.wfb-popover-people');
+  if (list) list.innerHTML = _wfPopoverPeopleHTML(entry._wf, value);
+}
+
+function _wfPopoverPick(type) {
+  const p = _wfPortPopover; if (!p) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  _wfClosePortPopover();
+  _wfInsertAfter(entry, p.fromNode, p.when, type, null, null);
+}
+
+function _wfPopoverPickPerson(scope, name) {
+  const p = _wfPortPopover; if (!p) return;
+  const entry = openModals.get(WF_MODAL_ID); if (!entry) return;
+  _wfClosePortPopover();
+  _wfInsertAfter(entry, p.fromNode, p.when, 'person', scope, name);
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _wfPortPopover) _wfClosePortPopover();
+});
+
 // ── Save ──────────────────────────────────────────────────────────────────────
 
 async function _wfSave() {
@@ -1436,6 +1803,12 @@ async function _wfSaveLinkedSchedule(st) {
 window.openWorkflowBuilder = openWorkflowBuilder;
 window._wfSetTriggerType = _wfSetTriggerType;
 window._wfPaletteDown = _wfPaletteDown;
+window._wfPaletteSearch = _wfPaletteSearch;
+window._wfHireSomeone = _wfHireSomeone;
+window._wfPortPlusClick = _wfPortPlusClick;
+window._wfPopoverPick = _wfPopoverPick;
+window._wfPopoverPickPerson = _wfPopoverPickPerson;
+window._wfPopoverSearch = _wfPopoverSearch;
 window._wfViewportDown = _wfViewportDown;
 window._wfNodeDragDown = _wfNodeDragDown;
 window._wfPortDown = _wfPortDown;

@@ -47,11 +47,44 @@ function fixtureProject(id, name) {
     distiller_skip_errors: true,
   };
 }
-const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Workflow Smoke')]);
+const PROJECTS_JSON = JSON.stringify([
+  fixtureProject('smoke_other', 'Some Other Project'),
+  fixtureProject(PID, 'Workflow Smoke'),
+]);
 const CHARACTERS_JSON = JSON.stringify([
   { name: 'builder', display_name: 'builder', agent_name: 'Tobin', scope: 'global',
-    description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
+    avatar: 'fig:smith', description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
+  { name: 'homed', display_name: 'homed', agent_name: 'Homer', scope: 'project',
+    avatar: '', description: '', engine: { provider: 'claude', model: 'claude-sonnet-5' } },
 ]);
+
+// The palette is the BENCH (UI brief §2), so the builder reads /api/floor —
+// the same payload the Floor's bench renders. The faces below are the
+// avatar-resolution cases Ron called out: a real figure, a real emoji, a
+// genuinely faceless type, and a `??` mangled by a Windows console codepage
+// (which must fall THROUGH to the initial, never be echoed as text).
+const BENCH = [
+  { name: 'builder', scope: 'global', display: 'Tobin', avatar: 'fig:smith',
+    description: 'builds things', skills: [], provider: 'claude', model: '', effort: '',
+    project_id: '', project_name: '', rooms: [] },
+  { name: 'code-reviewer', scope: 'global', display: 'Fenn', avatar: '\u{1F50D}',
+    description: 'reviews diffs', skills: [], provider: 'claude', model: '', effort: '',
+    project_id: '', project_name: '', rooms: [] },
+  { name: 'faceless', scope: 'global', display: 'Nomask', avatar: '',
+    description: 'has no face at all', skills: [], provider: 'claude', model: '', effort: '',
+    project_id: '', project_name: '', rooms: [] },
+  { name: 'mangled', scope: 'global', display: 'Qmark', avatar: '??',
+    description: 'face flattened by a console codepage', skills: [], provider: 'claude', model: '', effort: '',
+    project_id: '', project_name: '', rooms: [] },
+  { name: 'homed', scope: 'project', display: 'Homer', avatar: '',
+    description: 'lives in one project', skills: [], provider: 'claude', model: '', effort: '',
+    project_id: PID, project_name: 'Workflow Smoke', rooms: [] },
+];
+const FLOOR_JSON = JSON.stringify({ rooms: [], quiet: [], bench: BENCH, counts: {} });
+// 1x1 transparent PNG — figure avatars are real <img> requests now.
+const PNG_1PX = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==',
+  'base64');
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -71,17 +104,63 @@ async function setValue(page, selector, value) {
 // (Playwright's page.mouse.* dispatches real pointer events, unlike
 // page.dragAndDrop which is HTML5 DnD — the wrong gesture family per the
 // spec's explicit "never HTML5 drag-and-drop" precedent, floor.js).
-async function dragPaletteBlockTo(page, blockText, targetX, targetY) {
-  const block = await page.evaluateHandle((text) => {
-    return [...document.querySelectorAll('.wfb-palette-block')].find(b => b.textContent.trim() === text);
-  }, blockText);
-  const box = await block.asElement().boundingBox();
+// `target` is {x, y}, or a function returning one — resolved AFTER the row is
+// scrolled into view, because that scroll can move the canvas too.
+//
+// The palette is its own overflow:auto column and the tool tiles sit below the
+// people, so with a real-sized bench they start below the fold. boundingBox()
+// still reports coordinates for a row scrolled out of its container, and a
+// mouse.down() there lands on whatever is actually painted at that point —
+// the drag silently never starts. Scroll first, measure second.
+async function dragFromPalette(page, handle, target) {
+  const el = handle.asElement();
+  if (!el) throw new Error('dragFromPalette: palette row not found');
+  await el.scrollIntoViewIfNeeded();
+  const { x: targetX, y: targetY } = typeof target === 'function' ? await target() : target;
+  const box = await el.boundingBox();
   await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
   await page.mouse.down();
   await page.mouse.move(box.x + box.width / 2 + 40, box.y + box.height / 2 + 40, { steps: 4 }); // clear the 8px slop
   await page.mouse.move(targetX, targetY, { steps: 8 });
   await page.mouse.up();
   await page.waitForTimeout(120);
+}
+
+// A PERSON row — the palette is the Bench, so this is how an agent step is
+// created now (there is no generic "Agent step" tile any more).
+async function dragPalettePersonTo(page, display, targetX, targetY) {
+  const handle = await page.evaluateHandle((name) => [...document.querySelectorAll('.wfb-palette-person')]
+    .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === name), display);
+  return dragFromPalette(page, handle, targetY === undefined ? targetX : { x: targetX, y: targetY });
+}
+
+// One of the two TOOL tiles ('Approval gate' / 'Action').
+async function dragPaletteToolTo(page, label, targetX, targetY) {
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-palette-block')]
+    .find(b => b.textContent.includes(text)), label);
+  return dragFromPalette(page, handle, targetY === undefined ? targetX : { x: targetX, y: targetY });
+}
+
+// Free canvas, measured NOW. Both halves matter: the modal body is a scroller
+// and Playwright scrolls elements into view on click, so a box captured
+// earlier in the run has moved; and cards accumulate, so a fixed offset
+// eventually lands on one (which would silently exercise drop-onto-card
+// instead of a plain placement).
+async function emptyCanvasPoint(page) {
+  const pt = await page.evaluate(() => {
+    const vp = document.getElementById('wfb-canvas-viewport');
+    if (!vp) return null;
+    const r = vp.getBoundingClientRect();
+    for (let y = r.bottom - 30; y > r.top + 25; y -= 20) {
+      for (let x = r.right - 30; x > r.left + 25; x -= 20) {
+        const el = document.elementFromPoint(x, y);
+        if (el && vp.contains(el) && !el.closest('.wfb-node')) return { x, y };
+      }
+    }
+    return null;
+  });
+  if (!pt) throw new Error('emptyCanvasPoint: no free canvas left to drop onto');
+  return pt;
 }
 
 async function portCenter(page, selector) {
@@ -122,6 +201,8 @@ try {
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts.push(body);
@@ -147,11 +228,67 @@ try {
   await page.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
   ok('builder modal opened blank (new workflow) — canvas viewport present');
 
+  // ── The palette IS the Bench (UI brief §2) ────────────────────────────────
+  await page.waitForSelector('.wfb-palette-person', { timeout: 5000 });
+  const paletteNames = await page.$$eval('.wfb-palette-person-name', els => els.map(e => e.textContent));
+  (paletteNames.length === 5 && paletteNames[0] === 'Tobin')
+    ? ok(`the palette lists the bench roster as people: ${JSON.stringify(paletteNames)}`)
+    : fail(`expected the 5 bench people in the palette, got ${JSON.stringify(paletteNames)}`);
+  const hasGenericAgentTile = await page.$$eval('.wfb-palette-block',
+    els => els.some(b => /agent step/i.test(b.textContent)));
+  hasGenericAgentTile ? fail('a generic "Agent step" tile is still in the palette — drag PEOPLE, not primitives')
+                      : ok('no generic "Agent step" tile — the only way to add an agent step is to drag a person');
+  const toolTiles = await page.$$eval('.wfb-palette-block', els => els.map(b => b.textContent.replace(/\s+/g, ' ').trim()));
+  (toolTiles.length === 2 && /Approval gate/.test(toolTiles[0]) && /Action/.test(toolTiles[1]))
+    ? ok(`exactly two tools beside the people: ${JSON.stringify(toolTiles)}`)
+    : fail(`expected exactly the Approval gate + Action tools, got ${JSON.stringify(toolTiles)}`);
+
+  // Faces resolve the Floor's way: a real figure image, a real emoji, and the
+  // initial mark ONLY where a character genuinely has no usable avatar.
+  const faces = await page.$$eval('.wfb-palette-person', rows => rows.map(r => {
+    const img = r.querySelector('img.av-fig');
+    return {
+      name: (r.querySelector('.wfb-palette-person-name') || {}).textContent,
+      fig: !!img,
+      figSrc: img ? img.getAttribute('src') : '',
+      emoji: !!r.querySelector('.av-emoji'),
+      initial: (r.querySelector('.wfb-face-initial') || {}).textContent || '',
+      text: r.textContent,
+    };
+  }));
+  const fTobin = faces.find(f => f.name === 'Tobin') || {};
+  (fTobin.fig && /\/api\/avatars\/smith$/.test(fTobin.figSrc || ''))
+    ? ok(`a fig: persona draws its REAL avatar image (${fTobin.figSrc}), not a letter bubble`)
+    : fail(`expected Tobin's row to render the fig:smith image, got ${JSON.stringify(fTobin)}`);
+  const fFenn = faces.find(f => f.name === 'Fenn') || {};
+  (fFenn.emoji && !fFenn.initial)
+    ? ok('an emoji persona draws the emoji face, not a letter bubble')
+    : fail(`expected Fenn's row to render its emoji avatar, got ${JSON.stringify(fFenn)}`);
+  const fNone = faces.find(f => f.name === 'Nomask') || {};
+  (!fNone.fig && !fNone.emoji && fNone.initial === 'N')
+    ? ok('a genuinely faceless persona falls back to its initial — the ONLY case that does')
+    : fail(`expected the faceless persona to fall back to initial "N", got ${JSON.stringify(fNone)}`);
+  // The Windows-console case: `??` is not a face, and must never reach the DOM
+  // as text (mc/characters.clean_avatar's own reason for existing).
+  const fBad = faces.find(f => f.name === 'Qmark') || {};
+  (fBad.initial === 'Q' && !(fBad.text || '').includes('??'))
+    ? ok('an unrenderable avatar ("??") falls THROUGH to the initial and is never echoed as text')
+    : fail(`an unusable avatar leaked into the DOM or skipped the fallback: ${JSON.stringify(fBad)}`);
+
+  await setValue(page, '.wfb-palette-search', 'fen');
+  await page.waitForTimeout(80);
+  const filtered = await page.$$eval('.wfb-palette-person-name', els => els.map(e => e.textContent));
+  (filtered.length === 1 && filtered[0] === 'Fenn')
+    ? ok('the bench search filters the palette to matching people')
+    : fail(`expected the search to narrow the palette to Fenn, got ${JSON.stringify(filtered)}`);
+  await setValue(page, '.wfb-palette-search', '');
+  await page.waitForTimeout(80);
+
   // ── Drag a palette block onto the canvas ─────────────────────────────────
   const vpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPaletteBlockTo(page, 'Agent step', vpBox.x + 140, vpBox.y + 120);
+  await dragPalettePersonTo(page, 'Tobin', vpBox.x + 140, vpBox.y + 120);
   let nodeCount = await page.$$eval('.wfb-node', els => els.length);
-  nodeCount === 1 ? ok('drag from palette placed one node on the canvas')
+  nodeCount === 1 ? ok('dragging a PERSON from the palette placed one agent step on the canvas')
                   : fail(`expected 1 node after the palette drag, got ${nodeCount}`);
   // Field edits sync into the model (and `data-name` with them) only at the
   // moment of the NEXT structural action, not on every keystroke (file
@@ -163,10 +300,26 @@ try {
   await setValue(page, '.wfb-node .wfb-name', 'triage');
   await setValue(page, '.wfb-node .wfb-prompt', 'Decide whether this is worth drafting.');
 
-  await dragPaletteBlockTo(page, 'Agent step', vpBox.x + 460, vpBox.y + 120);
+  await dragPalettePersonTo(page, 'Fenn', vpBox.x + 460, vpBox.y + 120);
   nodeCount = await page.$$eval('.wfb-node', els => els.length);
   nodeCount === 2 ? ok('a second palette drag placed a second, independent node')
                   : fail(`expected 2 nodes, got ${nodeCount}`);
+  // The whole point of dragging a person: the persona is already chosen, and
+  // the card leads with their face rather than a generic type label.
+  const preset = await page.evaluate(() => {
+    const n = openModals.get('__workflow_builder')._wf.def.nodes[0];
+    return { character: n.character, project_id: n.project_id };
+  });
+  preset.character === 'global:builder'
+    ? ok(`the dropped person arrived with its persona already set (character=${preset.character}) — no "pick a persona" step`)
+    : fail(`expected character "global:builder" on the dropped node, got ${JSON.stringify(preset)}`);
+  const headFace = await page.$eval('.wfb-node .wfb-node-head', el => ({
+    fig: !!el.querySelector('img.av-fig'),
+    persona: (el.querySelector('.wfb-node-persona') || {}).textContent || '',
+  }));
+  (headFace.fig && headFace.persona === 'Tobin')
+    ? ok('the agent card header shows the real face and name of the persona dragged in')
+    : fail(`expected the card header to lead with Tobin's avatar, got ${JSON.stringify(headFace)}`);
   // Placing the second block synced the model (per `_wfPlaceNodeAt`), so the
   // first node's typed rename has already landed and `data-name` reflects it.
   const renamedOk = await page.$eval(`.wfb-node[data-name="triage"]`, () => true).catch(() => false);
@@ -215,13 +368,74 @@ try {
   breakToasts.some(t => /steps\.triage/.test(t)) ? ok(`a toast named the broken reference: "${breakToasts.find(t => /steps\.triage/.test(t))}"`)
                                                   : fail(`expected a toast naming {{steps.triage...}}, got ${JSON.stringify(breakToasts)}`);
 
+
+  // ── The `+` on a port: "After <label>, run…" auto-places AND wires, so a
+  // pipeline can be built without drawing a single arrow (UI brief §4). ─────
+  const nodesBeforePlus = await page.$$eval('.wfb-node', els => els.length);
+  const edgesBeforePlus = await page.$$eval('.wfb-edge-path', els => els.length);
+  await page.click('.wfb-node[data-name="draft"] .wfb-port-plus');
+  await page.waitForSelector('#wfb-port-popover', { timeout: 3000 });
+  ok('clicking a port + opens the "After …, run…" popover');
+  const popoverOffers = await page.$$eval('#wfb-port-popover .wfb-popover-row',
+    els => els.map(e => e.textContent.replace(/\s+/g, ' ').trim()));
+  const popoverPeople = await page.$$eval('#wfb-port-popover .wfb-popover-person-name', els => els.map(e => e.textContent));
+  (popoverOffers.length === 2 && /Action/.test(popoverOffers[0]) && /Approval gate/.test(popoverOffers[1]) && popoverPeople.length === 5)
+    ? ok(`the popover offers Action, Approval gate and ${popoverPeople.length} people`)
+    : fail(`popover contents wrong: rows=${JSON.stringify(popoverOffers)} people=${JSON.stringify(popoverPeople)}`);
+  const popoverFaces = await page.$$eval('#wfb-port-popover .wfb-popover-person',
+    rows => ({ figs: rows.filter(r => r.querySelector('img.av-fig')).length,
+               initials: rows.filter(r => r.querySelector('.wfb-face-initial')).length }));
+  (popoverFaces.figs === 1 && popoverFaces.initials === 3)
+    ? ok('popover people carry the same resolved faces as the palette (1 figure image, 3 initial fallbacks)')
+    : fail(`popover faces did not resolve like the palette: ${JSON.stringify(popoverFaces)}`);
+
+  const popoverRows = await page.$$('#wfb-port-popover .wfb-popover-row');
+  await popoverRows[1].click(); // [0] Action, [1] Approval gate
+  await page.waitForTimeout(150);
+  const nodesAfterPlus = await page.$$eval('.wfb-node', els => els.length);
+  const edgesAfterPlus = await page.$$eval('.wfb-edge-path', els => els.length);
+  (nodesAfterPlus === nodesBeforePlus + 1 && edgesAfterPlus === edgesBeforePlus + 1)
+    ? ok('picking from the + popover placed the new card AND wired the edge — no arrow drawn by hand')
+    : fail(`expected +1 node and +1 edge from the popover pick, got nodes ${nodesBeforePlus}->${nodesAfterPlus}, edges ${edgesBeforePlus}->${edgesAfterPlus}`);
+  const wiredFromDraft = await page.evaluate(() => {
+    const def = openModals.get('__workflow_builder')._wf.def;
+    const e = def.edges[def.edges.length - 1];
+    return { from: e.from, toType: (def.nodes.find(n => n.name === e.to) || {}).type };
+  });
+  (wiredFromDraft.from === 'draft' && wiredFromDraft.toType === 'approval')
+    ? ok('the new edge runs from the port that was clicked to the approval gate that was picked')
+    : fail(`expected an edge draft -> approval, got ${JSON.stringify(wiredFromDraft)}`);
+  await page.evaluate(() => { document.getElementById('wfb-port-popover')?.remove(); });
+
+  // ── Dropping a person ONTO a card = the same thing as that card's + ──────
+  const nodesBeforeDrop = await page.$$eval('.wfb-node', els => els.length);
+  const edgesBeforeDrop = await page.$$eval('.wfb-edge-path', els => els.length);
+  const triageBox = await (await page.$('.wfb-node[data-name="triage"] .wfb-node-head')).boundingBox();
+  await dragPalettePersonTo(page, 'Homer', triageBox.x + triageBox.width / 2, triageBox.y + triageBox.height / 2);
+  const nodesAfterDrop = await page.$$eval('.wfb-node', els => els.length);
+  const edgesAfterDrop = await page.$$eval('.wfb-edge-path', els => els.length);
+  (nodesAfterDrop === nodesBeforeDrop + 1 && edgesAfterDrop === edgesBeforeDrop + 1)
+    ? ok('dropping a person onto an existing card placed it after that card and wired the edge')
+    : fail(`expected +1 node and +1 edge from drop-onto-card, got nodes ${nodesBeforeDrop}->${nodesAfterDrop}, edges ${edgesBeforeDrop}->${edgesAfterDrop}`);
+  // Brief §8c rule 1: a dropped person defaults its project to that persona's
+  // HOME ROOM, not to whatever project happens to be first in the list.
+  const homed = await page.evaluate(() => {
+    const def = openModals.get('__workflow_builder')._wf.def;
+    return def.nodes.find(n => n.character === 'project:homed') || null;
+  });
+  (homed && homed.project_id === 'smoke_wf')
+    ? ok(`a project-scoped persona defaulted to its home room (project_id=${homed.project_id}), not the first project in the list`)
+    : fail(`expected the dropped persona to default to its home room smoke_wf, got ${JSON.stringify(homed)}`);
+
   // ── A Clayrune action block, dragged in separately (not wired to
   // anything) — exercises the third palette block + the unconnected-port
   // "stop stub" render path (R2-D6). ───────────────────────────────────────
-  await dragPaletteBlockTo(page, 'Clayrune action', vpBox.x + 300, vpBox.y + 320);
+  const nodesBeforeAction = await page.$$eval('.wfb-node', els => els.length);
+  await dragPaletteToolTo(page, 'Action', () => emptyCanvasPoint(page));
   nodeCount = await page.$$eval('.wfb-node', els => els.length);
-  nodeCount === 3 ? ok('Clayrune action block placed from the palette')
-                  : fail(`expected 3 nodes after placing the action block, got ${nodeCount}`);
+  nodeCount === nodesBeforeAction + 1
+    ? ok('the Action tool tile placed an action node from the palette')
+    : fail(`expected one more node after placing the action block, got ${nodesBeforeAction} -> ${nodeCount}`);
   const stubCount = await page.$$eval('.wfb-port-row.wfb-port-unconnected', els => els.length);
   stubCount > 0 ? ok(`${stubCount} unconnected port(s) render a stop stub`)
                 : fail('expected at least one unconnected port to render a stop stub');
@@ -267,6 +481,8 @@ try {
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     return route.abort();
   });
   await mpage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -301,6 +517,8 @@ try {
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'POST') {
       const body = JSON.parse(req.postData() || '{}');
       workflowPosts2.push(body);
@@ -315,7 +533,7 @@ try {
   await page2.evaluate(() => { window.openWorkflowBuilder(); });
   await page2.waitForSelector('#wfb-canvas-viewport', { timeout: 5000 });
   const vpBox2 = await (await page2.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPaletteBlockTo(page2, 'Agent step', vpBox2.x + 140, vpBox2.y + 120);
+  await dragPalettePersonTo(page2, 'Tobin', vpBox2.x + 140, vpBox2.y + 120);
   await setValue(page2, '.wfb-node .wfb-name', 'harvest-triage');
   await setValue(page2, '.wfb-node .wfb-prompt', 'Score the signals.');
   await setValue(page2, '#wfb-name', 'Smoke test workflow');
@@ -366,6 +584,8 @@ try {
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
     if (path === '/api/workflows' && req.method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(savedWorkflow3 ? [savedWorkflow3] : []) });
     }
@@ -401,7 +621,7 @@ try {
 
   await setValue(page3, '#wfb-name', 'Cadence smoke workflow');
   const vpBox3 = await (await page3.$('#wfb-canvas-viewport')).boundingBox();
-  await dragPaletteBlockTo(page3, 'Agent step', vpBox3.x + 140, vpBox3.y + 120);
+  await dragPalettePersonTo(page3, 'Tobin', vpBox3.x + 140, vpBox3.y + 120);
   await setValue(page3, '.wfb-node .wfb-name', 'step-one');
   await setValue(page3, '.wfb-node .wfb-prompt', 'Do the thing.');
 
@@ -496,7 +716,7 @@ try {
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — palette drag-to-place, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form (type switching, weekly day-picking, empty-day guard, save/reopen round-trip) all behave correctly.'
+    ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);

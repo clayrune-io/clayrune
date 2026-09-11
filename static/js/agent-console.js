@@ -574,12 +574,12 @@ function _wfRenderClayruneSection(projectId, list) {
         <div class="wfb-list-row-name">${esc(w.name || 'Untitled workflow')}</div>
         ${w.description ? `<div class="wfb-list-row-desc" title="${esc(w.description)}">${esc(w.description)}</div>` : ''}
       </div>
-      <button class="btn-header-action" style="padding:3px 10px;font-size:11px" onclick="openWorkflowBuilder('${esc(w.id)}')">Edit</button>
+      <button class="btn-header-action" style="padding:3px 10px;font-size:11px" onclick="openWorkflowBuilder('${esc(w.id)}','${esc(projectId)}')">Edit</button>
     </div>`).join('');
   return `<div class="card-section" style="margin-bottom:14px">
     <div class="section-title" style="display:flex;justify-content:space-between;align-items:center;gap:8px">
       <span>Workflows</span>
-      <button class="btn-add" style="padding:5px 12px;font-size:11px" onclick="openWorkflowBuilder()">+ New Workflow</button>
+      <button class="btn-add" style="padding:5px 12px;font-size:11px" onclick="openWorkflowBuilder(null,'${esc(projectId)}')">+ New Workflow</button>
     </div>
     ${rows || '<div style="color:var(--text-faint);font-style:italic;font-size:12px;padding:4px 0 2px">No workflows involve this project yet.</div>'}
   </div>`;

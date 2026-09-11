@@ -8329,19 +8329,58 @@
     display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; margin-top: 4px;
   }
   .wfb-palette {
-    width: 172px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
+    width: 200px; flex-shrink: 0; background: var(--surface); border-right: 1px solid var(--border);
     padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
   }
-  .wfb-palette-title {
+  .wfb-palette-title, .wfb-palette-tools-title {
     font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.5px;
     text-transform: uppercase; margin-bottom: 2px;
   }
+  .wfb-palette-tools-title { margin-top: 4px; }
+  .wfb-palette-search {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 12px; padding: 6px 9px; border-radius: 6px; outline: none;
+    box-sizing: border-box;
+  }
+  .wfb-palette-search:focus { border-color: var(--accent); }
+  /* ── People — the palette IS the Bench (MC-871 UI brief §2): dragging a
+     person onto the canvas creates an agent step with that persona already
+     set, never a bare "pick a persona later" placeholder. ── */
+  .wfb-palette-people { display: flex; flex-direction: column; gap: 4px; }
+  .wfb-palette-person {
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 6px 8px;
+    display: flex; align-items: center; gap: 8px; cursor: grab; user-select: none; touch-action: pan-y;
+  }
+  .wfb-palette-person.wfb-palette-dragging { cursor: grabbing; touch-action: none; opacity: 0.5; }
+  .wfb-palette-person-info { display: flex; flex-direction: column; min-width: 0; }
+  .wfb-palette-person-name { font-size: 12px; font-weight: 600; color: var(--text); }
+  .wfb-palette-person-role {
+    font-size: 10px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wfb-palette-empty { font-size: 11px; color: var(--text-faint); font-style: italic; padding: 4px 2px; }
+  /* Faces come from `avatarHTML` (the Floor's own resolution). This is only
+     the fallback for a character that genuinely has no usable avatar — never
+     the default, and never the raw unrenderable string. */
+  .wfb-face-initial {
+    display: inline-flex; align-items: center; justify-content: center; border-radius: 50%;
+    background: var(--surface2, var(--surface)); border: 1px solid var(--border);
+    color: var(--text-dim, var(--text-faint)); font-weight: 700; flex-shrink: 0; line-height: 1;
+  }
+  .wfb-palette-more {
+    background: transparent; border: none; color: var(--accent); font-size: 11px; font-weight: 600;
+    text-align: left; padding: 2px; cursor: pointer;
+  }
+  .wfb-palette-more:hover { text-decoration: underline; }
+  .wfb-palette-divider { border-top: 1px solid var(--border); margin: 2px 0; }
   .wfb-palette-block {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 10px 12px;
+    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
     font-size: 12px; font-weight: 600; color: var(--text); cursor: grab; user-select: none;
     touch-action: pan-y; display: flex; align-items: center; gap: 8px;
   }
   .wfb-palette-block.wfb-palette-dragging { cursor: grabbing; touch-action: none; opacity: 0.5; }
+  .wfb-palette-icon { font-size: 14px; flex-shrink: 0; }
+  .wfb-palette-block-info { display: flex; flex-direction: column; }
+  .wfb-palette-block-sub { font-size: 9.5px; font-weight: 500; color: var(--text-faint); text-transform: none; }
   .wfb-palette-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
   .wfb-palette-hint { font-size: 10.5px; color: var(--text-faint); line-height: 1.4; margin-top: 4px; }
   .wfb-place-ghost {
@@ -8378,7 +8417,16 @@
   }
   .wfb-node.wfb-node-dragging .wfb-node-head { cursor: grabbing; touch-action: none; }
   .wfb-node-type { font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); flex: 1; }
-  .wfb-node-del { background: transparent; border: none; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px; }
+  /* Agent-step header (UI brief §3): avatar + persona name, not a generic
+     type label — the card shows WHO was dragged onto the canvas. */
+  .wfb-node-avatar { flex-shrink: 0; line-height: 0; }
+  .wfb-node-title { flex: 1; min-width: 0; display: flex; align-items: baseline; gap: 4px; overflow: hidden; }
+  .wfb-node-persona { font-size: 12px; font-weight: 700; color: var(--text); white-space: nowrap; }
+  .wfb-node-step-sep { color: var(--text-faint); font-size: 10px; }
+  .wfb-node-step-name {
+    font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .wfb-node-del { background: transparent; border: none; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
   .wfb-node-del:hover { color: var(--red-text); }
   .wfb-node-own { padding: 8px 12px 0; }
 
@@ -8405,6 +8453,48 @@
      a dashed stub + a stop cap, not just an empty socket. */
   .wfb-port-stub { width: 14px; height: 0; border-top: 2px dashed var(--text-faint); position: relative; margin-right: -6px; }
   .wfb-port-stub::after { content: ''; position: absolute; right: -3px; top: -3px; width: 6px; height: 6px; background: var(--text-faint); }
+
+  /* The "+" on every output port (UI brief §4): the 80% path — no arrow ever
+     drawn by hand. Small and always present (not hover-only — "hover/tap"
+     per the brief, and a hover-only control is undiscoverable on touch). */
+  .wfb-port-plus {
+    width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border);
+    background: var(--surface); color: var(--text-faint); font-size: 11px; line-height: 1;
+    display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; flex-shrink: 0;
+  }
+  .wfb-port-plus:hover { border-color: var(--accent); color: var(--accent); }
+
+  /* The "After <label>, run…" popover — a fixed-position element appended to
+     <body> (not the modal), so it is never clipped by the modal's own
+     overflow:auto scroller. */
+  .wfb-port-popover {
+    position: fixed; z-index: 100000; width: 200px; background: var(--surface3, var(--surface));
+    border: 1px solid var(--border2, var(--border)); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    padding: 8px; font-family: 'Inter', sans-serif;
+  }
+  .wfb-popover-title { font-size: 11px; color: var(--text-faint); margin-bottom: 6px; }
+  .wfb-popover-title em { color: var(--text); font-style: normal; font-weight: 600; }
+  .wfb-popover-row {
+    display: flex; align-items: center; gap: 6px; padding: 6px 6px; border-radius: 6px; cursor: pointer;
+    font-size: 12px; font-weight: 600; color: var(--text);
+  }
+  .wfb-popover-row:hover { background: var(--bg); }
+  .wfb-popover-caret { margin-left: auto; color: var(--text-faint); font-size: 9px; }
+  .wfb-popover-people-title {
+    font-size: 9.5px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.4px; text-transform: uppercase;
+    margin: 6px 0 4px; border-top: 1px solid var(--border); padding-top: 6px;
+  }
+  .wfb-popover-search {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
+    font-family: inherit; font-size: 12px; padding: 5px 8px; border-radius: 6px; outline: none;
+    box-sizing: border-box; margin-bottom: 4px;
+  }
+  .wfb-popover-people { max-height: 180px; overflow-y: auto; display: flex; flex-direction: column; gap: 2px; }
+  .wfb-popover-person {
+    display: flex; align-items: center; gap: 6px; padding: 5px 6px; border-radius: 6px; cursor: pointer; font-size: 12px;
+  }
+  .wfb-popover-person:hover { background: var(--bg); }
+  .wfb-popover-empty { font-size: 11px; color: var(--text-faint); font-style: italic; padding: 4px 6px; }
 
   .wfb-add-btn {
     padding: 5px 11px; font-size: 11px; font-weight: 600; border-radius: 5px;
@@ -8455,8 +8545,11 @@
       width: auto; flex-direction: row; border-right: none; border-top: 1px solid var(--border);
       overflow-x: auto; overflow-y: hidden; align-items: center;
     }
-    .wfb-palette-title, .wfb-palette-hint { display: none; }
-    .wfb-palette-block { flex-shrink: 0; }
+    .wfb-palette-title, .wfb-palette-hint, .wfb-palette-tools-title,
+    .wfb-palette-search, .wfb-palette-divider, .wfb-palette-more { display: none; }
+    .wfb-palette-people { flex-direction: row; }
+    .wfb-palette-person, .wfb-palette-block { flex-shrink: 0; }
+    .wfb-palette-person-role { display: none; }
     /* `flex: 1` on the desktop rule is `flex-basis: 0%` — fine as a
        CROSS-axis size (desktop's row layout), but `.wfb-builder` flips to
        `column-reverse` here, which makes flex-basis the MAIN axis size
