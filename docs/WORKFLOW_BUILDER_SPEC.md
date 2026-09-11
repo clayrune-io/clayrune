@@ -1,8 +1,16 @@
 # Workflow Builder — authoring surface, wired to the scheduler
 
-**Status:** v1 spec, 2026-09-10. Marlow. Backlog: MC-871 (reopened from
+**Status:** v1 spec 2026-09-10; **revised 2026-09-11 — Q7 REVERSED by Ron
+after using the shipped spine.** Marlow. Backlog: MC-871 (reopened from
 `wontdo` — see "Why now"). Reference image: `data/uploads/agent_058984469b.png`
 (Zapier: trigger card, numbered steps, a Paths node, connectors down a spine).
+
+The reversal changes more than layout: drag-to-connect arrows turn the
+runtime model from a tree of lists into a DAG, which changes the stored
+definition format, the runner, and restart adoption. §Revision 2 (end of
+file) settles those. Q1–Q6 stand except where tagged `[Superseded → R2]`;
+Q7 is kept verbatim under its reversal banner — it was a deliberate call,
+reversed on contact with the built result, not an oversight.
 
 Ron's ask, verbatim: *"We decided last week that workflows menu is not really
 worth keeping and canceled the existing flows. However, the workflow tab was
@@ -66,8 +74,13 @@ a human, write a backlog item, fire a Desk harvest, run on a schedule.
   no OAuth to anything. An agent step can still be *told* to use whatever
   tools its normal permissions allow — the workflow layer adds no new reach.
 - No loops or cycles. A workflow is a DAG that runs top to bottom and ends.
-- No parallel fan-out and no rejoin after a branch. Paths diverge and each
-  path runs to its own end. (Fan-out is what Hivemind is for.)
+  (Unchanged by Revision 2 — now enforced three times, §R2-D3.)
+- ~~No parallel fan-out and no rejoin after a branch. Paths diverge and each
+  path runs to its own end.~~ **[Superseded 2026-09-11 → §R2-D2/D4]** A node
+  may now have multiple parents (rejoin exists) and a node may have multiple
+  unconditional children (fan-out exists in the graph). Execution stays
+  SERIAL — one agent step in flight per run, ever. The DAG expresses
+  dependency, not parallelism; genuine parallel work is still Hivemind's job.
 - No expression language. Handoff is string templating over named slots, §Q3.
 - No retry policies, no per-step timeouts config, no versioning/history of
   definitions beyond the file's git-style single current state.
@@ -121,6 +134,11 @@ What is deliberately absent: an HTTP node (connector-land through a side
 door), a code/eval node (arbitrary execution authored in a UI), a timer/wait
 node (that is what the trigger's schedule is for), a notification node (the
 question channel and run view already surface state).
+
+**[Superseded in part, 2026-09-11 → §R2-D6]** The **Paths node is retired**:
+branching is now conditional edges leaving an agent step — same `wf:result`
+outcome mechanism, same mandatory otherwise (now a port). The other four
+node types stand, and the deliberately-absent list above still binds.
 
 ### Q3 — How a step's output reaches the next step's input
 
@@ -241,6 +259,21 @@ authoring them. The tab is the door; the modal is the room.
 
 ### Q7 — Authoring UI: a spine, not a graph
 
+> **REVERSED — Ron, 2026-09-11, after using the shipped spine UI (Phase 2,
+> `3c67e73`).** His words: *"It is definitely a step in the right direction.
+> However, I would like it to be more intuitive. I think it should be blocks
+> that appear on the side and the user drags them onto the canvas and places
+> them in the order he wants. User should then be able to connect them in the
+> order he wants (drag lines / arrows) and create dependencies based on
+> that."*
+>
+> The decision below was deliberate: it read Zapier's own editor — the
+> reference image — as a vertical list, and it was right about that. It was
+> reversed by the person it was built for, on contact with the built result.
+> The replacement (palette, drag-to-place, drag-to-connect) and its runtime
+> consequences are settled in §Revision 2. The original text is kept below,
+> unedited, for the record.
+
 Zapier's own editor — the reference image included — is **not** a free
 canvas. It is a vertical list: trigger card, numbered step cards, connectors
 down the spine, and a Paths node that splits into side-by-side columns.
@@ -317,6 +350,204 @@ the builder cannot express it. The acceptance test passes.
 
 ---
 
-*Spec only. No implementation in this change. Build order, if approved:
-runner + stores → scheduler `workflow_id` + calendar badge → tab list →
-builder modal.*
+*v1 build order (Phases 1–2 shipped before the reversal): runner + stores →
+scheduler `workflow_id` + calendar badge → tab list → builder modal.
+Superseded by §Revision 2's build order below.*
+
+---
+
+# Revision 2 (2026-09-11) — the canvas, and the DAG underneath
+
+Q7 is reversed (banner above, Ron's words verbatim). This section settles
+what the reversal forces. Everything here is a decision with its
+recommendation marked; Ron approves choices, he does not do design.
+
+**What survives the reversal, unchanged and binding:** definition CRUD stays
+non-agent-callable (`position_whetheranagentsessionmaycreateoreditworkflowdefi`;
+enforced at `workflow_routes._refuse_if_agent_caller`). Storage stays a
+sibling of `DATA_DIR`, never a member. No cycles. No third-party connectors,
+no HTTP/code/eval nodes. The `wf:result` handoff (Q3). Approval gates are
+human-only and the runner can never satisfy one. One live run per workflow.
+The scheduler/calendar wiring (Q4). The Desk pipeline is still the
+acceptance test. Touch must work — Ron authors from his phone.
+
+## R2-D1 — Store: nodes + an explicit edge list. Not `depends_on`.
+
+**Decision: flat `nodes` array plus an `edges` array; `_next` is deleted.**
+
+```json
+{ "format": 2,
+  "nodes": [ {"name":"triage","type":"agent","project_id":"…","prompt":"…","x":220,"y":140} ],
+  "edges": [ {"from":"harvest","to":"triage"},
+             {"from":"triage","to":"draft","when":"worth_drafting"} ] }
+```
+
+Why edges and not per-node `depends_on`: a branch is a property of the
+CONNECTION (this arrow fires on outcome `worth_drafting`), not of either
+endpoint — `depends_on` on the child cannot say which outcome of the parent
+routes here without smuggling edge data into the node. And the canvas draws
+nodes and arrows; the store should hold exactly what the canvas draws.
+`when` is optional: absent = unconditional; a label = an outcome (agent
+step) or a choice (approval gate); the literal `"otherwise"` is reserved
+(§R2-D6). Compilation (`compile_workflow`) becomes: build adjacency, Kahn
+toposort, yield per-node `_parents`/`_children` (children carrying their
+`when` labels). The runner never walks raw JSON, same as today.
+
+**Migration:** no stored definitions exist on this box (verified 2026-09-11,
+`data/workflows.json` absent) — but Phase 1 is on the release channel, so
+other installs may hold v1 records. The loader upgrades mechanically: a
+record without `format` is a v1 nested tree; its compile already yields a
+unique linear order, which is emitted as nodes + edges (Paths branches →
+conditional edges, branch labels → `when`), default positions assigned in a
+column, `format: 2` stamped on next save. Deterministic, lossless, no
+migration tool. `STORE_VERSION` in `mc/workflows.py` is currently never
+written to disk — the `format` field per record fixes that as a side effect.
+
+## R2-D2 — Join semantics: ALL parents, with skip-propagation
+
+The question v1 dodged by having no rejoin, and the one that silently hangs
+a run if answered lazily.
+
+**Decision: a node with multiple incoming edges runs when EVERY parent is
+terminal for this run — `completed` or `skipped` — and at least one is
+`completed`.** FIRST-parent-wins is rejected: it is nondeterministic under
+any future parallelism and immediately raises "does the node run twice?".
+
+**The dead branch cannot hang the join, by construction:** at the moment an
+outcome or approval choice is decided, the runner marks every node reachable
+ONLY through the untaken edges as `skipped`, transitively, by plain graph
+reachability. Deterministic, immediate, no timeout, no waiting-forever
+state. If ALL of a node's parents end up skipped, the node itself is skipped
+— skip propagates through joins to each branch's natural end. The run view
+greys skipped nodes and names the decision that killed them.
+
+## R2-D3 — Cycle detection: at connect, at save, at run
+
+A cycle saved and caught only at run time is a workflow that looks fine and
+never works. **Decision: three layers, same check.**
+
+1. **At connect (the one the user sees):** the drag that would close a cycle
+   is refused at drop — the edge snaps back and a toast names the two nodes
+   ("draft → triage would create a loop"). A doomed graph is never drawn.
+2. **At save:** `validate_workflow` toposorts; a cycle is a hard validation
+   error listing the member nodes. This guards direct API writers, not just
+   the canvas.
+3. **At run start:** `compile_workflow` re-checks — defence in depth against
+   a hand-edited store file. The run fails at step zero, loudly.
+
+## R2-D4 — "Ready", the frontier, and restart adoption in a graph
+
+**Ready** = the R2-D2 rule. The run record replaces `current_step` with
+`frontier`: the list of ready-but-not-started node names. It is derived
+state — recomputable at any time from `steps` statuses plus the compiled
+graph — persisted only for run-view legibility.
+
+**Execution stays serial.** The runner takes ONE frontier node at a time, in
+topological order, ties broken by stored node order. At most one agent step
+is ever in flight per run. This is what keeps the reversal cheap where it
+matters: Q5's one-live-run reasoning, the completion-callback latch, and
+single-witness restart adoption all survive intact.
+
+**Restart adoption:** since at most one step can be `running`, adoption is
+the same shape as today — confirm that step against the agent_log
+(`completed`/`idle` → replay through `on_agent_step_complete`; anything else
+→ the run is `interrupted`, fail-closed, never silently re-dispatched).
+Then recompute the frontier from persisted step states and continue. The
+list-walk is gone; the invariant is untouched.
+
+## R2-D5 — Slot scope: a slot must name a DOMINATING ancestor
+
+In a DAG, `{{steps.X.output}}` can name a step that was skipped.
+**Decision: a slot in node N is valid iff X is an ancestor of N on EVERY
+path from the trigger to N** (X dominates N). A dominator can never be
+skipped while N runs, so a valid slot always resolves.
+
+- The builder enforces it at the same strength the spine enforced reorder:
+  an edge add/delete or node delete that breaks an existing slot reference
+  is refused, with the reference named ("draft uses {{steps.triage.output}};
+  this edge removal makes triage skippable").
+- The runtime keeps Q3's loud unresolved-slot failure as the backstop.
+- `{{prev.output}}` is valid only in a node with exactly one parent; the
+  builder refuses it elsewhere. At a join, "previous" is ambiguous and an
+  ambiguous slot is a fabricated prompt.
+
+## R2-D6 — Paths retired; conditional edges are the one way to branch
+
+Two ways to branch is one too many. **Decision: the Paths node type is
+deleted from the palette; an agent step whose outgoing edges carry `when`
+labels IS the branch.** The `wf:result` mechanism (Q3) is unchanged — the
+outcome vocabulary appended to the prompt is exactly the outgoing `when`
+labels. Approval gates work identically: their options are the `when` labels
+on their outgoing edges; the decision stays human-only.
+
+**Mandatory otherwise survives as a PORT.** Any node with a conditional
+outgoing edge always shows an `otherwise` port; missing or unparseable
+output routes there. An unconnected port is a deliberate, visible run-end —
+the canvas renders a stop stub on it. The fail-closed property is preserved:
+where a non-answer goes is always authored and always visible, never
+guessed. An unconnected declared-outcome port means the same thing (the
+Desk's `nothing` outcome is exactly this — a stopped branch you can see).
+
+## R2-D7 — The canvas: hand-rolled SVG + DOM. No graph library.
+
+**Decision: palette docked left (bottom sheet under the mobile breakpoint),
+drag-to-place onto the canvas, drag-to-connect from an output port to an
+input port. Node positions persist per node (`x`,`y`, R2-D1).**
+
+Q7 banned a graph library; the reversal does not un-ban it, because the
+reasons are independent of layout:
+
+- **React Flow / @xyflow** — needs React and a bundler; `static/js` is plain
+  ES modules served as-is, no build step. Not adoptable without changing how
+  the frontend ships.
+- **Drawflow / LiteGraph** — vanilla-JS, but each is thousands of lines with
+  its own styling regime, vendored into a repo that ships to strangers'
+  machines (CLAUDE.md: what we commit, others run). Ownership cost exceeds
+  what they buy.
+- What a library buys here is small on this codebase: pointer-drag already
+  exists (`floor.js` drag-to-hire); edges are one absolutely-positioned SVG
+  overlay drawing cubic paths between port coordinates; pan/zoom is a CSS
+  transform on the canvas container. Honest estimate: the canvas is the
+  largest UI piece of the feature, and still smaller than owning a
+  dependency.
+
+**Touch is first-class, not adapted:** pointer events throughout; the known
+mobile trap (`touch-action: none` blocks page scroll — the drag-to-hire
+fix) handled the same way, a dynamic class applied only during an active
+drag; ports get ≥ 40 px hit targets; pinch-zoom on the container.
+
+**What Phase 2 built is not discarded:** the spine builder's card editors
+(project select, persona picker, prompt textarea, option labels —
+`static/js/workflow-builder.js`) are reused verbatim inside canvas nodes.
+R2 replaces only their layout and connection model. The spine stays live
+until the canvas lands — no interregnum with no builder.
+
+## Acceptance re-walked: the Desk, in edge form
+
+Trigger (schedule) → harvest (action) → triage (agent) —`worth_drafting`→
+draft (agent) → approval gate —`release`→ publish (future action) →
+measure. Triage's `nothing` port unconnected: the Desk's "nothing worth
+saying produces nothing" requirement, now literally visible on the canvas
+as a stopped branch. Triage's `otherwise` port also unconnected — a
+non-answer ends the run, authored. Every phase maps; the acceptance test
+passes with fewer node types than v1 needed.
+
+## Build order, revised
+
+1. Store `format: 2` + v1 upgrade-on-load; compiler → adjacency/toposort.
+2. Runner: frontier, skip-propagation, join rule, restart adoption (D2/D4).
+3. Validation: cycles at save, dominator rule for slots (D3/D5).
+4. Canvas replacing the spine layout; card editors reused (D7).
+5. Run view: skipped-node greying, edge-decision display.
+
+## Open — named, not hidden
+
+- **Open: whether pan/zoom state (viewport) persists per workflow.**
+  Recommendation: yes, two numbers on the record; trivial and it is what
+  makes a phone reopen usable.
+- **Open: auto-tidy (one-click layout of a messy graph).** Recommendation:
+  defer; positions are author-owned in v2, revisit after real use.
+
+---
+
+*Spec only, both revisions. No implementation in this change.*
