@@ -1029,6 +1029,10 @@ function listRowHTML(p) {
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
 window.avatarHTML = avatarHTML;
 window.avatarIsFigure = avatarIsFigure;
+// Exposed for the same reason as its two siblings: a surface that needs to ask
+// "is this a face at all?" before falling back must use THIS predicate, not a
+// second copy of the non-ASCII rule that can drift from what avatarHTML draws.
+window.avatarIsRenderable = avatarIsRenderable;
 window.avatarFigureName = avatarFigureName;
 window.backlogSummary = backlogSummary;
 window.socialProjectBadgeHTML = socialProjectBadgeHTML;
