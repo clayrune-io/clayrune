@@ -251,6 +251,81 @@ def _find_transcript_file(project_path, claude_session_id):
     return None
 
 
+# The persona marker MC injects into a hired agent's prompt context. Only the
+# LONG form is a persona: `_build_agent_context` emits it when, and only when,
+# a character is resolved. The SHORT form ("Your name is Vector.") is the
+# inherited project/global default agent — matching that would stamp every
+# ordinary chat as if someone had hired the default, which is the bug this
+# exists to undo, not a fix for it.
+#
+# Matched against BYTES so a chunk boundary can never corrupt the decode, and
+# only the captured name is decoded. Held as a literal of the emitted string:
+# if the prompt builder's wording changes this simply stops matching and rows
+# go unstamped — a miss, never a wrong face on someone's chat.
+_PERSONA_MARKER_RE = re.compile(
+    rb'Your name is ([^.\r\n"]{1,32})\. '
+    rb'Use it when you introduce yourself or sign off')
+
+# Scan the whole transcript, not a prefix. Measured 2026-09-11: in a 4.4 MB
+# Mode-A chat the first marker sits at byte 2,295,484 — MC re-injects the
+# context into a later USER turn, and the early records carry none of it, so
+# any small head window reports "no persona" for exactly the long-running
+# chats whose identity matters most. Sequential scan with an early exit on the
+# first match; the cap is a backstop against a pathological file, above the
+# largest transcript on this box (22 MB).
+_PERSONA_SCAN_MAX_BYTES = 32 * 1024 * 1024
+_PERSONA_SCAN_CHUNK = 1 << 20
+# Longest possible match, so a marker straddling two chunks is still seen.
+_PERSONA_SCAN_OVERLAP = 128
+
+
+def _agent_name_in_transcript(path):
+    """The self-chosen name a session ran under, or '' — read from its
+    transcript. Never raises: an unreadable transcript is a miss."""
+    try:
+        with open(path, 'rb') as fh:
+            tail = b''
+            read = 0
+            while read < _PERSONA_SCAN_MAX_BYTES:
+                chunk = fh.read(_PERSONA_SCAN_CHUNK)
+                if not chunk:
+                    break
+                read += len(chunk)
+                m = _PERSONA_MARKER_RE.search(tail + chunk)
+                if m:
+                    return m.group(1).decode('utf-8', 'replace').strip()
+                tail = chunk[-_PERSONA_SCAN_OVERLAP:]
+    except Exception as e:
+        _log(f"[persona-scan] {path}: {e}")
+    return ''
+
+
+def persona_ref_for_session(project_path, claude_session_id):
+    """`{'name', 'scope'}` for the persona a past chat ran as, or None.
+
+    The character is normally recorded on the agent-log row at dispatch; this
+    recovers it for rows that have none — the transcript-synthesized ones
+    (MC-946), which otherwise render as the default agent and make every
+    hired agent's chat history look like it was someone else's.
+
+    Fails soft in both halves: no transcript, no marker, or a persona that has
+    since been deleted or renamed all return None, and the row stays unstamped
+    rather than being stamped wrong.
+    """
+    f = _find_transcript_file(project_path, claude_session_id)
+    if not f:
+        return None
+    agent_name = _agent_name_in_transcript(f)
+    if not agent_name:
+        return None
+    try:
+        from mc import characters as _characters
+        return _characters.ref_by_agent_name(agent_name, project_path=project_path)
+    except Exception as e:
+        _log(f"[persona-scan] character lookup for {agent_name!r} failed: {e}")
+        return None
+
+
 def _parse_transcript_messages(f, max_messages=2000):
     """Parse a Claude Code JSONL transcript into [{role, text, tool, timestamp}] for read-only display.
 

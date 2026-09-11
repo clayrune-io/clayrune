@@ -52,6 +52,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import state
 from mc.characters import clean_avatar
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 from mc.state import agent_sessions
 from mc.unattended import is_unattended_caller
@@ -96,7 +97,7 @@ def _load_settings():
 
 def _save_settings(settings):
     SETTINGS_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SETTINGS_PATH.write_text(json.dumps(settings, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(SETTINGS_PATH, settings, indent=2, ensure_ascii=False)
 
 
 # ── Global config endpoints ────────────────────────────────────────────────

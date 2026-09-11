@@ -47,6 +47,7 @@ from flask import Blueprint, jsonify, request
 
 from mc import obs
 from mc import state
+from mc.atomic_json import write_json_atomic
 from mc.core import _log, now_iso
 from mc.state import (
     _scheduler_stop,
@@ -122,7 +123,7 @@ def _load_schedules():
 
 def _save_schedules(schedules):
     SCHEDULES_PATH.parent.mkdir(parents=True, exist_ok=True)
-    SCHEDULES_PATH.write_text(json.dumps(schedules, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(SCHEDULES_PATH, schedules, indent=2, ensure_ascii=False)
 
 
 # ── One-fire-per-slot claim (MC-909) ─────────────────────────────────────────
