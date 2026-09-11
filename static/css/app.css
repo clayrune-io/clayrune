@@ -8434,7 +8434,12 @@
     border-bottom: 1px solid var(--border); border-radius: 9px 9px 0 0; touch-action: pan-y;
   }
   .wfb-node.wfb-node-dragging .wfb-node-head { cursor: grabbing; touch-action: none; }
-  .wfb-node-type { font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); flex: 1; }
+  /* Non-agent header: a small dimmed glyph + the type in dimmed caps (UI
+     brief mockup) -- not accent-colored, unlike the old type label, so it
+     reads as chrome rather than as the card's identity (the agent card's
+     face plays that role there). */
+  .wfb-node-type-icon { font-size: 11px; color: var(--text-faint); flex-shrink: 0; line-height: 1; }
+  .wfb-node-type { font-size: 9.5px; font-weight: 700; letter-spacing: 0.5px; color: var(--text-faint); flex: 1; }
   /* Agent-step header (UI brief §3): avatar + persona name, not a generic
      type label — the card shows WHO was dragged onto the canvas. */
   .wfb-node-avatar { flex-shrink: 0; line-height: 0; }
@@ -8444,9 +8449,40 @@
   .wfb-node-step-name {
     font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
-  .wfb-node-del { background: transparent; border: none; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px; flex-shrink: 0; }
-  .wfb-node-del:hover { color: var(--red-text); }
+  .wfb-node-menu-btn {
+    background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+    font-size: 15px; line-height: 1; padding: 2px 5px; flex-shrink: 0;
+  }
+  .wfb-node-menu-btn:hover { color: var(--accent); }
+  .wfb-node-menu {
+    position: fixed; z-index: 100000; min-width: 130px; background: var(--surface3, var(--surface));
+    border: 1px solid var(--border2, var(--border)); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    padding: 4px; font-family: 'Inter', sans-serif;
+  }
+  .wfb-node-menu-delete {
+    font-size: 12px; font-weight: 600; color: var(--red-text); padding: 6px 8px;
+    border-radius: 6px; cursor: pointer;
+  }
+  .wfb-node-menu-delete:hover { background: var(--red-dim, rgba(220,53,69,0.08)); }
   .wfb-node-own { padding: 8px 12px 0; }
+  /* The project row (agent card): a folder glyph reads faster than the
+     all-caps "Project" micro-label used everywhere else, so the label is
+     dropped here specifically (brief mockup). */
+  .wfb-project-row { display: flex; align-items: center; gap: 6px; margin: 8px 0 3px; }
+  .wfb-project-icon { font-size: 13px; color: var(--text-faint); flex-shrink: 0; }
+  .wfb-project-row .wfb-project { flex: 1; margin: 0; }
+  /* The prompt's tinted inset (brief mockup) -- the textarea itself stays a
+     plain <textarea> (ground rule 3: no contenteditable, so no real in-text
+     slot chips), just visually set apart from the rest of the card body. */
+  .wfb-prompt-inset { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px 6px; margin: 2px 0 6px; }
+  .wfb-prompt-inset .wfb-prompt { background: var(--surface); }
+  .wfb-prompt-inset .wfb-insert-select { margin-top: 6px; }
+  /* The action card's own description + dimmed identifier, under its plain-
+     label select (MC-871 label pass) -- the id stays visible in small type
+     because validation errors still name it ("action must be one of
+     (...)"), so a user needs a way to map the friendly label back to it. */
+  .wfb-action-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.35; margin: 5px 0 2px; }
+  .wfb-action-id { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); margin: 0 0 6px; }
 
   /* >= 40px hit target (brief's explicit ask): a small visible dot inside a
      larger invisible pointer target, rather than relying on pseudo-element
@@ -8456,10 +8492,23 @@
     display: flex; align-items: center; justify-content: center; cursor: crosshair;
     background: transparent; border: none; touch-action: none; padding: 0;
   }
+  /* Hollow ring by default (an input, or a fallback port like "otherwise");
+     an output that will actually fire is filled (UI brief mockup). */
   .wfb-port-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--text-faint); pointer-events: none; }
+  .wfb-port-out .wfb-port-dot { background: var(--accent); border-color: var(--accent); }
+  .wfb-port-otherwise .wfb-port-dot { background: var(--surface); border-color: var(--text-faint); }
   .wfb-port:hover .wfb-port-dot, .wfb-port.wfb-port-target .wfb-port-dot { border-color: var(--accent); background: var(--accent); }
   .wfb-port-in { left: 0; top: 34px; }
   .wfb-port-out { position: static; margin: 0; }
+  /* Only reached by a node with NO declared vocabulary (a no-outcome agent
+     step, or any action node) -- always exactly one plain port now that a
+     declared vocabulary renders its ports as in-card pills instead
+     (_wfRenderVocabRows). Fixed near the top, same as the input port: a
+     true vertical center (top: 50%) tracks the card's full height, which
+     drifts an agent card's port far down a tall body and off-screen on a
+     short viewport -- broke the connect-drag smoke test. The action card
+     this was meant to visually center on is short enough that this fixed
+     offset already lands close to its middle. */
   .wfb-ports-out { position: absolute; right: -20px; top: 60px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
   .wfb-port-row { display: flex; align-items: center; gap: 6px; }
   .wfb-port-label {
@@ -8531,6 +8580,16 @@
     cursor: pointer; font-size: 11px; padding: 4px 7px; flex-shrink: 0;
   }
   .wfb-branch-del:hover { border-color: var(--red); color: var(--red-text); }
+
+  /* Outcome/option pill rows (UI brief mockup): each one carries its own
+     port dot at the row's right edge, in the card's normal flow -- unlike
+     the old below-the-fold text-input list, the port you'd wire up sits
+     right next to the label you're editing. */
+  .wfb-vocab-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; }
+  .wfb-vocab-pill { flex: 1; }
+  .wfb-vocab-add { align-self: flex-start; border-style: dashed; margin: 2px 0 8px; }
+  .wfb-otherwise-row { display: flex; align-items: center; gap: 4px; margin: 0 0 4px; }
+  .wfb-otherwise-row em { font-style: italic; font-size: 11.5px; color: var(--text-faint); flex: 1; }
 
   .wfb-error {
     margin-top: 14px; padding: 10px 14px; border: 1px solid var(--red); background: var(--red-dim, rgba(220,53,69,0.08));
