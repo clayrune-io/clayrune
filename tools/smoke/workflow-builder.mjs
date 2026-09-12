@@ -960,6 +960,35 @@ try {
     ? ok('a real touch long-press-drag from the mobile palette placed a node on the canvas')
     : fail(`a real touch drag did not place a node on mobile -- nodes stayed at ${mNodesAfter} (expected ${mNodesBefore + 1}); the browser likely swallowed the up-drag as a native scroll`);
 
+  // Defect 14 -- the same treatment for the node/trigger drag path
+  // (_wfNodeDragDown, which the trigger tile's own drag reuses verbatim).
+  // The reasoning behind defect 13's fix does NOT automatically transfer: a
+  // node drag starts ON the canvas, whose viewport carries a STATIC
+  // `touch-action: none` (app.css .wfb-canvas-viewport) -- unlike the
+  // palette, which lives outside the canvas in the bottom sheet with no such
+  // restriction. Verified empirically with the same large mostly-vertical
+  // touch drag that broke defect 13: dragging the node just placed, further
+  // up the canvas, works cleanly (pointerdown/move/move/up, no
+  // pointercancel) with NO code change needed. Confirmed non-bug -- this
+  // assertion exists so a future regression (e.g. someone reusing this
+  // exact code for a drag target OUTSIDE a touch-action:none ancestor) gets
+  // caught, not to guard a fix.
+  const mNodeHeadBox = await (await mpage.$('.wfb-node-head')).boundingBox();
+  const mNodeStartX = mNodeHeadBox.x + mNodeHeadBox.width / 2, mNodeStartY = mNodeHeadBox.y + mNodeHeadBox.height / 2;
+  const mPosBefore = await mpage.evaluate(() => { const n = window._wfEntry()._wf.def.nodes[0]; return { x: n.x, y: n.y }; });
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: mNodeStartX, y: mNodeStartY, id: 1 }] });
+  await mpage.waitForTimeout(450);
+  for (const pt of [{ x: mNodeStartX, y: mNodeStartY - 150 }, { x: mNodeStartX + 20, y: mNodeStartY - 220 }]) {
+    await mCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: pt.x, y: pt.y, id: 1 }] });
+    await mpage.waitForTimeout(50);
+  }
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await mpage.waitForTimeout(200);
+  const mPosAfter = await mpage.evaluate(() => { const n = window._wfEntry()._wf.def.nodes[0]; return { x: n.x, y: n.y }; });
+  (mPosAfter.y < mPosBefore.y - 100)
+    ? ok(`a real touch long-press-drag moved an EXISTING node on the mobile canvas (dy=${(mPosAfter.y - mPosBefore.y).toFixed(0)}) -- the canvas's own touch-action:none already protects this path`)
+    : fail(`a real touch drag did not move an existing node on mobile -- ${JSON.stringify(mPosBefore)} -> ${JSON.stringify(mPosAfter)}`);
+
   // Same noise filter every other context in this suite (and boot-smoke.mjs)
   // applies: opening a real project modal lazy-loads mermaid.js, whose CDN
   // import this hermetic run always aborts (no network) -- expected, not a
