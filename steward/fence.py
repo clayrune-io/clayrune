@@ -194,6 +194,97 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+# ── Enabling-construct detection (hardening, 2026-09-12) ─────────────────────
+# Dave measured (2026-09-11, fence.classify_bash run directly) that the fence
+# regex-matches raw TEXT, so it blocks a SPELLING, not an ACT: `P=push; git $P
+# --force`, `T=destroy; terraform $T -auto-approve`, `$G$H --force` (concat'd
+# var expansion), `$(printf ...)` as the command word, `xargs` handing a
+# blocked verb its argument from stdin, and `base64 -d | bash` all sailed
+# through unmatched even though each performs exactly the catastrophic act the
+# verb regexes exist to stop. Enumerating more spellings cannot win that race
+# — the fix is to block the small, closed set of CONSTRUCTS that let a
+# command's identity be decided at runtime instead of read off the line: a
+# shell function definition, a decode-then-execute pipeline, xargs handing a
+# dangerous verb/interpreter an argument built from stdin, and a variable or
+# substitution sitting in COMMAND POSITION (the word the shell would actually
+# try to run, or the word right after a verb the fence denies — `git $P` lets
+# $P silently BE the subcommand).
+#
+# Command position only. `echo "$HOME"`, `foo=$(date)`, `content=$(cat f)`,
+# and `git commit -m "$(cat msg.txt)"` all put an expansion in ARGUMENT
+# position — data the command consumes, never text the shell tries to
+# execute — and must keep passing, per the 2026-07-13 / 2026-07-23
+# false-positive incidents recorded above. Scoped per shell segment via the
+# existing _SHELL_SPLIT_RE, same discipline as _touches_nonlocal_network.
+
+_FUNC_DEF_RE = re.compile(
+    r'(?:^|[\s;&|\n])(function\s+\w+\b|\w+\s*\(\)\s*\{)', re.I)
+
+_VAR_TOKEN = r'\$\{?\w+\}?|\$\([^()]*\)|`[^`]*`'
+
+_LEADING_ASSIGN_RE = re.compile(
+    r'^(?:\s*\w+=(?:"[^"]*"|\'[^\']*\'|\S*)\s+)+')
+
+_HEAD_EXPANSION_RE = re.compile(rf'^\s*(?:{_VAR_TOKEN})')
+
+# Verbs the fence already denies by literal spelling — the exact set a hidden
+# variable sitting in the SUBCOMMAND slot (`git $P`, `terraform $T`) defeats.
+_DENIED_VERBS_RE = (
+    r'git|npm|twine|docker|pip|gh|gcloud|aws|az|terraform|kubectl|alembic|'
+    r'psql|rm|rmdir|dd|curl|wget'
+)
+_VERB_THEN_EXPANSION_RE = re.compile(
+    rf'\b(?:{_DENIED_VERBS_RE})\s+(?:{_VAR_TOKEN})', re.I)
+
+_XARGS_RE = re.compile(r'\bxargs\b', re.I)
+_XARGS_TARGET_RE = re.compile(
+    rf'\b(?:{_DENIED_VERBS_RE}|bash|sh|zsh|dash|ksh|pwsh|powershell|'
+    r'python\w*|node|perl|ruby|eval|source|iex|invoke-expression)\b', re.I)
+
+_B64_DECODE_MARK = (
+    r'base64\s+(?:-d\b|--decode\b)|'
+    r'openssl\s+(?:base64|enc)\b[^\n;&|]*-d\b|'
+    r'\[?convert\]?\s*::\s*frombase64string'
+)
+_B64_TO_INTERPRETER_RE = re.compile(
+    rf'(?:{_B64_DECODE_MARK})[^\n;&]*?\|[^\n;&]*?\b'
+    r'(?:bash|sh|zsh|dash|ksh|pwsh|powershell|python\w*|node|perl|ruby|'
+    r'eval|source|cmd|iex|invoke-expression)\b',
+    re.I)
+
+
+def _enabling_construct(cmd: str) -> FenceDecision:
+    """Block the small set of constructs that decide a command's identity at
+    RUNTIME instead of on the line the fence can read (see module comment
+    above). Complements, does not replace, the verb denylist — a plain `git
+    push` still blocks on the literal pattern earlier in classify_bash."""
+    if _FUNC_DEF_RE.search(cmd):
+        return FenceDecision(True, "shell function definition — the fence "
+                                    "cannot see what a later call to it will "
+                                    "run (define-then-use crosses the "
+                                    "per-call boundary the fence checks at)")
+    if _B64_TO_INTERPRETER_RE.search(cmd):
+        return FenceDecision(True, "base64/decode piped into an interpreter "
+                                    "(decode-then-execute hides the command "
+                                    "from the verb denylist)")
+    for seg in _SHELL_SPLIT_RE.split(cmd):
+        if not seg.strip():
+            continue
+        m = _XARGS_RE.search(seg)
+        if m and _XARGS_TARGET_RE.search(seg[m.end():]):
+            return FenceDecision(True, "xargs handing a denied verb/"
+                                        "interpreter an argument built from "
+                                        "stdin (the verb the fence sees is "
+                                        "not the verb that runs)")
+        stripped = _LEADING_ASSIGN_RE.sub('', seg)
+        if _HEAD_EXPANSION_RE.match(stripped) or _VERB_THEN_EXPANSION_RE.search(seg):
+            return FenceDecision(True, "variable/command substitution in "
+                                        "command position (the word that "
+                                        "actually runs is decided at "
+                                        "runtime, not visible on this line)")
+    return FenceDecision(False, '')
+
+
 def classify_bash(command: str) -> FenceDecision:
     """Classify a Bash command string. Returns (blocked, reason).
 
@@ -222,6 +313,10 @@ def classify_bash(command: str) -> FenceDecision:
     net = _touches_nonlocal_network(cmd)
     if net.blocked:
         return net
+
+    enabling = _enabling_construct(cmd)
+    if enabling.blocked:
+        return enabling
 
     return FenceDecision(False, '')
 
