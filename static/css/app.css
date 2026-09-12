@@ -8569,6 +8569,34 @@
   }
   .wfb-toolbar-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
   .wfb-toolbar-btn:disabled { opacity: 0.4; cursor: default; }
+  /* Action / Approval gate / Wait (MC-871 follow-up, Ron: "these should go to
+     the top of the canvas screen same row as create and run now... to the
+     left of them"). Moved out of the palette (formerly `.wfb-palette-block`,
+     now removed) into the toolbar, grouped and rule-separated from
+     Undo/Redo/Reset so the two histories of controls (edit history vs. "add
+     a step") don't blur into one row of identical buttons. Same drag gesture
+     as before (`_wfPaletteDown`), PLUS a plain click/tap now also adds the
+     block (`_wfPlaceUp`'s no-drag branch) -- a toolbar button that only
+     responds to a drag reads as broken.
+     touch-action: none PERMANENTLY, unlike the palette's dynamic class trick
+     -- these are dedicated single controls (same precedent as `.wfb-port`),
+     not rows in a scrollable list, so there is no native scroll gesture to
+     protect here. Left at the palette's default (`auto`) would let the
+     modal body's vertical scroll (`.wfb-modal-body` on mobile) claim a
+     downward touch-drag before our JS ever sees it -- the toolbar sits ABOVE
+     the canvas, so a toolbar-to-canvas drag goes DOWN, the same trap as
+     defect 13's palette-to-canvas UP drag, just the opposite axis. */
+  .wfb-toolbar-tools {
+    display: flex; align-items: center; gap: 4px; padding-left: 8px; border-left: 1px solid var(--border);
+  }
+  .wfb-toolbar-tool {
+    background: transparent; border: 1px solid var(--border); border-radius: 6px;
+    color: var(--text-dim); font-size: 11.5px; font-weight: 600; padding: 5px 9px;
+    cursor: grab; white-space: nowrap; font-family: inherit; display: flex; align-items: center;
+    gap: 5px; touch-action: none; user-select: none;
+  }
+  .wfb-toolbar-tool:hover { border-color: var(--accent); color: var(--accent); }
+  .wfb-toolbar-tool.wfb-palette-dragging { cursor: grabbing; opacity: 0.5; }
   .wfb-toolbar-desc-row { flex-shrink: 0; padding-bottom: 8px; }
   .wfb-toolbar-desc-row textarea {
     width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
@@ -8639,11 +8667,10 @@
     padding: 10px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto;
     user-select: none; /* Change 8 — a drag-out starts over a row's own text */
   }
-  .wfb-palette-title, .wfb-palette-tools-title {
+  .wfb-palette-title {
     font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.5px;
     text-transform: uppercase; margin-bottom: 2px;
   }
-  .wfb-palette-tools-title { margin-top: 4px; }
   /* Wraps the title so the refresh button (Ron: "Is there a way to maybe add
      refresh button?") sits beside it on desktop -- kept OUTSIDE
      `.wfb-palette-title` on purpose, because that class is hidden outright on
@@ -8693,16 +8720,6 @@
     text-align: left; padding: 2px; cursor: pointer;
   }
   .wfb-palette-more:hover { text-decoration: underline; }
-  .wfb-palette-divider { border-top: 1px solid var(--border); margin: 2px 0; }
-  .wfb-palette-block {
-    background: var(--bg); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px;
-    font-size: 12px; font-weight: 600; color: var(--text); cursor: grab; user-select: none;
-    touch-action: pan-y; display: flex; align-items: center; gap: 8px;
-  }
-  .wfb-palette-block.wfb-palette-dragging { cursor: grabbing; touch-action: none; opacity: 0.5; }
-  .wfb-palette-icon { font-size: 14px; flex-shrink: 0; }
-  .wfb-palette-block-info { display: flex; flex-direction: column; }
-  .wfb-palette-block-sub { font-size: 9.5px; font-weight: 500; color: var(--text-faint); text-transform: none; }
   .wfb-palette-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
   .wfb-palette-hint { font-size: 10.5px; color: var(--text-faint); line-height: 1.4; margin-top: 4px; }
   /* Palette person popup (MC-871 follow-up) — replaces a native `title`
@@ -9212,15 +9229,24 @@
       width: auto; flex-direction: row; border-right: none; border-top: 1px solid var(--border);
       overflow-x: auto; overflow-y: hidden; align-items: center;
     }
-    .wfb-palette-title, .wfb-palette-hint, .wfb-palette-tools-title,
-    .wfb-palette-search, .wfb-palette-divider, .wfb-palette-more { display: none; }
+    .wfb-palette-title, .wfb-palette-hint,
+    .wfb-palette-search, .wfb-palette-more { display: none; }
+    /* The toolbar was already crowded on a phone (name, description,
+       Enabled, Undo/Redo/Reset, Create, Run now -- it wraps to more than one
+       line even without these). Icon-only keeps Action/Approval gate/Wait
+       reachable without adding a wall of labelled buttons; the meaning is
+       still one tap+hold (or the palette-era hint text above) away, and the
+       `title` tooltip still carries it for a mouse/trackpad phone browser. */
+    .wfb-toolbar-tool-label { display: none; }
+    .wfb-toolbar-tools { padding-left: 4px; gap: 2px; }
+    .wfb-toolbar-tool { padding: 5px 7px; }
     /* The title text hides above (it's one of the desktop-only labels), but
        the refresh button lives in the same `.wfb-palette-head` row and must
        stay reachable on the bottom sheet -- it's the manual escape hatch, so
        it has to survive on the surface Ron actually asked about it on. */
     .wfb-palette-head { flex-shrink: 0; }
     .wfb-palette-people { flex-direction: row; }
-    .wfb-palette-person, .wfb-palette-block { flex-shrink: 0; }
+    .wfb-palette-person { flex-shrink: 0; }
     /* Defect 13 (Ron, phone: "unable to drag agent onto the canvas"). The
        desktop rule (app.css above) gives these rows `touch-action: pan-y` --
        correct THERE, where the palette is a vertical sidebar and dragging a
@@ -9238,7 +9264,7 @@
        real scroll direction (`.wfb-palette`'s `overflow-x: auto` above) and
        leaves the vertical axis -- the ONLY direction an up-drag needs -- to
        our own long-press handler instead of the browser's native pan. */
-    .wfb-palette-person, .wfb-palette-block { touch-action: pan-x; }
+    .wfb-palette-person { touch-action: pan-x; }
     .wfb-palette-person-role { display: none; }
     /* `flex: 1` on the desktop rule is `flex-basis: 0%` — fine as a
        CROSS-axis size (desktop's row layout), but `.wfb-builder` flips to

@@ -1552,6 +1552,7 @@ function _wfRenderBody(st) {
       <button type="button" class="wfb-toolbar-btn" title="Undo (Ctrl+Z)" onclick="_wfUndo()" ${_wfCanUndo(st) ? '' : 'disabled'}>&#8630; Undo</button>
       <button type="button" class="wfb-toolbar-btn" title="Redo (Ctrl+Shift+Z)" onclick="_wfRedo()" ${_wfCanRedo(st) ? '' : 'disabled'}>&#8631; Redo</button>
       <button type="button" class="wfb-toolbar-btn" title="Revert to the last saved state" onclick="_wfResetCanvas()">&#8635; Reset</button>
+      ${_wfRenderToolbarTools()}
       <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
       <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
         title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
@@ -1571,11 +1572,37 @@ function _wfRenderBody(st) {
     ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}`;
 }
 
-// The palette is the Bench plus the ONE tool that is a user intention rather
-// than Clayrune housekeeping (UI brief §2, narrowed by Change 10 — see the
-// palette-tools comment below). People are listed first because they are the
-// common case; the tool sits under a rule so the eye lands on a face, not on
-// a primitive.
+// Ron (MC-871 follow-up, verbatim): "the action, wait and approval gate...
+// should go to the top of the canvas screen same row as the create and run
+// now buttons only to the left of them." Moved out of the palette entirely —
+// the palette is now people ONLY (the original UI brief §2 intent, before
+// Change 10 added the tool tiles below the Bench as a stopgap). Reuses
+// `_wfPaletteDown` verbatim (the `true` 5th arg marks the gesture as
+// originating from the toolbar, not the palette, so a plain click/tap can
+// also add the block — see `_wfPlaceUp`'s no-drag-happened branch) so there
+// is exactly one drag path for tools, same as before.
+//
+// Touch-action is permanently `none`, matching `.wfb-port`'s own precedent
+// (app.css) rather than the palette's dynamic-class trick: these are
+// dedicated single controls, not rows in a scrollable list, so there is no
+// native scroll gesture to protect here at all -- unlike the palette (a
+// scrollable bench/bottom-sheet), granting any pan axis at rest would only
+// re-open the same axis-conflict trap (defect 13) in the opposite direction,
+// since a toolbar-to-canvas drag goes DOWN where the palette's went UP.
+function _wfRenderToolbarTools() {
+  return `<span class="wfb-toolbar-tools" role="group" aria-label="Add a step">
+    <button type="button" class="wfb-toolbar-tool" title="${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent"
+      onpointerdown="_wfPaletteDown(event,'action',null,null,true)">&#9881; <span class="wfb-toolbar-tool-label">Action</span></button>
+    <button type="button" class="wfb-toolbar-tool" title="a human decides"
+      onpointerdown="_wfPaletteDown(event,'approval',null,null,true)">&#9995; <span class="wfb-toolbar-tool-label">Approval gate</span></button>
+    <button type="button" class="wfb-toolbar-tool" title="a delay, or until a time"
+      onpointerdown="_wfPaletteDown(event,'wait',null,null,true)">&#9203; <span class="wfb-toolbar-tool-label">Wait</span></button>
+  </span>`;
+}
+
+// The palette is the Bench (UI brief §2) — people only, since Change 10's
+// tool tiles moved to the toolbar above (see `_wfRenderToolbarTools`).
+// People are listed first because they are the common case.
 //
 // Cap raised 8 -> 12 (Change 9): the canvas fill (Change 1's amendment) gives
 // `.wfb-palette` real height to grow into now that it's not squeezed against
@@ -1626,24 +1653,7 @@ function _wfRenderPalette(st) {
     <div class="wfb-palette-people">${rows || `<div class="wfb-palette-empty">${empty}</div>`}</div>
     ${moreBtn}
     <button type="button" class="wfb-palette-more" onclick="_wfHireSomeone()">Hire someone new</button>
-    <div class="wfb-palette-divider"></div>
-    <div class="wfb-palette-tools-title">Tools</div>
-    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')">
-      <span class="wfb-palette-icon">&#9881;</span>
-      <span class="wfb-palette-block-info"><span>Action</span>
-        <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent</span></span>
-    </div>
-    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')">
-      <span class="wfb-palette-icon">&#9995;</span>
-      <span class="wfb-palette-block-info"><span>Approval gate</span>
-        <span class="wfb-palette-block-sub">a human decides</span></span>
-    </div>
-    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'wait')">
-      <span class="wfb-palette-icon">&#9203;</span>
-      <span class="wfb-palette-block-info"><span>Wait</span>
-        <span class="wfb-palette-block-sub">a delay, or until a time</span></span>
-    </div>
-    <div class="wfb-palette-hint">Looking for Decision or Parallel? Neither is a block here: an agent's outcomes (or an approval's options) ARE its branch points &mdash; wire each one's port to a different next step. And a port's + can be clicked again to add a SECOND next step from the same point; both run, one after another.</div>
+    <div class="wfb-palette-hint">Looking for Action, Approval gate or Wait? They're in the toolbar above, next to Create &middot; Run now. Looking for Decision or Parallel? Neither is a block here: an agent's outcomes (or an approval's options) ARE its branch points &mdash; wire each one's port to a different next step. And a port's + can be clicked again to add a SECOND next step from the same point; both run, one after another.</div>
     <div class="wfb-palette-hint">Drop a person anywhere on the canvas, or onto a card to run after it &middot; drag the blue dot onto another card to connect them &middot; every port's + adds and wires the next step.</div>`;
 }
 
@@ -3058,7 +3068,7 @@ function _wfPointInRect(x, y, r) { return x >= r.left && x <= r.right && y >= r.
 // identity (scope + name) through the drag so the drop can build an agent step
 // with that persona already set — the whole point of the palette being the
 // Bench (UI brief §2).
-function _wfPaletteDown(e, type, scope, name) {
+function _wfPaletteDown(e, type, scope, name, fromToolbar) {
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPlaceDrag || _wfNodeDrag || _wfPan || _wfConnectDrag) return;
   // Change 8: same text-selection guard -- a drag-out from the palette
@@ -3069,7 +3079,7 @@ function _wfPaletteDown(e, type, scope, name) {
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
     startX: e.clientX, startY: e.clientY, active: false, type,
-    scope: scope || '', name: name || '',
+    scope: scope || '', name: name || '', fromToolbar: !!fromToolbar,
     el: e.currentTarget, ghost: null, longPressTimer: null,
   };
   _wfPlaceDrag = st;
@@ -3123,6 +3133,14 @@ function _wfPlaceUp(e) {
     if (vp && _wfPointInRect(e.clientX, e.clientY, vp.getBoundingClientRect())) {
       _wfPlaceNodeAt(st.type, e.clientX, e.clientY, vp, st.scope, st.name);
     }
+  } else if (st.fromToolbar) {
+    // A toolbar tool that only responded to dragging would read as a broken
+    // button (Ron, MC-871 follow-up) -- released here with no drag ever
+    // having activated (no slop crossed on mouse/pen, no long-press elapsed
+    // on touch) means this was a plain click/tap, so place the block the
+    // same way a click on anything else does: right where the user is
+    // looking, never on top of an existing card.
+    _wfPlaceToolAtFreeSpot(st.type);
   }
   _wfPlaceTeardown(st);
 }
@@ -3190,6 +3208,96 @@ function _wfPlaceNodeAt(type, clientX, clientY, vp, scope, name) {
   _wfMarkDirty();
   _wfRender();
   if (node.type === 'agent') _wfFocusPrompt(node.name);
+}
+
+// A click/tap on a toolbar tool (never a person -- only the toolbar's Action/
+// Approval/Wait buttons pass `fromToolbar` to `_wfPaletteDown`) with no drag
+// gesture behind it. Placement rule: to the right of whichever node was
+// placed most recently (`def.nodes` is append-only, so the last entry IS the
+// last-placed one), stepping down and then right again if that would land on
+// an existing card; the visible canvas centre only when the canvas is empty.
+// Deliberately UNWIRED -- unlike a drop onto a card's `+`/body, a toolbar
+// click names no "after this step" target, so wiring one would be a guess.
+function _wfPlaceToolAtFreeSpot(type) {
+  const entry = _wfEntry(); if (!entry) return;
+  _wfSyncDomToModel(entry);
+  const st = entry._wf;
+  const spot = _wfFreeSpotWorld(st);
+  const node = _wfMakeNode(st, type, null, null, spot.x, spot.y);
+  st.def.nodes = (st.def.nodes || []).concat([node]);
+  _wfMarkDirty();
+  _wfRender();
+  _wfNudgeClearOfOverlap(node.name);
+}
+
+// `_wfFreeSpotWorld`'s guess assumes a fixed card height because the new
+// card's REAL height isn't knowable before it exists in the DOM -- Action/
+// Approval/Wait cards vary a lot by how much config they're showing. Once
+// the node above is actually rendered, its true `offsetHeight` is known, so
+// this re-checks against every OTHER card's real box and nudges straight
+// down (never sideways -- that would risk a second overlap in a fresh
+// direction) until clear, re-rendering each step. This is what turns "never
+// on top of an existing card" into an actual guarantee instead of a guess.
+function _wfNudgeClearOfOverlap(name) {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  const world = document.getElementById('wfb-world');
+  if (!world) return;
+  for (let tries = 0; tries < 20; tries++) {
+    const mine = world.querySelector(`.wfb-node[data-name="${_wfAttrEsc(name)}"]`);
+    if (!mine) return;
+    const mineRect = { x: mine.offsetLeft, y: mine.offsetTop, w: mine.offsetWidth, h: mine.offsetHeight };
+    const hit = [...world.querySelectorAll('.wfb-node, .wfb-trigger-box')]
+      .filter(el => el !== mine)
+      .map(el => ({ x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }))
+      .find(r =>
+        mineRect.x < r.x + r.w + WFB_TOOL_SPOT_GAP && mineRect.x + mineRect.w + WFB_TOOL_SPOT_GAP > r.x &&
+        mineRect.y < r.y + r.h + WFB_TOOL_SPOT_GAP && mineRect.y + mineRect.h + WFB_TOOL_SPOT_GAP > r.y);
+    if (!hit) return;
+    const node = (st.def.nodes || []).find(n => n.name === name);
+    if (!node) return;
+    node.y = hit.y + hit.h + WFB_TOOL_SPOT_GAP;
+    _wfRender();
+  }
+}
+
+// World-space (pre-pan/zoom) coordinates for a fresh, non-overlapping spot.
+// Reads REAL rendered card rects (`.wfb-node`/`.wfb-trigger-box` `offsetLeft/
+// Top/Width/Height`) rather than guessing card height from `def.nodes` alone
+// -- card height varies a lot by type/content (a Wait card is short, an agent
+// card with outcomes can run past 500px per the smoke harness's own notes),
+// and `offsetWidth/Height` reflect the pre-transform world box regardless of
+// the canvas's current zoom (a CSS `transform: scale()` on `#wfb-world`
+// changes paint, not layout).
+const WFB_TOOL_SPOT_CARD_W = 260, WFB_TOOL_SPOT_CARD_H = 140, WFB_TOOL_SPOT_GAP = 32;
+function _wfFreeSpotWorld(st) {
+  const world = document.getElementById('wfb-world');
+  const rects = world
+    ? [...world.querySelectorAll('.wfb-node, .wfb-trigger-box')].map(el => ({
+        x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight,
+      }))
+    : [];
+  const overlaps = (x, y) => rects.some(r =>
+    x < r.x + r.w + WFB_TOOL_SPOT_GAP && x + WFB_TOOL_SPOT_CARD_W + WFB_TOOL_SPOT_GAP > r.x &&
+    y < r.y + r.h + WFB_TOOL_SPOT_GAP && y + WFB_TOOL_SPOT_CARD_H + WFB_TOOL_SPOT_GAP > r.y);
+  if (!rects.length) {
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const rect = vp ? vp.getBoundingClientRect() : { width: 600, height: 400 };
+    const v = st.viewport;
+    return {
+      x: Math.round((rect.width / 2 - v.x) / v.scale - WFB_TOOL_SPOT_CARD_W / 2),
+      y: Math.round((rect.height / 2 - v.y) / v.scale - WFB_TOOL_SPOT_CARD_H / 2),
+    };
+  }
+  const nodes = st.def.nodes || [];
+  const last = nodes[nodes.length - 1];
+  const baseX = (last ? (last.x || 0) : 0) + 320, baseY = last ? (last.y || 0) : 0;
+  let x = baseX, y = baseY, tries = 0;
+  while (overlaps(x, y) && tries < 40) {
+    tries++;
+    if (tries % 8 === 0) { x += 320; y = baseY; } else { y += WFB_TOOL_SPOT_CARD_H + WFB_TOOL_SPOT_GAP; }
+  }
+  return { x: Math.round(x), y: Math.round(y) };
 }
 
 // Place a new node after `fromName`'s `when` port and wire the edge. The one
