@@ -98,7 +98,11 @@ CURRENT_FORMAT = 2  # stamped on every record write; fixes the store version
                      # never actually reaching disk under the old STORE_VERSION name.
 
 NODE_TYPES = ('agent', 'approval', 'action')
-ACTION_ALLOWLIST = ('backlog_create', 'backlog_patch', 'desk_harvest')
+# R3-1's final v2 allowlist (docs/WORKFLOW_BUILDER_SPEC.md). Growing this is a
+# spec change, not a config change -- every verb here was individually argued
+# through the authority guard (R3-3) before landing.
+ACTION_ALLOWLIST = ('backlog_create', 'backlog_patch', 'desk_harvest',
+                     'journal_append', 'notify_operator', 'restore_point_create')
 TRIGGER_TYPES = ('manual', 'schedule')
 RESERVED_WHEN = 'otherwise'
 
@@ -793,7 +797,7 @@ def _advance_run(run_id: str) -> None:
                 return
 
             if t == 'action':
-                ok, output, err = _execute_action(run, node)
+                ok, output, err = _execute_action(run, node, workflow)
                 run['steps'][name] = {
                     **run['steps'].get(name, {}),
                     'status': 'completed' if ok else 'failed',
@@ -995,6 +999,65 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
 
 # ── Clayrune actions (allowlisted, deterministic, no agent in the loop) ──────
 
+# Module-level so tests can monkeypatch it the same way they redirect
+# WORKFLOWS_PATH/WORKFLOW_RUNS_DIR -- a workflow test run must never write
+# into the real docs/_journal.
+_JOURNAL_DIR = Path(__file__).resolve().parent.parent / 'docs' / '_journal'
+
+
+def _journal_append(item_id: str, text: str, title: str = '') -> str:
+    """Append one dated entry to docs/_journal/<item_id>-<slug>.md, creating
+    it on first use. This is the sanctioned unattended log path (AGENT_RULES/
+    CLAUDE.md, 2026-08-15): a workflow run is unattended machinery and must
+    never write a backlog note. Filename convention matches
+    `tools/backlog_journal_common.py`'s `journal_name()` so a workflow's
+    entries land in the same file that tool already treats as canonical for
+    this item; if that file already exists (however it was created) we append
+    to it rather than starting a second one under a different slug."""
+    journal_dir = _JOURNAL_DIR
+    journal_dir.mkdir(parents=True, exist_ok=True)
+    existing = sorted(journal_dir.glob(f'{item_id}-*.md'))
+    if existing:
+        path = existing[0]
+    else:
+        slug = re.sub(r'[^a-z0-9]+', '-', (title or '').lower()).strip('-')[:48].rstrip('-') or 'item'
+        path = journal_dir / f'{item_id}-{slug}.md'
+    with path.open('a', encoding='utf-8') as f:
+        f.write(f'\n### {now_iso()}  ·  workflow\n\n{text.strip()}\n')
+    try:
+        return str(path.relative_to(Path(__file__).resolve().parent.parent))
+    except ValueError:
+        return str(path)
+
+
+def _send_operator_notification(subject: str, body: str) -> tuple:
+    """Best-effort email via the existing mailer (AGENT_RULES: no new SMTP
+    code, no new creds) -- same mechanism `_notify_approval_waiting` already
+    uses for the approval-gate channel. The recipient is resolved entirely
+    inside `send_mail.py` from server config/env; no argument here can carry
+    one. That is the whole reason `notify_operator` is on the allowlist while
+    `mail_send` is refused (R3-1): an authorable destination is an
+    exfiltration primitive, a fixed operator inbox is not. Do not add a `to`/
+    `cc`/`recipient` parameter to this function."""
+    if os.environ.get('PYTEST_CURRENT_TEST') and not os.environ.get('MC_LIVE_MAIL_TESTS'):
+        _log('[workflows] notify_operator suppressed under pytest')
+        return True, 'suppressed under pytest'
+    mailer = Path(__file__).resolve().parent.parent / 'tools' / 'night-review' / 'send_mail.py'
+    if not mailer.exists():
+        return False, 'mailer not found'
+    try:
+        import subprocess
+        import sys
+        r = subprocess.run(
+            [sys.executable, str(mailer), '--subject', subject, '--body', body],
+            capture_output=True, text=True, timeout=60)
+        if r.returncode != 0:
+            return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
+        return True, 'sent'
+    except Exception as e:
+        return False, str(e)
+
+
 def _http_json(method: str, path: str, payload: Optional[dict] = None) -> dict:
     url = f'http://127.0.0.1:{_port()}{path}'
     data = json.dumps(payload).encode() if payload is not None else None
@@ -1005,7 +1068,7 @@ def _http_json(method: str, path: str, payload: Optional[dict] = None) -> dict:
         return json.loads(raw) if raw else {}
 
 
-def _execute_action(run: dict, node: dict) -> tuple:
+def _execute_action(run: dict, node: dict, workflow: Optional[dict] = None) -> tuple:
     """(ok, output_text, error). Never raises -- dispatch-time errors become
     a terminal run failure, exactly like an agent step's dispatch failure."""
     ctx = _build_context(run, node)
@@ -1036,6 +1099,29 @@ def _execute_action(run: dict, node: dict) -> tuple:
             payload = {'project_id': rendered['project_id']} if rendered.get('project_id') else {}
             resp = _http_json('POST', '/api/desk/signals/harvest', payload)
             return True, json.dumps(resp), None
+        if action == 'journal_append':
+            item_id = rendered.get('item_id') or ''
+            text = rendered.get('text') or ''
+            if not item_id or not text.strip():
+                return False, '', 'journal_append requires item_id and text'
+            rel = _journal_append(item_id, text, rendered.get('title') or '')
+            return True, f'appended to {rel}', None
+        if action == 'notify_operator':
+            # No `to`/`cc`/`recipient` is ever read from `rendered` here --
+            # see _send_operator_notification's docstring. The message is the
+            # only authorable part of this action.
+            message = rendered.get('message') or ''
+            wf_name = (workflow or {}).get('name', '')
+            subject = f"[Clayrune workflow] {wf_name}: {node.get('name', '')}".strip(': ')
+            ok, info = _send_operator_notification(subject, message or '(no message)')
+            if not ok:
+                return False, '', f'notify_operator failed: {info}'
+            return True, info, None
+        if action == 'restore_point_create':
+            pid = rendered.get('project_id')
+            payload = {'label': rendered.get('label')} if rendered.get('label') else {}
+            resp = _http_json('POST', f'/api/backup/restore-point/{pid}', payload)
+            return True, f"restore point {resp.get('snap_id', '')}", None
         return False, '', f"'{action}' is not in the allowlist"
     except urllib.error.HTTPError as e:
         return False, '', f'HTTP {e.code}: {e.read().decode(errors="replace")[:300]}'
