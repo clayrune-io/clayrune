@@ -724,6 +724,16 @@
 <div class="minimized-tray" id="minimized-tray"></div>
 <div id="toast-container"></div>
 <div id="hm-worker-popover" class="hm-worker-popover hidden" onmouseenter="cancelHideHmPopover()" onmouseleave="scheduleHideHmPopover()"></div>
+<!-- Workflow-builder palette person popover — body-level for the same reason
+     as hm-worker-popover above: it is `position:fixed` and the builder's host
+     div lives inside a .modal-window, which carries a permanent
+     `filter: drop-shadow(...)` (removed only while maximized). A `filter` on
+     an ancestor makes IT the containing block for a fixed-position descendant,
+     so a copy of this node rendered inside the modal drifted by the modal's
+     own offset instead of sitting next to the hovered row. One static node
+     here (never created/destroyed by workflow-builder.js) means there is
+     nothing to leak or duplicate across remounts. -->
+<div id="wfb-palette-popover" class="wfb-palette-popover hidden"></div>
 
 <!-- Floating "Ask Claydo" button — draggable; tap opens the helper. The
      image src is the animated idle WebP so the mascot feels alive from

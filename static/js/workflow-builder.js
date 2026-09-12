@@ -597,6 +597,7 @@ function _wfSyncBeforeLeave(projectId) {
   _wfCloseTriggerPopover();
   _wfClosePortPopover();
   _wfCloseNodeMenu();
+  _wfHidePalettePopover();
 }
 window._wfSyncBeforeLeave = _wfSyncBeforeLeave;
 
@@ -1557,7 +1558,6 @@ function _wfRenderBody(st) {
     </div>` : ''}
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
-      <div id="wfb-palette-popover" class="wfb-palette-popover hidden"></div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
         <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
@@ -1650,6 +1650,23 @@ function _wfRenderPalette(st) {
 // showHmWorkerPopover/scheduleHideHmPopover): one shared DOM node, positioned
 // off the hovered row, clamped to the viewport so it can never overflow or
 // get clipped by the canvas.
+//
+// The node itself lives in index.html (`#wfb-palette-popover`, next to
+// `#hm-worker-popover`), NOT in this file's `_wfRenderBody` template — a bug
+// fix, not a style choice. It used to be rendered inline inside
+// `#wfb-builder`, which lives inside the builder's `.modal-window` host.
+// `.modal-window` carries a permanent `filter: drop-shadow(...)` (cleared
+// only while maximized, `.modal-window.is-maximized { filter: none; }`), and
+// a `filter` on an ancestor makes it the containing block for a
+// `position:fixed` descendant — so the popover's viewport-relative left/top
+// landed relative to the MODAL's box instead of the viewport, drifting well
+// down-and-right of the hovered row (reported: hovering Dave in the Bench put
+// his popover out over the middle of the canvas). Moving the node to
+// `document.body`, alongside the Hivemind popover it was already modeled on,
+// makes `position:fixed` mean the viewport again. It is static markup, never
+// created or torn down by this file, so there is nothing to leak or
+// duplicate across remounts — `_wfSyncBeforeLeave` just hides it, same as it
+// already does for the port/trigger/node-menu popovers that live on body.
 let _wfPalettePopoverHideTimer = null;
 
 function _wfPalettePersonHover(event, scope, name) {

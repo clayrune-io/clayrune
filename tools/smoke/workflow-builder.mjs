@@ -1067,6 +1067,40 @@ try {
     ? ok(`palette popup shows the pinned engine before drag: "${c11Pinned.text.trim()}"`)
     : fail(`expected the palette popup to show Pinny's pinned engine, got ${JSON.stringify(c11Pinned)}`);
 
+  // Regression for the reported bug: the popover landed in the middle of the
+  // canvas instead of next to the hovered row. Root cause was the popover's
+  // markup living INSIDE the builder's `.modal-window` host, which carries a
+  // permanent `filter: drop-shadow(...)` — a `filter` on an ancestor becomes
+  // the containing block for a `position:fixed` descendant, so viewport-space
+  // left/top land relative to the modal's own box instead of the viewport.
+  // This runs in the NORMAL (non-maximized) mount, where that filter is
+  // present — a maximized-only check would pass against today's bug, since
+  // `.modal-window.is-maximized { filter: none; }` removes the very ancestor
+  // that causes the drift. Confirms both effects: the node is a direct child
+  // of <body> (escapes the modal subtree entirely), and its rendered position
+  // actually lands next to the hovered row rather than merely having the
+  // right left/top VALUES computed against the wrong containing block.
+  const c11Pos = await page.evaluate(() => {
+    const modalMaximized = !!document.querySelector('.modal-window.is-maximized');
+    const row = [...document.querySelectorAll('.wfb-palette-person')]
+      .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Pinny');
+    const pop = document.getElementById('wfb-palette-popover');
+    const rowRect = row.getBoundingClientRect();
+    const popRect = pop.getBoundingClientRect();
+    return {
+      modalMaximized, mountedOnBody: pop.parentElement === document.body,
+      rowRight: rowRect.right, rowTop: rowRect.top, popLeft: popRect.left, popTop: popRect.top,
+    };
+  });
+  (!c11Pos.modalMaximized && c11Pos.mountedOnBody)
+    ? ok('the palette popover node is a direct child of <body> (portaled out of the filtered .modal-window), checked in the NORMAL (non-maximized) mount')
+    : fail(`expected the popover on <body> in the non-maximized mount, got ${JSON.stringify(c11Pos)}`);
+  const c11DeltaX = Math.abs(c11Pos.popLeft - (c11Pos.rowRight + 8));
+  const c11DeltaY = Math.abs(c11Pos.popTop - c11Pos.rowTop);
+  (c11DeltaX < 20 && c11DeltaY < 40)
+    ? ok(`the popover renders adjacent to the hovered row (dx=${c11DeltaX.toFixed(1)}px, dy=${c11DeltaY.toFixed(1)}px from the row's real position), not offset by an ancestor's filter`)
+    : fail(`popover drifted from the hovered row: row right/top=(${c11Pos.rowRight.toFixed(1)},${c11Pos.rowTop.toFixed(1)}) popover left/top=(${c11Pos.popLeft.toFixed(1)},${c11Pos.popTop.toFixed(1)}) dx=${c11DeltaX.toFixed(1)} dy=${c11DeltaY.toFixed(1)}`);
+
   const plainRow = await page.evaluateHandle(() => [...document.querySelectorAll('.wfb-palette-person')]
     .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Plain'));
   await plainRow.asElement().hover();

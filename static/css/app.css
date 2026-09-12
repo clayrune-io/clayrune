@@ -8696,7 +8696,15 @@
      convention as `.hm-worker-popover` (conversation.js) so hovers look
      like one system across the app; positioned + clamped in JS
      (_wfPalettePersonHover) so it can never overflow the viewport or get
-     clipped by the canvas. */
+     clipped by the canvas.
+     The node ITSELF is markup in index.html, a body-level sibling of
+     `#hm-worker-popover` — not rendered by workflow-builder.js's own
+     template. That template lives inside the builder's `.modal-window`
+     host, which carries `filter: drop-shadow(...)`; a `filter` on an
+     ancestor becomes the containing block for `position:fixed`, so a copy
+     of this popover rendered in there drifted by the modal's own offset
+     instead of sitting next to the hovered row. Keep it out of that
+     subtree. */
   .wfb-palette-popover {
     position: fixed; z-index: 10000; background: var(--bg-card, var(--surface));
     border: 1px solid var(--border); border-radius: 8px;
