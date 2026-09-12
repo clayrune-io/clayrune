@@ -133,6 +133,35 @@ def now_iso():
     return datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')
 
 
+BACKLOG_STATUS_HISTORY_CAP = 100
+
+
+def record_backlog_status_change(item, new_status, by='user', ts=None):
+    """Append a status transition to a backlog item's `status_history`.
+
+    Status and done_at are overwritten in place, so without this a reopen
+    erased the closure date and left no trace the item had ever been closed
+    (MC-871, 2026-09-12: reopened after a wontdo, done_at silently cleared).
+    Ticket numbers only advance, so reopening an old item instead of filing a
+    new one is fine only if the item can tell its own story. No-op when the
+    status is unchanged. The prior done_at rides along on the entry because
+    the caller is about to clear it. Returns True when an entry was written.
+    """
+    old_status = item.get('status')
+    if new_status == old_status:
+        return False
+    entry = {'ts': ts or now_iso(), 'from': old_status, 'to': new_status, 'by': by}
+    if item.get('done_at'):
+        entry['prior_done_at'] = item['done_at']
+    history = item.setdefault('status_history', [])
+    history.append(entry)
+    if len(history) > BACKLOG_STATUS_HISTORY_CAP:
+        _log(f"[backlog] status_history for {item.get('id')} capped at "
+             f"{BACKLOG_STATUS_HISTORY_CAP}; dropping {len(history) - BACKLOG_STATUS_HISTORY_CAP} oldest")
+        del history[:-BACKLOG_STATUS_HISTORY_CAP]
+    return True
+
+
 def file_type(filename):
     """Return a simple type hint for UI rendering."""
     ext = Path(filename).suffix.lower()
