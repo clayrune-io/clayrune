@@ -1299,21 +1299,462 @@ function _renderBoard() {
   </div>`;
 }
 
-// QUEUE — the only surface that ever demands anything of you.
-function _renderQueueInto(bodyEl) {
-  // Reuse cross-social.js wholesale: it already renders rows with the correct
-  // per-project scoping and the attribution guard, and two copies of that logic
-  // would drift. We just host its container.
-  bodyEl.innerHTML = `
-    <div style="display:flex;gap:8px;align-items:center;margin:10px 0 12px;flex-wrap:wrap">
-      <input type="text" id="asl-search" placeholder="Search draft text..."
-        value="${esc((window._allSocialFilter && window._allSocialFilter.search) || '')}"
-        style="flex:1;min-width:180px;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)"
-        oninput="_allSocialFilter.search=this.value;renderAllSocial()">
-      <span id="asl-count" style="font-size:11px;color:var(--text-faint)"></span>
+// QUEUE (UI brief §3) — the only surface that ever demands anything of you.
+// `300px list | review pane`, review pane itself `minmax(0,1fr) 300px`.
+//
+// Reads the SAME data cross-social.js hydrates (`allProjects[].social_queue`,
+// filled by `_hydrateAllSocial`) rather than a second fetch — two copies of
+// "what is pending across every project" would drift. What changes here is
+// the PRESENTATION: a compact, selectable row on the left instead of a full
+// accordion card, and a real review pane on the right instead of the row
+// carrying every action inline. Mutations still go through the existing
+// routes/functions (saveSocialBody, patchSocialItem, markSocialItemPosted,
+// restoreSocialItem — all in social-actions.js) — this never forks the write
+// path, only the read/selection layer on top of it.
+const _DESK_QUEUE_STATUSES = new Set(['pending', 'approved', 'needs_changes']);
+let _deskQueueSelectedId = null;   // `${projectId}:${itemId}`, or null
+let _deskQueueFilters = { voice: 'all', project: 'all' };
+let _deskQueueChecks = {};         // itemId -> {loading, body, repeat, error}
+let _deskPlatformRulesCache = {};  // platform -> rules | null (in flight)
+
+function _deskQueueAllItems() {
+  const rows = [];
+  for (const p of (typeof allProjects !== 'undefined' ? allProjects : [])) {
+    if (p._socialQueueFull && Array.isArray(p.social_queue)) {
+      for (const item of p.social_queue) rows.push({ p, item });
+    }
+  }
+  return rows;
+}
+
+function _deskQueueRows() {
+  let rows = _deskQueueAllItems().filter(r => _DESK_QUEUE_STATUSES.has(r.item.status));
+  if (_deskQueueFilters.voice !== 'all') rows = rows.filter(r => (r.item.voice || '') === _deskQueueFilters.voice);
+  if (_deskQueueFilters.project !== 'all') rows = rows.filter(r => r.item.project_id === _deskQueueFilters.project);
+  rows.sort((a, b) => (a.item.created_at || '').localeCompare(b.item.created_at || ''));
+  return rows;
+}
+
+function _deskVoicePlatform(name) {
+  const v = (_deskAllVoices || []).find(x => x.name === name);
+  return v ? (v.platform || '') : '';
+}
+
+function _deskVoicePillClass(platform) {
+  if (platform === 'x' || platform === 'twitter') return 'desk-vpill-x';
+  if (platform === 'linkedin') return 'desk-vpill-li';
+  return 'desk-vpill-neutral';
+}
+
+function _deskFindSignal(id) {
+  return (_deskSignals || []).find(s => s.id === id) || null;
+}
+
+function deskQueueSelect(projectId, itemId) {
+  _deskQueueSelectedId = projectId + ':' + itemId;
+  renderDesk();
+}
+
+function deskQueueSetFilter(kind, value) {
+  _deskQueueFilters[kind] = value;
+  renderDesk();
+}
+
+function _deskQueueRowHTML(row, selected) {
+  const { p, item } = row;
+  const voice = item.voice || '';
+  const platform = _deskVoicePlatform(voice) || item.platform || '';
+  const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === item.project_id);
+  const age = (typeof window.timeAgoShort === 'function') ? window.timeAgoShort(item.created_at) : '';
+  return `<div class="desk-qrow${selected ? ' selected' : ''}" data-item-id="${esc(item.id)}"
+      onclick="deskQueueSelect('${esc(p.id)}','${esc(item.id)}')">
+    <div class="desk-qrow-top">
+      <span class="desk-vpill ${_deskVoicePillClass(platform)}">${esc(voice || platform || 'unspecified')}</span>
+      <span class="desk-qrow-proj">${esc((proj && proj.name) || item.project_id || '')}</span>
+      <span class="desk-qrow-age">${esc(age)}</span>
+      ${!item.edited ? '<span class="desk-qrow-dot" title="Not yet edited"></span>' : ''}
     </div>
-    <div id="asl-list"></div>`;
-  if (typeof renderAllSocial === 'function') renderAllSocial();
+    <div class="desk-qrow-body">${esc(item.body || '')}</div>
+  </div>`;
+}
+
+// Real pricing (docs/THE_DESK_SPEC.md, verified 2026-09-09 at
+// docs.x.com/x-api/getting-started/pricing): $0.015/post, $0.20 if the body
+// contains a URL. LinkedIn's Share-on-LinkedIn is free. V1 has exactly these
+// two platforms — this mirrors the same numbers already written into
+// mc.desk's platform-rules free text rather than a second, drifting copy.
+// Anything else has no known cost and renders honestly as a dash.
+const _DESK_URL_RE = /https?:\/\//i;
+function _deskReleaseCost(platform, body) {
+  const p = (platform || '').toLowerCase();
+  if (p === 'x' || p === 'twitter') return _DESK_URL_RE.test(body || '') ? '$0.20' : '$0.015';
+  if (p === 'linkedin') return 'free';
+  return null;
+}
+
+async function _deskLoadPlatformRules(platform) {
+  if (!platform || _deskPlatformRulesCache[platform] !== undefined) return;
+  _deskPlatformRulesCache[platform] = null;
+  try {
+    _deskPlatformRulesCache[platform] = await _deskFetch(`/api/desk/platforms/${encodeURIComponent(platform)}`);
+  } catch (e) {
+    _deskPlatformRulesCache[platform] = {};
+  }
+  if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// The repeat-check hits the ledger's real similarity route (mc.desk.similar_published)
+// rather than reimplementing it client-side — same reasoning as reusing the
+// write path: one place that decides "have we said this before".
+function _deskQueueRunChecks(item) {
+  const id = item.id;
+  const body = item.body || '';
+  _deskQueueChecks[id] = { loading: true, body };
+  _deskFetch('/api/desk/repeat-check', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ body }),
+  }).then(out => {
+    _deskQueueChecks[id] = { loading: false, body, repeat: out.matches || [] };
+    if (openModals.has(DESK_MODAL_ID)) renderDesk();
+  }).catch(e => {
+    _deskQueueChecks[id] = { loading: false, body, repeat: null, error: String(e.message || e) };
+    if (openModals.has(DESK_MODAL_ID)) renderDesk();
+  });
+}
+
+// CHECKS (UI brief §3) — computed before release. Every row is informational
+// except the ledger one, and every row that has no store behind it renders
+// an honest dash with a tooltip rather than a guess (ground rule: never
+// invent a value, never hide the row).
+function _deskChecksHTML(item) {
+  const body = item.body || '';
+  const cache = _deskQueueChecks[item.id];
+  if (!cache || cache.body !== body) _deskQueueRunChecks(item);
+  const fresh = cache && cache.body === body && !cache.loading;
+
+  const repeatRow = !fresh
+    ? `<div class="desk-check-row unknown"><span class="dcr-mark">…</span> Checking the ledger…</div>`
+    : cache.repeat === null
+      ? `<div class="desk-check-row unknown" title="${esc(cache.error || '')}"><span class="dcr-mark">—</span> Could not check the ledger</div>`
+      : cache.repeat.length
+        ? `<div class="desk-check-row warn"><span class="dcr-mark">!</span> Said before — ${Math.round(cache.repeat[0].overlap * 100)}% overlap with a ${esc(cache.repeat[0].platform || '')} post
+             ${cache.repeat[0].url ? `(<a href="${esc(cache.repeat[0].url)}" target="_blank" rel="noopener">open it</a>)` : ''}</div>`
+        : `<div class="desk-check-row ok"><span class="dcr-mark">✓</span> Not said before (ledger)</div>`;
+
+  const signal = item.signal_id ? _deskFindSignal(item.signal_id) : null;
+  const signalRow = !item.signal_id
+    ? `<div class="desk-check-row unknown" title="This draft has no originating signal recorded"><span class="dcr-mark">—</span> Claim traces to a signal</div>`
+    : signal
+      ? `<div class="desk-check-row ok" title="${esc(signal.summary || '')}"><span class="dcr-mark">✓</span> Claim traces to <a onclick="deskTab('board')">${esc(_deskHumanizeTitle(signal.summary || '').slice(0, 44))}</a></div>`
+      : `<div class="desk-check-row unknown" title="Not in the currently loaded feed"><span class="dcr-mark">—</span> Claim traces to signal ${esc(item.signal_id)}</div>`;
+
+  const voice = item.voice ? (_deskAllVoices || []).find(v => v.name === item.voice) : null;
+  let bannedRow;
+  if (!item.voice || !voice) {
+    bannedRow = `<div class="desk-check-row unknown" title="No voice recorded on this draft"><span class="dcr-mark">—</span> No banned words for this voice</div>`;
+  } else {
+    const hits = (voice.banned || []).filter(w => w && body.toLowerCase().includes(String(w).toLowerCase()));
+    bannedRow = hits.length
+      ? `<div class="desk-check-row warn"><span class="dcr-mark">!</span> Banned for ${esc(voice.name)}: ${hits.map(esc).join(', ')}</div>`
+      : `<div class="desk-check-row ok"><span class="dcr-mark">✓</span> No banned words for ${esc(voice.name)}</div>`;
+  }
+
+  const assetRow = (item.media || []).length
+    ? `<div class="desk-check-row ok"><span class="dcr-mark">✓</span> ${(item.media || []).length} asset(s) attached</div>`
+    : `<div class="desk-check-row warn"><span class="dcr-mark">!</span> Asset missing — releases without media</div>`;
+
+  return `<div class="desk-checks-card">
+    <div class="desk-side-label" style="margin-bottom:8px">Checks</div>
+    ${repeatRow}${signalRow}${bannedRow}${assetRow}
+  </div>`;
+}
+
+// SAME STORY, OTHER VOICE — never cross-posts (spec: written twice, never
+// copied). Reuses deskDraft() for "Ask Posy" rather than a second dispatch
+// path.
+function _deskOtherVoiceHTML(item) {
+  if (!item.signal_id) {
+    return `<div class="desk-other-voice-card" title="No originating signal — nothing to compare">
+      Same story, other voice — no signal recorded</div>`;
+  }
+  const others = _deskQueueAllItems().filter(r =>
+    r.item.signal_id === item.signal_id && r.item.voice && r.item.voice !== item.voice);
+  if (others.length) {
+    const o = others[0];
+    return `<div class="desk-other-voice-card"><b>${esc(o.item.voice)}</b> already has a draft
+      from this signal — <a onclick="deskQueueSelect('${esc(o.p.id)}','${esc(o.item.id)}')">open it ›</a></div>`;
+  }
+  const otherVoiceName = (_deskAllVoices || []).map(v => v.name).find(n => n !== item.voice);
+  if (!otherVoiceName) {
+    return `<div class="desk-other-voice-card">Same story, other voice — no other voice exists yet</div>`;
+  }
+  return `<div class="desk-other-voice-card"><b>${esc(otherVoiceName)}</b> has no draft from this
+    signal yet — <button onclick="deskDraft('${esc(item.signal_id)}','${esc(otherVoiceName)}')">Ask Posy ›</button></div>`;
+}
+
+function _deskUpdateCharCounter(el) {
+  const wrap = el.closest('.desk-post-preview');
+  const counter = wrap && wrap.querySelector('.desk-char-counter');
+  if (!counter) return;
+  const len = el.innerText.length;
+  const m = counter.textContent.match(/\/\s*(\d+)/);
+  if (m) {
+    const limit = parseInt(m[1], 10);
+    counter.textContent = `${len} / ${limit}`;
+    counter.classList.toggle('over', len > limit);
+  } else {
+    counter.textContent = `${len} chars`;
+  }
+}
+
+// Autosave on blur -> update_social_queue_item -> desk.record_edit. THIS IS
+// THE LEARNING LOOP (UI brief §3) — saveSocialBody (social-actions.js) is the
+// exact function the old flat Queue used for the same contenteditable body,
+// so this is not a second write path, just a desk-aware wrapper that also
+// refreshes the soft-lock/char-counter/checks state the review pane shows.
+async function deskQueueSaveBody(e, projectId, itemId) {
+  await saveSocialBody(e, projectId, itemId);
+  renderDesk();
+}
+
+async function deskQueueRelease(projectId, itemId) {
+  const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/approve`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ decided_by: 'user' }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (typeof showToast === 'function') showToast(data.error || 'Could not release this draft.', 4000);
+    return;
+  }
+  // NOT A PUBLISH CALL. approve() only ever flips a status flag — Phase 1's
+  // shape since it shipped, and unchanged here. Wiring the publishing office
+  // is UI brief build order step 5, and needs Ron's go-ahead: it is
+  // outward-facing. Said plainly so nobody reads "Release" as "posted".
+  if (typeof showToast === 'function') {
+    showToast('Recorded. Publishing is not wired yet — post it yourself, then use "Mark posted" to record the link.', 6000);
+  }
+  if (typeof refreshProjectSocialQueue === 'function') await refreshProjectSocialQueue(projectId);
+  renderDesk();
+}
+
+// The override link records `released_unedited: true` on the SERVER, derived
+// from the item's own `edited` flag rather than trusted client input — see
+// approve_social_queue_item (project_routes.py), which sets it to
+// `not item.get('edited')` regardless of what the request claims.
+function deskQueueReleaseUnedited(projectId, itemId) {
+  if (!confirm('Release this draft without ever editing it?\n\nThis is the single '
+    + 'highest-risk artifact the system can produce — it will be flagged on the receipt.')) return;
+  deskQueueRelease(projectId, itemId);
+}
+
+async function deskQueueKill(projectId, itemId) {
+  if (!confirm('Kill this draft? This cannot be undone.')) return;
+  await patchSocialItem(projectId, itemId, { status: 'rejected' });
+  if (_deskQueueSelectedId === projectId + ':' + itemId) _deskQueueSelectedId = null;
+  if (typeof showToast === 'function') showToast('Draft killed.');
+  renderDesk();
+}
+
+// No per-draft schedule store exists yet (UI brief §3 lists it alongside
+// Release, but nothing wires a draft to the scheduler) — honest placeholder,
+// same pattern as deskAccountsInfo/deskReplyToPosy above.
+function deskQueueSchedule() {
+  if (typeof showToast === 'function') {
+    showToast('Scheduling a release is not wired yet — there is no per-draft schedule store.', 4000);
+  }
+}
+
+async function deskQueueAttachAsset(projectId, itemId) {
+  const path = (prompt('Path to the media file (under data/media/):') || '').trim();
+  if (!path) return;
+  await patchSocialItem(projectId, itemId, { media: [path] });
+  renderDesk();
+}
+
+function deskQueueToggleInsert(e) {
+  e.stopPropagation();
+  const wrap = e.target.closest('.desk-insert-wrap');
+  const menu = wrap && wrap.querySelector('.desk-insert-menu');
+  if (!menu) return;
+  const opening = menu.style.display !== 'block';
+  document.querySelectorAll('.desk-insert-menu').forEach(m => { m.style.display = 'none'; });
+  menu.style.display = opening ? 'block' : 'none';
+}
+
+function _deskInsertIntoBody(text) {
+  const bodyEl = document.querySelector('.desk-post-body');
+  if (!bodyEl) return null;
+  const current = bodyEl.innerText || '';
+  bodyEl.innerText = current + (current && !current.endsWith(' ') ? ' ' : '') + text;
+  return bodyEl;
+}
+
+// A tracked link always inserts the `?ref=desk-<item_id>` form the Ledger's
+// "to repo" count reads (UI brief §4) — appended automatically so it is never
+// left off by hand.
+async function deskQueueInsertLink(projectId, itemId) {
+  const url = (prompt('Destination URL (a tracking tag is appended automatically):') || '').trim();
+  if (!url) return;
+  const sep = url.includes('?') ? '&' : '?';
+  const bodyEl = _deskInsertIntoBody(`${url}${sep}ref=desk-${itemId}`);
+  document.querySelectorAll('.desk-insert-menu').forEach(m => { m.style.display = 'none'; });
+  if (bodyEl) await deskQueueSaveBody({ target: bodyEl }, projectId, itemId);
+}
+
+async function deskQueueInsertMention(projectId, itemId) {
+  const handle = (prompt('@handle to mention:') || '').trim();
+  if (!handle) return;
+  const bodyEl = _deskInsertIntoBody(handle.startsWith('@') ? handle : '@' + handle);
+  document.querySelectorAll('.desk-insert-menu').forEach(m => { m.style.display = 'none'; });
+  if (bodyEl) await deskQueueSaveBody({ target: bodyEl }, projectId, itemId);
+}
+
+function _deskReviewPaneHTML(row) {
+  const { p, item } = row;
+  const voice = item.voice || '';
+  const platform = _deskVoicePlatform(voice) || item.platform || '';
+  const pillClass = _deskVoicePillClass(platform);
+
+  const signal = item.signal_id ? _deskFindSignal(item.signal_id) : null;
+  const signalHTML = !item.signal_id
+    ? `<span class="desk-review-nosignal" title="No originating signal recorded on this draft">from signal — none recorded</span>`
+    : signal
+      ? `<a class="desk-review-signal" onclick="deskTab('board')" title="${esc(signal.summary || '')}">from signal ${esc(_deskHumanizeTitle(signal.summary || '').slice(0, 44))} ›</a>`
+      : `<span class="desk-review-nosignal" title="Not in the currently loaded feed">from signal ${esc(item.signal_id)}</span>`;
+
+  const editedHTML = item.edited
+    ? `<span class="desk-review-edited green">✓ edited · ${item.edited_lines || 1} line${(item.edited_lines || 1) === 1 ? '' : 's'}</span>`
+    : `<span class="desk-review-edited red">● not yet edited</span>`;
+
+  if (_deskPlatformRulesCache[platform] === undefined) _deskLoadPlatformRules(platform);
+  const rules = _deskPlatformRulesCache[platform];
+  const len = (item.body || '').length;
+  const charLimit = rules && rules.char_limit;
+  const counterHTML = charLimit
+    ? `<span class="desk-char-counter${len > charLimit ? ' over' : ''}">${len} / ${charLimit}</span>`
+    : `<span class="desk-char-counter" title="No character limit on file for this platform">${len} chars</span>`;
+
+  const assetHTML = (item.media || []).length ? '' : `
+    <div class="desk-needs-asset">
+      <span>Needs asset — no media attached yet.</span>
+      <button onclick="deskQueueAttachAsset('${esc(p.id)}','${esc(item.id)}')">Attach ›</button>
+    </div>`;
+
+  const cost = _deskReleaseCost(platform, item.body);
+  const platLabel = platform === 'x' ? 'X' : platform === 'linkedin' ? 'LinkedIn' : (platform || 'the platform');
+  const priced = `Release to ${platLabel}${cost ? ' · ' + cost : ' · —'}`;
+  const locked = !item.edited;
+
+  let railHTML;
+  if (item.status === 'needs_changes') {
+    railHTML = `
+      <div class="desk-checks-card" style="color:var(--amber-text)">
+        <b>Pushed back</b> — ${esc(item.note || 'no note recorded')}
+      </div>
+      <button class="desk-schedule-btn" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')">Restore to pending</button>`;
+  } else if (item.status === 'approved') {
+    railHTML = `
+      <div class="desk-checks-card" style="color:var(--green-text)">
+        <b>Released</b> — recorded${item.released_unedited ? ' (unedited)' : ''}. Publishing is not wired
+        yet: post it yourself, then record the link below.
+      </div>
+      <button class="desk-schedule-btn" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')">Mark posted ›</button>
+      <button class="desk-kill-btn" onclick="deskQueueKill('${esc(p.id)}','${esc(item.id)}')">Kill this draft</button>`;
+  } else {
+    railHTML = `
+      <button class="desk-release-btn${locked ? ' locked' : ''}" ${locked ? 'disabled' : ''}
+        onclick="deskQueueRelease('${esc(p.id)}','${esc(item.id)}')"
+        title="${locked ? 'Edit the draft at least once to unlock' : ''}">${esc(priced)}</button>
+      <div class="desk-release-unlock">Release unlocks after your first edit — ${
+        locked ? `or <a onclick="deskQueueReleaseUnedited('${esc(p.id)}','${esc(item.id)}')">release unedited anyway</a>`
+               : 'already unlocked.'}</div>
+      <button class="desk-schedule-btn" onclick="deskQueueSchedule()">Schedule ▾</button>
+      <button class="desk-kill-btn" onclick="deskQueueKill('${esc(p.id)}','${esc(item.id)}')">Kill this draft</button>
+      ${_deskChecksHTML(item)}
+      ${_deskOtherVoiceHTML(item)}`;
+  }
+
+  return `
+    <div class="desk-review-left">
+      <div class="desk-review-meta">
+        <span class="desk-vpill ${pillClass}">${esc(voice || platform || 'unspecified')}</span>
+        ${signalHTML}
+        ${editedHTML}
+      </div>
+      <div class="desk-post-preview">
+        <div class="desk-post-preview-head">
+          ${(typeof window.avatarHTML === 'function') ? window.avatarHTML('', 28) : ''}
+          <span class="desk-post-voice">${esc(voice || 'unspecified')}</span>
+          <span class="desk-post-asis">as it will appear</span>
+          ${counterHTML}
+        </div>
+        <div class="desk-post-body" contenteditable="true" spellcheck="true"
+          oninput="_deskUpdateCharCounter(this)"
+          onblur="deskQueueSaveBody(event,'${esc(p.id)}','${esc(item.id)}')">${esc(item.body || '')}</div>
+        ${assetHTML}
+      </div>
+      <div class="desk-post-footer">
+        <span>Click to edit in place. Every edit teaches the ${esc(voice || 'unspecified')} voice.</span>
+        <div class="desk-insert-wrap">
+          <button class="desk-insert-btn" onclick="deskQueueToggleInsert(event)">Insert ▾</button>
+          <div class="desk-insert-menu" style="display:none">
+            <button onclick="deskQueueInsertLink('${esc(p.id)}','${esc(item.id)}')">Tracked link</button>
+            <button onclick="deskQueueInsertMention('${esc(p.id)}','${esc(item.id)}')">Mention</button>
+            <button disabled title="This campaign has no canonical URL stored yet">Campaign canonical URL</button>
+          </div>
+        </div>
+      </div>
+      <!-- Thread with Posy (teaching bubble, pushback composer, typing
+           indicator, quick-reply chips) is UI brief build order step 4 — a
+           DELIBERATE hole, not an oversight. It imports the conversation
+           redesign's chat components; forking them here for one surface is
+           exactly what "reuse, don't rebuild" forbids. -->
+      <div class="desk-thread-hole">Thread with Posy — lands with the next pass.</div>
+    </div>
+    <div class="desk-review-rail">${railHTML}</div>`;
+}
+
+function _renderQueueInto(bodyEl) {
+  const rows = _deskQueueRows();
+  const key = (r) => r.p.id + ':' + r.item.id;
+  if (!_deskQueueSelectedId || !rows.some(r => key(r) === _deskQueueSelectedId)) {
+    _deskQueueSelectedId = rows.length ? key(rows[0]) : null;
+  }
+
+  const voiceOpts = ['<option value="all">All voices</option>'].concat(
+    (_deskAllVoices || []).map(v =>
+      `<option value="${esc(v.name)}"${_deskQueueFilters.voice === v.name ? ' selected' : ''}>${esc(v.name)}</option>`));
+  const projIds = Array.from(new Set(_deskQueueAllItems()
+    .filter(r => _DESK_QUEUE_STATUSES.has(r.item.status)).map(r => r.item.project_id)));
+  const projOpts = ['<option value="all">All projects</option>'].concat(
+    projIds.map(pid => {
+      const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === pid);
+      return `<option value="${esc(pid)}"${_deskQueueFilters.project === pid ? ' selected' : ''}>${esc((proj && proj.name) || pid)}</option>`;
+    }));
+
+  const listHTML = rows.length
+    ? rows.map(r => _deskQueueRowHTML(r, key(r) === _deskQueueSelectedId)).join('')
+    : `<div class="desk-queue-empty">Nothing waiting on you.</div>`;
+
+  const selectedRow = rows.find(r => key(r) === _deskQueueSelectedId);
+  const reviewHTML = selectedRow
+    ? _deskReviewPaneHTML(selectedRow)
+    : `<div class="desk-review-empty">Select a draft to review it.</div>`;
+
+  bodyEl.innerHTML = `<div class="desk-queue-grid">
+    <div class="desk-queue-list">
+      <div class="desk-queue-list-head">
+        <span class="desk-queue-count">${rows.length} DRAFT${rows.length === 1 ? '' : 'S'} · OLDEST FIRST</span>
+        <div class="desk-queue-filters">
+          <select class="desk-queue-filter" onchange="deskQueueSetFilter('voice', this.value)">${voiceOpts.join('')}</select>
+          <select class="desk-queue-filter" onchange="deskQueueSetFilter('project', this.value)">${projOpts.join('')}</select>
+        </div>
+      </div>
+      <div class="desk-queue-rows">${listHTML}</div>
+    </div>
+    <div class="desk-queue-review">${reviewHTML}</div>
+  </div>`;
 }
 
 // CALENDAR — what is scheduled and what went out, grouped by day.
@@ -1387,3 +1828,15 @@ window.deskAccountsInfo = deskAccountsInfo;
 window.deskReplyToPosy = deskReplyToPosy;
 window.deskToggleSeeAll = deskToggleSeeAll;
 window._deskOpenCadenceWorkflow = _deskOpenCadenceWorkflow;
+window.deskQueueSelect = deskQueueSelect;
+window.deskQueueSetFilter = deskQueueSetFilter;
+window.deskQueueSaveBody = deskQueueSaveBody;
+window.deskQueueRelease = deskQueueRelease;
+window.deskQueueReleaseUnedited = deskQueueReleaseUnedited;
+window.deskQueueKill = deskQueueKill;
+window.deskQueueSchedule = deskQueueSchedule;
+window.deskQueueAttachAsset = deskQueueAttachAsset;
+window.deskQueueToggleInsert = deskQueueToggleInsert;
+window.deskQueueInsertLink = deskQueueInsertLink;
+window.deskQueueInsertMention = deskQueueInsertMention;
+window._deskUpdateCharCounter = _deskUpdateCharCounter;

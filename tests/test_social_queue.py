@@ -96,6 +96,67 @@ def test_patch_edits_body(client):
     assert res.get_json()['item']['body'] == 'draft two'
 
 
+def test_new_draft_starts_unedited(client):
+    """The Queue's soft-lock (UI brief §3) reads this — Release must dim until
+    the human has actually touched the body at least once."""
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'x', 'body': 'draft one'}).get_json()['item']
+    assert item['edited'] is False
+    assert item['edit_count'] == 0
+    assert item['edited_lines'] == 0
+
+
+def test_patch_with_a_real_body_change_marks_the_item_edited(client):
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'x', 'body': 'Shipped the thing. It works well.'}).get_json()['item']
+    res = client.patch(f"/api/project/proj1/social/queue/{item['id']}",
+                       json={'body': 'Shipped the thing.'})
+    updated = res.get_json()['item']
+    assert updated['edited'] is True
+    assert updated['edit_count'] == 1
+    assert updated['edited_lines'] >= 1
+
+    # A second real edit accumulates rather than resetting.
+    res2 = client.patch(f"/api/project/proj1/social/queue/{item['id']}",
+                        json={'body': 'Shipped the thing today.'})
+    updated2 = res2.get_json()['item']
+    assert updated2['edit_count'] == 2
+
+
+def test_patch_with_no_actual_change_does_not_mark_edited(client):
+    """Saving the body back unchanged (e.g. a blur with no keystrokes) must not
+    unlock Release — that would make the soft-lock meaningless."""
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue',
+                        json={'platform': 'x', 'body': 'draft one'}).get_json()['item']
+    res = client.patch(f"/api/project/proj1/social/queue/{item['id']}", json={'body': 'draft one'})
+    assert res.get_json()['item']['edited'] is False
+
+
+def test_approve_records_released_unedited_when_never_touched(client):
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue', json={
+        'platform': 'x', 'body': 'Shipped the thing.', 'originated': False,
+    }).get_json()['item']
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    assert res.status_code == 200
+    assert res.get_json()['item']['released_unedited'] is True
+
+
+def test_approve_does_not_flag_released_unedited_after_a_real_edit(client):
+    _make_project(client)
+    item = client.post('/api/project/proj1/social/queue', json={
+        'platform': 'x', 'body': 'Shipped the thing.', 'originated': False,
+    }).get_json()['item']
+    client.patch(f"/api/project/proj1/social/queue/{item['id']}",
+                json={'body': 'Shipped the thing today.'})
+    res = client.post(f"/api/project/proj1/social/queue/{item['id']}/approve")
+    assert res.status_code == 200
+    assert res.get_json()['item']['released_unedited'] is False
+
+
 def test_attribution_guard_blocks_then_allows(client):
     """The finding this ticket exists to prove: an originated draft missing the
     attribution line is refused on approve, and the SAME item is approved once

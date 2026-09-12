@@ -31,6 +31,7 @@ pollution" and tests/test_load_projects_sidecar_exclusions.py (which reads
 both names through the server.py shims).
 """
 
+import difflib
 import json
 import os
 import re
@@ -1296,6 +1297,23 @@ def _media_violation(media):
     return None
 
 
+def _diff_line_count(before: str, after: str) -> int:
+    """How many lines changed between two draft bodies — the Queue's "edited ·
+    N lines" readout (UI brief §3). Most drafts are a single unbroken
+    paragraph, so a literal `.splitlines()` diff would almost always read "1
+    line changed" regardless of how much text moved; splitting on sentence
+    boundaries instead gives a number that actually tracks what a human edit
+    looks like ("cut two sentences" -> 2).
+    """
+    b_lines = before.splitlines() or [before]
+    a_lines = after.splitlines() or [after]
+    if len(b_lines) <= 1 and len(a_lines) <= 1:
+        b_lines = re.split(r'(?<=[.!?])\s+', before.strip()) or ['']
+        a_lines = re.split(r'(?<=[.!?])\s+', after.strip()) or ['']
+    sm = difflib.SequenceMatcher(None, b_lines, a_lines)
+    return sum(max(i2 - i1, j2 - j1) for tag, i1, i2, j1, j2 in sm.get_opcodes() if tag != 'equal')
+
+
 @bp.route('/api/project/<project_id>/social/queue', methods=['GET'])
 def get_social_queue(project_id):
     p = load_project(project_id)
@@ -1351,6 +1369,16 @@ def add_social_queue_item(project_id):
         # new draft back to the one it supersedes so Ron can see what changed.
         # See reject_social_queue_item / mc.blueprints.desk_routes.dispatch_rework.
         'reworked_from': data.get('reworked_from'),
+        # The Queue's soft-lock (UI brief §3): Release is dimmed until the body
+        # has been edited at least once IN THIS ITEM'S HISTORY. Tracked here,
+        # not on the voice profile — release-readiness is per-draft, and a
+        # voice's rewrite count says nothing about whether THIS body was ever
+        # touched. `edited_lines` backs the "edited · N lines" readout;
+        # `released_unedited` is set on approve if the human overrode the lock.
+        'edited': False,
+        'edit_count': 0,
+        'edited_lines': 0,
+        'released_unedited': False,
     }
     queue.insert(0, item)
     p['last_updated'] = now_iso()
@@ -1391,6 +1419,16 @@ def update_social_queue_item(project_id, item_id):
                 _desk.record_edit(voice, before, after, draft_id=item['id'])
             except Exception as e:
                 _log(f'[desk] could not learn from the edit to {item["id"]}: {e}')
+        # THE QUEUE'S SOFT-LOCK, tracked independently of record_edit's
+        # cosmetic-edit threshold: ANY real change to the body — even one
+        # record_edit ignores as too small to teach the voice — still counts
+        # as "you looked at this and changed it," which is what unlocks
+        # Release. before/after are compared unstripped so trailing-whitespace
+        # noise from a contenteditable blur doesn't falsely flip the lock.
+        if before.strip() != after:
+            item['edited'] = True
+            item['edit_count'] = item.get('edit_count', 0) + 1
+            item['edited_lines'] = item.get('edited_lines', 0) + _diff_line_count(before, after)
         item['body'] = after
     if 'platform' in data:
         item['platform'] = data['platform']
@@ -1435,6 +1473,13 @@ def approve_social_queue_item(project_id, item_id):
     item['status'] = 'approved'
     item['decided_at'] = now_iso()
     item['decided_by'] = data.get('decided_by', 'user')
+    # The Queue's soft-lock is enforced client-side (the button is dimmed and
+    # non-clickable) — this route stays permissive so a legitimate release
+    # never 409s on a stale `edited` read. What it DOES do is record the fact
+    # for the receipt: `released_unedited` is true only when the draft reaches
+    # here having never been edited, which is what the small "release unedited
+    # anyway" link on the rail confirms before calling this.
+    item['released_unedited'] = not item.get('edited')
     p['last_updated'] = now_iso()
     save_project(project_id, p)
     _log_agent_activity(project_id, f"Social: released a {item.get('platform') or 'draft'} post")

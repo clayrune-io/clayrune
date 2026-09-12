@@ -177,6 +177,12 @@ try {
   const draftCalls = [];
   const postedCalls = [];
   const patchCalls = [];
+  const approveCalls = [];
+  const repeatCheckCalls = [];
+  // Stateful, unlike the other fixtures: the Queue's soft-lock (UI brief §3)
+  // is a round trip — edit, then Release unlocks — and a route that always
+  // hands back the original static QUEUE array can never show that working.
+  const queueState = QUEUE.map(q => ({ ...q }));
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -192,11 +198,41 @@ try {
       return J({ ok: true, item: { id: 'd3', status: 'posted' }, post_id: 'post-9',
                  ledger_written: true, reactions_readable: true });
     }
-    if (path === `/api/project/${PID}/social/queue`) return J(QUEUE);
+    if (/\/social\/queue\/[^/]+\/approve$/.test(path) && req.method() === 'POST') {
+      const id = path.split('/').slice(-2, -1)[0];
+      const item = queueState.find(q => q.id === id);
+      approveCalls.push(path);
+      if (item) {
+        item.status = 'approved';
+        item.released_unedited = !item.edited;
+      }
+      return J({ ok: true, item: item || { id } });
+    }
+    if (path === `/api/project/${PID}/social/queue`) return J(queueState);
     if (path.endsWith('/social/queue')) return J([]);
     if (/\/social\/queue\/[^/]+$/.test(path) && req.method() === 'PATCH') {
-      patchCalls.push({ path, body: JSON.parse(req.postData() || '{}') });
-      return J({ ok: true, item: { id: path.split('/').pop() } });
+      const id = path.split('/').pop();
+      const body = JSON.parse(req.postData() || '{}');
+      patchCalls.push({ path, body });
+      const item = queueState.find(q => q.id === id);
+      // Mirrors the real update_social_queue_item (project_routes.py) closely
+      // enough for the soft-lock to actually flip in this harness: a real
+      // body change marks the item edited, same trigger as the server.
+      if (item) {
+        if ('body' in body) {
+          const before = item.body || '';
+          const after = body.body;
+          if (before.trim() !== after) {
+            item.edited = true;
+            item.edit_count = (item.edit_count || 0) + 1;
+            item.edited_lines = (item.edited_lines || 0) + 1;
+          }
+          item.body = after;
+        }
+        if ('status' in body) item.status = body.status;
+        if ('media' in body) item.media = body.media;
+      }
+      return J({ ok: true, item: item || { id } });
     }
     if (path === '/api/desk/overview') return J(OVERVIEW);
     if (path === '/api/desk/signals') return J(SIGNALS);
@@ -212,6 +248,15 @@ try {
     if (path === '/api/desk/signals/harvest' && req.method() === 'POST') {
       harvestCalls++;
       return J({ projects: [{ project_id: PID, commits: 3, backlog: 1 }], commits: 3, backlog: 1 });
+    }
+    if (/^\/api\/desk\/platforms\//.test(path)) {
+      const name = decodeURIComponent(path.split('/').pop());
+      if (name === 'x') return J({ name: 'x', char_limit: 280, text: 'costs $0.015, $0.20 with a link', configured: true });
+      return J({ name, char_limit: null, text: '', configured: false });
+    }
+    if (path === '/api/desk/repeat-check' && req.method() === 'POST') {
+      repeatCheckCalls.push(JSON.parse(req.postData() || '{}'));
+      return J({ repeat: false, matches: [] });
     }
     if (path === '/api/workflows') return J(WORKFLOWS);
     if (path === '/api/schedules') return J(SCHEDULES);
@@ -367,95 +412,137 @@ try {
 
   await page.click('.desk-see-all');  // collapse it back — later Board assertions target the top picks again
 
-  // ── QUEUE: hosts cross-social.js's REAL rows (the window bridge works) ────
+  // ── QUEUE (UI brief §3): 300px list | review pane ─────────────────────────
+  // Reworked wholesale from the flat cross-social.js list this used to host —
+  // the redesign is the ask, so the old accordion-row assertions below are
+  // REPLACED, not merely adapted, by two-pane equivalents that check the same
+  // underlying behaviours (hydration bridge, receipt chain, edit-teaches-the-
+  // voice, survives-a-poll) against the new markup.
   await page.click('.desk-tab:has-text("Queue")');
-  await page.waitForSelector('#asl-list .social-item', { timeout: 8000 });
-  const rows = await page.$$eval('#asl-list .social-item .backlog-text', els => els.map(e => e.textContent.trim()));
-  if (rows.length === 3 && rows.some(r => r.includes('Shipped drag-to-hire today'))) {
-    ok(`Queue hosts cross-social.js's real rows (${rows.length}) — the _hydrateAllSocial bridge holds`);
+  await page.waitForSelector('.desk-qrow', { timeout: 8000 });
+  const qrows = await page.$$eval('.desk-qrow .desk-qrow-body', els => els.map(e => e.textContent.trim()));
+  if (qrows.length === 3 && qrows.some(r => r.includes('Shipped drag-to-hire today'))) {
+    ok(`Queue lists all 3 pending/approved drafts (${qrows.length}) — the _hydrateAllSocial bridge holds`);
   } else {
-    fail(`Queue rows wrong: ${JSON.stringify(rows)}`);
-  }
-  const badge = await page.textContent('#asl-list .social-project-badge');
-  if ((badge || '').includes('Desk Project')) ok('Queue rows name the project they belong to');
-  else fail(`project badge did not resolve: ${JSON.stringify(badge)}`);
-
-  const teaching = await page.textContent('#asl-list .social-teaching');
-  if ((teaching || '').includes('Ships-beat-promises')) {
-    ok('the teaching block renders on the draft, where the decision is made');
-  } else {
-    fail(`teaching block missing from the queue row: ${JSON.stringify(teaching)}`);
+    fail(`Queue rows wrong: ${JSON.stringify(qrows)}`);
   }
 
-  // The receipt chain: an approved draft is still queue work, and only its
-  // "Mark posted" writes the story ledger. Until 2026-09-10 nothing did.
-  const statuses = await page.$$eval('#asl-list .social-item',
-    els => els.map(e => (e.className.match(/status-(\w+)/) || [])[1]));
-  if (statuses.includes('approved')) {
-    ok('an approved draft stays in the Queue — it still owes a receipt');
+  // Oldest first: d3 (2026-09-08) precedes d2 (09-09 09:00) precedes d1 (09-09 10:00).
+  const rowOrder = await page.$$eval('.desk-qrow', els => els.map(e => e.dataset.itemId));
+  if (JSON.stringify(rowOrder) === JSON.stringify(['d3', 'd2', 'd1'])) {
+    ok(`the list is oldest-first: ${rowOrder.join(' -> ')}`);
   } else {
-    fail(`approved drafts vanished from the queue: ${JSON.stringify(statuses)}`);
+    fail(`expected oldest-first d3,d2,d1 — got ${JSON.stringify(rowOrder)}`);
   }
 
-  const postedBtns = await page.$$('#asl-list .btn-social-posted');
-  if (postedBtns.length === 1) ok('only the approved draft offers "Mark posted"');
-  else fail(`expected exactly 1 Mark-posted button, got ${postedBtns.length}`);
+  const projLabel = await page.textContent('.desk-qrow[data-item-id="d1"] .desk-qrow-proj');
+  if ((projLabel || '').includes('Desk Project')) ok('Queue rows name the project they belong to');
+  else fail(`project label did not resolve: ${JSON.stringify(projLabel)}`);
 
+  // The oldest draft (d3, already `approved`) is selected by default (UI
+  // brief §8 acceptance step 2) — and an approved draft still owes a receipt,
+  // so its rail offers "Mark posted" rather than Release.
+  await page.waitForSelector('.desk-review-rail', { timeout: 8000 });
+  const defaultSelected = await page.getAttribute('.desk-qrow.selected', 'data-item-id');
+  if (defaultSelected === 'd3') ok('the oldest draft is selected by default');
+  else fail(`expected d3 selected by default, got ${JSON.stringify(defaultSelected)}`);
+
+  const postedBtnSel = '.desk-review-rail button:has-text("Mark posted")';
+  const postedBtn = await page.$(postedBtnSel);
+  if (postedBtn) ok('an approved draft\'s rail offers "Mark posted" — it still owes a receipt');
+  else fail('approved draft\'s rail did not offer "Mark posted"');
+
+  // A selector-based click (not the handle above) — an async platform-rules
+  // fetch triggered on selection can re-render the rail before the click
+  // lands, detaching a held ElementHandle; page.click() re-queries.
   page.once('dialog', d => d.accept('https://x.com/RanLevi15/status/1'));
-  await postedBtns[0].click();
-  await page.waitForTimeout(600);
+  await page.click(postedBtnSel);
+  await page.waitForTimeout(400);
   if (postedCalls.length === 1) ok('"Mark posted" POSTs the receipt that writes the ledger');
   else fail(`Mark posted did not call the receipt route: ${JSON.stringify(postedCalls)}`);
 
-  const hasActions = await page.$('#asl-list .btn-social-release');
-  if (hasActions) ok('Queue rows keep their Release / Edit / Push-back actions');
-  else fail('Queue rows lost their action buttons');
-
-  // ── Edit opens a REAL modal, not an inline focus() ───────────────────────
-  // Ron: "when I click Edit it opens up in popup window and allow me to edit
-  // the data? And also abide to popup windows rules so I can zoom in out and
-  // move the window around?" The old editSocialItem just called .focus() on
-  // the contenteditable row, which #asl-list replaces wholesale on every
-  // repaint — the same class of bug as the note field above.
-  await page.click('#asl-list .social-item[data-item-id="d1"] .btn-social-edit');
-  await page.waitForSelector('.modal-window[data-modal-id="__social_edit_d1"]', { timeout: 8000 });
-  if (SHOT_DIR) {
-    const editWin = await page.$('.modal-window[data-modal-id="__social_edit_d1"]');
-    await editWin.screenshot({ path: resolve(SHOT_DIR, 'desk-edit-modal.png') });
-  }
-  const editorText = await page.textContent('.modal-window[data-modal-id="__social_edit_d1"]');
-  if (editorText.includes('Shipped drag-to-hire today') && editorText.includes('Ships-beat-promises')) {
-    ok('Edit opens a real modal window carrying the draft body and teaching note');
+  // ── Select d1: teaching pane is a DELIBERATE hole (step 4), not built here ─
+  await page.click('.desk-qrow[data-item-id="d1"]');
+  await page.waitForSelector('.desk-post-body', { timeout: 8000 });
+  const bodyText = await page.textContent('.desk-post-body');
+  if ((bodyText || '').includes('Shipped drag-to-hire today')) {
+    ok('selecting a row loads its body into the editable preview');
   } else {
-    fail(`edit modal did not carry the draft: ${JSON.stringify(editorText)}`);
+    fail(`review pane did not carry the draft body: ${JSON.stringify(bodyText)}`);
+  }
+  const signalLink = await page.textContent('.desk-review-signal').catch(() => null);
+  if ((signalLink || '').includes('Shipped drag-to-hire')) {
+    ok('the meta line links back to the originating signal');
+  } else {
+    fail(`signal deep-link missing: ${JSON.stringify(signalLink)}`);
+  }
+  const threadHole = await page.textContent('.desk-thread-hole');
+  if ((threadHole || '').trim() && !/Ships-beat-promises/.test(threadHole)) {
+    ok('the Thread-with-Posy slot renders an empty placeholder, not the teaching content (step 4\'s job)');
+  } else {
+    fail(`thread hole rendered unexpected content: ${JSON.stringify(threadHole)}`);
   }
 
-  // Typing survives a forced repaint of the container the OLD editor lived in
-  // — the whole point of moving the editor outside #asl-list.
-  const editorSel = '#social-edit-body-d1';
-  await page.click(editorSel);
+  // ── The soft-lock: dimmed until edited, unlocks after a real edit ─────────
+  const lockedBefore = await page.$('.desk-release-btn.locked[disabled]');
+  if (lockedBefore) ok('Release is soft-locked before any edit');
+  else fail('Release was not locked on an unedited draft');
+  const unlockLink = await page.$('.desk-release-unlock a');
+  if (unlockLink) ok('the "release unedited anyway" override link is offered while locked');
+  else fail('no unedited-override link while locked');
+
+  if (SHOT_DIR) {
+    const win = await page.$('.modal-window[data-modal-id="__desk"]');
+    await win.screenshot({ path: resolve(SHOT_DIR, 'desk-queue-review.png') });
+  }
+
+  // Edit in place — NO modal, autosave on blur -> record_edit (the learning loop).
+  await page.click('.desk-post-body');
   await page.keyboard.press('End');
   await page.keyboard.type(' EDITED');
-  await page.evaluate(() => window.renderAllSocial && window.renderAllSocial());
+  // Typing must survive a forced renderDesk() the same way the old flat list
+  // protected a live cursor — deferRepaintWhileTyping now guards the whole
+  // #desk-body, since the editable body lives inside it.
+  await page.evaluate(() => window.renderDesk && window.renderDesk());
   await page.waitForTimeout(150);
-  const survived = await page.$eval(editorSel, el => el.value).catch(() => null);
+  const survived = await page.$eval('.desk-post-body', el => el.innerText).catch(() => null);
   if (survived && survived.includes('EDITED')) {
-    ok('typing in the modal survives a forced renderAllSocial() — it no longer shares a lifetime with the list');
+    ok('typing in the review pane survives a forced renderDesk() mid-edit');
   } else {
     fail(`edit was lost on repaint: ${JSON.stringify(survived)}`);
   }
-
-  // Saving goes through the SAME PATCH route the inline field always used —
-  // that route is the Desk's learning loop (desk.record_edit on body change).
-  await page.click('.modal-window[data-modal-id="__social_edit_d1"] .btn-add');
-  await page.waitForFunction(
-    () => !document.querySelector('.modal-window[data-modal-id="__social_edit_d1"]'),
-    null, { timeout: 8000 }).catch(() => {});
-  if (patchCalls.length === 1 && patchCalls[0].path.endsWith('/social/queue/d1')
-      && patchCalls[0].body.body.includes('EDITED')) {
-    ok('Save PATCHes /api/project/<pid>/social/queue/<id> with the edited body — no new route');
+  await page.click('.desk-queue-list-head');  // blur the contenteditable
+  await page.waitForTimeout(400);
+  if (patchCalls.some(c => c.path.endsWith('/social/queue/d1') && c.body.body && c.body.body.includes('EDITED'))) {
+    ok('autosave on blur PATCHes /api/project/<pid>/social/queue/<id> — no new route, this is desk.record_edit\'s trigger');
   } else {
-    fail(`Save did not PATCH the existing route as expected: ${JSON.stringify(patchCalls)}`);
+    fail(`blur did not PATCH the existing route as expected: ${JSON.stringify(patchCalls)}`);
+  }
+
+  // The edit above must have unlocked Release in this same session — the
+  // fixture's mock PATCH route mirrors update_social_queue_item's real
+  // edited-flag trigger for exactly this reason.
+  await page.waitForSelector('.desk-release-btn:not(.locked):not([disabled])', { timeout: 8000 });
+  const releaseBtn = await page.textContent('.desk-release-btn');
+  if (/Release to X/.test(releaseBtn || '') && /\$0\.015|\$0\.20/.test(releaseBtn || '')) {
+    ok(`Release unlocked after the edit, priced: "${releaseBtn.trim()}"`);
+  } else {
+    fail(`Release did not unlock/price correctly: ${JSON.stringify(releaseBtn)}`);
+  }
+
+  const checksText = await page.textContent('.desk-checks-card');
+  if (repeatCheckCalls.length && /Not said before|Checking the ledger/.test(checksText || '')) {
+    ok('the Checks card runs the ledger repeat-check before release');
+  } else {
+    fail(`Checks card did not run/render the repeat-check: ${JSON.stringify(checksText)}`);
+  }
+
+  await page.click('.desk-release-btn');
+  await page.waitForTimeout(400);
+  if (approveCalls.length === 1) {
+    ok('Release calls the existing (non-publishing) approve route — no outbound platform call exists to make');
+  } else {
+    fail(`Release did not call approve as expected: ${JSON.stringify(approveCalls)}`);
   }
 
   // ── A poll must not empty the Queue under the user ───────────────────────
@@ -466,7 +553,7 @@ try {
     allProjects = _preserveOpenSocial(fresh);
     render();
   });
-  const afterPoll = await page.$$eval('#asl-list .social-item', els => els.length);
+  const afterPoll = await page.$$eval('.desk-qrow', els => els.length);
   if (afterPoll === 3) ok('a refresh poll does NOT empty the Queue — __desk preserves hydrated rows');
   else fail(`Queue emptied on refresh: ${afterPoll} rows left, expected 3`);
 
@@ -574,30 +661,29 @@ try {
     fail(`expected one seed POST for "personal", got ${JSON.stringify(seedCalls)}`);
   }
 
-  // ── Typing survives a refresh ────────────────────────────────────────────
+  // ── Focus itself survives a refresh, not just the typed text ─────────────
   //
   // Ron: "I try to add notes to Posy, but the cursor keeps jumping off that
-  // window." renderDesk() rebuilds the body with innerHTML, so a refresh while
-  // a field has focus destroys the element being typed into.
+  // window." renderDesk() rebuilds #desk-body with innerHTML, so a refresh
+  // while a field has focus destroys the element being typed into. The Queue
+  // section above already checks the TEXT survives; this checks FOCUS itself
+  // is never lost (deferRepaintWhileTyping must skip the repaint entirely,
+  // not repaint-then-refocus, or a mid-edit poll would visibly steal the
+  // cursor even if the content came back).
   await page.click('.desk-tab:has-text("Queue")');
-  await page.waitForTimeout(200);
-  const searchBox = await page.$('#asl-search');
-  if (searchBox) {
-    await searchBox.click();
-    await page.keyboard.type('half-typed');
-    await page.evaluate(() => window.renderDesk && window.renderDesk());
-    await page.waitForTimeout(150);
-    const state = await page.evaluate(() => {
-      const el = document.getElementById('asl-search');
-      return { focused: document.activeElement === el, value: el ? el.value : null };
-    });
-    if (state.focused && state.value === 'half-typed') {
-      ok('a refresh mid-typing keeps focus and the typed text');
-    } else {
-      fail(`refresh destroyed the field being typed into: ${JSON.stringify(state)}`);
-    }
+  await page.waitForSelector('.desk-post-body', { timeout: 8000 });
+  await page.click('.desk-post-body');
+  await page.keyboard.type(' more');
+  await page.evaluate(() => window.renderDesk && window.renderDesk());
+  await page.waitForTimeout(150);
+  const focusState = await page.evaluate(() => {
+    const el = document.querySelector('.desk-post-body');
+    return { focused: document.activeElement === el, hasText: el ? el.innerText.includes('more') : false };
+  });
+  if (focusState.focused && focusState.hasText) {
+    ok('a refresh mid-typing keeps FOCUS (not just the text) on the editable post body');
   } else {
-    fail('#asl-search not found — cannot verify the typing guard');
+    fail(`refresh moved focus off the field being typed into: ${JSON.stringify(focusState)}`);
   }
 
   if (SHOT_DIR) {

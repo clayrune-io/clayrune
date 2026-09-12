@@ -8307,11 +8307,170 @@
   .desk-curriculum-card .desk-side-label { color: var(--amber-text); }
   .desk-curriculum-card .desk-empty { background: transparent; border: none; padding: 4px 0; text-align: left; }
 
+  /* ── Queue (UI brief §3) — 300px list | review pane, review pane itself
+     minmax(0,1fr) 300px. Everything here reads/writes the SAME social_queue
+     item cross-social.js already renders; this is a second view of it, not a
+     fork of the store. ── */
+  .desk-queue-grid {
+    display: grid; grid-template-columns: 300px minmax(0, 1fr);
+    gap: 0; border: 1px solid var(--border); border-radius: 10px; overflow: hidden;
+    min-height: 480px; align-items: stretch;
+  }
+  .desk-queue-list {
+    border-right: 1px solid var(--border); display: flex; flex-direction: column;
+    min-width: 0; background: var(--surface2);
+  }
+  .desk-queue-list-head {
+    padding: 12px 12px 8px; display: flex; flex-direction: column; gap: 8px;
+    border-bottom: 1px solid var(--border);
+  }
+  .desk-queue-count {
+    font-size: 10.5px; font-weight: 800; letter-spacing: 0.05em;
+    text-transform: uppercase; color: var(--text-faint);
+  }
+  .desk-queue-filters { display: flex; gap: 6px; }
+  .desk-queue-filter {
+    flex: 1; min-width: 0; font-size: 11px; padding: 4px 6px; border-radius: 5px;
+    border: 1px solid var(--border); background: var(--surface3); color: var(--text);
+  }
+  .desk-queue-rows { flex: 1; overflow-y: auto; }
+  .desk-qrow {
+    padding: 10px 12px; border-bottom: 1px solid var(--border); cursor: pointer;
+    display: flex; flex-direction: column; gap: 5px;
+  }
+  .desk-qrow:hover { background: var(--surface3); }
+  .desk-qrow.selected { background: var(--accent-dim); border-left: 3px solid var(--accent); padding-left: 9px; }
+  .desk-qrow-top { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; }
+  .desk-vpill {
+    font-size: 10px; font-weight: 700; padding: 2px 7px; border-radius: 20px;
+    text-transform: lowercase; letter-spacing: 0.02em; white-space: nowrap;
+  }
+  .desk-vpill-x { background: var(--text); color: var(--bg); }
+  .desk-vpill-li { background: var(--accent); color: var(--bg); }
+  .desk-vpill-neutral { background: var(--surface3); color: var(--text-dim); border: 1px solid var(--border); }
+  .desk-qrow-proj { font-size: 10.5px; color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .desk-qrow-age { font-size: 10.5px; color: var(--text-faint); margin-left: auto; }
+  .desk-qrow-dot {
+    width: 7px; height: 7px; border-radius: 50%; background: var(--red);
+    flex-shrink: 0; margin-left: 4px;
+  }
+  .desk-qrow-body {
+    font-size: 12px; line-height: 1.4; color: var(--text-dim);
+    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
+  }
+  .desk-qrow.selected .desk-qrow-body { color: var(--text); }
+  .desk-queue-empty { padding: 40px 16px; text-align: center; color: var(--text-faint); font-size: 12px; }
+
+  .desk-queue-review { display: grid; grid-template-columns: minmax(0, 1fr) 300px; min-width: 0; }
+  .desk-review-empty {
+    grid-column: 1 / -1; display: flex; align-items: center; justify-content: center;
+    color: var(--text-faint); font-size: 12.5px; padding: 60px 20px;
+  }
+  .desk-review-left { padding: 16px; border-right: 1px solid var(--border); min-width: 0; overflow-y: auto; }
+  .desk-review-rail { padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
+  .desk-review-meta {
+    display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 12px;
+    font-size: 11.5px;
+  }
+  .desk-review-signal { color: var(--accent-soft); cursor: pointer; text-decoration: none; }
+  .desk-review-signal:hover { text-decoration: underline; }
+  .desk-review-nosignal { color: var(--text-faint); text-decoration: underline dotted; cursor: help; }
+  .desk-review-edited { margin-left: auto; font-weight: 700; white-space: nowrap; }
+  .desk-review-edited.red { color: var(--red-text); }
+  .desk-review-edited.green { color: var(--green-text); }
+
+  .desk-post-preview {
+    border: 1px solid var(--border); border-radius: 10px; padding: 14px; background: var(--surface2);
+  }
+  .desk-post-preview-head { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .desk-post-voice { font-size: 12.5px; font-weight: 700; color: var(--text); }
+  .desk-post-asis { font-size: 11px; color: var(--text-faint); }
+  .desk-char-counter {
+    margin-left: auto; font-size: 11px; font-variant-numeric: tabular-nums; color: var(--text-faint);
+  }
+  .desk-char-counter.over { color: var(--red-text); font-weight: 700; }
+  .desk-post-body {
+    font-size: 13.5px; line-height: 1.55; color: var(--text); white-space: pre-wrap;
+    min-height: 60px; outline: none; border-radius: 6px; padding: 4px 6px; margin: -4px -6px;
+  }
+  .desk-post-body:focus { background: var(--surface3); box-shadow: 0 0 0 2px var(--accent-dim); }
+  .desk-needs-asset {
+    margin-top: 10px; border: 1px dashed var(--border2); border-radius: 8px; padding: 10px 12px;
+    font-size: 11.5px; color: var(--text-dim); display: flex; align-items: center; gap: 8px;
+  }
+  .desk-needs-asset button {
+    background: none; border: none; color: var(--accent-soft); cursor: pointer; font-size: 11.5px;
+    font-family: inherit; padding: 0;
+  }
+  .desk-post-footer {
+    display: flex; align-items: center; justify-content: space-between; gap: 10px;
+    margin-top: 10px; font-size: 11px; color: var(--text-faint);
+  }
+  .desk-insert-wrap { position: relative; }
+  .desk-insert-btn {
+    background: none; border: 1px solid var(--border); border-radius: 5px; color: var(--text-dim);
+    font-size: 11px; padding: 3px 9px; cursor: pointer; font-family: inherit;
+  }
+  .desk-insert-btn:hover { color: var(--accent); border-color: var(--accent); }
+  .desk-insert-menu {
+    position: absolute; right: 0; bottom: calc(100% + 4px); background: var(--surface3);
+    border: 1px solid var(--border); border-radius: 8px; padding: 4px; min-width: 180px;
+    box-shadow: 0 6px 20px rgba(0,0,0,0.25); z-index: 5;
+  }
+  .desk-insert-menu button {
+    display: block; width: 100%; text-align: left; background: none; border: none;
+    color: var(--text); font-size: 12px; padding: 7px 9px; border-radius: 5px; cursor: pointer;
+    font-family: inherit;
+  }
+  .desk-insert-menu button:hover:not(:disabled) { background: var(--accent-dim); }
+  .desk-insert-menu button:disabled { color: var(--text-faint); cursor: help; }
+
+  .desk-thread-hole {
+    margin-top: 16px; border: 1px dashed var(--border2); border-radius: 10px; padding: 20px;
+    text-align: center; font-size: 11.5px; color: var(--text-faint); font-style: italic;
+  }
+
+  .desk-release-btn {
+    width: 100%; padding: 11px; border-radius: 8px; border: none; font-weight: 700;
+    font-size: 13px; cursor: pointer; background: var(--green); color: var(--bg);
+  }
+  .desk-release-btn.locked { opacity: 0.4; cursor: not-allowed; background: var(--text-faint); color: var(--bg); }
+  .desk-release-unlock { font-size: 10.5px; color: var(--red-text); line-height: 1.5; }
+  .desk-release-unlock a { color: var(--red-text); text-decoration: underline; cursor: pointer; }
+  .desk-schedule-btn, .desk-kill-btn {
+    width: 100%; padding: 9px; border-radius: 8px; font-size: 12.5px; cursor: pointer;
+    background: none; font-family: inherit;
+  }
+  .desk-schedule-btn { border: 1px solid var(--border); color: var(--text-dim); }
+  .desk-schedule-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .desk-kill-btn { border: 1px solid var(--red); color: var(--red-text); }
+  .desk-kill-btn:hover { background: var(--red-dim); }
+
+  .desk-checks-card, .desk-other-voice-card {
+    border-radius: 10px; padding: 12px 13px; font-size: 11.5px;
+  }
+  .desk-checks-card { background: var(--surface2); border: 1px solid var(--border); }
+  .desk-check-row { display: flex; align-items: flex-start; gap: 6px; padding: 3px 0; line-height: 1.4; }
+  .desk-check-row .dcr-mark { flex-shrink: 0; font-weight: 800; }
+  .desk-check-row.ok .dcr-mark { color: var(--green-text); }
+  .desk-check-row.warn .dcr-mark { color: var(--amber-text); }
+  .desk-check-row.warn { color: var(--amber-text); }
+  .desk-check-row.unknown .dcr-mark { color: var(--text-faint); }
+  .desk-check-row a { color: inherit; text-decoration: underline; cursor: pointer; }
+  .desk-other-voice-card { background: var(--amber-dim); border: 1px solid color-mix(in srgb, var(--amber) 28%, transparent); color: var(--amber-text); }
+  .desk-other-voice-card a, .desk-other-voice-card button {
+    color: var(--amber-text); text-decoration: underline; cursor: pointer;
+    background: none; border: none; font-size: inherit; font-family: inherit; padding: 0;
+  }
+
   @media (max-width: 960px) {
     .desk-board-grid { grid-template-columns: 1fr; }
     .desk-campaigns { grid-template-columns: 1fr; }
     .desk-tab { padding: 6px 10px; font-size: 11.5px; }
     .desk-signal-proj, .desk-signal-when { display: none; }
+    .desk-queue-grid, .desk-queue-review { grid-template-columns: 1fr; }
+    .desk-queue-list { border-right: none; border-bottom: 1px solid var(--border); }
+    .desk-review-left { border-right: none; border-bottom: 1px solid var(--border); }
   }
 
   /* ── Workflow Builder (MC-871 R2-D7 — "the canvas") ───────────────────────
