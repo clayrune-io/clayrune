@@ -137,7 +137,7 @@ async function dragPalettePersonTo(page, display, targetX, targetY) {
   return dragFromPalette(page, handle, targetY === undefined ? targetX : { x: targetX, y: targetY });
 }
 
-// One of the two TOOL tiles ('Approval gate' / 'Action').
+// One of the TOOL tiles ('Action' / 'Approval gate' / 'Wait').
 async function dragPaletteToolTo(page, label, targetX, targetY) {
   const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-palette-block')]
     .find(b => b.textContent.includes(text)), label);
@@ -338,10 +338,18 @@ try {
     els => els.some(b => /agent step/i.test(b.textContent)));
   hasGenericAgentTile ? fail('a generic "Agent step" tile is still in the palette — drag PEOPLE, not primitives')
                       : ok('no generic "Agent step" tile — the only way to add an agent step is to drag a person');
+  // MC-871 palette-composition pass: Action, Approval gate, Wait -- in that
+  // order (mirrors the reviewed block-vocabulary proposal's Agent/Action/
+  // Human/Wait sequence, Decision and Parallel deliberately absent as
+  // blocks -- docs/WORKFLOW_BLOCK_VOCABULARY_REVIEW.md).
   const toolTiles = await page.$$eval('.wfb-palette-block', els => els.map(b => b.textContent.replace(/\s+/g, ' ').trim()));
-  (toolTiles.length === 2 && /Approval gate/.test(toolTiles[0]) && /Action/.test(toolTiles[1]))
-    ? ok(`exactly two tools beside the people: ${JSON.stringify(toolTiles)}`)
-    : fail(`expected exactly the Approval gate + Action tools, got ${JSON.stringify(toolTiles)}`);
+  (toolTiles.length === 3 && /Action/.test(toolTiles[0]) && /Approval gate/.test(toolTiles[1]) && /Wait/.test(toolTiles[2]))
+    ? ok(`exactly three tools beside the people, in order: ${JSON.stringify(toolTiles)}`)
+    : fail(`expected exactly Action, Approval gate, Wait (in order), got ${JSON.stringify(toolTiles)}`);
+  const conceptHint = await page.$$eval('.wfb-palette-hint', els => els.map(e => e.textContent).join(' '));
+  (/Decision or Parallel/.test(conceptHint) && /outcomes/.test(conceptHint) && /branch points/.test(conceptHint))
+    ? ok('the palette teaches that outcomes/options ARE the branch points, in place of a fake Decision block')
+    : fail(`expected the palette to explain Decision/Parallel discoverability, got: ${conceptHint}`);
 
   // Faces resolve the Floor's way: a real figure image, a real emoji, and the
   // initial mark ONLY where a character genuinely has no usable avatar.
@@ -484,8 +492,9 @@ try {
   const popoverOffers = await page.$$eval('#wfb-port-popover .wfb-popover-row',
     els => els.map(e => e.textContent.replace(/\s+/g, ' ').trim()));
   const popoverPeople = await page.$$eval('#wfb-port-popover .wfb-popover-person-name', els => els.map(e => e.textContent));
-  (popoverOffers.length === 2 && /Action/.test(popoverOffers[0]) && /Approval gate/.test(popoverOffers[1]) && popoverPeople.length === 5)
-    ? ok(`the popover offers Action, Approval gate and ${popoverPeople.length} people`)
+  (popoverOffers.length === 3 && /Action/.test(popoverOffers[0]) && /Approval gate/.test(popoverOffers[1])
+      && /Wait/.test(popoverOffers[2]) && popoverPeople.length === 5)
+    ? ok(`the popover offers Action, Approval gate, Wait and ${popoverPeople.length} people`)
     : fail(`popover contents wrong: rows=${JSON.stringify(popoverOffers)} people=${JSON.stringify(popoverPeople)}`);
   const popoverFaces = await page.$$eval('#wfb-port-popover .wfb-popover-person',
     rows => ({ figs: rows.filter(r => r.querySelector('img.av-fig')).length,
@@ -1764,6 +1773,117 @@ try {
   const uncaught4 = page4Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught4.length) uncaught4.forEach((e) => fail('uncaught exception in the prompt collapse/expand flow: ' + e));
   await ctx4.close();
+
+  // ── MC-871 palette-composition pass: the Wait node end-to-end, and the
+  // Action/Approval cards' narrowing pattern (thing -> verb -> settings; pick
+  // the kind of wait, then only that kind's field). Each "not relevant yet"
+  // assertion below checks a control's ABSENCE, not just its presence — the
+  // rule this pass exists to enforce is "never show a control before it
+  // applies", which a presence-only check can't catch a regression of. ──────
+  let workflowPosts5 = [];
+  const ctx5 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page5 = await ctx5.newPage();
+  const page5Errors = [];
+  page5.on('pageerror', (e) => page5Errors.push(e.message || String(e)));
+  const page5Dialogs = [];
+  page5.on('dialog', async (d) => { page5Dialogs.push(d.message()); await d.accept(); });
+  await page5.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    if (path === '/api/workflows' && req.method() === 'POST') {
+      const body = JSON.parse(req.postData() || '{}');
+      workflowPosts5.push(body);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, workflow: { ...body, id: 'wf-smoke5', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
+      }) });
+    }
+    return route.abort();
+  });
+  await page5.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page5.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await newWorkflow(page5, PID);
+
+  // ── Wait: drag it on, confirm the default is "For a delay" with a minutes
+  // field and NO datetime field, then switch modes and confirm the reverse. ──
+  const vpBox5 = await (await page5.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPaletteToolTo(page5, 'Wait', vpBox5.x + 140, vpBox5.y + 160);
+  const waitName = await page5.$eval('.wfb-node', el => el.dataset.name);
+  const waitSel = `.wfb-node[data-name="${waitName}"]`;
+  (await page5.$eval(`${waitSel} .wfb-wait-mode-select`, el => el.value)) === 'delay'
+    ? ok('a freshly-dropped Wait defaults to "For a delay"')
+    : fail('a freshly-dropped Wait did not default to delay mode');
+  (await page5.$(`${waitSel} [data-cfg-key="minutes"]`)) && !(await page5.$(`${waitSel} [data-cfg-key="at"]`))
+    ? ok('delay mode shows the minutes field and NOT the date/time field — no not-yet-relevant control')
+    : fail('delay mode rendered the wrong field(s)');
+  await setValue(page5, `${waitSel} [data-cfg-key="minutes"]`, '45');
+  await page5.selectOption(`${waitSel} .wfb-wait-mode-select`, 'until');
+  await page5.waitForTimeout(80);
+  (await page5.$(`${waitSel} [data-cfg-key="at"]`)) && !(await page5.$(`${waitSel} [data-cfg-key="minutes"]`))
+    ? ok('switching to "Until a date and time" shows the date/time field and hides minutes — never both at once')
+    : fail('switching wait modes left the wrong field(s) visible');
+  await setValue(page5, `${waitSel} [data-cfg-key="at"]`, '2027-01-01T09:30');
+
+  await setValue(page5, '#wfb-name', 'Wait smoke workflow');
+  await page5.evaluate(() => window._wfSave());
+  await page5.waitForTimeout(150);
+  const savedWaitNode = workflowPosts5.length
+    ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.type === 'wait') : null;
+  (savedWaitNode && savedWaitNode.config && savedWaitNode.config.mode === 'until' && /^2027-01-01T/.test(savedWaitNode.config.at || ''))
+    ? ok(`the saved Wait node round-tripped mode "until" with the picked date: ${JSON.stringify(savedWaitNode.config)}`)
+    : fail(`expected a saved wait node with mode "until", got ${JSON.stringify(savedWaitNode)}`);
+
+  // ── Action: the two-level What/Do narrowing. Backlog has 2 verbs -> a real
+  // second dropdown; Notify has 1 -> static text, no dropdown to open.
+  // `emptyCanvasPoint` (not a fixed offset) — the wait card from above is
+  // still on the canvas, and cards are 260px wide, so a fixed delta risks
+  // dropping ON it (drop-onto-card wires an edge instead of a fresh place). ──
+  const actPt = await emptyCanvasPoint(page5);
+  await dragPaletteToolTo(page5, 'Action', actPt.x, actPt.y);
+  const allNodeNames5 = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
+  const actName = allNodeNames5.find(n => n !== waitName);
+  const actSel = `.wfb-node[data-name="${actName}"]`;
+  (await page5.$eval(`${actSel} .wfb-action-group-select`, el => el.value)) === 'Backlog'
+    ? ok('a freshly-dropped Action defaults to the Backlog group')
+    : fail('a freshly-dropped Action did not default to Backlog');
+  (await page5.$(`${actSel} .wfb-action-verb-select`)) && !(await page5.$(`${actSel} .wfb-action-verb-single`))
+    ? ok('Backlog (2 verbs) renders a real second dropdown, not static text')
+    : fail('Backlog should render a verb dropdown, not static text');
+  await page5.fill(`${actSel} [data-cfg-key="text"]`, 'Something typed that would be lost');
+  await page5.selectOption(`${actSel} .wfb-action-group-select`, 'Notify');
+  await page5.waitForTimeout(80);
+  page5Dialogs.some(m => /clears the settings/i.test(m))
+    ? ok(`switching groups with typed content prompted before discarding it: "${page5Dialogs.find(m => /clears the settings/i.test(m))}"`)
+    : fail(`expected a confirm() before discarding typed config, got dialogs: ${JSON.stringify(page5Dialogs)}`);
+  (await page5.$(`${actSel} .wfb-action-verb-single`)) && !(await page5.$(`${actSel} .wfb-action-verb-select`))
+    ? ok('Notify (1 verb) renders static text, not a single-option dropdown — no not-yet-relevant control')
+    : fail('Notify should render static text, not a dropdown, for its one verb');
+  (await page5.$eval(`${actSel} .wfb-action-id`, el => el.textContent.trim())) === 'notify_operator'
+    ? ok('the raw identifier stayed visible and correct after the group switch (notify_operator)')
+    : fail('the raw action identifier did not update to notify_operator after switching groups');
+
+  // ── Approval: the consequence-framing description line (Action-standard). ─
+  const apprPt = await emptyCanvasPoint(page5);
+  await dragPaletteToolTo(page5, 'Approval gate', apprPt.x, apprPt.y);
+  const allNodeNames5b = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
+  const apprName = allNodeNames5b.find(n => n !== waitName && n !== actName);
+  const apprDesc = await page5.$eval(`.wfb-node[data-name="${apprName}"] .wfb-action-desc`, el => el.textContent).catch(() => '');
+  /Parks the run and waits for a human/.test(apprDesc)
+    ? ok(`the Approval card states what it does, Action-style: "${apprDesc}"`)
+    : fail(`expected the Approval card to describe its consequence, got: "${apprDesc}"`);
+
+  const uncaught5 = page5Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught5.length) uncaught5.forEach((e) => fail('uncaught exception in the Wait/Action-narrowing flow: ' + e));
+  await ctx5.close();
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0

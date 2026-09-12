@@ -153,15 +153,18 @@ function _wfBlankDef() {
 }
 
 function _wfTypeLabel(t) {
-  return { agent: 'AGENT STEP', approval: 'APPROVAL GATE', action: 'CLAYRUNE ACTION' }[t] || String(t || '').toUpperCase();
+  return { agent: 'AGENT STEP', approval: 'APPROVAL GATE', action: 'CLAYRUNE ACTION', wait: 'WAIT' }[t] || String(t || '').toUpperCase();
 }
 
+// Default: a 30-minute delay -- the common case (per-block options pass,
+// MC-871) -- with `until` a deliberate second choice, not a peer default.
 function _wfBlankNode(type, x, y) {
   const name = _wfNewName(type);
   const base = { type, name, x: Math.round(x), y: Math.round(y) };
   if (type === 'agent') return { ...base, project_id: '', character: '', prompt: '', outcomes: [] };
   if (type === 'approval') return { ...base, options: ['approve', 'reject'] };
   if (type === 'action') return { ...base, action: 'backlog_create', config: {} };
+  if (type === 'wait') return { ...base, config: { mode: 'delay', minutes: 30 } };
   return base;
 }
 
@@ -175,11 +178,11 @@ function _wfVocab(node) {
 
 // Ports actually drawn on the node. R2-D6: a non-empty vocabulary always
 // gets a trailing `otherwise` port; an empty vocabulary (a plain agent step,
-// or any action node — action steps cannot have conditional edges at all,
+// or any action/wait node — neither can have conditional edges at all,
 // `validate_workflow`) gets exactly one plain unconditional port.
 function _wfOutPorts(node) {
   const vocab = _wfVocab(node);
-  if (node.type === 'action' || !vocab.length) return [{ when: null, label: '' }];
+  if (node.type === 'action' || node.type === 'wait' || !vocab.length) return [{ when: null, label: '' }];
   return vocab.map(w => ({ when: w, label: w })).concat([{ when: 'otherwise', label: 'otherwise' }]);
 }
 
@@ -1296,14 +1299,37 @@ function _wfSyncNodeOwn(node, own) {
   } else if (node.type === 'approval') {
     node.options = [...own.querySelectorAll('.wfb-option-input')].map(i => i.value.trim()).filter(Boolean);
   } else if (node.type === 'action') {
-    const selEl = own.querySelector('.wfb-action-select');
-    if (selEl) node.action = selEl.value;
+    // Two-level What/Do (palette-composition pass): a multi-verb group has a
+    // real `.wfb-action-verb-select` to read; a single-verb group shows
+    // static text instead (nothing to read), so the resolved verb is read
+    // back from `.wfb-action-id`, which `_wfActionGroupChanged` keeps in
+    // sync with whichever the DOM is currently showing either way.
+    const verbSelEl = own.querySelector('.wfb-action-verb-select');
+    if (verbSelEl) {
+      node.action = verbSelEl.value;
+    } else {
+      const idEl = own.querySelector('.wfb-action-id');
+      if (idEl && idEl.textContent.trim()) node.action = idEl.textContent.trim();
+    }
     const config = {};
     own.querySelectorAll('[data-cfg-key]').forEach((el) => {
       const key = el.dataset.cfgKey;
       const required = el.dataset.cfgRequired === '1';
       if (el.value.trim() !== '' || required) config[key] = el.value;
     });
+    node.config = config;
+  } else if (node.type === 'wait') {
+    const modeEl = own.querySelector('.wfb-wait-mode-select');
+    const mode = modeEl ? modeEl.value : ((node.config || {}).mode || 'delay');
+    const config = { mode };
+    if (mode === 'until') {
+      const atEl = own.querySelector('[data-cfg-key="at"]');
+      config.at = atEl ? _wfLocalInputToIso(atEl.value) : ((node.config || {}).at || '');
+    } else {
+      const minEl = own.querySelector('[data-cfg-key="minutes"]');
+      const n = minEl ? parseFloat(minEl.value) : NaN;
+      config.minutes = isFinite(n) ? n : (((node.config || {}).minutes) || 30);
+    }
     node.config = config;
   }
 }
@@ -1594,16 +1620,22 @@ function _wfRenderPalette(st) {
     <button type="button" class="wfb-palette-more" onclick="_wfHireSomeone()">Hire someone new</button>
     <div class="wfb-palette-divider"></div>
     <div class="wfb-palette-tools-title">Tools</div>
-    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')">
-      <span class="wfb-palette-icon">&#9995;</span>
-      <span class="wfb-palette-block-info"><span>Approval gate</span>
-        <span class="wfb-palette-block-sub">a human decides</span></span>
-    </div>
     <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'action')">
       <span class="wfb-palette-icon">&#9881;</span>
       <span class="wfb-palette-block-info"><span>Action</span>
         <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent</span></span>
     </div>
+    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')">
+      <span class="wfb-palette-icon">&#9995;</span>
+      <span class="wfb-palette-block-info"><span>Approval gate</span>
+        <span class="wfb-palette-block-sub">a human decides</span></span>
+    </div>
+    <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'wait')">
+      <span class="wfb-palette-icon">&#9203;</span>
+      <span class="wfb-palette-block-info"><span>Wait</span>
+        <span class="wfb-palette-block-sub">a delay, or until a time</span></span>
+    </div>
+    <div class="wfb-palette-hint">Looking for Decision or Parallel? Neither is a block here: an agent's outcomes (or an approval's options) ARE its branch points &mdash; wire each one's port to a different next step. And a port's + can be clicked again to add a SECOND next step from the same point; both run, one after another.</div>
     <div class="wfb-palette-hint">Drop a person anywhere on the canvas, or onto a card to run after it &middot; drag the blue dot onto another card to connect them &middot; every port's + adds and wires the next step.</div>`;
 }
 
@@ -1693,7 +1725,7 @@ function _wfHireSomeone() {
 // glyph + the type in dimmed caps). Agent cards lead with the face instead
 // (below) so they carry no icon of their own.
 function _wfTypeIcon(t) {
-  return { approval: '&#9995;', action: '&#9881;' }[t] || '';
+  return { approval: '&#9995;', action: '&#9881;', wait: '&#9203;' }[t] || '';
 }
 
 function _wfRenderNode(st, node) {
@@ -1702,6 +1734,7 @@ function _wfRenderNode(st, node) {
   if (node.type === 'agent') own = _wfRenderAgentOwn(st, node);
   else if (node.type === 'approval') own = _wfRenderApprovalOwn(st, node);
   else if (node.type === 'action') own = _wfRenderActionOwn(st, node);
+  else if (node.type === 'wait') own = _wfRenderWaitOwn(st, node);
   else own = 'Unknown node type.';
   const edges = st.def.edges || [];
   // A declared vocabulary (agent outcomes / approval options) renders its
@@ -1927,12 +1960,20 @@ function _wfRenderAgentOwn(st, node) {
     </div>`;
 }
 
+// Ron: "say what approving and rejecting actually DO to the run" -- approval
+// options are freeform (there's no fixed verb taxonomy to narrow the way
+// Action's is below), so the consequence is stated once, plain-English, in
+// the SAME description-line convention Action uses (`.wfb-action-desc`),
+// rather than per-option. The options list itself already IS "choosing the
+// shape of the gate" (its own step, unconditional on anything else) --
+// there's nothing to configure ahead of it, so nothing is gated behind it.
 function _wfRenderApprovalOwn(st, node) {
   return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="approval-name">
+    <div class="wfb-action-desc">Parks the run and waits for a human to pick one of the options below (delivered over the question channel). Whichever is picked routes to that option's own port -- nothing runs while it waits.</div>
     <div class="wfb-branch-labels">
-      <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; delivered over the question channel; each gets its own port)</span></label>
+      <label>Options <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(what a human can choose &mdash; each gets its own port)</span></label>
       ${_wfRenderVocabRows(st, node, 'option')}
     </div>`;
 }
@@ -1951,33 +1992,158 @@ const _WF_ACTION_META = {
 };
 const _WF_ACTION_GROUP_ORDER = ['Backlog', 'The Desk', 'Notify', 'Backup'];
 
-function _wfActionSelectHTML(action) {
-  const groups = {};
-  Object.keys(_WF_ACTION_META).forEach(id => {
-    const g = _WF_ACTION_META[id].group;
-    (groups[g] = groups[g] || []).push(id);
-  });
-  // Never render a heading whose group is empty -- matters once R3-1's verbs
-  // start landing in the lookup one at a time.
-  const order = _WF_ACTION_GROUP_ORDER.filter(g => groups[g] && groups[g].length);
-  return `<select class="wfb-action-select" onchange="_wfRerenderActionFields(this)">
-    ${order.map(g => `<optgroup label="${esc(g)}">
-      ${groups[g].map(id => `<option value="${id}"${id === action ? ' selected' : ''}>${esc(_WF_ACTION_META[id].label)}</option>`).join('')}
-    </optgroup>`).join('')}
+function _wfActionVerbsForGroup(group) {
+  return Object.keys(_WF_ACTION_META).filter(id => _WF_ACTION_META[id].group === group);
+}
+
+// Ron, palette-composition follow-up: "It should be [a] drop down with the
+// options and then the actions that option can make and how" -- two levels,
+// WHAT this touches (the group) then what you DO to it (the verb), instead
+// of one flat list spanning four unrelated subjects. Never render a heading
+// whose group is empty -- matters once R3-1's verbs start landing one at a
+// time.
+function _wfActionGroupSelectHTML(group) {
+  const order = _WF_ACTION_GROUP_ORDER.filter(g => _wfActionVerbsForGroup(g).length);
+  return `<select class="wfb-action-group-select" onchange="_wfActionGroupChanged(this)">
+    ${order.map(g => `<option value="${esc(g)}"${g === group ? ' selected' : ''}>${esc(g)}</option>`).join('')}
   </select>`;
+}
+
+// The second level. A group with exactly one verb (Notify, Backup today) is
+// not made to open a dropdown to pick its only option (Ron: a single-choice
+// control is friction) -- shown as plain static text instead. The raw
+// identifier stays visible regardless, in `.wfb-action-id` below (validation
+// errors speak in identifiers, e.g. "must be one of ('backlog_create', ...)"),
+// so nothing here hides the thing the user needs to map an error back to.
+function _wfActionVerbAreaHTML(group, action) {
+  const verbs = _wfActionVerbsForGroup(group);
+  if (verbs.length <= 1) {
+    const only = verbs[0] || action;
+    return `<div class="wfb-action-verb-single">${esc((_WF_ACTION_META[only] || {}).label || only)}</div>`;
+  }
+  return `<select class="wfb-action-verb-select" onchange="_wfRerenderActionFields(this)">
+    ${verbs.map(id => `<option value="${id}"${id === action ? ' selected' : ''}>${esc(_WF_ACTION_META[id].label)}</option>`).join('')}
+  </select>`;
+}
+
+// Switching the THING after a verb from a DIFFERENT group was already chosen:
+// the old verb's config fields don't mean anything under the new group (a
+// backlog item id has no reading under "Notify"), so this resets `config`
+// rather than silently carrying stale values forward. Only confirms when
+// there's real typed content to lose -- text/textarea fields the user
+// composed (a message, an item id) -- not a `<select>` still sitting on its
+// untouched default (e.g. Priority: normal), which costs nothing to redo.
+function _wfActionGroupChanged(selectEl) {
+  const own = selectEl.closest('.wfb-node-own');
+  if (!own) return;
+  const group = selectEl.value;
+  const verbs = _wfActionVerbsForGroup(group);
+  const newAction = verbs[0];
+  const typedInputs = own.querySelectorAll('input[data-cfg-key], textarea[data-cfg-key]');
+  const hasTypedConfig = [...typedInputs].some(el => (el.value || '').trim() !== '');
+  if (hasTypedConfig && !confirm('Switching to a different kind of action clears the settings you already filled in below. Continue?')) {
+    const curAction = (own.querySelector('.wfb-action-id') || {}).textContent || '';
+    const curMeta = _WF_ACTION_META[curAction] || {};
+    selectEl.value = curMeta.group || _WF_ACTION_GROUP_ORDER[0];
+    return;
+  }
+  const verbArea = own.querySelector('.wfb-action-verb-row');
+  if (verbArea) verbArea.innerHTML = _wfActionVerbAreaHTML(group, newAction);
+  const meta = _WF_ACTION_META[newAction] || {};
+  const descEl = own.querySelector('.wfb-action-desc');
+  const idEl = own.querySelector('.wfb-action-id');
+  if (descEl) descEl.textContent = meta.desc || '';
+  if (idEl) idEl.textContent = newAction;
+  const box = own.querySelector('.wfb-action-fields');
+  if (box) {
+    const entry = _wfEntry();
+    const nodeEl = selectEl.closest('.wfb-node');
+    const nodeName = nodeEl ? nodeEl.dataset.name : '';
+    const def = entry && entry._wf ? entry._wf.def : null;
+    box.innerHTML = _wfActionFieldsHTML(newAction, {}, def, nodeName);
+  }
 }
 
 function _wfRenderActionOwn(st, node) {
   const action = node.action || 'backlog_create';
   const meta = _WF_ACTION_META[action] || {};
+  const group = meta.group || _WF_ACTION_GROUP_ORDER[0];
   return `
     <label>Name</label>
     <input class="wfb-name" value="${esc(node.name || '')}" placeholder="action-name">
-    <label>Action</label>
-    ${_wfActionSelectHTML(action)}
+    <label>What</label>
+    ${_wfActionGroupSelectHTML(group)}
+    <label>Do</label>
+    <div class="wfb-action-verb-row">${_wfActionVerbAreaHTML(group, action)}</div>
     <div class="wfb-action-desc">${esc(meta.desc || '')}</div>
     <div class="wfb-action-id" title="The stored identifier -- validation errors refer to this">${esc(action)}</div>
     <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {}, st.def, node.name)}</div>`;
+}
+
+// ── Wait card (MC-871 gap #4) — same narrowing pattern as Action: pick the
+// KIND of wait first, then only that kind's own field is shown -- never both
+// a minutes input and a date picker at once, since only one is ever live.
+// datetime-local inputs speak in the browser's local time; converted to/from
+// the UTC ISO string mc/workflows.py actually stores and compares
+// (`_wfIsoToLocalInput`/`_wfLocalInputToIso`) so what the user sees always
+// matches their own clock, not the server's.
+function _wfRenderWaitOwn(st, node) {
+  const cfg = node.config || {};
+  const mode = cfg.mode === 'until' ? 'until' : 'delay';
+  return `
+    <label>Name</label>
+    <input class="wfb-name" value="${esc(node.name || '')}" placeholder="wait-name">
+    <label>Wait</label>
+    <select class="wfb-wait-mode-select" onchange="_wfRerenderWaitFields(this)">
+      <option value="delay"${mode === 'delay' ? ' selected' : ''}>For a delay</option>
+      <option value="until"${mode === 'until' ? ' selected' : ''}>Until a date and time</option>
+    </select>
+    <div class="wfb-wait-fields">${_wfWaitFieldsHTML(mode, cfg)}</div>
+    <div class="wfb-action-desc">${mode === 'until'
+      ? 'Parks the run until the moment below, then continues automatically. No agent involved.'
+      : 'Parks the run for the delay below (counted from when it reaches this step), then continues automatically. No agent involved.'}</div>`;
+}
+
+function _wfWaitFieldsHTML(mode, cfg) {
+  if (mode === 'until') {
+    return `<label>Resume at</label>
+      <input type="datetime-local" data-cfg-key="at" data-cfg-required="1" value="${esc(_wfIsoToLocalInput(cfg.at || ''))}">`;
+  }
+  const minutes = (cfg.minutes === undefined || cfg.minutes === null) ? 30 : cfg.minutes;
+  return `<label>Minutes</label>
+    <input type="number" min="1" step="1" data-cfg-key="minutes" data-cfg-required="1" value="${esc(String(minutes))}">`;
+}
+
+function _wfRerenderWaitFields(selectEl) {
+  const own = selectEl.closest('.wfb-node-own');
+  const box = own && own.querySelector('.wfb-wait-fields');
+  if (!box) return;
+  box.innerHTML = _wfWaitFieldsHTML(selectEl.value, {});
+  const descEl = own.querySelector('.wfb-action-desc');
+  if (descEl) {
+    descEl.textContent = selectEl.value === 'until'
+      ? 'Parks the run until the moment below, then continues automatically. No agent involved.'
+      : 'Parks the run for the delay below (counted from when it reaches this step), then continues automatically. No agent involved.';
+  }
+}
+
+// datetime-local <-> the UTC ISO string mc/workflows.py stores/compares.
+// `new Date(isoString)` and `Date#toISOString()` both round-trip through the
+// runtime's own local timezone, which is exactly the conversion wanted here
+// (display local, store UTC) -- neither needs a manual offset calculation.
+function _wfIsoToLocalInput(iso) {
+  if (!iso) return '';
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return '';
+  const pad = (n) => String(n).padStart(2, '0');
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+function _wfLocalInputToIso(local) {
+  if (!local) return '';
+  const d = new Date(local);
+  if (isNaN(d.getTime())) return '';
+  return d.toISOString();
 }
 
 // def/nodeName (step 5b): "anywhere a slot is legal, e.g. the backlog
@@ -3343,6 +3509,8 @@ function _wfRenderPortPopover() {
       <span class="wfb-popover-icon">&#9881;</span> Action <span class="wfb-popover-caret">&#9662;</span></div>
     <div class="wfb-popover-row" onclick="_wfPopoverPick('approval')">
       <span class="wfb-popover-icon">&#9995;</span> Approval gate</div>
+    <div class="wfb-popover-row" onclick="_wfPopoverPick('wait')">
+      <span class="wfb-popover-icon">&#9203;</span> Wait</div>
     <div class="wfb-popover-people-title">People</div>
     <input class="wfb-popover-search" placeholder="Search bench&hellip;" value="${esc(p.search || '')}"
       oninput="_wfPopoverSearch(this.value)">
@@ -3608,6 +3776,19 @@ function _wfValidateGraph(def) {
       const cfg = node.config || {};
       const missing = required.filter(k => !String(cfg[k] || '').trim());
       if (missing.length) add(node.name, `Needs ${missing.join(', ')}.`);
+    } else if (node.type === 'wait') {
+      // Mirrors mc/workflows.py::validate_workflow's wait-node checks.
+      const cfg = node.config || {};
+      if (cfg.mode === 'delay') {
+        const minutes = cfg.minutes;
+        if (typeof minutes !== 'number' || !isFinite(minutes) || minutes <= 0) {
+          add(node.name, 'Needs a positive number of minutes.');
+        }
+      } else if (cfg.mode === 'until') {
+        if (!cfg.at || isNaN(new Date(cfg.at).getTime())) add(node.name, 'Needs a valid resume date/time.');
+      } else {
+        add(node.name, 'Pick what kind of wait this is.');
+      }
     }
   });
 
@@ -3724,6 +3905,8 @@ window._wfAddOption = _wfAddOption;
 window._wfRemoveOption = _wfRemoveOption;
 window._wfReloadCharacters = _wfReloadCharacters;
 window._wfRerenderActionFields = _wfRerenderActionFields;
+window._wfActionGroupChanged = _wfActionGroupChanged;
+window._wfRerenderWaitFields = _wfRerenderWaitFields;
 window._wfInsertSlot = _wfInsertSlot;
 window._wfSave = _wfSave;
 window._wfRunNow = _wfRunNow;

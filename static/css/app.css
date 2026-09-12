@@ -8528,6 +8528,7 @@
   }
   .wfb-node-own label:first-child { margin-top: 0; }
   .wfb-node-own select, .wfb-node-own input[type="text"], .wfb-node-own input:not([type]),
+  .wfb-node-own input[type="number"], .wfb-node-own input[type="datetime-local"],
   .wfb-node-own textarea {
     width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
     font-family: 'Inter', sans-serif; font-size: 13px; padding: 7px 9px; border-radius: 5px;
@@ -8904,6 +8905,14 @@
      (...)"), so a user needs a way to map the friendly label back to it. */
   .wfb-action-desc { font-size: 11.5px; color: var(--text-dim); line-height: 1.35; margin: 5px 0 2px; }
   .wfb-action-id { font-family: var(--mono); font-size: 9.5px; color: var(--text-faint); margin: 0 0 6px; }
+  /* A group with exactly one verb (Notify, Backup) shows it as plain text,
+     not a single-option dropdown (palette-composition pass: a control with
+     one choice is friction) -- styled like the disabled control it replaces,
+     never like an editable field. */
+  .wfb-action-verb-single {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+    font-size: 13px; padding: 7px 9px; border-radius: 5px; box-sizing: border-box;
+  }
 
   /* >= 40px hit target (brief's explicit ask): a small visible dot inside a
      larger invisible pointer target, rather than relying on pseudo-element
