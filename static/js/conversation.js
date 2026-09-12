@@ -1613,14 +1613,29 @@ function _applyRailFilter(projectId) {
   _syncHiddenToggle(projectId, q, scope);
 }
 
-// How many HIDDEN chats match `q` ('' = all of them).
-function _hiddenMatchCount(projectId, q) {
+// Every list that renders a "Show N hidden" toggle registers ITS OWN hidden
+// rows here, keyed by the list key the button carries in `data-hidden-key`.
+// _syncHiddenToggle runs on every keystroke with NO re-render, so it cannot
+// re-derive the pool from the render call's arguments — it reads it back out.
+// Keys are stable per (project, list) and overwritten on every render, so the
+// map stays bounded rather than growing one entry per repaint.
+let _hiddenPools = {};
+
+// How many chats IN THIS LIST'S POOL match `q` ('' = all of them).
+// Measured 2026-09-11: counting over a project-wide pool while the rows came
+// from a character-scoped one is exactly what made "Show 1 hidden" advertise a
+// row that could never appear in the list it sits under (Channel mode).
+function _hiddenPoolMatchCount(pool, q) {
+  if (!pool || !pool.length) return 0;
+  return pool.filter(c => !q || _convSearchText(c).includes(q)).length;
+}
+
+// The project-wide hidden pool — the right pool for Chats mode and the mobile
+// Layer-2 list, both of which render EVERY user-initiated chat in the project.
+function _hiddenConvPool(projectId) {
   const hidden = _hiddenConvSet(projectId);
-  if (!hidden.size) return 0;
-  return _userInitiatedConvos(projectId, true)
-    .filter(c => hidden.has(_convHideKey(c)))
-    .filter(c => !q || _convSearchText(c).includes(q))
-    .length;
+  if (!hidden.size) return [];
+  return _userInitiatedConvos(projectId, true).filter(c => hidden.has(_convHideKey(c)));
 }
 
 // Identity key for the "hide this chat" toggle. claude_session_id when there
@@ -1636,7 +1651,10 @@ function _syncHiddenToggle(projectId, q, scope) {
   const root = scope || _railScopeEl(projectId);
   if (!root) return;
   root.querySelectorAll('.conv-hidden-toggle').forEach(btn => {
-    const n = _hiddenMatchCount(projectId, q);
+    // Per-BUTTON pool, not a project-wide recount: Channel mode renders this
+    // toggle under one person's conversation list, where the only hidden rows
+    // that can ever appear are that person's.
+    const n = _hiddenPoolMatchCount(_hiddenPools[btn.dataset.hiddenKey || ''], q);
     btn.style.display = n ? '' : 'none';
     btn.textContent = `${_showHiddenConvos[projectId] ? 'Hide' : 'Show'} ${n} hidden`;
   });
@@ -2052,7 +2070,12 @@ function _convIsIncognito(c) {
   return !!(h && h.incognito);
 }
 
-function mobileUserConversationsHTML(p, convos) {
+// `opts.listKey` / `opts.hiddenPool` scope the "Show N hidden" toggle to the
+// list actually being rendered. Callers that render the project's WHOLE chat
+// list (Chats rail, mobile Layer-2) can omit them and get the project-wide
+// defaults; Channel mode, which renders one person's slice, must pass its own
+// or the toggle advertises rows this list will never contain.
+function mobileUserConversationsHTML(p, convos, opts) {
   // mobileMode is a LOCAL const inside agentPanelHTML — not visible here. The
   // split-view affordance below needs it, so recompute from the shared source
   // (bare `mobileMode` threw ReferenceError, aborting the whole rail render).
@@ -2217,9 +2240,16 @@ function mobileUserConversationsHTML(p, convos) {
   // display-toggled by _syncHiddenToggle) so clearing the query can bring it
   // back — if we omitted it entirely there'd be no node left to restore.
   const _q = (_railQuery[p.id] || '').trim().toLowerCase();
-  const hiddenCount = _hiddenMatchCount(p.id, _q);
-  const toggle = hidden.size > 0
-    ? `<button class="conv-hidden-toggle" style="${hiddenCount ? '' : 'display:none'}" onclick="toggleShowHiddenConvos('${esc(p.id)}')">${_showHiddenConvos[p.id] ? 'Hide' : 'Show'} ${hiddenCount} hidden</button>`
+  // The pool is THIS list's hidden rows. Gating the button's existence on it
+  // (rather than on the project-wide `hidden.size`) is the honest half of the
+  // fix: a list with no hidden rows of its own offers nothing to reveal, so it
+  // must not render an affordance that cannot change a single row.
+  const _listKey = (opts && opts.listKey) || (p.id + '|all');
+  const _hiddenPool = (opts && opts.hiddenPool) || _hiddenConvPool(p.id);
+  _hiddenPools[_listKey] = _hiddenPool;
+  const hiddenCount = _hiddenPoolMatchCount(_hiddenPool, _q);
+  const toggle = _hiddenPool.length > 0
+    ? `<button class="conv-hidden-toggle" data-hidden-key="${esc(_listKey)}" style="${hiddenCount ? '' : 'display:none'}" onclick="toggleShowHiddenConvos('${esc(p.id)}')">${_showHiddenConvos[p.id] ? 'Hide' : 'Show'} ${hiddenCount} hidden</button>`
     : '';
   return `<div class="conv-list-header"><span class="conv-list-title">Conversations</span><span class="conv-list-count">${convos.length}</span></div>
     <div class="conv-list">${rows}</div>
@@ -2479,9 +2509,21 @@ function _railChannelHTML(p) {
     // a dead 0-turn stub (no character, no spawner, no content) surfaced here
     // as a "(empty)" row for whatever identity a characterless session
     // resolves to (see _isNoiseConvoRow).
-    const convos = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
-    const list = convos.length
-      ? mobileUserConversationsHTML(p, convos)
+    // Hiding a chat had NO EFFECT in Channel mode (measured 2026-09-11): this
+    // path read conversationsCache directly and never consulted the hidden set,
+    // so a chat the user moved sideways still sat under its persona. That is
+    // also why the "Show N hidden" toggle did nothing here — there was nothing
+    // for it to reveal, because nothing had been concealed. Honour the hide,
+    // and honour the per-project reveal toggle that undoes it.
+    const _hiddenKeys = _hiddenConvSet(p.id);
+    const _all = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
+    const _hiddenHere = _all.filter(c => _hiddenKeys.has(_convHideKey(c)));
+    const convos = _showHiddenConvos[p.id] ? _all : _all.filter(c => !_hiddenKeys.has(_convHideKey(c)));
+    // Rendered whenever this person has ANY chat at all, hidden ones included —
+    // otherwise a persona whose every chat is hidden collapses to "no
+    // conversations yet" with no toggle left to bring them back.
+    const list = (convos.length || _hiddenHere.length)
+      ? mobileUserConversationsHTML(p, convos, { listKey: p.id + '|ch|' + r.key, hiddenPool: _hiddenHere })
       : `<div class="agent-rail-empty">No conversations with ${who} yet.</div>`;
     return rowHTML + `<div class="channel-expanded">${list}</div>`;
   }).join('');

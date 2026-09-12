@@ -250,6 +250,66 @@ try {
     ? ok('reopening the project lands with every row COLLAPSED — the expansion does not stick across opens')
     : fail(`reopen should show 3 collapsed rows, got expanded=${expandedOnReopen} rows=${rowsOnReopen}`);
 
+  // ── 5e. "Show N hidden" must CHANGE THE RENDERED ROWS, not just its label.
+  // Measured 2026-09-11 (Ron, two screenshots of the same rail): the button
+  // flipped "Show 1 hidden" ↔ "Hide 1 hidden" while the list underneath never
+  // moved. Two separate defects, both in this path:
+  //   (a) `_railChannelHTML` read conversationsCache directly and never
+  //       consulted the hidden set, so hiding a chat had no effect here at all
+  //       — nothing was concealed, so the toggle had nothing to reveal;
+  //   (b) the count came from the PROJECT-WIDE hidden pool while the rows came
+  //       from one person's slice, so a chat hidden under a DIFFERENT persona
+  //       was still advertised under this one, where it could never appear.
+  // Asserting on the label is how this shipped broken. Assert on the ROW COUNT.
+  const expandedRows = () => page.$$eval(`${scope}.channel-expanded .conv-row[data-csid]`,
+    (els) => els.map((el) => el.dataset.csid));
+  const hiddenBtn = () => page.$eval(`${scope}.channel-expanded .conv-hidden-toggle`,
+    (el) => (el.offsetParent === null ? null : el.textContent.trim())).catch(() => null);
+
+  await page.evaluate((pid) => { hideConversation(null, pid, 'fenn-2'); }, PID);
+  await page.waitForTimeout(200);
+  await page.click(`${scope}.channel-row[data-char-key="project:code-reviewer"]`);
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="project:code-reviewer"].expanded`, { timeout: 3000 });
+
+  const beforeReveal = await expandedRows();
+  (beforeReveal.length === 1 && beforeReveal[0] === 'fenn-1')
+    ? ok('hiding fenn-2 actually removed it from Fenn\'s expanded list (hide works in Channel mode)')
+    : fail(`hiding fenn-2 should leave exactly [fenn-1], got ${JSON.stringify(beforeReveal)}`);
+  (await hiddenBtn()) === 'Show 1 hidden'
+    ? ok('Fenn\'s list offers "Show 1 hidden"')
+    : fail(`Fenn's list should offer "Show 1 hidden", got: ${await hiddenBtn()}`);
+
+  await page.click(`${scope}.channel-expanded .conv-hidden-toggle`);
+  await page.waitForTimeout(250);
+  const afterReveal = await expandedRows();
+  afterReveal.length === beforeReveal.length + 1 && afterReveal.includes('fenn-2')
+    ? ok(`clicking the toggle CHANGED THE ROW COUNT ${beforeReveal.length} → ${afterReveal.length} and brought fenn-2 back`)
+    : fail(`toggle must change the rendered rows: ${beforeReveal.length} → ${afterReveal.length}, ids ${JSON.stringify(afterReveal)}`);
+  (await hiddenBtn()) === 'Hide 1 hidden'
+    ? ok('the revealed state reads "Hide 1 hidden"')
+    : fail(`revealed state should read "Hide 1 hidden", got: ${await hiddenBtn()}`);
+
+  await page.click(`${scope}.channel-expanded .conv-hidden-toggle`);
+  await page.waitForTimeout(250);
+  const afterReHide = await expandedRows();
+  (afterReHide.length === 1 && !afterReHide.includes('fenn-2'))
+    ? ok(`clicking again re-hid it — row count back to ${afterReHide.length}`)
+    : fail(`re-hiding should drop back to [fenn-1], got ${JSON.stringify(afterReHide)}`);
+
+  // A person with NO hidden chats of their own must not be offered the button.
+  // Tobin has one chat and none of it is hidden; fenn-2 is hidden but belongs
+  // to someone else. Advertising it here is the exact lie this fix removes —
+  // the honest outcome is no affordance, not a row forced into the DOM.
+  await page.click(`${scope}.channel-row[data-char-key="project:builder"]`);
+  await page.waitForSelector(`${scope}.channel-row[data-char-key="project:builder"].expanded`, { timeout: 3000 });
+  const tobinBtn = await hiddenBtn();
+  tobinBtn === null
+    ? ok('Tobin\'s list (no hidden chats of her own) offers no "Show N hidden" button at all')
+    : fail(`Tobin's list must not advertise another person's hidden chat, got: "${tobinBtn}"`);
+
+  await page.evaluate((pid) => { unhideConversation(null, pid, 'fenn-2'); }, PID);
+  await page.waitForTimeout(150);
+
   // ── 6. A vanilla / empty project shows the empty state, not a broken rail ─
   await page.evaluate(({ pid }) => { openProjectModal(pid); }, { pid: PID_EMPTY });
   await page.waitForSelector(`.modal-window[data-modal-id="${PID_EMPTY}"] .agent-rail`, { timeout: 5000 });
