@@ -45,7 +45,7 @@ from flask import Blueprint, abort, jsonify, request, send_file
 
 from mc import state
 from mc.atomic_json import write_json_atomic
-from mc.core import _log, file_type, now_iso, time_ago
+from mc.core import _log, file_type, now_iso, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
     agent_sessions,
@@ -929,6 +929,10 @@ def update_backlog_item(project_id, item_id):
     if 'priority' in data:
         item['priority'] = data['priority']
     if 'status' in data:
+        now = now_iso()
+        by = str(data.get('by') or 'user')[:80]
+        if record_backlog_status_change(item, data['status'], by=by, ts=now):
+            item['updated_at'] = now
         item['status'] = data['status']
         # done_at tracks CLOSURE, not the literal 'done' string — a wontdo item
         # is closed too, and left without a timestamp it sorted as if it were

@@ -23,6 +23,8 @@ import subprocess
 import threading
 import uuid
 
+from mc.core import record_backlog_status_change
+
 # ── Injected helpers (set by register()) ─────────────────────────────────────
 
 _POPEN_FLAGS = 0
@@ -258,6 +260,16 @@ def _pull_issues(project: dict, repo: str) -> tuple[int, int, int]:
             changed |= _merge_field(item, 'text', title, base, project_id, num)
             changed |= _merge_field(item, 'priority', priority, base, project_id, num)
             changed |= _merge_field(item, 'status', mc_status, base, project_id, num)
+
+            if item.get('status') != old_status:
+                # _merge_field already wrote the new status, so record the
+                # transition against a view carrying the OLD status and done_at
+                # (sharing the item's history list, so the entry lands on it).
+                record_backlog_status_change(
+                    {'id': item.get('id'), 'status': old_status,
+                     'done_at': item.get('done_at'),
+                     'status_history': item.setdefault('status_history', [])},
+                    item.get('status'), by='github-sync')
 
             if item.get('status') == 'done' and old_status != 'done':
                 if not item.get('done_at'):

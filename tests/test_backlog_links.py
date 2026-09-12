@@ -354,6 +354,25 @@ def test_done_at_tracks_closure_not_the_literal_done_string(client):
     assert r.get_json()['item']['done_at'] is None
 
 
+def test_reopen_keeps_status_history_and_the_closure_date(client):
+    # MC-871: reopening a wontdo item cleared done_at and left no trace it had
+    # ever been closed. The history must survive the reopen.
+    _seed(client, backlog=[{'id': 'a', 'text': 'x', 'status': 'open'}])
+    closed = client.patch('/api/project/tproj/backlog/a',
+                          json={'status': 'wontdo', 'by': 'ron'}).get_json()['item']
+    item = client.patch('/api/project/tproj/backlog/a',
+                        json={'status': 'in_progress'}).get_json()['item']
+    h = item['status_history']
+    assert [(e['from'], e['to'], e['by']) for e in h] == [
+        ('open', 'wontdo', 'ron'), ('wontdo', 'in_progress', 'user')]
+    assert h[1]['prior_done_at'] == closed['done_at']
+    assert item['updated_at'] == h[1]['ts']
+    # Re-sending the same status is not a transition.
+    item = client.patch('/api/project/tproj/backlog/a',
+                        json={'status': 'in_progress'}).get_json()['item']
+    assert len(item['status_history']) == 2
+
+
 # ── hand-setting the project key ─────────────────────────────────────────────
 
 def test_project_key_can_be_set_by_hand_and_normalises(client):
