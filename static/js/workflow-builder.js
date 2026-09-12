@@ -1857,7 +1857,18 @@ function _wfRenderPromptField(st, node) {
   st.promptOpen = st.promptOpen || {};
   if (forceOpen) st.promptOpen[node.name] = true;
   const open = !!st.promptOpen[node.name];
-  const label = `<label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>`;
+  // MC-871 agent-card pass, defect 1 (Ron, mobile: "I still see the prompt as
+  // gray text" -- he meant this hint, not the prompt body a prior pass
+  // collapsed). The raw-syntax explanation this used to carry is now fully
+  // redundant: the Insert control right below (`_wfInsertControlHTML`) says
+  // the same thing in plain English ("Use an earlier step's result...",
+  // "Fenn's result", "When the trigger fired") for anyone inserting a slot,
+  // and the chip legend (`_wfSlotChipsHTML`) flags valid/broken refs for
+  // anyone reading one already typed. A hint restating the raw `{{...}}`
+  // syntax on top of both added nothing but five lines of dim body-sized
+  // text that read as disabled content, not a caption -- so it's deleted
+  // outright rather than just shrunk.
+  const label = `<label>Prompt</label>`;
   if (open) {
     // No collapse control while an active error is forcing this open --
     // collapsing would just hide the thing the user needs to fix, and the
