@@ -302,11 +302,21 @@ function scheduleDescription(s) {
   })();
   if (type === 'once') {
     return s.run_at ? 'Once at ' + formatScheduleTime(s.run_at) : 'Once (no time set)';
-  } else if (type === 'daily') {
+  } else if (type === 'daily' || type === 'weekly') {
+    // 'weekly' is daily-restricted-to-days in the backend too — scheduler_routes
+    // runs both through one branch. It had no case here at all, so every weekly
+    // schedule described itself as the bare word "weekly" via the fallthrough at
+    // the bottom, on EVERY surface that calls this (found 2026-09-12).
     const dayNames = ['', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
     const days = (s.days || []).map(d => dayNames[d] || '?').join(', ');
     const time = s.time || '09:00';
-    return `Daily at ${time}${tzAbbr ? ' ' + tzAbbr : ''}${days ? ' (' + days + ')' : ''}`;
+    const when = `${time}${tzAbbr ? ' ' + tzAbbr : ''}`;
+    // A weekly schedule with no day is the backend's refuse-to-run case
+    // (scheduler_routes.py:385) — say so rather than reading as a daily run.
+    if (type === 'weekly') {
+      return days ? `Weekly on ${days} at ${when}` : 'Weekly (no day set)';
+    }
+    return `Daily at ${when}${days ? ' (' + days + ')' : ''}`;
   } else if (type === 'interval') {
     const mins = s.interval_minutes || 60;
     if (mins >= 60 && mins % 60 === 0) return `Every ${mins / 60}h`;
