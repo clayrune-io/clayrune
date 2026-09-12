@@ -8774,6 +8774,11 @@
   .wfb-trigger-box {
     position: absolute; width: 160px; background: var(--surface); border: 1px solid var(--accent);
     border-radius: 9px; box-shadow: 0 1px 3px rgba(0,0,0,0.12); z-index: 2; user-select: none;
+    /* Reserves the room the port row used to claim in normal flow, now that
+       the row itself is a zero-size anchor (see .wfb-trigger-port-row) — box
+       height must stay the same or the dot has nowhere to sit below the
+       sub-label without overlapping it. */
+    padding-bottom: 24px;
   }
   .wfb-trigger-box.wfb-node-dragging { box-shadow: 0 6px 18px rgba(0,0,0,0.22); z-index: 5; }
   .wfb-trigger-box-head {
@@ -8796,7 +8801,13 @@
      260px) and only ever has the one plain port, so this sits in normal flow
      under the sub-label rather than reusing the node's absolutely-positioned
      `.wfb-ports-out` column. */
-  .wfb-trigger-port-row { display: flex; align-items: center; gap: 6px; padding: 0 10px 10px; }
+  /* MC-871 edge-anchor pass: was an in-flow flex row (`display:flex; padding:
+     0 10px 10px`) whose row content determined the dot's position — same
+     defect as `.wfb-ports-out` below, just narrower. Now a zero-size point
+     pinned to the trigger box's true right edge; `.wfb-trigger-box`'s own
+     `padding-bottom` (above) reserves the vertical room this used to take up
+     in flow. */
+  .wfb-trigger-port-row { position: absolute; right: 0; bottom: 10px; width: 0; height: 0; }
 
   .wfb-node {
     position: absolute; width: 260px; background: var(--surface); border: 1px solid var(--border);
@@ -8924,7 +8935,7 @@
   }
   /* Hollow ring by default (a fallback port like "otherwise"); an output
      that will actually fire is filled (UI brief mockup). */
-  .wfb-port-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--text-faint); pointer-events: none; }
+  .wfb-port-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--surface); border: 2px solid var(--text-faint); pointer-events: none; transition: transform 0.08s ease; }
   .wfb-port-out .wfb-port-dot { background: var(--accent); border-color: var(--accent); }
   .wfb-port-otherwise .wfb-port-dot { background: var(--surface); border-color: var(--text-faint); }
   /* Change 5, part 2: the IN-port read as a bare gray ring half-off the
@@ -8933,9 +8944,27 @@
      reads as a socket at rest, in both dark and cream, without going as loud
      as a solid output dot (no christmas-tree effect across a graph). */
   .wfb-port-in .wfb-port-dot { background: var(--accent-dim); border-color: var(--accent); }
-  .wfb-port:hover .wfb-port-dot, .wfb-port.wfb-port-target .wfb-port-dot { border-color: var(--accent); background: var(--accent); }
+  /* MC-871 discoverability pass (Ron: "not clear what it does without being
+     familiar with the screen already") — a hover/focus ring plus a slight
+     grow reads as "this is draggable", reusing the existing hover-tint rule
+     rather than a new hover-card system. `title` on the port element itself
+     (workflow-builder.js) supplies the native tooltip text. */
+  .wfb-port:hover .wfb-port-dot, .wfb-port.wfb-port-target .wfb-port-dot {
+    border-color: var(--accent); background: var(--accent); transform: scale(1.25);
+  }
   .wfb-port-in { left: 0; top: 34px; }
-  .wfb-port-out { position: static; margin: 0; }
+  /* MC-871 (Ron's screenshot: the output dot sat INSIDE the card, over the
+     prompt field, with the "+" and stub pushed past the edge to its right).
+     The old rule made `.wfb-port-out` a static flex child, so its position
+     depended on whatever sat next to it in the row — the actual defect. This
+     mirrors `.wfb-port-in` exactly: the dot is pinned by its OWN top/right
+     (independent of siblings), anchored at the (right:0, top:0) corner of
+     its nearest positioned ancestor. For the plain/trigger single-port case
+     that ancestor is a zero-size point pinned to the card's true edge (see
+     `.wfb-ports-out` / `.wfb-trigger-port-row` below); the vocabulary-pill
+     and "otherwise" rows already anchor themselves more specifically further
+     down and win on specificity, so this is only the plain/trigger default. */
+  .wfb-port-out { position: absolute; right: 0; top: 0; margin: -20px -20px 0 0; }
   /* Change 5, part 1: "forgiving drop" — a connect-drag highlights the WHOLE
      candidate card, not just its 40px in-port, so it's obvious mid-gesture
      where a wire can land (_wfConnectMove/_wfConnectResolveTarget). */
@@ -8949,27 +8978,47 @@
      short viewport -- broke the connect-drag smoke test. The action card
      this was meant to visually center on is short enough that this fixed
      offset already lands close to its middle. */
-  .wfb-ports-out { position: absolute; right: -20px; top: 60px; display: flex; flex-direction: column; gap: 10px; align-items: flex-end; }
-  .wfb-port-row { display: flex; align-items: center; gap: 6px; }
+  /* MC-871 edge-anchor pass: was `right:-20px; display:flex; flex-direction:
+     column` — a real box whose flex-row children determined the dot's
+     position. Now a ZERO-SIZE point pinned to the card's true right edge at
+     a fixed height; `.wfb-port-out`'s own `right:0;top:0` (above) resolves
+     against exactly this point, so nothing painted near it can ever shift
+     it. `.wfb-port-row` is `display:contents` so it contributes no box of
+     its own — its children (dot/plus/stub) become direct, individually
+     absolute-positioned children of this anchor. Only ever one row here
+     (see the comment at `_wfRenderNode`'s portsHtml — vocab nodes render
+     pills inside the card body instead), so there's no stacking to manage. */
+  .wfb-ports-out { position: absolute; right: 0; top: 60px; width: 0; height: 0; }
+  .wfb-ports-out > .wfb-port-row { display: contents; }
   .wfb-port-label {
     font-size: 9.5px; font-weight: 600; color: var(--text-faint); background: var(--surface);
     border: 1px solid var(--border); border-radius: 4px; padding: 1px 5px; white-space: nowrap;
   }
   .wfb-port-otherwise .wfb-port-label { font-style: italic; }
   /* An unconnected declared port is a deliberate, visible run-end (R2-D6) —
-     a dashed stub + a stop cap, not just an empty socket. */
-  .wfb-port-stub { width: 14px; height: 0; border-top: 2px dashed var(--text-faint); position: relative; margin-right: -6px; }
+     a dashed stub + a stop cap, not just an empty socket. Extends OUTWARD
+     from the dot's visible edge (7px radius), away from the card. */
+  .wfb-port-stub { width: 14px; height: 0; border-top: 2px dashed var(--text-faint); position: relative; }
   .wfb-port-stub::after { content: ''; position: absolute; right: -3px; top: -3px; width: 6px; height: 6px; background: var(--text-faint); }
+  .wfb-ports-out .wfb-port-stub, .wfb-trigger-port-row .wfb-port-stub {
+    position: absolute; left: 7px; top: 0; margin-top: -1px; margin-right: 0;
+  }
 
   /* The "+" on every output port (UI brief §4): the 80% path — no arrow ever
-     drawn by hand. Small and always present (not hover-only — "hover/tap"
-     per the brief, and a hover-only control is undiscoverable on touch). */
+     drawn by hand. Small and always present for a single port (not
+     hover-only — "hover/tap" per the brief, and a hover-only control is
+     undiscoverable on touch). Ron: "The + sign can be above the blue dot but
+     they both need to be on the edge" — pinned above the same anchor point
+     the dot uses, centered on the card's true edge, independent of layout. */
   .wfb-port-plus {
     width: 16px; height: 16px; border-radius: 50%; border: 1px solid var(--border);
     background: var(--surface); color: var(--text-faint); font-size: 11px; line-height: 1;
     display: flex; align-items: center; justify-content: center; cursor: pointer; padding: 0; flex-shrink: 0;
   }
   .wfb-port-plus:hover { border-color: var(--accent); color: var(--accent); }
+  .wfb-ports-out .wfb-port-plus, .wfb-trigger-port-row .wfb-port-plus {
+    position: absolute; right: -8px; top: -28px;
+  }
 
   /* The "After <label>, run…" popover — a fixed-position element appended to
      <body> (not the modal), so it is never clipped by the modal's own
@@ -9030,10 +9079,11 @@
      down the edge, each tied to its own label, rather than colliding into
      one spot; `right:-32px` compensates for `.wfb-node-own`'s 12px padding
      so the dot's CENTER lands exactly on `.wfb-node`'s true edge — the same
-     place the single-port case's `.wfb-ports-out{right:-20px}` already
-     lands (12px inset + 20px offset = 32px). `_wfRedrawEdges` measures the
-     dot's real `getBoundingClientRect()` at draw time, so the connecting
-     curve follows automatically at any pan/zoom, no JS change needed. */
+     point the single-port case's `.wfb-ports-out{right:0}` zero-size anchor
+     lands on directly (12px inset + 20px hit-box radius = 32px here, since
+     this row's own right edge is still inset by that 12px padding). `_wfRedrawEdges`
+     measures the dot's real `getBoundingClientRect()` at draw time, so the
+     connecting curve follows automatically at any pan/zoom, no JS change needed. */
   .wfb-vocab-row, .wfb-otherwise-row { display: flex; align-items: center; gap: 4px; margin-bottom: 4px; position: relative; }
   .wfb-otherwise-row { margin: 0 0 4px; }
   .wfb-vocab-pill { flex: 1; }
@@ -9044,6 +9094,27 @@
   }
   .wfb-vocab-row .wfb-port-stub, .wfb-otherwise-row .wfb-port-stub {
     position: absolute; left: auto; right: -12px; top: 50%; margin: -1px 0 0 0;
+  }
+  /* MC-871 (hard case, Ron's own framing): stacked outcome rows sit only
+     ~26-30px apart, so a "+" pinned persistently above every dot collides
+     with the row above it — the single-port treatment above can't apply
+     unmodified here. Chosen fix: the "+" stays anchored to the SAME edge
+     line as its own dot (right:-20px centers the 16px button where the
+     40px dot centers itself, same math as the comment above) but is
+     invisible and non-interactive until its OWN row is hovered or gains
+     focus — never a persistent second row of "+" buttons marching down the
+     edge. This matches the agreed mockup (data/uploads/agent_ba06e63b5d.png
+     shows no "+" at rest next to the outcome pills) and costs nothing
+     structurally since it's never in flow. Touch has no hover, so the
+     button stays reachable by tabbing to it (`:focus-within` fires from the
+     button's own focus, not just a mouseover) — the existing 40px port
+     hit-target and the pill/delete controls remain reachable without it. */
+  .wfb-vocab-row .wfb-port-plus, .wfb-otherwise-row .wfb-port-plus {
+    position: absolute; right: -20px; top: 50%; margin-top: -29px;
+    opacity: 0; pointer-events: none; transition: opacity 0.12s ease;
+  }
+  .wfb-vocab-row:hover .wfb-port-plus, .wfb-vocab-row:focus-within .wfb-port-plus {
+    opacity: 1; pointer-events: auto;
   }
 
   .wfb-error {

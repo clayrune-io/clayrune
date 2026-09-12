@@ -1508,7 +1508,7 @@ function _wfRenderTriggerBox(st) {
     </div>
     <div class="wfb-trigger-box-sub">${esc(label)}</div>
     <div class="wfb-port-row wfb-trigger-port-row${wiredCount ? '' : ' wfb-port-unconnected'}">
-      <span class="wfb-port wfb-port-out" data-node="__trigger__" data-when="" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <span class="wfb-port wfb-port-out" data-node="__trigger__" data-when="" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       <button type="button" class="wfb-port-plus" title="First step, run&hellip;"
         onclick="_wfPortPlusClick(event,'__trigger__','')">&#43;</button>
       ${wiredCount ? '' : '<span class="wfb-port-stub"></span>'}
@@ -1747,7 +1747,7 @@ function _wfRenderNode(st, node) {
   const portsHtml = vocabPresent ? '' : (() => {
     const connected = edges.some(e => e.from === node.name && (e.when || null) === null);
     return `<div class="wfb-port-row${connected ? '' : ' wfb-port-unconnected'}">
-      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       <button type="button" class="wfb-port-plus" title="After this step, run&hellip;"
         onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','')">&#43;</button>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
@@ -1807,7 +1807,7 @@ function _wfRenderNode(st, node) {
       ${authWarning ? `<div class="wfb-node-inline-warning">${esc(authWarning)}</div>` : ''}
       ${own}
     </div>
-    <span class="wfb-port wfb-port-in" data-node="${nameAttr}"><span class="wfb-port-dot"></span></span>
+    <span class="wfb-port wfb-port-in" data-node="${nameAttr}" title="Drop a connection here"><span class="wfb-port-dot"></span></span>
     ${vocabPresent ? '' : `<div class="wfb-ports-out">${portsHtml}</div>`}
   </div>`;
 }
@@ -1837,7 +1837,7 @@ function _wfRenderVocabRows(st, node, kind) {
       <button class="wfb-branch-del" title="Remove ${kind}" onclick="${removeFn}('${_wfJsStrEsc(node.name)}',${oi})">&#10005;</button>
       <button type="button" class="wfb-port-plus" title="After &ldquo;${esc(label)}&rdquo;, run&hellip;"
         onclick="_wfPortPlusClick(event,'${_wfJsStrEsc(node.name)}','${_wfJsStrEsc(label)}')">&#43;</button>
-      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <span class="wfb-port wfb-port-out" data-node="${nameAttr}" data-when="${esc(label)}" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       ${connected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
   }).join('');
@@ -1845,7 +1845,7 @@ function _wfRenderVocabRows(st, node, kind) {
     const otherConnected = edges.some(e => e.from === node.name && (e.when || null) === 'otherwise');
     return `<div class="wfb-otherwise-row">
       <em>otherwise</em>
-      <span class="wfb-port wfb-port-out wfb-port-otherwise" data-node="${nameAttr}" data-when="otherwise" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <span class="wfb-port wfb-port-out wfb-port-otherwise" data-node="${nameAttr}" data-when="otherwise" title="Drag to connect to the next step" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
       ${otherConnected ? '' : '<span class="wfb-port-stub"></span>'}
     </div>`;
   })() : '';
