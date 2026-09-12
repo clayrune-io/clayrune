@@ -936,6 +936,87 @@ try {
     ? ok(`an unpinned persona's tooltip is honest that it's INHERITED from the project default, not its own: "${c10InheritedTitle}"`)
     : fail(`expected an inherited-from-project-default tooltip (Sonnet 5 / effort medium), got "${c10InheritedTitle}"`);
 
+  // ── C11: the PALETTE popup — model before dragging + bounded width (Ron,
+  // 2026-09-11 follow-up). This is the OTHER hover: the Bench popup shown
+  // BEFORE a person is dropped, not the on-canvas node tooltip C10 covers.
+  // Reuses the exact bench rows C10 added (Pinny pinned, Plain inherits the
+  // project default) so a real hover exercises the shared resolver, plus a
+  // fresh long-description row for the width bound and a temporarily
+  // project-less hover for the "can't know yet" case.
+  await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    st.bench = st.bench.concat([{
+      name: 'wide-desc-agent', scope: 'global', display: 'Wordy', avatar: '',
+      description: 'This description is deliberately long enough that, rendered at full width with no bound at all, it would run edge-to-edge across a 1280px-wide desktop window — exactly the "extends all across the screen" defect Ron reported, so a fixed max-width has to force it to wrap onto several lines instead.',
+      skills: [], provider: 'claude', model: '', effort: '',
+      project_id: '', project_name: '', rooms: [],
+    }]);
+    // C9 (above) left the bench at 15 filler rows plus a "filler1" search;
+    // Pinny/Plain/Wordy sort after all of those alphabetically and the
+    // palette caps at 12, so without expanding, none of the three rows this
+    // test hovers would even be in the DOM.
+    st.paletteExpanded = true;
+    window._wfPaletteSearch(''); // re-render the palette so the new rows mount
+  });
+  await page.waitForTimeout(50);
+
+  const pinnedRow = await page.evaluateHandle(() => [...document.querySelectorAll('.wfb-palette-person')]
+    .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Pinny'));
+  await pinnedRow.asElement().hover();
+  await page.waitForTimeout(50);
+  const c11Pinned = await page.evaluate(() => {
+    const pop = document.getElementById('wfb-palette-popover');
+    return { hidden: pop.classList.contains('hidden'), text: pop.textContent };
+  });
+  (!c11Pinned.hidden && /Model: Opus 5/.test(c11Pinned.text) && /pinned on Pinny/.test(c11Pinned.text))
+    ? ok(`palette popup shows the pinned engine before drag: "${c11Pinned.text.trim()}"`)
+    : fail(`expected the palette popup to show Pinny's pinned engine, got ${JSON.stringify(c11Pinned)}`);
+
+  const plainRow = await page.evaluateHandle(() => [...document.querySelectorAll('.wfb-palette-person')]
+    .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Plain'));
+  await plainRow.asElement().hover();
+  await page.waitForTimeout(50);
+  const c11Plain = await page.evaluate(() => document.getElementById('wfb-palette-popover').textContent);
+  /Model: Sonnet 5/.test(c11Plain) && /inherited, project default/.test(c11Plain)
+    ? ok(`palette popup shows the inherited project-default engine for an unpinned persona: "${c11Plain.trim()}"`)
+    : fail(`expected an inherited-project-default engine line, got "${c11Plain}"`);
+
+  const wordyRow = await page.evaluateHandle(() => [...document.querySelectorAll('.wfb-palette-person')]
+    .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Wordy'));
+  await wordyRow.asElement().hover();
+  await page.waitForTimeout(50);
+  const c11Wide = await page.evaluate(() => {
+    const pop = document.getElementById('wfb-palette-popover');
+    const rect = pop.getBoundingClientRect();
+    return { width: rect.width, lineHeight: parseFloat(getComputedStyle(pop).lineHeight) || 0,
+             descHeight: pop.querySelector('.wfb-palette-popover-desc').getBoundingClientRect().height };
+  });
+  (c11Wide.width > 0 && c11Wide.width <= 361)
+    ? ok(`long-description palette popup is bounded to ${c11Wide.width}px (<= 360px), not full window width`)
+    : fail(`expected the popup width to be bounded to <= 360px, got ${c11Wide.width}px`);
+  (c11Wide.descHeight > c11Wide.lineHeight * 1.5)
+    ? ok(`the long description wraps onto multiple lines (desc height ${c11Wide.descHeight}px vs one line-height ${c11Wide.lineHeight}px)`)
+    : fail(`expected the long description to wrap onto multiple lines, got desc height ${c11Wide.descHeight}px vs line-height ${c11Wide.lineHeight}px`);
+
+  // The one honest gap the brief calls out: a person with no home project,
+  // hovered before the builder has any project context at all — must say it
+  // doesn't know, never guess a project or global default that may not be
+  // the one actually used once dropped.
+  const c11NoProject = await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    const savedHint = st.hintProjectId;
+    st.hintProjectId = '';
+    const row = [...document.querySelectorAll('.wfb-palette-person')]
+      .find(r => (r.querySelector('.wfb-palette-person-name') || {}).textContent === 'Plain');
+    window._wfPalettePersonHover({ currentTarget: row }, 'global', 'plain-agent');
+    const text = document.getElementById('wfb-palette-popover').textContent;
+    st.hintProjectId = savedHint;
+    return text;
+  });
+  (/no project yet/.test(c11NoProject) && !/inherited/.test(c11NoProject))
+    ? ok(`with no project context at all, the palette popup admits it doesn't know rather than guessing: "${c11NoProject.trim()}"`)
+    : fail(`expected an honest "no project yet" line with no guessed default, got "${c11NoProject}"`);
+
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();
   const mctx = await browser.newContext({ viewport: { width: 390, height: 844 }, hasTouch: true, isMobile: true });
