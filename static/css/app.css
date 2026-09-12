@@ -8851,6 +8851,19 @@
     font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
   }
 
+  /* MC-871 follow-up: an unauthenticated provider is a WARNING, not an error
+     -- Save/Run-now still work (brief: "the user may have a reason, he just
+     should not proceed unaware"). Same shape as wfb-node-error above, amber
+     instead of red so the two are never mistaken for each other -- the same
+     amber wfb-node-unwired-badge already uses for "this will still run even
+     though you didn't wire it". Never rendered together with the error pair
+     (_wfRenderNode suppresses the warning whenever runError is already set). */
+  .wfb-node.wfb-node-warning { border-color: var(--amber); box-shadow: 0 0 0 2px var(--amber-dim); }
+  .wfb-node-inline-warning {
+    background: var(--amber-dim); border: 1px solid var(--amber); color: var(--amber-text);
+    font-size: 11px; padding: 6px 8px; border-radius: 5px; margin-bottom: 8px;
+  }
+
   /* ── Workflow tabs row, top of the Workflows tab (MC-871 Q7 re-reversed:
      the canvas hosts inline here, one tab per workflow touching this
      project, plus "+ New Workflow"). ── */

@@ -272,6 +272,13 @@ try {
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
   const workflowPosts = [];
+  // MC-871 follow-up (Item B smoke coverage): the live provider-auth probe
+  // GET /api/agent/provider/<name>/auth (agent_routes.py:1339). Keyed by
+  // provider name so different fixture providers can carry different
+  // statuses in the same page -- tests mutate this map directly, no restart
+  // needed since _wfEnsureProviderAuthFresh caches per-provider and this
+  // route is read fresh on every request.
+  const providerAuthResponses = {};
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -283,6 +290,15 @@ try {
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
     if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    const authMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/auth$/);
+    if (authMatch) {
+      const name = authMatch[1];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        name, installed: true, version: null, binary_path: null,
+        auth_status: providerAuthResponses[name] || 'unknown', auth_method: null,
+        auth_error_text: null, install_hint: '',
+      }) });
+    }
     // GET /api/workflows feeds the Workflows tab's tab row (MC-871 inline
     // rehost, window._wfSyncTabsForProject) -- empty here since this context
     // only ever authors a brand-new workflow.
@@ -1016,6 +1032,129 @@ try {
   (/no project yet/.test(c11NoProject) && !/inherited/.test(c11NoProject))
     ? ok(`with no project context at all, the palette popup admits it doesn't know rather than guessing: "${c11NoProject.trim()}"`)
     : fail(`expected an honest "no project yet" line with no guessed default, got "${c11NoProject}"`);
+
+  // ── C13: tell the user when the ENGINE won't work (Ron, MC-871 follow-up)
+  // — all three engine problems are non-blocking WARNINGS on the card, never
+  // a Save-blocking error: an empty model chain runs on the CLI default
+  // (agent_runtime.py only appends --model `if model:`), and a catalog miss
+  // is unproven (model_supported: "the user may legitimately type a model id
+  // newer than our catalog"). `unknown` auth must never warn at all, and a
+  // retired-but-still-valid legacy id must never be called dead. ──────────
+  await page.evaluate(({ pid }) => {
+    // Case 1: a project with no agent_model/agent_effort of its own --
+    // "smoke_other" is otherwise untouched by every prior section, so
+    // mutating it here can't disturb an already-asserted case.
+    const proj = allProjects.find((p) => p.id === 'smoke_other');
+    proj.agent_model = ''; proj.agent_effort = '';
+    const st = window._wfEntry()._wf;
+    // Case 2: a persona pinning a model id its provider catalog no longer
+    // lists, and (case 3) one pinning a RETIRED-but-valid legacy id that
+    // must stay silent. Seed a fake catalog directly -- /api/agent/providers
+    // is aborted in this harness, so _agentProviders is otherwise null and
+    // the "unknown, can't judge" branch would (correctly) stay silent.
+    _agentProviders = [{ name: 'claude', display_name: 'Claude', installed: true,
+      models: [{ id: 'claude-sonnet-5', label: 'Sonnet 5' }] }];
+    st.bench = st.bench.concat([{
+      name: 'retired-model-agent', scope: 'global', display: 'Retiro', avatar: '',
+      description: '', skills: [], provider: 'claude', model: 'claude-retired-1', effort: '',
+      project_id: '', project_name: '', rooms: [],
+    }, {
+      name: 'legacy-model-agent', scope: 'global', display: 'Legacio', avatar: '',
+      description: '', skills: [], provider: 'claude', model: 'claude-opus-4-8', effort: '',
+      project_id: '', project_name: '', rooms: [],
+    }]);
+    const noEngine = { type: 'agent', name: 'c13-noengine', x: -1300, y: -700,
+      project_id: 'smoke_other', character: 'global:plain-agent', prompt: 'test', outcomes: [] };
+    const deadModel = { type: 'agent', name: 'c13-deadmodel', x: -960, y: -700,
+      project_id: pid, character: 'global:retired-model-agent', prompt: 'test', outcomes: [] };
+    const legacyModel = { type: 'agent', name: 'c13-legacymodel', x: -620, y: -700,
+      project_id: pid, character: 'global:legacy-model-agent', prompt: 'test', outcomes: [] };
+    st.def.nodes = (st.def.nodes || []).concat([noEngine, deadModel, legacyModel]);
+  }, { pid: PID });
+  // _wfSave() calls _wfSyncDomToModel() FIRST, which reads def.name back
+  // from the real #wfb-name input -- setting st.def.name directly on the
+  // model would just get overwritten by that sync (silently: the save then
+  // exits at its own "Name the workflow" gate, never reaching the validator
+  // this section means to exercise). Type it into the DOM instead.
+  await setValue(page, '#wfb-name', 'Smoke C13');
+  const c13Save = await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    window._wfSave();
+    return { runErrors: Object.assign({}, st.runErrors) };
+  });
+  await page.waitForTimeout(120);
+  // The load-bearing assertion of this whole section: neither engine case is
+  // allowed to block Save, because neither proves the step cannot run.
+  (!c13Save.runErrors['c13-noengine'] && !c13Save.runErrors['c13-deadmodel'])
+    ? ok('an empty model chain and an off-catalog pin both SAVE — neither is refused as a hard error')
+    : fail(`engine problems must not block Save, got ${JSON.stringify(c13Save.runErrors)}`);
+  const c13Warnings = await page.evaluate(() => {
+    const read = (n) => {
+      const el = document.querySelector(`.wfb-node[data-name="${n}"]`);
+      if (!el) return null;
+      const w = el.querySelector('.wfb-node-inline-warning');
+      return { warn: el.classList.contains('wfb-node-warning'),
+               err: el.classList.contains('wfb-node-error'),
+               text: w ? w.textContent : '' };
+    };
+    return { noengine: read('c13-noengine'), dead: read('c13-deadmodel'), legacy: read('c13-legacymodel') };
+  });
+  (c13Warnings.noengine && c13Warnings.noengine.warn && !c13Warnings.noengine.err
+    && /pins no model.*"Some Other Project" sets no default/.test(c13Warnings.noengine.text))
+    ? ok(`empty chain warns honestly about CLI drift, in amber: "${c13Warnings.noengine.text}"`)
+    : fail(`expected an amber CLI-default warning, got ${JSON.stringify(c13Warnings.noengine)}`);
+  (c13Warnings.dead && c13Warnings.dead.warn && !c13Warnings.dead.err
+    && /"claude-retired-1" is pinned on Retiro but claude no longer lists it/.test(c13Warnings.dead.text))
+    ? ok(`off-catalog pin warns without asserting it is dead: "${c13Warnings.dead.text}"`)
+    : fail(`expected an amber off-catalog warning, got ${JSON.stringify(c13Warnings.dead)}`);
+  (c13Warnings.legacy && !c13Warnings.legacy.warn && !c13Warnings.legacy.text)
+    ? ok('a retired-but-valid legacy id (claude-opus-4-8, MC_LEGACY_MODEL_LABELS) is never called dead')
+    : fail(`legacy pinned id must not warn, got ${JSON.stringify(c13Warnings.legacy)}`);
+
+  // Provider auth: a definite-negative status warns (non-blocking); `unknown`
+  // never does. Two fake providers so each starts with a clean cache entry.
+  // The response map MUST be set before the first render that touches these
+  // providers -- _wfEnsureProviderAuthFresh caches per-provider for 60s, so
+  // a render that fires while the map still reads "unknown" (the fallback)
+  // would cache that miss and never look again in time for this test.
+  providerAuthResponses.authbad = 'not_logged_in';
+  providerAuthResponses.authunknown = 'unknown';
+  const c13AuthNames = await page.evaluate(({ pid }) => {
+    const st = window._wfEntry()._wf;
+    st.bench = st.bench.concat([
+      { name: 'authbad-agent', scope: 'global', display: 'Badauth', avatar: '',
+        description: '', skills: [], provider: 'authbad', model: 'authbad-1', effort: '',
+        project_id: '', project_name: '', rooms: [] },
+      { name: 'authunknown-agent', scope: 'global', display: 'Unkauth', avatar: '',
+        description: '', skills: [], provider: 'authunknown', model: 'authunknown-1', effort: '',
+        project_id: '', project_name: '', rooms: [] },
+    ]);
+    const bad = { type: 'agent', name: 'c13-authbad', x: -1300, y: -500,
+      project_id: pid, character: 'global:authbad-agent', prompt: 'test', outcomes: [] };
+    const unk = { type: 'agent', name: 'c13-authunknown', x: -960, y: -500,
+      project_id: pid, character: 'global:authunknown-agent', prompt: 'test', outcomes: [] };
+    st.def.nodes = (st.def.nodes || []).concat([bad, unk]);
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+    return ['c13-authbad', 'c13-authunknown'];
+  }, { pid: PID });
+  c13AuthNames.length === 2 ? ok('placed a not-logged-in-provider node and an unknown-status one')
+                            : fail(`expected 2 fresh nodes, got ${JSON.stringify(c13AuthNames)}`);
+  await page.waitForSelector('.wfb-node[data-name="c13-authbad"].wfb-node-warning', { timeout: 3000 })
+    .then(() => ok('the not-logged-in provider gets the live warning outline (wfb-node-warning) — not the hard-error red'),
+          () => fail('expected c13-authbad to pick up wfb-node-warning after the auth probe resolved'));
+  const c13AuthBadText = await page.$eval('.wfb-node[data-name="c13-authbad"] .wfb-node-inline-warning', (el) => el.textContent).catch(() => null);
+  (c13AuthBadText && /will fail when the workflow runs/.test(c13AuthBadText) && /authbad/.test(c13AuthBadText))
+    ? ok(`warning names the consequence and the provider, not the mechanism: "${c13AuthBadText}"`)
+    : fail(`expected a consequence-framed warning naming "authbad", got ${JSON.stringify(c13AuthBadText)}`);
+  await page.waitForTimeout(400); // let authunknown's probe settle too -- it must NOT warn
+  const c13UnknownState = await page.evaluate(() => {
+    const el = document.querySelector('.wfb-node[data-name="c13-authunknown"]');
+    return { warningClass: el.classList.contains('wfb-node-warning'), inlineWarning: !!el.querySelector('.wfb-node-inline-warning') };
+  });
+  (!c13UnknownState.warningClass && !c13UnknownState.inlineWarning)
+    ? ok('an `unknown` auth status never trips the warning — "unknown is not unauthenticated"')
+    : fail(`expected no warning for an unknown auth status, got ${JSON.stringify(c13UnknownState)}`);
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();
