@@ -564,6 +564,155 @@ async function runClaydoRestoreGuard(browser) {
   return true;
 }
 
+// ── A new hire arrives with a name and a face (MC-871 defect B) ─────────────
+// Never built before this: the save panel wrote Voice automatically but left
+// "Goes by" and "Face" both unset, so a hire landed on the roster nameless and
+// faceless until someone opened the persona editor by hand. This drives the
+// REAL hand-off — a restored ready-card, "Open in editor", "Save
+// character…" — through to the actual POST body that would create the file,
+// so it fails if the identity fields are ever wired to a stub instead of the
+// real fetch, or silently dropped again the way `agent_name` was dropped from
+// create_character_route.
+async function runIdentityPrefillGuard(browser) {
+  const SESSION = {
+    mode: 'character', minimized: false, draft: '',
+    history: [
+      { role: 'user', text: 'a terse code reviewer' },
+      { role: 'assistant', ready: 'character-ready', text:
+        'Here is the draft.\n```\n---\nname: terse-reviewer\n'
+        + 'description: reviews diffs for bugs\n---\nYou review diffs. Be terse.\n```' },
+    ],
+  };
+  const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page = await ctx.newPage();
+  await page.addInitScript((st) => {
+    localStorage.setItem('mc_claydo_session', JSON.stringify(st));
+  }, SESSION);
+  const identityCalls = [];
+  const createCalls = [];
+  await page.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
+      body: JSON.stringify(body) });
+    if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
+    if (path === '/api/avatars') return json({
+      figures: ['courier', 'scholar', 'lamplighter'], prefix: 'fig:' });
+    if (path === '/api/characters/voice') return json({ voice: '## Voice\n\n- Terse.' });
+    if (path === '/api/characters/identity') {
+      identityCalls.push(JSON.parse(req.postData() || '{}'));
+      return json({ agent_name: 'Fenwick', avatar: 'fig:courier' });
+    }
+    if (path === '/api/characters' && req.method() === 'POST') {
+      createCalls.push(JSON.parse(req.postData() || '{}'));
+      return json({ name: 'terse-reviewer', scope: 'global' });
+    }
+    return fulfillStaticOrAbort(route);
+  });
+  const pageErrors = [];
+  page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
+  await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1500);
+
+  const out = await page.evaluate(async () => {
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 300));
+    const r = { err: null };
+    try {
+      const win = document.querySelector('[data-modal-id="__claydo"]');
+      if (!win) throw new Error('Claydo did not restore its session');
+      const openEditorBtn = win.querySelector('.claydo-ready-card .claydo-ready-btn.accent');
+      if (!openEditorBtn) throw new Error('no ready card rendered for the restored draft');
+      openEditorBtn.click();
+      await settle(300);
+      const saveBtn = document.querySelector('[data-act="save"]');
+      if (!saveBtn) throw new Error('the editor never opened, or has no Save action');
+      saveBtn.click();
+      // Checked with NO await in between: _claydoOpenSavePanel builds the
+      // panel and kicks off both generations synchronously, so this reads the
+      // DOM before either fetch has had any chance to resolve — the state a
+      // fast real click would actually see.
+      const panel = document.querySelector('.claydo-save-panel');
+      if (!panel) throw new Error('the save panel never opened');
+      // Pre-existing, unrelated to this guard: _claydoOpenSavePanel's own
+      // description-frontmatter regex (claydo.js ~861) has no /m flag, so it
+      // only ever matches when "description:" is the FIRST line of the
+      // frontmatter block — never true for the documented name-then-
+      // description order (docs/PROMPT_BUILDER_DESIGN.md), so the field is
+      // silently blank on every real hand-off. Filled by hand here so this
+      // guard exercises identity prefill, not that separate defect.
+      panel.querySelector('#claydo-save-desc').value = 'reviews diffs for bugs';
+      const goBtn = panel.querySelector('#claydo-save-go');
+      r.goDisabledWhileGenerating = !!goBtn && goBtn.disabled;
+      // The identity + voice fetches both fire on open; give them a real round
+      // trip through the mocked route rather than assuming they've landed.
+      await settle(600);
+      r.agentNameField = panel.querySelector('#claydo-save-agent-name')?.value || '';
+      r.avatarField = panel.querySelector('#claydo-save-avatar')?.value || '';
+      r.figChips = panel.querySelectorAll('#claydo-save-figs .pe-fig').length;
+      r.selectedChip = !!panel.querySelector('#claydo-save-figs .pe-fig.sel');
+      r.goEnabledAfterGeneration = !!goBtn && !goBtn.disabled;
+      goBtn.click();
+      await settle(500);
+      const errEl = panel.querySelector('#claydo-save-err');
+      r.saveErr = errEl && errEl.style.display !== 'none' ? errEl.textContent : '';
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  });
+  await ctx.close();
+
+  const fails = [];
+  if (out.err) fails.push('threw - ' + out.err);
+  pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
+    .forEach((e) => fails.push('uncaught: ' + e));
+  if (!identityCalls.length)
+    fails.push('the save panel never called /api/characters/identity — a hire would '
+      + 'land with no name and no face suggested at all');
+  if (out.agentNameField !== 'Fenwick')
+    fails.push('the suggested name never reached the "Goes by" field: '
+      + JSON.stringify(out.agentNameField));
+  if (out.avatarField !== 'fig:courier')
+    fails.push('the suggested face never reached the Face field: '
+      + JSON.stringify(out.avatarField));
+  if (!out.figChips) fails.push('the face-chip row never rendered any figures to pick from');
+  if (!out.selectedChip)
+    fails.push('the suggested face is not shown as selected among the figure chips');
+  if (!out.goDisabledWhileGenerating)
+    fails.push('Save was clickable WHILE identity/voice were still generating — a fast '
+      + 'click could ship a hire with no name and no face nobody saw chosen');
+  if (!out.goEnabledAfterGeneration)
+    fails.push('Save stayed disabled after both generations settled');
+  if (!createCalls.length)
+    fails.push('clicking "Save character" never reached POST /api/characters'
+      + (out.saveErr ? ' (panel showed: ' + out.saveErr + ')' : ''));
+  else {
+    const body = createCalls[0];
+    // The actual bar this guard exists to enforce: a newly created agent must
+    // have a NON-EMPTY name and a RENDERABLE avatar — not merely that some
+    // field was filled in, but that what shipped to the create endpoint is
+    // what render-core.js's avatarHTML() would actually draw a face for
+    // (fig:<name>, or a real emoji — not blank, not mangled ASCII).
+    if (!body.agent_name || !body.agent_name.trim())
+      fails.push('the created agent has no name: ' + JSON.stringify(body));
+    const av = (body.avatar || '').trim();
+    const isFig = av.startsWith('fig:') && av.length > 4;
+    const isRenderableEmoji = av.length > 0 && /[^\x00-\x7F]/.test(av);
+    if (!isFig && !isRenderableEmoji)
+      fails.push('the created agent has no renderable avatar: ' + JSON.stringify(body));
+  }
+
+  if (fails.length) {
+    console.error('FAIL identity-prefill guard:');
+    fails.forEach((f) => console.error(`       * ${f}`));
+    return false;
+  }
+  console.log('OKAY identity prefill: a new hire\'s save panel suggests a name and a '
+    + 'face automatically, Save waits for both, and the created agent ships with '
+    + 'a real name and a renderable face.');
+  return true;
+}
+
 async function runBacklogRefreshGuard(browser) {
   const PID = 'smoke_alpha';
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
@@ -1811,7 +1960,7 @@ async function runFloorGuard(browser) {
     return false;
   }
 
-  const out = await page.evaluate(async () => {
+  const out1 = await page.evaluate(async () => {
     const r = { err: null };
     const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
     try {
@@ -1932,7 +2081,46 @@ async function runFloorGuard(browser) {
       r.edits = edits;
       // A busy type stays on the bench and says where it already is.
       r.busy = Array.from(win.querySelectorAll('.fl-busy')).map((e) => e.textContent.trim());
+    } catch (e) {
+      r.err = e.message + ' | ' + ((e.stack || '').split('\n')[1] || '').trim();
+    }
+    return r;
+  });
 
+  // The checks above use the DOM's synthetic el.click() to prove the pencil is
+  // WIRED to floorEditType/openPersonaEditor — but el.click() never goes through
+  // the browser's own hit-test, so it cannot see a dead-click bug caused by the
+  // hit-test itself being wrong. MC-871: drag-to-hire's floorFigDown grabbed
+  // pointer capture on the whole card/figure on every pointerdown (so a real
+  // drag could keep tracking the pointer past the card's edge). Chromium
+  // retargets the `click` UI event to whichever element currently holds pointer
+  // capture, so a REAL click on the nested `.fl-edit` button landed on the
+  // outer card instead — the pencil's own onclick (and its stopPropagation)
+  // never ran. Verified empirically: a scripted PointerEvent+.click() does NOT
+  // reproduce this (Chromium only retargets clicks born from real input), only
+  // actual mouse down/up does. Confirmed this reproduces on the pre-fix code
+  // (capture taken in floorFigDown) and passes once capture is deferred to
+  // _floorHireActivate (real drags only).
+  const _clickOpensEditor = async (selector) => {
+    const box = await page.locator(selector).first().boundingBox();
+    if (!box) return { opened: false, reason: 'element not found: ' + selector };
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await page.waitForTimeout(30);   // a real user's down/up are never in the same tick
+    await page.mouse.up();
+    await page.waitForTimeout(300);
+    const opened = await page.evaluate(() => !!document.querySelector('.persona-editor'));
+    await page.evaluate(() => document.querySelector('.persona-editor')?.remove());
+    return { opened };
+  };
+  const benchRealClick = await _clickOpensEditor('[data-modal-id="__floor"] .fl-bench-card .fl-edit');
+  const figRealClick = await _clickOpensEditor('[data-modal-id="__floor"] .fl-fig .fl-edit');
+
+  const out2 = await page.evaluate(async () => {
+    const r = { err: null };
+    const settle = (ms) => new Promise((res) => setTimeout(res, ms || 400));
+    try {
+      const win = document.querySelector('[data-modal-id="__floor"]');
       // The face picker: a 38px chip cannot show a beekeeper's smoker, so
       // hovering one must lift the full render OUT of `.pe-scroll` — which
       // clips its overflow, so anything that grows in place is cut off.
@@ -1996,9 +2184,16 @@ async function runFloorGuard(browser) {
   });
 
   await ctx.close();
+  const out = { ...out1, ...out2, err: out1.err || out2.err, benchRealClick, figRealClick };
 
   const fails = [];
   if (out.err) fails.push('threw - ' + out.err);
+  if (!benchRealClick.opened)
+    fails.push('a REAL mouse click on the bench card edit pencil did not open the '
+      + 'persona editor (pointer-capture dead-click regression): ' + JSON.stringify(benchRealClick));
+  if (!figRealClick.opened)
+    fails.push('a REAL mouse click on a working figure edit pencil did not open the '
+      + 'persona editor (pointer-capture dead-click regression): ' + JSON.stringify(figRealClick));
   pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
     .forEach((e) => fails.push('uncaught: ' + e));
   if (!floorCalls) fails.push('the board never called /api/floor');
@@ -2219,6 +2414,7 @@ try {
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runClaydoRestoreGuard(browser));
+  results.push(await runIdentityPrefillGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
   results.push(await runBacklogLinksGuard(browser));
   results.push(await runMemoryPanelGuard(browser));
@@ -2229,7 +2425,7 @@ try {
   results.push(await runAgentFaceGuard(browser));
   allOk = results.every(Boolean);
   console.log(allOk
-    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
+    ? `\n✅ PASS — ${SCENARIOS.length} boot scenarios + dispatch, model-picker, identity-prefill, backlog, backlog-links, memory-panel, calendar, scheduler-layout, question-repaint, floor & agent-face guards all green.`
     : `\n❌ FAIL — ${results.filter((r) => !r).length}/${results.length} check(s) failed.`);
 } catch (err) {
   console.error('❌ FAIL — smoke harness error:', err && err.stack ? err.stack : err);
