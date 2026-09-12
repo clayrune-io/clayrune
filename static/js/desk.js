@@ -910,11 +910,18 @@ async function _loadDeskProposals() {
 // leak when the modal closes. 6s is the writing timescale (an agent takes a
 // minute or two), not a UI-liveness timescale.
 function _deskSyncWritingPoll() {
-  const shouldPoll = _deskWriting.length > 0 && openModals.has(DESK_MODAL_ID);
+  // Also polls while a push-back's rework is in flight (Thread with Posy,
+  // §3) — the successor draft that closes that loop is a normal queue item on
+  // an ALREADY-HYDRATED project, so `_hydrateAllSocial` alone won't see it
+  // land (it only fetches projects that aren't hydrated yet); each reworking
+  // project needs its own `refreshProjectSocialQueue` to notice the new row.
+  const reworking = _deskReworkingProjectIds();
+  const shouldPoll = (_deskWriting.length > 0 || reworking.size > 0) && openModals.has(DESK_MODAL_ID);
   if (shouldPoll && !_deskWritingTimer) {
     _deskWritingTimer = setInterval(() => {
       if (!openModals.has(DESK_MODAL_ID)) { _deskStopWritingPoll(); return; }
       _loadDesk(); _hydrateAllSocial(); _loadDeskProposals();
+      for (const pid of _deskReworkingProjectIds()) refreshProjectSocialQueue(pid);
     }, 6000);
   } else if (!shouldPoll && _deskWritingTimer) {
     _deskStopWritingPoll();
@@ -1705,14 +1712,194 @@ function _deskReviewPaneHTML(row) {
           </div>
         </div>
       </div>
-      <!-- Thread with Posy (teaching bubble, pushback composer, typing
-           indicator, quick-reply chips) is UI brief build order step 4 — a
-           DELIBERATE hole, not an oversight. It imports the conversation
-           redesign's chat components; forking them here for one surface is
-           exactly what "reuse, don't rebuild" forbids. -->
-      <div class="desk-thread-hole">Thread with Posy — lands with the next pass.</div>
+      ${_deskThreadHTML(row)}
     </div>
     <div class="desk-review-rail">${railHTML}</div>`;
+}
+
+// ── Thread with Posy (UI brief §3, build order step 4) ──────────────────────
+//
+// REUSE, NOT A FORK: bubbles are `.agent-output`/`.agent-line`/`.agent-line-
+// prompt` verbatim (same reuse the Board's note bubble already established,
+// app.css:8198+); the typing indicator is `.typing-indicator`/`.act-dot`
+// verbatim (conversation.js's own §4 component — only a label span is added
+// next to the dots, because the shared component has no slot for custom
+// text); quick-reply chips are `.agent-question-chip` verbatim (the
+// conversation view's own chip, used elsewhere for AskUserQuestion); the
+// composer is `.agent-input-row`/`.agent-task-input`/`.btn-dispatch` verbatim
+// plus `micBtnHTML()` (composer-extras.js) for the mic button. Sending goes
+// through the EXISTING `/reject` route (mc/blueprints/project_routes.py
+// reject_social_queue_item -> desk_routes.dispatch_rework) — the same
+// pushback+rework mechanism cross-social.js's old push-back modal already
+// used, not a second write path or a new dispatch.
+//
+// THE DATA MODEL IS A CHAIN, NOT A SINGLE THREAD, AND THAT IS LOAD-BEARING TO
+// UNDERSTAND BEFORE TOUCHING THIS: a push-back does not revise this queue item
+// in place. It stores the note on THIS item (status -> needs_changes) and
+// dispatches a rework that lands as a BRAND NEW item carrying `reworked_from`
+// = this item's id (mc/desk_brief.py build_rework_brief, mc/blueprints/
+// desk_routes.py dispatch_rework). So "the thread" is reconstructed by
+// walking `reworked_from` backward across however many rounds have happened,
+// not read off one item's history. This means the UI brief's "her revision
+// streams into the POST PREVIEW above" is not literally what happens — the
+// revision is a NEW queue row, not an in-place body update — and reworking
+// that backend behavior to match is out of scope for a surfaces-only pass
+// (it is a shipped, tested mechanism: tests/test_social_queue.py, the
+// 2026-09-11 "close the push-back loop" comment in project_routes.py). The
+// UI below makes the chain legible instead: a "revision is ready -> open it"
+// link when a successor has landed, and a "superseded" notice (composer
+// hidden) when the item being viewed is no longer the live one.
+function _deskThreadChain(item) {
+  const all = _deskQueueAllItems().map(r => r.item);
+  const chain = [item];
+  let cur = item;
+  while (cur.reworked_from) {
+    const prev = all.find(i => i.id === cur.reworked_from);
+    if (!prev || chain.includes(prev)) break;
+    chain.unshift(prev);
+    cur = prev;
+  }
+  return chain;
+}
+
+function _deskThreadSuccessor(item) {
+  return _deskQueueAllItems().find(r => r.item.reworked_from === item.id) || null;
+}
+
+// A rework is "in flight" once dispatched and until its successor lands. No
+// timeout — same convention as _deskWriting's own poll (proposals), which
+// also never gives up waiting rather than guess at a failure.
+function _deskReworkPending(item) {
+  return !!item.rework_session_id && !_deskThreadSuccessor(item);
+}
+
+function _deskReworkingProjectIds() {
+  const ids = new Set();
+  for (const r of _deskQueueAllItems()) {
+    if (_deskReworkPending(r.item)) ids.add(r.p.id);
+  }
+  return ids;
+}
+
+function _deskThreadHeaderHTML() {
+  const avatar = (typeof window.avatarHTML === 'function') ? window.avatarHTML(_deskPosyAvatar, 24) : '';
+  return `<div class="desk-thread-head">${avatar}<span class="desk-thread-name">Posy</span></div>`;
+}
+
+// Interleaves each round's teaching (why this draft) with the note that
+// pushed it into the NEXT round, in chain order — which is what reconstructs
+// a readable conversation out of what is actually several linked queue items.
+// Ground rule: a round with nothing to say renders no bubble, never faked copy.
+function _deskThreadBubblesHTML(chain) {
+  const parts = [];
+  for (const round of chain) {
+    if (round.teaching) {
+      parts.push(`<div class="agent-line">${esc(round.teaching)}</div>`);
+    }
+    if (round.note) {
+      parts.push(`<div class="agent-line agent-line-prompt">${esc(round.note)}</div>`);
+    }
+  }
+  return parts.join('');
+}
+
+const DESK_QUICK_REPLY_CHIPS = ['Shorter', 'Less technical', 'Add the cost', 'Try LinkedIn voice'];
+
+function deskThreadFillChip(itemId, text) {
+  const ta = document.getElementById('desk-thread-input-' + itemId);
+  if (!ta) return;
+  ta.value = text;
+  ta.focus();
+}
+
+// FIXED SET, NOT LEARNED (UI brief §3's fallback: "ship a sensible fixed set
+// and say so — do not invent a learning mechanism this pass"). There is no
+// per-operator pushback-history store yet to learn from.
+function _deskThreadChipsHTML(item) {
+  return `<div class="desk-thread-chips agent-question-chips">${
+    DESK_QUICK_REPLY_CHIPS.map(c =>
+      `<button type="button" class="agent-question-chip" onclick="deskThreadFillChip('${esc(item.id)}','${esc(c)}')">${esc(c)}</button>`
+    ).join('')}</div>`;
+}
+
+function _deskThreadComposerHTML(item, disabled) {
+  const taId = 'desk-thread-input-' + item.id;
+  return `
+    ${_deskThreadChipsHTML(item)}
+    <div class="agent-input-row">
+      <textarea class="agent-task-input" id="${taId}" rows="1" ${disabled ? 'disabled' : ''}
+        placeholder="${disabled ? "Posy is already revising this draft…" : 'Push back to Posy…'}"
+        onkeydown="handleInputEnter(event,()=>deskThreadSendPushback('${esc(item.project_id)}','${esc(item.id)}'),null)"
+      ></textarea>
+      ${(!disabled && typeof window.micBtnHTML === 'function') ? window.micBtnHTML(taId) : ''}
+      <button class="btn-dispatch" id="desk-thread-send-${esc(item.id)}" ${disabled ? 'disabled' : ''}
+        onclick="deskThreadSendPushback('${esc(item.project_id)}','${esc(item.id)}')">Send</button>
+    </div>`;
+}
+
+// Posts to the SAME /reject route the old push-back modal used
+// (submitPushBack, social-actions.js) — this is not a second write path, only
+// a second trigger for it. dispatch_rework (server) is what turns "posts a
+// pushback note" into "and dispatches Posy to revise" — both already true of
+// that route before this pass touched anything.
+async function deskThreadSendPushback(projectId, itemId) {
+  const ta = document.getElementById('desk-thread-input-' + itemId);
+  const note = ta ? ta.value.trim() : '';
+  if (!note) return;
+  const btn = document.getElementById('desk-thread-send-' + itemId);
+  if (btn) btn.disabled = true;
+  try {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/reject`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ note, decided_by: 'user' }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      if (typeof showToast === 'function') showToast(data.error || 'Could not push back.', 4000);
+      if (btn) btn.disabled = false;
+      return;
+    }
+    await refreshProjectSocialQueue(projectId);
+    _deskSyncWritingPoll();
+    renderDesk();
+  } catch (e) {
+    if (typeof showToast === 'function') showToast('Could not push back: ' + e.message, 4000);
+    if (btn) btn.disabled = false;
+  }
+}
+
+function _deskThreadHTML(row) {
+  const item = row.item;
+  const chain = _deskThreadChain(item);
+  const bubbles = _deskThreadBubblesHTML(chain);
+  const successor = _deskThreadSuccessor(item);
+  const reworkPending = _deskReworkPending(item);
+
+  let tailHTML = '';
+  if (reworkPending) {
+    tailHTML = `<div class="agent-line typing-indicator desk-thread-typing" data-act="writing">
+      <span class="act-dot"></span><span class="act-dot"></span><span class="act-dot"></span>
+      <span class="desk-thread-typing-label">Posy is revising the draft&hellip;</span>
+    </div>`;
+  } else if (successor) {
+    tailHTML = `<div class="agent-line desk-thread-ready">Her revision is ready &mdash; <a
+      onclick="deskQueueSelect('${esc(successor.p.id)}','${esc(successor.item.id)}')">open it &rsaquo;</a></div>`;
+  } else if (item.status === 'needs_changes') {
+    tailHTML = `<div class="agent-line desk-thread-note">No rework is in flight for this push-back &mdash;
+      edit the draft yourself, or push back again.</div>`;
+  }
+
+  const bodyHTML = (bubbles || tailHTML)
+    ? `<div class="agent-output desk-thread-output">${bubbles}${tailHTML}</div>`
+    : `<div class="desk-thread-empty">Nothing from Posy on this draft yet.</div>`;
+
+  const canPushBack = !successor && (item.status === 'pending' || item.status === 'needs_changes');
+  const footerHTML = successor
+    ? `<div class="desk-thread-superseded">This draft was superseded by a revision &mdash; <a
+        onclick="deskQueueSelect('${esc(successor.p.id)}','${esc(successor.item.id)}')">open it &rsaquo;</a> to keep pushing back.</div>`
+    : canPushBack ? _deskThreadComposerHTML(item, reworkPending) : '';
+
+  return `<div class="desk-thread">${_deskThreadHeaderHTML()}${bodyHTML}${footerHTML}</div>`;
 }
 
 function _renderQueueInto(bodyEl) {
@@ -1840,3 +2027,5 @@ window.deskQueueToggleInsert = deskQueueToggleInsert;
 window.deskQueueInsertLink = deskQueueInsertLink;
 window.deskQueueInsertMention = deskQueueInsertMention;
 window._deskUpdateCharCounter = _deskUpdateCharCounter;
+window.deskThreadFillChip = deskThreadFillChip;
+window.deskThreadSendPushback = deskThreadSendPushback;

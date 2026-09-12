@@ -178,6 +178,7 @@ try {
   const postedCalls = [];
   const patchCalls = [];
   const approveCalls = [];
+  const reworkCalls = [];
   const repeatCheckCalls = [];
   // Stateful, unlike the other fixtures: the Queue's soft-lock (UI brief §3)
   // is a round trip — edit, then Release unlocks — and a route that always
@@ -207,6 +208,24 @@ try {
         item.released_unedited = !item.edited;
       }
       return J({ ok: true, item: item || { id } });
+    }
+    // Mirrors reject_social_queue_item + dispatch_rework closely enough to
+    // exercise the Thread's chain reconstruction: note lands on THIS item,
+    // status flips to needs_changes, and a rework is marked in flight — the
+    // successor only appears once the test pushes one into queueState itself,
+    // same as the real world's rework session landing a NEW draft later.
+    if (/\/social\/queue\/[^/]+\/reject$/.test(path) && req.method() === 'POST') {
+      const id = path.split('/').slice(-2, -1)[0];
+      const body = JSON.parse(req.postData() || '{}');
+      reworkCalls.push({ id, body });
+      const item = queueState.find(q => q.id === id);
+      if (item) {
+        item.status = 'needs_changes';
+        item.note = body.note;
+        item.rework_session_id = 'rw1';
+      }
+      return J({ ok: true, item: item || { id }, rework_dispatched: true,
+                 rework_session_id: 'rw1', rework_reason: null });
     }
     if (path === `/api/project/${PID}/social/queue`) return J(queueState);
     if (path.endsWith('/social/queue')) return J([]);
@@ -476,12 +495,121 @@ try {
   } else {
     fail(`signal deep-link missing: ${JSON.stringify(signalLink)}`);
   }
-  const threadHole = await page.textContent('.desk-thread-hole');
-  if ((threadHole || '').trim() && !/Ships-beat-promises/.test(threadHole)) {
-    ok('the Thread-with-Posy slot renders an empty placeholder, not the teaching content (step 4\'s job)');
+  // ── Thread with Posy (step 4): teaching bubble, quick-reply chips, composer ─
+  const teachingBubble = await page.textContent('.desk-thread-output .agent-line:not(.agent-line-prompt)').catch(() => null);
+  if ((teachingBubble || '').includes('Ships-beat-promises')) {
+    ok('the teaching block renders as the thread\'s first left bubble, off the existing `teaching` field');
   } else {
-    fail(`thread hole rendered unexpected content: ${JSON.stringify(threadHole)}`);
+    fail(`teaching bubble missing/wrong: ${JSON.stringify(teachingBubble)}`);
   }
+  const chipLabels = await page.$$eval('.desk-thread-chips .agent-question-chip', els => els.map(e => e.textContent.trim()));
+  if (JSON.stringify(chipLabels) === JSON.stringify(['Shorter', 'Less technical', 'Add the cost', 'Try LinkedIn voice'])) {
+    ok('quick-reply chips render the fixed set (no pushback-history store to learn from yet)');
+  } else {
+    fail(`quick-reply chips wrong: ${JSON.stringify(chipLabels)}`);
+  }
+  const threadComposer = await page.$('.desk-thread .agent-task-input');
+  if (threadComposer) ok('the thread composer renders — same .agent-input-row/.agent-task-input as the conversation view');
+  else fail('no thread composer rendered for a pending, non-superseded draft');
+
+  // A chip fills the composer, it does not send — same pattern as the +New
+  // screen's starter chips.
+  await page.click('.desk-thread-chips .agent-question-chip:has-text("Shorter")');
+  const chipFilled = await page.$eval('.desk-thread .agent-task-input', el => el.value);
+  if (chipFilled === 'Shorter') ok('a quick-reply chip fills the composer rather than auto-sending');
+  else fail(`chip did not fill the composer: ${JSON.stringify(chipFilled)}`);
+  await page.fill('.desk-thread .agent-task-input', '');
+
+  // ── Push back on d2 (no teaching/signal — exercises the "no bubble" case
+  // too) and follow the chain through to a landed revision. ──
+  await page.click('.desk-qrow[data-item-id="d2"]');
+  await page.waitForSelector('.desk-thread', { timeout: 8000 });
+  // Selecting a row kicks off `_deskLoadPlatformRules`, an async fetch that
+  // unconditionally calls `renderDesk()` on completion (same pre-existing race
+  // the "Mark posted" test above already comments on). If that lands WHILE
+  // the composer below is focused, `deferRepaintWhileTyping` defers it to the
+  // textarea's blur — which fires from the Send button's own mousedown, right
+  // before its click, and can rebuild the DOM out from under the in-flight
+  // click. Draining it here (nothing is focused yet) keeps the click below
+  // deterministic; this is a test-timing concern, not product behavior this
+  // pass changes.
+  await page.waitForTimeout(250);
+  const d2Teaching = await page.$('.desk-thread-output .agent-line:not(.agent-line-prompt)');
+  const d2Empty = await page.$('.desk-thread-empty');
+  if (!d2Teaching && d2Empty) {
+    ok('a draft with no teaching renders no fake bubble — the honest empty state instead');
+  } else {
+    fail(`expected the empty-thread state for d2 (no teaching field), got teaching=${!!d2Teaching}, empty=${!!d2Empty}`);
+  }
+  await page.fill('.desk-thread .agent-task-input', 'Cut the middle two sentences.');
+  await page.click('.desk-thread button.btn-dispatch');
+  await page.waitForTimeout(400);
+  if (reworkCalls.length === 1 && reworkCalls[0].id === 'd2' && reworkCalls[0].body.note === 'Cut the middle two sentences.') {
+    ok('sending a pushback POSTs the existing /reject route (note + dispatch, not a new write path)');
+  } else {
+    fail(`pushback did not call /reject as expected: ${JSON.stringify(reworkCalls)}`);
+  }
+  await page.waitForSelector('.desk-thread-typing', { timeout: 8000 });
+  const typingText = await page.textContent('.desk-thread-typing');
+  if (/revising the draft/.test(typingText || '')) {
+    ok('while the rework is in flight, the shared typing indicator shows "Posy is revising the draft…"');
+  } else {
+    fail(`typing indicator did not render: ${JSON.stringify(typingText)}`);
+  }
+  const composerGoneWhilePending = await page.$('.desk-thread .agent-task-input:not([disabled])');
+  if (!composerGoneWhilePending) ok('the composer disables while a rework is already in flight for this draft');
+  else fail('composer stayed enabled while a rework was in flight');
+
+  // The rework's successor is an ORDINARY new queue item (reworked_from: d2),
+  // not an in-place revision — land it and confirm the thread surfaces the
+  // hand-off rather than claiming something happened in place that did not.
+  queueState.push({
+    id: 'd2r', project_id: PID, platform: 'linkedin', status: 'pending',
+    body: 'Restore points now keep ten.', originated: false, note: '',
+    created_at: '2026-09-09T09:05:00Z', reworked_from: 'd2', voice: 'clayrune',
+    teaching: 'Cut the qualifier — the number carries the claim on its own.',
+  });
+  await page.evaluate((pid) => window.refreshProjectSocialQueue(pid), PID);
+  await page.evaluate(() => window.renderDesk());
+  await page.waitForSelector('.desk-thread-ready', { timeout: 8000 });
+  const readyText = await page.textContent('.desk-thread-ready');
+  if (/revision is ready/.test(readyText || '')) {
+    ok('once the successor lands, the thread says the revision is ready rather than faking an in-place update');
+  } else {
+    fail(`ready banner missing/wrong: ${JSON.stringify(readyText)}`);
+  }
+  await page.click('.desk-thread-ready a');
+  await page.waitForSelector('.desk-qrow[data-item-id="d2r"].selected', { timeout: 8000 });
+  const revisedBody = await page.textContent('.desk-post-body');
+  if ((revisedBody || '').includes('Restore points now keep ten')) {
+    ok('"open it ›" switches the review pane to the actual revised draft');
+  } else {
+    fail(`did not land on the revised draft: ${JSON.stringify(revisedBody)}`);
+  }
+  const chainBubbles = await page.$$eval('.desk-thread-output .agent-line', els => els.map(e => e.textContent.trim()));
+  if (chainBubbles.some(t => t.includes('Cut the middle two sentences.'))
+      && chainBubbles.some(t => t.includes('Cut the qualifier'))) {
+    ok('the new item\'s thread reconstructs the FULL chain — the old pushback note plus the new teaching, ' +
+       'even though they live on two different queue items, not one');
+  } else {
+    fail(`chain did not reconstruct across the rework: ${JSON.stringify(chainBubbles)}`);
+  }
+  // The OLD item (d2) is superseded now — its composer must not still invite
+  // a pushback that would dispatch a second, conflicting rework.
+  await page.click('.desk-qrow[data-item-id="d2"]');
+  await page.waitForSelector('.desk-thread', { timeout: 8000 });
+  const supersededNotice = await page.$('.desk-thread-superseded');
+  const supersededComposer = await page.$('.desk-thread .agent-task-input');
+  if (supersededNotice && !supersededComposer) {
+    ok('the superseded original hides the composer and points at the successor instead');
+  } else {
+    fail(`superseded item still offered a composer or no hand-off notice: notice=${!!supersededNotice}, composer=${!!supersededComposer}`);
+  }
+
+  // Back to d1 — the rest of this run exercises the edit/release flow the
+  // thread section above deliberately left (it has its own draft, d2/d2r).
+  await page.click('.desk-qrow[data-item-id="d1"]');
+  await page.waitForSelector('.desk-post-body', { timeout: 8000 });
 
   // ── The soft-lock: dimmed until edited, unlocks after a real edit ─────────
   const lockedBefore = await page.$('.desk-release-btn.locked[disabled]');
@@ -553,9 +681,11 @@ try {
     allProjects = _preserveOpenSocial(fresh);
     render();
   });
+  // 4, not the original 3: the Thread section above landed d2r (a real new
+  // queue row, reworked_from: d2) alongside d1/d2/d3.
   const afterPoll = await page.$$eval('.desk-qrow', els => els.length);
-  if (afterPoll === 3) ok('a refresh poll does NOT empty the Queue — __desk preserves hydrated rows');
-  else fail(`Queue emptied on refresh: ${afterPoll} rows left, expected 3`);
+  if (afterPoll === 4) ok('a refresh poll does NOT empty the Queue — __desk preserves hydrated rows');
+  else fail(`Queue emptied on refresh: ${afterPoll} rows left, expected 4`);
 
   // ── CALENDAR and LEDGER each render their own thing ──────────────────────
   await page.click('.desk-tab:has-text("Calendar")');
