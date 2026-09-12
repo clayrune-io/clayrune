@@ -8855,6 +8855,24 @@
     .wfb-palette-search, .wfb-palette-divider, .wfb-palette-more { display: none; }
     .wfb-palette-people { flex-direction: row; }
     .wfb-palette-person, .wfb-palette-block { flex-shrink: 0; }
+    /* Defect 13 (Ron, phone: "unable to drag agent onto the canvas"). The
+       desktop rule (app.css above) gives these rows `touch-action: pan-y` --
+       correct THERE, where the palette is a vertical sidebar and dragging a
+       person out means moving RIGHT toward the canvas, a direction pan-y
+       never claims. On mobile the palette flips to a horizontal bottom
+       sheet directly BELOW the canvas, so dragging a person out now means
+       moving UP -- exactly the direction `pan-y` tells the browser it may
+       treat as a native scroll. touch-action is fixed for a touch's entire
+       gesture at its first contact (verified live: switching to
+       `.wfb-palette-dragging`'s touch-action:none 400ms into an ALREADY-
+       STARTED long-press does not stop an in-progress touch from being
+       cancelled as a pan -- the class flip lands too late to matter,
+       regardless of when it happens). The fix has to be the axis granted at
+       touchstart, not a later class: `pan-x` matches this breakpoint's own
+       real scroll direction (`.wfb-palette`'s `overflow-x: auto` above) and
+       leaves the vertical axis -- the ONLY direction an up-drag needs -- to
+       our own long-press handler instead of the browser's native pan. */
+    .wfb-palette-person, .wfb-palette-block { touch-action: pan-x; }
     .wfb-palette-person-role { display: none; }
     /* `flex: 1` on the desktop rule is `flex-basis: 0%` — fine as a
        CROSS-axis size (desktop's row layout), but `.wfb-builder` flips to
