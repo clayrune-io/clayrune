@@ -924,6 +924,42 @@ try {
   (paletteFlow.builderDir === 'column-reverse' && paletteFlow.paletteDir === 'row')
     ? ok(`at a phone width, the palette lays out as a bottom sheet (builder: ${paletteFlow.builderDir}, palette row: ${paletteFlow.paletteDir})`)
     : fail(`expected the palette to become a horizontal bottom sheet at 390px, got ${JSON.stringify(paletteFlow)}`);
+
+  // Defect 13 (Ron, phone: "unable to drag agent onto the canvas") -- a REAL
+  // touch gesture via CDP Input.dispatchTouchEvent, not a mouse-emulated
+  // drag: touchstart, hold past the 400ms long-press with no movement, THEN
+  // move up toward the canvas (the direction a bottom-sheet drag-out always
+  // is) and release. This is deliberately NOT the same check as "touch-
+  // action stays scrollable at rest" above -- that only reads a computed CSS
+  // property, and the mobile-layout check above only reads flex-direction;
+  // neither ever performed a gesture, which is exactly why both passed while
+  // the real drag was broken. touch-action is fixed for a touch's whole
+  // gesture at first contact, so switching to touch-action:none 400ms into
+  // an ALREADY-STARTED touch (via .wfb-palette-dragging) cannot retroactively
+  // stop the browser from having already claimed a vertical move as a native
+  // pan under the desktop-inherited `pan-y` -- the fix is a mobile-only
+  // `touch-action: pan-x` matching this breakpoint's OWN scroll axis
+  // (`.wfb-palette`'s overflow-x), freeing the vertical axis an up-drag
+  // needs. This asserts the actual placement, not just the gesture's shape.
+  const mCdp = await mctx.newCDPSession(mpage);
+  const mPersonBox = await (await mpage.$('.wfb-palette-person')).boundingBox();
+  const mCanvasBox = await (await mpage.$('#wfb-canvas-viewport')).boundingBox();
+  const mStartX = mPersonBox.x + mPersonBox.width / 2, mStartY = mPersonBox.y + mPersonBox.height / 2;
+  const mDropX = mCanvasBox.x + mCanvasBox.width / 2, mDropY = mCanvasBox.y + mCanvasBox.height / 2;
+  const mNodesBefore = await mpage.evaluate(() => (window._wfEntry()._wf.def.nodes || []).length);
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: mStartX, y: mStartY, id: 1 }] });
+  await mpage.waitForTimeout(450); // past WFB_LONG_PRESS_MS with the finger held still
+  for (const pt of [{ x: mStartX + 5, y: mStartY - 40 }, { x: (mStartX + mDropX) / 2, y: (mStartY + mDropY) / 2 }, { x: mDropX, y: mDropY }]) {
+    await mCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: pt.x, y: pt.y, id: 1 }] });
+    await mpage.waitForTimeout(50);
+  }
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await mpage.waitForTimeout(200);
+  const mNodesAfter = await mpage.evaluate(() => (window._wfEntry()._wf.def.nodes || []).length);
+  (mNodesAfter === mNodesBefore + 1)
+    ? ok('a real touch long-press-drag from the mobile palette placed a node on the canvas')
+    : fail(`a real touch drag did not place a node on mobile -- nodes stayed at ${mNodesAfter} (expected ${mNodesBefore + 1}); the browser likely swallowed the up-drag as a native scroll`);
+
   // Same noise filter every other context in this suite (and boot-smoke.mjs)
   // applies: opening a real project modal lazy-loads mermaid.js, whose CDN
   // import this hermetic run always aborts (no network) -- expected, not a
