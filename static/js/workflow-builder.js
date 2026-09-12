@@ -1946,7 +1946,7 @@ const _WF_ACTION_META = {
   backlog_patch:  { label: 'Update a backlog item', desc: "Changes an existing backlog item's status or text. No agent involved.", group: 'Backlog' },
   desk_harvest:   { label: 'Run a Desk harvest', desc: 'Scans signal sources. No agent involved.', group: 'The Desk' },
   journal_append: { label: 'Log to a backlog item\'s journal', desc: 'Appends a dated note to that item\'s journal file on disk. This is the unattended-safe log — it never writes a backlog note. No agent involved.', group: 'Backlog' },
-  notify_operator: { label: 'Email me when this runs', desc: "Sends the operator (Ron) an email with your message. The recipient is fixed by server config — there is no address field here, so this can't be pointed anywhere else. No agent involved.", group: 'Notify' },
+  notify_operator: { label: 'Email me when this runs', desc: "Sends the operator an email with your message. The recipient is fixed by server config — there is no address field here, so this can't be pointed anywhere else. No agent involved.", group: 'Notify' },
   restore_point_create: { label: 'Snapshot this project', desc: 'Creates a restore point (a reversible backup) of the project before the next steps run. No agent involved.', group: 'Backup' },
 };
 const _WF_ACTION_GROUP_ORDER = ['Backlog', 'The Desk', 'Notify', 'Backup'];
