@@ -8500,6 +8500,31 @@
   .wfb-palette-block-sub { font-size: 9.5px; font-weight: 500; color: var(--text-faint); text-transform: none; }
   .wfb-palette-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); flex-shrink: 0; }
   .wfb-palette-hint { font-size: 10.5px; color: var(--text-faint); line-height: 1.4; margin-top: 4px; }
+  /* Palette person popup (MC-871 follow-up) — replaces a native `title`
+     attribute, which can't be styled and let a long description run the
+     full width of the screen. Same max-width (360px) and fixed-popover
+     convention as `.hm-worker-popover` (conversation.js) so hovers look
+     like one system across the app; positioned + clamped in JS
+     (_wfPalettePersonHover) so it can never overflow the viewport or get
+     clipped by the canvas. */
+  .wfb-palette-popover {
+    position: fixed; z-index: 10000; background: var(--bg-card, var(--surface));
+    border: 1px solid var(--border); border-radius: 8px;
+    box-shadow: 0 8px 24px rgba(0,0,0,0.3);
+    max-width: 360px; padding: 8px 10px;
+    font-size: 11px; line-height: 1.4; white-space: normal; word-wrap: break-word;
+  }
+  .wfb-palette-popover.hidden { display: none; }
+  .wfb-palette-popover-desc { color: var(--text); }
+  .wfb-palette-popover-engine {
+    color: var(--text-faint); margin-top: 6px; padding-top: 6px;
+    border-top: 1px solid var(--border);
+  }
+  @media (max-width: 960px) {
+    /* The palette itself is a bottom sheet here; the popup still has to fit
+       a narrow phone viewport rather than the desktop 360px. */
+    .wfb-palette-popover { max-width: calc(100vw - 24px); }
+  }
   .wfb-place-ghost {
     position: fixed; z-index: 99999; pointer-events: none; transform: translate(-50%, -50%);
     background: var(--accent); color: #fff; font-size: 11px; font-weight: 700; padding: 6px 12px;

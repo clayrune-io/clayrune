@@ -299,6 +299,52 @@ function _wfModelLabel(provider, modelId) {
   return modelId;
 }
 
+// Shared core, reused by BOTH hovers (canvas node tooltip and palette popup —
+// MC-871 follow-up): given an already-resolved person (bench row, possibly
+// null) and its project (possibly null — the palette has no node yet, so no
+// project may exist to inherit from), produce the "Model: ..." line. `proj`
+// being null is NOT the same as `proj.agent_model` being empty: the former
+// means we genuinely do not know what a drop will inherit and must say so,
+// never guess a project or global default that might not be the one used.
+function _wfEngineLine(person, proj, cfg, who) {
+  const label = who || (person && (person.display || person.name)) || 'this persona';
+  const pinModel = (person && person.model) || '';
+  const pinProvider = (person && person.provider) || '';
+  const pinEffort = (person && person.effort) || '';
+  const provider = pinProvider || (proj && proj.provider) || cfg.default_provider || 'claude';
+
+  let line;
+  let resolved = true;
+  if (pinModel) {
+    line = `${_wfModelLabel(provider, pinModel)} — pinned on ${label}`;
+  } else if (provider !== 'claude') {
+    // The router only ever produces a claude id and never runs for another
+    // provider's dispatch path — no static number to fall back to either,
+    // since agent_model/agent_effort are claude ids the runtime would reject.
+    line = `— (no model pinned on ${label}; ${provider} runtime uses its own default)`;
+  } else if (cfg.auto_model_enabled) {
+    line = 'chosen at dispatch — auto-router is ON (Haiku / Sonnet / Opus by task)';
+  } else if (proj && proj.agent_model) {
+    line = `${_wfModelLabel(provider, proj.agent_model)} — inherited, project default`;
+  } else if (proj && cfg.agent_model) {
+    line = `${_wfModelLabel(provider, cfg.agent_model)} — inherited, global default`;
+  } else if (!proj) {
+    line = `— (pins nothing; no project yet, so its default depends on where it lands)`;
+    resolved = false;
+  } else {
+    line = '— (no model configured anywhere in the chain)';
+  }
+
+  if (provider === 'claude' && resolved) {
+    const effort = pinEffort || (proj && proj.agent_effort) || cfg.agent_effort || '';
+    if (effort) {
+      const src = pinEffort ? '' : ((proj && proj.agent_effort) ? ', project default' : ', global default');
+      line += ` · effort ${effort}${src}`;
+    }
+  }
+  return 'Model: ' + line;
+}
+
 function _wfEngineTooltip(st, node) {
   if (!node || node.type !== 'agent') return '';
   const proj = _wfProjectFor(node);
@@ -308,40 +354,21 @@ function _wfEngineTooltip(st, node) {
   if (ref && !person) {
     return `Model: — (persona "${ref}" not found — deleted or renamed)`;
   }
-  const who = person ? (person.display || person.name) : '';
-
   const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
-  const pinModel = (person && person.model) || '';
-  const pinProvider = (person && person.provider) || '';
-  const pinEffort = (person && person.effort) || '';
-  const provider = pinProvider || proj.provider || cfg.default_provider || 'claude';
+  return _wfEngineLine(person, proj, cfg, person ? (person.display || person.name) : '');
+}
 
-  let line;
-  if (pinModel) {
-    line = `${_wfModelLabel(provider, pinModel)} — pinned on ${who || 'this persona'}`;
-  } else if (provider !== 'claude') {
-    // The router only ever produces a claude id and never runs for another
-    // provider's dispatch path — no static number to fall back to either,
-    // since agent_model/agent_effort are claude ids the runtime would reject.
-    line = `— (no model pinned on ${who || 'this persona'}; ${provider} runtime uses its own default)`;
-  } else if (cfg.auto_model_enabled) {
-    line = 'chosen at dispatch — auto-router is ON (Haiku / Sonnet / Opus by task)';
-  } else if (proj.agent_model) {
-    line = `${_wfModelLabel(provider, proj.agent_model)} — inherited, project default`;
-  } else if (cfg.agent_model) {
-    line = `${_wfModelLabel(provider, cfg.agent_model)} — inherited, global default`;
-  } else {
-    line = '— (no model configured anywhere in the chain)';
-  }
-
-  if (provider === 'claude') {
-    const effort = pinEffort || proj.agent_effort || cfg.agent_effort || '';
-    if (effort) {
-      const src = pinEffort ? '' : (proj.agent_effort ? ', project default' : ', global default');
-      line += ` · effort ${effort}${src}`;
-    }
-  }
-  return 'Model: ' + line;
+// Palette equivalent: the bench row IS the person (no persona-reference
+// lookup needed, we already have the exact row), and there is no node yet —
+// so the project is whatever a drop would actually assign it, mirroring
+// `_wfMakeNode`'s own fallback exactly (person's home project, else the
+// builder's own project). Only when BOTH are empty is the project genuinely
+// unknown.
+function _wfPaletteEngineLine(st, b) {
+  const projId = (b && b.project_id) || (st && st.hintProjectId) || '';
+  const proj = projId ? _wfProjectFor({ project_id: projId }) : null;
+  const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
+  return _wfEngineLine(b, proj, cfg, b && (b.display || b.name));
 }
 
 function _wfBenchFiltered(st, search) {
@@ -1313,6 +1340,7 @@ function _wfRenderBody(st) {
     </div>` : ''}
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
+      <div id="wfb-palette-popover" class="wfb-palette-popover hidden"></div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
         <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
@@ -1345,7 +1373,8 @@ function _wfRenderPalette(st) {
   const hidden = bench.length - shown.length;
   const rows = shown.map(b => `<div class="wfb-palette-person"
       onpointerdown="_wfPaletteDown(event,'person','${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
-      title="${esc(b.description || b.name)}">
+      onmouseenter="_wfPalettePersonHover(event,'${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
+      onmouseleave="_wfPalettePersonUnhover()">
       <span class="wfb-palette-avatar">${_wfAvatarHTML(b, 28)}</span>
       <span class="wfb-palette-person-info">
         <span class="wfb-palette-person-name">${esc(b.display || b.name)}</span>
@@ -1386,6 +1415,59 @@ function _wfRenderPalette(st) {
     </div>
     <div class="wfb-palette-hint">Drop a person anywhere on the canvas, or onto a card to run after it &middot; drag the blue dot onto another card to connect them &middot; every port's + adds and wires the next step.</div>`;
 }
+
+// ── Palette person popup — description + engine (MC-871 follow-up) ─────────
+//
+// Ron: the palette popup's description was good, but a workflow spends real
+// money per unattended run, so the engine has to be visible BEFORE dragging
+// someone onto the canvas, not just after. A native `title` attribute can't
+// be styled (no theme, no max-width, so a long description ran the full
+// width of the screen) — this replaces it with a small fixed popover, same
+// convention as the Hivemind worker popover (conversation.js
+// showHmWorkerPopover/scheduleHideHmPopover): one shared DOM node, positioned
+// off the hovered row, clamped to the viewport so it can never overflow or
+// get clipped by the canvas.
+let _wfPalettePopoverHideTimer = null;
+
+function _wfPalettePersonHover(event, scope, name) {
+  if (_wfPalettePopoverHideTimer) { clearTimeout(_wfPalettePopoverHideTimer); _wfPalettePopoverHideTimer = null; }
+  const entry = _wfEntry();
+  const st = entry && entry._wf;
+  const pop = document.getElementById('wfb-palette-popover');
+  const row = event.currentTarget;
+  if (!st || !pop || !row) return;
+  const b = _wfBenchLookup(st, scope, name);
+  if (!b) return;
+
+  pop.innerHTML = `<div class="wfb-palette-popover-desc">${esc(b.description || b.display || b.name)}</div>
+    <div class="wfb-palette-popover-engine">${esc(_wfPaletteEngineLine(st, b))}</div>`;
+  pop.classList.remove('hidden');
+
+  // Measure AFTER content + max-width are applied, then clamp to the
+  // viewport — the same overflow the bounded CSS width fixes for long text
+  // also has to be fixed for placement, or a row near an edge would still
+  // push the popover off-screen.
+  const rect = row.getBoundingClientRect();
+  const popRect = pop.getBoundingClientRect();
+  let left = rect.right + 8;
+  if (left + popRect.width > window.innerWidth - 8) left = rect.left - popRect.width - 8;
+  left = Math.max(8, Math.min(left, window.innerWidth - popRect.width - 8));
+  let top = rect.top;
+  top = Math.max(8, Math.min(top, window.innerHeight - popRect.height - 8));
+  pop.style.left = left + 'px';
+  pop.style.top = top + 'px';
+}
+
+function _wfPalettePersonUnhover() {
+  _wfPalettePopoverHideTimer = setTimeout(_wfHidePalettePopover, 120);
+}
+
+function _wfHidePalettePopover() {
+  const pop = document.getElementById('wfb-palette-popover');
+  if (pop) pop.classList.add('hidden');
+}
+window._wfPalettePersonHover = _wfPalettePersonHover;
+window._wfPalettePersonUnhover = _wfPalettePersonUnhover;
 
 // Re-renders ONLY the palette: a keystroke in the search box must not rebuild
 // the canvas (that would blow away an unsynced prompt the user is typing in a
@@ -2394,6 +2476,8 @@ function _wfPaletteDown(e, type, scope, name) {
   // Change 8: same text-selection guard -- a drag-out from the palette
   // starts over a row's own name/role text.
   e.preventDefault();
+  if (_wfPalettePopoverHideTimer) { clearTimeout(_wfPalettePopoverHideTimer); _wfPalettePopoverHideTimer = null; }
+  _wfHidePalettePopover();
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
     startX: e.clientX, startY: e.clientY, active: false, type,
