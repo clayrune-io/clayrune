@@ -238,6 +238,112 @@ function _wfPersonFromCharacter(st, character) {
   return _wfBenchLookup(st, s.slice(0, i), s.slice(i + 1));
 }
 
+// ── Engine hover tooltip (Ron, 2026-09-11 — "what will this step cost to
+// run") ──────────────────────────────────────────────────────────────────
+// Mirrors mc/blueprints/agent_routes.py's dispatch precedence EXACTLY —
+// this is a display of what mc/workflows.py's _dispatch_step actually hands
+// to _dispatch_agent_internal, not an independent guess:
+//   1. the resolved persona's own engine pin (`_character_engine`) — always
+//      wins and, for model, BYPASSES the auto-router entirely (agent_routes.py
+//      ~5794/~5925: a character's pinned model sets `model_override`, and the
+//      router is never consulted once that's set).
+//   2. otherwise, if the resolved provider is 'claude' and the auto-router
+//      is on (`state.CONFIG.auto_model_enabled`), the model is chosen BY A
+//      CLASSIFIER AT DISPATCH TIME (Haiku/Sonnet/Opus, from the prompt) —
+///     this is a per-turn decision, so there is no static number to show.
+//   3. otherwise: the project's own `agent_model`/`agent_effort`, then the
+//      global config's, exactly like `_build_claude_flags`.
+// A non-claude provider (gemini/codex/...) never reaches the router at all
+// (agent_routes.py:5816 returns through `_dispatch_via_runtime` first) and
+// effort is a claude-CLI-only flag (`_dispatch_via_runtime` never threads
+// one through) — so both are gated on the resolved provider being 'claude'.
+// A resolved-but-deleted persona, or a project this node no longer points
+// at, renders an em dash and the reason — never a guessed model id.
+function _wfProjectFor(node) {
+  return (typeof allProjects !== 'undefined' ? allProjects : [])
+    .find(p => p.id === (node && node.project_id)) || null;
+}
+
+// The persona dispatch will actually use: the node's own pick, or — exactly
+// like `_resolve_character`'s `source='project'` branch — the project's
+// `default_character` when the node has none. Returns the bench row (or
+// null if the reference doesn't resolve) plus the raw "scope:name" it came
+// from, so a stale reference can be named instead of silently dropped.
+function _wfResolvedPersonaFor(st, node, proj) {
+  let ref = (node && node.character) || '';
+  if (!ref) ref = (proj && proj.default_character) || '';
+  if (!ref) return { person: null, ref: '' };
+  const i = ref.indexOf(':');
+  if (i < 1) return { person: null, ref };
+  return { person: _wfBenchLookup(st, ref.slice(0, i), ref.slice(i + 1)), ref };
+}
+
+// A model id → its friendly label, for whichever provider actually owns it.
+// `_agentProviders` (index.html, `/api/agent/providers`) carries every
+// runtime's own catalog, same as the composer's Model picker
+// (conversation.js `_providerModelChoices`); `MC_MODEL_CHOICES` (modal-
+// manager.js, window-exposed) is the claude-only fallback for the window
+// this fetch hasn't resolved into yet. An id neither knows is still shown
+// verbatim — a raw id is a fact, a blank would read as "nothing pinned".
+function _wfModelLabel(provider, modelId) {
+  if (!modelId) return '';
+  const provRec = (typeof _agentProviders !== 'undefined' && _agentProviders || [])
+    .find(x => x.name === provider);
+  const hit = provRec && Array.isArray(provRec.models)
+    ? provRec.models.find(x => x.id === modelId) : null;
+  if (hit) return hit.label || modelId;
+  if (provider === 'claude') {
+    const c = (window.MC_MODEL_CHOICES || []).find(x => x[0] === modelId);
+    if (c) return c[1];
+  }
+  return modelId;
+}
+
+function _wfEngineTooltip(st, node) {
+  if (!node || node.type !== 'agent') return '';
+  const proj = _wfProjectFor(node);
+  if (!proj) return 'Model: — (no project set on this step)';
+
+  const { person, ref } = _wfResolvedPersonaFor(st, node, proj);
+  if (ref && !person) {
+    return `Model: — (persona "${ref}" not found — deleted or renamed)`;
+  }
+  const who = person ? (person.display || person.name) : '';
+
+  const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
+  const pinModel = (person && person.model) || '';
+  const pinProvider = (person && person.provider) || '';
+  const pinEffort = (person && person.effort) || '';
+  const provider = pinProvider || proj.provider || cfg.default_provider || 'claude';
+
+  let line;
+  if (pinModel) {
+    line = `${_wfModelLabel(provider, pinModel)} — pinned on ${who || 'this persona'}`;
+  } else if (provider !== 'claude') {
+    // The router only ever produces a claude id and never runs for another
+    // provider's dispatch path — no static number to fall back to either,
+    // since agent_model/agent_effort are claude ids the runtime would reject.
+    line = `— (no model pinned on ${who || 'this persona'}; ${provider} runtime uses its own default)`;
+  } else if (cfg.auto_model_enabled) {
+    line = 'chosen at dispatch — auto-router is ON (Haiku / Sonnet / Opus by task)';
+  } else if (proj.agent_model) {
+    line = `${_wfModelLabel(provider, proj.agent_model)} — inherited, project default`;
+  } else if (cfg.agent_model) {
+    line = `${_wfModelLabel(provider, cfg.agent_model)} — inherited, global default`;
+  } else {
+    line = '— (no model configured anywhere in the chain)';
+  }
+
+  if (provider === 'claude') {
+    const effort = pinEffort || proj.agent_effort || cfg.agent_effort || '';
+    if (effort) {
+      const src = pinEffort ? '' : (proj.agent_effort ? ', project default' : ', global default');
+      line += ` · effort ${effort}${src}`;
+    }
+  }
+  return 'Model: ' + line;
+}
+
 function _wfBenchFiltered(st, search) {
   const q = String(search || '').trim().toLowerCase();
   const list = st.bench || [];
@@ -1345,9 +1451,14 @@ function _wfRenderNode(st, node) {
   // chosen by the drag itself (UI brief §3), so the face is the identity and
   // the step name is the subtitle it is referenced by in slots.
   const person = node.type === 'agent' ? _wfPersonFromCharacter(st, node.character) : null;
+  // Engine tooltip: what this step will actually run on and what that costs
+  // (Ron, 2026-09-11) -- native `title`, the same convention the Floor's
+  // provider badges and face pickers already use (floor.js), not a new
+  // hover-card system.
+  const engineTitle = node.type === 'agent' ? esc(_wfEngineTooltip(st, node)) : '';
   const headHtml = node.type === 'agent'
-    ? `<span class="wfb-node-avatar">${_wfAvatarHTML(person, 22)}</span>
-       <span class="wfb-node-title">
+    ? `<span class="wfb-node-avatar" title="${engineTitle}">${_wfAvatarHTML(person, 22)}</span>
+       <span class="wfb-node-title" title="${engineTitle}">
          <span class="wfb-node-persona">${esc(person ? (person.display || person.name) : 'No persona yet')}</span>
          <span class="wfb-node-step-sep">&middot;</span>
          <span class="wfb-node-step-name">${esc(node.name || '')}</span>
