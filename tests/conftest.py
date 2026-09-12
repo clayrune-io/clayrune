@@ -20,10 +20,32 @@ from __future__ import annotations
 
 import importlib
 import json
+import os
 import sys
 from pathlib import Path
 
 import pytest
+
+# ── No test may start the operator's REAL remote tunnel ──────────────────────
+# `import mc_remote` (pulled in transitively by `import server`) runs
+# _maybe_register(), which spawns a daemon thread calling
+# tunnel_supervisor.maybe_start(). On a machine that already has a device
+# enrolled, that starts a LIVE attestation loop: it re-attests to the control
+# plane every ~5s for the REST OF THE PYTEST SESSION and shells out to
+# `tasklist` from a NON-MAIN thread (cloudflared.reap_orphans).
+#
+# subprocess.run is a process global, so those foreign calls land inside any
+# test that has it patched. Measured 2026-09-11: 62 such spawns in one suite
+# run, the last of them in the file collected immediately before
+# test_spawn_sites.py, which failed intermittently with KeyError('input')
+# because calls[0] was the tunnel's tasklist rather than the oneshot() call it
+# was asserting the prompt-injection fence on.
+#
+# MC_REMOTE_ENABLED is mc_remote's own documented kill switch
+# (mc_remote/config.py) and must be set BEFORE mc_remote.config is imported —
+# conftest is imported before any test module, so here is the only place it
+# works. setdefault so an operator can still opt a run back in.
+os.environ.setdefault("MC_REMOTE_ENABLED", "0")
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
