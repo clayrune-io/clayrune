@@ -41,6 +41,9 @@ function fixtureProject(id, name) {
     project_path: '/smoke/' + id, last_updated: '2026-09-11T00:00:00Z',
     last_updated_relative: 'today', last_completed: null, live_agent: null,
     display_order: 0, provider: 'claude', use_streaming_agent: true,
+    // MC-871 engine tooltip: the project's own fallback, one rung above the
+    // global default in the resolution chain nothing here previously tested.
+    agent_model: 'claude-sonnet-5', agent_effort: 'medium',
     distiller_mode: 'proposed', distiller_min_recurrence: 3,
     distiller_max_topics_per_session: 3, distiller_max_preferences_per_session: 3,
     distiller_max_explorations_per_session: 3, distiller_min_turns: 5,
@@ -891,6 +894,47 @@ try {
   // "filler1","filler10".."filler14" all match the substring "filler1"
   c9SearchCount === 6 ? ok(`a search still shows every match regardless of expanded state (${c9SearchCount} matches for "filler1")`)
                        : fail(`expected 6 matches for "filler1", got ${c9SearchCount}`);
+
+  // ── C10: the engine hover tooltip (Ron, 2026-09-11) — pinned vs inherited ──
+  // Two personas added straight to st.bench (same idiom as the c9 replace
+  // above; nothing after this assumes the prior bench shape either): one
+  // pins its own engine, one pins nothing and must fall through to the
+  // PROJECT's agent_model/agent_effort (fixtureProject above) — the
+  // inherited path the brief calls out as the one that silently rots.
+  const c10Names = await page.evaluate(({ pid }) => {
+    const st = window._wfEntry()._wf;
+    st.bench = st.bench.concat([
+      { name: 'pinned-agent', scope: 'global', display: 'Pinny', avatar: '',
+        description: '', skills: [], provider: 'claude', model: 'claude-opus-5', effort: 'high',
+        project_id: '', project_name: '', rooms: [] },
+      { name: 'plain-agent', scope: 'global', display: 'Plain', avatar: '',
+        description: '', skills: [], provider: 'claude', model: '', effort: '',
+        project_id: '', project_name: '', rooms: [] },
+    ]);
+    const pinned = { type: 'agent', name: 'c10-pinned', x: -1300, y: -900,
+      project_id: pid, character: 'global:pinned-agent', prompt: '', outcomes: [] };
+    const inherited = { type: 'agent', name: 'c10-inherited', x: -960, y: -900,
+      project_id: pid, character: 'global:plain-agent', prompt: '', outcomes: [] };
+    st.def.nodes = (st.def.nodes || []).concat([pinned, inherited]);
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const rect = vp.getBoundingClientRect();
+    st.viewport.x = rect.width / 2 - (pinned.x + 260) * st.viewport.scale;
+    st.viewport.y = rect.height / 2 - (pinned.y + 60) * st.viewport.scale;
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+    return ['c10-pinned', 'c10-inherited'];
+  }, { pid: PID });
+  await page.waitForTimeout(100);
+  c10Names.length === 2 ? ok('placed a pinned-engine node and an unpinned (inherited) one')
+                        : fail(`expected 2 fresh nodes, got ${JSON.stringify(c10Names)}`);
+  const c10PinnedTitle = await page.$eval('.wfb-node[data-name="c10-pinned"] .wfb-node-avatar', el => el.title);
+  (/Opus 5/.test(c10PinnedTitle) && /effort high/.test(c10PinnedTitle) && /pinned on Pinny/.test(c10PinnedTitle))
+    ? ok(`a persona's own engine pin shows verbatim: "${c10PinnedTitle}"`)
+    : fail(`expected the pinned engine (Opus 5 / effort high / pinned on Pinny), got "${c10PinnedTitle}"`);
+  const c10InheritedTitle = await page.$eval('.wfb-node[data-name="c10-inherited"] .wfb-node-avatar', el => el.title);
+  (/Sonnet 5/.test(c10InheritedTitle) && /effort medium/.test(c10InheritedTitle) && /inherited, project default/.test(c10InheritedTitle))
+    ? ok(`an unpinned persona's tooltip is honest that it's INHERITED from the project default, not its own: "${c10InheritedTitle}"`)
+    : fail(`expected an inherited-from-project-default tooltip (Sonnet 5 / effort medium), got "${c10InheritedTitle}"`);
 
   // ── Mobile viewport: palette becomes a bottom sheet, canvas still present ─
   await ctx.close();
