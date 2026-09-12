@@ -338,7 +338,13 @@ function _wfEngineLine(person, proj, cfg, who) {
   if (provider === 'claude' && resolved) {
     const effort = pinEffort || (proj && proj.agent_effort) || cfg.agent_effort || '';
     if (effort) {
-      const src = pinEffort ? '' : ((proj && proj.agent_effort) ? ', project default' : ', global default');
+      // With no project yet (palette hover on a person whose home project is
+      // empty and no builder hint), a pinned MODEL still resolves but the
+      // effort chain does not: the project it lands in can override the
+      // global default, so don't assert one we can't know.
+      const src = pinEffort ? ''
+        : ((proj && proj.agent_effort) ? ', project default'
+        : (proj ? ', global default' : ', global default unless its project overrides'));
       line += ` · effort ${effort}${src}`;
     }
   }
