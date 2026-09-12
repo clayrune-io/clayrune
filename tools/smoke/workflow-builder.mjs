@@ -390,6 +390,29 @@ try {
   let nodeCount = await page.$$eval('.wfb-node', els => els.length);
   nodeCount === 1 ? ok('dragging a PERSON from the palette placed one agent step on the canvas')
                   : fail(`expected 1 node after the palette drag, got ${nodeCount}`);
+
+  // MC-871 agent-card mobile pass, defect 1 (Ron: "I still see the prompt as
+  // gray text" -- the Prompt field's hint, not the body a prior pass already
+  // collapsed). The raw-syntax hint duplicated what the Insert control below
+  // it already says in plain English, and at a card's fixed 260px width it
+  // wrapped to enough lines to read as a wall of disabled-looking content --
+  // deleted outright rather than just shrunk. This guards the regression:
+  // the bare "Prompt" label survives, with no `.memory-hint` sibling, and the
+  // Insert control (which made the hint redundant) is still there doing the
+  // explaining.
+  const promptLabelInfo = await page.evaluate(() => {
+    const label = Array.from(document.querySelectorAll('.wfb-node label'))
+      .find(l => l.textContent.trim().startsWith('Prompt'));
+    return {
+      text: label ? label.textContent.trim() : null,
+      hasHint: !!(label && label.querySelector('.memory-hint')),
+      hasInsertSelect: !!document.querySelector('.wfb-node .wfb-insert-select'),
+    };
+  });
+  (promptLabelInfo.text === 'Prompt' && !promptLabelInfo.hasHint && promptLabelInfo.hasInsertSelect)
+    ? ok('the Prompt field has no raw-syntax hint wall any more (bare "Prompt" label), and the Insert control that made it redundant is still present')
+    : fail(`expected a bare "Prompt" label with no .memory-hint and the Insert control present, got ${JSON.stringify(promptLabelInfo)}`);
+
   // Field edits sync into the model (and `data-name` with them) only at the
   // moment of the NEXT structural action, not on every keystroke (file
   // header: "typing in one node's prompt is never clobbered by placing a new
@@ -556,6 +579,53 @@ try {
   (c12bScaleAfter !== 1 && c12bPortBoxZoomed && c12bEdgeAtZoom && await page.$$eval('.wfb-edge-path', els => els.length) === c12bEdgesBeforeZoom)
     ? ok(`zoom changed to scale ${c12bScaleAfter.toFixed(2)} and the edge layer still redraws with valid, finite coordinates (edge count unchanged: ${c12bEdgesBeforeZoom})`)
     : fail(`edge layer broke under zoom: scale=${c12bScaleAfter}, portBox=${JSON.stringify(c12bPortBoxZoomed)}, edgeValid=${c12bEdgeAtZoom}`);
+
+  // MC-871 agent-card mobile pass, defect 2 (Ron: "when zooming in it goes
+  // out of boundaries"). Zoom further still (past the code's own 2.5x cap,
+  // to prove the cap plus the clip both hold) and confirm no canvas content
+  // (a card, a port, an edge) is ever hit-testable OUTSIDE #wfb-canvas-
+  // viewport's own box -- elementFromPoint respects real overflow clipping,
+  // so this is a direct proof the transform on .wfb-canvas-world never
+  // escapes its ancestor's overflow:hidden, at a zoom level well past what a
+  // default-zoom-only test would ever exercise.
+  // Zoom is exponential (factor = exp(-deltaY*k)), so an equal count of
+  // opposite-signed wheel events does NOT round-trip once either clamp is
+  // hit -- save the exact pre-check viewport here and restore it directly
+  // afterward, rather than trying to "undo" with more wheel events.
+  const c2ViewportBefore = await page.evaluate(() => ({ ...window._wfEntry()._wf.viewport }));
+  for (let i = 0; i < 6; i++) await page.mouse.wheel(0, -400); // drive well past the 2.5x clamp
+  await page.waitForTimeout(150);
+  const c2ScaleClamped = await page.evaluate(() => window._wfEntry()._wf.viewport.scale);
+  c2ScaleClamped <= 2.5
+    ? ok(`repeated zoom-in stays clamped at the code's own ceiling (scale=${c2ScaleClamped.toFixed(2)}, cap 2.5)`)
+    : fail(`zoom exceeded its documented 2.5x cap: scale=${c2ScaleClamped.toFixed(2)}`);
+  const c2VpBox = await (await page.$('#wfb-canvas-viewport')).boundingBox();
+  const c2Escape = await page.evaluate((vp) => {
+    const probe = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      return !!(el && el.closest && el.closest('.wfb-canvas-world'));
+    };
+    const midX = vp.x + vp.width / 2, midY = vp.y + vp.height / 2;
+    return {
+      // 4px outside each edge, at the midpoint of that edge -- inside the
+      // canvas world's painted area if (and only if) clipping has failed.
+      left: probe(vp.x - 4, midY), right: probe(vp.x + vp.width + 4, midY),
+      top: probe(midX, vp.y - 4), bottom: probe(midX, vp.y + vp.height + 4),
+    };
+  }, c2VpBox);
+  (!c2Escape.left && !c2Escape.right && !c2Escape.top && !c2Escape.bottom)
+    ? ok(`at ${c2ScaleClamped.toFixed(2)}x zoom, nothing from the canvas world paints outside #wfb-canvas-viewport's own box on any of the 4 edges`)
+    : fail(`canvas content escaped its viewport's clip at ${c2ScaleClamped.toFixed(2)}x zoom: ${JSON.stringify(c2Escape)}`);
+  // Restore the exact pre-check viewport directly (see comment above on why
+  // not more wheel events), so the existing single wheel(0,400) reset right
+  // below still lands back at ~1.0 exactly as it did before this block.
+  await page.evaluate((vp) => {
+    const st = window._wfEntry()._wf;
+    st.viewport.x = vp.x; st.viewport.y = vp.y; st.viewport.scale = vp.scale;
+    const world = document.getElementById('wfb-world');
+    if (world) world.style.transform = `translate(${vp.x}px, ${vp.y}px) scale(${vp.scale})`;
+  }, c2ViewportBefore);
+  await page.waitForTimeout(80);
   // Reset the zoom this check just changed -- every drop/drag test AFTER
   // this point computes its target coordinates assuming scale 1, same as
   // when they were written; leaving the canvas zoomed in ~1.8x would silently
@@ -1223,6 +1293,45 @@ try {
   (mNodesAfter === mNodesBefore + 1)
     ? ok('a real touch long-press-drag from the mobile palette placed a node on the canvas')
     : fail(`a real touch drag did not place a node on mobile -- nodes stayed at ${mNodesAfter} (expected ${mNodesBefore + 1}); the browser likely swallowed the up-drag as a native scroll`);
+
+  // MC-871 agent-card mobile pass, defect 2, AT A MOBILE WIDTH specifically
+  // (Ron's own report was from a phone) -- the same clip-integrity check as
+  // the desktop case above, so a regression that only shows up under the
+  // mobile breakpoint's layout (`.wfb-canvas-viewport { flex:none; height:
+  // 58vh }`, app.css ~9142) doesn't slip through a desktop-only assertion.
+  const mViewportBefore = await mpage.evaluate(() => ({ ...window._wfEntry()._wf.viewport }));
+  await mpage.mouse.move(mCanvasBox.x + mCanvasBox.width / 2, mCanvasBox.y + mCanvasBox.height / 2);
+  for (let i = 0; i < 8; i++) await mpage.mouse.wheel(0, -400); // drive well past the 2.5x clamp
+  await mpage.waitForTimeout(150);
+  const mScaleClamped = await mpage.evaluate(() => window._wfEntry()._wf.viewport.scale);
+  mScaleClamped <= 2.5
+    ? ok(`mobile: repeated zoom-in stays clamped at the code's own ceiling (scale=${mScaleClamped.toFixed(2)}, cap 2.5)`)
+    : fail(`mobile: zoom exceeded its documented 2.5x cap: scale=${mScaleClamped.toFixed(2)}`);
+  const mVpBoxZoomed = await (await mpage.$('#wfb-canvas-viewport')).boundingBox();
+  const mEscape = await mpage.evaluate((vp) => {
+    const probe = (x, y) => {
+      const el = document.elementFromPoint(x, y);
+      return !!(el && el.closest && el.closest('.wfb-canvas-world'));
+    };
+    const midX = vp.x + vp.width / 2, midY = vp.y + vp.height / 2;
+    return {
+      left: probe(vp.x - 4, midY), right: probe(vp.x + vp.width + 4, midY),
+      top: probe(midX, vp.y - 4), bottom: probe(midX, vp.y + vp.height + 4),
+    };
+  }, mVpBoxZoomed);
+  (!mEscape.left && !mEscape.right && !mEscape.top && !mEscape.bottom)
+    ? ok(`mobile width: at ${mScaleClamped.toFixed(2)}x zoom, nothing from the canvas world paints outside #wfb-canvas-viewport's own box on any of the 4 edges`)
+    : fail(`mobile width: canvas content escaped its viewport's clip at ${mScaleClamped.toFixed(2)}x zoom: ${JSON.stringify(mEscape)}`);
+  // Direct restore of the exact pre-check viewport (see the desktop case's
+  // comment on why not more wheel events) -- Defect 14's drag right below
+  // assumes scale 1 geometry.
+  await mpage.evaluate((vp) => {
+    const st = window._wfEntry()._wf;
+    st.viewport.x = vp.x; st.viewport.y = vp.y; st.viewport.scale = vp.scale;
+    const world = document.getElementById('wfb-world');
+    if (world) world.style.transform = `translate(${vp.x}px, ${vp.y}px) scale(${vp.scale})`;
+  }, mViewportBefore);
+  await mpage.waitForTimeout(80);
 
   // Defect 14 -- the same treatment for the node/trigger drag path
   // (_wfNodeDragDown, which the trigger tile's own drag reuses verbatim).
