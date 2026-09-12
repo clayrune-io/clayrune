@@ -2259,7 +2259,7 @@ def save_project_order():
     order = data['order']
     # Save full grid layout (with nulls for spacers)
     layout_path = DATA_DIR.parent / 'grid_layout.json'
-    layout_path.write_text(json.dumps({'order': order}, indent=2, ensure_ascii=False), encoding='utf-8')
+    write_json_atomic(layout_path, {'order': order}, indent=2, ensure_ascii=False)
     # Update display_order on each project
     for i, project_id in enumerate(order):
         if project_id is None:

@@ -501,13 +501,22 @@ function _mcMenuSwitchTab(projectId, tab) {
 }
 
 function switchModalTab(projectId, tab) {
-  // Leaving the Workflows tab with an unsaved canvas edit is the inline
-  // equivalent of closing the old floating builder modal — same dirty-state
-  // warning (MC-871 rehost, UI brief: "switching tabs with unsaved changes
-  // must hit the same dirty-state warning that closing did").
+  // MC-871 Change 3 — REVERSED the previous behaviour here (which prompted
+  // "Discard unsaved changes?" on every tab switch, INCLUDING "← Back to
+  // conversation" — the bug Ron actually hit). Leaving the Workflows tab
+  // never loses the edit: `_wfState` is an in-memory singleton independent
+  // of this DOM, and `_wfSyncTabsForProject` -> `_wfRemountDom` re-mounts
+  // the SAME state when the tab is reopened (workflow-builder.js header).
+  // What genuinely needs guarding is the one gap that claim depends on: a
+  // field just typed into but never yet synced into `def` (this file's own
+  // FIELD SYNC discipline only syncs at the next STRUCTURAL action) would be
+  // silently dropped when the tab body's DOM is torn down below by
+  // `refreshModal()`/`loadAgentLog()`/etc. `_wfSyncBeforeLeave` flushes that
+  // in-flight text into the model first, so there is nothing left to lose —
+  // no confirm needed BECAUSE nothing is discarded, not despite it.
   if (tab !== 'workflows' && modalActiveTab[projectId] === 'workflows'
-      && typeof window._wfConfirmDiscardIfDirty === 'function' && !window._wfConfirmDiscardIfDirty()) {
-    return;
+      && typeof window._wfSyncBeforeLeave === 'function') {
+    window._wfSyncBeforeLeave(projectId);
   }
   modalActiveTab[projectId] = tab;
   if (tab === 'agent-log') {
@@ -606,7 +615,12 @@ async function loadWorkflows(projectId) {
   const el = document.getElementById('workflows-body-' + projectId);
   if (!el) return;
   if (!document.getElementById('wfb-clayrune-section-' + projectId)) {
-    el.innerHTML = `<div id="wfb-clayrune-section-${esc(projectId)}" style="margin-bottom:14px"></div>`
+    // wfb-fill-col (MC-871 Change 1 amendment, desktop only — app.css): part
+    // of the flex-column chain that lets the canvas grow to fill the tab
+    // instead of sitting in a fixed-height stub under a scrolling page. A
+    // no-op class at mobile widths, where this section keeps its plain block
+    // layout.
+    el.innerHTML = `<div id="wfb-clayrune-section-${esc(projectId)}" class="wfb-fill-col" style="margin-bottom:6px"></div>`
       + `<div id="wfb-fanout-section-${esc(projectId)}"></div>`;
   }
 

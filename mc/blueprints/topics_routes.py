@@ -25,6 +25,8 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+from mc.atomic_json import write_json_atomic
+
 bp = Blueprint('topics_routes', __name__)
 
 # ── wired by server.py (None until wire() runs) ──────────────────────────────
@@ -89,9 +91,7 @@ def _load_json(path, default):
 
 def _atomic_write(path, obj):
     try:
-        tmp = path.with_suffix('.tmp')
-        tmp.write_text(json.dumps(obj, ensure_ascii=False), encoding='utf-8')
-        tmp.replace(path)
+        write_json_atomic(path, obj, ensure_ascii=False)
     except Exception:
         pass
 

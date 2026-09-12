@@ -50,6 +50,15 @@
 // node, gets exactly one plain (unconditional, `when: null`) output port —
 // matching what `mc/workflows.py::validate_workflow` actually accepts.
 //
+// CHANGE 10/11 (palette Action tile): 10 asked to remove the Action tile
+// from the palette; before that landed, Ron overrode it with 11 — the tile
+// STAYS, but the fixed 3-verb dropdown becomes a free-text "what should
+// happen here" resolved at save/test time. 11 is a schema-touching design
+// change, deliberately NOT implemented in this pass (see the resolution
+// proposal in docs/WORKFLOW_BUILDER_SPEC.md's "Open" section, awaiting
+// Ron's review) -- the palette tile and the action card editor below are
+// therefore exactly as they were before either 10 or 11 was raised.
+//
 // PHASE 2'S CARD EDITORS ARE REUSED VERBATIM (brief's explicit instruction):
 // `_wfRenderAgentOwn`'s project-select/persona-picker/prompt-textarea and
 // `_wfRenderActionOwn`/`_wfActionFieldsHTML`/`_wfRerenderActionFields` are
@@ -281,10 +290,39 @@ function _wfMakeNode(st, type, scope, name, x, y) {
 // close confirm (`_wfRequestClose`), now also the gate every tab switch and
 // re-mount goes through (UI brief: "switching tabs with unsaved changes must
 // hit the same dirty-state warning that closing did").
-function _wfConfirmDiscardIfDirty() {
+// MC-871 Change 3: this now guards ONLY the cases that genuinely replace the
+// mounted state (loading a different/new workflow over a dirty canvas) — a
+// plain tab switch away no longer calls this at all (see agent-console.js's
+// switchModalTab and _wfSyncBeforeLeave below). Worded as REPLACING, not
+// discarding, per the brief: a tab switch keeps the edit; this action does
+// not.
+function _wfConfirmDiscardIfDirty(targetLabel) {
   if (!_wfState || !_wfState._wf || !_wfState._wf.dirty) return true;
-  return confirm('Discard unsaved changes to this workflow?');
+  const current = (_wfState._wf.def && _wfState._wf.def.name) || 'this workflow';
+  const opening = targetLabel || 'a different workflow';
+  return confirm(`You have unsaved changes to "${current}". Open ${opening} anyway?`);
 }
+
+// Flushes any text just typed into a field (not yet synced into `def` --
+// this file's FIELD SYNC discipline only syncs at the next STRUCTURAL
+// action) into the in-memory model. Called from agent-console.js's
+// switchModalTab right before the tab body's DOM is torn down, so a plain
+// tab switch (including "← Back to conversation") never silently drops an
+// in-flight edit. No render call: the DOM is about to be destroyed by the
+// caller regardless, and re-rendering it here would just be discarded work.
+function _wfSyncBeforeLeave(projectId) {
+  if (!_wfState || _wfState.projectId !== projectId || !_wfState._wf) return;
+  _wfSyncDomToModel(_wfState);
+  // Every popover in this file lives on <body>, OUTSIDE the tab-content div
+  // that's about to be torn down (agent-console.js's tabOn('workflows')
+  // lazy-skip) — none of them get removed by that teardown on their own, so
+  // without this a popover left open would keep floating on screen over
+  // whatever tab/page the user switches to next.
+  _wfCloseTriggerPopover();
+  _wfClosePortPopover();
+  _wfCloseNodeMenu();
+}
+window._wfSyncBeforeLeave = _wfSyncBeforeLeave;
 
 // Another project's Workflows tab just stole the singleton canvas. Its host
 // div is still live DOM in a still-open modal -- leaving it wired to
@@ -296,12 +334,28 @@ function _wfRenderIdleHost(projectId) {
   if (host) host.innerHTML = '<div class="wfb-canvas-idle">Editing moved to another project — pick a tab to resume here.</div>';
 }
 
-async function openWorkflowBuilder(workflowId, hintProjectId) {
+// `targetLabel` is the ONE place this ever confirms a discard (Ron: choosing
+// "+ New Workflow" while dirty needed OK pressed TWICE, and Cancel on the
+// second of those left the pane stuck). `_wfTabClick`/`_wfNewWorkflowClick`
+// used to run their own `_wfConfirmDiscardIfDirty` first and then call here,
+// which ran the SAME check again with no label -- two dialogs for one click,
+// the second overwriting the first's wording. They now pass their label
+// straight through and never check it themselves; `_wfSyncTabsForProject`'s
+// own auto-select call (no caller-side check of its own) still gets the
+// generic wording by passing none.
+async function openWorkflowBuilder(workflowId, hintProjectId, targetLabel) {
   const projectId = hintProjectId || (_wfState && _wfState.projectId) || '';
   const host = document.getElementById('wfb-inline-host-' + projectId);
   if (!host) { console.warn('[workflow-builder] no inline host mounted for project', projectId); return; }
-  if (!_wfConfirmDiscardIfDirty()) return;
+  if (!_wfConfirmDiscardIfDirty(targetLabel)) return;
   if (_wfState && _wfState.projectId && _wfState.projectId !== projectId) _wfRenderIdleHost(_wfState.projectId);
+  // The trigger popover (Change 2) lives on <body>, outside #wfb-inline-host
+  // -- a fresh load below replaces the host's contents but would otherwise
+  // leave a stale popover open over whatever loads next, still wired to the
+  // OLD state via its onclick handlers' closed-over `_wfPortPopover`-style
+  // module state. Close it before the swap, same as _wfRender() already does
+  // unconditionally for the port "+" popover.
+  _wfCloseTriggerPopover();
 
   host.innerHTML = '<div id="wfb-body" class="wfb-modal-body"></div>';
   // Dirty-state watcher (UI brief §6/build-order step 6): delegated so it
@@ -347,16 +401,27 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
   // stamp is "since this modal opened", not a durable last-modified. runErrors/
   // scrollToNode carry a failed Save/Run-now's per-card messages (step 6,
   // "inline on the offending card, not only a toast") to the next render.
+  // descOpen/paletteExpanded (MC-871 Change 1/9): descOpen starts OPEN when
+  // the loaded def already carries a description (never hide content that's
+  // there), then tracks the toolbar's disclosure toggle. paletteExpanded
+  // tracks the palette's "+N more"/"Show fewer" state (Change 9) -- separate
+  // from paletteSearch, which already bypasses the cap on its own.
+  // _undo/_redo/_lastSnapshot/_savedSnapshot (Change 3): see _wfCheckpointForUndo
+  // and _wfStampSavedSnapshot below for how these three stay in sync.
   return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
            _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null,
            hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '',
-           dirty: false, savedAt: null, runErrors: null, scrollToNode: null };
+           paletteExpanded: false,
+           dirty: false, savedAt: null, runErrors: null, scrollToNode: null,
+           descOpen: !!(def.description && String(def.description).trim()),
+           _undo: [], _redo: [], _lastSnapshot: null, _savedSnapshot: null };
 }
 
 async function _wfLoadInto(entry, workflowId, hintProjectId) {
   if (!workflowId) {
     entry._wf = _wfFreshState(_wfBlankDef(), null, null, hintProjectId);
     await _wfLoadBench(entry._wf);
+    _wfStampSavedSnapshot(entry._wf);
     return;
   }
   try {
@@ -373,6 +438,11 @@ async function _wfLoadInto(entry, workflowId, hintProjectId) {
     entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow', hintProjectId);
   }
   await _wfLoadBench(entry._wf);
+  // Baseline for Reset (Change 3): "the last saved state" for a workflow that
+  // loaded from the server IS this load; for a brand-new one it's the blank
+  // def _wfFreshState just built. Either way, Reset must have a stable target
+  // BEFORE the user's first edit, not just after their first Save.
+  _wfStampSavedSnapshot(entry._wf);
 }
 
 // Same data source as the Floor/Bench (UI brief §2, "Palette data source: the
@@ -391,6 +461,142 @@ async function _wfLoadBench(st) {
   st.benchLoaded = true;
 }
 
+// ── Undo / Redo / Reset (MC-871 Change 3) ────────────────────────────────────
+//
+// Snapshot = {def, linkedSchedule} JSON round-tripped (the same deep-copy
+// idiom _wfLoadInto/_wfSave already use throughout this file). The choke
+// point is `_wfRender()` itself, not the ~30 individual mutators: every
+// structural mutation in this file already ends by calling `_wfRender()`
+// (never on a bare keystroke -- those only touch the DOM via the delegated
+// input/change listener, see `_wfMarkDirty`), so diffing "the def as of the
+// last render" against "the def right now" at the top of `_wfRender()` is
+// exactly one undo step per structural action and zero per keystroke, with
+// no call added at any of those ~30 sites. Cap: 50 steps -- generous for one
+// editing session, bounded so the stack can't grow unbounded across a long
+// one.
+const WFB_UNDO_CAP = 50;
+
+function _wfSnapshot(st) {
+  return JSON.stringify({ def: st.def, linkedSchedule: st.linkedSchedule });
+}
+
+function _wfStampSavedSnapshot(st) {
+  st._savedSnapshot = _wfSnapshot(st);
+  st._lastSnapshot = st._savedSnapshot;
+}
+
+function _wfApplySnapshot(st, raw) {
+  const snap = JSON.parse(raw);
+  st.def = snap.def;
+  st.linkedSchedule = snap.linkedSchedule;
+}
+
+// Called at the top of every `_wfRender()`. Pushes the PREVIOUS checkpoint
+// (not the current state) onto the undo stack the first time it sees the def
+// has actually changed since that checkpoint, then advances the checkpoint.
+// `_wfUndo`/`_wfRedo`/`_wfResetCanvas` pre-set `st._lastSnapshot` to the
+// state they just applied before calling `_wfRender()`, so this sees "no
+// change" on the render THEY trigger and doesn't re-push what it just popped.
+function _wfCheckpointForUndo(st) {
+  const snap = _wfSnapshot(st);
+  if (st._lastSnapshot == null) { st._lastSnapshot = snap; return; }
+  if (snap === st._lastSnapshot) return;
+  st._undo = st._undo || [];
+  st._undo.push(st._lastSnapshot);
+  if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
+  st._redo = []; // a fresh structural change invalidates any redo history
+  st._lastSnapshot = snap;
+}
+
+function _wfCanUndo(st) { return !!(st._undo && st._undo.length); }
+function _wfCanRedo(st) { return !!(st._redo && st._redo.length); }
+
+function _wfUndo() {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  if (!_wfCanUndo(st)) return;
+  _wfSyncDomToModel(entry); // capture in-flight typing before it's discarded
+  const cur = _wfSnapshot(st);
+  st._redo = st._redo || [];
+  st._redo.push(cur);
+  if (st._redo.length > WFB_UNDO_CAP) st._redo.shift();
+  const prev = st._undo.pop();
+  _wfApplySnapshot(st, prev);
+  st._lastSnapshot = prev;
+  st.dirty = (prev !== st._savedSnapshot);
+  st.runErrors = null;
+  _wfCloseTriggerPopover();
+  _wfRender();
+}
+window._wfUndo = _wfUndo;
+
+function _wfRedo() {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  if (!_wfCanRedo(st)) return;
+  _wfSyncDomToModel(entry);
+  const cur = _wfSnapshot(st);
+  st._undo = st._undo || [];
+  st._undo.push(cur);
+  if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
+  const next = st._redo.pop();
+  _wfApplySnapshot(st, next);
+  st._lastSnapshot = next;
+  st.dirty = (next !== st._savedSnapshot);
+  st.runErrors = null;
+  _wfCloseTriggerPopover();
+  _wfRender();
+}
+window._wfRedo = _wfRedo;
+
+// Revert to the last SAVED state (or blank, for a workflow that was never
+// saved -- brief's explicit fallback). Itself pushed onto the undo stack
+// first, so Reset is undoable like everything else here -- Change 13, Ron:
+// "no need to ask if I'm certain ... we have the undo button" -- a confirm
+// and an undo are redundant, and undo is the better of the two. No dialog;
+// it just happens, and Undo takes it back.
+function _wfResetCanvas() {
+  const entry = _wfEntry(); if (!entry) return;
+  const st = entry._wf;
+  _wfSyncDomToModel(entry);
+  const cur = _wfSnapshot(st);
+  const baseline = st._savedSnapshot || JSON.stringify({ def: _wfBlankDef(), linkedSchedule: null });
+  if (cur === baseline) return; // already at the saved state -- nothing to do
+  st._undo = st._undo || [];
+  st._undo.push(cur);
+  if (st._undo.length > WFB_UNDO_CAP) st._undo.shift();
+  st._redo = [];
+  _wfApplySnapshot(st, baseline);
+  st._lastSnapshot = baseline;
+  st.dirty = false;
+  st.runErrors = null;
+  _wfCloseTriggerPopover();
+  _wfRender();
+}
+window._wfResetCanvas = _wfResetCanvas;
+
+// Ctrl+Z / Ctrl+Shift+Z (Cmd on mac), while the canvas has focus. "Focus"
+// here means the Workflows tab is the one currently showing -- its host div
+// only exists in the DOM while that tab is active (agent-console.js's
+// tabOn('workflows') lazy-skips the tab-content otherwise, see file header) --
+// AND the browser's real text-field focus isn't inside an input/textarea
+// (mirrors the existing edge-delete keydown guard just below: Delete/
+// Backspace also excludes INPUT/TEXTAREA) so a field's own native undo is
+// never hijacked. Not `host.contains(activeElement)`: clicking a node's
+// (non-focusable) header div leaves `document.activeElement` on `<body>`,
+// which would otherwise make the shortcut work only right after typing in a
+// field -- the opposite of what "canvas has focus" means here.
+document.addEventListener('keydown', (e) => {
+  if (!_wfState) return;
+  if (e.key.toLowerCase() !== 'z' || !(e.ctrlKey || e.metaKey)) return;
+  const tag = document.activeElement && document.activeElement.tagName;
+  if (tag === 'INPUT' || tag === 'TEXTAREA') return;
+  const host = document.getElementById('wfb-inline-host-' + _wfState.projectId);
+  if (!host) return;
+  e.preventDefault();
+  if (e.shiftKey) _wfRedo(); else _wfUndo();
+});
+
 // ── Tabs row: "one per workflow that involves this project" ─────────────────
 //
 // Called by agent-console.js's `loadWorkflows` every time it re-fetches
@@ -403,7 +609,7 @@ const _wfTabsSig = {}; // projectId -> last-seen "id,id,id" signature
 
 function _wfTabsRowHTML(projectId, list, selectedId) {
   const tabs = list.map(w => `<button type="button" class="wfb-tab${w.id === selectedId ? ' active' : ''}"
-      onclick="_wfTabClick('${_wfJsStrEsc(projectId)}','${_wfJsStrEsc(w.id)}')">${esc(w.name || 'Untitled workflow')}</button>`).join('');
+      onclick="_wfTabClick('${_wfJsStrEsc(projectId)}','${_wfJsStrEsc(w.id)}','${_wfJsStrEsc(w.name || 'Untitled workflow')}')">${esc(w.name || 'Untitled workflow')}</button>`).join('');
   return `<div class="wfb-tabs-row">${tabs}
     <button type="button" class="wfb-tab wfb-tab-new" onclick="_wfNewWorkflowClick('${_wfJsStrEsc(projectId)}')">+ New Workflow</button>
   </div>`;
@@ -413,16 +619,20 @@ function _wfEmptyStateHTML() {
   return '<div style="color:var(--text-faint);font-style:italic;font-size:12px;padding:4px 0 2px">No workflows involve this project yet.</div>';
 }
 
-function _wfTabClick(projectId, workflowId) {
+// targetName threaded through from the tabs row (Change 3's "word it as
+// replacing" — the confirm names what's about to open, not just "a
+// different workflow"). The discard confirm itself lives ONLY inside
+// openWorkflowBuilder now (see its own comment) — this used to also run
+// _wfConfirmDiscardIfDirty here first, so one click could show the dialog
+// twice.
+function _wfTabClick(projectId, workflowId, targetName) {
   if (_wfState && _wfState.projectId === projectId && _wfState._wf && _wfState._wf.workflowId === workflowId) return;
-  if (!_wfConfirmDiscardIfDirty()) return;
-  openWorkflowBuilder(workflowId, projectId);
+  openWorkflowBuilder(workflowId, projectId, targetName ? `"${targetName}"` : null);
 }
 window._wfTabClick = _wfTabClick;
 
 function _wfNewWorkflowClick(projectId) {
-  if (!_wfConfirmDiscardIfDirty()) return;
-  openWorkflowBuilder(null, projectId);
+  openWorkflowBuilder(null, projectId, 'a new workflow');
 }
 window._wfNewWorkflowClick = _wfNewWorkflowClick;
 
@@ -434,8 +644,19 @@ function _wfSyncTabsForProject(projectId, list) {
   _wfTabsSig[projectId] = sig;
   section.dataset.wfBuilt = '1';
 
-  const mountedId = (_wfState && _wfState.projectId === projectId && _wfState._wf) ? _wfState._wf.workflowId : undefined;
-  const stillMounted = list.some(w => w.id === mountedId);
+  const activeEntry = (_wfState && _wfState.projectId === projectId) ? _wfState._wf : null;
+  const mountedId = activeEntry ? activeEntry.workflowId : undefined;
+  // A brand-new, never-saved workflow (`workflowId: null`, _wfFreshState's
+  // own "unsaved" marker) can NEVER appear in `list` -- it doesn't exist on
+  // the server yet -- so `list.some(w => w.id === mountedId)` was always
+  // false for it. That silently discarded an in-progress unsaved flow the
+  // moment this section's DOM got rebuilt with a fresh (unbuilt) element --
+  // e.g. closing and reopening the project modal, which is exactly what "start
+  // a new flow, navigate away, come back" does (Ron: "the work is gone").
+  // An unsaved draft counts as "still mounted" on its own; anything with a
+  // real id still needs the list lookup (a workflow deleted elsewhere must
+  // still fall through to auto-select below).
+  const stillMounted = !!activeEntry && (mountedId === null || list.some(w => w.id === mountedId));
   const selected = stillMounted ? mountedId : (list[0] ? list[0].id : null);
 
   // "+ New Workflow" is always present, even with zero workflows (UI brief:
@@ -444,9 +665,12 @@ function _wfSyncTabsForProject(projectId, list) {
   // simply has no per-workflow tabs alongside it when `list` is empty.
   section.innerHTML = _wfTabsRowHTML(projectId, list, selected)
     + (list.length ? '' : _wfEmptyStateHTML())
-    + `<div id="wfb-inline-host-${esc(projectId)}"></div>`;
+    + `<div id="wfb-inline-host-${esc(projectId)}" class="wfb-fill-col"></div>`;
 
-  if (selected == null) return;
+  // NOT `selected == null` on its own any more: an unsaved draft's `selected`
+  // IS null (it has no id yet) even though it is very much still mounted and
+  // must be remounted, not treated as "nothing to show".
+  if (!stillMounted && selected == null) return;
   if (stillMounted) _wfRemountDom(projectId);      // already loaded in memory -- just rebuild the DOM around it
   else openWorkflowBuilder(selected, projectId);   // a different/new workflow -- load it for real
 }
@@ -704,8 +928,9 @@ function _wfSyncDomToModel(entry) {
   if (nameEl) def.name = nameEl.value;
   const descEl = document.getElementById('wfb-desc');
   if (descEl) def.description = descEl.value;
-  const enabledEl = document.getElementById('wfb-enabled');
-  if (enabledEl) def.enabled = !!enabledEl.checked;
+  // Enabled is a toolbar toggle pill now (Change 1), not a checkbox synced
+  // from the DOM -- _wfToggleEnabled mutates def.enabled directly, the same
+  // way _wfToggleSchedEnabled already does for the linked schedule's own flag.
   if (def.trigger && def.trigger.type === 'schedule') _wfSyncScheduleFormToState(entry._wf);
   const nodes = def.nodes || [];
   const edges = def.edges || [];
@@ -721,8 +946,12 @@ function _wfSyncDomToModel(entry) {
       // elsewhere (spine behaviour, carried forward — see file header), but
       // a rename WOULD silently orphan this node's own edges if they
       // weren't repointed, which is new breakage this file would be
-      // introducing, not inheriting. Repoint them.
+      // introducing, not inheriting. Repoint them -- and Change 12a's
+      // def.trigger.entry the same way, for the same reason.
       edges.forEach(e => { if (e.from === oldName) e.from = node.name; if (e.to === oldName) e.to = node.name; });
+      if (def.trigger && Array.isArray(def.trigger.entry)) {
+        def.trigger.entry = def.trigger.entry.map(n => n === oldName ? node.name : n);
+      }
       renameMap[oldName] = node.name;
     }
   });
@@ -760,10 +989,11 @@ function _wfSyncNodeOwn(node, own) {
 function _wfRender() {
   const entry = _wfEntry();
   if (!entry || !entry._wf) return;
+  const st = entry._wf;
+  _wfCheckpointForUndo(st); // Change 3: one undo step per structural render, zero per keystroke
   _wfClosePortPopover(); // its anchor port is about to be replaced
   const body = document.getElementById('wfb-body');
   if (!body) return;
-  const st = entry._wf;
   body.innerHTML = _wfRenderBody(st);
   st._charLoads.forEach(({ seq, want }) => _wfReloadCharacters(seq, want));
   // Run-now/Save set scrollToNode to the first offending card (step 6); pan
@@ -776,6 +1006,18 @@ function _wfRender() {
   }
   _wfApplyViewport(st);
   _wfAttachCanvasGestures();
+  // The trigger popover (Change 2) lives outside #wfb-body (same reason the
+  // port popover does -- an overflow:auto ancestor would clip it), so a full
+  // body re-render doesn't touch it. Every mutator it drives (_wfSetTriggerType,
+  // _wfSetSchedType, _wfToggleSchedEnabled...) already ends in this same
+  // _wfRender(), so refreshing its content here -- rather than teaching each
+  // of those to know about the popover -- is the one place that keeps it in
+  // sync without forking the cadence form.
+  if (_wfTriggerPopoverOpen) {
+    const pop = document.getElementById('wfb-trigger-popover');
+    if (pop) pop.innerHTML = _wfTriggerPopoverHTML(st);
+    else _wfTriggerPopoverOpen = false;
+  }
 }
 
 // Cards live on a pan/zoom CSS-transformed canvas, not inside a scrolling
@@ -798,21 +1040,26 @@ function _wfPanToNode(st, nodeName) {
 //
 // Ron: "Needs the Trigger box to exist on the canvas as first point" -- chosen
 // deliberately as its OWN shape, not a real node: it is never a member of
-// `def.nodes`, never in NODE_TYPES, has no card editor, and the actual
-// manual/schedule form above (`.wfb-trigger-card`) is unchanged and still owns
-// `def.trigger.type`. This box is a positioned, draggable marker for it on
-// the free canvas -- `trigger.x`/`trigger.y` are additive keys on the same
+// `def.nodes`, never in NODE_TYPES, has no card editor of its own (Change 2
+// gives it a popover instead, reusing the old `.wfb-trigger-card` form
+// verbatim -- see `_wfTriggerPopoverHTML`), and `def.trigger.type` is
+// unchanged by any of this. This box is a positioned, draggable marker for it
+// on the free canvas -- `trigger.x`/`trigger.y` are additive keys on the same
 // dict (verified round-tripping through mc/workflows.py: `doc.get('trigger')`
 // is stored and returned verbatim, no key allowlist).
 //
-// NO input port (nothing can feed a trigger) and NO output port either: every
-// output port on a real node is wired through `_wfTryAddEdge`, which the
-// dominator/broken-slot fixpoint (`_wfToposort`/`_wfDominators`) walks by
-// iterating `def.nodes` -- the trigger isn't in that array, so an edge
-// touching it would need those functions (and the stored edge shape) to learn
-// a node that isn't a node. Out of scope per the brief ("if wiring would mean
-// touching the edge model or stored format, DON'T"), so it stays visually
-// unconnected.
+// NO input port (nothing can feed a trigger, unchanged). Change 4a REVERSES
+// the "no output port either" call this comment used to make (Ron, after
+// using the canvas: "There is no connection point on the Start tile so it
+// cannot be tied to the first agent or action"). The port IS there now, but
+// as a VIEW, not new persisted state: `mc/workflows.py:421` refuses any edge
+// whose `from` isn't a real `nodes[]` member, and `:656` already defines
+// "wired to the trigger" as being a ROOT (no incoming edges) -- so the port
+// drives `_wfInsertRootAfterTrigger`/`_wfMakeRoot`, which only ever touch
+// node membership and incoming-edge lists, and `_wfRedrawEdges` draws the
+// implied trigger->root line as a read of "no incoming edges", never a
+// stored edge. `_wfToposort`/`_wfDominators` still never learn the trigger is
+// a node -- nothing about that changed.
 // Above the root node, not to its left: a root's `x` is wherever the user
 // actually dropped it (usually near the canvas's default viewport origin),
 // so subtracting a further fixed offset from that can walk the trigger off
@@ -828,80 +1075,167 @@ function _wfTriggerDefaultPos(def) {
   return { x: root.x || 0, y: (root.y || 0) - 110 };
 }
 
+// MC-871 Change 4a (reverses the "no output port" call the file header used
+// to document -- Ron, after using the shipped canvas: "There is no
+// connection point on the Start tile so it cannot be tied to the first agent
+// or action that should happen at the trigger"). The port is a VIEW, not new
+// persisted state: `mc/workflows.py:421` refuses any edge whose `from` isn't
+// a real `nodes[]` member, and `:656` already defines "wired to the trigger"
+// as being a ROOT (no incoming edges) -- so this port doesn't add a
+// `__trigger__` edge to `def.edges`, it drives `_wfMakeRoot`/
+// `_wfInsertRootAfterTrigger`, which only ever touch node membership and
+// incoming-edge lists. `_wfRedrawEdges` draws the implied trigger->root
+// line(s) this creates as a view over "no incoming edges", never a stored
+// edge. `data-when=""` matches a plain node's single unconditional port so
+// `_wfPortPlusClick`/the popover pick functions need only one extra branch
+// (`fromNode === '__trigger__'`), not a parallel code path.
+//
+// Change 12a (corrects an over-eager first cut of 4a): a trigger line used to
+// be drawn to EVERY root node -- meaning any freshly dropped standalone card
+// (which starts with no incoming edges, ie. a root by definition) instantly
+// looked wired to the trigger, with no action from Ron. Wiring to the
+// trigger is now an EXPLICIT act, same as any other connection, recorded as
+// `def.trigger.entry` -- a plain array of node names -- alongside the
+// trigger's already-additive `x`/`y` keys (verified: `create_workflow`/
+// `update_workflow` store `doc.get('trigger')` WHOLE, and `validate_workflow`
+// checks only `.type` -- mc/workflows.py:235/355-357 -- the same reason
+// `trigger.x`/`trigger.y` already round-trip with no schema change). Only
+// `_wfInsertRootAfterTrigger` (the trigger's own "+"/drop target) and
+// `_wfMakeRoot` (dragging FROM the trigger port onto a card) add to `entry`
+// -- both are gestures that touch the trigger tile directly. A plain drop on
+// EMPTY canvas never does, even though the result is technically a root too.
+function _wfTriggerEntry(def) {
+  const trigger = def.trigger;
+  return (trigger && Array.isArray(trigger.entry)) ? trigger.entry : [];
+}
+
 function _wfRenderTriggerBox(st) {
   const def = st.def;
   const trigger = def.trigger || (def.trigger = { type: 'manual' });
   const hasPos = typeof trigger.x === 'number' && typeof trigger.y === 'number';
-  const pos = hasPos ? { x: trigger.x, y: trigger.y } : _wfTriggerDefaultPos(def);
-  const label = trigger.type === 'schedule' ? 'On a schedule' : 'Manual';
-  return `<div class="wfb-trigger-box" data-name="__trigger__" style="left:${pos.x}px;top:${pos.y}px">
+  // Ron: "dropping a block beside Start snaps it to connect to the top of
+  // the dropped tile" / "after connecting Start to a tile, it snaps to the
+  // top of that tile" -- both were this same recompute, not a real snap: as
+  // long as the trigger has never been dragged, EVERY render fell through to
+  // _wfTriggerDefaultPos, which anchors above whichever node is currently the
+  // graph's root -- so any new node, or any node picking up an incoming edge
+  // that demotes it from root, silently re-homed the tile on the next
+  // _wfRender(). Persisting the computed default into `trigger.x/y` the first
+  // time it's needed makes `hasPos` true from then on, so this box behaves
+  // exactly like a node that already has a saved position: it only ever
+  // moves in response to _wfNodeDragUp's own drag-and-release.
+  if (!hasPos) { const pos0 = _wfTriggerDefaultPos(def); trigger.x = pos0.x; trigger.y = pos0.y; }
+  const pos = { x: trigger.x, y: trigger.y };
+  // Defect 11's follow-on ("Manual -- Run now" vs "Runs weekly - Mon 07:00"):
+  // the tile reads its OWN live state instead of a static "Manual"/"On a
+  // schedule" label, which also gives defect 8's affordance something to
+  // read -- a tile whose text changes when you configure it looks
+  // interactive even before the hover/caret styling lands. Reuses
+  // scheduler.js's own `scheduleDescription` (window export) rather than
+  // reimplementing cadence formatting a second time; falls back to the old
+  // generic wording if the linked schedule hasn't loaded yet.
+  const label = trigger.type === 'schedule'
+    ? (st.linkedSchedule && typeof window.scheduleDescription === 'function' ? window.scheduleDescription(st.linkedSchedule) : 'On a schedule')
+    : 'Manual — Run now';
+  const names = new Set((def.nodes || []).map(n => n.name));
+  const hasIncoming = new Set((def.edges || []).map(e => e.to));
+  // "Connected" (a solid line, no stop stub) only for entries that are BOTH
+  // still real nodes AND still roots -- an entry that later gained an
+  // incoming edge from elsewhere is no longer "ready the moment the run
+  // starts" as a root, so drawing it as trigger-wired here would be exactly
+  // the silent lie R2-D6's stop-stub convention exists to prevent.
+  const wiredCount = _wfTriggerEntry(def).filter(n => names.has(n) && !hasIncoming.has(n)).length;
+  // Defect 8: clicking "Trigger" opens the config popover (_wfNodeDragUp's
+  // no-drag-happened branch) but nothing said so -- a caret is the same
+  // affordance `.wfb-toolbar-desc-toggle` already uses for "this text opens
+  // something", so the tile reads as configurable without a second visual
+  // language of its own.
+  return `<div class="wfb-trigger-box" data-name="__trigger__" style="left:${pos.x}px;top:${pos.y}px" title="Click to change the trigger &middot; drag to move">
     <div class="wfb-trigger-box-head" onpointerdown="_wfNodeDragDown(event)">
       <span class="wfb-trigger-box-icon">&#9654;</span>
       <span class="wfb-trigger-box-title">Trigger</span>
+      <span class="wfb-trigger-box-caret">&#9662;</span>
     </div>
     <div class="wfb-trigger-box-sub">${esc(label)}</div>
+    <div class="wfb-port-row wfb-trigger-port-row${wiredCount ? '' : ' wfb-port-unconnected'}">
+      <span class="wfb-port wfb-port-out" data-node="__trigger__" data-when="" onpointerdown="_wfPortDown(event)"><span class="wfb-port-dot"></span></span>
+      <button type="button" class="wfb-port-plus" title="First step, run&hellip;"
+        onclick="_wfPortPlusClick(event,'__trigger__','')">&#43;</button>
+      ${wiredCount ? '' : '<span class="wfb-port-stub"></span>'}
+    </div>
   </div>`;
 }
 
+// MC-871 Change 1 (+ Ron's amendment: "the canvas is the dominant element").
+// The old stacked chrome (.wfb-meta name/description/enabled, .wfb-trigger-card
+// TRIGGER radios+cadence, and a bottom .wfb-actions row) spent ~500px of
+// vertical space before the canvas even started and left it a fixed 520px
+// stub below. All of it collapses into ONE toolbar row above the canvas:
+// name (inline, borderless), a description disclosure (open only when the
+// loaded def already has one -- never hide existing content), an Enabled
+// pill, undo/redo/reset (Change 3), and Save/Run now/the save-stamp moved up
+// from the old .wfb-actions. The TRIGGER radios + cadence form move OUT
+// entirely -- Change 2 reuses them verbatim inside a popover anchored to the
+// trigger tile on the canvas (_wfTriggerPopoverHTML), not rendered here.
 function _wfRenderBody(st) {
   const def = st.def;
   st._cardSeq = 0;
   st._charLoads = [];
-  const triggerType = (def.trigger && def.trigger.type) || 'manual';
   const nodes = def.nodes || [];
   const nodesHtml = nodes.map(n => _wfRenderNode(st, n)).join('');
+  const descOpen = !!st.descOpen;
   return `
-    <div class="wfb-meta">
-      <label>Name</label>
-      <input id="wfb-name" value="${esc(def.name || '')}" placeholder="Untitled workflow">
-      <label>Description</label>
-      <textarea id="wfb-desc" rows="2" placeholder="What this pipeline is for">${esc(def.description || '')}</textarea>
-      <label style="display:flex;align-items:center;gap:8px;text-transform:none;font-size:12px;color:var(--text)">
-        <input type="checkbox" id="wfb-enabled" style="margin:0;width:auto" ${def.enabled !== false ? 'checked' : ''}>
+    <div class="wfb-toolbar">
+      <input id="wfb-name" class="wfb-toolbar-name" value="${esc(def.name || '')}" placeholder="Untitled workflow">
+      <button type="button" class="wfb-toolbar-desc-toggle${descOpen ? ' active' : ''}" onclick="_wfToggleDesc()"
+        title="${descOpen ? 'Hide the description' : 'Add a description'}">${descOpen ? '&#9662;' : '&#65291;'} Description</button>
+      <label class="wfb-toolbar-enabled" title="Enabled">
+        <span class="schedule-toggle ${def.enabled !== false ? 'on' : ''}" onclick="_wfToggleEnabled()"></span>
         <span>Enabled</span>
       </label>
+      <span class="wfb-toolbar-spacer"></span>
+      <button type="button" class="wfb-toolbar-btn" title="Undo (Ctrl+Z)" onclick="_wfUndo()" ${_wfCanUndo(st) ? '' : 'disabled'}>&#8630; Undo</button>
+      <button type="button" class="wfb-toolbar-btn" title="Redo (Ctrl+Shift+Z)" onclick="_wfRedo()" ${_wfCanRedo(st) ? '' : 'disabled'}>&#8631; Redo</button>
+      <button type="button" class="wfb-toolbar-btn" title="Revert to the last saved state" onclick="_wfResetCanvas()">&#8635; Reset</button>
+      <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
+      <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
+        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
+      <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
     </div>
-    <div class="wfb-trigger-card">
-      <div class="wfb-trigger-title">TRIGGER</div>
-      <div class="wfb-trigger-row">
-        <label class="wfb-trigger-opt">
-          <input type="radio" name="wfb-trigger" value="manual" ${triggerType !== 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('manual')">
-          Manual &mdash; Run Now or the API
-        </label>
-        <label class="wfb-trigger-opt">
-          <input type="radio" name="wfb-trigger" value="schedule" ${triggerType === 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('schedule')">
-          On a schedule
-        </label>
-      </div>
-      ${triggerType === 'schedule' ? _wfRenderScheduleCadence(st) : ''}
-    </div>
+    ${descOpen ? `<div class="wfb-toolbar-desc-row">
+      <textarea id="wfb-desc" rows="1" placeholder="What this pipeline is for">${esc(def.description || '')}</textarea>
+    </div>` : ''}
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
         <svg id="wfb-canvas-svg" class="wfb-canvas-svg"></svg>
         <div id="wfb-world" class="wfb-canvas-world">${_wfRenderTriggerBox(st)}${nodesHtml}</div>
-        ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag a port to connect &middot; + on a port adds &amp; wires the next step</div>'}
+        ${nodes.length ? '' : '<div class="wfb-canvas-empty">drop anyone anywhere &middot; drag the blue dot onto another card to connect them &middot; + on a port adds &amp; wires the next step</div>'}
       </div>
     </div>
-    ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}
-    <div class="wfb-actions">
-      <button class="btn-sched-save" onclick="_wfSave()" ${st.saving ? 'disabled' : ''}>${st.saving ? 'Saving…' : (st.workflowId ? 'Update' : 'Create')}</button>
-      <button class="btn-sched-cancel" style="color:var(--accent);border-color:var(--accent)" onclick="_wfRunNow()"
-        title="${st.workflowId ? 'Validate and run this workflow now' : 'Save the workflow first'}">&#x25B6; Run now</button>
-      <span id="wfb-save-stamp" class="wfb-save-stamp${st.dirty ? ' wfb-save-stamp-dirty' : ''}">${st.dirty ? 'Unsaved changes' : esc(_wfRelativeSavedLabel(st.savedAt))}</span>
-    </div>`;
+    ${st.error ? `<div class="wfb-error">${esc(st.error)}</div>` : ''}`;
 }
 
-// The palette is the Bench plus exactly two tools (UI brief §2). People are
-// listed first because they are the common case; the tools sit under a rule so
-// the eye lands on a face, not on a primitive.
-const WFB_PALETTE_PEOPLE_CAP = 8;
+// The palette is the Bench plus the ONE tool that is a user intention rather
+// than Clayrune housekeeping (UI brief §2, narrowed by Change 10 — see the
+// palette-tools comment below). People are listed first because they are the
+// common case; the tool sits under a rule so the eye lands on a face, not on
+// a primitive.
+//
+// Cap raised 8 -> 12 (Change 9): the canvas fill (Change 1's amendment) gives
+// `.wfb-palette` real height to grow into now that it's not squeezed against
+// a fixed 520px viewport, so a taller visible list before anyone needs "+ N
+// more" costs nothing and the column's own overflow-y:auto still catches an
+// exceptionally long bench.
+const WFB_PALETTE_PEOPLE_CAP = 12;
 
 function _wfRenderPalette(st) {
   const bench = _wfBenchFiltered(st, st.paletteSearch);
-  // A search has already narrowed the list, so it shows every match; the
-  // unfiltered list caps and offers the rest behind "+ N more".
-  const shown = st.paletteSearch ? bench : bench.slice(0, WFB_PALETTE_PEOPLE_CAP);
+  // A search already narrows the list, so it shows every match regardless of
+  // expanded state (Change 9's explicit "confirm a search still shows every
+  // match"); otherwise the cap applies until "+ N more" is clicked.
+  const showAll = !!st.paletteSearch || !!st.paletteExpanded;
+  const shown = showAll ? bench : bench.slice(0, WFB_PALETTE_PEOPLE_CAP);
   const hidden = bench.length - shown.length;
   const rows = shown.map(b => `<div class="wfb-palette-person"
       onpointerdown="_wfPaletteDown(event,'person','${_wfJsStrEsc(b.scope || 'global')}','${_wfJsStrEsc(b.name)}')"
@@ -915,13 +1249,23 @@ function _wfRenderPalette(st) {
   const empty = st.benchLoaded
     ? (st.paletteSearch ? 'No one matches.' : 'You have not hired anyone yet.')
     : 'Loading the bench&hellip;';
+  // Change 9: "+ N more" and "Hire someone new" are two separate controls now
+  // — the old single button silently only ever offered the hire flow, so the
+  // capped-off people were unreachable by any path. "+ N more" only shows the
+  // rest of the ALREADY-HIRED bench; it never opens the hire dialog.
+  let moreBtn = '';
+  if (!st.paletteSearch && hidden > 0) {
+    moreBtn = `<button type="button" class="wfb-palette-more" onclick="_wfPaletteToggleExpand()">+ ${hidden} more</button>`;
+  } else if (!st.paletteSearch && st.paletteExpanded && bench.length > WFB_PALETTE_PEOPLE_CAP) {
+    moreBtn = `<button type="button" class="wfb-palette-more" onclick="_wfPaletteToggleExpand()">Show fewer</button>`;
+  }
   return `
     <div class="wfb-palette-title">People &middot; drag onto canvas</div>
     <input class="wfb-palette-search" id="wfb-palette-search" placeholder="Search bench&hellip;"
       value="${esc(st.paletteSearch || '')}" oninput="_wfPaletteSearch(this.value)">
     <div class="wfb-palette-people">${rows || `<div class="wfb-palette-empty">${empty}</div>`}</div>
-    <button type="button" class="wfb-palette-more" onclick="_wfHireSomeone()"
-      >${hidden > 0 ? `+ ${hidden} more &middot; ` : ''}Hire someone new</button>
+    ${moreBtn}
+    <button type="button" class="wfb-palette-more" onclick="_wfHireSomeone()">Hire someone new</button>
     <div class="wfb-palette-divider"></div>
     <div class="wfb-palette-tools-title">Tools</div>
     <div class="wfb-palette-block" onpointerdown="_wfPaletteDown(event,'approval')">
@@ -934,7 +1278,7 @@ function _wfRenderPalette(st) {
       <span class="wfb-palette-block-info"><span>Action</span>
         <span class="wfb-palette-block-sub">${Object.keys(_WF_ACTION_META).length} verbs &middot; no agent</span></span>
     </div>
-    <div class="wfb-palette-hint">Drop a person on the canvas, or on a card to run after it. Every port's + adds and wires the next step.</div>`;
+    <div class="wfb-palette-hint">Drop a person anywhere on the canvas, or onto a card to run after it &middot; drag the blue dot onto another card to connect them &middot; every port's + adds and wires the next step.</div>`;
 }
 
 // Re-renders ONLY the palette: a keystroke in the search box must not rebuild
@@ -949,6 +1293,16 @@ function _wfPaletteSearch(value) {
   const input = document.getElementById('wfb-palette-search');
   if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
 }
+
+// Change 9: toggles the palette between the capped and full bench list. Same
+// palette-only re-render as the search box above -- must not touch the canvas.
+function _wfPaletteToggleExpand() {
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  entry._wf.paletteExpanded = !entry._wf.paletteExpanded;
+  const box = document.getElementById('wfb-palette');
+  if (box) box.innerHTML = _wfRenderPalette(entry._wf);
+}
+window._wfPaletteToggleExpand = _wfPaletteToggleExpand;
 
 // Claydo's character mode, the one creation flow (floor.js `floorHire`) — not
 // a second one. Guarded the same way: it is a cross-module global.
@@ -1004,8 +1358,21 @@ function _wfRenderNode(st, node) {
   // map a validate attempt populates; _wfRender's caller pans the canvas to
   // st.scrollToNode so the red-outlined card is the one already in view.
   const runError = st.runErrors && st.runErrors[node.name];
+  // Change 12a's honesty half: a node with no incoming edges is a ROOT, and
+  // mc/workflows.py:656 starts every root "the moment the run starts",
+  // REGARDLESS of whether it's in `def.trigger.entry` -- the frontend-only
+  // fix stops auto-wiring the CANVAS, it cannot stop the RUNNER (a backend
+  // change, out of scope here, reported rather than papered over). So a root
+  // Ron did NOT explicitly wire still runs; the canvas must say so rather
+  // than implying it's inert because no line reaches it.
+  const isRoot = !edges.some(e => e.to === node.name);
+  const isUnwiredRoot = isRoot && !_wfTriggerEntry(st.def).includes(node.name);
+  const unwiredBadge = isUnwiredRoot
+    ? `<span class="wfb-node-unwired-badge" title="No incoming edges, so this runs automatically as soon as the workflow starts — even though it isn't wired to the Trigger tile.">&#9888;</span>`
+    : '';
   return `<div class="wfb-node${runError ? ' wfb-node-error' : ''}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
+      ${unwiredBadge}
       ${headHtml}
       <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
     </div>
@@ -1273,12 +1640,44 @@ function _wfSetTriggerType(t) {
   // Keep x/y (MC-871 Change 2): they're the canvas box's dragged position,
   // unrelated to which radio is picked -- a fresh `{type: t}` here would snap
   // the box back to its default spot every time the trigger type changes.
-  const { x, y } = st.def.trigger || {};
-  st.def.trigger = (typeof x === 'number' && typeof y === 'number') ? { type: t, x, y } : { type: t };
+  // Keep `entry` too (Ron: picking a trigger option deleted the connection to
+  // the agent it was wired to) -- this rebuild used to keep only x/y and drop
+  // every other key on `trigger`, silently un-wiring every node in
+  // `trigger.entry` (Change 4a/12a's record of an explicit "wired to the
+  // trigger" act) the moment the type changed.
+  const { x, y, entry: wiredEntry } = st.def.trigger || {};
+  const next = { type: t };
+  if (typeof x === 'number' && typeof y === 'number') { next.x = x; next.y = y; }
+  if (Array.isArray(wiredEntry)) next.entry = wiredEntry;
+  st.def.trigger = next;
   if (t === 'schedule' && !st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
   _wfMarkDirty();
   _wfRender();
 }
+
+// Toolbar toggle pill (Change 1) -- same "sync first" discipline every other
+// structural mutator follows, so an unsynced edit elsewhere on the canvas
+// isn't clobbered by this render.
+function _wfToggleEnabled() {
+  const entry = _wfEntry(); if (!entry) return;
+  _wfSyncDomToModel(entry);
+  const st = entry._wf;
+  st.def.enabled = !(st.def.enabled !== false);
+  _wfMarkDirty();
+  _wfRender();
+}
+window._wfToggleEnabled = _wfToggleEnabled;
+
+// Toolbar description disclosure (Change 1). Purely cosmetic -- not itself an
+// undo-worthy graph change, and _wfCheckpointForUndo only diffs def/
+// linkedSchedule, so toggling it never pushes a spurious undo entry.
+function _wfToggleDesc() {
+  const entry = _wfEntry(); if (!entry) return;
+  _wfSyncDomToModel(entry); // capture any typed description before hiding the field
+  entry._wf.descOpen = !entry._wf.descOpen;
+  _wfRender();
+}
+window._wfToggleDesc = _wfToggleDesc;
 
 // ── Trigger card: schedule cadence sub-form ──────────────────────────────────
 // The cadence itself lives on the linked SCHEDULE record (spec Q4 -- "one
@@ -1400,6 +1799,112 @@ function _wfSyncScheduleFormToState(st) {
   if (cronEl) s.cron_expr = cronEl.value;
 }
 
+// ── The Trigger popover (MC-871 Change 2) ────────────────────────────────────
+//
+// Everything `.wfb-trigger-card` used to render permanently above the canvas
+// now lives here instead, opened by clicking the trigger TILE on the canvas.
+// REUSES VERBATIM: _wfSetTriggerType, _wfRenderScheduleCadence (which itself
+// calls _wfSchedTypeFieldsHTML/_wfSetSchedType/_wfToggleSchedEnabled) --
+// nothing about the cadence form forked, only where it's mounted. The cadence
+// still lives on `st.linkedSchedule`, never duplicated onto `def.trigger`.
+//
+// Same body-appended/outside-click-closes/Escape-closes shape as the port +
+// popover and node menu below, for the same reason: `.wfb-modal-body` is an
+// overflow:auto scroller (mobile) and the trigger tile can sit near an edge,
+// so a popover positioned as a DESCENDANT of the canvas would get clipped.
+let _wfTriggerPopoverOpen = false;
+
+// Defect 11 (Ron, after using the Manual/Schedule radio pair): "if we have a
+// Run now button, why do we also need that option on the start tile?" -- a
+// forced binary choice duplicated what Run now already does. Reworked as a
+// single unchecked-by-default checkbox: unchecked IS `manual` (the stored
+// default -- mc/workflows.py's TRIGGER_TYPES/validator are untouched, a
+// workflow with no schedule is still `manual` on disk), so building a flow
+// never makes the author decide about scheduling first. Checking it reveals
+// the cadence controls and calls the SAME `_wfSetTriggerType('schedule')`
+// this used to wire to a radio; unchecking calls `_wfSetTriggerType('manual')`
+// -- x/y and trigger.entry preservation (see that function) apply exactly the
+// same way. Checked-with-no-cadence-yet can't happen: `_wfSetTriggerType`
+// already seeds `st.linkedSchedule` from `_wfDraftSchedule()` (daily 09:00)
+// the moment schedule turns on, so there is always a valid cadence to save.
+function _wfTriggerPopoverHTML(st) {
+  const def = st.def;
+  const triggerType = (def.trigger && def.trigger.type) || 'manual';
+  const isSchedule = triggerType === 'schedule';
+  return `
+    <div class="wfb-popover-title" style="margin-bottom:8px">Trigger</div>
+    <label class="wfb-trigger-sched-toggle">
+      <input type="checkbox" ${isSchedule ? 'checked' : ''} onchange="_wfSetTriggerType(this.checked ? 'schedule' : 'manual')">
+      Run on a schedule
+    </label>
+    ${isSchedule ? _wfRenderScheduleCadence(st) : ''}`;
+}
+
+function _wfOpenTriggerPopover(anchorEl) {
+  if (_wfTriggerPopoverOpen) { _wfCloseTriggerPopover(); return; } // a second click closes it
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  _wfClosePortPopover();
+  _wfCloseNodeMenu();
+  const rect = anchorEl.getBoundingClientRect();
+  const box = document.createElement('div');
+  box.className = 'wfb-port-popover wfb-trigger-popover';
+  box.id = 'wfb-trigger-popover';
+  box.innerHTML = _wfTriggerPopoverHTML(entry._wf);
+  document.body.appendChild(box);
+  _wfTriggerPopoverOpen = true;
+  let left = rect.right + 10;
+  let top = rect.top;
+  if (left + box.offsetWidth > window.innerWidth - 8) left = Math.max(8, rect.left - box.offsetWidth - 10);
+  if (top + box.offsetHeight > window.innerHeight - 8) top = Math.max(8, window.innerHeight - box.offsetHeight - 8);
+  box.style.left = left + 'px';
+  box.style.top = top + 'px';
+  // Deferred for the same reason the port popover's own listener is: this
+  // click is still propagating and would otherwise close what it just opened.
+  setTimeout(() => document.addEventListener('pointerdown', _wfTriggerPopoverOutsideDown, true), 0);
+}
+window._wfOpenTriggerPopover = _wfOpenTriggerPopover;
+
+// A real bug this caught in testing, not a hypothetical: the popover closes
+// on ANY outside click (_wfTriggerPopoverOutsideDown, capturing phase), which
+// fires BEFORE the click that triggered it (e.g. clicking Save) reaches that
+// element's own handler. The cadence sub-form's fields only sync into the
+// model at "the next structural action" (this file's FIELD SYNC discipline,
+// header) -- fine when that form was a permanent fixture, but now the DOM
+// holding it is destroyed by the SAME click that's about to trigger the sync
+// (Save), so a just-toggled day-picker selection would be silently lost:
+// gone from the DOM before _wfSave()'s own _wfSyncDomToModel ever runs.
+// Flushing it here, before removal, closes that gap.
+function _wfCloseTriggerPopover() {
+  const el = document.getElementById('wfb-trigger-popover');
+  if (el) {
+    const entry = _wfEntry();
+    if (entry && entry._wf && entry._wf.def.trigger && entry._wf.def.trigger.type === 'schedule') {
+      _wfSyncScheduleFormToState(entry._wf);
+      // Defect 11's follow-on: the tile's sub-label is only recomputed by a
+      // full _wfRender(), which the cadence sub-form's own edits (picking
+      // Weekly, toggling a day, typing a time) never trigger on their own --
+      // only the schedule/manual checkbox does. Patch just the label text
+      // here, now that the sync above just caught up `linkedSchedule` with
+      // whatever was left in the form, so closing the popover is always the
+      // point the tile catches up to what was actually configured.
+      const sub = document.querySelector('.wfb-trigger-box .wfb-trigger-box-sub');
+      if (sub && typeof window.scheduleDescription === 'function') sub.textContent = window.scheduleDescription(entry._wf.linkedSchedule || {});
+    }
+    el.remove();
+  }
+  document.removeEventListener('pointerdown', _wfTriggerPopoverOutsideDown, true);
+  _wfTriggerPopoverOpen = false;
+}
+
+function _wfTriggerPopoverOutsideDown(e) {
+  const el = document.getElementById('wfb-trigger-popover');
+  if (el && !el.contains(e.target) && !e.target.closest('.wfb-trigger-box')) _wfCloseTriggerPopover();
+}
+
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && _wfTriggerPopoverOpen) _wfCloseTriggerPopover();
+});
+
 function _wfAddOutcome(name) {
   const entry = _wfEntry(); if (!entry) return;
   const renameMap = _wfSyncDomToModel(entry);
@@ -1489,10 +1994,71 @@ function _wfDeleteNode(name) {
   }
   def.nodes = newNodes;
   def.edges = newEdges;
+  // Change 12a: a deleted node can't stay a trigger.entry -- prune it the
+  // same way its edges are pruned above.
+  if (def.trigger && Array.isArray(def.trigger.entry)) {
+    def.trigger.entry = def.trigger.entry.filter(n => n !== name);
+  }
   if (_wfSelectedEdge && (_wfSelectedEdge.from === name || _wfSelectedEdge.to === name)) _wfSelectedEdge = null;
   _wfMarkDirty();
   _wfRender();
 }
+
+// Change 6b: copy a node's own config (prompt/persona/project/outcomes/
+// options/action config) under a fresh unique name, offset so it doesn't
+// land exactly on the original. Edges are per-CONNECTION state (R2-D1 — "a
+// branch is a property of the connection"), so a duplicate never copies
+// them; wiring the copy is the user's next decision, per the brief.
+function _wfDuplicateNode(rawName) {
+  const entry = _wfEntry(); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  const name = renameMap[rawName] || rawName;
+  const st = entry._wf;
+  const node = (st.def.nodes || []).find(n => n.name === name);
+  if (!node) return;
+  const copy = JSON.parse(JSON.stringify(node));
+  copy.name = _wfUniqueNodeName(st, _wfSlug(node.name));
+  copy.x = (node.x || 0) + 40;
+  copy.y = (node.y || 0) + 40;
+  st.def.nodes = (st.def.nodes || []).concat([copy]);
+  _wfMarkDirty();
+  _wfRender();
+  if (copy.type === 'agent') _wfFocusPrompt(copy.name);
+}
+window._wfDuplicateNode = _wfDuplicateNode;
+
+// Change 6b: drop every edge into AND out of this node, leaving the card in
+// place -- the undo for a mis-drop now that dropping a person on a card
+// auto-wires it (Ron: "now that dropping on a card auto-wires it, I need a
+// way to undo that without deleting the step"). Same slot-break guard every
+// other edge-removing mutator here runs. Change 12a: also drops the node
+// from `def.trigger.entry` if it was explicitly wired to the trigger --
+// "every edge into and out of this node" reads as covering the implied
+// trigger wire too, not just real `def.edges` members.
+function _wfDisconnectNode(rawName) {
+  const entry = _wfEntry(); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  const name = renameMap[rawName] || rawName;
+  const def = entry._wf.def;
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const inTriggerEntry = _wfTriggerEntry(def).includes(name);
+  if (!edges.some(e => e.from === name || e.to === name) && !inTriggerEntry) return; // already isolated
+  const before = _wfFindBrokenSlotRefs(nodes, edges);
+  const newEdges = edges.filter(e => e.from !== name && e.to !== name);
+  const after = _wfFindBrokenSlotRefs(nodes, newEdges);
+  const newOnes = _wfNewViolations(before, after);
+  if (newOnes.length) {
+    showToast(`Can't disconnect "${name}" — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs an edge through it to stay reachable.`, 6000);
+    return;
+  }
+  def.edges = newEdges;
+  if (inTriggerEntry && def.trigger) def.trigger.entry = def.trigger.entry.filter(n => n !== name);
+  if (_wfSelectedEdge && (_wfSelectedEdge.from === name || _wfSelectedEdge.to === name)) _wfSelectedEdge = null;
+  _wfMarkDirty();
+  _wfRender();
+}
+window._wfDisconnectNode = _wfDisconnectNode;
 
 let _wfSelectedEdge = null; // { from, to, when } | null
 
@@ -1501,6 +2067,16 @@ function _wfEdgeClick(e, from, to, when) {
   _wfSelectedEdge = { from, to, when: when || null };
   _wfRedrawEdges();
 }
+
+// Change 7: the visible × at an edge's midpoint. Same removal path as the
+// keyboard shortcut (select then Delete/Backspace, still below) -- this is
+// only a second way to REACH _wfDeleteEdge, not a second implementation, so
+// the slot-break refusal + toast it already carries applies unchanged.
+function _wfEdgeDelClick(e, from, to, when) {
+  e.stopPropagation();
+  _wfDeleteEdge(from, to, when || null);
+}
+window._wfEdgeDelClick = _wfEdgeDelClick;
 
 function _wfDeleteEdge(from, to, when) {
   const entry = _wfEntry(); if (!entry) return;
@@ -1594,10 +2170,30 @@ function _wfCanvasWheel(e) {
 let _wfPan = null;
 
 function _wfViewportDown(e) {
-  if (e.target.closest('.wfb-node, .wfb-port')) return;
+  // The trigger box (MC-871 Change 2) is its own shape, not a `.wfb-node` --
+  // this guard used to only exclude nodes/ports, so a pointerdown anywhere on
+  // the trigger tile OTHER than its head (which has its own drag handler,
+  // _wfNodeDragDown) fell through to here: a plain click on the "Manual"
+  // sub-label or the port row PANNED THE WHOLE CANVAS (every node visibly
+  // drags along with what looked like a Start-tile drag -- Ron: "if I grab
+  // the start tile ... everything moves with it", the same complaint Change
+  // 4b's z-index fix addressed for overlap hit-testing but not this bubble
+  // path), and `setPointerCapture` below retargets the pointerup/click that
+  // follows to the VIEWPORT -- exactly the mechanism _wfNodeDragDown's own
+  // header comment already documents for the node "..." menu button -- which
+  // silently ate clicks on the trigger's own "+" (`.wfb-port-plus` is not
+  // `.wfb-port`, so it wasn't covered either).
+  if (e.target.closest('.wfb-node, .wfb-port, .wfb-trigger-box')) return;
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPan || _wfNodeDrag || _wfPlaceDrag || _wfConnectDrag) return;
   const entry = _wfEntry(); if (!entry) return;
+  // Change 8: a pan that starts on empty canvas must never begin a native
+  // text-selection drag underneath it (Ron: card text "gets selected and
+  // highlighted" while panning) -- this handler never called preventDefault
+  // at all before. The CSS user-select:none on .wfb-canvas-viewport (app.css)
+  // is the other half; this stops the browser's own selection gesture at the
+  // source rather than fighting it after the fact.
+  e.preventDefault();
   const vp = e.currentTarget;
   _wfPan = { pointerId: e.pointerId, startX: e.clientX, startY: e.clientY, vx: entry._wf.viewport.x, vy: entry._wf.viewport.y, vp };
   vp.classList.add('wfb-panning');
@@ -1684,6 +2280,9 @@ function _wfPointInRect(x, y, r) { return x >= r.left && x <= r.right && y >= r.
 function _wfPaletteDown(e, type, scope, name) {
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPlaceDrag || _wfNodeDrag || _wfPan || _wfConnectDrag) return;
+  // Change 8: same text-selection guard -- a drag-out from the palette
+  // starts over a row's own name/role text.
+  e.preventDefault();
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
     startX: e.clientX, startY: e.clientY, active: false, type,
@@ -1774,10 +2373,19 @@ function _wfPlaceNodeAt(type, clientX, clientY, vp, scope, name) {
   const renameMap = _wfSyncDomToModel(entry);
   const st = entry._wf;
 
+  // Dropped ONTO the trigger tile (Change 4b): the honest equivalent of
+  // dropping onto a card -- place the step and leave it a ROOT (ie. wired to
+  // the trigger, R2-D4's own definition of "runs first"). Checked before the
+  // node lookup below: `.wfb-trigger-box` doesn't match `.wfb-node`, so this
+  // used to fall through to the free-placement branch and land the card
+  // overlapping the tile instead of doing anything useful with the drop.
+  const under = document.elementFromPoint(clientX, clientY);
+  const triggerEl = under && under.closest ? under.closest('.wfb-trigger-box') : null;
+  if (triggerEl) { _wfInsertRootAfterTrigger(entry, type, scope, name); return; }
+
   // Dropped ONTO an existing card = the same thing as that card's `+`: place
   // after it and wire the edge (UI brief §4). Which port: the one actually
   // under the pointer if there is one, else the card's first output port.
-  const under = document.elementFromPoint(clientX, clientY);
   const cardEl = under && under.closest ? under.closest('.wfb-node') : null;
   if (cardEl && cardEl.dataset.name) {
     const fromName = renameMap[cardEl.dataset.name] || cardEl.dataset.name;
@@ -1828,6 +2436,66 @@ function _wfInsertAfter(entry, fromName, when, type, scope, name, opts) {
   if (node.type === 'agent') _wfFocusPrompt(node.name);
 }
 
+// Place a new node as a ROOT, explicitly wired to the trigger -- the
+// trigger's own "+"/drop-onto-the-tile target (Change 4a/4b/12a). No EDGE is
+// added: `mc/workflows.py:421` refuses any persisted edge whose `from` isn't
+// a real node, and `:656` already defines a root (no incoming edges) as
+// running the moment the run starts. What IS recorded is `def.trigger.entry`
+// -- this gesture (the trigger's own + / a drop ON the trigger tile) is an
+// explicit act, unlike an ordinary drop on empty canvas (Change 12a), so the
+// new node's name is added there. `_wfRedrawEdges` draws the implied line
+// for entries that are still roots; nothing here needs to know about that.
+function _wfInsertRootAfterTrigger(entry, type, scope, name) {
+  const st = entry._wf;
+  const def = st.def;
+  const trigger = def.trigger || (def.trigger = { type: 'manual' });
+  const hasPos = typeof trigger.x === 'number' && typeof trigger.y === 'number';
+  const pos = hasPos ? trigger : _wfTriggerDefaultPos(def);
+  const node = _wfMakeNode(st, type, scope, name, (pos.x || 0), (pos.y || 0) + 110);
+  def.nodes = (def.nodes || []).concat([node]);
+  trigger.entry = _wfTriggerEntry(def).concat([node.name]);
+  _wfMarkDirty();
+  _wfRender();
+  if (node.type === 'agent') _wfFocusPrompt(node.name);
+}
+
+// Drop every incoming edge into `name` AND add it to `def.trigger.entry`,
+// explicitly wiring it to the trigger -- Change 4a's inverse (dragging FROM
+// the trigger port ONTO an existing card), corrected by 12a to record the
+// explicit act rather than relying on "has no incoming edges" alone (which
+// is also true of every untouched standalone drop, and Ron does not want
+// those auto-wired). Guarded by the same slot-break check every other
+// edge-removing mutator here already runs (_wfDeleteEdge/_wfDeleteNode):
+// stripping incoming edges can strand a `{{steps.X.*}}` reference the same
+// way deleting one edge can.
+function _wfMakeRoot(rawName) {
+  const entry = _wfEntry(); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  const name = renameMap[rawName] || rawName;
+  const def = entry._wf.def;
+  const trigger = def.trigger || (def.trigger = { type: 'manual' });
+  const nodes = def.nodes || [];
+  const edges = def.edges || [];
+  const alreadyEntry = _wfTriggerEntry(def).includes(name);
+  const hasIncoming = edges.some(e => e.to === name);
+  if (alreadyEntry && !hasIncoming) return; // already explicitly wired and already a root -- nothing to do
+  let newEdges = edges;
+  if (hasIncoming) {
+    const before = _wfFindBrokenSlotRefs(nodes, edges);
+    newEdges = edges.filter(e => e.to !== name);
+    const after = _wfFindBrokenSlotRefs(nodes, newEdges);
+    const newOnes = _wfNewViolations(before, after);
+    if (newOnes.length) {
+      showToast(`Can't wire "${name}" directly to the trigger — "${newOnes[0].step}" reads {{steps.${newOnes[0].ref}.…}}, which needs an incoming edge to stay reachable.`, 6000);
+      return;
+    }
+  }
+  def.edges = newEdges;
+  if (!alreadyEntry) trigger.entry = _wfTriggerEntry(def).concat([name]);
+  _wfMarkDirty();
+  _wfRender();
+}
+
 // The prompt is the one place the author actually types (UI brief §2 — "prompt
 // focuses"), so a freshly-dropped person hands them the caret.
 function _wfFocusPrompt(nodeName) {
@@ -1845,6 +2513,15 @@ let _wfNodeDrag = null;
 
 function _wfNodeDragDown(e) {
   if (typeof e.button === 'number' && e.button !== 0) return;
+  // Change 6a: the "..." menu button lives INSIDE .wfb-node-head, which owns
+  // this same pointerdown handler. Diagnosed live (Playwright event trace):
+  // this handler's own `setPointerCapture` below retargets the button's
+  // pointerup/mouseup/click to the HEAD once it captures the pointer, so the
+  // button's onclick never fired -- clicking "..." looked completely dead.
+  // The fix is to never start a drag from the button in the first place
+  // (and never capture its pointer), not to remove the capture generally --
+  // dragging the head still needs it.
+  if (e.target.closest('.wfb-node-menu-btn')) return;
   if (_wfNodeDrag || _wfPan || _wfPlaceDrag || _wfConnectDrag) return;
   // The Trigger box (MC-871 Change 2) is deliberately NOT a node -- not in
   // `nodes[]`, no card markup -- but Ron wants it draggable on the same
@@ -1854,6 +2531,11 @@ function _wfNodeDragDown(e) {
   const nodeEl = e.currentTarget.closest('.wfb-node, .wfb-trigger-box');
   const entry = _wfEntry();
   if (!nodeEl || !entry) return;
+  // Change 8: same text-selection guard as the canvas pan below -- a card or
+  // trigger drag that starts before the slop threshold (or during a touch
+  // long-press wait) must not let the browser start selecting the card's own
+  // text underneath it.
+  e.preventDefault();
   const st = {
     pointerId: e.pointerId, pointerType: e.pointerType || 'mouse',
     startX: e.clientX, startY: e.clientY, active: false, nodeEl,
@@ -1911,6 +2593,13 @@ function _wfNodeDragUp(e) {
         _wfMarkDirty();
       }
     }
+  } else if (st.nodeEl.dataset.name === '__trigger__') {
+    // MC-871 Change 2: a plain click on the trigger tile (no real drag ever
+    // happened -- `st.active` is the exact slop/long-press gate _wfNodeDragMove
+    // uses to promote this gesture to a drag in the first place) opens its
+    // config popover. Reusing that flag here is what tells a click from a
+    // drag apart, rather than adding a second gesture path.
+    _wfOpenTriggerPopover(st.nodeEl.querySelector('.wfb-trigger-box-head') || st.nodeEl);
   }
   _wfNodeDragTeardown(st);
 }
@@ -1942,6 +2631,7 @@ function _wfPortDown(e) {
   e.stopPropagation();
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfConnectDrag || _wfNodeDrag || _wfPan || _wfPlaceDrag) return;
+  e.preventDefault(); // Change 8: same text-selection guard as the other drag starts
   const portEl = e.currentTarget;
   const st = { pointerId: e.pointerId, fromNode: portEl.dataset.node, when: portEl.dataset.when || null, portEl, curX: e.clientX, curY: e.clientY };
   _wfConnectDrag = st;
@@ -1953,27 +2643,53 @@ function _wfPortDown(e) {
   _wfRedrawEdges();
 }
 
+// MC-871 Change 5 — "forgiving drop": a connect-drag completes on a drop
+// ANYWHERE on the target card, not only the 40px in-port hit box. The in-port
+// itself still exists and still highlights (visible feedback for the precise
+// case), but requiring the drop to land exactly on it was the discoverability
+// bug Ron hit ("no way to connect a tile to another unless triggered by the
+// small plus icon") — the gesture worked, the target was just too small to
+// find. `.wfb-node` never matches the trigger tile (`.wfb-trigger-box` is a
+// different class, by design — nothing can feed a trigger), and excluding the
+// drag's own origin card here is what "keep refusing self-connection" means
+// at this layer; _wfTryAddEdge's cycle/slot-break guards are untouched.
+function _wfConnectResolveTarget(clientX, clientY, fromNode) {
+  const target = document.elementFromPoint(clientX, clientY);
+  const cardEl = target && target.closest ? target.closest('.wfb-node') : null;
+  if (!cardEl || !cardEl.dataset.name || cardEl.dataset.name === fromNode) return null;
+  return cardEl;
+}
+
 function _wfConnectMove(e) {
   const st = _wfConnectDrag;
   if (!st || e.pointerId !== st.pointerId) return;
   e.preventDefault();
   st.curX = e.clientX; st.curY = e.clientY;
-  const target = document.elementFromPoint(e.clientX, e.clientY);
-  const portIn = target && target.closest && target.closest('.wfb-port-in');
-  document.querySelectorAll('.wfb-port-in.wfb-port-target').forEach(p => { if (p !== portIn) p.classList.remove('wfb-port-target'); });
-  if (portIn && portIn.dataset.node !== st.fromNode) portIn.classList.add('wfb-port-target');
+  const cardEl = _wfConnectResolveTarget(e.clientX, e.clientY, st.fromNode);
+  // Highlight the WHOLE candidate card (not just its in-port) so it's obvious
+  // mid-gesture where the wire can land, per the brief.
+  document.querySelectorAll('.wfb-node.wfb-connect-target').forEach((el) => { if (el !== cardEl) el.classList.remove('wfb-connect-target'); });
+  document.querySelectorAll('.wfb-port-in.wfb-port-target').forEach((p) => { if (!cardEl || p.dataset.node !== cardEl.dataset.name) p.classList.remove('wfb-port-target'); });
+  if (cardEl) {
+    cardEl.classList.add('wfb-connect-target');
+    const portIn = cardEl.querySelector('.wfb-port-in');
+    if (portIn) portIn.classList.add('wfb-port-target');
+  }
   _wfRedrawEdges();
 }
 
 function _wfConnectUp(e) {
   const st = _wfConnectDrag;
   if (!st || e.pointerId !== st.pointerId) return;
-  const target = document.elementFromPoint(e.clientX, e.clientY);
-  const portIn = target && target.closest && target.closest('.wfb-port-in');
+  const cardEl = _wfConnectResolveTarget(e.clientX, e.clientY, st.fromNode);
   _wfConnectTeardown(st);
-  if (portIn && portIn.dataset.node && portIn.dataset.node !== st.fromNode) {
-    _wfTryAddEdge(st.fromNode, portIn.dataset.node, st.when);
-  }
+  if (!cardEl) return;
+  const toName = cardEl.dataset.name;
+  // Change 4a's inverse: dragging FROM the trigger port onto an existing
+  // card makes that card a root, rather than trying to persist a "__trigger__"
+  // edge (mc/workflows.py:421 would refuse it — see _wfRenderTriggerBox).
+  if (st.fromNode === '__trigger__') _wfMakeRoot(toName);
+  else _wfTryAddEdge(st.fromNode, toName, st.when);
 }
 
 function _wfConnectCancel(e) {
@@ -1985,6 +2701,7 @@ function _wfConnectCancel(e) {
 
 function _wfConnectTeardown(st) {
   document.querySelectorAll('.wfb-port-in.wfb-port-target').forEach(p => p.classList.remove('wfb-port-target'));
+  document.querySelectorAll('.wfb-node.wfb-connect-target').forEach(el => el.classList.remove('wfb-connect-target'));
   window.removeEventListener('pointermove', _wfConnectMove);
   window.removeEventListener('pointerup', _wfConnectUp);
   window.removeEventListener('pointercancel', _wfConnectCancel);
@@ -2016,14 +2733,59 @@ function _wfRedrawEdges() {
     const dx = Math.max(50, Math.abs(p2.x - p1.x) * 0.5);
     return `M ${p1.x},${p1.y} C ${p1.x + dx},${p1.y} ${p2.x - dx},${p2.y} ${p2.x},${p2.y}`;
   };
+  // For THIS symmetric control-point layout, the cubic's t=0.5 point reduces
+  // exactly to the segment midpoint (Change 7) -- no curve sampling needed.
+  const midOf = (p1, p2) => ({ x: (p1.x + p2.x) / 2, y: (p1.y + p2.y) / 2 });
   let html = '';
+  // MC-871 Change 4a, corrected by 12a: implied trigger->root edges are a
+  // VIEW over "no incoming edges" (mc/workflows.py:656) FOR NODES RON
+  // EXPLICITLY WIRED (`def.trigger.entry`) -- never a stored edge, never
+  // selectable/deletable like a real one (no onpointerdown, no delete ×).
+  // The first cut of this drew a line to EVERY root, which made a fresh
+  // standalone drop look auto-wired with no action taken; `entry` is the
+  // fix. A name in `entry` that is no longer a root (gained an incoming
+  // edge elsewhere) or no longer exists (deleted/renamed without repointing)
+  // draws nothing -- see _wfDeleteNode/_wfSyncDomToModel for how `entry`
+  // stays in sync with those.
+  const triggerPortEl = vp.querySelector('.wfb-trigger-box .wfb-port-out');
+  if (triggerPortEl) {
+    const hasIncoming = new Set(edges.map(e => e.to));
+    const wiredNames = _wfTriggerEntry(entry._wf.def);
+    const nodesByName = new Map((entry._wf.def.nodes || []).map(n => [n.name, n]));
+    for (const name of wiredNames) {
+      const n = nodesByName.get(name);
+      if (!n || hasIncoming.has(name)) continue;
+      const toEl = vp.querySelector(`.wfb-port-in[data-node="${_wfAttrEsc(n.name)}"]`);
+      // Deliberately NOT `.wfb-edge-path` -- that class is also how the
+      // smoke suite and _wfEdgeClick's own selection counts REAL edges;
+      // sharing it would silently inflate every edge-count assertion (and
+      // every future one) the moment a graph has a root node, which is
+      // always. `.wfb-edge-implied` is a fully standalone style, not a
+      // modifier on `.wfb-edge-path`.
+      if (toEl) html += `<path class="wfb-edge-implied" d="${bezier(ptOf(triggerPortEl), ptOf(toEl))}"></path>`;
+    }
+  }
   for (const e of edges) {
     const fromEl = vp.querySelector(`.wfb-port-out[data-node="${_wfAttrEsc(e.from)}"][data-when="${_wfAttrEsc(e.when || '')}"]`);
     const toEl = vp.querySelector(`.wfb-port-in[data-node="${_wfAttrEsc(e.to)}"]`);
     if (!fromEl || !toEl) continue;
+    const p1 = ptOf(fromEl), p2 = ptOf(toEl);
+    const mid = midOf(p1, p2);
     const selected = _wfSelectedEdge && _wfSelectedEdge.from === e.from && _wfSelectedEdge.to === e.to && (_wfSelectedEdge.when || null) === (e.when || null);
-    html += `<path class="wfb-edge-path${selected ? ' wfb-edge-selected' : ''}" d="${bezier(ptOf(fromEl), ptOf(toEl))}"
-      onpointerdown="_wfEdgeClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')"></path>`;
+    // Change 7: a small × at the midpoint, quiet at rest (revealed on hover
+    // of the edge or while selected -- see .wfb-edge-group in app.css) so a
+    // dense graph doesn't turn into a field of ×s, but always reachable by
+    // pointer alone since hovering the path itself reveals its own ×.
+    html += `<g class="wfb-edge-group${selected ? ' wfb-edge-group-selected' : ''}">
+      <path class="wfb-edge-path${selected ? ' wfb-edge-selected' : ''}" d="${bezier(p1, p2)}"
+        onpointerdown="_wfEdgeClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')"></path>
+      <g class="wfb-edge-del" transform="translate(${mid.x},${mid.y})"
+        onpointerdown="_wfEdgeDelClick(event,'${_wfJsStrEsc(e.from)}','${_wfJsStrEsc(e.to)}','${_wfJsStrEsc(e.when || '')}')">
+        <circle class="wfb-edge-del-hit" r="10"></circle>
+        <circle class="wfb-edge-del-bg" r="7"></circle>
+        <text class="wfb-edge-del-glyph" x="0" y="1" text-anchor="middle" dominant-baseline="central">&#10005;</text>
+      </g>
+    </g>`;
   }
   if (_wfConnectDrag) {
     const fromEl = vp.querySelector(`.wfb-port-out[data-node="${_wfAttrEsc(_wfConnectDrag.fromNode)}"][data-when="${_wfAttrEsc(_wfConnectDrag.when || '')}"]`);
@@ -2078,7 +2840,7 @@ function _wfRenderPortPopover() {
   box.className = 'wfb-port-popover';
   box.id = 'wfb-port-popover';
   box.innerHTML = `
-    <div class="wfb-popover-title">After <em>${esc(p.when || 'this step')}</em>, run&hellip;</div>
+    <div class="wfb-popover-title">${p.fromNode === '__trigger__' ? 'As the first step, run&hellip;' : `After <em>${esc(p.when || 'this step')}</em>, run&hellip;`}</div>
     <div class="wfb-popover-row" onclick="_wfPopoverPick('action')">
       <span class="wfb-popover-icon">&#9881;</span> Action <span class="wfb-popover-caret">&#9662;</span></div>
     <div class="wfb-popover-row" onclick="_wfPopoverPick('approval')">
@@ -2128,14 +2890,19 @@ function _wfPopoverPick(type) {
   const p = _wfPortPopover; if (!p) return;
   const entry = _wfEntry(); if (!entry) return;
   _wfClosePortPopover();
-  _wfInsertAfter(entry, p.fromNode, p.when, type, null, null);
+  // Change 4a: the trigger's own "+" opens this SAME popover (_wfPortPlusClick
+  // is called with fromNode='__trigger__' from _wfRenderTriggerBox) — a pick
+  // from it places a ROOT, not a node wired via a (nonexistent) trigger edge.
+  if (p.fromNode === '__trigger__') _wfInsertRootAfterTrigger(entry, type, null, null);
+  else _wfInsertAfter(entry, p.fromNode, p.when, type, null, null);
 }
 
 function _wfPopoverPickPerson(scope, name) {
   const p = _wfPortPopover; if (!p) return;
   const entry = _wfEntry(); if (!entry) return;
   _wfClosePortPopover();
-  _wfInsertAfter(entry, p.fromNode, p.when, 'person', scope, name);
+  if (p.fromNode === '__trigger__') _wfInsertRootAfterTrigger(entry, 'person', scope, name);
+  else _wfInsertAfter(entry, p.fromNode, p.when, 'person', scope, name);
 }
 
 document.addEventListener('keydown', (e) => {
@@ -2158,7 +2925,15 @@ function _wfNodeMenuToggle(e, name) {
   const box = document.createElement('div');
   box.className = 'wfb-node-menu';
   box.id = 'wfb-node-menu';
-  box.innerHTML = `<div class="wfb-node-menu-delete" onclick="_wfDeleteNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Delete step</div>`;
+  // Change 6b: Duplicate + Disconnect join the previously-only Delete step.
+  // All three funnel through the same mutators every other structural
+  // action uses (_wfMarkDirty + _wfRender), so all three are undoable for
+  // free via the Change 3 checkpoint hook -- nothing extra needed here.
+  box.innerHTML = `
+    <div class="wfb-node-menu-item" onclick="_wfDuplicateNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Duplicate</div>
+    <div class="wfb-node-menu-item" onclick="_wfDisconnectNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Disconnect</div>
+    <div class="wfb-node-menu-sep"></div>
+    <div class="wfb-node-menu-delete" onclick="_wfDeleteNode('${_wfJsStrEsc(name)}');_wfCloseNodeMenu()">Delete step</div>`;
   document.body.appendChild(box);
   let left = r.right - box.offsetWidth;
   if (left < 8) left = 8;

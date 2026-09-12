@@ -48,6 +48,7 @@ import os
 import re
 import shutil
 import uuid
+from mc.atomic_json import write_json_atomic
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -347,7 +348,7 @@ def _quarantine_dir_copy(src_dir: Path, verdict: dict[str, Any], *, kind: str, s
     record['kind'] = kind
     record['source'] = source_label
     record['quarantined_at'] = datetime.now(timezone.utc).isoformat()
-    (dest_root / 'verdict.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+    write_json_atomic(dest_root / 'verdict.json', record, indent=2)
     return qid
 
 
@@ -362,7 +363,7 @@ def _quarantine_text_copy(filename: str, content: str, verdict: dict[str, Any], 
     record['kind'] = kind
     record['source'] = source_label
     record['quarantined_at'] = datetime.now(timezone.utc).isoformat()
-    (dest_root / 'verdict.json').write_text(json.dumps(record, indent=2), encoding='utf-8')
+    write_json_atomic(dest_root / 'verdict.json', record, indent=2)
     return qid
 
 
