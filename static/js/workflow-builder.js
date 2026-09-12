@@ -659,6 +659,10 @@ function _wfRemountDom(projectId) {
   wfBody.addEventListener('input', _wfMarkDirty);
   wfBody.addEventListener('change', _wfMarkDirty);
   _wfRender();
+  // Closes the gap the broadcast event can't reach — a rename from another
+  // browser tab or the phone. One cheap GET; patches in place once it
+  // resolves (see _wfRefreshBench), same as the in-tab listener.
+  _wfRefreshBench(_wfState._wf);
 }
 
 function _wfFreshState(def, workflowId, error, hintProjectId) {
@@ -1612,7 +1616,11 @@ function _wfRenderPalette(st) {
     moreBtn = `<button type="button" class="wfb-palette-more" onclick="_wfPaletteToggleExpand()">Show fewer</button>`;
   }
   return `
-    <div class="wfb-palette-title">People &middot; drag onto canvas</div>
+    <div class="wfb-palette-head">
+      <div class="wfb-palette-title">People &middot; drag onto canvas</div>
+      <button type="button" class="wfb-palette-refresh-btn" id="wfb-palette-refresh-btn"
+        title="Refresh the roster &mdash; picks up renames/new hires without reopening" onclick="_wfPaletteRefreshClick()">&#8635;</button>
+    </div>
     <input class="wfb-palette-search" id="wfb-palette-search" placeholder="Search bench&hellip;"
       value="${esc(st.paletteSearch || '')}" oninput="_wfPaletteSearch(this.value)">
     <div class="wfb-palette-people">${rows || `<div class="wfb-palette-empty">${empty}</div>`}</div>
@@ -1714,6 +1722,89 @@ function _wfPaletteToggleExpand() {
   if (box) box.innerHTML = _wfRenderPalette(entry._wf);
 }
 window._wfPaletteToggleExpand = _wfPaletteToggleExpand;
+
+// ── Stale-roster fix (MC-871, Ron: renamed an agent, palette still showed the
+// old name after leaving and returning to the workflow tab) ────────────────
+//
+// Root cause: `st.bench` is fetched once, in `_wfLoadInto`, on a FRESH load
+// only. `_wfSyncTabsForProject`'s "already loaded in memory" path
+// (`_wfRemountDom`) deliberately skips that fetch to preserve the in-progress
+// edit, so a rename made anywhere else (the persona editor, another tab, the
+// phone) never reaches the copy this modal is holding — no code refetches it
+// and nothing ever announced the change to begin with.
+//
+// The refresh here is DELIBERATELY NOT a call to `_wfRender()`: that rebuilds
+// `#wfb-body` from scratch, which would tear out the exact DOM nodes a
+// mid-drag gesture is holding a live reference to (`_wfNodeDrag.nodeEl`,
+// `_wfPlaceDrag`, `_wfConnectDrag`) — the node would keep "moving" a detached
+// element while the visible one sits still. A rename is an event from
+// somewhere else entirely, so it can land at any moment, including mid-drag.
+// This patches only `#wfb-palette`'s innerHTML (same technique as
+// `_wfPaletteSearch`/`_wfPaletteToggleExpand` above) plus each already-placed
+// agent card's own face/name span — never touching `st.def`, so
+// `_wfCheckpointForUndo` sees nothing changed and pushes no bogus undo step,
+// and never touching `#wfb-body`, so viewport/dirty/drag state are untouched.
+async function _wfRefreshBench(st) {
+  await _wfLoadBench(st);
+  const box = document.getElementById('wfb-palette');
+  if (box) box.innerHTML = _wfRenderPalette(st);
+  const world = document.getElementById('wfb-world');
+  if (!world) return;
+  // A card resolves its face/name through `_wfBenchLookup` by `(scope, name)`
+  // — the type's stable slug, unaffected by a rename (see
+  // `_announceCharacterChange` in claydo.js) — so re-resolving against the
+  // freshly-fetched `st.bench` here is exactly what a full re-render would
+  // have shown, without rebuilding the card.
+  (st.def.nodes || []).forEach((n) => {
+    if (n.type !== 'agent') return;
+    const nodeEl = world.querySelector(`.wfb-node[data-name="${CSS.escape(n.name)}"]`);
+    if (!nodeEl) return;
+    const person = _wfPersonFromCharacter(st, n.character);
+    const avatarEl = nodeEl.querySelector('.wfb-node-avatar');
+    const personaEl = nodeEl.querySelector('.wfb-node-persona');
+    if (avatarEl) avatarEl.innerHTML = _wfAvatarHTML(person, 22);
+    if (personaEl) personaEl.textContent = person ? (person.display || person.name) : 'No persona yet';
+  });
+}
+
+// The header button Ron asked for ("Is there a way to maybe add refresh
+// button?") — the manual escape hatch for whatever the broadcast event below
+// doesn't reach (a change made before this tab's listener existed, or one the
+// event genuinely can't reach). `_wfPaletteRefreshing` blocks a double-fire;
+// the button is re-created by `_wfRefreshBench`'s palette repaint, so the
+// disabled/spinning state it sets below only has to last until that repaint
+// lands, which is exactly the duration of the fetch it's covering for.
+let _wfPaletteRefreshing = false;
+async function _wfPaletteRefreshClick() {
+  if (_wfPaletteRefreshing) return;
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  _wfPaletteRefreshing = true;
+  const btn = document.getElementById('wfb-palette-refresh-btn');
+  if (btn) { btn.disabled = true; btn.classList.add('wfb-palette-refresh-spin'); }
+  try {
+    await _wfRefreshBench(entry._wf);
+  } finally {
+    _wfPaletteRefreshing = false;
+  }
+}
+window._wfPaletteRefreshClick = _wfPaletteRefreshClick;
+
+// Broadcast side (claydo.js `_announceCharacterChange`): fired after a
+// character write actually lands — name/avatar/full-record save, move,
+// delete. Bound once at module load, not per mount/remount — `openWorkflowBuilder`
+// re-enters this module on every tab switch and would otherwise stack a new
+// listener per switch, firing N refetches per rename after N switches.
+let _wfCharacterListenerBound = false;
+function _wfBindCharacterChangeListener() {
+  if (_wfCharacterListenerBound) return;
+  _wfCharacterListenerBound = true;
+  window.addEventListener('clayrune:characters-changed', () => {
+    const entry = _wfEntry();
+    if (!entry || !entry._wf) return;
+    _wfRefreshBench(entry._wf);
+  });
+}
+_wfBindCharacterChangeListener();
 
 // Claydo's character mode, the one creation flow (floor.js `floorHire`) — not
 // a second one. Guarded the same way: it is a cross-module global.

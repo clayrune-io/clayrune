@@ -234,6 +234,16 @@ function resolveCharacterMeta(projectId, character) {
 window.setComposerCharacter = setComposerCharacter;
 window.editComposerCharacter = editComposerCharacter;
 window.reloadCharacters = reloadCharacters;
+// MC-871 follow-up (stale-name fix): claydo.js's persona editor already calls
+// reloadCharacters(projectId) directly for the ONE project it was opened
+// from, so that picker was never stale. What it can't reach is every OTHER
+// open project's composer — a global persona's characterCache entry there
+// only gets invalidated by this event, since nothing else touches it until
+// that project's own modal happens to reopen. Reuses reloadCharacters
+// verbatim, once per cached project — no new fetch logic, just subscribing.
+window.addEventListener('clayrune:characters-changed', () => {
+  Object.keys(characterCache).forEach((pid) => reloadCharacters(pid));
+});
 window.clearCharacterIfSelected = clearCharacterIfSelected;
 window.getPendingCharacter = getPendingCharacter;
 window.clearPendingCharacter = clearPendingCharacter;

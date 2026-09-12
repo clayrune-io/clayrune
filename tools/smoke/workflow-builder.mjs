@@ -1994,6 +1994,117 @@ try {
   if (uncaught5.length) uncaught5.forEach((e) => fail('uncaught exception in the Wait/Action-narrowing flow: ' + e));
   await ctx5.close();
 
+  // ── MC-871 stale-roster fix (Ron: renamed an agent while the workflow was
+  // open, saw the old name after leaving and returning; asked for a refresh
+  // button too). `floorBody6` is mutable so the SAME route can serve a
+  // changed roster mid-test, standing in for claydo.js's real write — this
+  // exercises the listener contract (`clayrune:characters-changed` ->
+  // refetch -> patch) without needing the persona editor's own DOM. ─────────
+  let floorReqCount6 = 0;
+  let floorBody6 = FLOOR_JSON;
+  const ctx6 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page6 = await ctx6.newPage();
+  const page6Errors = [];
+  page6.on('pageerror', (e) => page6Errors.push(e.message || String(e)));
+  await page6.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') { floorReqCount6++; return route.fulfill({ status: 200, contentType: 'application/json', body: floorBody6 }); }
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    return route.abort();
+  });
+  await page6.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page6.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await newWorkflow(page6, PID);
+
+  const vpBox6 = await (await page6.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPalettePersonTo(page6, 'Tobin', vpBox6.x + 150, vpBox6.y + 150);
+  const renamedNodeName = await page6.$eval('.wfb-node', el => el.dataset.name);
+  const nodeSel6 = `.wfb-node[data-name="${renamedNodeName}"]`;
+
+  // Dirty the canvas and tag the live DOM element with a JS-only property (not
+  // an attribute) — a full `_wfRender()` teardown-and-rebuild would replace
+  // this exact node with a fresh one that never had it set, so the tag
+  // surviving is proof the refresh patched in place instead of re-rendering.
+  await page6.fill(`${nodeSel6} .wfb-prompt`, 'do not lose this');
+  const before6 = await page6.evaluate((name) => {
+    const el = document.querySelector(`.wfb-node[data-name="${CSS.escape(name)}"]`);
+    el._smokeCanvasMarker = true;
+    return {
+      undoLen: (window._wfEntry()._wf._undo || []).length,
+      dirty: (document.getElementById('wfb-save-stamp') || {}).textContent,
+    };
+  }, renamedNodeName);
+
+  floorBody6 = JSON.stringify({ rooms: [], quiet: [],
+    bench: BENCH.map(b => b.name === 'builder' ? { ...b, display: 'Tobin Renamed' } : b), counts: {} });
+  const floorReqBeforeEvent = floorReqCount6;
+  await page6.evaluate(() => window.dispatchEvent(new CustomEvent('clayrune:characters-changed',
+    { detail: { scope: 'global', name: 'builder', action: 'rename' } })));
+  await page6.waitForTimeout(150);
+
+  (floorReqCount6 > floorReqBeforeEvent)
+    ? ok('a rename broadcast (clayrune:characters-changed) made the builder refetch /api/floor')
+    : fail('the characters-changed event did not trigger a bench refetch');
+
+  const paletteNameAfter = await page6.$eval('.wfb-palette-person-name', el => el.textContent);
+  paletteNameAfter === 'Tobin Renamed'
+    ? ok('the palette shows the renamed display name with no reload')
+    : fail(`expected the palette to show "Tobin Renamed", got "${paletteNameAfter}"`);
+
+  const cardNameAfter = await page6.$eval(`${nodeSel6} .wfb-node-persona`, el => el.textContent);
+  cardNameAfter === 'Tobin Renamed'
+    ? ok('a card already on the canvas re-resolves the new display name via _wfBenchLookup')
+    : fail(`expected the placed card to show "Tobin Renamed", got "${cardNameAfter}"`);
+
+  const after6 = await page6.evaluate((name) => {
+    const el = document.querySelector(`.wfb-node[data-name="${CSS.escape(name)}"]`);
+    return {
+      markerSurvived: !!(el && el._smokeCanvasMarker),
+      undoLen: (window._wfEntry()._wf._undo || []).length,
+      dirty: (document.getElementById('wfb-save-stamp') || {}).textContent,
+    };
+  }, renamedNodeName);
+  after6.markerSurvived
+    ? ok('the bench refresh patched the existing card in place — it did not tear down/rebuild the canvas')
+    : fail('the placed node card was replaced by the bench refresh (canvas was reset)');
+  after6.undoLen === before6.undoLen
+    ? ok('the bench refresh pushed no undo step')
+    : fail(`the bench refresh changed the undo stack length (${before6.undoLen} -> ${after6.undoLen})`);
+  after6.dirty === before6.dirty
+    ? ok('dirty/unsaved-changes state survived the bench refresh')
+    : fail(`dirty state changed across the bench refresh: "${before6.dirty}" -> "${after6.dirty}"`);
+
+  // ── The manual refresh button (Ron: "Is there a way to maybe add refresh
+  // button?"). Calls the exported click handler twice back-to-back in one
+  // browser-side tick (a real double-click risks Playwright's actionability
+  // wait swallowing the second click once the first disables the button,
+  // which would prove nothing) — the guard must still cap it at one fetch. ──
+  floorBody6 = JSON.stringify({ rooms: [], quiet: [],
+    bench: BENCH.map(b => b.name === 'builder' ? { ...b, display: 'Tobin Thrice' } : b), counts: {} });
+  const floorReqBeforeClick = floorReqCount6;
+  await page6.evaluate(() => { window._wfPaletteRefreshClick(); window._wfPaletteRefreshClick(); });
+  await page6.waitForTimeout(150);
+  (floorReqCount6 === floorReqBeforeClick + 1)
+    ? ok(`the refresh button refetched /api/floor exactly once despite two back-to-back calls (${floorReqCount6 - floorReqBeforeClick})`)
+    : fail(`expected exactly 1 refetch from the refresh button, got ${floorReqCount6 - floorReqBeforeClick}`);
+  const paletteNameAfterClick = await page6.$eval('.wfb-palette-person-name', el => el.textContent);
+  paletteNameAfterClick === 'Tobin Thrice'
+    ? ok('the refresh button picked up the new roster data')
+    : fail(`expected "Tobin Thrice" after clicking refresh, got "${paletteNameAfterClick}"`);
+
+  const uncaught6 = page6Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught6.length) uncaught6.forEach((e) => fail('uncaught exception in the stale-roster refresh flow: ' + e));
+  await ctx6.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'
