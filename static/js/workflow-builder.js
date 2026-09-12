@@ -332,7 +332,16 @@ function _wfEngineLine(person, proj, cfg, who) {
     line = `— (pins nothing; no project yet, so its default depends on where it lands)`;
     resolved = false;
   } else {
+    // MC-871 follow-up: nothing pinned, provider is claude, auto-router is
+    // off, and neither the project nor the global config has a model —
+    // dispatch has genuinely nothing to run on. `resolved` used to stay at
+    // its default `true` here (only the `!proj` branch above ever cleared
+    // it), so the unresolvable-engine check callers now do against this
+    // flag never fired for the one case the brief specifically named
+    // ("a character that pins nothing AND a project with no model
+    // default"). Fixed as part of that check, not a cosmetic change.
     line = '— (no model configured anywhere in the chain)';
+    resolved = false;
   }
 
   if (provider === 'claude' && resolved) {
@@ -342,20 +351,56 @@ function _wfEngineLine(person, proj, cfg, who) {
       line += ` · effort ${effort}${src}`;
     }
   }
-  return 'Model: ' + line;
+  return { text: 'Model: ' + line, resolved, provider };
+}
+
+// MC-871 follow-up (Item A, case 2): a persona can pin a model id its
+// provider has since stopped offering (a retired snapshot, a renamed id).
+// `_wfModelLabel` deliberately shows a raw unknown id verbatim rather than
+// guessing (see its own header comment) — right for the label, but it means
+// nothing else in this file ever notices the id is dead. Reads the exact
+// same catalog sources `_wfModelLabel` does (`_agentProviders`,
+// `MC_MODEL_CHOICES`) so it can never disagree with what the label already
+// shows. A provider whose catalog hasn't loaded yet, or that has no models
+// list at all (a mode-A-only runtime with no --model flag), can't be judged
+// either way — this only returns true on a genuine, checkable miss, never
+// on missing data (a false "no longer exists" would be worse than no check).
+function _wfModelUnknown(provider, modelId) {
+  if (!modelId) return false;
+  const list = (typeof _agentProviders !== 'undefined' && _agentProviders) || null;
+  if (!list) return false;
+  const provRec = list.find(x => x.name === provider);
+  if (!provRec || !Array.isArray(provRec.models) || !provRec.models.length) return false;
+  if (provRec.models.some(x => x.id === modelId)) return false;
+  if (provider === 'claude' && (window.MC_MODEL_CHOICES || []).some(x => x[0] === modelId)) return false;
+  return true;
+}
+
+// Full-info resolver for an actual canvas node (person + project already
+// looked up), shared by the canvas tooltip, the Save/Run-now validator
+// (Item A) and the live unauthenticated-provider warning (Item B) — three
+// call sites now, all going through _wfEngineLine so none of them can ever
+// disagree about what a step will run on.
+function _wfEngineResolution(st, node) {
+  const proj = _wfProjectFor(node);
+  if (!proj) {
+    // Already surfaced as "Needs a project" by _wfValidateGraph's structural
+    // check — not re-flagged as an engine problem too.
+    return { text: 'Model: — (no project set on this step)', resolved: true, provider: '', proj: null, person: null };
+  }
+  const { person, ref } = _wfResolvedPersonaFor(st, node, proj);
+  if (ref && !person) {
+    return { text: `Model: — (persona "${ref}" not found — deleted or renamed)`, resolved: true, provider: '', proj, person: null };
+  }
+  const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
+  const who = person ? (person.display || person.name) : '';
+  const line = _wfEngineLine(person, proj, cfg, who);
+  return { text: line.text, resolved: line.resolved, provider: line.provider, proj, person };
 }
 
 function _wfEngineTooltip(st, node) {
   if (!node || node.type !== 'agent') return '';
-  const proj = _wfProjectFor(node);
-  if (!proj) return 'Model: — (no project set on this step)';
-
-  const { person, ref } = _wfResolvedPersonaFor(st, node, proj);
-  if (ref && !person) {
-    return `Model: — (persona "${ref}" not found — deleted or renamed)`;
-  }
-  const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
-  return _wfEngineLine(person, proj, cfg, person ? (person.display || person.name) : '');
+  return _wfEngineResolution(st, node).text;
 }
 
 // Palette equivalent: the bench row IS the person (no persona-reference
@@ -368,7 +413,61 @@ function _wfPaletteEngineLine(st, b) {
   const projId = (b && b.project_id) || (st && st.hintProjectId) || '';
   const proj = projId ? _wfProjectFor({ project_id: projId }) : null;
   const cfg = (typeof _globalConfig !== 'undefined' ? _globalConfig : {}) || {};
-  return _wfEngineLine(b, proj, cfg, b && (b.display || b.name));
+  return _wfEngineLine(b, proj, cfg, b && (b.display || b.name)).text;
+}
+
+// ── Provider auth cache for the live "won't work" warning (MC-871 follow-up,
+// Item B) ── keyed by provider name. A render pass can touch a dozen agent
+// cards that all share one provider; this dedupes to one in-flight fetch per
+// provider and caches the result briefly so dragging/typing (41 call sites
+// hit _wfRender()) doesn't refire the probe on every keystroke. Reads
+// whatever is cached synchronously — never blocks a render on the network —
+// and kicks a background refresh on a miss/stale entry, re-rendering once it
+// lands (same precedent as render-core.js's _ensureAgentProviders().then(...)
+// refreshModal()).
+const _wfAuthCache = Object.create(null);   // { [provider]: { status, fetchedAt } }
+const _wfAuthFetching = new Set();
+const _WF_AUTH_TTL_MS = 60000;
+
+function _wfEnsureProviderAuthFresh(provider) {
+  const rec = _wfAuthCache[provider];
+  if ((rec && (Date.now() - rec.fetchedAt) < _WF_AUTH_TTL_MS) || _wfAuthFetching.has(provider)) return;
+  _wfAuthFetching.add(provider);
+  fetch(`${API_BASE}/api/agent/provider/${encodeURIComponent(provider)}/auth`)
+    .then(r => (r.ok ? r.json() : null))
+    .then((d) => {
+      _wfAuthFetching.delete(provider);
+      // Only re-render when the probe actually landed new data. Firing a
+      // full-body _wfRender() on every settle -- success OR failure -- means
+      // a slow/unreachable endpoint rebuilds #wfb-body while the user might
+      // be mid-drag on a card the rebuild just replaced (found via the mobile
+      // touch-drag smoke case: an aborted probe's unconditional re-render
+      // detached the very node the next gesture was about to grab).
+      if (d && d.name) {
+        _wfAuthCache[d.name] = { status: d.auth_status || 'unknown', fetchedAt: Date.now() };
+        if (_wfEntry()) _wfRender();
+      }
+    })
+    .catch(() => { _wfAuthFetching.delete(provider); });
+}
+
+// Definite-negative statuses only. Confirmed against every
+// AgentRuntime.health_check() implementation in mc/agent_runtime.py plus the
+// claude bridge in server.py (_claude_health_check_hook): the full
+// auth_status vocabulary any runtime returns is
+// ok / unknown / not_installed / not_logged_in / invalid_api_key /
+// quota_exceeded — nothing else. `unknown` is what a never-probed claude
+// session reports even when it IS authenticated (server.py: "a fresh,
+// never-checked boot reads unknown instead of falsely claiming signed-in"),
+// so warning on it would cry wolf on the common case, not the broken one —
+// the brief's own "unknown is not unauthenticated" line. Warn only on a
+// status this list can name as a definite negative.
+function _wfProviderAuthWarning(provider) {
+  if (!provider) return '';
+  _wfEnsureProviderAuthFresh(provider);
+  const rec = _wfAuthCache[provider];
+  if (!rec || rec.status === 'ok' || rec.status === 'unknown') return '';
+  return `This step will fail when the workflow runs — ${provider} is not authenticated (${String(rec.status).replace(/_/g, ' ')}).`;
 }
 
 function _wfBenchFiltered(st, search) {
@@ -1537,7 +1636,8 @@ function _wfRenderNode(st, node) {
   // (Ron, 2026-09-11) -- native `title`, the same convention the Floor's
   // provider badges and face pickers already use (floor.js), not a new
   // hover-card system.
-  const engineTitle = node.type === 'agent' ? esc(_wfEngineTooltip(st, node)) : '';
+  const engineInfo = node.type === 'agent' ? _wfEngineResolution(st, node) : null;
+  const engineTitle = engineInfo ? esc(engineInfo.text) : '';
   const headHtml = node.type === 'agent'
     ? `<span class="wfb-node-avatar" title="${engineTitle}">${_wfAvatarHTML(person, 22)}</span>
        <span class="wfb-node-title" title="${engineTitle}">
@@ -1550,7 +1650,18 @@ function _wfRenderNode(st, node) {
   // not only as a toast (brief §7) -- st.runErrors is a {nodeName: message}
   // map a validate attempt populates; _wfRender's caller pans the canvas to
   // st.scrollToNode so the red-outlined card is the one already in view.
+  // MC-871 follow-up Item A (unresolvable engine) rides the same map --
+  // _wfValidateGraph now adds those problems too, so no separate wiring here.
   const runError = st.runErrors && st.runErrors[node.name];
+  // MC-871 follow-up Item B: unlike runError, this is NOT gated behind a
+  // Save/Run-now attempt -- the whole point is to warn while the user is
+  // still picking the engine, not only after they try to ship it. Only
+  // checked once the engine itself resolves (an already-broken engine gets
+  // Item A's error, not a second banner on top of it) and suppressed
+  // whenever a hard error is already showing -- "one banner per card", the
+  // same rule _wfApplyRunErrors documents for structural problems.
+  const authWarning = (!runError && engineInfo && engineInfo.resolved && engineInfo.provider)
+    ? _wfProviderAuthWarning(engineInfo.provider) : '';
   // Change 12a's honesty half: a node with no incoming edges is a ROOT, and
   // mc/workflows.py:656 starts every root "the moment the run starts",
   // REGARDLESS of whether it's in `def.trigger.entry` -- the frontend-only
@@ -1563,7 +1674,8 @@ function _wfRenderNode(st, node) {
   const unwiredBadge = isUnwiredRoot
     ? `<span class="wfb-node-unwired-badge" title="No incoming edges, so this runs automatically as soon as the workflow starts — even though it isn't wired to the Trigger tile.">&#9888;</span>`
     : '';
-  return `<div class="wfb-node${runError ? ' wfb-node-error' : ''}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
+  const nodeStateCls = runError ? ' wfb-node-error' : (authWarning ? ' wfb-node-warning' : '');
+  return `<div class="wfb-node${nodeStateCls}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
       ${unwiredBadge}
       ${headHtml}
@@ -1571,6 +1683,7 @@ function _wfRenderNode(st, node) {
     </div>
     <div class="wfb-node-own">
       ${runError ? `<div class="wfb-node-inline-error">${esc(runError)}</div>` : ''}
+      ${authWarning ? `<div class="wfb-node-inline-warning">${esc(authWarning)}</div>` : ''}
       ${own}
     </div>
     <span class="wfb-port wfb-port-in" data-node="${nameAttr}"><span class="wfb-port-dot"></span></span>
@@ -3174,7 +3287,7 @@ async function _wfSave() {
   // prompt/project, no options, cycles, broken slot scope) so a violation
   // reads inline on its card before ever reaching the network, not only as a
   // round-tripped 400. The server re-validates regardless (defence in depth).
-  const problems = _wfValidateGraph(def);
+  const problems = _wfValidateGraph(def, st);
   if (problems.length) {
     _wfApplyRunErrors(st, problems);
     showToast(problems[0].message, 5000);
@@ -3281,7 +3394,7 @@ const _WF_ACTION_REQUIRED = {
 // both save and run (R2-D3/D5 defence in depth). Reuses the exact toposort/
 // dominator/broken-slot helpers the save guard already computes, so this can
 // never disagree with what actually gets refused.
-function _wfValidateGraph(def) {
+function _wfValidateGraph(def, st) {
   const nodes = def.nodes || [];
   const edges = def.edges || [];
   const names = nodes.map(n => n.name);
@@ -3295,6 +3408,28 @@ function _wfValidateGraph(def) {
       const outcomes = node.outcomes || [];
       if (outcomes.includes('otherwise')) add(node.name, '"otherwise" is reserved, not a usable outcome label.');
       if (new Set(outcomes).size !== outcomes.length) add(node.name, 'Outcome labels must be unique.');
+
+      // MC-871 follow-up (Item A): tell the user when the ENGINE itself
+      // can't run, not just when the graph shape is broken -- a workflow
+      // runs unattended on a cadence, so an unresolvable step doesn't fail
+      // once in front of someone, it fails every cycle into a log nobody
+      // reads. Reuses _wfEngineResolution, the same resolver the canvas
+      // tooltip and the live warning below use, so this can never disagree
+      // with what the hover already told the user. Skipped when there's no
+      // project yet -- that's already the "Needs a project" case above, and
+      // this project already ensures an agent step never reaches a run
+      // without one, so the project-default tier always resolves by then.
+      if (node.project_id && st) {
+        const info = _wfEngineResolution(st, node);
+        if (!info.resolved) {
+          const projLabel = (info.proj && (info.proj.name || info.proj.id)) || 'its project';
+          const who = info.person ? (info.person.display || info.person.name) : 'this step';
+          add(node.name, `No engine: ${who} pins nothing and "${projLabel}" has no default model.`);
+        } else if (info.person && info.person.model && _wfModelUnknown(info.provider, info.person.model)) {
+          const who = info.person.display || info.person.name;
+          add(node.name, `No engine: "${info.person.model}" is pinned on ${who} but ${info.provider} no longer offers it.`);
+        }
+      }
     } else if (node.type === 'approval') {
       const options = node.options || [];
       if (!options.length) add(node.name, 'Needs at least one option.');
@@ -3336,7 +3471,7 @@ async function _wfRunNow() {
   _wfSyncDomToModel(entry);
   const st = entry._wf;
   if (!st.workflowId) { showToast('Save the workflow before running it.', 4000); return; }
-  const problems = _wfValidateGraph(st.def);
+  const problems = _wfValidateGraph(st.def, st);
   if (problems.length) {
     _wfApplyRunErrors(st, problems);
     showToast(problems[0].message, 5000);
