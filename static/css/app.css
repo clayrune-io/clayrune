@@ -8387,12 +8387,12 @@
   }
   .wfb-toolbar-desc-row textarea:focus { border-color: var(--accent); }
 
-  /* .wfb-trigger-row/.wfb-trigger-opt/.wfb-sched-cadence: KEPT verbatim from
-     the old permanent .wfb-trigger-card (Change 2 reuses this exact markup
-     inside the popover below). */
-  .wfb-trigger-row { display: flex; gap: 18px; flex-wrap: wrap; }
-  .wfb-trigger-opt { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--text); cursor: pointer; }
-  .wfb-trigger-opt input { margin: 0; }
+  /* Defect 11: the old Manual/Schedule radio pair (forced a choice before
+     the author could get on with the flow) is now one unchecked-by-default
+     checkbox -- unchecked IS manual, the stored default, so the
+     no-interaction path and the disk default agree. */
+  .wfb-trigger-sched-toggle { display: flex; align-items: center; gap: 7px; font-size: 12px; color: var(--text); cursor: pointer; }
+  .wfb-trigger-sched-toggle input { margin: 0; }
   .wfb-sched-cadence { margin-top: 12px; padding-top: 12px; border-top: 1px solid var(--border); }
   .wfb-sched-cadence label { display: block; font-size: 10px; font-weight: 700; color: var(--text-faint); letter-spacing: 0.4px; margin: 8px 0 4px; text-transform: uppercase; }
   .wfb-sched-cadence label:first-of-type { margin-top: 0; }
@@ -8400,10 +8400,36 @@
     width: 100%; background: var(--surface); border: 1px solid var(--border); color: var(--text);
     font-family: inherit; font-size: 13px; padding: 6px 9px; border-radius: 5px; outline: none; box-sizing: border-box;
   }
+  /* Defect 10: this cadence form is scheduler.js's own markup (sched-type-btn/
+     sched-day-btn), but that file's styling is scoped to `.schedule-form` --
+     an ancestor class this popover deliberately never carries (this file's
+     own header: "a distinct wfb-sched-* namespace so the two forms can never
+     collide"). The buttons were therefore bare unstyled <button> elements
+     with no selected state at all. Same tokens as `.schedule-form`'s own
+     rules (app.css above) -- not a new button style, the SAME one, rescoped —
+     but sized to fit content (`.schedule-form`'s flex:1 assumes a wider
+     modal; five equal-width segments in this 300px popover pushed "Interval"/
+     "Cron" onto their own wrapped line). */
+  .wfb-sched-cadence .sched-type-row { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 10px; }
+  .wfb-sched-cadence .sched-type-btn {
+    flex: 0 0 auto; padding: 6px 10px; text-align: center; border: 1px solid var(--border2, var(--border));
+    border-radius: 5px; background: var(--surface3, var(--surface)); color: var(--text-faint);
+    font-size: 12px; font-weight: 600; cursor: pointer; transition: all 0.15s; white-space: nowrap;
+  }
+  .wfb-sched-cadence .sched-type-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
+  .wfb-sched-cadence .sched-days { display: flex; gap: 4px; margin-bottom: 10px; }
+  .wfb-sched-cadence .sched-day-btn {
+    width: 32px; height: 28px; border: 1px solid var(--border2, var(--border)); border-radius: 4px;
+    background: var(--surface3, var(--surface)); color: var(--text-faint); font-size: 11px; font-weight: 600;
+    cursor: pointer; transition: all 0.15s;
+  }
+  .wfb-sched-cadence .sched-day-btn.active { border-color: var(--accent); color: var(--accent); background: var(--accent-dim); }
   /* The trigger popover is wider than the plain port "+" popover (it hosts
      the whole cadence form, not three rows) — extends .wfb-port-popover
-     rather than duplicating its box/position/z-index rules. */
-  .wfb-trigger-popover { width: 260px; max-height: 70vh; overflow-y: auto; }
+     rather than duplicating its box/position/z-index rules. Widened from
+     260px (defect 10: five type buttons at their natural width need more
+     room than three port-popover rows ever did). */
+  .wfb-trigger-popover { width: 300px; max-height: 70vh; overflow-y: auto; }
 
   /* ── The canvas (R2-D7): palette docked left (a bottom sheet under the
      mobile breakpoint), free-positioned nodes, one absolutely-positioned SVG
@@ -8541,7 +8567,15 @@
   }
   .wfb-trigger-box.wfb-node-dragging .wfb-trigger-box-head { cursor: grabbing; touch-action: none; }
   .wfb-trigger-box-icon { color: var(--accent); font-size: 10px; }
-  .wfb-trigger-box-title { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); }
+  .wfb-trigger-box-title { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; color: var(--accent); flex: 1; }
+  /* Defect 8: nothing said clicking "Trigger" opens its config popover. A
+     caret (same affordance `.wfb-toolbar-desc-toggle` already uses) plus a
+     hover tint on the head reads as "this opens something", matching what a
+     click on it actually does. Grab cursor stays -- the head is still the
+     drag handle too. */
+  .wfb-trigger-box-caret { color: var(--text-faint); font-size: 9px; flex-shrink: 0; }
+  .wfb-trigger-box-head:hover { background: var(--surface2); border-radius: 9px 9px 0 0; }
+  .wfb-trigger-box-head:hover .wfb-trigger-box-caret { color: var(--accent); }
   .wfb-trigger-box-sub { font-size: 11px; color: var(--text-faint); padding: 0 10px 8px; }
   /* Change 4a's port row: the trigger is narrower than a card (160px vs
      260px) and only ever has the one plain port, so this sits in normal flow

@@ -984,10 +984,27 @@ try {
   const triggerVisible = await page2.$eval('.wfb-trigger-box', () => true).catch(() => false);
   triggerVisible ? ok('the Trigger box renders on the canvas alongside the nodes')
                  : fail('no .wfb-trigger-box found on the canvas');
+  // Regression guard for the MC-871 canvas-iteration bugs Ron hit after this
+  // suite last ran clean (Ron's defects 4/6/9): an untouched trigger USED TO
+  // have no persisted x/y at all, recomputing a fresh default position from
+  // "whichever node is currently the graph's root" on every single
+  // _wfRender() — so dropping a new node, or connecting one, silently
+  // re-homed the trigger tile even though nobody dragged it. _wfRenderTriggerBox
+  // now pins the computed default into the model the first time it's needed,
+  // so it must have real x/y immediately, and that value must NOT change
+  // just because the graph changes underneath it.
   const triggerBeforeDrag = await page2.evaluate(() => window._wfEntry()._wf.def.trigger);
-  (triggerBeforeDrag && typeof triggerBeforeDrag.x !== 'number')
-    ? ok('an untouched trigger has no x/y yet — it renders at a computed default, not a stored one')
-    : fail(`expected no trigger.x/y before any drag, got ${JSON.stringify(triggerBeforeDrag)}`);
+  (triggerBeforeDrag && typeof triggerBeforeDrag.x === 'number' && typeof triggerBeforeDrag.y === 'number')
+    ? ok(`an untouched trigger already has a pinned x/y (${triggerBeforeDrag.x},${triggerBeforeDrag.y}) — no drag needed for it to be stable`)
+    : fail(`expected the trigger's computed default position to be pinned into the model immediately, got ${JSON.stringify(triggerBeforeDrag)}`);
+  // Force a re-render via an UNRELATED structural action (toggling Enabled)
+  // and confirm the trigger did not silently re-home itself -- this is the
+  // exact shape of defect 4 ("dropping a block beside Start snapped it").
+  await page2.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
+  const triggerAfterUnrelatedRerender = await page2.evaluate(() => window._wfEntry()._wf.def.trigger);
+  (triggerAfterUnrelatedRerender.x === triggerBeforeDrag.x && triggerAfterUnrelatedRerender.y === triggerBeforeDrag.y)
+    ? ok('the trigger stayed exactly where it was across an unrelated re-render')
+    : fail(`the trigger moved from ${JSON.stringify(triggerBeforeDrag)} to ${JSON.stringify(triggerAfterUnrelatedRerender)} on a re-render nobody asked it to move for`);
   const triggerHeadBox = await (await page2.$('.wfb-trigger-box-head')).boundingBox();
   await page2.mouse.move(triggerHeadBox.x + triggerHeadBox.width / 2, triggerHeadBox.y + triggerHeadBox.height / 2);
   await page2.mouse.down();
@@ -1188,9 +1205,13 @@ try {
   await page3.waitForSelector('#wfb-trigger-popover', { timeout: 3000 })
     .then(() => ok('clicking the Trigger tile opens its config popover'))
     .catch(() => fail('the Trigger tile did not open a popover on click'));
-  await page3.click('#wfb-trigger-popover input[name="wfb-trigger"][value="schedule"]');
+  // Defect 11 (Ron: "if we have a Run now button, why do we also need that
+  // option on the start tile?") replaced the Manual/Schedule radio pair with
+  // a single unchecked-by-default "Run on a schedule" checkbox -- unchecked
+  // IS manual, so checking it is the only gesture that turns scheduling on.
+  await page3.click('#wfb-trigger-popover input[type="checkbox"]');
   await page3.waitForSelector('#wfb-trigger-popover .wfb-sched-cadence', { timeout: 3000 });
-  ok('selecting "On a schedule" (inside the popover) renders the cadence sub-form');
+  ok('checking "Run on a schedule" (inside the popover) renders the cadence sub-form');
 
   const defaultType = await page3.$eval('.sched-type-btn.active', el => el.textContent.trim());
   defaultType === 'Daily' ? ok('cadence defaults to Daily')

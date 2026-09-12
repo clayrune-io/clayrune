@@ -334,11 +334,20 @@ function _wfRenderIdleHost(projectId) {
   if (host) host.innerHTML = '<div class="wfb-canvas-idle">Editing moved to another project — pick a tab to resume here.</div>';
 }
 
-async function openWorkflowBuilder(workflowId, hintProjectId) {
+// `targetLabel` is the ONE place this ever confirms a discard (Ron: choosing
+// "+ New Workflow" while dirty needed OK pressed TWICE, and Cancel on the
+// second of those left the pane stuck). `_wfTabClick`/`_wfNewWorkflowClick`
+// used to run their own `_wfConfirmDiscardIfDirty` first and then call here,
+// which ran the SAME check again with no label -- two dialogs for one click,
+// the second overwriting the first's wording. They now pass their label
+// straight through and never check it themselves; `_wfSyncTabsForProject`'s
+// own auto-select call (no caller-side check of its own) still gets the
+// generic wording by passing none.
+async function openWorkflowBuilder(workflowId, hintProjectId, targetLabel) {
   const projectId = hintProjectId || (_wfState && _wfState.projectId) || '';
   const host = document.getElementById('wfb-inline-host-' + projectId);
   if (!host) { console.warn('[workflow-builder] no inline host mounted for project', projectId); return; }
-  if (!_wfConfirmDiscardIfDirty()) return;
+  if (!_wfConfirmDiscardIfDirty(targetLabel)) return;
   if (_wfState && _wfState.projectId && _wfState.projectId !== projectId) _wfRenderIdleHost(_wfState.projectId);
   // The trigger popover (Change 2) lives on <body>, outside #wfb-inline-host
   // -- a fresh load below replaces the host's contents but would otherwise
@@ -612,17 +621,18 @@ function _wfEmptyStateHTML() {
 
 // targetName threaded through from the tabs row (Change 3's "word it as
 // replacing" — the confirm names what's about to open, not just "a
-// different workflow").
+// different workflow"). The discard confirm itself lives ONLY inside
+// openWorkflowBuilder now (see its own comment) — this used to also run
+// _wfConfirmDiscardIfDirty here first, so one click could show the dialog
+// twice.
 function _wfTabClick(projectId, workflowId, targetName) {
   if (_wfState && _wfState.projectId === projectId && _wfState._wf && _wfState._wf.workflowId === workflowId) return;
-  if (!_wfConfirmDiscardIfDirty(targetName ? `"${targetName}"` : null)) return;
-  openWorkflowBuilder(workflowId, projectId);
+  openWorkflowBuilder(workflowId, projectId, targetName ? `"${targetName}"` : null);
 }
 window._wfTabClick = _wfTabClick;
 
 function _wfNewWorkflowClick(projectId) {
-  if (!_wfConfirmDiscardIfDirty('a new workflow')) return;
-  openWorkflowBuilder(null, projectId);
+  openWorkflowBuilder(null, projectId, 'a new workflow');
 }
 window._wfNewWorkflowClick = _wfNewWorkflowClick;
 
@@ -634,8 +644,19 @@ function _wfSyncTabsForProject(projectId, list) {
   _wfTabsSig[projectId] = sig;
   section.dataset.wfBuilt = '1';
 
-  const mountedId = (_wfState && _wfState.projectId === projectId && _wfState._wf) ? _wfState._wf.workflowId : undefined;
-  const stillMounted = list.some(w => w.id === mountedId);
+  const activeEntry = (_wfState && _wfState.projectId === projectId) ? _wfState._wf : null;
+  const mountedId = activeEntry ? activeEntry.workflowId : undefined;
+  // A brand-new, never-saved workflow (`workflowId: null`, _wfFreshState's
+  // own "unsaved" marker) can NEVER appear in `list` -- it doesn't exist on
+  // the server yet -- so `list.some(w => w.id === mountedId)` was always
+  // false for it. That silently discarded an in-progress unsaved flow the
+  // moment this section's DOM got rebuilt with a fresh (unbuilt) element --
+  // e.g. closing and reopening the project modal, which is exactly what "start
+  // a new flow, navigate away, come back" does (Ron: "the work is gone").
+  // An unsaved draft counts as "still mounted" on its own; anything with a
+  // real id still needs the list lookup (a workflow deleted elsewhere must
+  // still fall through to auto-select below).
+  const stillMounted = !!activeEntry && (mountedId === null || list.some(w => w.id === mountedId));
   const selected = stillMounted ? mountedId : (list[0] ? list[0].id : null);
 
   // "+ New Workflow" is always present, even with zero workflows (UI brief:
@@ -646,7 +667,10 @@ function _wfSyncTabsForProject(projectId, list) {
     + (list.length ? '' : _wfEmptyStateHTML())
     + `<div id="wfb-inline-host-${esc(projectId)}" class="wfb-fill-col"></div>`;
 
-  if (selected == null) return;
+  // NOT `selected == null` on its own any more: an unsaved draft's `selected`
+  // IS null (it has no id yet) even though it is very much still mounted and
+  // must be remounted, not treated as "nothing to show".
+  if (!stillMounted && selected == null) return;
   if (stillMounted) _wfRemountDom(projectId);      // already loaded in memory -- just rebuild the DOM around it
   else openWorkflowBuilder(selected, projectId);   // a different/new workflow -- load it for real
 }
@@ -1089,8 +1113,30 @@ function _wfRenderTriggerBox(st) {
   const def = st.def;
   const trigger = def.trigger || (def.trigger = { type: 'manual' });
   const hasPos = typeof trigger.x === 'number' && typeof trigger.y === 'number';
-  const pos = hasPos ? { x: trigger.x, y: trigger.y } : _wfTriggerDefaultPos(def);
-  const label = trigger.type === 'schedule' ? 'On a schedule' : 'Manual';
+  // Ron: "dropping a block beside Start snaps it to connect to the top of
+  // the dropped tile" / "after connecting Start to a tile, it snaps to the
+  // top of that tile" -- both were this same recompute, not a real snap: as
+  // long as the trigger has never been dragged, EVERY render fell through to
+  // _wfTriggerDefaultPos, which anchors above whichever node is currently the
+  // graph's root -- so any new node, or any node picking up an incoming edge
+  // that demotes it from root, silently re-homed the tile on the next
+  // _wfRender(). Persisting the computed default into `trigger.x/y` the first
+  // time it's needed makes `hasPos` true from then on, so this box behaves
+  // exactly like a node that already has a saved position: it only ever
+  // moves in response to _wfNodeDragUp's own drag-and-release.
+  if (!hasPos) { const pos0 = _wfTriggerDefaultPos(def); trigger.x = pos0.x; trigger.y = pos0.y; }
+  const pos = { x: trigger.x, y: trigger.y };
+  // Defect 11's follow-on ("Manual -- Run now" vs "Runs weekly - Mon 07:00"):
+  // the tile reads its OWN live state instead of a static "Manual"/"On a
+  // schedule" label, which also gives defect 8's affordance something to
+  // read -- a tile whose text changes when you configure it looks
+  // interactive even before the hover/caret styling lands. Reuses
+  // scheduler.js's own `scheduleDescription` (window export) rather than
+  // reimplementing cadence formatting a second time; falls back to the old
+  // generic wording if the linked schedule hasn't loaded yet.
+  const label = trigger.type === 'schedule'
+    ? (st.linkedSchedule && typeof window.scheduleDescription === 'function' ? window.scheduleDescription(st.linkedSchedule) : 'On a schedule')
+    : 'Manual — Run now';
   const names = new Set((def.nodes || []).map(n => n.name));
   const hasIncoming = new Set((def.edges || []).map(e => e.to));
   // "Connected" (a solid line, no stop stub) only for entries that are BOTH
@@ -1099,10 +1145,16 @@ function _wfRenderTriggerBox(st) {
   // starts" as a root, so drawing it as trigger-wired here would be exactly
   // the silent lie R2-D6's stop-stub convention exists to prevent.
   const wiredCount = _wfTriggerEntry(def).filter(n => names.has(n) && !hasIncoming.has(n)).length;
-  return `<div class="wfb-trigger-box" data-name="__trigger__" style="left:${pos.x}px;top:${pos.y}px">
+  // Defect 8: clicking "Trigger" opens the config popover (_wfNodeDragUp's
+  // no-drag-happened branch) but nothing said so -- a caret is the same
+  // affordance `.wfb-toolbar-desc-toggle` already uses for "this text opens
+  // something", so the tile reads as configurable without a second visual
+  // language of its own.
+  return `<div class="wfb-trigger-box" data-name="__trigger__" style="left:${pos.x}px;top:${pos.y}px" title="Click to change the trigger &middot; drag to move">
     <div class="wfb-trigger-box-head" onpointerdown="_wfNodeDragDown(event)">
       <span class="wfb-trigger-box-icon">&#9654;</span>
       <span class="wfb-trigger-box-title">Trigger</span>
+      <span class="wfb-trigger-box-caret">&#9662;</span>
     </div>
     <div class="wfb-trigger-box-sub">${esc(label)}</div>
     <div class="wfb-port-row wfb-trigger-port-row${wiredCount ? '' : ' wfb-port-unconnected'}">
@@ -1588,8 +1640,16 @@ function _wfSetTriggerType(t) {
   // Keep x/y (MC-871 Change 2): they're the canvas box's dragged position,
   // unrelated to which radio is picked -- a fresh `{type: t}` here would snap
   // the box back to its default spot every time the trigger type changes.
-  const { x, y } = st.def.trigger || {};
-  st.def.trigger = (typeof x === 'number' && typeof y === 'number') ? { type: t, x, y } : { type: t };
+  // Keep `entry` too (Ron: picking a trigger option deleted the connection to
+  // the agent it was wired to) -- this rebuild used to keep only x/y and drop
+  // every other key on `trigger`, silently un-wiring every node in
+  // `trigger.entry` (Change 4a/12a's record of an explicit "wired to the
+  // trigger" act) the moment the type changed.
+  const { x, y, entry: wiredEntry } = st.def.trigger || {};
+  const next = { type: t };
+  if (typeof x === 'number' && typeof y === 'number') { next.x = x; next.y = y; }
+  if (Array.isArray(wiredEntry)) next.entry = wiredEntry;
+  st.def.trigger = next;
   if (t === 'schedule' && !st.linkedSchedule) st.linkedSchedule = _wfDraftSchedule();
   _wfMarkDirty();
   _wfRender();
@@ -1754,22 +1814,30 @@ function _wfSyncScheduleFormToState(st) {
 // so a popover positioned as a DESCENDANT of the canvas would get clipped.
 let _wfTriggerPopoverOpen = false;
 
+// Defect 11 (Ron, after using the Manual/Schedule radio pair): "if we have a
+// Run now button, why do we also need that option on the start tile?" -- a
+// forced binary choice duplicated what Run now already does. Reworked as a
+// single unchecked-by-default checkbox: unchecked IS `manual` (the stored
+// default -- mc/workflows.py's TRIGGER_TYPES/validator are untouched, a
+// workflow with no schedule is still `manual` on disk), so building a flow
+// never makes the author decide about scheduling first. Checking it reveals
+// the cadence controls and calls the SAME `_wfSetTriggerType('schedule')`
+// this used to wire to a radio; unchecking calls `_wfSetTriggerType('manual')`
+// -- x/y and trigger.entry preservation (see that function) apply exactly the
+// same way. Checked-with-no-cadence-yet can't happen: `_wfSetTriggerType`
+// already seeds `st.linkedSchedule` from `_wfDraftSchedule()` (daily 09:00)
+// the moment schedule turns on, so there is always a valid cadence to save.
 function _wfTriggerPopoverHTML(st) {
   const def = st.def;
   const triggerType = (def.trigger && def.trigger.type) || 'manual';
+  const isSchedule = triggerType === 'schedule';
   return `
     <div class="wfb-popover-title" style="margin-bottom:8px">Trigger</div>
-    <div class="wfb-trigger-row">
-      <label class="wfb-trigger-opt">
-        <input type="radio" name="wfb-trigger" value="manual" ${triggerType !== 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('manual')">
-        Manual &mdash; Run Now or the API
-      </label>
-      <label class="wfb-trigger-opt">
-        <input type="radio" name="wfb-trigger" value="schedule" ${triggerType === 'schedule' ? 'checked' : ''} onchange="_wfSetTriggerType('schedule')">
-        On a schedule
-      </label>
-    </div>
-    ${triggerType === 'schedule' ? _wfRenderScheduleCadence(st) : ''}`;
+    <label class="wfb-trigger-sched-toggle">
+      <input type="checkbox" ${isSchedule ? 'checked' : ''} onchange="_wfSetTriggerType(this.checked ? 'schedule' : 'manual')">
+      Run on a schedule
+    </label>
+    ${isSchedule ? _wfRenderScheduleCadence(st) : ''}`;
 }
 
 function _wfOpenTriggerPopover(anchorEl) {
@@ -1812,6 +1880,15 @@ function _wfCloseTriggerPopover() {
     const entry = _wfEntry();
     if (entry && entry._wf && entry._wf.def.trigger && entry._wf.def.trigger.type === 'schedule') {
       _wfSyncScheduleFormToState(entry._wf);
+      // Defect 11's follow-on: the tile's sub-label is only recomputed by a
+      // full _wfRender(), which the cadence sub-form's own edits (picking
+      // Weekly, toggling a day, typing a time) never trigger on their own --
+      // only the schedule/manual checkbox does. Patch just the label text
+      // here, now that the sync above just caught up `linkedSchedule` with
+      // whatever was left in the form, so closing the popover is always the
+      // point the tile catches up to what was actually configured.
+      const sub = document.querySelector('.wfb-trigger-box .wfb-trigger-box-sub');
+      if (sub && typeof window.scheduleDescription === 'function') sub.textContent = window.scheduleDescription(entry._wf.linkedSchedule || {});
     }
     el.remove();
   }
@@ -2093,7 +2170,20 @@ function _wfCanvasWheel(e) {
 let _wfPan = null;
 
 function _wfViewportDown(e) {
-  if (e.target.closest('.wfb-node, .wfb-port')) return;
+  // The trigger box (MC-871 Change 2) is its own shape, not a `.wfb-node` --
+  // this guard used to only exclude nodes/ports, so a pointerdown anywhere on
+  // the trigger tile OTHER than its head (which has its own drag handler,
+  // _wfNodeDragDown) fell through to here: a plain click on the "Manual"
+  // sub-label or the port row PANNED THE WHOLE CANVAS (every node visibly
+  // drags along with what looked like a Start-tile drag -- Ron: "if I grab
+  // the start tile ... everything moves with it", the same complaint Change
+  // 4b's z-index fix addressed for overlap hit-testing but not this bubble
+  // path), and `setPointerCapture` below retargets the pointerup/click that
+  // follows to the VIEWPORT -- exactly the mechanism _wfNodeDragDown's own
+  // header comment already documents for the node "..." menu button -- which
+  // silently ate clicks on the trigger's own "+" (`.wfb-port-plus` is not
+  // `.wfb-port`, so it wasn't covered either).
+  if (e.target.closest('.wfb-node, .wfb-port, .wfb-trigger-box')) return;
   if (typeof e.button === 'number' && e.button !== 0) return;
   if (_wfPan || _wfNodeDrag || _wfPlaceDrag || _wfConnectDrag) return;
   const entry = _wfEntry(); if (!entry) return;
