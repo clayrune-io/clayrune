@@ -8644,6 +8644,21 @@
     text-transform: uppercase; margin-bottom: 2px;
   }
   .wfb-palette-tools-title { margin-top: 4px; }
+  /* Wraps the title so the refresh button (Ron: "Is there a way to maybe add
+     refresh button?") sits beside it on desktop -- kept OUTSIDE
+     `.wfb-palette-title` on purpose, because that class is hidden outright on
+     the mobile bottom sheet below and the button must not disappear with it. */
+  .wfb-palette-head { display: flex; align-items: center; justify-content: space-between; gap: 6px; }
+  .wfb-palette-head .wfb-palette-title { margin-bottom: 0; }
+  .wfb-palette-refresh-btn {
+    background: transparent; border: 1px solid var(--border); border-radius: 5px;
+    color: var(--text-faint); font-size: 12px; line-height: 1; padding: 2px 5px;
+    cursor: pointer; flex-shrink: 0;
+  }
+  .wfb-palette-refresh-btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .wfb-palette-refresh-btn:disabled { opacity: 0.5; cursor: default; }
+  .wfb-palette-refresh-spin { animation: wfb-palette-refresh-spin 0.6s linear infinite; }
+  @keyframes wfb-palette-refresh-spin { from { transform: rotate(0deg); } to { transform: rotate(360deg); } }
   .wfb-palette-search {
     width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text);
     font-family: inherit; font-size: 12px; padding: 6px 9px; border-radius: 6px; outline: none;
@@ -9128,6 +9143,11 @@
     }
     .wfb-palette-title, .wfb-palette-hint, .wfb-palette-tools-title,
     .wfb-palette-search, .wfb-palette-divider, .wfb-palette-more { display: none; }
+    /* The title text hides above (it's one of the desktop-only labels), but
+       the refresh button lives in the same `.wfb-palette-head` row and must
+       stay reachable on the bottom sheet -- it's the manual escape hatch, so
+       it has to survive on the surface Ron actually asked about it on. */
+    .wfb-palette-head { flex-shrink: 0; }
     .wfb-palette-people { flex-direction: row; }
     .wfb-palette-person, .wfb-palette-block { flex-shrink: 0; }
     /* Defect 13 (Ron, phone: "unable to drag agent onto the canvas"). The

@@ -29,6 +29,21 @@ let _claydoMode = 'ask';
   }
 })();
 
+// Fired after a character write actually lands (name/avatar/full-record save,
+// move, delete) — never before, and never on a failed request. Listeners
+// (workflow-builder's palette, the Channel picker's cache) can react without
+// this module knowing who they are. `detail.name` is the type's stable slug
+// (the `<scope>/<name>` route key), never `agent_name` — a rename only ever
+// changes the display value, not the slug (mc/blueprints/character_routes.py
+// has no rename-the-slug endpoint), so a listener keying off `name` stays
+// correct across a rename.
+function _announceCharacterChange(scope, name, action) {
+  try {
+    window.dispatchEvent(new CustomEvent('clayrune:characters-changed',
+      { detail: { scope, name, action } }));
+  } catch (e) {}
+}
+
 // Pulse the floating button until the user opens the modal once.
 (function _initClaydoPulse() {
   if (localStorage.getItem('claydo_opened')) return;
@@ -1424,6 +1439,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     // globals; it publishes this one explicitly.
     if (typeof window.refreshFloor === 'function') window.refreshFloor();
     if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+    _announceCharacterChange(scope, name, 'move');
     // Reopen at the NEW home. Closing on a move and leaving the user staring
     // at the board is the moment they wonder whether it worked.
     openPersonaEditor(toProject || null, toScope, name, onDone);
@@ -1482,6 +1498,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       });
       const data = await res.json().catch(() => ({}));
       if (!res.ok) { btn.disabled = false; return showErr(data.error || `Save failed (${res.status})`); }
+      _announceCharacterChange(scope, name, 'save');
       // "Belongs to" sits among the fields and reads like one, so a changed
       // home has to be part of Save — leaving it to the separate Move button
       // meant picking Global, pressing Save, and being told nothing while the
@@ -1531,6 +1548,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // subsequent Save does not send a stale value back over it.
       nameEl.value = data.agent_name || '';
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      _announceCharacterChange(scope, name, 'rename');
       if (typeof onDone === 'function') onDone();
     } catch (e) {
       showErr('Network error: ' + (e.message || e));
@@ -1559,6 +1577,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       // Save does not push a stale value back over it.
       setFace(data.avatar || '');
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      _announceCharacterChange(scope, name, 'avatar');
       if (typeof onDone === 'function') onDone();
     } catch (e) {
       showErr('Network error: ' + (e.message || e));
@@ -1584,6 +1603,7 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
         window.clearCharacterIfSelected(projectId, scope + ':' + name);
       }
       if (typeof window.reloadCharacters === 'function') window.reloadCharacters(projectId);
+      _announceCharacterChange(scope, name, 'delete');
       if (typeof onDone === 'function') onDone();
     } catch (e) {
       btn.disabled = false;
