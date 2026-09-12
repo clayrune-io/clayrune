@@ -581,6 +581,112 @@ def test_unknown_action_rejected_at_validation(wf):
     assert any('must be one of' in e for e in errors)
 
 
+# ── R3-1's three new verbs: journal_append, notify_operator, restore_point_create ──
+
+def test_journal_append_writes_a_dated_entry_and_reuses_the_file(wf, tmp_path, monkeypatch):
+    journal_dir = tmp_path / '_journal'
+    monkeypatch.setattr(wf.m, '_JOURNAL_DIR', journal_dir)
+    doc = _doc('journal', [
+        _action('log', 'journal_append', config={'item_id': 'MC-1', 'title': 'thing', 'text': 'first run'}),
+    ])
+    record = wf.m.create_workflow(doc)
+    run = wf.m.start_run(record['id'])
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['log']['status'] == 'completed'
+    files = list(journal_dir.glob('MC-1-*.md'))
+    assert len(files) == 1
+    content = files[0].read_text(encoding='utf-8')
+    assert 'first run' in content
+
+    # A second run with the same item_id appends to the SAME file rather than
+    # creating a second one under a different slug.
+    run2 = wf.m.start_run(record['id'])
+    run2 = wf.m.get_run(run2['id'])
+    assert run2['steps']['log']['status'] == 'completed'
+    assert len(list(journal_dir.glob('MC-1-*.md'))) == 1
+    content2 = files[0].read_text(encoding='utf-8')
+    assert content2.count('### ') == 2
+
+
+def test_journal_append_requires_item_id_and_text(wf, tmp_path, monkeypatch):
+    monkeypatch.setattr(wf.m, '_JOURNAL_DIR', tmp_path / '_journal')
+    doc = _doc('journal-bad', [_action('log', 'journal_append', config={'item_id': 'MC-2'})])
+    record = wf.m.create_workflow(doc)
+    run = wf.m.start_run(record['id'])
+    run = wf.m.get_run(run['id'])
+    assert run['status'] == 'failed'
+    assert run['steps']['log']['status'] == 'failed'
+
+
+def test_notify_operator_sends_no_recipient_argument(wf, monkeypatch):
+    """The whole reason this verb is on the allowlist while mail_send is
+    refused: the recipient is fixed server-side and never an authorable node
+    parameter. Assert the mailer subprocess is invoked with no --to/--cc/
+    --recipient flag, however the config tries to smuggle one in."""
+    calls = []
+
+    class FakeCompleted:
+        returncode = 0
+        stdout = ''
+        stderr = ''
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return FakeCompleted()
+
+    monkeypatch.setenv('MC_LIVE_MAIL_TESTS', '1')  # exercise the real send path
+    import subprocess as _sp
+    monkeypatch.setattr(_sp, 'run', fake_run)
+
+    doc = _doc('notify', [
+        # Even if an author stuffs a 'to' key into config, the runner must
+        # never forward it -- notify_operator's config schema has no
+        # recipient field, and the implementation must not invent one.
+        _action('ping', 'notify_operator', config={'message': 'hello Ron', 'to': 'someone@else.com'}),
+    ])
+    record = wf.m.create_workflow(doc)
+    run = wf.m.start_run(record['id'])
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['ping']['status'] == 'completed'
+    assert calls, 'expected the mailer subprocess to be invoked'
+    cmd = calls[0]
+    assert '--to' not in cmd and '--cc' not in cmd and '--recipient' not in cmd
+    assert 'someone@else.com' not in cmd
+    assert '--subject' in cmd and '--body' in cmd
+
+
+def test_notify_operator_suppressed_under_pytest_by_default(wf):
+    """Precedent: _notify_approval_waiting is gated on PYTEST_CURRENT_TEST so
+    the suite itself never sends real mail. notify_operator must be gated the
+    same way -- this test runs WITHOUT MC_LIVE_MAIL_TESTS set, so it must not
+    shell out at all, and the step must still complete."""
+    doc = _doc('notify-quiet', [_action('ping', 'notify_operator', config={'message': 'hi'})])
+    record = wf.m.create_workflow(doc)
+    run = wf.m.start_run(record['id'])
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['ping']['status'] == 'completed'
+
+
+def test_restore_point_create_posts_to_backup_route(wf, monkeypatch):
+    calls = []
+
+    def fake_http(method, path, payload=None):
+        calls.append((method, path, payload))
+        return {'snap_id': 'snap-001'}
+
+    monkeypatch.setattr(wf.m, '_http_json', fake_http)
+    doc = _doc('snapshot', [
+        _action('snap', 'restore_point_create', config={'project_id': 'p1', 'label': 'pre-run'}),
+    ])
+    record = wf.m.create_workflow(doc)
+    run = wf.m.start_run(record['id'])
+    run = wf.m.get_run(run['id'])
+    assert calls and calls[0][0] == 'POST' and calls[0][1] == '/api/backup/restore-point/p1'
+    assert calls[0][2] == {'label': 'pre-run'}
+    assert run['steps']['snap']['status'] == 'completed'
+    assert 'snap-001' in run['steps']['snap']['output']
+
+
 # ── restart adoption (fail-closed) ───────────────────────────────────────────
 
 def test_adoption_advances_a_confirmed_completed_child(wf):

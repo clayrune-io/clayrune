@@ -1940,17 +1940,16 @@ function _wfRenderApprovalOwn(st, node) {
 // Plain-English labels over the internal ACTION_ALLOWLIST identifiers (Ron,
 // looking at the raw verbs: "this is unintuitive, I don't think anyone will
 // understand these actions"). Stored values / mc/workflows.py are untouched —
-// this is a label/description layer only, kept in ONE lookup so R3-1's three
-// approved-but-unimplemented verbs (journal_append, notify_operator,
-// restore_point_create) are a data edit later, not a code change. Do NOT add
-// them here now — they are not in ACTION_ALLOWLIST and must not appear in the
-// palette or this select.
+// this is a label/description layer only, kept in ONE lookup.
 const _WF_ACTION_META = {
   backlog_create: { label: 'Add a backlog item', desc: 'Adds a new item to the project backlog. No agent involved.', group: 'Backlog' },
   backlog_patch:  { label: 'Update a backlog item', desc: "Changes an existing backlog item's status or text. No agent involved.", group: 'Backlog' },
   desk_harvest:   { label: 'Run a Desk harvest', desc: 'Scans signal sources. No agent involved.', group: 'The Desk' },
+  journal_append: { label: 'Log to a backlog item\'s journal', desc: 'Appends a dated note to that item\'s journal file on disk. This is the unattended-safe log — it never writes a backlog note. No agent involved.', group: 'Backlog' },
+  notify_operator: { label: 'Email me when this runs', desc: "Sends the operator (Ron) an email with your message. The recipient is fixed by server config — there is no address field here, so this can't be pointed anywhere else. No agent involved.", group: 'Notify' },
+  restore_point_create: { label: 'Snapshot this project', desc: 'Creates a restore point (a reversible backup) of the project before the next steps run. No agent involved.', group: 'Backup' },
 };
-const _WF_ACTION_GROUP_ORDER = ['Backlog', 'The Desk'];
+const _WF_ACTION_GROUP_ORDER = ['Backlog', 'The Desk', 'Notify', 'Backup'];
 
 function _wfActionSelectHTML(action) {
   const groups = {};
@@ -2012,6 +2011,32 @@ function _wfActionFieldsHTML(action, cfg, def, nodeName) {
     return `
       <label>Project <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(blank = every project)</span></label>
       <select data-cfg-key="project_id">${projOpts(true)}</select>`;
+  }
+  if (action === 'journal_append') {
+    return `
+      <label>Backlog item ID <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(can be a slot, e.g. <code>{{steps.triage.result.item_id}}</code>)</span></label>
+      <input data-cfg-key="item_id" data-cfg-required="1" value="${esc(cfg.item_id || '')}">
+      ${slotField('[data-cfg-key="item_id"]', cfg.item_id || '')}
+      <label>Title <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(only used to name the file the first time it's created)</span></label>
+      <input data-cfg-key="title" value="${esc(cfg.title || '')}">
+      <label>Entry text</label>
+      <textarea data-cfg-key="text" data-cfg-required="1" rows="3" placeholder="What happened this run">${esc(cfg.text || '')}</textarea>
+      ${slotField('[data-cfg-key="text"]', cfg.text || '')}`;
+  }
+  if (action === 'notify_operator') {
+    return `
+      <label>Message</label>
+      <textarea data-cfg-key="message" data-cfg-required="1" rows="3" placeholder="What should the email say?">${esc(cfg.message || '')}</textarea>
+      ${slotField('[data-cfg-key="message"]', cfg.message || '')}
+      <div class="wfb-action-desc">Goes to the operator's fixed address only — there is no recipient field to fill in here.</div>`;
+  }
+  if (action === 'restore_point_create') {
+    return `
+      <label>Project</label>
+      <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
+      <label>Label <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(optional, shown in the restore-point list)</span></label>
+      <input data-cfg-key="label" value="${esc(cfg.label || '')}">
+      ${slotField('[data-cfg-key="label"]', cfg.label || '')}`;
   }
   // backlog_create (default)
   return `
