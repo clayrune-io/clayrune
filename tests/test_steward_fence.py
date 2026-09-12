@@ -373,3 +373,44 @@ ENABLING_CONSTRUCT_ALLOW_CASES = [
 def test_enabling_construct_checks_allow_argument_position_expansion(cmd):
     d = classify_bash(cmd)
     assert not d.blocked, f"false positive: {d.reason!r} for {cmd!r}"
+
+
+# ── Review pass over the hardening (2026-09-12) ──────────────────────────────
+# Two gaps found by probing the merged branch against realistic agent commands.
+
+def test_grep_for_the_word_function_is_not_a_function_definition():
+    # The original `function\s+\w+\b` half blocked this — and passed the same
+    # search once it was quoted, which is an arbitrary line. A definition has
+    # a body; the pattern is anchored on the brace now.
+    assert not classify_bash('grep -n function renderChat static/js/app.js').blocked
+    assert not classify_bash('grep -rn function static/js/').blocked
+
+
+def test_function_keyword_form_with_a_body_still_blocks():
+    assert classify_bash('function doit { echo hi; }').blocked
+    assert classify_bash('function doit() { echo hi; }').blocked
+
+
+@pytest.mark.parametrize('cmd', [
+    'eval "$CMD"',
+    'eval $(cat /tmp/payload)',
+    'bash -c "$CMD"',
+    'sh -c "$(cat /tmp/x)"',
+    'python -c "$CODE"',
+    'powershell -c "$s"',
+    'iex "$payload"',
+])
+def test_eval_and_dash_c_on_an_expansion_block(cmd):
+    d = classify_bash(cmd)
+    assert d.blocked, f"missed enabling construct: {cmd!r}"
+
+
+@pytest.mark.parametrize('cmd', [
+    'python -c "print(1)"',
+    'bash -c "ls -la"',
+    'node -e "console.log(1)"',
+    'pytest -c setup.cfg tests/',
+])
+def test_literal_dash_c_programs_still_pass(cmd):
+    d = classify_bash(cmd)
+    assert not d.blocked, f"false positive: {d.reason!r} for {cmd!r}"

@@ -217,8 +217,14 @@ def _touches_nonlocal_network(cmd: str) -> FenceDecision:
 # false-positive incidents recorded above. Scoped per shell segment via the
 # existing _SHELL_SPLIT_RE, same discipline as _touches_nonlocal_network.
 
+# Both bash spellings, but ALWAYS anchored on the opening brace. Without that
+# anchor the `function\s+\w+` half blocked `grep -n function renderChat app.js`
+# — searching a JS codebase for the word "function" is one of the most common
+# things an agent does here, and it only passed when the pattern happened to be
+# quoted (the quote fails the leading-char class), which is an arbitrary line to
+# draw. A real definition always has a body.
 _FUNC_DEF_RE = re.compile(
-    r'(?:^|[\s;&|\n])(function\s+\w+\b|\w+\s*\(\)\s*\{)', re.I)
+    r'(?:^|[\s;&|\n])(?:function\s+\w+\s*(?:\(\s*\))?\s*\{|\w+\s*\(\s*\)\s*\{)', re.I)
 
 _VAR_TOKEN = r'\$\{?\w+\}?|\$\([^()]*\)|`[^`]*`'
 
@@ -246,6 +252,20 @@ _B64_DECODE_MARK = (
     r'openssl\s+(?:base64|enc)\b[^\n;&|]*-d\b|'
     r'\[?convert\]?\s*::\s*frombase64string'
 )
+_EXPANSION_TOKEN = r'\$\{?\w+|\$\(|`'
+
+# `eval "$CMD"` and `bash -c "$CMD"` are the purest enabling constructs of all —
+# the command that runs is the VALUE of something the fence cannot see, and
+# neither was in the measured row set. Only flagged when the interpreted text
+# actually carries an expansion: `python -c "print(1)"` is a literal program the
+# fence can read, and keeps passing.
+_EVAL_EXPANSION_RE = re.compile(
+    rf'\b(?:eval|iex|invoke-expression)\b[^\n;&|]*(?:{_EXPANSION_TOKEN})', re.I)
+_DASH_C_EXPANSION_RE = re.compile(
+    r'\b(?:bash|sh|zsh|dash|ksh|pwsh|powershell|python\w*|node|perl|ruby)\b'
+    rf'[^\n;&|]*\s-c\b[^\n;&|]*(?:{_EXPANSION_TOKEN})', re.I)
+
+
 _B64_TO_INTERPRETER_RE = re.compile(
     rf'(?:{_B64_DECODE_MARK})[^\n;&]*?\|[^\n;&]*?\b'
     r'(?:bash|sh|zsh|dash|ksh|pwsh|powershell|python\w*|node|perl|ruby|'
@@ -263,6 +283,11 @@ def _enabling_construct(cmd: str) -> FenceDecision:
                                     "cannot see what a later call to it will "
                                     "run (define-then-use crosses the "
                                     "per-call boundary the fence checks at)")
+    for pat, why in ((_EVAL_EXPANSION_RE, "eval/iex of an expansion"),
+                     (_DASH_C_EXPANSION_RE, "interpreter -c on an expansion")):
+        if pat.search(cmd):
+            return FenceDecision(True, f"{why} - the program text that runs is "
+                                        "a runtime VALUE the fence cannot read")
     if _B64_TO_INTERPRETER_RE.search(cmd):
         return FenceDecision(True, "base64/decode piped into an interpreter "
                                     "(decode-then-execute hides the command "
