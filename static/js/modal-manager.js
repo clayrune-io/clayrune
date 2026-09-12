@@ -842,6 +842,11 @@ function _modelShortLabel(id) {
 // Cross-module: the composer's Model picker (conversation.js) reuses this list —
 // single source of truth for the model ids/labels.
 window.MC_MODEL_CHOICES = MC_MODEL_CHOICES;
+// Same reason, for the retired ids: the workflow builder needs to tell a
+// still-valid legacy pin apart from a genuinely unknown one before it
+// warns that a provider "no longer lists" a model (workflow-builder.js
+// _wfModelUnknown). Modules don't share top-level consts.
+window.MC_LEGACY_MODEL_LABELS = MC_LEGACY_MODEL_LABELS;
 // Same reason: the persona editor (claydo.js) builds an effort picker and
 // cannot see a module-scoped const.
 window.MC_EFFORT_CHOICES = MC_EFFORT_CHOICES;

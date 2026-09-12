@@ -1034,33 +1034,42 @@ try {
     : fail(`expected an honest "no project yet" line with no guessed default, got "${c11NoProject}"`);
 
   // ── C13: tell the user when the ENGINE won't work (Ron, MC-871 follow-up)
-  // — an unresolvable engine is an inline ERROR that blocks Save like the
-  // existing structural problems (Item A), an unauthenticated provider is a
-  // non-blocking WARNING (Item B), and `unknown` must never trip that
-  // warning (the brief's own "unknown is not unauthenticated" line). ──────
+  // — all three engine problems are non-blocking WARNINGS on the card, never
+  // a Save-blocking error: an empty model chain runs on the CLI default
+  // (agent_runtime.py only appends --model `if model:`), and a catalog miss
+  // is unproven (model_supported: "the user may legitimately type a model id
+  // newer than our catalog"). `unknown` auth must never warn at all, and a
+  // retired-but-still-valid legacy id must never be called dead. ──────────
   await page.evaluate(({ pid }) => {
-    // Item A case 1: a project that has no agent_model/agent_effort of its
-    // own -- "smoke_other" is otherwise untouched by every prior section,
-    // so mutating it here can't disturb an already-asserted case.
+    // Case 1: a project with no agent_model/agent_effort of its own --
+    // "smoke_other" is otherwise untouched by every prior section, so
+    // mutating it here can't disturb an already-asserted case.
     const proj = allProjects.find((p) => p.id === 'smoke_other');
     proj.agent_model = ''; proj.agent_effort = '';
     const st = window._wfEntry()._wf;
-    // Item A case 2: a persona pinning a model id its provider catalog no
-    // longer lists. Seed a fake catalog directly -- /api/agent/providers is
-    // aborted in this harness, so _agentProviders is otherwise null and the
-    // "unknown, can't judge" branch would (correctly) stay silent forever.
+    // Case 2: a persona pinning a model id its provider catalog no longer
+    // lists, and (case 3) one pinning a RETIRED-but-valid legacy id that
+    // must stay silent. Seed a fake catalog directly -- /api/agent/providers
+    // is aborted in this harness, so _agentProviders is otherwise null and
+    // the "unknown, can't judge" branch would (correctly) stay silent.
     _agentProviders = [{ name: 'claude', display_name: 'Claude', installed: true,
       models: [{ id: 'claude-sonnet-5', label: 'Sonnet 5' }] }];
     st.bench = st.bench.concat([{
       name: 'retired-model-agent', scope: 'global', display: 'Retiro', avatar: '',
       description: '', skills: [], provider: 'claude', model: 'claude-retired-1', effort: '',
       project_id: '', project_name: '', rooms: [],
+    }, {
+      name: 'legacy-model-agent', scope: 'global', display: 'Legacio', avatar: '',
+      description: '', skills: [], provider: 'claude', model: 'claude-opus-4-8', effort: '',
+      project_id: '', project_name: '', rooms: [],
     }]);
     const noEngine = { type: 'agent', name: 'c13-noengine', x: -1300, y: -700,
       project_id: 'smoke_other', character: 'global:plain-agent', prompt: 'test', outcomes: [] };
     const deadModel = { type: 'agent', name: 'c13-deadmodel', x: -960, y: -700,
       project_id: pid, character: 'global:retired-model-agent', prompt: 'test', outcomes: [] };
-    st.def.nodes = (st.def.nodes || []).concat([noEngine, deadModel]);
+    const legacyModel = { type: 'agent', name: 'c13-legacymodel', x: -620, y: -700,
+      project_id: pid, character: 'global:legacy-model-agent', prompt: 'test', outcomes: [] };
+    st.def.nodes = (st.def.nodes || []).concat([noEngine, deadModel, legacyModel]);
   }, { pid: PID });
   // _wfSave() calls _wfSyncDomToModel() FIRST, which reads def.name back
   // from the real #wfb-name input -- setting st.def.name directly on the
@@ -1068,25 +1077,41 @@ try {
   // exits at its own "Name the workflow" gate, never reaching the validator
   // this section means to exercise). Type it into the DOM instead.
   await setValue(page, '#wfb-name', 'Smoke C13');
-  const c13NoEngine = await page.evaluate(() => {
+  const c13Save = await page.evaluate(() => {
     const st = window._wfEntry()._wf;
     window._wfSave();
-    return { runErrors: st.runErrors };
+    return { runErrors: Object.assign({}, st.runErrors) };
   });
-  await page.waitForTimeout(80);
-  /No engine: .*pins nothing.*"Some Other Project".*no default model/.test(c13NoEngine.runErrors['c13-noengine'] || '')
-    ? ok(`Save blocked an unresolvable engine (nothing pinned, project has no default): "${c13NoEngine.runErrors['c13-noengine']}"`)
-    : fail(`expected a "No engine" error naming the failed tier, got ${JSON.stringify(c13NoEngine.runErrors['c13-noengine'])}`);
-  /No engine: "claude-retired-1" is pinned on Retiro but claude no longer offers it/.test(c13NoEngine.runErrors['c13-deadmodel'] || '')
-    ? ok(`Save blocked a pinned model id the provider catalog no longer lists: "${c13NoEngine.runErrors['c13-deadmodel']}"`)
-    : fail(`expected a "no longer offers it" error for the dead pinned model, got ${JSON.stringify(c13NoEngine.runErrors['c13-deadmodel'])}`);
-  const c13ErrorCards = await page.evaluate(() => ['c13-noengine', 'c13-deadmodel'].map(
-    (n) => !!document.querySelector(`.wfb-node[data-name="${n}"].wfb-node-error`)));
-  c13ErrorCards.every(Boolean)
-    ? ok('both unresolvable-engine cards render with the same red wfb-node-error outline as a structural problem')
-    : fail(`expected both cards to carry wfb-node-error, got ${JSON.stringify(c13ErrorCards)}`);
+  await page.waitForTimeout(120);
+  // The load-bearing assertion of this whole section: neither engine case is
+  // allowed to block Save, because neither proves the step cannot run.
+  (!c13Save.runErrors['c13-noengine'] && !c13Save.runErrors['c13-deadmodel'])
+    ? ok('an empty model chain and an off-catalog pin both SAVE — neither is refused as a hard error')
+    : fail(`engine problems must not block Save, got ${JSON.stringify(c13Save.runErrors)}`);
+  const c13Warnings = await page.evaluate(() => {
+    const read = (n) => {
+      const el = document.querySelector(`.wfb-node[data-name="${n}"]`);
+      if (!el) return null;
+      const w = el.querySelector('.wfb-node-inline-warning');
+      return { warn: el.classList.contains('wfb-node-warning'),
+               err: el.classList.contains('wfb-node-error'),
+               text: w ? w.textContent : '' };
+    };
+    return { noengine: read('c13-noengine'), dead: read('c13-deadmodel'), legacy: read('c13-legacymodel') };
+  });
+  (c13Warnings.noengine && c13Warnings.noengine.warn && !c13Warnings.noengine.err
+    && /pins no model.*"Some Other Project" sets no default/.test(c13Warnings.noengine.text))
+    ? ok(`empty chain warns honestly about CLI drift, in amber: "${c13Warnings.noengine.text}"`)
+    : fail(`expected an amber CLI-default warning, got ${JSON.stringify(c13Warnings.noengine)}`);
+  (c13Warnings.dead && c13Warnings.dead.warn && !c13Warnings.dead.err
+    && /"claude-retired-1" is pinned on Retiro but claude no longer lists it/.test(c13Warnings.dead.text))
+    ? ok(`off-catalog pin warns without asserting it is dead: "${c13Warnings.dead.text}"`)
+    : fail(`expected an amber off-catalog warning, got ${JSON.stringify(c13Warnings.dead)}`);
+  (c13Warnings.legacy && !c13Warnings.legacy.warn && !c13Warnings.legacy.text)
+    ? ok('a retired-but-valid legacy id (claude-opus-4-8, MC_LEGACY_MODEL_LABELS) is never called dead')
+    : fail(`legacy pinned id must not warn, got ${JSON.stringify(c13Warnings.legacy)}`);
 
-  // Item B: a definite-negative auth status warns (non-blocking); `unknown`
+  // Provider auth: a definite-negative status warns (non-blocking); `unknown`
   // never does. Two fake providers so each starts with a clean cache entry.
   // The response map MUST be set before the first render that touches these
   // providers -- _wfEnsureProviderAuthFresh caches per-provider for 60s, so
@@ -1098,10 +1123,10 @@ try {
     const st = window._wfEntry()._wf;
     st.bench = st.bench.concat([
       { name: 'authbad-agent', scope: 'global', display: 'Badauth', avatar: '',
-        description: '', skills: [], provider: 'authbad', model: '', effort: '',
+        description: '', skills: [], provider: 'authbad', model: 'authbad-1', effort: '',
         project_id: '', project_name: '', rooms: [] },
       { name: 'authunknown-agent', scope: 'global', display: 'Unkauth', avatar: '',
-        description: '', skills: [], provider: 'authunknown', model: '', effort: '',
+        description: '', skills: [], provider: 'authunknown', model: 'authunknown-1', effort: '',
         project_id: '', project_name: '', rooms: [] },
     ]);
     const bad = { type: 'agent', name: 'c13-authbad', x: -1300, y: -500,

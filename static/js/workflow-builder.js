@@ -373,6 +373,11 @@ function _wfModelUnknown(provider, modelId) {
   if (!provRec || !Array.isArray(provRec.models) || !provRec.models.length) return false;
   if (provRec.models.some(x => x.id === modelId)) return false;
   if (provider === 'claude' && (window.MC_MODEL_CHOICES || []).some(x => x[0] === modelId)) return false;
+  // Retired-but-still-valid ids. `MC_LEGACY_MODEL_LABELS` (modal-manager.js)
+  // exists precisely because "an existing project/conversation may be pinned
+  // to one" -- the picker stopped offering claude-opus-4-8, the CLI still
+  // accepts it. Treating those as dead would flag a step that runs fine.
+  if (provider === 'claude' && (window.MC_LEGACY_MODEL_LABELS || {})[modelId]) return false;
   return true;
 }
 
@@ -468,6 +473,36 @@ function _wfProviderAuthWarning(provider) {
   const rec = _wfAuthCache[provider];
   if (!rec || rec.status === 'ok' || rec.status === 'unknown') return '';
   return `This step will fail when the workflow runs — ${provider} is not authenticated (${String(rec.status).replace(/_/g, ' ')}).`;
+}
+
+// The single warning line an agent card shows, highest-signal first. Every
+// one of these is a WARNING and none of them blocks Save — measured, not
+// assumed:
+//   * no model anywhere in the chain is NOT a dead step. `agent_runtime.py`
+//     only appends `--model` when a model is non-empty (`if model:`), and
+//     server.py:86 says of an empty value verbatim: "'' would mean whatever
+//     the CLI defaults to". The step runs; it just runs on a tier that
+//     drifts with the CLI, which is worth saying and not worth refusing.
+//   * a pinned id missing from the catalog is UNPROVEN, not dead.
+//     `AgentRuntime.model_supported` documents the opposite policy for an
+//     explicit pick: "the user may legitimately type a model id newer than
+//     our catalog", and it is deliberately not filtered. Legacy ids are
+//     exempted outright in _wfModelUnknown.
+// So this stays advisory. Blocking Save on either would refuse a workflow
+// that runs fine — a false "no" the user cannot override.
+function _wfEngineWarning(st, node, info) {
+  if (!info) return '';
+  if (!info.resolved && node.project_id) {
+    const projLabel = (info.proj && (info.proj.name || info.proj.id)) || 'its project';
+    const who = info.person ? (info.person.display || info.person.name) : 'This step';
+    return `${who} pins no model and "${projLabel}" sets no default — this step runs on whatever the CLI picks, which changes as the CLI updates.`;
+  }
+  if (info.person && info.person.model && _wfModelUnknown(info.provider, info.person.model)) {
+    const who = info.person.display || info.person.name;
+    return `"${info.person.model}" is pinned on ${who} but ${info.provider} no longer lists it — if it has been retired, this step will fail when the workflow runs.`;
+  }
+  if (info.resolved && info.provider) return _wfProviderAuthWarning(info.provider);
+  return '';
 }
 
 function _wfBenchFiltered(st, search) {
@@ -1650,18 +1685,14 @@ function _wfRenderNode(st, node) {
   // not only as a toast (brief §7) -- st.runErrors is a {nodeName: message}
   // map a validate attempt populates; _wfRender's caller pans the canvas to
   // st.scrollToNode so the red-outlined card is the one already in view.
-  // MC-871 follow-up Item A (unresolvable engine) rides the same map --
-  // _wfValidateGraph now adds those problems too, so no separate wiring here.
   const runError = st.runErrors && st.runErrors[node.name];
-  // MC-871 follow-up Item B: unlike runError, this is NOT gated behind a
-  // Save/Run-now attempt -- the whole point is to warn while the user is
-  // still picking the engine, not only after they try to ship it. Only
-  // checked once the engine itself resolves (an already-broken engine gets
-  // Item A's error, not a second banner on top of it) and suppressed
-  // whenever a hard error is already showing -- "one banner per card", the
-  // same rule _wfApplyRunErrors documents for structural problems.
-  const authWarning = (!runError && engineInfo && engineInfo.resolved && engineInfo.provider)
-    ? _wfProviderAuthWarning(engineInfo.provider) : '';
+  // MC-871 follow-up: the engine warning is NOT gated behind a Save/Run-now
+  // attempt -- the whole point is to warn while the user is still picking
+  // the engine, not only after they try to ship it. Suppressed whenever a
+  // hard error is already showing -- "one banner per card", the same rule
+  // _wfApplyRunErrors documents for structural problems.
+  const authWarning = (!runError && node.type === 'agent')
+    ? _wfEngineWarning(st, node, engineInfo) : '';
   // Change 12a's honesty half: a node with no incoming edges is a ROOT, and
   // mc/workflows.py:656 starts every root "the moment the run starts",
   // REGARDLESS of whether it's in `def.trigger.entry` -- the frontend-only
@@ -3287,7 +3318,7 @@ async function _wfSave() {
   // prompt/project, no options, cycles, broken slot scope) so a violation
   // reads inline on its card before ever reaching the network, not only as a
   // round-tripped 400. The server re-validates regardless (defence in depth).
-  const problems = _wfValidateGraph(def, st);
+  const problems = _wfValidateGraph(def);
   if (problems.length) {
     _wfApplyRunErrors(st, problems);
     showToast(problems[0].message, 5000);
@@ -3394,7 +3425,7 @@ const _WF_ACTION_REQUIRED = {
 // both save and run (R2-D3/D5 defence in depth). Reuses the exact toposort/
 // dominator/broken-slot helpers the save guard already computes, so this can
 // never disagree with what actually gets refused.
-function _wfValidateGraph(def, st) {
+function _wfValidateGraph(def) {
   const nodes = def.nodes || [];
   const edges = def.edges || [];
   const names = nodes.map(n => n.name);
@@ -3408,28 +3439,6 @@ function _wfValidateGraph(def, st) {
       const outcomes = node.outcomes || [];
       if (outcomes.includes('otherwise')) add(node.name, '"otherwise" is reserved, not a usable outcome label.');
       if (new Set(outcomes).size !== outcomes.length) add(node.name, 'Outcome labels must be unique.');
-
-      // MC-871 follow-up (Item A): tell the user when the ENGINE itself
-      // can't run, not just when the graph shape is broken -- a workflow
-      // runs unattended on a cadence, so an unresolvable step doesn't fail
-      // once in front of someone, it fails every cycle into a log nobody
-      // reads. Reuses _wfEngineResolution, the same resolver the canvas
-      // tooltip and the live warning below use, so this can never disagree
-      // with what the hover already told the user. Skipped when there's no
-      // project yet -- that's already the "Needs a project" case above, and
-      // this project already ensures an agent step never reaches a run
-      // without one, so the project-default tier always resolves by then.
-      if (node.project_id && st) {
-        const info = _wfEngineResolution(st, node);
-        if (!info.resolved) {
-          const projLabel = (info.proj && (info.proj.name || info.proj.id)) || 'its project';
-          const who = info.person ? (info.person.display || info.person.name) : 'this step';
-          add(node.name, `No engine: ${who} pins nothing and "${projLabel}" has no default model.`);
-        } else if (info.person && info.person.model && _wfModelUnknown(info.provider, info.person.model)) {
-          const who = info.person.display || info.person.name;
-          add(node.name, `No engine: "${info.person.model}" is pinned on ${who} but ${info.provider} no longer offers it.`);
-        }
-      }
     } else if (node.type === 'approval') {
       const options = node.options || [];
       if (!options.length) add(node.name, 'Needs at least one option.');
@@ -3471,7 +3480,7 @@ async function _wfRunNow() {
   _wfSyncDomToModel(entry);
   const st = entry._wf;
   if (!st.workflowId) { showToast('Save the workflow before running it.', 4000); return; }
-  const problems = _wfValidateGraph(st.def, st);
+  const problems = _wfValidateGraph(st.def);
   if (problems.length) {
     _wfApplyRunErrors(st, problems);
     showToast(problems[0].message, 5000);
