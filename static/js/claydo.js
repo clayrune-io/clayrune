@@ -887,13 +887,19 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       <div class="claydo-save-scroll">
       <label>1. Name</label>
       <input id="claydo-save-name" type="text" spellcheck="false" value="${esc(name)}">
-      <label>2. Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
+      <label>2. Goes by <span class="claydo-save-hint">(what it calls itself — chosen from the role, edit freely)</span></label>
+      <input id="claydo-save-agent-name" type="text" maxlength="32" spellcheck="false" placeholder="choosing…">
+      <label>3. Face <span class="claydo-save-hint">(a figure, or any emoji — chosen from the role, edit freely)</span></label>
+      <div id="claydo-save-figs" class="persona-fig-row"></div>
+      <input id="claydo-save-avatar" type="text" maxlength="40" spellcheck="false" placeholder="choosing…">
+      <div class="claydo-save-voice-status" id="claydo-save-identity-status">Choosing a name and a face for this role&hellip;</div>
+      <label>4. Description <span class="claydo-save-hint">(when should the agent use it?)</span></label>
       <input id="claydo-save-desc" type="text" value="${esc(description)}">
-      <label>3. Where</label>
+      <label>5. Where</label>
       <select id="claydo-save-scope">
         <option value="global">All my projects (global)</option>
       </select>
-      <label>4. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
+      <label>6. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
       <div class="claydo-save-voice-status" id="claydo-save-voice-status">Writing a voice for this role&hellip;</div>
       <textarea id="claydo-save-voice" class="claydo-save-voice" spellcheck="true" rows="7"
         placeholder="## Voice&#10;&#10;Concrete speech habits go here once generated — or write your own."
@@ -938,6 +944,15 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
 
   const goBtn = panel.querySelector('#claydo-save-go');
 
+  // Two generations run at once on open (voice below, identity further down)
+  // and Save must wait for BOTH to settle — a fast click while either is still
+  // in flight could save a hire with an empty voice or a blank name/face
+  // nobody saw generate. Each holds the button disabled for as long as it is
+  // running; Save only re-enables once nothing is left pending.
+  let _genPending = 0;
+  const _beginGen = () => { _genPending++; goBtn.disabled = true; };
+  const _endGen = () => { _genPending = Math.max(0, _genPending - 1); if (!_genPending) goBtn.disabled = false; };
+
   // ── Voice generation (MC-943) ─────────────────────────────────────────
   // Runs automatically on open — "in singular flow" means the user is never
   // required to click a separate button to get one, unlike the post-hoc
@@ -953,7 +968,7 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   };
   const runVoiceGen = async () => {
     regenBtn.disabled = true;
-    goBtn.disabled = true;
+    _beginGen();
     setVoiceStatus('Writing a voice for this role…', false);
     const descNow = panel.querySelector('#claydo-save-desc').value.trim() || description;
     try {
@@ -974,11 +989,74 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
         + '). Write one by hand, or try Regenerate again.', true);
     } finally {
       regenBtn.disabled = false;
-      goBtn.disabled = false;
+      _endGen();
     }
   };
   regenBtn.onclick = runVoiceGen;
   runVoiceGen();
+
+  // ── Identity suggestion (MC-871 defect B) ────────────────────────────
+  // A hire arrives with a name and a face already chosen, same singular-flow
+  // reasoning as Voice above — the persona editor's post-hoc "Let it choose"
+  // buttons are for CHANGING an existing persona's identity later, not for
+  // the first one. /api/characters/identity never comes back empty (it falls
+  // back to a deterministic, roster-deduped pick rather than a blank), so
+  // this never needs its own error state — just fill the fields once it
+  // answers, same as Voice.
+  const identityStatusEl = panel.querySelector('#claydo-save-identity-status');
+  const agentNameInput = panel.querySelector('#claydo-save-agent-name');
+  const avatarInput = panel.querySelector('#claydo-save-avatar');
+  const figsRow = panel.querySelector('#claydo-save-figs');
+  const setChosenFace = (v) => {
+    avatarInput.value = v;
+    figsRow.querySelectorAll('.pe-fig').forEach(
+      (e) => e.classList.toggle('sel', e.dataset.face === v));
+  };
+  (async () => {
+    let figs = [];
+    try {
+      const r = await fetch(API_BASE + '/api/avatars');
+      figs = (await r.json()).figures || [];
+    } catch (e) { /* the picker just stays empty; typing an emoji still works */ }
+    if (!figs.length) return;
+    figsRow.innerHTML = figs.map((n) => {
+      const v = 'fig:' + n;
+      return `<button type="button" class="pe-fig" data-face="${esc(v)}"
+        title="${esc(n)}">${window.avatarHTML(v, 38)}</button>`;
+    }).join('');
+    figsRow.querySelectorAll('.pe-fig').forEach((b) => {
+      b.onclick = () => setChosenFace(b.dataset.face);
+    });
+  })();
+  const runIdentityGen = async () => {
+    _beginGen();
+    const descNow = panel.querySelector('#claydo-save-desc').value.trim() || description;
+    try {
+      const res = await fetch(API_BASE + '/api/characters/identity', {
+        method: 'POST',
+        headers: {'Content-Type': 'application/json'},
+        body: JSON.stringify({
+          description: descNow, body: baseBody,
+          scope: scopeSel.value === 'global' ? 'global' : 'project',
+          project_id: scopeSel.value === 'global' ? null : scopeSel.value,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || `identity suggestion failed (${res.status})`);
+      agentNameInput.value = data.agent_name || '';
+      if (data.avatar) setChosenFace(data.avatar);
+      identityStatusEl.textContent = 'Chosen — edit freely before saving.';
+    } catch (e) {
+      // Same non-blocking failure discipline as Voice: an honest message, two
+      // empty/editable fields, and a hire that still completes.
+      identityStatusEl.textContent = 'Could not auto-choose a name or face ('
+        + (e.message || e) + '). Set them by hand.';
+      identityStatusEl.classList.add('err');
+    } finally {
+      _endGen();
+    }
+  };
+  runIdentityGen();
 
   let overwrite = false;
   goBtn.onclick = async () => {
@@ -1001,6 +1079,8 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
           name: nameVal, description: descVal, body,
           scope: isGlobal ? 'global' : 'project',
           project_id: isGlobal ? null : whereVal,
+          agent_name: agentNameInput.value.trim(),
+          avatar: avatarInput.value.trim(),
           overwrite,
         }),
       });

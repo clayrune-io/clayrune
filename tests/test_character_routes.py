@@ -81,6 +81,17 @@ class TestCreate:
         assert r.status_code == 201
         assert (client.global_dir / 'code-reviewer.md').is_file()
 
+    def test_agent_name_and_avatar_are_stored_at_creation(self, client):
+        """MC-871 defect B: the create route accepted `avatar` in the POST
+        body but silently dropped `agent_name` — a hire could arrive with a
+        face but never a name, no matter what the save panel sent."""
+        r = client.post('/api/characters',
+                        json=_payload(agent_name='Vector', avatar='fig:courier'))
+        assert r.status_code == 201
+        rec = r.get_json()
+        assert rec['agent_name'] == 'Vector'
+        assert rec['avatar'] == 'fig:courier'
+
     @pytest.mark.parametrize('over,frag', [
         ({'name': 'Bad Name!'}, 'kebab-case'),
         ({'description': '  '}, 'description is required'),
@@ -626,3 +637,95 @@ class TestSelfChosenFace:
                     json={'project_id': 'tchar'})
         assert 'do NOT reuse' in seen['instruction']
         assert 'scholar' in seen['instruction'].split('do NOT reuse')[1]
+
+
+# ── Identity suggestion (MC-871 defect B) ────────────────────────────────────
+# A hire has to land on the roster with a name and a face already picked —
+# unlike /name and /avatar (a deliberate, retryable manual action on an
+# EXISTING character), this runs on a draft with no scope/name yet, same
+# reasoning as /voice, and it must never come back empty: a model failure or a
+# collision falls back to a deterministic pick rather than shipping a blank.
+
+class TestSuggestIdentity:
+
+    @pytest.fixture(autouse=True)
+    def _figures(self, monkeypatch):
+        from mc import characters as ch
+        monkeypatch.setattr(ch, 'list_figures',
+                            lambda: ['courier', 'scholar', 'lamplighter'])
+
+    def test_suggests_a_name_and_a_face(self, client):
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda model, prompt, payload: (
+            'Vector' if 'Choose the name' in prompt else 'courier')
+        r = client.post('/api/characters/identity',
+                        json={'description': 'strict code reviewer',
+                              'body': 'You are a strict senior code reviewer.'})
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data['agent_name'] == 'Vector'
+        assert data['avatar'] == 'fig:courier'
+
+    def test_no_description_and_no_body_is_a_400(self, client):
+        r = client.post('/api/characters/identity', json={})
+        assert r.status_code == 400
+
+    def test_model_failure_falls_back_rather_than_502ing(self, client):
+        """Unlike /name and /avatar, a hire cannot land with a blank identity —
+        there is no later manual retry built into the save panel flow."""
+        from mc.blueprints import character_routes as cr
+
+        def _boom(*a, **k):
+            raise RuntimeError('scribe claude call failed (timeout)')
+        cr._scribe_call = _boom
+        r = client.post('/api/characters/identity',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data['agent_name']
+        assert data['avatar'].startswith('fig:')
+
+    def test_a_name_that_collides_with_the_live_roster_is_not_shipped(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='reviewer', model='claude-fable-5')
+        client.post('/api/characters/project/reviewer/name',
+                    json={'project_id': 'tchar', 'agent_name': 'Vector'})
+        cr._scribe_call = lambda model, prompt, payload: (
+            'Vector' if 'Choose the name' in prompt else 'courier')
+        r = client.post('/api/characters/identity',
+                        json={'description': 'a reviewer', 'body': 'x',
+                              'scope': 'project', 'project_id': 'tchar'})
+        assert r.status_code == 200
+        assert r.get_json()['agent_name'] != 'Vector'
+
+    def test_a_face_that_collides_with_the_live_roster_is_not_shipped(self, client):
+        from mc.blueprints import character_routes as cr
+        _mk(client, name='scout', model='claude-fable-5')
+        client.post('/api/characters/project/scout/avatar',
+                    json={'project_id': 'tchar', 'avatar': 'fig:courier'})
+        cr._scribe_call = lambda model, prompt, payload: (
+            'Vector' if 'Choose the name' in prompt else 'courier')
+        r = client.post('/api/characters/identity',
+                        json={'description': 'a reviewer', 'body': 'x',
+                              'scope': 'project', 'project_id': 'tchar'})
+        assert r.status_code == 200
+        assert r.get_json()['avatar'] != 'fig:courier'
+
+    def test_never_persists_anything(self, client):
+        from mc.blueprints import character_routes as cr
+        cr._scribe_call = lambda *a, **k: 'courier'
+        client.post('/api/characters/identity',
+                    json={'description': 'a reviewer', 'body': 'x'})
+        assert not client.global_dir.exists() or not list(client.global_dir.glob('*.md'))
+
+    def test_no_figures_on_this_install_still_returns_a_name(self, client, monkeypatch):
+        from mc import characters as ch
+        from mc.blueprints import character_routes as cr
+        monkeypatch.setattr(ch, 'list_figures', lambda: [])
+        cr._scribe_call = lambda *a, **k: 'Vector'
+        r = client.post('/api/characters/identity',
+                        json={'description': 'a reviewer', 'body': 'x'})
+        assert r.status_code == 200
+        data = r.get_json()
+        assert data['agent_name']
+        assert data['avatar'] == ''

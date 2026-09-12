@@ -651,7 +651,13 @@ function floorFigDown(e, pid, scope, name, display, avatar) {
       if (_hireDrag === st && !st.active) _floorHireActivate(st, st.startX, st.startY);
     }, HIRE_LONG_PRESS_MS);
   }
-  try { el.setPointerCapture(e.pointerId); } catch (err) { /* best-effort */ }
+  // Capture is NOT taken here. Chromium retargets `click` to whichever element
+  // holds pointer capture — so grabbing it on every pointerdown silently ate
+  // every click on a card's children (the edit pencil, "put in a room", the
+  // figure itself) even for a plain click that was never a drag, because the
+  // click landed on the capturing card instead of the button underneath it.
+  // Capture only starts in _floorHireActivate(), the same moment
+  // `.fl-hire-dragging` is added — a plain click never reaches either.
   // On WINDOW, not on `el`. The gesture outlives the node: the Floor re-renders
   // its whole body on every poll, the modal can close, a room can empty — and a
   // listener bound to the card dies with the card, taking the pointerup that
@@ -689,6 +695,11 @@ function _floorHireMove(e) {
 function _floorHireActivate(st, x, y) {
   st.active = true;
   clearTimeout(st.longPressTimer);
+  // Capture belongs here, not at pointerdown (see floorFigDown) — only a real
+  // drag needs pointerup/pointermove to keep targeting `el` once the pointer
+  // leaves it; a plain click must never be at risk of being retargeted away
+  // from the element the user actually clicked.
+  try { st.el.setPointerCapture(st.pointerId); } catch (err) { /* best-effort */ }
   if (navigator.vibrate) { try { navigator.vibrate(15); } catch (e) { /* not every device */ } }
   document.body.classList.add('hire-active');
   // Only NOW does the card stop panning (app.css :7715) — before activation

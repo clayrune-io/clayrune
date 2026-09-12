@@ -8,6 +8,7 @@ the UI word for them is "Characters" — never "agents", which is taken by
 MC's dispatched session.
 """
 
+import random
 import re
 from typing import Any, Callable
 
@@ -130,6 +131,7 @@ def create_character_route():
         rec = _chars.write_character(scope, name, description, body,
                                      project_path=project_path,
                                      overwrite=overwrite, engine=engine,
+                                     agent_name=data.get('agent_name'),
                                      avatar=data.get('avatar'),
                                      skills=data.get('skills'))
     except FileExistsError as e:
@@ -240,6 +242,106 @@ def generate_voice_route():
         return jsonify({'error': 'the model did not return a usable voice section — '
                                  'edit one by hand, or try again'}), 502
     return jsonify({'voice': voice})
+
+
+# ── Identity suggestion — a new hire arrives already named and faced ────────
+# MC-871 defect B: the save panel above generated a Voice section automatically
+# but left "Goes by" and "Face" (the persona editor's own fields, see
+# openPersonaEditor in claydo.js) unset — a hire landed on the roster with no
+# name and no avatar, and picking either was a manual trip into the editor
+# after the fact. This runs the same self-naming/self-facing prompts as the
+# `/name` and `/avatar` routes below (so a suggested identity and a
+# later-repicked one come from the same voice), but for a DRAFT that has no
+# scope/name yet — same reasoning as /voice above.
+#
+# Unlike /name and /avatar, this never 502s: those are a deliberate manual
+# retry ("try again, or pick one by hand"), but a hire has to land with SOME
+# identity, so a model failure or a same-name/same-face collision falls back to
+# a deterministic pick from a curated pool rather than leaving the field blank.
+# The fallback POOL was hand-picked to sit next to the existing roster's
+# register (short, plain, human-sounding) rather than the generic AI-assistant
+# names _NAME_PROMPT already warns the model away from.
+_FALLBACK_NAMES = [
+    'Odell', 'Fitch', 'Marnie', 'Callan', 'Rook', 'Sable', 'Perry', 'Wynn',
+    'Blythe', 'Corin', 'Faye', 'Grady', 'Idris', 'Junot', 'Kestrel', 'Lowell',
+    'Merrin', 'Nash', 'Orla', 'Piper', 'Rhys', 'Sloane', 'Tamsin', 'Vance',
+    'Wilder', 'Yara', 'Zeke',
+]
+
+
+def _fallback_name(taken):
+    taken_cf = {t.casefold() for t in taken}
+    pool = [n for n in _FALLBACK_NAMES if n.casefold() not in taken_cf]
+    return random.choice(pool or _FALLBACK_NAMES)
+
+
+def _fallback_avatar(figures, taken):
+    taken_cf = {t.casefold() for t in taken}
+    pool = [f for f in figures if f.casefold() not in taken_cf]
+    fig = random.choice(pool or figures)
+    return _chars.AVATAR_FIG_PREFIX + fig
+
+
+@bp.route('/api/characters/identity', methods=['POST'])
+def suggest_identity_route():
+    """Suggest a display name + face for a character still being hired.
+
+    Same draft-only shape as /voice: takes description/body directly, never
+    persists, and the save panel folds the result into the create POST. Always
+    returns a usable {agent_name, avatar} pair — see the fallback note above.
+    """
+    data = request.get_json(silent=True) or {}
+    description = (data.get('description') or '').strip()
+    body = (data.get('body') or '').strip()
+    if not description and not body:
+        return jsonify({'error': 'need a description or body to suggest an identity from'}), 400
+
+    scope = (data.get('scope') or 'global').strip()
+    project_path, err = _resolve_project_path_or_400(scope, data.get('project_id'))
+    if err:
+        return err
+
+    engine_raw = data.get('engine')
+    engine = engine_raw if isinstance(engine_raw, dict) else {}
+    model = (engine.get('model') or '').strip() or state.CONFIG.get('agent_model') or 'sonnet'
+    payload = (f"Role: {description}\n\n{body}")[:6000]
+
+    taken_names = _taken_agent_names(project_path, None)
+    name_prompt = _NAME_PROMPT
+    if taken_names:
+        name_prompt += (
+            "\n- These names are ALREADY TAKEN by other agents on this "
+            "machine: " + ", ".join(taken_names) + ". Do not reuse any of "
+            "them, and do not pick anything that differs from one by only a "
+            "letter or two — the roster has to be readable at a glance.")
+    try:
+        raw_name = _scribe_call(model, name_prompt, payload)
+        agent_name = _chars.clean_agent_name(raw_name)
+    except Exception as e:
+        _log(f"[characters] identity suggestion (name) failed, falling back: {e}")
+        agent_name = ''
+    if not agent_name or agent_name.casefold() in {t.casefold() for t in taken_names}:
+        agent_name = _fallback_name(taken_names)
+
+    figures = _chars.list_figures()
+    taken_figs = _taken_avatars(project_path, None)
+    avatar = ''
+    if figures:
+        face_prompt = _FACE_PROMPT + "\n\nFigures available: " + ", ".join(figures)
+        if taken_figs:
+            face_prompt += ("\n\nAlready worn by other agents on this machine "
+                            "— do NOT reuse any of these: " + ", ".join(taken_figs))
+        try:
+            raw_face = _scribe_call(model, face_prompt, payload)
+            avatar = _resolve_face(raw_face, figures)
+        except Exception as e:
+            _log(f"[characters] identity suggestion (face) failed, falling back: {e}")
+            avatar = ''
+        chosen_fig = _chars.avatar_figure(avatar)
+        if not avatar or (chosen_fig and chosen_fig.casefold() in {t.casefold() for t in taken_figs}):
+            avatar = _fallback_avatar(figures, taken_figs)
+
+    return jsonify({'agent_name': agent_name, 'avatar': avatar})
 
 
 @bp.route('/api/characters/<scope>/<name>')
