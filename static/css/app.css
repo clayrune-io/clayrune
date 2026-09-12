@@ -8837,6 +8837,37 @@
   .wfb-prompt-inset { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px 6px; margin: 2px 0 6px; }
   .wfb-prompt-inset .wfb-prompt { background: var(--surface); }
   .wfb-prompt-inset .wfb-insert-select { margin-top: 6px; }
+  /* MC-871 agent-card pass: the prompt collapses behind this row by default
+     (Ron: an always-visible dimmed textarea per card is a wall of grey text
+     on a multi-step canvas). Same tinted-inset treatment as the expanded
+     panel above so the collapsed state still reads as "this is the prompt
+     control", not a bare row of plain text. */
+  .wfb-prompt-collapsed {
+    display: flex; align-items: center; gap: 6px; background: var(--surface2); border: 1px solid var(--border);
+    border-radius: 7px; padding: 5px 8px; margin: 2px 0 6px;
+  }
+  /* The collapsed row only ever renders for a NON-empty, non-broken prompt --
+     an empty prompt or a live broken slot ref forces the panel open instead
+     (_wfPromptForceOpen), so there is no "reads as fine but secretly isn't"
+     collapsed state to style here. */
+  .wfb-prompt-summary {
+    flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    font-size: 11.5px; color: var(--text-dim, var(--text-faint));
+  }
+  .wfb-prompt-toggle {
+    flex-shrink: 0; background: transparent; border: none; color: var(--text-faint); cursor: pointer;
+    font-family: inherit; font-size: 11px; padding: 2px 4px;
+  }
+  .wfb-prompt-toggle:hover { color: var(--accent); }
+  /* Sits inside .wfb-prompt-inset when forced open by a live error, so it
+     needs its own top margin rather than relying on the collapsed row's flex
+     gap. */
+  .wfb-prompt-inset .wfb-prompt-toggle { display: block; margin-top: 4px; }
+  /* Change 2 (Ron: "'Insert' and some other unclear options -- not sure what
+     the function of that is"): a bare row of `{{...}}` chips read as more of
+     the same unlabelled UI. This says plainly what they are -- refs already
+     typed into the field, not a second list of things to insert. */
+  .wfb-slot-chips-label { font-size: 10px; color: var(--text-faint); align-self: center; }
   /* The action card's own description + dimmed identifier, under its plain-
      label select (MC-871 label pass) -- the id stays visible in small type
      because validation errors still name it ("action must be one of

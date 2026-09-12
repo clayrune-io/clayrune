@@ -1644,6 +1644,127 @@ try {
   if (uncaught3.length) uncaught3.forEach((e) => fail('uncaught exception in the cadence trigger flow: ' + e));
   await ctx3.close();
 
+  // ── MC-871 agent-card pass: the prompt collapse/expand (Ron: "why show the
+  // prompt in the first place?" -- an always-visible dimmed textarea per card
+  // is a wall of grey text on a multi-step canvas). Covers: collapses/reopens
+  // on the user's own toggle, the expand state survives a re-render in BOTH
+  // directions, an empty prompt is never hidden behind the collapse, and a
+  // reference that becomes illegal (a rename) forces the panel back open with
+  // no way to hide it. ─────────────────────────────────────────────────────
+  const ctx4 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page4 = await ctx4.newPage();
+  const page4Errors = [];
+  page4.on('pageerror', (e) => page4Errors.push(e.message || String(e)));
+  await page4.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    return route.abort();
+  });
+  await page4.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page4.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await newWorkflow(page4, PID);
+
+  const vpBox4 = await (await page4.$('#wfb-canvas-viewport')).boundingBox();
+  await dragPalettePersonTo(page4, 'Tobin', vpBox4.x + 140, vpBox4.y + 200);
+  const c4Name1 = await page4.$eval('.wfb-node', el => el.dataset.name);
+  (await page4.$(`.wfb-node[data-name="${c4Name1}"] .wfb-prompt`))
+    ? ok('a freshly-dropped, empty-prompt step opens straight to the editable textarea — never a collapsed summary')
+    : fail('a fresh empty-prompt step rendered collapsed instead of forcing its panel open');
+  (await page4.$(`.wfb-node[data-name="${c4Name1}"] .wfb-prompt-toggle`))
+    ? fail('an empty prompt still offered a collapse control — an unfixed error must not be hideable')
+    : ok('an empty prompt offers no "Hide prompt" control -- the error cannot be collapsed away');
+  await setValue(page4, `.wfb-node[data-name="${c4Name1}"] .wfb-name`, 'triage');
+  await setValue(page4, `.wfb-node[data-name="${c4Name1}"] .wfb-prompt`, 'Decide whether this is worth drafting.');
+
+  // Force a sync+render via an action unrelated to the prompt panel itself
+  // (same technique the Trigger-position regression guard above uses) --
+  // now that the prompt is non-empty, this is the first render where the
+  // collapse control is actually reachable.
+  await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
+  const c4HideBtn = await page4.$(`.wfb-node[data-name="triage"] .wfb-prompt-toggle`);
+  c4HideBtn ? ok('once filled in, the prompt panel offers a "Hide prompt" control')
+            : fail('expected a collapse control on a filled-in, valid prompt panel');
+  await c4HideBtn.click();
+  await page4.waitForTimeout(80);
+  const c4CollapsedSummary = await page4.$eval('.wfb-node[data-name="triage"] .wfb-prompt-summary', el => el.textContent).catch(() => null);
+  (await page4.$('.wfb-node[data-name="triage"] .wfb-prompt')) === null && c4CollapsedSummary === 'Decide whether this is worth drafting.'
+    ? ok(`clicking "Hide prompt" collapsed the panel to a one-line summary: "${c4CollapsedSummary}"`)
+    : fail(`collapse did not behave as expected (summary=${JSON.stringify(c4CollapsedSummary)})`);
+
+  // Expand state must survive a re-render (file header's own recurring
+  // failure class: "state written but lost on rebuild" -- costs a whole
+  // round here every time it regresses).
+  await dragPalettePersonTo(page4, 'Fenn', vpBox4.x + 460, vpBox4.y + 120);
+  const stillCollapsed = (await page4.$('.wfb-node[data-name="triage"] .wfb-prompt')) === null
+    && !!(await page4.$('.wfb-node[data-name="triage"] .wfb-prompt-summary'));
+  stillCollapsed ? ok('the collapsed state survived an unrelated structural re-render (placing a second block)')
+                 : fail('placing a second block re-expanded a panel the user had explicitly collapsed');
+
+  const c4Name2 = await page4.$eval('.wfb-node:not([data-name="triage"])', el => el.dataset.name);
+  (await page4.$(`.wfb-node[data-name="${c4Name2}"] .wfb-prompt`))
+    ? ok("the second, freshly-dropped node's own empty prompt still opens straight to the textarea")
+    : fail("the second node's empty prompt did not force its panel open");
+
+  // Reopen "triage" and confirm the typed text round-tripped through the
+  // collapse -- collapsing must never lose what was typed.
+  await page4.click('.wfb-node[data-name="triage"] .wfb-prompt-toggle');
+  await page4.waitForTimeout(80);
+  const c4Reopened = await page4.$eval('.wfb-node[data-name="triage"] .wfb-prompt', el => el.value).catch(() => null);
+  c4Reopened === 'Decide whether this is worth drafting.'
+    ? ok('reopening the panel restores the exact text that was there before it was collapsed')
+    : fail(`reopening lost or altered the prompt text: ${JSON.stringify(c4Reopened)}`);
+
+  // ── A reference that BECOMES illegal (brief: "the step was renamed") must
+  // force the panel open and stay legible -- the collapse must never hide it.
+  await dragPortTo(page4,
+    `.wfb-node[data-name="triage"] .wfb-port-out`,
+    `.wfb-node[data-name="${c4Name2}"] .wfb-port-in`);
+  await setValue(page4, `.wfb-node[data-name="${c4Name2}"] .wfb-name`, 'draft');
+  await setValue(page4, `.wfb-node[data-name="${c4Name2}"] .wfb-prompt`, 'Draft from {{steps.triage.output}}.');
+  await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
+  const c4ChipBeforeRename = await page4.$eval('.wfb-node[data-name="draft"] .wfb-slot-chip', el => el.className).catch(() => null);
+  (c4ChipBeforeRename && !c4ChipBeforeRename.includes('wfb-slot-chip-broken'))
+    ? ok('the reference to "triage" reads as valid before the rename')
+    : fail(`expected a valid (non-broken) chip before the rename, got ${JSON.stringify(c4ChipBeforeRename)}`);
+  await page4.click('.wfb-node[data-name="draft"] .wfb-prompt-toggle'); // collapse it -- a valid prompt, nothing forcing it open
+  await page4.waitForTimeout(80);
+  (await page4.$('.wfb-node[data-name="draft"] .wfb-prompt')) === null
+    ? ok('the "draft" panel collapses normally while its reference is still valid')
+    : fail('the "draft" panel did not collapse despite having a valid, filled-in prompt');
+
+  // Rename "triage" -- its edges get repointed (existing behaviour), but the
+  // literal `{{steps.triage.output}}` text inside "draft"'s prompt does not
+  // get rewritten (file header: renames aren't guarded against breaking a
+  // TEXT slot reference elsewhere), so it is now a dangling reference to a
+  // name that no longer exists.
+  await setValue(page4, '.wfb-node[data-name="triage"] .wfb-name', 'triage2');
+  await page4.evaluate(() => { window._wfToggleEnabled(); window._wfToggleEnabled(); });
+  const c4DraftPromptAfterRename = await page4.$(`.wfb-node[data-name="draft"] .wfb-prompt`);
+  c4DraftPromptAfterRename
+    ? ok('renaming an upstream step re-forces the dependent panel open instead of leaving it collapsed')
+    : fail('a reference broken by an upstream rename stayed hidden behind the collapse');
+  const c4BrokenChip = await page4.$eval('.wfb-node[data-name="draft"] .wfb-slot-chip', el => el.className).catch(() => null);
+  (c4BrokenChip && c4BrokenChip.includes('wfb-slot-chip-broken'))
+    ? ok('the now-illegal {{steps.triage.output}} reference is flagged broken, visibly, without being collapsed away')
+    : fail(`expected the chip to read broken after the rename, got ${JSON.stringify(c4BrokenChip)}`);
+  (await page4.$('.wfb-node[data-name="draft"] .wfb-prompt-toggle'))
+    ? fail('a panel forced open by a live broken reference still offered a way to hide it')
+    : ok('no collapse control is offered while the broken reference is live -- it cannot be hidden away');
+
+  const uncaught4 = page4Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught4.length) uncaught4.forEach((e) => fail('uncaught exception in the prompt collapse/expand flow: ' + e));
+  await ctx4.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'

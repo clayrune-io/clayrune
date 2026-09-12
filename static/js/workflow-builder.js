@@ -679,12 +679,17 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
   // there), then tracks the toolbar's disclosure toggle. paletteExpanded
   // tracks the palette's "+N more"/"Show fewer" state (Change 9) -- separate
   // from paletteSearch, which already bypasses the cap on its own.
+  // promptOpen (MC-871 agent-card pass): {nodeName: bool} -- the user's own
+  // disclosure toggle for each agent card's prompt panel (_wfRenderPromptField).
+  // Lives here, not on the DOM, because _wfRender() rebuilds #wfb-body's
+  // innerHTML from scratch on every structural change; _wfSyncDomToModel
+  // migrates a renamed node's key the same way it already repoints edges.
   // _undo/_redo/_lastSnapshot/_savedSnapshot (Change 3): see _wfCheckpointForUndo
   // and _wfStampSavedSnapshot below for how these three stay in sync.
   return { def, workflowId, saving: false, error: error || null, _cardSeq: 0,
            _charLoads: [], viewport: { x: 60, y: 40, scale: 1 }, linkedSchedule: null,
            hintProjectId: hintProjectId || '', bench: [], benchLoaded: false, paletteSearch: '',
-           paletteExpanded: false,
+           paletteExpanded: false, promptOpen: {},
            dirty: false, savedAt: null, runErrors: null, scrollToNode: null,
            descOpen: !!(def.description && String(def.description).trim()),
            _undo: [], _redo: [], _lastSnapshot: null, _savedSnapshot: null };
@@ -1112,21 +1117,45 @@ function _wfLegalInsertSlots(def, nodeName) {
   return { ancestors, prevLegal: parents.length === 1 ? parents[0] : null };
 }
 
+// MC-871 agent-card pass (Ron: "'Insert' and some other unclear options --
+// not sure what is the function of that"). The mechanism is untouched -- the
+// VALUE inserted at the cursor is still the literal `{{steps.NAME.output}}`
+// slot string (_wfInsertSlot reads it verbatim) -- only the visible <option>
+// text changes to plain English, the same value/label split the project
+// picker two lines up already uses. The raw slot string is still one hover
+// away via `title`, for anyone who wants it.
 function _wfInsertControlHTML(def, nodeName, fieldSelector) {
   const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
   const opts = [];
-  if (prevLegal) opts.push('{{prev.output}}');
-  ancestors.forEach(a => opts.push(`{{steps.${a}.output}}`));
-  opts.push('{{trigger.fired_at}}', '{{run.id}}');
-  return `<select class="wfb-insert-select" title="Insert a slot at the cursor"
+  if (prevLegal) opts.push({ value: '{{prev.output}}', label: "Previous step's result" });
+  ancestors.forEach(a => opts.push({ value: `{{steps.${a}.output}}`, label: `${a}'s result` }));
+  opts.push({ value: '{{trigger.fired_at}}', label: 'When the trigger fired' });
+  opts.push({ value: '{{run.id}}', label: "This run's ID" });
+  return `<select class="wfb-insert-select" title="Pull an earlier step's result into this field, at the cursor"
       onchange="_wfInsertSlot(event,'${_wfJsStrEsc(nodeName)}','${_wfJsStrEsc(fieldSelector)}')">
-    <option value="">Insert &#9662;</option>
-    ${opts.map(v => `<option value="${esc(v)}">${esc(v)}</option>`).join('')}
+    <option value="">Use an earlier step's result&hellip;</option>
+    ${opts.map(o => `<option value="${esc(o.value)}" title="${esc(o.value)}">${esc(o.label)}</option>`).join('')}
   </select>`;
 }
 
 const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
 
+// Single source of truth for "is this one ref legal here" -- shared by the
+// read-only chip legend below and _wfTextHasBrokenSlotRef (the collapse
+// force-open check), so the two can never disagree about what counts as
+// broken (same guarantee the file header already documents for the dropdown
+// vs. the legend).
+function _wfSlotRefBroken(ref, legalSteps, prevLegal) {
+  if (ref === 'prev.output') return !prevLegal;
+  if (ref === 'trigger.fired_at' || ref === 'run.id') return false;
+  const stepM = /^steps\.([a-zA-Z0-9_]+)\./.exec(ref);
+  return !stepM || !legalSteps.has(stepM[1]);
+}
+
+// Read-only legend of the refs ALREADY TYPED into `text` (not the legal-to-
+// insert list -- that's the dropdown above), each flagged valid/broken. The
+// "In this text:" label exists because a bare row of `{{...}}` strings next
+// to an "Insert" control read, to Ron, as more of the same unexplained UI.
 function _wfSlotChipsHTML(def, nodeName, text) {
   const refs = [];
   _WF_SLOT_ANY_RE.lastIndex = 0;
@@ -1136,17 +1165,28 @@ function _wfSlotChipsHTML(def, nodeName, text) {
   const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
   const legalSteps = new Set(ancestors);
   const chip = (ref) => {
-    let broken;
-    if (ref === 'prev.output') broken = !prevLegal;
-    else if (ref === 'trigger.fired_at' || ref === 'run.id') broken = false;
-    else {
-      const stepM = /^steps\.([a-zA-Z0-9_]+)\./.exec(ref);
-      broken = !stepM || !legalSteps.has(stepM[1]);
-    }
+    const broken = _wfSlotRefBroken(ref, legalSteps, prevLegal);
     return `<span class="wfb-slot-chip${broken ? ' wfb-slot-chip-broken' : ''}"
       title="${broken ? 'Not reachable on every path into this step' : 'Valid here'}">{{${esc(ref)}}}</span>`;
   };
-  return `<div class="wfb-slot-chips">${refs.map(chip).join('')}</div>`;
+  return `<div class="wfb-slot-chips"><span class="wfb-slot-chips-label">In this text:</span>${refs.map(chip).join('')}</div>`;
+}
+
+// Live broken-ref check, independent of any Save/Run-now attempt -- a rename
+// or an edge change can make a reference illegal the instant it happens, and
+// the collapsed prompt panel must not be the thing that hides that (brief:
+// "the existing broken-slot detection is load-bearing; do not let the
+// collapse hide it"). Reuses _wfSlotRefBroken so this can never disagree
+// with what the chip legend itself would flag.
+function _wfTextHasBrokenSlotRef(def, nodeName, text) {
+  _WF_SLOT_ANY_RE.lastIndex = 0;
+  let m;
+  const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
+  const legalSteps = new Set(ancestors);
+  while ((m = _WF_SLOT_ANY_RE.exec(text || ''))) {
+    if (_wfSlotRefBroken(m[1], legalSteps, prevLegal)) return true;
+  }
+  return false;
 }
 
 // Writes at the field's caret, same "sync first" discipline every other
@@ -1228,6 +1268,17 @@ function _wfSyncDomToModel(entry) {
       renameMap[oldName] = node.name;
     }
   });
+  // promptOpen is keyed by node name (see _wfFreshState) -- a rename that
+  // isn't repointed here would silently reset that card's disclosure state
+  // to collapsed the next render, since the old key would no longer match.
+  if (entry._wf.promptOpen) {
+    Object.keys(renameMap).forEach((oldName) => {
+      if (Object.prototype.hasOwnProperty.call(entry._wf.promptOpen, oldName)) {
+        entry._wf.promptOpen[renameMap[oldName]] = entry._wf.promptOpen[oldName];
+        delete entry._wf.promptOpen[oldName];
+      }
+    });
+  }
   return renameMap;
 }
 
@@ -1768,6 +1819,88 @@ function _wfRenderVocabRows(st, node, kind) {
   return `${rows}<button class="wfb-add-btn wfb-vocab-add" onclick="${addFn}('${_wfJsStrEsc(node.name)}')">+ ${kind}</button>${otherwiseRow}`;
 }
 
+// MC-871 agent-card pass (Ron: "why show [the prompt] in the first place?").
+// A card on a multi-step canvas is competing for attention against every
+// other card; an always-visible, dimmed prompt textarea reads as a wall of
+// grey text ahead of the thing the card is actually for -- who runs, on
+// what, wired to what. Collapsed by default behind _wfTogglePromptOpen's
+// disclosure, with two cases that force it open regardless of the user's own
+// toggle -- both are "an error is live right now", never a soft hint:
+//   - an EMPTY prompt: _wfValidateGraph flags this as an error the instant
+//     Save/Run-now is tried ("Needs a prompt.") -- collapsing it behind a
+//     "no prompt yet" label would still make Ron open a panel to act on it,
+//     so it opens straight to the empty textarea instead (brief: "do not
+//     hide that behind a collapsed panel where he cannot see it").
+//   - a live broken slot reference (_wfTextHasBrokenSlotRef, independent of
+//     any Save attempt -- a rename or edge change can break a reference the
+//     instant it happens): forced open since the broken chip that explains
+//     it lives inside the panel (_wfSlotChipsHTML).
+// st.promptOpen (see _wfFreshState) is the user's own toggle and survives
+// _wfRender()'s full innerHTML rebuild because it lives on session state,
+// not the DOM. A force-open ALSO writes st.promptOpen (a render-time side
+// effect the same shape as _wfRenderAgentOwn's own st._charLoads.push --
+// this file already lets a render helper queue/record state, not just
+// derive markup): otherwise, the instant the error clears -- the user types
+// the missing prompt, or fixes the reference -- the very next unrelated
+// re-render (placing a second block, connecting an edge) would find
+// forceOpen suddenly false and userOpen still unset, and snap the panel shut
+// mid-edit. Once opened, for any reason, it stays open until the user
+// explicitly collapses it again.
+function _wfPromptForceOpen(st, node) {
+  const prompt = node.prompt || '';
+  return !prompt.trim() || _wfTextHasBrokenSlotRef(st.def, node.name, prompt);
+}
+
+function _wfRenderPromptField(st, node) {
+  const prompt = node.prompt || '';
+  const forceOpen = _wfPromptForceOpen(st, node);
+  st.promptOpen = st.promptOpen || {};
+  if (forceOpen) st.promptOpen[node.name] = true;
+  const open = !!st.promptOpen[node.name];
+  const label = `<label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>`;
+  if (open) {
+    // No collapse control while an active error is forcing this open --
+    // collapsing would just hide the thing the user needs to fix, and the
+    // panel would silently re-force itself open again next render anyway
+    // (still broken == still forced).
+    const toggleBtn = forceOpen ? '' : `<button type="button" class="wfb-prompt-toggle"
+        onclick="_wfTogglePromptOpen(event,'${_wfJsStrEsc(node.name)}')" title="Hide the prompt">&#9662; Hide prompt</button>`;
+    return `${label}
+    <div class="wfb-prompt-inset">
+      <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(prompt)}</textarea>
+      ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
+      ${_wfSlotChipsHTML(st.def, node.name, prompt)}
+      ${toggleBtn}
+    </div>`;
+  }
+  const summaryText = prompt.trim().replace(/\s+/g, ' ');
+  return `${label}
+    <div class="wfb-prompt-collapsed">
+      <span class="wfb-prompt-summary" title="${esc(summaryText)}">${esc(summaryText)}</span>
+      <button type="button" class="wfb-prompt-toggle"
+        onclick="_wfTogglePromptOpen(event,'${_wfJsStrEsc(node.name)}')" title="Show the prompt">&#9656; Show prompt</button>
+    </div>`;
+}
+
+// "Sync first" (same discipline as _wfToggleDesc/_wfToggleEnabled): capture
+// any unsynced typing anywhere on the canvas -- including this card's own
+// prompt, which only exists in the DOM while its panel is open -- before the
+// re-render replaces it. The "Hide prompt" button is only ever rendered when
+// !forceOpen (_wfRenderPromptField), so a plain flip is enough here -- if the
+// sync above just revealed an empty/broken prompt, the render this triggers
+// re-forces it open regardless of what we flip it to.
+function _wfTogglePromptOpen(e, nodeName) {
+  if (e) e.preventDefault();
+  const entry = _wfEntry(); if (!entry) return;
+  const renameMap = _wfSyncDomToModel(entry);
+  nodeName = renameMap[nodeName] || nodeName;
+  const st = entry._wf;
+  st.promptOpen = st.promptOpen || {};
+  st.promptOpen[nodeName] = !st.promptOpen[nodeName];
+  _wfRender();
+}
+window._wfTogglePromptOpen = _wfTogglePromptOpen;
+
 function _wfRenderAgentOwn(st, node) {
   const seq = ++st._cardSeq;
   const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter(p => p.project_path);
@@ -1787,12 +1920,7 @@ function _wfRenderAgentOwn(st, node) {
       <span id="wfb-face-${seq}" class="sched-agent-face"></span>
       <select id="wfb-persona-${seq}" class="wfb-persona"><option value="">Loading…</option></select>
     </div>
-    <label>Prompt <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(<code>{{steps.NAME.output}}</code> / <code>{{prev.output}}</code> pull an earlier step's result forward)</span></label>
-    <div class="wfb-prompt-inset">
-      <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(node.prompt || '')}</textarea>
-      ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
-      ${_wfSlotChipsHTML(st.def, node.name, node.prompt || '')}
-    </div>
+    ${_wfRenderPromptField(st, node)}
     <div class="wfb-branch-labels">
       <label>Outcomes <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(this step must end its reply naming one &mdash; each gets its own port below to wire up)</span></label>
       ${_wfRenderVocabRows(st, node, 'outcome')}
