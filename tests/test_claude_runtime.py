@@ -1670,3 +1670,64 @@ def test_list_sessions_worktree_scan_stays_within_the_project(tmp_path, monkeypa
         encoding='utf-8')
 
     assert rt.list_sessions(mine, limit=10) == []
+
+
+# ── permission_denials: the refusals we used to throw away ───────────────────
+# Claude Code has always reported denied tool calls in the stream-json `result`
+# object; the TURN_END parser read usage/cost/num_turns and dropped this field,
+# so a refused tool call left no trace anywhere. Verified empirically
+# 2026-09-12 that a PreToolUse HOOK block (exit 2, e.g. steward/fence.py) lands
+# in this list too — not only settings-based permission rules — and that it
+# lands even under --dangerously-skip-permissions.
+
+_DENIAL = {
+    'tool_name': 'Bash',
+    'tool_use_id': 'toolu_01Test',
+    'tool_input': {'command': 'git push --force', 'description': 'force push'},
+}
+
+
+def test_claude_turn_end_carries_permission_denials():
+    from mc.agent_runtime import ClaudeRuntime, EventType
+    rt = ClaudeRuntime()
+    ev = rt.parse_event(json.dumps({
+        'type': 'result', 'session_id': 's1', 'num_turns': 2,
+        'permission_denials': [_DENIAL],
+    }))
+    assert ev is not None and ev.type == EventType.TURN_END
+    assert ev.payload['permission_denials'] == [_DENIAL]
+
+
+def test_claude_turn_end_permission_denials_defaults_to_empty_list():
+    """Absent/None must normalise to [] so consumers can iterate unconditionally."""
+    from mc.agent_runtime import ClaudeRuntime, EventType
+    rt = ClaudeRuntime()
+    for payload in ({'type': 'result'}, {'type': 'result', 'permission_denials': None}):
+        ev = rt.parse_event(json.dumps(payload))
+        assert ev is not None and ev.type == EventType.TURN_END
+        assert ev.payload['permission_denials'] == []
+
+
+def test_record_permission_denials_accumulates_and_writes_transcript():
+    from mc.blueprints.agent_routes import _record_permission_denials
+    session = {'log_lines': []}
+    _record_permission_denials(session, {'permission_denials': [_DENIAL]})
+    _record_permission_denials(session, {'permission_denials': [
+        {'tool_name': 'Write', 'tool_input': {'file_path': '/etc/hosts'}}]})
+    # Accumulated, not overwritten — `result` fires once per turn in Mode B.
+    assert len(session['permission_denials']) == 2
+    assert session['log_lines'] == [
+        '[denied: Bash] git push --force',
+        '[denied: Write] /etc/hosts',
+    ]
+
+
+def test_record_permission_denials_is_a_noop_when_nothing_was_refused():
+    """The common case must not create keys or emit transcript noise."""
+    from mc.blueprints.agent_routes import _record_permission_denials
+    for msg in ({'type': 'result'}, {'permission_denials': []},
+                {'permission_denials': 'nonsense'}, 'not-a-dict'):
+        session = {'log_lines': []}
+        _record_permission_denials(session, msg)
+        assert session['log_lines'] == []
+        assert 'permission_denials' not in session

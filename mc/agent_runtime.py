@@ -1325,6 +1325,14 @@ class ClaudeRuntime(AgentRuntime):
                     'cost_usd': msg.get('cost_usd'),
                     'num_turns': msg.get('num_turns'),
                     'rc': msg.get('result_code'),
+                    # Tool calls this turn REFUSED. Claude Code has always put
+                    # them in the result object; we parsed the object for
+                    # usage/cost/turns and dropped this, so a refusal left no
+                    # trace an operator could read. Verified 2026-09-12: a
+                    # PreToolUse HOOK block (exit 2 — i.e. steward/fence.py)
+                    # lands here too, not only settings-based permission rules,
+                    # and it lands even under --dangerously-skip-permissions.
+                    'permission_denials': msg.get('permission_denials') or [],
                 },
                 raw=msg,
             )

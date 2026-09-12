@@ -2111,6 +2111,52 @@ def _coverage_last_user_message(session) -> str:
     return ''
 
 
+def _record_permission_denials(session, msg):
+    """Record the tool calls a turn REFUSED (stream-json `permission_denials`).
+
+    Claude Code reports every denied tool call in the `result` object. Clayrune
+    read that object for usage / cost / num_turns and dropped this field
+    entirely, so a refusal left no trace anywhere an operator could read: the
+    agent just appeared to change its mind mid-turn.
+
+    VERIFIED EMPIRICALLY 2026-09-12 (synthetic PreToolUse hook, exit 2, run under
+    `--dangerously-skip-permissions`): a HOOK block lands in this list, not just
+    settings-based permission rules. That makes this the steward fence's audit
+    trail for free. Same run pins the limit: an entry is
+    `{tool_name, tool_use_id, tool_input}` with NO reason/source field, so the
+    fence's own stderr explanation is NOT carried — you learn WHAT was refused
+    and by which tool, never WHY or by which rule. A fence that needs its reason
+    preserved still has to log it itself.
+
+    Accumulates across turns (`result` fires once per turn in Mode B, so
+    overwriting would discard earlier denials) and mirrors each denial into the
+    visible transcript, which is what makes it readable with no frontend change.
+    """
+    if not isinstance(msg, dict):
+        return
+    denials = msg.get('permission_denials')
+    if not isinstance(denials, list) or not denials:
+        return
+    bucket = session.setdefault('permission_denials', [])
+    lines = session.setdefault('log_lines', [])
+    for d in denials:
+        if not isinstance(d, dict):
+            continue
+        bucket.append(d)
+        tool = str(d.get('tool_name') or 'tool')
+        ti = d.get('tool_input') if isinstance(d.get('tool_input'), dict) else {}
+        detail = str(ti.get('command') or ti.get('file_path')
+                     or ti.get('notebook_path') or ti.get('url') or '')
+        detail = ' '.join(detail.split())
+        if len(detail) > 200:
+            detail = detail[:200] + '...'
+        lines.append(f"[denied: {tool}]" + (f" {detail}" if detail else ""))
+    # Keep the structured list bounded; the transcript keeps the full history.
+    if len(bucket) > 200:
+        del bucket[:-200]
+    session['last_output_time'] = _time.time()
+
+
 def _emit_coverage_advisory(session) -> None:
     """At turn end: one advisory line if the user named something concrete that
     no tool call touched. Silent on a turn with no tool calls, and silent when
@@ -3391,6 +3437,7 @@ def _read_agent_stream(proc, session):
                         session['cost_usd'] = (session.get('cost_usd') or 0.0) + (msg['cost_usd'] or 0.0)
                     if 'num_turns' in msg:
                         session['num_turns'] = msg['num_turns']
+                    _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
@@ -3606,6 +3653,7 @@ def _read_agent_stream_b(proc, session):
                         session['cost_usd'] = (session.get('cost_usd') or 0.0) + (msg['cost_usd'] or 0.0)
                     if 'num_turns' in msg:
                         session['num_turns'] = msg['num_turns']
+                    _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
                     _emit_coverage_advisory(session)
@@ -3937,6 +3985,10 @@ def _session_usage_payload(session: dict) -> dict:
         out['cost_usd'] = session.get('cost_usd', 0)
     if caps.emits_num_turns:
         out['num_turns'] = session.get('num_turns', 0)
+    # Refused tool calls. Not capability-gated on a flag of its own: only
+    # runtimes that actually report denials ever populate it, and an empty list
+    # is the honest answer for the rest (nothing was refused that we saw).
+    out['permission_denials'] = session.get('permission_denials', [])
     return out
 
 def _transcript_buffer_default() -> int:
@@ -4738,6 +4790,7 @@ def _log_agent_completion(session):
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),
         'num_turns': session.get('num_turns', 0),
+        'permission_denials': session.get('permission_denials', []),
         'plan_file': session.get('plan_file', ''),
         'plan_files': _session_plan_files(session),
         'hivemind_id': session.get('hivemind_id', ''),
