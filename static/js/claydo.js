@@ -858,7 +858,13 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   if (fm) {
     rawBody = artifact.slice(fm[0].length).trim();
     const nm = fm[1].match(/^name:\s*(.+)$/m);
-    const dm = fm[1].match(/^description:\s*([\s\S]*?)(?=\r?\n[a-zA-Z_-]+\s*:|$)/);
+    // /m so `^` matches at the start of ANY frontmatter line -- without it this
+    // only ever fired when `description:` was the FIRST line, which the
+    // documented name-then-description order (docs/PROMPT_BUILDER_DESIGN.md)
+    // never is, so the field came up blank on every real hand-off. `$(?![\s\S])`
+    // keeps the terminator anchored to the END OF THE BLOCK, not end-of-line,
+    // so a description that wraps onto continuation lines still matches whole.
+    const dm = fm[1].match(/^description:\s*([\s\S]*?)(?=\r?\n[a-zA-Z_-]+\s*:|$(?![\s\S]))/m);
     if (nm) name = nm[1].trim().replace(/^["']|["']$/g, '');
     if (dm) description = dm[1].replace(/\s*\r?\n\s+/g, ' ').trim().replace(/^["']|["']$/g, '');
   }
@@ -1021,7 +1027,12 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
     if (!figs.length) return;
     figsRow.innerHTML = figs.map((n) => {
       const v = 'fig:' + n;
-      return `<button type="button" class="pe-fig" data-face="${esc(v)}"
+      // Honour a face already chosen: /api/characters/identity and /api/avatars
+      // race, and when identity answers FIRST this innerHTML rebuild would wipe
+      // the `sel` class setChosenFace had just applied -- leaving the suggested
+      // face in the text field with no chip showing as picked.
+      const sel = v === avatarInput.value ? ' sel' : '';
+      return `<button type="button" class="pe-fig${sel}" data-face="${esc(v)}"
         title="${esc(n)}">${window.avatarHTML(v, 38)}</button>`;
     }).join('');
     figsRow.querySelectorAll('.pe-fig').forEach((b) => {

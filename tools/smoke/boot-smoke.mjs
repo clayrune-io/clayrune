@@ -633,14 +633,13 @@ async function runIdentityPrefillGuard(browser) {
       // fast real click would actually see.
       const panel = document.querySelector('.claydo-save-panel');
       if (!panel) throw new Error('the save panel never opened');
-      // Pre-existing, unrelated to this guard: _claydoOpenSavePanel's own
-      // description-frontmatter regex (claydo.js ~861) has no /m flag, so it
-      // only ever matches when "description:" is the FIRST line of the
-      // frontmatter block — never true for the documented name-then-
-      // description order (docs/PROMPT_BUILDER_DESIGN.md), so the field is
-      // silently blank on every real hand-off. Filled by hand here so this
-      // guard exercises identity prefill, not that separate defect.
-      panel.querySelector('#claydo-save-desc').value = 'reviews diffs for bugs';
+      // Read, not filled: _claydoOpenSavePanel's description-frontmatter regex
+      // used to lack /m, so it only matched when "description:" was the FIRST
+      // frontmatter line — never true for the documented name-then-description
+      // order (docs/PROMPT_BUILDER_DESIGN.md), leaving the field silently blank
+      // on every real hand-off. The fixture above uses that documented order,
+      // so this now asserts the prefill instead of papering over it.
+      r.descField = panel.querySelector('#claydo-save-desc').value;
       const goBtn = panel.querySelector('#claydo-save-go');
       r.goDisabledWhileGenerating = !!goBtn && goBtn.disabled;
       // The identity + voice fetches both fire on open; give them a real round
@@ -675,6 +674,9 @@ async function runIdentityPrefillGuard(browser) {
   if (out.avatarField !== 'fig:courier')
     fails.push('the suggested face never reached the Face field: '
       + JSON.stringify(out.avatarField));
+  if (out.descField !== 'reviews diffs for bugs')
+    fails.push('the draft\'s frontmatter description never reached the Description '
+      + 'field — a hire would save with it blank: ' + JSON.stringify(out.descField));
   if (!out.figChips) fails.push('the face-chip row never rendered any figures to pick from');
   if (!out.selectedChip)
     fails.push('the suggested face is not shown as selected among the figure chips');
