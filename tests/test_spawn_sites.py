@@ -195,10 +195,22 @@ class TestScribeCallEquivalence:
     """
 
     def _capture_run_calls(self, rt, model, instruction, body):
-        """Call oneshot() and capture subprocess.run kwargs."""
+        """Call oneshot() and capture subprocess.run kwargs.
+
+        Only OUR calls. `subprocess.run` is a process global, so a background
+        thread that outlives an earlier test lands its argv in this list too,
+        and then calls[0] is some other thread's command — the fence assertions
+        below would be reading a payload oneshot() never built. Foreign calls
+        are passed through to the real subprocess.run rather than answered with
+        this mock, so we neither capture nor swallow another thread's work.
+        """
         calls = []
+        me = threading.current_thread()
+        real_run = subprocess.run
 
         def fake_run(cmd, **kwargs):
+            if threading.current_thread() is not me:
+                return real_run(cmd, **kwargs)
             calls.append({'cmd': cmd, 'kwargs': kwargs})
             fake = MagicMock()
             fake.returncode = 0
@@ -321,6 +333,45 @@ class TestScribeCallEquivalence:
         assert payload.index(instruction) < payload.index('BEGIN SESSION TRANSCRIPT')
         assert payload.index('BEGIN SESSION TRANSCRIPT') < payload.index(body)
         assert payload.index(body) < payload.index('END SESSION TRANSCRIPT')
+
+    def test_capture_is_scoped_to_this_thread(self):
+        """A leaked background thread must not be able to break the fence
+        assertions above.
+
+        subprocess.run is a PROCESS global. Until 2026-09-11 `import server`
+        auto-started the real mc_remote tunnel supervisor, whose attestation
+        loop re-ran every ~5s for the rest of the pytest session and shelled
+        out to `tasklist` from a non-main thread. Landing inside one of these
+        patch windows, that argv became calls[0] and
+        test_stdin_payload_format failed with KeyError('input') — a
+        prompt-injection guard that only passed when it ran alone. conftest
+        now disables that autostart; this asserts the capture itself is
+        thread-scoped so the next leaked thread cannot resurrect it.
+        """
+        foreign = {}
+
+        class _Rt(ar.ClaudeRuntime):
+            def oneshot(self, **kw):
+                done = threading.Event()
+
+                def _other():
+                    r = subprocess.run([sys.executable, '-c', 'print("foreign")'],
+                                       capture_output=True, text=True)
+                    foreign['out'] = (r.stdout or '').strip()
+                    done.set()
+
+                threading.Thread(target=_other, daemon=True).start()
+                done.wait(30)
+                return super().oneshot(**kw)
+
+        instruction, body = 'Summarize.', 'log content here'
+        calls, _ = self._capture_run_calls(_Rt(), 'claude-haiku-4-5-20251001',
+                                           instruction, body)
+        assert len(calls) == 1, f"captured another thread call: {calls}"
+        payload = calls[0]['kwargs']['input']
+        assert payload.index('BEGIN SESSION TRANSCRIPT') < payload.index(body)
+        # and the other thread got the REAL subprocess, not this test's mock
+        assert foreign.get('out') == 'foreign'
 
     def test_returns_none_on_nonzero_exit(self):
         rt = _fresh_claude()
