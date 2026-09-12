@@ -775,6 +775,76 @@ try {
     ? ok(`dropping on the card BODY (not the in-port) connected ${c5From} -> ${c5To} — edge landed in def.edges`)
     : fail(`forgiving drop did not add the edge: before=${c5EdgesBefore} after=${c5EdgesAfter.length} found=${JSON.stringify(c5NewEdge)}`);
 
+  // ── MC-871 (Ron's screenshot: the output dot sat INSIDE the card, over the
+  // prompt field, with the "+" and the stub pushed past the edge to its
+  // right) — confirms the PLAIN single-port case (c5-a, an agent step with
+  // no outcomes) now anchors the same way c12b already proved for the
+  // vocabulary-pill case above, at the tight ~2px tolerance Ron's "centre
+  // sits on the edge line" mockup actually asks for (c12b's own check above
+  // uses a looser 12px band, which a container-based fix could pass while
+  // still being visibly off). ────────────────────────────────────────────
+  const mc871PlainCardBox = await (await page.$(`.wfb-node[data-name="${c5From}"]`)).boundingBox();
+  const mc871PlainPortBox = await (await page.$(`.wfb-node[data-name="${c5From}"] .wfb-ports-out .wfb-port`)).boundingBox();
+  const mc871PlainDist = Math.abs((mc871PlainPortBox.x + mc871PlainPortBox.width / 2) - (mc871PlainCardBox.x + mc871PlainCardBox.width));
+  mc871PlainDist < 2
+    ? ok(`a single (plain) output port dot sits within 2px of the card's right edge (${mc871PlainDist.toFixed(2)}px)`)
+    : fail(`expected the plain port dot within 2px of the card's right edge, got ${mc871PlainDist.toFixed(2)}px away`);
+  const mc871VocabCardBox = await (await page.$(`.wfb-node[data-name="${approvalNodeName}"]`)).boundingBox();
+  const mc871VocabPortBox = await (await page.$(`.wfb-node[data-name="${approvalNodeName}"] .wfb-vocab-row .wfb-port`)).boundingBox();
+  const mc871VocabDist = Math.abs((mc871VocabPortBox.x + mc871VocabPortBox.width / 2) - (mc871VocabCardBox.x + mc871VocabCardBox.width));
+  mc871VocabDist < 2
+    ? ok(`a multi-outcome port dot sits within 2px of the card's right edge (${mc871VocabDist.toFixed(2)}px)`)
+    : fail(`expected the outcome port dot within 2px of the card's right edge, got ${mc871VocabDist.toFixed(2)}px away`);
+  // Now pan AND zoom, then confirm the c5-a -> c5-b edge's SVG path still
+  // starts exactly at the live plain port's real getBoundingClientRect()
+  // center — an edge that starts even a few px off its dot is the obvious
+  // regression moving the dot's anchoring could introduce. _wfRedrawEdges
+  // measures the real DOM rect at draw time, so this exercises the actual
+  // fix, not a snapshot of intent.
+  const mc871ViewportBefore = await page.evaluate(() => ({ ...window._wfEntry()._wf.viewport }));
+  await page.mouse.move(mc871PlainCardBox.x + 40, mc871PlainCardBox.y + 40);
+  await page.mouse.wheel(0, -200); // zoom in a bit
+  await page.waitForTimeout(100);
+  await page.evaluate(() => {
+    const st = window._wfEntry()._wf;
+    st.viewport.x += 37; st.viewport.y -= 23; // pan
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual'); // idempotent, forces the one render path
+  });
+  await page.waitForTimeout(100);
+  const mc871PanZoomCheck = await page.evaluate((from) => {
+    const vp = document.getElementById('wfb-canvas-viewport');
+    const rect = vp.getBoundingClientRect();
+    const portEl = document.querySelector(`.wfb-port-out[data-node="${from}"][data-when=""]`);
+    const pr = portEl.getBoundingClientRect();
+    const wantX = pr.left + pr.width / 2 - rect.left, wantY = pr.top + pr.height / 2 - rect.top;
+    for (const p of document.querySelectorAll('g.wfb-edge-group path.wfb-edge-path')) {
+      const m = /^M\s*([\d.-]+),([\d.-]+)/.exec(p.getAttribute('d') || '');
+      if (!m) continue;
+      const dx = Math.abs(parseFloat(m[1]) - wantX), dy = Math.abs(parseFloat(m[2]) - wantY);
+      if (dx < 2 && dy < 2) return { found: true, dx, dy };
+    }
+    return { found: false };
+  }, c5From);
+  mc871PanZoomCheck.found
+    ? ok(`after a pan and a zoom, an edge's start point still coincides with its port dot's real center (dx=${mc871PanZoomCheck.dx.toFixed(2)}, dy=${mc871PanZoomCheck.dy.toFixed(2)})`)
+    : fail(`edge start drifted from its port dot's center after pan+zoom: ${JSON.stringify(mc871PanZoomCheck)}`);
+  // Restore the exact pre-check viewport. Unlike the c2 zoom-escape block
+  // above (which never touches an edge again before the NEXT edge gets
+  // drawn fresh by a real drag), the very next check here (Change 7) reads
+  // an existing edge <path>'s live position — a direct style.transform poke
+  // snaps the CARDS back instantly but leaves the SVG path strings stale at
+  // the zoomed-in coordinates they were last drawn at, so go through the
+  // same real render path (_wfMarkDirty + the idempotent _wfSetTriggerType
+  // trick used above) to force _wfRedrawEdges to recompute them too.
+  await page.evaluate((vp) => {
+    const st = window._wfEntry()._wf;
+    st.viewport.x = vp.x; st.viewport.y = vp.y; st.viewport.scale = vp.scale;
+    window._wfMarkDirty();
+    window._wfSetTriggerType(st.def.trigger.type || 'manual');
+  }, mc871ViewportBefore);
+  await page.waitForTimeout(80);
+
   // ── MC-871 Change 7 — the delete × at an edge's midpoint (reusing the
   // c5From -> c5To edge the forgiving-drop test just made). ────────────────
   const c7GroupSel = `g.wfb-edge-group:has(path[onpointerdown*="_wfEdgeClick(event,'${c5From}','${c5To}'"])`;
