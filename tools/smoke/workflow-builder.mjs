@@ -137,11 +137,38 @@ async function dragPalettePersonTo(page, display, targetX, targetY) {
   return dragFromPalette(page, handle, targetY === undefined ? targetX : { x: targetX, y: targetY });
 }
 
-// One of the TOOL tiles ('Action' / 'Approval gate' / 'Wait').
+// One of the TOOLBAR tools ('Action' / 'Approval gate' / 'Wait') — moved out
+// of the palette into `.wfb-toolbar-tools` (MC-871 follow-up: "these should
+// go to the top of the canvas... to the left of Create/Run now").
 async function dragPaletteToolTo(page, label, targetX, targetY) {
-  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-palette-block')]
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-toolbar-tool')]
     .find(b => b.textContent.includes(text)), label);
   return dragFromPalette(page, handle, targetY === undefined ? targetX : { x: targetX, y: targetY });
+}
+
+async function toolbarToolBox(page, label) {
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-toolbar-tool')]
+    .find(b => b.textContent.includes(text)), label);
+  const el = handle.asElement();
+  if (!el) throw new Error('toolbarToolBox: toolbar tool not found: ' + label);
+  await el.scrollIntoViewIfNeeded();
+  return el.boundingBox();
+}
+
+// A plain click/tap on a toolbar tool button — no drag at all. Exercises the
+// `_wfPlaceUp` no-drag-happened branch (a toolbar button that only responds
+// to dragging reads as broken).
+async function clickToolbarTool(page, label) {
+  const handle = await page.evaluateHandle((text) => [...document.querySelectorAll('.wfb-toolbar-tool')]
+    .find(b => b.textContent.includes(text)), label);
+  const el = handle.asElement();
+  if (!el) throw new Error('clickToolbarTool: toolbar tool not found: ' + label);
+  await el.scrollIntoViewIfNeeded();
+  const box = await el.boundingBox();
+  await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+  await page.mouse.down();
+  await page.mouse.up();
+  await page.waitForTimeout(120);
 }
 
 // Free canvas, measured NOW. Both halves matter: the modal body is a scroller
@@ -245,10 +272,21 @@ async function openWorkflowsTab(page, pid) {
   // resize handles wider once and it's remembered (mc_modal_prefs); this
   // mirrors that so drop coordinates below land on the visible canvas rather
   // than past its right edge.
+  // MC-871 follow-up: re-center after the resize, not just widen. `centerModalElement`
+  // was already called once by `openProjectModal` above, but AT THE OLD 700px width --
+  // `win.style.left` is a fixed `(innerWidth - 700) / 2`, so widening `.modal-content` in
+  // place without recomputing `left` leaves the window's right edge exactly
+  // (1180 - 700) / 2 = 240px further right than the ORIGINAL centering intended, which
+  // this 1280px-wide test viewport has no headroom for. A wider toolbar (MC-871's
+  // Action/Approval gate/Wait buttons, now to the left of Create/Run now) made this
+  // start clipping Create/Run now past the browser's own viewport edge — invisible to
+  // every assertion that reads coordinates via JS, but fatal to `page.click`, which
+  // refuses to click something it computes as outside the viewport.
   await page.evaluate((pid) => {
     const win = document.querySelector(`.modal-window[data-modal-id="${pid}"]`);
     const content = win && win.querySelector('.modal-content');
     if (content) content.style.width = '1180px';
+    if (win && typeof window.centerModalElement === 'function') window.centerModalElement(win);
   }, pid);
   await page.evaluate((pid) => { switchModalTab(pid, 'workflows'); }, pid);
   await page.waitForSelector(`#wfb-clayrune-section-${pid}`, { timeout: 5000 });
@@ -334,22 +372,39 @@ try {
   (paletteNames.length === 5 && paletteNames[0] === 'Tobin')
     ? ok(`the palette lists the bench roster as people: ${JSON.stringify(paletteNames)}`)
     : fail(`expected the 5 bench people in the palette, got ${JSON.stringify(paletteNames)}`);
-  const hasGenericAgentTile = await page.$$eval('.wfb-palette-block',
+  const hasGenericAgentTile = await page.$$eval('.wfb-palette-person, .wfb-palette-more, .wfb-palette-hint',
     els => els.some(b => /agent step/i.test(b.textContent)));
   hasGenericAgentTile ? fail('a generic "Agent step" tile is still in the palette — drag PEOPLE, not primitives')
                       : ok('no generic "Agent step" tile — the only way to add an agent step is to drag a person');
-  // MC-871 palette-composition pass: Action, Approval gate, Wait -- in that
-  // order (mirrors the reviewed block-vocabulary proposal's Agent/Action/
-  // Human/Wait sequence, Decision and Parallel deliberately absent as
-  // blocks -- docs/WORKFLOW_BLOCK_VOCABULARY_REVIEW.md).
-  const toolTiles = await page.$$eval('.wfb-palette-block', els => els.map(b => b.textContent.replace(/\s+/g, ' ').trim()));
+  // MC-871 follow-up (Ron, verbatim): "these should go to the top of the
+  // canvas screen same row as the create and run now buttons only to the
+  // left of them" — the palette is people ONLY now; no tool tiles at all.
+  const paletteHasTools = await page.$('.wfb-palette-block, .wfb-palette-tools-title');
+  paletteHasTools ? fail('the palette still lists tool tiles — they must move to the toolbar')
+                  : ok('the palette lists people only — Action/Approval gate/Wait are gone from it');
+  // Action, Approval gate, Wait -- in that order (mirrors the reviewed
+  // block-vocabulary proposal's Agent/Action/Human/Wait sequence, Decision
+  // and Parallel deliberately absent as blocks --
+  // docs/WORKFLOW_BLOCK_VOCABULARY_REVIEW.md), now living in the toolbar
+  // immediately left of Create/Run now.
+  const toolTiles = await page.$$eval('.wfb-toolbar-tool', els => els.map(b => b.textContent.replace(/\s+/g, ' ').trim()));
   (toolTiles.length === 3 && /Action/.test(toolTiles[0]) && /Approval gate/.test(toolTiles[1]) && /Wait/.test(toolTiles[2]))
-    ? ok(`exactly three tools beside the people, in order: ${JSON.stringify(toolTiles)}`)
-    : fail(`expected exactly Action, Approval gate, Wait (in order), got ${JSON.stringify(toolTiles)}`);
+    ? ok(`exactly three tools in the toolbar, in order: ${JSON.stringify(toolTiles)}`)
+    : fail(`expected exactly Action, Approval gate, Wait (in order) in the toolbar, got ${JSON.stringify(toolTiles)}`);
+  const toolbarToolsOrder = await page.$$eval('.wfb-toolbar > *', els => els.map(e => e.className || e.tagName));
+  const toolsIdx = toolbarToolsOrder.findIndex(c => String(c).includes('wfb-toolbar-tools'));
+  const createIdx = toolbarToolsOrder.findIndex(c => String(c).includes('btn-sched-save'));
+  const runNowIdx = toolbarToolsOrder.findIndex(c => String(c).includes('btn-sched-cancel'));
+  (toolsIdx > -1 && toolsIdx < createIdx && createIdx < runNowIdx)
+    ? ok('the tool group sits in the toolbar row, to the left of Create and Run now')
+    : fail(`expected the tool group before Create/Run now in the toolbar, order: ${JSON.stringify(toolbarToolsOrder)}`);
   const conceptHint = await page.$$eval('.wfb-palette-hint', els => els.map(e => e.textContent).join(' '));
   (/Decision or Parallel/.test(conceptHint) && /outcomes/.test(conceptHint) && /branch points/.test(conceptHint))
     ? ok('the palette teaches that outcomes/options ARE the branch points, in place of a fake Decision block')
     : fail(`expected the palette to explain Decision/Parallel discoverability, got: ${conceptHint}`);
+  (/toolbar above/.test(conceptHint) && /Action/.test(conceptHint))
+    ? ok('the palette hint now points Action/Approval gate/Wait at the toolbar instead of listing them itself')
+    : fail(`expected the palette hint to redirect to the toolbar for Action/Approval gate/Wait, got: ${conceptHint}`);
 
   // Faces resolve the Floor's way: a real figure image, a real emoji, and the
   // initial mark ONLY where a character genuinely has no usable avatar.
@@ -981,14 +1036,14 @@ try {
   // actually active, via a dynamically-applied class. ─────────────────────
   const touchActionAtRest = await page.evaluate(() => {
     const head = document.querySelector('.wfb-node-head');
-    const block = document.querySelector('.wfb-palette-block');
+    const person = document.querySelector('.wfb-palette-person');
     return {
       head: getComputedStyle(head).touchAction,
-      block: getComputedStyle(block).touchAction,
+      person: getComputedStyle(person).touchAction,
     };
   });
-  (touchActionAtRest.head !== 'none' && touchActionAtRest.block !== 'none')
-    ? ok(`at rest, drag handles stay scrollable (node-head: ${touchActionAtRest.head}, palette-block: ${touchActionAtRest.block}) — no permanent scroll lock`)
+  (touchActionAtRest.head !== 'none' && touchActionAtRest.person !== 'none')
+    ? ok(`at rest, drag handles stay scrollable (node-head: ${touchActionAtRest.head}, palette-person: ${touchActionAtRest.person}) — no permanent scroll lock`)
     : fail(`a drag handle is touch-action:none at rest — this is the mobile scroll-lock trap: ${JSON.stringify(touchActionAtRest)}`);
   const touchActionDuringDrag = await page.evaluate(() => {
     document.querySelector('.wfb-node').classList.add('wfb-node-dragging');
@@ -1001,6 +1056,15 @@ try {
   const portTouchAction = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-port')).touchAction);
   portTouchAction === 'none' ? ok('a port (a dedicated control, not a scrollable list item) is touch-action:none unconditionally')
                              : fail(`expected a port to be touch-action:none always, got "${portTouchAction}"`);
+  // The toolbar tools are dedicated single controls (not rows in a
+  // scrollable list) — same precedent as the port above, touch-action:none
+  // UNCONDITIONALLY rather than the palette's dynamic-class trick. This is
+  // what actually prevents defect 13's trap in the opposite direction (a
+  // toolbar-to-canvas drag goes DOWN, the same axis `.wfb-modal-body`'s
+  // vertical scroll would otherwise claim on mobile).
+  const toolbarToolTouchAction = await page.evaluate(() => getComputedStyle(document.querySelector('.wfb-toolbar-tool')).touchAction);
+  toolbarToolTouchAction === 'none' ? ok('a toolbar tool (Action/Approval gate/Wait) is touch-action:none unconditionally, like a port')
+                                    : fail(`expected a toolbar tool to be touch-action:none always, got "${toolbarToolTouchAction}"`);
 
   // ── MC-871 Change 9 — "+ N more" reveals hidden bench people (previously
   // a single button whose text prefix lied: clicking it ALWAYS opened the
@@ -1406,6 +1470,60 @@ try {
   (mNodesAfter === mNodesBefore + 1)
     ? ok('a real touch long-press-drag from the mobile palette placed a node on the canvas')
     : fail(`a real touch drag did not place a node on mobile -- nodes stayed at ${mNodesAfter} (expected ${mNodesBefore + 1}); the browser likely swallowed the up-drag as a native scroll`);
+
+  // MC-871 follow-up (Ron, phone): Action/Approval gate/Wait moved out of the
+  // palette into the toolbar, which sits ABOVE the canvas at every width
+  // including mobile ("same row as create and run now") -- so a
+  // toolbar-to-canvas drag goes DOWN, the same axis conflict as defect 13
+  // above, just the opposite direction (that drag went UP from a bottom
+  // sheet). `.wfb-toolbar-tool` is touch-action:none UNCONDITIONALLY (this
+  // file's own CSS, matching `.wfb-port`'s existing precedent for a
+  // dedicated single control, not a dynamic class the way the palette does
+  // it) specifically so the browser never gets the chance to claim the move
+  // as `.wfb-modal-body`'s native vertical scroll -- proved here with a real
+  // touch gesture, not a mouse-emulated one.
+  const mToolBox = await toolbarToolBox(mpage, 'Action');
+  const mCanvasBox2 = await (await mpage.$('#wfb-canvas-viewport')).boundingBox();
+  const mToolStartX = mToolBox.x + mToolBox.width / 2, mToolStartY = mToolBox.y + mToolBox.height / 2;
+  const mToolDropX = mCanvasBox2.x + mCanvasBox2.width / 2, mToolDropY = mCanvasBox2.y + mCanvasBox2.height / 2;
+  const mToolNodesBefore = await mpage.evaluate(() => (window._wfEntry()._wf.def.nodes || []).length);
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: mToolStartX, y: mToolStartY, id: 1 }] });
+  await mpage.waitForTimeout(450); // past WFB_LONG_PRESS_MS with the finger held still
+  for (const pt of [{ x: mToolStartX, y: mToolStartY + 40 }, { x: (mToolStartX + mToolDropX) / 2, y: (mToolStartY + mToolDropY) / 2 }, { x: mToolDropX, y: mToolDropY }]) {
+    await mCdp.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [{ x: pt.x, y: pt.y, id: 1 }] });
+    await mpage.waitForTimeout(50);
+  }
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await mpage.waitForTimeout(200);
+  const mToolNodesAfter = await mpage.evaluate(() => (window._wfEntry()._wf.def.nodes || []).length);
+  (mToolNodesAfter === mToolNodesBefore + 1)
+    ? ok('a real touch long-press-drag from a toolbar tool (downward, toolbar-above-canvas axis) placed a node on the mobile canvas')
+    : fail(`a real touch drag from the toolbar did not place a node on mobile -- nodes stayed at ${mToolNodesAfter} (expected ${mToolNodesBefore + 1}); the browser likely swallowed the down-drag as a native scroll`);
+
+  // A plain tap (touchstart+touchend, NO movement at all) must also add the
+  // block -- real touch, not page.click, since this exercises the same
+  // pointer-event state machine the drag above does, not a synthetic one.
+  const mTapBox = await toolbarToolBox(mpage, 'Approval gate');
+  const mTapX = mTapBox.x + mTapBox.width / 2, mTapY = mTapBox.y + mTapBox.height / 2;
+  const mTapNodesBefore = mToolNodesAfter;
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [{ x: mTapX, y: mTapY, id: 1 }] });
+  await mCdp.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+  await mpage.waitForTimeout(150);
+  const mTapNodesAfter = await mpage.evaluate(() => (window._wfEntry()._wf.def.nodes || []).length);
+  const mTapOverlap = await mpage.evaluate(() => {
+    const world = document.getElementById('wfb-world');
+    const rects = [...world.querySelectorAll('.wfb-node, .wfb-trigger-box')].map(el => ({
+      x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight,
+    }));
+    for (let i = 0; i < rects.length; i++) for (let j = i + 1; j < rects.length; j++) {
+      const a = rects[i], b = rects[j];
+      if (a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y) return true;
+    }
+    return false;
+  });
+  (mTapNodesAfter === mTapNodesBefore + 1 && !mTapOverlap)
+    ? ok('a plain tap on a toolbar tool (no drag at all) added a block on mobile, placed clear of every existing card')
+    : fail(`tap-to-add on mobile: nodes ${mTapNodesBefore} -> ${mTapNodesAfter} (expected +1), overlap=${mTapOverlap}`);
 
   // MC-871 agent-card mobile pass, defect 2, AT A MOBILE WIDTH specifically
   // (Ron's own report was from a phone) -- the same clip-integrity check as
@@ -2093,6 +2211,40 @@ try {
   /Parks the run and waits for a human/.test(apprDesc)
     ? ok(`the Approval card states what it does, Action-style: "${apprDesc}"`)
     : fail(`expected the Approval card to describe its consequence, got: "${apprDesc}"`);
+
+  // ── Click/tap-to-add (Ron's own trap warning: "a toolbar item that only
+  // responds to dragging reads as a broken button"). A plain click, no
+  // pointer movement at all, on the Wait tool must still add a block, placed
+  // clear of every existing card (three are already on the canvas from the
+  // drags above). ──────────────────────────────────────────────────────────
+  const c5PreNodes = await page5.evaluate(() => (window._wfEntry()._wf.def.nodes || []).map(n => ({ x: n.x, y: n.y })));
+  await clickToolbarTool(page5, 'Wait');
+  await page5.waitForTimeout(120);
+  const c5PostNodes = await page5.evaluate(() => (window._wfEntry()._wf.def.nodes || []).map(n => ({ x: n.x, y: n.y })));
+  c5PostNodes.length === c5PreNodes.length + 1
+    ? ok(`a plain click on a toolbar tool (no drag) added a block — ${c5PreNodes.length} -> ${c5PostNodes.length} nodes`)
+    : fail(`clicking a toolbar tool with no drag did not add a block: ${c5PreNodes.length} -> ${c5PostNodes.length} nodes`);
+  // Checks the NEW card specifically against every OTHER card -- not every
+  // pair on the canvas, which would also flag pre-existing cards placed by
+  // the earlier drag-drop tests above landing close together (a real
+  // possibility with `emptyCanvasPoint`'s screen-space scan, unrelated to
+  // what THIS assertion is testing: does click-to-add avoid the cards that
+  // were already there).
+  const c5NewName = await page5.evaluate(() => (window._wfEntry()._wf.def.nodes || []).slice(-1)[0].name);
+  const c5Overlap = await page5.evaluate((newName) => {
+    const world = document.getElementById('wfb-world');
+    const mine = world.querySelector(`.wfb-node[data-name="${newName}"]`);
+    if (!mine) return { error: 'new node not found in DOM' };
+    const a = { x: mine.offsetLeft, y: mine.offsetTop, w: mine.offsetWidth, h: mine.offsetHeight };
+    const hit = [...world.querySelectorAll('.wfb-node, .wfb-trigger-box')]
+      .filter((el) => el !== mine)
+      .map((el) => ({ name: el.dataset.name || '__trigger__', x: el.offsetLeft, y: el.offsetTop, w: el.offsetWidth, h: el.offsetHeight }))
+      .find((b) => a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y);
+    return { mine: a, hit: hit || null };
+  }, c5NewName);
+  (c5NewName && !c5Overlap.hit && !c5Overlap.error)
+    ? ok(`the click-placed block ("${c5NewName}", ${JSON.stringify(c5Overlap.mine)}) does not overlap any existing card`)
+    : fail(`the click-placed block overlaps an existing card: ${JSON.stringify(c5Overlap)}`);
 
   const uncaught5 = page5Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught5.length) uncaught5.forEach((e) => fail('uncaught exception in the Wait/Action-narrowing flow: ' + e));
