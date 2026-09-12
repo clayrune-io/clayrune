@@ -738,6 +738,19 @@ def _scheduler_loop():
         except Exception as e:
             _log(f"[scheduler] Error: {e}")
 
+        # ── Workflow waits (Wait node resume, MC-871) ───────────────────────
+        # A parked Wait step is `status: 'waiting'` with a `resume_at` on the
+        # step -- same shape as an approval gate, resolved automatically
+        # instead of by a human. This tick is the ONLY thing that ever
+        # advances one: mc/workflows.py deliberately never blocks a thread
+        # sleeping, so a wait of any length is just a timestamp comparison
+        # here, polled every 30s, and survives a restart for free since the
+        # deadline lives on disk.
+        try:
+            _wf.resume_due_waits()
+        except Exception as e:
+            _log(f"[scheduler] workflow wait resume error: {e}")
+
         # ── GitHub auto-sync (every 5 minutes) ──
         try:
             for proj in load_projects():

@@ -82,6 +82,10 @@ def _action(name, action, config=None, x=0, y=0):
     return {'type': 'action', 'name': name, 'action': action, 'config': config or {}, 'x': x, 'y': y}
 
 
+def _wait(name, config, x=0, y=0):
+    return {'type': 'wait', 'name': name, 'config': config, 'x': x, 'y': y}
+
+
 def _edge(frm, to, when=None):
     e = {'from': frm, 'to': to}
     if when is not None:
@@ -532,6 +536,122 @@ def test_approval_options_reject_reserved_otherwise(wf):
     doc = _doc('bad-opt', [_approval('gate', options=['otherwise'])])
     errors = wf.m.validate_workflow(doc)
     assert any('reserved' in e for e in errors)
+
+
+# ── wait ──────────────────────────────────────────────────────────────────────
+#
+# The runner never sleeps a real thread for a wait (mc/workflows.py's `t ==
+# 'wait'` branch in `_advance_run`) -- it parks the whole run `waiting` with a
+# `resume_at` timestamp, same shape as an approval gate, and only
+# `resume_due_waits()` (polled by the scheduler's existing 30s tick) ever
+# resolves one. These tests freeze `mc.workflows.datetime` rather than
+# sleeping in real time to exercise "not due yet" vs "due".
+
+from datetime import datetime as _real_datetime, timedelta as _real_timedelta, timezone as _real_timezone
+
+
+class _FrozenDatetime(_real_datetime):
+    _now = _real_datetime.now(_real_timezone.utc)
+
+    @classmethod
+    def now(cls, tz=None):
+        return cls._now
+
+
+def test_wait_delay_rejects_non_positive_minutes(wf):
+    doc = _doc('bad-wait-minutes', [_wait('w', {'mode': 'delay', 'minutes': 0})])
+    errors = wf.m.validate_workflow(doc)
+    assert any('positive number of minutes' in e for e in errors)
+
+
+def test_wait_until_rejects_unparseable_at(wf):
+    doc = _doc('bad-wait-at', [_wait('w', {'mode': 'until', 'at': 'not-a-date'})])
+    errors = wf.m.validate_workflow(doc)
+    assert any('unparseable' in e for e in errors)
+
+
+def test_wait_rejects_unknown_mode(wf):
+    doc = _doc('bad-wait-mode', [_wait('w', {'mode': 'forever'})])
+    errors = wf.m.validate_workflow(doc)
+    assert any('config.mode must be one of' in e for e in errors)
+
+
+def test_wait_step_cannot_have_conditional_outgoing_edges(wf):
+    doc = _doc('wait-cond', [
+        _wait('w', {'mode': 'delay', 'minutes': 5}),
+        _agent('after'),
+    ], edges=[_edge('w', 'after', 'somelabel')])
+    errors = wf.m.validate_workflow(doc)
+    assert any('cannot have conditional outgoing edges' in e for e in errors)
+
+
+def test_wait_delay_parks_run_and_is_not_due_immediately(wf):
+    doc = wf.m.create_workflow(_doc('wait-delay', [
+        _wait('w', {'mode': 'delay', 'minutes': 30}), _agent('after'),
+    ], edges=[_edge('w', 'after')]))
+    run = wf.m.start_run(doc['id'])
+    assert run['status'] == 'waiting'
+    assert run['steps']['w']['status'] == 'waiting'
+    assert 'resume_at' in run['steps']['w']
+
+    resumed = wf.m.resume_due_waits()
+    assert resumed == 0
+    run = wf.m.get_run(run['id'])
+    assert run['status'] == 'waiting'  # untouched -- not due for 30 minutes
+
+
+def test_wait_delay_resumes_once_due_and_dispatches_the_next_step(wf, monkeypatch):
+    doc = wf.m.create_workflow(_doc('wait-delay-due', [
+        _wait('w', {'mode': 'delay', 'minutes': 30}), _agent('after'),
+    ], edges=[_edge('w', 'after')]))
+    run = wf.m.start_run(doc['id'])
+
+    monkeypatch.setattr(wf.m, 'datetime', _FrozenDatetime)
+    _FrozenDatetime._now = _real_datetime.now(_real_timezone.utc) + _real_timedelta(minutes=31)
+    resumed = wf.m.resume_due_waits()
+    assert resumed == 1
+
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['w']['status'] == 'completed'
+    assert run['steps']['after']['status'] == 'running'  # dispatched in the same advance
+    assert run['status'] == 'running'
+
+
+def test_wait_until_a_past_timestamp_is_due_immediately(wf):
+    past = (_real_datetime.now(_real_timezone.utc) - _real_timedelta(minutes=1)).isoformat().replace('+00:00', 'Z')
+    doc = wf.m.create_workflow(_doc('wait-until-past', [
+        _wait('w', {'mode': 'until', 'at': past}), _agent('after'),
+    ], edges=[_edge('w', 'after')]))
+    run = wf.m.start_run(doc['id'])
+    assert run['status'] == 'waiting'
+
+    resumed = wf.m.resume_due_waits()
+    assert resumed == 1
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['after']['status'] == 'running'
+
+
+def test_resume_due_waits_ignores_an_approval_gate(wf):
+    """An approval gate is also `status: 'waiting'` -- resume_due_waits must
+    only ever touch a step that actually has a `resume_at` (a wait), never
+    auto-answer a human decision (the runtime half of the authority guard,
+    mc/workflows.py module docstring)."""
+    doc = wf.m.create_workflow(_doc('wait-vs-approval', [_approval('gate', options=['go'])]))
+    run = wf.m.start_run(doc['id'])
+    resumed = wf.m.resume_due_waits()
+    assert resumed == 0
+    run = wf.m.get_run(run['id'])
+    assert run['status'] == 'waiting'
+    assert run['steps']['gate']['status'] == 'waiting'
+
+
+def test_adoption_leaves_a_waiting_wait_run_untouched(wf):
+    doc = wf.m.create_workflow(_doc('adopt-wait2', [_wait('w', {'mode': 'delay', 'minutes': 30})]))
+    run = wf.m.start_run(doc['id'])
+    assert run['status'] == 'waiting'
+    wf.m.adopt_on_startup()
+    run = wf.m.get_run(run['id'])
+    assert run['status'] == 'waiting'  # untouched, same as an approval gate
 
 
 # ── one-live-run-per-workflow ─────────────────────────────────────────────────

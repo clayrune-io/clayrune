@@ -75,6 +75,7 @@ import threading
 import urllib.error
 import urllib.request
 import uuid
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 
@@ -97,7 +98,7 @@ _runs_lock = threading.Lock()
 CURRENT_FORMAT = 2  # stamped on every record write; fixes the store version
                      # never actually reaching disk under the old STORE_VERSION name.
 
-NODE_TYPES = ('agent', 'approval', 'action')
+NODE_TYPES = ('agent', 'approval', 'action', 'wait')
 # R3-1's final v2 allowlist (docs/WORKFLOW_BUILDER_SPEC.md). Growing this is a
 # spec change, not a config change -- every verb here was individually argued
 # through the authority guard (R3-3) before landing.
@@ -105,6 +106,7 @@ ACTION_ALLOWLIST = ('backlog_create', 'backlog_patch', 'desk_harvest',
                      'journal_append', 'notify_operator', 'restore_point_create')
 TRIGGER_TYPES = ('manual', 'schedule')
 RESERVED_WHEN = 'otherwise'
+WAIT_MODES = ('delay', 'until')
 
 _SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}')
 _WF_RESULT_RE = re.compile(r'```[ \t]*wf:result[ \t\r\n]*(.*?)```', re.DOTALL | re.IGNORECASE)
@@ -286,6 +288,16 @@ def delete_workflow(workflow_id: str) -> bool:
 
 # ── Validation + compilation ─────────────────────────────────────────────────
 
+def _parse_iso(ts: str) -> datetime:
+    """Raises on anything that isn't a real timestamp -- both the save-time
+    validator and the resume poll below need that failure to be loud rather
+    than silently treating a garbled `at` as "already due" or "never due"."""
+    dt = datetime.fromisoformat(str(ts).replace('Z', '+00:00'))
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def _declared_vocab(node: dict) -> list:
     t = node.get('type')
     if t == 'agent':
@@ -412,6 +424,24 @@ def validate_workflow(doc: dict) -> list:
         elif t == 'action':
             if node.get('action') not in ACTION_ALLOWLIST:
                 errors.append(f"action step '{name}' action must be one of {ACTION_ALLOWLIST}")
+        elif t == 'wait':
+            config = node.get('config') or {}
+            mode = config.get('mode')
+            if mode not in WAIT_MODES:
+                errors.append(f"wait step '{name}' config.mode must be one of {WAIT_MODES}")
+            elif mode == 'delay':
+                minutes = config.get('minutes')
+                if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+                    errors.append(f"wait step '{name}' needs a positive number of minutes")
+            elif mode == 'until':
+                at = config.get('at')
+                if not isinstance(at, str) or not at.strip():
+                    errors.append(f"wait step '{name}' needs a 'config.at' date/time")
+                else:
+                    try:
+                        _parse_iso(at)
+                    except Exception:
+                        errors.append(f"wait step '{name}' has an unparseable 'config.at' value")
 
     if errors:
         return errors
@@ -433,8 +463,9 @@ def validate_workflow(doc: dict) -> list:
             continue
         node_from = nodes_by_name[frm]
         if when is not None:
-            if node_from.get('type') == 'action':
-                errors.append(f"action step '{frm}' cannot have conditional outgoing edges")
+            from_type = node_from.get('type')
+            if from_type in ('action', 'wait'):
+                errors.append(f"{from_type} step '{frm}' cannot have conditional outgoing edges")
                 continue
             vocab = _declared_vocab(node_from)
             if when != RESERVED_WHEN and when not in vocab:
@@ -796,6 +827,31 @@ def _advance_run(run_id: str) -> None:
                 _notify_approval_waiting(run, workflow, node)
                 return
 
+            if t == 'wait':
+                # Parks the WHOLE run, same shape as an approval gate, rather
+                # than blocking this thread with a real sleep -- the runner is
+                # serial and single-process (R2-D4), so a `time.sleep` here
+                # would hold `_runs_lock` (or, released, would still tie up
+                # this worker) for up to the wait's own duration, and would
+                # not survive a restart at all. Parking with a persisted
+                # `resume_at` costs nothing while waiting and survives a
+                # restart for free: `resume_due_waits` (below) is polled from
+                # the scheduler's existing 30s tick and just finds the
+                # deadline on disk, the same way a `waiting` approval gate is
+                # already left untouched by `adopt_on_startup` and picked up
+                # whenever the human decides. This is why a long wait is safe
+                # here even though a blocking sleep would not be.
+                resume_at = _compute_wait_resume_at(node)
+                if resume_at is None:
+                    _fail_run(run, f"wait step '{name}' has invalid config")
+                    return
+                run['status'] = 'waiting'
+                run['steps'][name] = {**run['steps'].get(name, {}), 'status': 'waiting',
+                                       'resume_at': resume_at}
+                run['frontier'] = _compute_frontier(run, nodes, order)
+                _write_run(run)
+                return
+
             if t == 'action':
                 ok, output, err = _execute_action(run, node, workflow)
                 run['steps'][name] = {
@@ -810,6 +866,32 @@ def _advance_run(run_id: str) -> None:
 
             _fail_run(run, f"unrunnable node type '{t}' at '{name}'")
             return
+
+
+def _compute_wait_resume_at(node: dict) -> Optional[str]:
+    """The absolute UTC instant a wait step should resolve at, computed ONCE
+    when the step is first dispatched (not re-derived on every poll -- a
+    'delay' wait counts from when the run actually reached it, not from
+    workflow-definition time). Returns None on a config validation would
+    have already refused; callers treat that as a run-failure, not a silent
+    skip."""
+    config = node.get('config') or {}
+    mode = config.get('mode')
+    if mode == 'delay':
+        minutes = config.get('minutes')
+        if isinstance(minutes, bool) or not isinstance(minutes, (int, float)) or minutes <= 0:
+            return None
+        return (datetime.now(timezone.utc) + timedelta(minutes=minutes)).isoformat().replace('+00:00', 'Z')
+    if mode == 'until':
+        at = config.get('at')
+        if not isinstance(at, str) or not at.strip():
+            return None
+        try:
+            _parse_iso(at)  # stored/compared verbatim; this just confirms it parses
+        except Exception:
+            return None
+        return at
+    return None
 
 
 def _dispatch_step(run: dict, node: dict) -> bool:
@@ -954,6 +1036,71 @@ def resolve_decision(run_id: str, choice: str) -> dict:
         _write_run(run)
     _advance_run(run_id)
     return _read_run(run['id']) or run
+
+
+# ── Wait resume (polled, not blocked) ────────────────────────────────────────
+
+def resume_due_waits() -> int:
+    """Resolve every parked `wait` step whose `resume_at` has passed. This is
+    the ONLY thing that ever advances a wait -- there is no blocking sleep
+    anywhere in the runner (see the `t == 'wait'` branch in `_advance_run`
+    for why). The caller is `mc/blueprints/scheduler_routes.py`'s existing
+    30s scheduler tick, already running in the server process; this function
+    adds no thread, no timer, and no new concurrency to the runner, which
+    stays exactly as serial as R2-D4 requires.
+
+    Also the reason a long wait needs no separate restart-adoption path
+    (unlike an in-flight agent step): `resume_at` is a plain field on the
+    persisted run, so the very next tick after a restart just finds it due
+    (or not) -- `adopt_on_startup` already leaves `waiting` runs untouched
+    for exactly this reason (a parked approval gate is the same shape and
+    already relies on it). No side effect can have been missed by going
+    down, because nothing runs *during* a wait.
+
+    Returns the number of steps resolved, for tests and the scheduler's own
+    logging -- never raises; a single bad run file is logged and skipped so
+    it can't starve every other run's waits behind it.
+    """
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return 0
+    now = datetime.now(timezone.utc)
+    resumed = 0
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        run_id = f.stem
+        run_to_advance = None
+        with _runs_lock:
+            try:
+                run = _read_run(run_id)
+            except Exception as e:
+                _log(f'[workflows] resume_due_waits: unreadable run {run_id[:12]}: {e}')
+                continue
+            if run is None or run.get('status') != 'waiting':
+                continue
+            step_name = next((n for n, st in (run.get('steps') or {}).items()
+                              if st.get('status') == 'waiting' and 'resume_at' in st), None)
+            if step_name is None:
+                continue  # e.g. an approval gate -- a human resolves that, not this
+            resume_at = run['steps'][step_name].get('resume_at') or ''
+            try:
+                due = _parse_iso(resume_at) <= now
+            except Exception as e:
+                _log(f"[workflows] run {run_id[:12]} step '{step_name}': "
+                     f"unparseable resume_at {resume_at!r}, resuming now rather "
+                     f"than wedging the run forever: {e}")
+                due = True
+            if not due:
+                continue
+            run['steps'][step_name] = {
+                **run['steps'][step_name], 'status': 'completed',
+                'output': f'waited until {resume_at}', 'error': None, 'chosen_when': None,
+            }
+            run['status'] = 'running'
+            _write_run(run)
+            run_to_advance = run_id
+            resumed += 1
+        if run_to_advance:  # outside the lock -- _advance_run takes it itself
+            _advance_run(run_to_advance)
+    return resumed
 
 
 def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
