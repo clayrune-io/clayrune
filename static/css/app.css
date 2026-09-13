@@ -9311,3 +9311,16 @@
     .modal-scroll-body.wf-tab-active .card-section.wfb-fill-col { padding-top: 2px; }
     .modal-scroll-body.wf-tab-active .card-section.wfb-fill-col > .section-title { display: none; }
   }
+
+/* Workflow builder: live-run strip + Cancel (incident run-42a3f2aa). A run
+   whose completion never arrives blocks every future run (one live run per
+   workflow), so the builder shows the live run and a way to cancel it. */
+.wfb-live-run {
+  display: flex; align-items: center; gap: 10px; flex-shrink: 0; margin-bottom: 8px;
+  padding: 8px 12px; border: 1px solid var(--amber, #d98a00); border-radius: 6px;
+  background: var(--amber-dim, rgba(217,138,0,0.08)); color: var(--text); font-size: 12px;
+}
+.wfb-live-run-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--amber, #d98a00); flex-shrink: 0; }
+.wfb-live-run-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.wfb-live-run-text code { font-family: var(--mono, monospace); font-size: 11px; }
+.wfb-live-run-cancel { flex-shrink: 0; color: var(--red-text, #c0392b); border-color: var(--red, #c0392b); }

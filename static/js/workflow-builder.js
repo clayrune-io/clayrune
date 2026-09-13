@@ -700,6 +700,7 @@ function _wfFreshState(def, workflowId, error, hintProjectId) {
            paletteExpanded: false, promptOpen: {},
            dirty: false, savedAt: null, runErrors: null, scrollToNode: null,
            descOpen: !!(def.description && String(def.description).trim()),
+           liveRun: null, cancellingRun: false,
            _undo: [], _redo: [], _lastSnapshot: null, _savedSnapshot: null };
 }
 
@@ -720,6 +721,7 @@ async function _wfLoadInto(entry, workflowId, hintProjectId) {
       found ? null : 'Workflow not found',
       hintProjectId);
     if (found) await _wfLoadLinkedSchedule(entry._wf);
+    if (found) await _wfLoadLiveRun(entry._wf);
   } catch (e) {
     entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow', hintProjectId);
   }
@@ -1561,6 +1563,7 @@ function _wfRenderBody(st) {
     ${descOpen ? `<div class="wfb-toolbar-desc-row">
       <textarea id="wfb-desc" rows="1" placeholder="What this pipeline is for">${esc(def.description || '')}</textarea>
     </div>` : ''}
+    ${_wfRenderLiveRun(st)}
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
@@ -4062,15 +4065,89 @@ async function _wfRunNow() {
     const data = await res.json().catch(() => ({}));
     if (!res.ok || !data.ok) {
       const msg = data.error || ('HTTP ' + res.status);
+      // 409 busy = a run is already live. Surface it (with its Cancel) rather
+      // than leaving only a toast -- a run whose completion never arrives
+      // otherwise blocks every future run with no visible way out.
+      if (data.busy) { await _wfLoadLiveRun(st); _wfRender(); }
       const names = (st.def.nodes || []).map(n => n.name);
       const hit = names.find(n => msg.includes(`'${n}'`));
       if (hit) _wfApplyRunErrors(st, [{ node: hit, message: msg }]);
       showToast('Run failed: ' + msg, 6000);
       return;
     }
+    st.liveRun = (data.run && _WF_LIVE_RUN_STATUSES.includes(data.run.status)) ? data.run : null;
+    _wfRender();
     showToast('Run started.', 3000);
   } catch (e) {
     showToast('Run failed: ' + e.message, 6000);
+  }
+}
+
+// ── Live run strip + Cancel ──────────────────────────────────────────────────
+// One live run per workflow (mc/workflows.py `_has_live_run`), so the strip
+// shows at most one. Loaded when a saved workflow mounts and after Run now;
+// not polled -- a run that has since finished is caught by Cancel's own 409,
+// which clears the strip. Cancel marks the RUN cancelled and deliberately
+// leaves any in-flight agent session running (its chat's Stop owns that), so
+// the toast names what is still going.
+const _WF_LIVE_RUN_STATUSES = ['running', 'waiting'];
+
+async function _wfLoadLiveRun(st) {
+  if (!st || !st.workflowId) { if (st) st.liveRun = null; return; }
+  try {
+    const res = await fetch(`${API_BASE}/api/workflows/${encodeURIComponent(st.workflowId)}/runs?limit=5`);
+    const runs = res.ok ? await res.json() : [];
+    st.liveRun = (runs || []).find(r => _WF_LIVE_RUN_STATUSES.includes(r.status)) || null;
+  } catch (e) {
+    st.liveRun = null;
+  }
+}
+
+function _wfRenderLiveRun(st) {
+  const run = st.liveRun;
+  if (!run) return '';
+  const inFlight = Object.entries(run.steps || {})
+    .filter(([, s]) => _WF_LIVE_RUN_STATUSES.includes(s.status)).map(([n]) => n);
+  const since = (run.trigger && run.trigger.fired_at) || run.created || '';
+  const sinceLabel = since ? new Date(since).toLocaleString() : '';
+  return `<div class="wfb-live-run" data-run-id="${esc(run.id)}">
+      <span class="wfb-live-run-dot"></span>
+      <span class="wfb-live-run-text">Run <code>${esc(run.id)}</code> is ${esc(run.status)}${inFlight.length ? ` on <b>${esc(inFlight.join(', '))}</b>` : ''}${sinceLabel ? ` · started ${esc(sinceLabel)}` : ''}. A new run can't start until it ends.</span>
+      <button type="button" class="wfb-toolbar-btn wfb-live-run-cancel" onclick="_wfCancelRun()" ${st.cancellingRun ? 'disabled' : ''}
+        title="Stop this run from advancing. Any agent already working keeps going — stop it from its own chat.">${st.cancellingRun ? 'Cancelling…' : 'Cancel run'}</button>
+    </div>`;
+}
+
+async function _wfCancelRun() {
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  const st = entry._wf;
+  const run = st.liveRun;
+  if (!run || st.cancellingRun) return;
+  if (!confirm(`Cancel run ${run.id}? Its remaining steps will not run. An agent already working on a step keeps going until you stop it from its chat.`)) return;
+  st.cancellingRun = true;
+  _wfRender();
+  try {
+    const res = await fetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok || !data.ok) {
+      if (res.status === 409 || res.status === 404) {
+        st.liveRun = null;
+        showToast('That run had already ended: ' + (data.error || ('HTTP ' + res.status)), 5000);
+      } else {
+        showToast('Cancel failed: ' + (data.error || ('HTTP ' + res.status)), 6000);
+      }
+      return;
+    }
+    st.liveRun = null;
+    const left = (data.run && data.run.left_running) || [];
+    showToast(left.length
+      ? `Run cancelled. Still working: ${left.map(l => `${l.step} (session ${l.session_id})`).join(', ')} — stop it from its chat if you need to.`
+      : 'Run cancelled.', left.length ? 8000 : 3000);
+  } catch (e) {
+    showToast('Cancel failed: ' + e.message, 6000);
+  } finally {
+    st.cancellingRun = false;
+    _wfRender();
   }
 }
 
@@ -4137,6 +4214,7 @@ window._wfRerenderWaitFields = _wfRerenderWaitFields;
 window._wfInsertSlot = _wfInsertSlot;
 window._wfSave = _wfSave;
 window._wfRunNow = _wfRunNow;
+window._wfCancelRun = _wfCancelRun;
 window._wfMarkDirty = _wfMarkDirty;
 window._wfSetSchedType = _wfSetSchedType;
 window._wfToggleSchedEnabled = _wfToggleSchedEnabled;

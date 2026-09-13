@@ -2361,6 +2361,79 @@ try {
   if (uncaught6.length) uncaught6.forEach((e) => fail('uncaught exception in the stale-roster refresh flow: ' + e));
   await ctx6.close();
 
+  // ── Live run strip + Cancel (incident run-42a3f2aa, 2026-09-12): a run whose
+  // completion never arrived sat `running` and blocked every future run, with
+  // no route or control to end it. Opening the saved workflow must show the
+  // live run, and Cancel must POST the human-only cancel route (a real browser
+  // click carries Origin) and clear the strip, naming the agent left running.
+  const WF7 = { id: 'wf-smoke-live', format: 2, name: 'Check US stocks', enabled: true,
+    trigger: { type: 'manual' }, edges: [],
+    nodes: [{ type: 'agent', name: 'us-stock-investor', project_id: PID, character: '', prompt: 'scan', x: 40, y: 40 }] };
+  const RUN7 = { id: 'run-42a3f2aa', workflow_id: WF7.id, status: 'running',
+    trigger: { type: 'manual', fired_at: '2026-09-12T21:42:58Z' }, created: '2026-09-12T21:42:58Z',
+    steps: { 'us-stock-investor': { status: 'running', project_id: PID, session_id: '4e31ad33938b' } } };
+  let runs7 = [RUN7];
+  const cancelPosts7 = [];
+  const ctx7 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page7 = await ctx7.newPage();
+  const page7Errors = [];
+  page7.on('pageerror', (e) => page7Errors.push(e.message || String(e)));
+  page7.on('dialog', (d) => d.accept());
+  await page7.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([WF7]) });
+    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(runs7) });
+    if (path === `/api/workflow-runs/${RUN7.id}/cancel` && req.method() === 'POST') {
+      cancelPosts7.push(path);
+      const cancelled = { ...RUN7, status: 'cancelled',
+        left_running: [{ step: 'us-stock-investor', project_id: PID, session_id: '4e31ad33938b' }] };
+      runs7 = [cancelled];
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, run: cancelled }) });
+    }
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    return route.abort();
+  });
+  await page7.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page7.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page7.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
+  });
+  await openWorkflowsTab(page7, PID);
+  const strip7 = await page7.waitForSelector('.wfb-live-run', { timeout: 5000 }).catch(() => null);
+  const stripText7 = strip7 ? await strip7.textContent() : '';
+  (strip7 && /run-42a3f2aa/.test(stripText7) && /us-stock-investor/.test(stripText7))
+    ? ok('opening a workflow with a live run shows the run strip naming the run and its in-flight step')
+    : fail(`expected a live-run strip naming run-42a3f2aa / us-stock-investor, got: ${JSON.stringify(stripText7)}`);
+  if (strip7) {
+    await page7.click('.wfb-live-run-cancel');
+    await page7.waitForTimeout(250);
+    cancelPosts7.length === 1
+      ? ok('Cancel run POSTed /api/workflow-runs/<id>/cancel exactly once (after the confirm)')
+      : fail(`expected exactly 1 cancel POST, got ${cancelPosts7.length}`);
+    (await page7.$('.wfb-live-run'))
+      ? fail('the live-run strip is still showing after a successful cancel')
+      : ok('the live-run strip clears after a successful cancel');
+    const toasts7 = await page7.evaluate(() => window.__toasts || []);
+    toasts7.some(t => /cancelled/i.test(t) && /4e31ad33938b/.test(t))
+      ? ok('the cancel toast names the agent session that is still running')
+      : fail(`expected a toast naming session 4e31ad33938b, got ${JSON.stringify(toasts7)}`);
+  }
+  const uncaught7 = page7Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught7.length) uncaught7.forEach((e) => fail('uncaught exception in the live-run cancel flow: ' + e));
+  await ctx7.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'
