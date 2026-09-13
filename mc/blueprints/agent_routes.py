@@ -5279,8 +5279,17 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
                           character_body='', model_override='',
-                          resume_id='', source=''):
+                          resume_id='', source='',
+                          notify_session='', notify_workflow=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
+
+    `notify_session` / `notify_workflow` (MC-946 / MC-871): the completion
+    callbacks, stored on the session dict under the SAME keys the claude Mode
+    A/B dicts use so `_maybe_notify_spawner` finds them at process exit. These
+    were not parameters here at all until 2026-09-12: `_dispatch_agent_internal`
+    accepted both and dropped them on this branch, so every non-claude child
+    silently never reported back and a codex workflow step (run-42a3f2aa)
+    left its run `running` forever. Pinned by tests/test_workflow_runtime_notify.py.
 
     `resume_id` (parity audit item 3, "Resume"): the provider's own session
     id to continue — for Codex this is `provider_session_id` (the thread id
@@ -5354,6 +5363,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # present, so a personaless Codex/Gemini/opencode worker introduced
             # itself as the project's default agent instead.
             'source': source or '',
+            # Completion callbacks -- see the docstring. Same keys as the
+            # claude session dicts in _dispatch_agent_internal.
+            '_notify_session': notify_session,
+            '_notify_workflow': notify_workflow,
         }
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
@@ -5878,7 +5891,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          character_body=character_body,
                                          model_override=model_override,
                                          resume_id=resume_id,
-                                         source=source)
+                                         source=source,
+                                         notify_session=notify_session,
+                                         notify_workflow=notify_workflow)
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
