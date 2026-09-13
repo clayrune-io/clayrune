@@ -8918,7 +8918,7 @@
      slot chips), just visually set apart from the rest of the card body. */
   .wfb-prompt-inset { background: var(--surface2); border: 1px solid var(--border); border-radius: 7px; padding: 8px 10px 6px; margin: 2px 0 6px; }
   .wfb-prompt-inset .wfb-prompt { background: var(--surface); }
-  .wfb-prompt-inset .wfb-insert-select { margin-top: 6px; }
+  .wfb-prompt-inset .wfb-insert-btn { margin-top: 6px; }
   /* MC-871 agent-card pass: the prompt collapses behind this row by default
      (Ron: an always-visible dimmed textarea per card is a wall of grey text
      on a multi-step canvas). Same tinted-inset treatment as the expanded
@@ -9166,14 +9166,27 @@
   .wfb-save-stamp { font-size: 11px; color: var(--text-faint); font-family: var(--mono); white-space: nowrap; }
   .wfb-save-stamp-dirty { color: var(--amber-text); font-weight: 600; }
 
-  /* Step 5b: the Insert dropdown + read-only slot legend sitting under a
-     reused Phase-2 <textarea>/<input> (ground rule 3 forbids replacing them
-     with a contenteditable so real in-text chips could render). */
-  .wfb-insert-select {
+  /* Step 5b / MC-871 Ron report (Insert control never held a value AND never
+     persisted): the read-only slot legend sitting under a reused Phase-2
+     <textarea>/<input> (ground rule 3 forbids replacing them with a
+     contenteditable so real in-text chips could render) is unchanged; the
+     inserter above it is now a plain button that opens a floating menu
+     (mirrors `.wfb-node-menu`) instead of a one-shot <select> that always
+     snapped back to its placeholder and read as "rejected my choice". */
+  .wfb-insert-btn {
     margin: 4px 0 2px; background: var(--surface); border: 1px solid var(--border); color: var(--text-faint);
-    font-family: inherit; font-size: 11px; padding: 3px 6px; border-radius: 5px; outline: none; cursor: pointer;
+    font-family: inherit; font-size: 11px; padding: 3px 8px; border-radius: 5px; outline: none; cursor: pointer;
   }
-  .wfb-insert-select:hover, .wfb-insert-select:focus { border-color: var(--accent); color: var(--text); }
+  .wfb-insert-btn:hover, .wfb-insert-btn:focus { border-color: var(--accent); color: var(--text); }
+  .wfb-insert-menu {
+    position: fixed; z-index: 100000; min-width: 180px; max-width: 260px; background: var(--surface3, var(--surface));
+    border: 1px solid var(--border2, var(--border)); border-radius: 8px; box-shadow: 0 6px 20px rgba(0,0,0,0.25);
+    padding: 4px; font-family: 'Inter', sans-serif; max-height: 260px; overflow-y: auto;
+  }
+  .wfb-insert-menu-item { padding: 6px 8px; border-radius: 6px; cursor: pointer; display: flex; flex-direction: column; gap: 1px; }
+  .wfb-insert-menu-item:hover { background: var(--surface2); }
+  .wfb-insert-menu-item-primary { font-size: 12px; font-weight: 600; color: var(--text); }
+  .wfb-insert-menu-item-secondary { font-size: 10.5px; color: var(--text-faint); }
   .wfb-slot-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: 2px 0 6px; }
   .wfb-slot-chip {
     font-family: var(--mono); font-size: 10px; background: var(--surface); border: 1px solid var(--border);

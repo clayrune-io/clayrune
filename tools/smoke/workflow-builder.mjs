@@ -469,7 +469,7 @@ try {
     return {
       text: label ? label.textContent.trim() : null,
       hasHint: !!(label && label.querySelector('.memory-hint')),
-      hasInsertSelect: !!document.querySelector('.wfb-node .wfb-insert-select'),
+      hasInsertSelect: !!document.querySelector('.wfb-node .wfb-insert-btn'),
     };
   });
   (promptLabelInfo.text === 'Prompt' && !promptLabelInfo.hasHint && promptLabelInfo.hasInsertSelect)
@@ -2138,6 +2138,16 @@ try {
         ok: true, workflow: { ...body, id: 'wf-smoke5', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:00:00Z' },
       }) });
     }
+    // A second `_wfSave()` after the first (the rename+insert-persistence
+    // case below) goes out as a PUT once st.workflowId is set — unmocked,
+    // this silently route.abort()s and the save never happens at all.
+    if (path === '/api/workflows/wf-smoke5' && req.method() === 'PUT') {
+      const body = JSON.parse(req.postData() || '{}');
+      workflowPosts5.push(body);
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        ok: true, workflow: { ...body, id: 'wf-smoke5', format: 2, created: '2026-09-11T00:00:00Z', updated: '2026-09-11T00:10:00Z' },
+      }) });
+    }
     return route.abort();
   });
   await page5.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -2202,11 +2212,96 @@ try {
     ? ok('the raw identifier stayed visible and correct after the group switch (notify_operator)')
     : fail('the raw action identifier did not update to notify_operator after switching groups');
 
+  // ── Ron report: rename an action node, then use the Insert control on its
+  // message field — the slot never actually landed in the saved definition.
+  // Root cause (confirmed, not guessed): the old <select>'s onchange baked a
+  // raw CSS selector containing a literal `"` into a double-quoted HTML
+  // attribute, corrupting the parse; the handler never ran. Reproduces with
+  // a rename still in-flight (typed, not yet synced) — the field-sync must
+  // resolve the CURRENT node via the card's own DOM element, not a name
+  // string baked at the last render. ──────────────────────────────────────
+  await setValue(page5, `${actSel} .wfb-node-own .wfb-name`, 'Send email');
+  await page5.click(`${actSel} .wfb-insert-btn`);
+  await page5.waitForTimeout(80);
+  const menuAfterOpen = await page5.$$eval('.wfb-insert-menu-item .wfb-insert-menu-item-primary', els => els.map(e => e.textContent));
+  menuAfterOpen.includes("This run's ID")
+    ? ok(`the Insert menu opened with plain-English options: ${JSON.stringify(menuAfterOpen)}`)
+    : fail(`expected "This run's ID" in the Insert menu, got ${JSON.stringify(menuAfterOpen)}`);
+  const runIdItem = await page5.evaluateHandle(() => [...document.querySelectorAll('.wfb-insert-menu-item')]
+    .find((el) => (el.querySelector('.wfb-insert-menu-item-primary') || {}).textContent === "This run's ID"));
+  await runIdItem.asElement().click();
+  await page5.waitForTimeout(80);
+  (await page5.$('.wfb-insert-menu')) === null
+    ? ok('the Insert menu closed itself on pick — no lingering open menu')
+    : fail('the Insert menu stayed open after picking an item');
+  const modelAfterInsert = await page5.evaluate((oldName) => {
+    const def = window._wfEntry()._wf.def;
+    const node = def.nodes.find(n => n.name === 'Send email') || def.nodes.find(n => n.name === oldName);
+    return node ? { name: node.name, config: node.config } : null;
+  }, actName);
+  (modelAfterInsert && modelAfterInsert.name === 'Send email' && /\{\{run\.id\}\}/.test((modelAfterInsert.config || {}).message || ''))
+    ? ok(`inserting a result into a just-renamed action node's message field persisted in-memory: ${JSON.stringify(modelAfterInsert)}`)
+    : fail(`inserting a result into a just-renamed action node's message field did NOT persist: ${JSON.stringify(modelAfterInsert)}`);
+  const actSelNow = '.wfb-node[data-name="Send email"]'; // the render after insert wrote the NEW data-name
+  const flashedAfterInsert = await page5.$eval(`${actSelNow} [data-cfg-key="message"]`, el => el.classList.contains('clayrune-highlight'));
+  flashedAfterInsert
+    ? ok('the message field flashed (.clayrune-highlight) right after the insert landed — visible confirmation it worked')
+    : fail('expected the message field to carry the highlight-flash class immediately after inserting');
+
+  await setValue(page5, '#wfb-name', 'Renamed action smoke workflow');
+  await page5.evaluate(() => window._wfSave());
+  await page5.waitForTimeout(150);
+  const savedActionNode = workflowPosts5.length
+    ? (workflowPosts5[workflowPosts5.length - 1].nodes || []).find(n => n.name === 'Send email') : null;
+  (savedActionNode && /\{\{run\.id\}\}/.test((savedActionNode.config || {}).message || ''))
+    ? ok(`the saved definition kept {{run.id}} in the renamed action node's message after Save: ${JSON.stringify(savedActionNode && savedActionNode.config)}`)
+    : fail(`the saved action node lost the inserted slot after rename+Save: ${JSON.stringify(savedActionNode)}`);
+
+  // ── Plain-English ancestor labels: an agent ancestor's option must read
+  // as WHO ("Tobin's result"), with the internal step name demoted to a
+  // secondary line -- never the raw step identifier as the primary label.
+  // Wired directly into the model (not a live drag) -- the canvas is
+  // already crowded from the cases above, and this assertion is about the
+  // LABEL the menu renders for an existing legal ancestor, not about
+  // drag-to-wire mechanics (covered elsewhere in this suite). ────────────────
+  // Legal-slot computation (`_wfInsertOptions`) reads `entry._wf.def`
+  // directly, not the DOM -- no re-render needed for the menu to see this.
+  await page5.evaluate(({ actNodeName, pid }) => {
+    const def = window._wfEntry()._wf.def;
+    def.nodes.push({ character: 'global:builder', name: 'triage-agent', outcomes: [],
+      project_id: pid, prompt: 'triage', type: 'agent', x: 40, y: 900 });
+    def.edges = def.edges || [];
+    def.edges.push({ from: 'triage-agent', to: actNodeName });
+  }, { actNodeName: 'Send email', pid: PID });
+  await page5.click(`${actSelNow} .wfb-insert-btn`);
+  await page5.waitForTimeout(80);
+  const ancestorItem = await page5.evaluate((stepName) => {
+    const items = [...document.querySelectorAll('.wfb-insert-menu-item')];
+    const hit = items.find((el) => (el.querySelector('.wfb-insert-menu-item-secondary') || {}).textContent === stepName);
+    return hit ? {
+      primary: (hit.querySelector('.wfb-insert-menu-item-primary') || {}).textContent,
+      secondary: (hit.querySelector('.wfb-insert-menu-item-secondary') || {}).textContent,
+    } : null;
+  }, 'triage-agent');
+  (ancestorItem && ancestorItem.primary === "Tobin's result" && ancestorItem.secondary === 'triage-agent')
+    ? ok(`the agent ancestor's option leads with the display name ("Tobin's result") and demotes the step name ("triage-agent") to a secondary line`)
+    : fail(`expected {primary:"Tobin's result",secondary:"triage-agent"}, got ${JSON.stringify(ancestorItem)}`);
+  // Deliberately NOT Escape here: index.html's global handler closes the
+  // focused modal on Escape with no guard for this menu (same unguarded
+  // conflict `_wfNodeMenuOpenFor`/`_wfPortPopover`/`_wfTriggerPopoverOpen`
+  // already carry -- fixing that global handler is out of scope for the
+  // Insert control). An outside click is the documented close path.
+  await page5.mouse.click(vpBox5.x + 10, vpBox5.y + 10);
+  await page5.waitForTimeout(80);
+  (await page5.$('.wfb-insert-menu')) === null
+    ? ok('the Insert menu closes on an outside click')
+    : fail('the Insert menu stayed open after an outside click');
+
   // ── Approval: the consequence-framing description line (Action-standard). ─
   const apprPt = await emptyCanvasPoint(page5);
   await dragPaletteToolTo(page5, 'Approval gate', apprPt.x, apprPt.y);
   const allNodeNames5b = await page5.$$eval('.wfb-node', els => els.map(e => e.dataset.name));
-  const apprName = allNodeNames5b.find(n => n !== waitName && n !== actName);
+  const apprName = allNodeNames5b.find(n => n !== waitName && n !== 'Send email' && n !== 'triage-agent');
   const apprDesc = await page5.$eval(`.wfb-node[data-name="${apprName}"] .wfb-action-desc`, el => el.textContent).catch(() => '');
   /Parks the run and waits for a human/.test(apprDesc)
     ? ok(`the Approval card states what it does, Action-style: "${apprDesc}"`)
