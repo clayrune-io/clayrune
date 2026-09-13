@@ -3289,6 +3289,8 @@ def _read_agent_stream(proc, session):
     # Snapshot the proc we were launched with so we can detect if a follow-up
     # replaced us with a newer process while we were still draining stdout.
     my_proc = proc
+    # total_cost_usd is cumulative per CLI process; this reader IS the process.
+    proc_cost = {}
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:a')  # Phase 2 loop observability (1.12)
@@ -3433,8 +3435,7 @@ def _read_agent_stream(proc, session):
                     # in Mode B; overwriting would discard all prior turns).
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
-                    if 'cost_usd' in msg:
-                        session['cost_usd'] = (session.get('cost_usd') or 0.0) + (msg['cost_usd'] or 0.0)
+                    _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
                     if 'num_turns' in msg:
                         session['num_turns'] = msg['num_turns']
                     _record_permission_denials(session, msg)
@@ -3519,6 +3520,8 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
+    # total_cost_usd is cumulative per CLI process; this reader IS the process.
+    proc_cost = {}
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -3649,8 +3652,7 @@ def _read_agent_stream_b(proc, session):
                         _note_claude_sid(session, msg['session_id'])
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
-                    if 'cost_usd' in msg:
-                        session['cost_usd'] = (session.get('cost_usd') or 0.0) + (msg['cost_usd'] or 0.0)
+                    _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
                     if 'num_turns' in msg:
                         session['num_turns'] = msg['num_turns']
                     _record_permission_denials(session, msg)

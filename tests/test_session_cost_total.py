@@ -1,0 +1,170 @@
+"""Session cost must come from Claude's `total_cost_usd`, counted as deltas.
+
+Claude Code's stream-json `result` object has no `cost_usd` key. It carries
+`total_cost_usd`, and that figure is cumulative for the CLI PROCESS. Every
+reader read `cost_usd`, so every session's cost stayed 0.
+
+The numbers below are real, captured 2026-09-13 from CLI 2.1.268 (haiku):
+one Mode-B process, two turns, then the same session resumed in a new
+process for a third turn.
+
+    process 1, turn 1   total_cost_usd 0.031334
+    process 1, turn 2   total_cost_usd 0.0354149   (turn 2 alone ~0.0041)
+    process 2, turn 1   total_cost_usd 0.0038313   (counter restarted)
+
+So the session has really spent 0.0354149 after process 1 and 0.0392462
+after process 2. Setting from the last event would report 0.0038313; adding
+every event would report 0.0705802. Both are wrong, which is what these
+tests pin.
+"""
+from __future__ import annotations
+
+import importlib
+import io
+import json
+
+import pytest
+
+P1_T1 = 0.031334
+P1_T2 = 0.0354149
+P2_T1 = 0.0038313
+
+
+def _result(total=None, cost=None, sid='sess-cost'):
+    msg = {'type': 'result', 'subtype': 'success', 'session_id': sid,
+           'num_turns': 1,
+           'usage': {'input_tokens': 10, 'output_tokens': 47}}
+    if total is not None:
+        msg['total_cost_usd'] = total
+    if cost is not None:
+        msg['cost_usd'] = cost
+    return json.dumps(msg)
+
+
+def _assistant(text):
+    return json.dumps({'type': 'assistant', 'session_id': 'sess-cost',
+                       'message': {'content': [{'type': 'text', 'text': text}]}})
+
+
+class _FakeProc:
+    def __init__(self, lines):
+        self.stdout = io.StringIO('\n'.join(lines) + '\n')
+        self.pid = -1
+        self._rc = 0
+
+    def wait(self):
+        return self._rc
+
+    def poll(self):
+        return self._rc
+
+    def kill(self):
+        pass
+
+
+def _new_session():
+    return {'project_id': 'p-cost', 'status': 'running', 'log_lines': [],
+            'last_output_time': 0.0, 'last_status_change_time': 0.0,
+            'provider': 'claude'}
+
+
+def _run(reader, session, lines):
+    proc = _FakeProc(lines)
+    session['proc'] = proc
+    reader(proc, session)
+
+
+# ── the helper ──────────────────────────────────────────────────────────────
+
+def test_helper_two_turns_one_process_counts_the_delta():
+    from mc.agent_runtime import accumulate_result_cost
+    session, proc_cost = {}, {}
+    accumulate_result_cost(session, {'total_cost_usd': P1_T1}, proc_cost)
+    accumulate_result_cost(session, {'total_cost_usd': P1_T2}, proc_cost)
+    assert session['cost_usd'] == pytest.approx(P1_T2)
+
+
+def test_helper_new_process_counts_its_first_turn_in_full():
+    from mc.agent_runtime import accumulate_result_cost
+    session = {}
+    first = {}
+    accumulate_result_cost(session, {'total_cost_usd': P1_T1}, first)
+    accumulate_result_cost(session, {'total_cost_usd': P1_T2}, first)
+    accumulate_result_cost(session, {'total_cost_usd': P2_T1}, {})
+    assert session['cost_usd'] == pytest.approx(P1_T2 + P2_T1)
+
+
+def test_helper_backwards_total_is_a_restart_not_a_refund():
+    from mc.agent_runtime import accumulate_result_cost
+    session, proc_cost = {}, {}
+    accumulate_result_cost(session, {'total_cost_usd': 0.5}, proc_cost)
+    accumulate_result_cost(session, {'total_cost_usd': 0.1}, proc_cost)
+    assert session['cost_usd'] == pytest.approx(0.6)
+
+
+def test_helper_falls_back_to_per_turn_cost_usd():
+    from mc.agent_runtime import accumulate_result_cost
+    session, proc_cost = {}, {}
+    accumulate_result_cost(session, {'cost_usd': 0.01}, proc_cost)
+    accumulate_result_cost(session, {'cost_usd': 0.02}, proc_cost)
+    assert session['cost_usd'] == pytest.approx(0.03)
+
+
+def test_helper_no_cost_fields_leaves_session_untouched():
+    from mc.agent_runtime import accumulate_result_cost
+    session = {}
+    accumulate_result_cost(session, {'cost_usd': None, 'total_cost_usd': None}, {})
+    assert 'cost_usd' not in session
+
+
+def test_claude_turn_end_payload_carries_total_cost_usd():
+    from mc.agent_runtime import ClaudeRuntime
+    ev = ClaudeRuntime().parse_event(_result(total=P1_T1))
+    assert ev.payload['total_cost_usd'] == P1_T1
+    assert ev.payload['cost_usd'] is None
+
+
+# ── the live Claude readers (mc/blueprints/agent_routes.py) ─────────────────
+
+def test_mode_b_reader_two_turns_then_respawn(tmp_data_dir):
+    server = importlib.import_module('server')
+    importlib.reload(server)
+    session = _new_session()
+
+    _run(server._read_agent_stream_b, session, [
+        _assistant('one'), _result(total=P1_T1),
+        _assistant('two'), _result(total=P1_T2),
+    ])
+    assert session['cost_usd'] == pytest.approx(P1_T2)
+
+    # The respawned process's counter starts again at its own first turn.
+    _run(server._read_agent_stream_b, session, [
+        _assistant('three'), _result(total=P2_T1),
+    ])
+    assert session['cost_usd'] == pytest.approx(P1_T2 + P2_T1)
+
+
+def test_mode_a_reader_accumulates_one_process_per_turn(tmp_data_dir):
+    server = importlib.import_module('server')
+    importlib.reload(server)
+    session = _new_session()
+
+    _run(server._read_agent_stream, session, [_assistant('one'), _result(total=0.02)])
+    _run(server._read_agent_stream, session, [_assistant('two'), _result(total=0.03)])
+    assert session['cost_usd'] == pytest.approx(0.05)
+
+
+# ── the shared Mode-A reader (mc/agent_runtime.py `_mode_a_reader`) ─────────
+
+def test_shared_mode_a_reader_two_turns_one_process():
+    from mc import agent_runtime as rt
+    proc = _FakeProc([_assistant('one'), _result(total=P1_T1),
+                      _assistant('two'), _result(total=P1_T2)])
+    session: dict = {'log_lines': [], 'proc': proc}
+    handle = rt.SessionHandle(
+        mc_session_id='sid-cost', provider='claude', mode='A',
+        project_path='/p', project_id='p-cost', session_dict=session,
+        meta={'callbacks': {}},
+    )
+    rt._mode_a_reader(proc, handle, rt.ClaudeRuntime())
+    assert session['cost_usd'] == pytest.approx(P1_T2)
