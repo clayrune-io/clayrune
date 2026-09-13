@@ -1322,7 +1322,11 @@ class ClaudeRuntime(AgentRuntime):
                 timestamp=_now_iso(),
                 payload={
                     'usage': msg.get('usage'),
+                    # Per-turn, if a runtime ever emits it. Claude emits
+                    # total_cost_usd instead: cumulative for the process.
+                    # See accumulate_result_cost.
                     'cost_usd': msg.get('cost_usd'),
+                    'total_cost_usd': msg.get('total_cost_usd'),
                     'num_turns': msg.get('num_turns'),
                     'rc': msg.get('result_code'),
                     # Tool calls this turn REFUSED. Claude Code has always put
@@ -3470,6 +3474,39 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     return handle
 
 
+def accumulate_result_cost(session, msg, proc_cost):
+    """Add one turn's spend, from a `result`-style dict, to session['cost_usd'].
+
+    Claude Code's `result` carries `total_cost_usd`, and it is CUMULATIVE FOR
+    THE CLI PROCESS, not per turn. Measured 2026-09-13 on CLI 2.1.268, one
+    Mode-B process, two turns: 0.031334 then 0.0354149 (turn two alone cost
+    ~0.004). The same session resumed in a NEW process (`--resume`) reported
+    0.0038313 for its first turn: the counter restarts with the process.
+    We read only `cost_usd`, which that object never has, so every session's
+    cost stayed 0.
+
+    So the running total is kept as deltas. `proc_cost` is a dict the caller
+    creates once PER PROCESS (one reader thread per proc), holding the last
+    `total_cost_usd` that process reported. A respawn gets a fresh dict, and
+    its first turn counts in full. A total that goes backwards is treated as
+    a restart rather than a refund. `cost_usd` stays as a per-turn fallback
+    for any runtime that emits it.
+    """
+    if not isinstance(msg, dict):
+        return
+    total = msg.get('total_cost_usd')
+    if isinstance(total, (int, float)):
+        seen = proc_cost.get('total_cost_usd', 0.0)
+        delta = total - seen if total >= seen else total
+        proc_cost['total_cost_usd'] = total
+    else:
+        turn = msg.get('cost_usd')
+        if not isinstance(turn, (int, float)):
+            return
+        delta = turn
+    session['cost_usd'] = (session.get('cost_usd') or 0.0) + delta
+
+
 # ── Tool-line formatting — shared by Claude's native reader (agent_routes.py
 # `_read_agent_stream`) and every Mode-A provider (`_mode_a_reader`, below) ──
 #
@@ -3569,6 +3606,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     # blocks once the process exits.
     turn_text_parts: List[str] = []
     _mc_suppressing = False
+    proc_cost: Dict[str, float] = {}  # this proc's running total_cost_usd
 
     def _cb(name: str, ev: AgentEvent) -> None:
         fn = cbs.get(name)
@@ -3633,9 +3671,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
-                _cost = ev.payload.get('cost_usd')
-                if _cost is not None:
-                    session['cost_usd'] = _cost
+                accumulate_result_cost(session, ev.payload, proc_cost)
                 _cb('on_turn_end', ev)
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
