@@ -6,6 +6,7 @@ in the spec's own build order).
   RUNS             POST /api/workflows/<id>/run, GET /api/workflows/<id>/runs,
                     GET /api/workflow-runs/<run_id>
   DECISION         POST /api/workflow-runs/<run_id>/decision
+  CANCEL           POST /api/workflow-runs/<run_id>/cancel
 
 THE AUTHORITY GUARD, enforced HERE not in a docstring (settled, see
 `position_whetheranagentsessionmaycreateoreditworkflowdefi` in the project
@@ -171,4 +172,23 @@ def decide_run(run_id):
         return jsonify({'error': 'run not found'}), 404
     except ValueError as e:
         return jsonify({'error': str(e)}), 400
+    return jsonify({'ok': True, 'run': run})
+
+
+@bp.route('/api/workflow-runs/<run_id>/cancel', methods=['POST'])
+def cancel_run(run_id):
+    """Cancel a live run. Human-only: stopping a pipeline is an operator
+    decision, and an agent that could cancel runs could also clear the
+    one-live-run guard to re-fire a workflow at will. Leaves any in-flight
+    agent session running -- see `mc.workflows.cancel_run`; the response's
+    `run.left_running` names them."""
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
+    try:
+        run = _wf.cancel_run(run_id)
+    except KeyError:
+        return jsonify({'error': 'run not found'}), 404
+    except ValueError as e:
+        return jsonify({'error': str(e)}), 409
     return jsonify({'ok': True, 'run': run})

@@ -754,6 +754,9 @@ def start_run(workflow_id: str, trigger_type: str = 'manual') -> dict:
             'workflow_id': workflow_id,
             'status': 'running',
             'trigger': {'type': trigger_type, 'fired_at': now_iso()},
+            # The definition this run executes, frozen at start. See
+            # `_run_definition` for why a run must never re-read the live one.
+            'definition': _snapshot_definition(workflow),
             'frontier': [],
             'steps': steps,
             'error': None,
@@ -763,6 +766,78 @@ def start_run(workflow_id: str, trigger_type: str = 'manual') -> dict:
         _write_run(run)
     _advance_run(run['id'])
     return _read_run(run['id']) or run
+
+
+_SNAPSHOT_KEYS = ('id', 'name', 'format', 'trigger', 'nodes', 'edges')
+
+
+def _snapshot_definition(workflow: dict) -> dict:
+    """Deep copy of the parts of a definition a run executes against."""
+    return json.loads(json.dumps({k: workflow[k] for k in _SNAPSHOT_KEYS if k in workflow}))
+
+
+def _run_definition(run: dict) -> Optional[dict]:
+    """The definition THIS run executes: the snapshot `start_run` froze into
+    it, never the live store.
+
+    Every step after the first used to re-read the live definition via
+    `get_workflow`, while `run['steps']` stayed keyed by the node names that
+    existed at start. So an edit made while a run was in flight changed the
+    run under its own feet: run-42a3f2aa (2026-09-12) was started with its
+    email step named `action-2`, Ron renamed that node `Send email` while the
+    agent step was still out, and advancing would have looked for a step the
+    run had never heard of. Editing a workflow affects FUTURE runs only.
+
+    Runs written before the snapshot existed carry no `definition` key; those
+    fall back to the live definition, which is exactly the pre-snapshot
+    behaviour (and fails loudly, not silently, if a step was renamed)."""
+    snap = run.get('definition')
+    if isinstance(snap, dict) and isinstance(snap.get('nodes'), list):
+        return snap
+    return get_workflow(run['workflow_id'])
+
+
+LIVE_RUN_STATUSES = ('running', 'waiting')
+
+
+def cancel_run(run_id: str) -> dict:
+    """Operator cancel of a live (`running`/`waiting`) run -> `cancelled`.
+
+    Without this a run that never gets its completion callback bricks its
+    workflow: `_has_live_run` refuses every new run while one is live, and
+    nothing else could ever move it out of `running`.
+
+    Does NOT stop an in-flight agent session. The step is marked `cancelled`
+    and its session id is kept (and listed in `left_running`) so the caller
+    can say which chat is still going; that agent may be mid-way through a
+    commit or an external write, and killing it is a separate decision the
+    operator makes from its own chat's Stop control. A late completion from
+    that session is a no-op: `on_agent_step_complete` only applies to a
+    `running` run, and every other entry point (`_advance_run`,
+    `resolve_decision`, `resume_due_waits`, `adopt_on_startup`) gates on
+    `running`/`waiting` the same way."""
+    with _runs_lock:
+        run = _read_run(run_id)
+        if run is None:
+            raise KeyError('run not found')
+        if run.get('status') not in LIVE_RUN_STATUSES:
+            raise ValueError(f"run is not live (status={run.get('status')})")
+        left_running = []
+        for name, st in (run.get('steps') or {}).items():
+            if st.get('status') in LIVE_RUN_STATUSES:
+                run['steps'][name] = {**st, 'status': 'cancelled'}
+                if st.get('session_id'):
+                    left_running.append({'step': name, 'project_id': st.get('project_id', ''),
+                                         'session_id': st['session_id']})
+        run['status'] = 'cancelled'
+        run['error'] = 'cancelled by operator'
+        run['cancelled_at'] = now_iso()
+        run['left_running'] = left_running
+        run['frontier'] = []
+        _write_run(run)
+    _log(f"[workflows] run {run_id[:12]} cancelled by operator "
+         f"({len(left_running)} agent session(s) left running)")
+    return run
 
 
 def _fail_run(run: dict, message: str) -> None:
@@ -786,7 +861,7 @@ def _advance_run(run_id: str) -> None:
         run = _read_run(run_id)
         if run is None or run.get('status') != 'running':
             return
-        workflow = get_workflow(run['workflow_id'])
+        workflow = _run_definition(run)
         if not workflow:
             _fail_run(run, 'workflow definition no longer exists')
             return
@@ -954,7 +1029,7 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
                  f"completion from stale session {session_id[:12]} (project "
                  f"{project_id}), expected {recorded_sid[:12]}")
             return
-        workflow = get_workflow(run['workflow_id'])
+        workflow = _run_definition(run)
         if not workflow:
             _fail_run(run, 'workflow definition no longer exists')
             return
@@ -1012,7 +1087,7 @@ def resolve_decision(run_id: str, choice: str) -> dict:
                           if st.get('status') == 'waiting'), None)
         if step_name is None:
             raise ValueError('no step is currently waiting')
-        workflow = get_workflow(run['workflow_id'])
+        workflow = _run_definition(run)
         if not workflow:
             _fail_run(run, 'workflow definition no longer exists')
             raise ValueError('workflow definition no longer exists')

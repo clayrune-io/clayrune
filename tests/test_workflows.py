@@ -920,3 +920,130 @@ def test_run_endpoint_not_gated_for_agent_callers(wf):
     doc = wf.m.create_workflow(_doc('runnable', [_agent('only')]))
     resp = wf.client.post(f"/api/workflows/{doc['id']}/run")  # no Origin header
     assert resp.status_code == 200
+
+
+# ── run snapshot: editing a workflow affects FUTURE runs only (run-42a3f2aa) ─
+
+def test_run_advances_against_its_snapshot_after_a_downstream_rename(wf, monkeypatch):
+    """Incident 2026-09-12: the email step was renamed `action-2` -> `Send
+    email` while the agent step was still out. Advancing against the LIVE
+    definition looks for a step the run never had. The run must finish on the
+    definition it started with, sending through the ORIGINAL step."""
+    sent = []
+    monkeypatch.setattr(wf.m, '_send_operator_notification',
+                        lambda subject, body: (sent.append((subject, body)) or (True, 'recorded')))
+    doc = wf.m.create_workflow(_doc('Check US stocks', [
+        _agent('us-stock-investor'),
+        _action('action-2', 'notify_operator', config={'message': '{{prev.output}}'}),
+    ], edges=[_edge('us-stock-investor', 'action-2')]))
+    run = wf.m.start_run(doc['id'])
+    assert run['definition']['nodes'][1]['name'] == 'action-2'
+
+    live = wf.m.get_workflow(doc['id'])
+    live['nodes'][1]['name'] = 'Send email'
+    live['edges'] = [_edge('us-stock-investor', 'Send email')]
+    wf.m.update_workflow(doc['id'], live)
+    assert [n['name'] for n in wf.m.get_workflow(doc['id'])['nodes']] == ['us-stock-investor', 'Send email']
+
+    _complete(wf, run, 'us-stock-investor', summary='HPE leads')
+    run = wf.m.get_run(run['id'])
+    assert run['status'] == 'completed', run
+    assert run['steps']['action-2']['status'] == 'completed'
+    assert 'Send email' not in run['steps']
+    assert len(sent) == 1
+    assert sent[0][0].endswith('action-2') and sent[0][1] == 'HPE leads'
+
+
+def test_a_new_run_uses_the_edited_definition(wf):
+    doc = wf.m.create_workflow(_doc('edit-then-run', [_agent('first')]))
+    r1 = wf.m.start_run(doc['id'])
+    _complete(wf, r1, 'first')
+    live = wf.m.get_workflow(doc['id'])
+    live['nodes'][0]['name'] = 'renamed'
+    wf.m.update_workflow(doc['id'], live)
+    r2 = wf.m.start_run(doc['id'])
+    assert list(r2['steps']) == ['renamed']
+    assert r2['definition']['nodes'][0]['name'] == 'renamed'
+
+
+def test_pre_snapshot_run_falls_back_to_the_live_definition(wf):
+    """A run file written before `definition` existed still advances."""
+    doc = wf.m.create_workflow(_doc('legacy', [_agent('first'), _agent('second')],
+                                    edges=[_edge('first', 'second')]))
+    run = wf.m.start_run(doc['id'])
+    raw = wf.m.get_run(run['id'])
+    raw.pop('definition')
+    wf.m._write_run(raw)
+    _complete(wf, raw, 'first')
+    assert wf.m.get_run(run['id'])['steps']['second']['status'] == 'running'
+
+
+def test_adoption_advances_against_the_snapshot(wf):
+    doc = wf.m.create_workflow(_doc('adopt-snap', [_agent('first'), _agent('second')],
+                                    edges=[_edge('first', 'second')]))
+    run = wf.m.start_run(doc['id'])
+    live = wf.m.get_workflow(doc['id'])
+    live['nodes'][1]['name'] = 'second-renamed'
+    live['edges'] = [_edge('first', 'second-renamed')]
+    wf.m.update_workflow(doc['id'], live)
+    sid = run['steps']['first']['session_id']
+    wf.agent_logs['p1'] = [{'session_id': sid, 'status': 'completed', 'summary': 'ok'}]
+    wf.m.adopt_on_startup()
+    run = wf.m.get_run(run['id'])
+    assert run['steps']['second']['status'] == 'running'
+
+
+# ── cancel ────────────────────────────────────────────────────────────────────
+
+def test_cancel_unbricks_the_workflow_and_ignores_a_late_completion(wf):
+    doc = wf.m.create_workflow(_doc('stuck', [_agent('only'), _agent('after')],
+                                    edges=[_edge('only', 'after')]))
+    run = wf.m.start_run(doc['id'])
+    with pytest.raises(RuntimeError):
+        wf.m.start_run(doc['id'])  # bricked while live
+
+    resp = wf.client.post(f"/api/workflow-runs/{run['id']}/cancel", headers=UI_HEADERS)
+    assert resp.status_code == 200
+    body = resp.get_json()['run']
+    assert body['status'] == 'cancelled'
+    assert body['steps']['only']['status'] == 'cancelled'
+    assert body['left_running'] == [{'step': 'only', 'project_id': 'p1',
+                                     'session_id': run['steps']['only']['session_id']}]
+
+    n_dispatched = len(wf.dispatch.calls)
+    _complete(wf, run, 'only')  # the agent finishes after the cancel
+    after = wf.m.get_run(run['id'])
+    assert after['status'] == 'cancelled'
+    assert after['steps']['after']['status'] == 'pending'
+    assert len(wf.dispatch.calls) == n_dispatched  # nothing further dispatched
+
+    assert wf.m.start_run(doc['id'])['status'] == 'running'  # un-bricked
+
+
+def test_cancel_a_waiting_run(wf):
+    doc = wf.m.create_workflow(_doc('gated-cancel', [_approval('gate', options=['go'])]))
+    run = wf.m.start_run(doc['id'])
+    resp = wf.client.post(f"/api/workflow-runs/{run['id']}/cancel", headers=UI_HEADERS)
+    assert resp.status_code == 200
+    assert wf.m.get_run(run['id'])['status'] == 'cancelled'
+    r2 = wf.client.post(f"/api/workflow-runs/{run['id']}/decision",
+                        headers=UI_HEADERS, json={'choice': 'go'})
+    assert r2.status_code == 400  # a cancelled gate cannot be answered
+
+
+def test_cancel_refused_without_origin_header(wf):
+    doc = wf.m.create_workflow(_doc('no-agent-cancel', [_agent('only')]))
+    run = wf.m.start_run(doc['id'])
+    resp = wf.client.post(f"/api/workflow-runs/{run['id']}/cancel")
+    assert resp.status_code == 403
+    assert wf.m.get_run(run['id'])['status'] == 'running'
+
+
+def test_cancel_a_finished_or_missing_run(wf):
+    doc = wf.m.create_workflow(_doc('done-cancel', [_agent('only')]))
+    run = wf.m.start_run(doc['id'])
+    _complete(wf, run, 'only')
+    r1 = wf.client.post(f"/api/workflow-runs/{run['id']}/cancel", headers=UI_HEADERS)
+    assert r1.status_code == 409
+    r2 = wf.client.post('/api/workflow-runs/run-nope/cancel', headers=UI_HEADERS)
+    assert r2.status_code == 404
