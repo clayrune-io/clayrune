@@ -66,7 +66,7 @@ detail and the commit ids. Tag not cut.
 - Remote access survives Windows credential-store loss, alerts when
   enrollment disappears, and re-alerts on an outage that never recovers;
   CLIs under a custom npm prefix are found.
-- Documents tab: cache thrash fixed (2.77 s warm request, 0% hit rate).
+- Documents tab: a warm request took 2.77 s at a 0% cache hit rate; fixed.
 - Agent prompt: conduct rules re-delivered every turn; the API reference is a
   pointer card (~4.6k tokens less per dispatch).
 
