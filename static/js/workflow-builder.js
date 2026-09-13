@@ -1128,24 +1128,67 @@ function _wfLegalInsertSlots(def, nodeName) {
 }
 
 // MC-871 agent-card pass (Ron: "'Insert' and some other unclear options --
-// not sure what is the function of that"). The mechanism is untouched -- the
-// VALUE inserted at the cursor is still the literal `{{steps.NAME.output}}`
-// slot string (_wfInsertSlot reads it verbatim) -- only the visible <option>
-// text changes to plain English, the same value/label split the project
-// picker two lines up already uses. The raw slot string is still one hover
-// away via `title`, for anyone who wants it.
-function _wfInsertControlHTML(def, nodeName, fieldSelector) {
+// not sure what is the function of that"), THEN Ron's follow-up report: an
+// action node's message field never actually got the slot after picking an
+// option and clicking Update. Root cause (confirmed via
+// tools/smoke/workflow-builder.mjs's rename+insert case, not guessed): the
+// old `<select onchange="...">` baked its THIRD argument as a raw CSS
+// selector string (`[data-cfg-key="message"]`) into a DOUBLE-quoted HTML
+// attribute. `_wfJsStrEsc` only escapes for a single-quoted JS string --
+// it never touched the literal `"` characters inside that selector, so the
+// browser's own HTML parser closed the `onchange="..."` attribute early, at
+// the first `"` inside `data-cfg-key=`. The handler was never valid JS to
+// begin with; selecting an option did nothing at all (agent steps' prompt
+// field used `.wfb-prompt`, no embedded quote, which is why only ACTION
+// fields showed the bug). Fixed by never putting a selector string in an
+// HTML attribute again: only a bare field KEY ('prompt', or a cfg key like
+// 'message') crosses that boundary now -- see `_wfInsertFieldSelector`.
+//
+// Second, independent defect Ron reported in the same breath: the control
+// itself LOOKED rejected the instant a choice was made (`_wfInsertSlot` used
+// to reset `e.target.value = ''` synchronously). Replaced the one-shot
+// <select> with a plain button that opens a floating menu (mirrors
+// `_wfNodeMenuToggle`'s "..." card menu) and closes on pick -- nothing to
+// silently snap back. `_wfInsertMenuPick`/`_wfInsertAtField` flash the field
+// (`.clayrune-highlight`, the same accent pulse Claydo's own markers use)
+// once the insert actually lands, so success is visible, not implied.
+//
+// Slot legality is untouched: `_wfLegalInsertSlots` (dominator-fixpoint) is
+// still the single source of truth for what may be offered, shared with the
+// chip legend below exactly as before.
+function _wfInsertFieldSelector(fieldKey) {
+  return fieldKey === 'prompt' ? '.wfb-prompt' : `[data-cfg-key="${fieldKey}"]`;
+}
+
+// Ancestor step labels: plain English everywhere else in this builder means
+// WHO, not the internal step identifier (file header, "an agent card leads
+// with WHO"). An agent ancestor is offered as "<display name>'s result"
+// with the step name demoted to a secondary line; a non-agent ancestor
+// (action/wait/approval) has no persona to show, so its own step name stays
+// the primary label -- there is nothing plainer to say instead.
+function _wfInsertOptions(st, nodeName) {
+  const def = st.def;
   const { ancestors, prevLegal } = _wfLegalInsertSlots(def, nodeName);
   const opts = [];
-  if (prevLegal) opts.push({ value: '{{prev.output}}', label: "Previous step's result" });
-  ancestors.forEach(a => opts.push({ value: `{{steps.${a}.output}}`, label: `${a}'s result` }));
-  opts.push({ value: '{{trigger.fired_at}}', label: 'When the trigger fired' });
-  opts.push({ value: '{{run.id}}', label: "This run's ID" });
-  return `<select class="wfb-insert-select" title="Pull an earlier step's result into this field, at the cursor"
-      onchange="_wfInsertSlot(event,'${_wfJsStrEsc(nodeName)}','${_wfJsStrEsc(fieldSelector)}')">
-    <option value="">Use an earlier step's result&hellip;</option>
-    ${opts.map(o => `<option value="${esc(o.value)}" title="${esc(o.value)}">${esc(o.label)}</option>`).join('')}
-  </select>`;
+  if (prevLegal) opts.push({ value: '{{prev.output}}', primary: "Previous step's result", secondary: null });
+  ancestors.forEach((a) => {
+    const n = (def.nodes || []).find((x) => x.name === a);
+    const person = n && n.type === 'agent' ? _wfPersonFromCharacter(st, n.character) : null;
+    const display = person ? (person.display || person.name) : null;
+    opts.push({
+      value: `{{steps.${a}.output}}`,
+      primary: display ? `${display}'s result` : `${a}'s result`,
+      secondary: display ? a : null,
+    });
+  });
+  opts.push({ value: '{{trigger.fired_at}}', primary: 'When the trigger fired', secondary: null });
+  opts.push({ value: '{{run.id}}', primary: "This run's ID", secondary: null });
+  return opts;
+}
+
+function _wfInsertControlHTML(st, nodeName, fieldKey) {
+  return `<button type="button" class="wfb-insert-btn" title="Pull an earlier step's result into this field, at the cursor"
+      onclick="_wfInsertMenuToggle(event,'${_wfJsStrEsc(nodeName)}','${_wfJsStrEsc(fieldKey)}')">+ Insert a result</button>`;
 }
 
 const _WF_SLOT_ANY_RE = /\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}/g;
@@ -1199,42 +1242,110 @@ function _wfTextHasBrokenSlotRef(def, nodeName, text) {
   return false;
 }
 
-// Writes at the field's caret, same "sync first" discipline every other
-// structural mutation follows (file header, FIELD SYNC): other cards' unsynced
-// edits are captured into the model before this one mutation is applied, so a
-// re-render never clobbers a prompt someone else is mid-typing.
-function _wfInsertSlot(e, nodeName, fieldSelector) {
-  const value = e.target.value;
-  e.target.value = '';
-  if (!value) return;
+// ── Insert menu: a floating list (mirrors `_wfNodeMenuToggle`'s card "..."
+// menu) that replaces the old one-shot <select>. Opens anchored to the
+// button that was clicked and closes on pick or an outside click -- nothing
+// resets to a placeholder for the user to read as "my choice was rejected".
+// Deliberately NOT wired to Escape: index.html's global handler closes the
+// focused modal on Escape with no guard for this menu (it already guards
+// the mermaid viewer and an in-flight hire-drag for exactly this reason --
+// "one keystroke closes two things"), and `_wfNodeMenuOpenFor`/
+// `_wfPortPopover`/`_wfTriggerPopoverOpen` already carry the same
+// unguarded conflict. Fixing that global handler is out of scope here.
+let _wfInsertMenuOpenFor = null; // `${nodeName}::${fieldKey}` | null
+
+// Same "sync first" discipline every other structural mutation follows
+// (file header, FIELD SYNC): other cards' unsynced edits are captured into
+// the model before this reads it, so a re-render never clobbers a prompt
+// someone else is mid-typing. Also resolves a rename that was TYPED but not
+// yet synced (no blur/structural action since) via the card's OWN DOM
+// element rather than a name string baked at the last render -- `cardEl` is
+// a live reference the rename can never invalidate, unlike a fresh
+// `document.querySelector('[data-name="..."]')` keyed on a name that may no
+// longer match anything until the next render.
+function _wfInsertMenuToggle(e, nodeName, fieldKey) {
+  e.stopPropagation();
+  const menuKey = `${nodeName}::${fieldKey}`;
+  if (_wfInsertMenuOpenFor === menuKey) { _wfCloseInsertMenu(); return; }
+  _wfCloseInsertMenu();
   const entry = _wfEntry(); if (!entry) return;
+  const btn = e.currentTarget;
+  const cardEl = btn.closest('.wfb-node');
+  if (!cardEl) return;
   const renameMap = _wfSyncDomToModel(entry);
-  nodeName = renameMap[nodeName] || nodeName;
-  const node = (entry._wf.def.nodes || []).find(n => n.name === nodeName);
+  const currentName = renameMap[cardEl.dataset.name] || cardEl.dataset.name;
+  const node = (entry._wf.def.nodes || []).find(n => n.name === currentName);
   if (!node) return;
-  const cardEl = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"]`);
-  const field = cardEl && cardEl.querySelector(fieldSelector);
+  const selector = _wfInsertFieldSelector(fieldKey);
+  const field = cardEl.querySelector(selector);
   if (!field) return;
+  const opts = _wfInsertOptions(entry._wf, currentName);
+  _wfInsertMenuOpenFor = menuKey;
+  const box = document.createElement('div');
+  box.className = 'wfb-insert-menu';
+  box.id = 'wfb-insert-menu';
+  box.innerHTML = opts.map((o, i) => `
+    <div class="wfb-insert-menu-item" data-idx="${i}" title="${esc(o.value)}">
+      <span class="wfb-insert-menu-item-primary">${esc(o.primary)}</span>
+      ${o.secondary ? `<span class="wfb-insert-menu-item-secondary">${esc(o.secondary)}</span>` : ''}
+    </div>`).join('');
+  box.querySelectorAll('.wfb-insert-menu-item').forEach((itemEl, i) => {
+    itemEl.addEventListener('click', () => {
+      _wfInsertAtField(cardEl, field, node, fieldKey, selector, opts[i].value);
+      _wfCloseInsertMenu();
+    });
+  });
+  document.body.appendChild(box);
+  const r = btn.getBoundingClientRect();
+  const maxLeft = window.innerWidth - box.offsetWidth - 8;
+  box.style.left = Math.max(8, Math.min(r.left, maxLeft)) + 'px';
+  box.style.top = (r.bottom + 4) + 'px';
+  // Deferred for the same reason the node menu's own listener is: this click
+  // is still propagating and would otherwise close what it just opened.
+  setTimeout(() => document.addEventListener('pointerdown', _wfInsertMenuOutsideDown, true), 0);
+}
+
+function _wfCloseInsertMenu() {
+  const el = document.getElementById('wfb-insert-menu');
+  if (el) el.remove();
+  document.removeEventListener('pointerdown', _wfInsertMenuOutsideDown, true);
+  _wfInsertMenuOpenFor = null;
+}
+
+function _wfInsertMenuOutsideDown(e) {
+  const el = document.getElementById('wfb-insert-menu');
+  if (el && !el.contains(e.target)) _wfCloseInsertMenu();
+}
+
+// `field` and `node` are the SAME references resolved when the menu opened
+// (menu-open and pick are one user gesture apart, synchronously -- no other
+// re-render can land between them), so no second sync/lookup is needed here.
+function _wfInsertAtField(cardEl, field, node, fieldKey, selector, value) {
+  if (!value || !cardEl.isConnected) return;
   const start = field.selectionStart != null ? field.selectionStart : field.value.length;
   const end = field.selectionEnd != null ? field.selectionEnd : field.value.length;
   const newText = field.value.slice(0, start) + value + field.value.slice(end);
   const caret = start + value.length;
-  if (node.type === 'agent' && fieldSelector === '.wfb-prompt') {
+  if (node.type === 'agent' && fieldKey === 'prompt') {
     node.prompt = newText;
   } else {
-    const cfgMatch = /\[data-cfg-key="([^"]+)"\]/.exec(fieldSelector);
-    if (!cfgMatch) return;
     node.config = node.config || {};
-    node.config[cfgMatch[1]] = newText;
+    node.config[fieldKey] = newText;
   }
   _wfMarkDirty();
   _wfRender();
-  const freshField = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(nodeName)}"] ${fieldSelector}`);
+  const freshField = document.querySelector(`.wfb-node[data-name="${_wfAttrEsc(node.name)}"] ${selector}`);
   if (freshField) {
     freshField.focus({ preventScroll: true });
     try { freshField.setSelectionRange(caret, caret); } catch (err) { /* not all input types support it */ }
+    // The same accent pulse Claydo's own [clayrune:highlight] markers use
+    // (claydo.js) -- visible confirmation that the insert actually landed,
+    // replacing the old <select> whose only feedback was resetting itself.
+    freshField.classList.add('clayrune-highlight');
+    setTimeout(() => freshField.classList.remove('clayrune-highlight'), 3600);
   }
 }
+
 
 // ── Field sync: DOM → in-memory def, at the moment of a structural action ────
 
@@ -2033,7 +2144,7 @@ function _wfRenderPromptField(st, node) {
     return `${label}
     <div class="wfb-prompt-inset">
       <textarea class="wfb-prompt" rows="3" placeholder="What should this step do?">${esc(prompt)}</textarea>
-      ${_wfInsertControlHTML(st.def, node.name, '.wfb-prompt')}
+      ${_wfInsertControlHTML(st, node.name, 'prompt')}
       ${_wfSlotChipsHTML(st.def, node.name, prompt)}
       ${toggleBtn}
     </div>`;
@@ -2191,8 +2302,8 @@ function _wfActionGroupChanged(selectEl) {
     const entry = _wfEntry();
     const nodeEl = selectEl.closest('.wfb-node');
     const nodeName = nodeEl ? nodeEl.dataset.name : '';
-    const def = entry && entry._wf ? entry._wf.def : null;
-    box.innerHTML = _wfActionFieldsHTML(newAction, {}, def, nodeName);
+    const st = entry && entry._wf ? entry._wf : null;
+    box.innerHTML = _wfActionFieldsHTML(newAction, {}, st, nodeName);
   }
 }
 
@@ -2209,7 +2320,7 @@ function _wfRenderActionOwn(st, node) {
     <div class="wfb-action-verb-row">${_wfActionVerbAreaHTML(group, action)}</div>
     <div class="wfb-action-desc">${esc(meta.desc || '')}</div>
     <div class="wfb-action-id" title="The stored identifier -- validation errors refer to this">${esc(action)}</div>
-    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {}, st.def, node.name)}</div>`;
+    <div class="wfb-action-fields">${_wfActionFieldsHTML(action, node.config || {}, st, node.name)}</div>`;
 }
 
 // ── Wait card (MC-871 gap #4) — same narrowing pattern as Action: pick the
@@ -2278,24 +2389,26 @@ function _wfLocalInputToIso(local) {
   return d.toISOString();
 }
 
-// def/nodeName (step 5b): "anywhere a slot is legal, e.g. the backlog
+// st/nodeName (step 5b): "anywhere a slot is legal, e.g. the backlog
 // action's item-id field, offer an Insert control" (brief) -- every
-// data-cfg-key text input/textarea below gets its own Insert dropdown +
-// chip legend, keyed to that one field by its own `[data-cfg-key="…"]`
-// selector so each field's insert lands in the right place.
-function _wfActionFieldsHTML(action, cfg, def, nodeName) {
+// data-cfg-key text input/textarea below gets its own Insert button + chip
+// legend, keyed to that one field by its own cfg KEY (not a CSS selector --
+// see `_wfInsertFieldSelector`'s header for why a raw selector string must
+// never cross into an inline HTML attribute again).
+function _wfActionFieldsHTML(action, cfg, st, nodeName) {
+  const def = st && st.def;
   const projects = (typeof allProjects !== 'undefined' ? allProjects : []).filter(p => p.project_path);
   const projOpts = (includeAny) => (includeAny ? '<option value="">(any project)</option>' : '')
     + projects.map(p => `<option value="${esc(p.id)}"${p.id === cfg.project_id ? ' selected' : ''}>${esc(p.name)}</option>`).join('');
-  const slotField = (selector, text) => def && nodeName
-    ? `${_wfInsertControlHTML(def, nodeName, selector)}${_wfSlotChipsHTML(def, nodeName, text)}` : '';
+  const slotField = (fieldKey, text) => def && nodeName
+    ? `${_wfInsertControlHTML(st, nodeName, fieldKey)}${_wfSlotChipsHTML(def, nodeName, text)}` : '';
   if (action === 'backlog_patch') {
     return `
       <label>Project</label>
       <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
       <label>Backlog item ID <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(can be a slot, e.g. <code>{{steps.triage.result.item_id}}</code>)</span></label>
       <input data-cfg-key="item_id" data-cfg-required="1" value="${esc(cfg.item_id || '')}">
-      ${slotField('[data-cfg-key="item_id"]', cfg.item_id || '')}
+      ${slotField('item_id', cfg.item_id || '')}
       <label>New status <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(blank = leave unchanged)</span></label>
       <select data-cfg-key="status">
         <option value=""${!cfg.status ? ' selected' : ''}>(unchanged)</option>
@@ -2303,7 +2416,7 @@ function _wfActionFieldsHTML(action, cfg, def, nodeName) {
       </select>
       <label>New text <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(blank = leave unchanged)</span></label>
       <textarea data-cfg-key="text" rows="2">${esc(cfg.text || '')}</textarea>
-      ${slotField('[data-cfg-key="text"]', cfg.text || '')}`;
+      ${slotField('text', cfg.text || '')}`;
   }
   if (action === 'desk_harvest') {
     return `
@@ -2314,18 +2427,18 @@ function _wfActionFieldsHTML(action, cfg, def, nodeName) {
     return `
       <label>Backlog item ID <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(can be a slot, e.g. <code>{{steps.triage.result.item_id}}</code>)</span></label>
       <input data-cfg-key="item_id" data-cfg-required="1" value="${esc(cfg.item_id || '')}">
-      ${slotField('[data-cfg-key="item_id"]', cfg.item_id || '')}
+      ${slotField('item_id', cfg.item_id || '')}
       <label>Title <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(only used to name the file the first time it's created)</span></label>
       <input data-cfg-key="title" value="${esc(cfg.title || '')}">
       <label>Entry text</label>
       <textarea data-cfg-key="text" data-cfg-required="1" rows="3" placeholder="What happened this run">${esc(cfg.text || '')}</textarea>
-      ${slotField('[data-cfg-key="text"]', cfg.text || '')}`;
+      ${slotField('text', cfg.text || '')}`;
   }
   if (action === 'notify_operator') {
     return `
       <label>Message</label>
       <textarea data-cfg-key="message" data-cfg-required="1" rows="3" placeholder="What should the email say?">${esc(cfg.message || '')}</textarea>
-      ${slotField('[data-cfg-key="message"]', cfg.message || '')}
+      ${slotField('message', cfg.message || '')}
       <div class="wfb-action-desc">Goes to the operator's fixed address only — there is no recipient field to fill in here.</div>`;
   }
   if (action === 'restore_point_create') {
@@ -2334,7 +2447,7 @@ function _wfActionFieldsHTML(action, cfg, def, nodeName) {
       <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
       <label>Label <span class="memory-hint" style="margin:0;font-weight:normal;text-transform:none">(optional, shown in the restore-point list)</span></label>
       <input data-cfg-key="label" value="${esc(cfg.label || '')}">
-      ${slotField('[data-cfg-key="label"]', cfg.label || '')}`;
+      ${slotField('label', cfg.label || '')}`;
   }
   // backlog_create (default)
   return `
@@ -2342,7 +2455,7 @@ function _wfActionFieldsHTML(action, cfg, def, nodeName) {
     <select data-cfg-key="project_id" data-cfg-required="1">${projOpts(false)}</select>
     <label>Text</label>
     <textarea data-cfg-key="text" data-cfg-required="1" rows="2" placeholder="What the item says">${esc(cfg.text || '')}</textarea>
-    ${slotField('[data-cfg-key="text"]', cfg.text || '')}
+    ${slotField('text', cfg.text || '')}
     <label>Priority</label>
     <select data-cfg-key="priority">
       ${['low', 'normal', 'high'].map(p => `<option value="${p}"${(cfg.priority || 'normal') === p ? ' selected' : ''}>${p}</option>`).join('')}
@@ -2361,8 +2474,8 @@ function _wfRerenderActionFields(selectEl) {
   const entry = _wfEntry();
   const nodeEl = selectEl.closest('.wfb-node');
   const nodeName = nodeEl ? nodeEl.dataset.name : '';
-  const def = entry && entry._wf ? entry._wf.def : null;
-  box.innerHTML = _wfActionFieldsHTML(selectEl.value, {}, def, nodeName);
+  const st = entry && entry._wf ? entry._wf : null;
+  box.innerHTML = _wfActionFieldsHTML(selectEl.value, {}, st, nodeName);
 }
 
 // ── Persona picker (mirrors scheduler.js's reloadSchedCharacters, per-node) ──
@@ -4211,7 +4324,7 @@ window._wfReloadCharacters = _wfReloadCharacters;
 window._wfRerenderActionFields = _wfRerenderActionFields;
 window._wfActionGroupChanged = _wfActionGroupChanged;
 window._wfRerenderWaitFields = _wfRerenderWaitFields;
-window._wfInsertSlot = _wfInsertSlot;
+window._wfInsertMenuToggle = _wfInsertMenuToggle;
 window._wfSave = _wfSave;
 window._wfRunNow = _wfRunNow;
 window._wfCancelRun = _wfCancelRun;
