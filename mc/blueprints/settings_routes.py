@@ -190,6 +190,19 @@ _CONFIG_EDITABLE_KEYS = {
     # falls back to ~/.clayrune/backups — validated in update_config below so a
     # bad value (inside the repo or data/projects/) is refused, not persisted.
     'backup_dest_dir',
+    # MEMORY_DESIGN_V2_SPEC.md §16 step 1 (MC-944), Condition 9. Four keys
+    # already read live by mc/memory.py but missing from this set until now —
+    # every PUT of one returned 200 {"updated": []} and silently changed
+    # nothing. server.py's defaults dict carries the matching fallback values.
+    'positions_enabled', 'read_floor_position_reserve',
+    'position_trigger_max_df', 'continuity_enabled',
+    # §4.6's remaining new keys (three of the table's thirteen already shipped
+    # under different names in steps 5/8 — see the defaults-dict comment in
+    # server.py for which, and docs/_journal/9adaef68-memory-v2.md).
+    'memory_index_byte_cap', 'session_log_ring',
+    'negation_ledger_max', 'negation_pin_max', 'read_floor_negation_reserve',
+    'memory_gate_mode', 'memory_cold_probe_k', 'memory_fetch_calls_per_turn',
+    'memory_mint_on_close', 'trigger_phrase_bigrams',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the

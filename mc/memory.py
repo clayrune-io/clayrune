@@ -575,9 +575,15 @@ def _archive_quota():
 _LINK_DECAY_OUT = 0.5
 _LINK_DECAY_IN = 0.35
 
-# Parsed corpus cache: mem_dir -> (signature, units). The signature is every
-# *.md file's (name, mtime_ns, size), so any write invalidates it. Without this
-# the read floor re-tokenizes ~1.7MB on every single dispatch.
+# Parsed corpus cache: mem_dir -> {filename: ((mtime_ns, size), units)}.
+# PER-FILE (MEMORY_DESIGN_V2_SPEC.md Condition 53): a write to one topic note
+# invalidates only that file's cached units and re-tokenizes just it; every
+# other file's units are reused as-is. The prior scheme keyed the whole cache
+# on one signature tuple over every *.md file, so ANY write anywhere
+# invalidated the lot and re-tokenized the entire vault — cheap at ~100 notes,
+# measured to cost ~1.19s on the dispatch critical path at 17MB/~1,700 notes
+# (spec §13.3 Break 1). Without SOME cache the read floor re-tokenizes the
+# whole vault on every single dispatch; this keeps that guarantee per-file.
 _memsearch_cache: dict = {}
 _memsearch_cache_lock = threading.Lock()
 
@@ -604,9 +610,19 @@ def _mem_link_key(s):
     `name:` fields are free prose. Rather than demand one true spelling from
     every future note, matching ignores every non-alphanumeric character —
     `arch-mobile-ui`, `arch_mobile_ui` and `Arch Mobile UI` all key the same.
+
+    R2 (MEMORY_DESIGN_V2_SPEC.md §4.4, Condition class A): a trailing `.md` is
+    stripped BEFORE that non-alphanumeric strip, not after — the old order
+    dropped only the dot and kept the letters, so `[[x.md]]` keyed as `xmd`
+    and never matched the `x` key every other call site derives from a bare
+    filename stem. Resolution bug fix, not a new authoring convention: no
+    note or link needs to change for this to repair itself.
     """
     import re  # module has no top-level `re` import (see _re_auth pattern)
-    return re.sub(r'[^a-z0-9]', '', (s or '').lower())
+    s = (s or '').strip()
+    if s.lower().endswith('.md'):
+        s = s[:-3]
+    return re.sub(r'[^a-z0-9]', '', s.lower())
 
 
 def _mem_link_targets(text):
@@ -1355,6 +1371,17 @@ def write_position(project, subject, verdict, reason,
     `reason` is required on purpose. A bare verdict is dogma an agent can only
     obey; a reason is checkable, which is what lets a position be re-opened
     honestly rather than either ignored or followed blindly.
+
+    Leaf-locked (MEMORY_DESIGN_V2_SPEC.md §16 step 1 / §10.3 G4): the
+    read-prior / compose / write sequence below is a read-modify-write over
+    ONE file, and until now it took no lock at all — two concurrent callers
+    superseding the same subject could both read the same `prior`, and the
+    second writer's atomic replace would silently drop the first writer's
+    supersession, losing a ruling with no error anywhere. Uses the SAME
+    per-project `_get_mem_write_lock` as the MEMORY.md writers (this module's
+    docstring); a position file is a different leaf under the same memory
+    dir, so it does not contend with a MEMORY.md commit, only with another
+    concurrent write to a position.
     """
     subject = (subject or '').strip()
     reason = (reason or '').strip()
@@ -1369,30 +1396,32 @@ def write_position(project, subject, verdict, reason,
     mem_dir.mkdir(parents=True, exist_ok=True)
     slug = (slug or '').strip() or _mem_link_key(subject)[:48] or 'unnamed'
     path = mem_dir / f'{POSITION_PREFIX}{slug}.md'
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
 
-    prior = ''
-    if path.exists():
-        try:
-            old_txt = path.read_text(encoding='utf-8', errors='replace')
-            old_rec = _parse_position(old_txt)
-            if old_rec:
-                prior = (f"\n\n## Previously\n\n- **{old_rec.get('verdict')}**"
-                         f"{' (' + old_rec['decided'] + ')' if old_rec.get('decided') else ''}"
-                         f" — {old_rec.get('reason')}")
-                if old_rec.get('body', '').strip():
-                    prior += '\n' + old_rec['body'].strip()
-        except Exception as e:
-            _log(f'[position] could not read prior {path.name}: {e}')
+    with _get_mem_write_lock(f'position:{project_id}'):
+        prior = ''
+        if path.exists():
+            try:
+                old_txt = path.read_text(encoding='utf-8', errors='replace')
+                old_rec = _parse_position(old_txt)
+                if old_rec:
+                    prior = (f"\n\n## Previously\n\n- **{old_rec.get('verdict')}**"
+                             f"{' (' + old_rec['decided'] + ')' if old_rec.get('decided') else ''}"
+                             f" — {old_rec.get('reason')}")
+                    if old_rec.get('body', '').strip():
+                        prior += '\n' + old_rec['body'].strip()
+            except Exception as e:
+                _log(f'[position] could not read prior {path.name}: {e}')
 
-    front = {'name': slug, 'subject': subject, 'position': verdict,
-             'reason': reason}
-    if triggers:
-        front['triggers'] = triggers.strip()
-    if expires_when:
-        front['expires_when'] = expires_when.strip()
-    front['decided'] = (decided or '').strip() or now_iso()[:10]
-    text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
-    _atomic_write_text(path, text)
+        front = {'name': slug, 'subject': subject, 'position': verdict,
+                 'reason': reason}
+        if triggers:
+            front['triggers'] = triggers.strip()
+        if expires_when:
+            front['expires_when'] = expires_when.strip()
+        front['decided'] = (decided or '').strip() or now_iso()[:10]
+        text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
+        _atomic_write_text(path, text)
     return path.name
 
 
@@ -1463,88 +1492,117 @@ def _unit_uid(label, text, cls):
     return label
 
 
+def _mem_file_units(f, mem_name, arch_name):
+    """The raw (label, text, cls) triples ONE file on disk contributes to the
+    corpus, before tokenization. Split out of `_mem_corpus` so the per-file
+    cache (Condition 53) can invalidate a single file without re-deriving the
+    rest of the vault.
+    """
+    if f.name == CONTINUITY_FILE:
+        # Already injected verbatim into every prompt. Letting it also win a
+        # read-floor slot spends one of six on text the agent is guaranteed
+        # to have anyway — measured: it displaced real notes on 2 of 3 probe
+        # queries the day continuity shipped.
+        return []
+    try:
+        txt = f.read_text(encoding='utf-8', errors='replace')
+    except Exception:
+        return []
+    if f.name == mem_name:
+        return [(f'{f.name}#managed', e, 'managed')
+                for e in _mem_split(txt)[1]]
+    if f.name == arch_name:
+        _arch = [ln.strip() for ln in txt.splitlines()
+                 if ln.strip().startswith('- [')]
+        return [(f.name, ln, 'archive')
+                for ln in _dedupe_archive_lines(_arch)]
+    if _is_position_file(f.name):
+        return [(f.name, txt, 'position')]
+    return [(f.name, txt, 'topic')]
+
+
+def _mem_tokenize_unit(label, text, cls):
+    """Turn one (label, text, cls) triple into a scoring-unit dict, or None
+    for an empty document. Split out of `_mem_corpus` for the per-file cache
+    (Condition 53) — tokenization is the expensive part being cached.
+    """
+    toks = _mem_tokens(text)
+    subject_terms = set()
+    trigger_explicit = False
+    if not toks:
+        return None
+    if cls == 'topic':
+        # A topic file's NAME is its title — `decision_step7_semantic_
+        # search_deferral.md` says more than most of its body — so index it
+        # as part of the document, boosted. Doing it here rather than as a
+        # score bonus is what lets a note match on its title ALONE; a bonus
+        # applied after the match test can't, because a document with no
+        # body hit never gets scored at all.
+        #
+        # Deliberately NOT done for 'archive'/'managed' units: their label
+        # is the container's filename, not a title, so folding it in would
+        # make every one of the ~2k archive lines match the query "memory".
+        toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
+    elif cls == 'position':
+        # The SUBJECT is what has to match, far more than the prose. A
+        # position about Obsidian must beat every note that merely mentions
+        # Obsidian in passing, or it loses its own question.
+        _pos = _parse_position(text)
+        subject_terms = _position_triggers(_pos)
+        trigger_explicit = bool(str(_pos.get('triggers') or '').strip())
+        toks = toks + _mem_tokens(_pos.get('subject', '')) * _POSITION_SUBJECT_BOOST
+        toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
+    tf = {}
+    for t in toks:
+        tf[t] = tf.get(t, 0) + 1
+    return {'file': label, 'text': text, 'tf': tf,
+            'len': len(toks), 'cls': cls,
+            'uid': _unit_uid(label, text, cls),
+            'subject_terms': subject_terms,
+            'trigger_explicit': trigger_explicit,
+            'links': _mem_link_targets(text) if cls == 'topic' else []}
+
+
 def _mem_corpus(mem_dir, mem_name, arch_name):
-    """Parse + tokenize the memory corpus into scoring units (cached).
+    """Parse + tokenize the memory corpus into scoring units (cached per file).
 
     Unit classes, which the scorer keeps separate (see _memory_search):
       'topic'   — a whole topic .md file
       'archive' — one '- [' line of MEMORY_ARCHIVE.md
       'managed' — one managed entry of MEMORY.md
+
+    Cache invalidation is per FILE (Condition 53), not per directory: each
+    file's units are kept keyed on that file's own (mtime_ns, size), so a
+    write to one topic note re-tokenizes only that note — every other
+    cached file's units are reused untouched. Cheap at ~100 notes either
+    way; at ~1,700+ (spec §13.3 Break 1) a whole-vault signature makes ANY
+    write anywhere pay for re-tokenizing everything.
     """
     try:
-        sig = tuple(sorted(
-            (f.name, f.stat().st_mtime_ns, f.stat().st_size)
-            for f in mem_dir.glob('*.md')))
+        files = sorted(mem_dir.glob('*.md'))
+        stats = {f.name: (f.stat().st_mtime_ns, f.stat().st_size) for f in files}
     except OSError:
         return []
     key = str(mem_dir)
     with _memsearch_cache_lock:
-        hit = _memsearch_cache.get(key)
-        if hit and hit[0] == sig:
-            return hit[1]
-    units = []
-    for f in sorted(mem_dir.glob('*.md')):
-        try:
-            txt = f.read_text(encoding='utf-8', errors='replace')
-        except Exception:
-            continue
-        if f.name == CONTINUITY_FILE:
-            # Already injected verbatim into every prompt. Letting it also win a
-            # read-floor slot spends one of six on text the agent is guaranteed
-            # to have anyway — measured: it displaced real notes on 2 of 3 probe
-            # queries the day continuity shipped.
-            continue
-        if f.name == mem_name:
-            for e in _mem_split(txt)[1]:
-                units.append((f'{f.name}#managed', e, 'managed'))
-        elif f.name == arch_name:
-            _arch = [ln.strip() for ln in txt.splitlines()
-                     if ln.strip().startswith('- [')]
-            for ln in _dedupe_archive_lines(_arch):
-                units.append((f.name, ln, 'archive'))
-        elif _is_position_file(f.name):
-            units.append((f.name, txt, 'position'))
-        else:
-            units.append((f.name, txt, 'topic'))
+        cached = _memsearch_cache.get(key) or {}
+    fresh = {}
     out = []
-    for label, text, cls in units:
-        toks = _mem_tokens(text)
-        subject_terms = set()
-        trigger_explicit = False
-        if not toks:
+    for f in files:
+        name = f.name
+        st = stats[name]
+        hit = cached.get(name)
+        if hit is not None and hit[0] == st:
+            fresh[name] = hit
+            out.extend(hit[1])
             continue
-        if cls == 'topic':
-            # A topic file's NAME is its title — `decision_step7_semantic_
-            # search_deferral.md` says more than most of its body — so index it
-            # as part of the document, boosted. Doing it here rather than as a
-            # score bonus is what lets a note match on its title ALONE; a bonus
-            # applied after the match test can't, because a document with no
-            # body hit never gets scored at all.
-            #
-            # Deliberately NOT done for 'archive'/'managed' units: their label
-            # is the container's filename, not a title, so folding it in would
-            # make every one of the ~2k archive lines match the query "memory".
-            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
-        elif cls == 'position':
-            # The SUBJECT is what has to match, far more than the prose. A
-            # position about Obsidian must beat every note that merely mentions
-            # Obsidian in passing, or it loses its own question.
-            _pos = _parse_position(text)
-            subject_terms = _position_triggers(_pos)
-            trigger_explicit = bool(str(_pos.get('triggers') or '').strip())
-            toks = toks + _mem_tokens(_pos.get('subject', '')) * _POSITION_SUBJECT_BOOST
-            toks = toks + _mem_tokens(label.rsplit('.', 1)[0]) * _title_boost()
-        tf = {}
-        for t in toks:
-            tf[t] = tf.get(t, 0) + 1
-        out.append({'file': label, 'text': text, 'tf': tf,
-                    'len': len(toks), 'cls': cls,
-                    'uid': _unit_uid(label, text, cls),
-                    'subject_terms': subject_terms,
-                    'trigger_explicit': trigger_explicit,
-                    'links': _mem_link_targets(text) if cls == 'topic' else []})
+        units = [_mem_tokenize_unit(label, text, cls)
+                 for label, text, cls in _mem_file_units(f, mem_name, arch_name)]
+        units = [u for u in units if u is not None]
+        fresh[name] = (st, units)
+        out.extend(units)
     with _memsearch_cache_lock:
-        _memsearch_cache[key] = (sig, out)
+        _memsearch_cache[key] = fresh
     return out
 
 
