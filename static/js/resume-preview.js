@@ -520,12 +520,14 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
     const have = agentServerLines[sessionId] || 0;
     if (serverLines.length < have) {
       // Server buffer shrank under our cursor (log_lines rebuilt by a
-      // revive after restart/purge, or capped server-side). The slice
-      // recovery below could never fire again from here — adopt server
-      // truth wholesale and repaint, same as a cold reopen does.
-      agentOutputBuffers[sessionId] = serverLines.slice();
+      // revive after restart/purge, capped server-side, or a forked copy).
+      // Re-anchor the cursor so the slice recovery below can fire again, but
+      // keep the rendered history when it is longer (_mergeShorterHistory).
+      if (!_mergeShorterHistory(sessionId, serverLines, 'reconcile')) {
+        agentOutputBuffers[sessionId] = serverLines.slice();
+        _repaintAgentOutput(sessionId);
+      }
       agentServerLines[sessionId] = serverLines.length;
-      _repaintAgentOutput(sessionId);
       return;
     }
     if (serverLines.length === have) return;  // buffer in sync — nothing more to recover
@@ -553,6 +555,59 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
   } finally {
     _reconcileBusy[sessionId] = false;
   }
+}
+
+// History guard (2026-09-14): the chat view never replaces already-rendered
+// history with a shorter copy. A forked conversation, a revive that rebuilt
+// log_lines from the transcript, or a server-side cap can all hand back fewer
+// lines than are on screen, and adopting that made a reply vanish until the
+// next message. Keep what is shown, append whatever the incoming copy has past
+// the last line both share, and log the mismatch. Returns true when it kept the
+// rendered history (caller must NOT adopt `incoming`), false to adopt normally.
+const _historyShrinkWarned = {};
+window._historyShrinkLog = window._historyShrinkLog || [];
+function _mergeShorterHistory(sessionId, incoming, source) {
+  const shown = agentOutputBuffers[sessionId] || [];
+  if (!Array.isArray(incoming) || incoming.length >= shown.length) return false;
+  let anchor = -1;
+  for (let k = shown.length - 1; k >= 0; k--) {
+    const t = (shown[k] || '').trim();
+    if (!t) continue;
+    for (let j = incoming.length - 1; j >= 0; j--) {
+      if ((incoming[j] || '').trim() === t) { anchor = j; break; }
+    }
+    break;
+  }
+  const tail = anchor >= 0 ? incoming.slice(anchor + 1) : [];
+  const key = `${source}:${shown.length}:${incoming.length}`;
+  if (_historyShrinkWarned[sessionId] !== key) {
+    _historyShrinkWarned[sessionId] = key;
+    window._historyShrinkLog.push({ sessionId, source, shown: shown.length,
+      incoming: incoming.length, appended: tail.length, at: Date.now() });
+    if (window._historyShrinkLog.length > 50) window._historyShrinkLog.shift();
+    console.warn(`[history-guard] ${source}: server sent ${incoming.length} lines for ${String(sessionId).slice(0, 8)} but ${shown.length} are on screen; keeping the rendered history` + (tail.length ? `, appending ${tail.length} new` : ''));
+  }
+  for (const line of tail) { shown.push(line); appendAgentLine(sessionId, line); }
+  agentOutputBuffers[sessionId] = shown;
+  return true;
+}
+
+// SSE `reset` replay hold. The replay that follows a reset is collected here
+// instead of wiping the screen first, then settled once it stops arriving.
+const _historyReplay = {};
+function _scheduleReplaySettle(sessionId) {
+  const rp = _historyReplay[sessionId];
+  if (!rp) return;
+  clearTimeout(rp.timer);
+  rp.timer = setTimeout(() => _settleHistoryReplay(sessionId), 400);
+}
+function _settleHistoryReplay(sessionId) {
+  const rp = _historyReplay[sessionId];
+  if (!rp) return;
+  delete _historyReplay[sessionId];
+  if (_mergeShorterHistory(sessionId, rp.lines, 'stream-reset')) return;
+  agentOutputBuffers[sessionId] = rp.lines;
+  _repaintAgentOutput(sessionId);
 }
 
 // Repaint a session's agent-output element from its full buffer. Fixes a render
@@ -648,6 +703,13 @@ function connectAgentStream(projectId, sessionId) {
       if (msg.type === 'output') {
         sseRetryCount[sessionId] = 0;  // successful data — reset retry counter
         if (followupTimeouts[sessionId]) { clearTimeout(followupTimeouts[sessionId].timerId); delete followupTimeouts[sessionId]; }
+        if (_historyReplay[sessionId]) {
+          // Replay after a `reset`: hold it, decide once it settles (see reset).
+          _historyReplay[sessionId].lines.push(msg.text);
+          agentServerLines[sessionId] = (agentServerLines[sessionId] || 0) + 1;
+          _scheduleReplaySettle(sessionId);
+          return;
+        }
         if (!agentOutputBuffers[sessionId]) agentOutputBuffers[sessionId] = [];
         agentOutputBuffers[sessionId].push(msg.text);
         agentServerLines[sessionId] = (agentServerLines[sessionId] || 0) + 1;
@@ -755,9 +817,18 @@ function connectAgentStream(projectId, sessionId) {
         // slammed) — the server reset its cursor to 0 and is about to
         // replay. Drop the local buffer + DOM so the replay repaints from
         // scratch instead of starving under a cursor that never advances.
-        agentOutputBuffers[sessionId] = [];
+        //
+        // History guard (2026-09-14): never wipe what is on screen first. Hold
+        // the replay; once it settles, adopt it only if it is at least as long
+        // as what is shown, otherwise keep the rendered history.
         agentServerLines[sessionId] = 0;
-        _repaintAgentOutput(sessionId);
+        if ((agentOutputBuffers[sessionId] || []).length) {
+          _historyReplay[sessionId] = { lines: [], timer: null };
+          _scheduleReplaySettle(sessionId);
+        } else {
+          agentOutputBuffers[sessionId] = [];
+          _repaintAgentOutput(sessionId);
+        }
       } else if (msg.type === 'turn_start') {
         // Phase 2 (2026-04-27): server tells us a new turn started so we can
         // flip the status UI without optimistic cache writes in sendFollowup.
@@ -1086,6 +1157,8 @@ window.closeAgentTab = closeAgentTab;
 window.dispatchAgent = dispatchAgent;
 window._reconcileAgentBuffer = _reconcileAgentBuffer;
 window._repaintAgentOutput = _repaintAgentOutput;
+window._mergeShorterHistory = _mergeShorterHistory;
+window._settleHistoryReplay = _settleHistoryReplay;
 window.connectAgentStream = connectAgentStream;
 window.escPromptWithImages = escPromptWithImages;
 window.previewOpenFull = previewOpenFull;

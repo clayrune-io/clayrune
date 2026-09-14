@@ -230,6 +230,132 @@ def _claude(*args):
     return [_resolve_claude(), *args]
 
 
+# ── One live process per Claude conversation (2026-09-14) ─────────────────
+# A Claude conversation (claude_session_id) must never run as two claude
+# processes at once: each `claude -r <csid>` keeps its own in-memory leaf and
+# appends to the SAME transcript, so the conversation forks. Replies land in
+# whichever copy answered and the chat on screen shows only one of them.
+# Measured 2026-09-14: one Dave chat ran as four simultaneous processes, one per
+# message sent, because the tab addressed the chat by its csid and /agent/send's
+# csid-resume fallback dispatched a fresh `-r` (plus a new worktree) every time
+# instead of finding the idle session that already owned the conversation.
+
+def _session_proc_alive(sess):
+    """True when this session dict holds a claude process that has not exited."""
+    proc = (sess or {}).get('proc')
+    if proc is None:
+        return False
+    try:
+        return proc.poll() is None
+    except Exception as e:
+        _log(f"[spawn-guard] poll failed: {e}")
+        return False
+
+
+def _sessions_sharing_csid(project_id, csid, exclude_sid=''):
+    if not csid:
+        return []
+    return [(sid, s) for sid, s in list(agent_sessions.items())
+            if sid != exclude_sid and s.get('project_id') == project_id
+            and s.get('claude_session_id') == csid]
+
+
+def _live_owner_of_csid(project_id, csid, exclude_sid=''):
+    """Session id whose process is alive for this conversation, or None. With
+    several (a fork that already happened) the most recently active wins."""
+    live = [(sid, s) for sid, s in _sessions_sharing_csid(project_id, csid, exclude_sid)
+            if _session_proc_alive(s)]
+    if not live:
+        return None
+    live.sort(key=lambda r: r[1].get('last_output_time') or 0, reverse=True)
+    return live[0][0]
+
+
+def _refuse_duplicate_spawn(project_id, csid, own_sid, where):
+    """Spawn guard: return the session already running `csid` (logging the
+    refusal), or None when spawning is safe. `own_sid` is excluded so a session
+    respawning its OWN process never trips it."""
+    if not csid:
+        return None
+    owner = _live_owner_of_csid(project_id, csid, exclude_sid=own_sid or '')
+    if owner:
+        _log(f"[spawn-guard] REFUSED a second process for claude_session "
+             f"{csid[:12]} ({where}, requested for {own_sid or 'a new session'}): "
+             f"already live in session {owner}")
+    return owner
+
+
+def _resolve_conversation_owner(project_id, session_id):
+    """The session a message addressed to `session_id` really belongs to, when
+    that is a DIFFERENT session than the id names; else None.
+
+    Three ways a client names a conversation without its live session: the
+    transcript-reconstruct tab keys itself on the CLAUDE session id; an old tab
+    keeps an MC id whose agent_log row carries a csid a newer session resumed;
+    and a registered session whose process is dead while another session runs
+    its conversation. Live owners win; otherwise the newest registered owner (a
+    followup there respawns its own process, so still only one)."""
+    if not session_id:
+        return None
+    own = agent_sessions.get(session_id)
+    if own is not None:
+        if own.get('project_id') != project_id or _session_proc_alive(own):
+            return None
+        return _live_owner_of_csid(project_id, own.get('claude_session_id') or '',
+                                   exclude_sid=session_id)
+    rows = _sessions_sharing_csid(project_id, session_id)
+    if not rows:
+        try:
+            entry = next((e for e in _load_agent_log(project_id)
+                          if e.get('session_id') == session_id), None)
+        except Exception as e:
+            _log(f"[spawn-guard] agent_log read failed resolving {session_id[:12]}: {e}")
+            entry = None
+        rows = _sessions_sharing_csid(project_id, (entry or {}).get('claude_session_id') or '')
+    if not rows:
+        return None
+    pool = [r for r in rows if _session_proc_alive(r[1])] or rows
+    pool.sort(key=lambda r: (r[1].get('last_output_time') or 0, r[1].get('started_at') or ''),
+              reverse=True)
+    return pool[0][0]
+
+
+def _resume_cwd_for(project_path, claude_session_id):
+    """The directory a conversation's transcript was written from: the project
+    tree or one of its agent worktrees; None when neither holds it. A resume goes
+    back there instead of into a brand-new worktree, so the agent sees the files
+    it was working on and `-r` reads the transcript under the cwd it is keyed on."""
+    if not project_path or not claude_session_id:
+        return None
+    try:
+        rt = _agent_runtime.get_runtime('claude')
+        if rt.transcript_path(project_path, claude_session_id):  # pyright: ignore[reportAttributeAccessIssue]
+            return project_path
+        agents_dir = Path(project_path) / '.clayrune' / 'agents'
+        if agents_dir.is_dir():
+            for wt in agents_dir.iterdir():
+                if wt.is_dir() and rt.transcript_path(str(wt), claude_session_id):  # pyright: ignore[reportAttributeAccessIssue]
+                    return str(wt)
+    except Exception as e:
+        _log(f"[resume-cwd] transcript lookup failed for {claude_session_id[:12]}: {e}")
+    return None
+
+
+def _session_cwd(sess, project_path):
+    """cwd for respawning an existing session: the tree it started in. Falls back
+    to the project tree, and records the move, when that worktree is gone."""
+    cwd = (sess or {}).get('_agent_cwd') or ''
+    if not cwd or cwd == project_path:
+        return project_path
+    if Path(cwd).is_dir():
+        return cwd
+    if sess is not None and not sess.get('_cwd_moved_from'):
+        sess['_cwd_moved_from'] = cwd
+        _log(f"[resume-cwd] {sess.get('session_id')}: worktree {cwd} is gone, "
+             f"respawning in the project tree")
+    return project_path
+
+
 def _pid_is_alive(pid):
     """Check if a PID is alive. Works reliably on both Windows and Unix."""
     if sys.platform == 'win32':
@@ -4142,6 +4268,12 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     if not pp or not Path(pp).is_dir():
         return None
 
+    # One live process per conversation: an old tab reviving a csid that a newer
+    # session already runs would fork the transcript.
+    if _refuse_duplicate_spawn(project_id, claude_sid, session_id, 'revive'):
+        return None
+    _revive_cwd = _resume_cwd_for(pp, claude_sid) or pp
+
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
     # WHO this conversation is. A revive re-spawns the process from scratch, so
@@ -4228,7 +4360,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         try:
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, cwd=pp,
+                stderr=subprocess.STDOUT, cwd=_revive_cwd,
                 text=True, encoding='utf-8', errors='replace',
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
@@ -4265,6 +4397,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             'claude_session_id': claude_sid,
             '_resume_id': claude_sid,
             '_resume_confirmed': False,   # a just-spawned resume hasn't proven itself yet
+            '_agent_cwd': _revive_cwd,
             '_dispatch_time': _time.time(),
             'usage': entry.get('usage', {}),
             'cost_usd': entry.get('cost_usd', 0),
@@ -4313,7 +4446,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     try:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT, cwd=pp,
+            stderr=subprocess.STDOUT, cwd=_revive_cwd,
             text=True, encoding='utf-8', errors='replace',
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
@@ -4347,6 +4480,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'circuit_breaker_tripped': False,
         'claude_session_id': claude_sid,
         '_resume_id': claude_sid,
+        '_agent_cwd': _revive_cwd,
         '_dispatch_time': _time.time(),
         'usage': entry.get('usage', {}),
         'cost_usd': entry.get('cost_usd', 0),
@@ -4457,6 +4591,14 @@ def _note_claude_sid(session, sid):
     session['claude_session_id'] = sid
     if prev == sid:
         return
+    try:
+        _fork_other = _live_owner_of_csid(session.get('project_id', ''), sid,
+                                          exclude_sid=session.get('session_id', ''))
+        if _fork_other:
+            _log(f"[spawn-guard] FORK: session {session.get('session_id')} now runs "
+                 f"claude_session {sid[:12]}, which session {_fork_other} is also running")
+    except Exception as e:
+        _log(f"[spawn-guard] fork check failed: {e}")
     if session.get('incognito'):
         # Durable F7 fix: the in-memory 'incognito' flag on `session` doesn't
         # survive a restart. This is the first (and only) point every stream
@@ -5017,7 +5159,7 @@ def _auto_dispatch_followup(session, message):
             stdin=subprocess.DEVNULL,
             stdout=subprocess.PIPE,
             stderr=subprocess.STDOUT,
-            cwd=pp,
+            cwd=_session_cwd(session, pp),
             text=True,
             encoding='utf-8',
             errors='replace',
@@ -5973,6 +6115,16 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     f"to resume ({size_mb:.0f} MB). Start fresh but continue the user's request below.]\n\n{task}")
             resume_id = ''
 
+    # One live process per conversation (2026-09-14). Refused BEFORE a worktree
+    # is created or a context is built; re-checked under mgr.lock at spawn.
+    if resume_id:
+        _dup_owner = _refuse_duplicate_spawn(project_id, resume_id, '', 'dispatch')
+        if _dup_owner:
+            raise ValueError(
+                f"conversation {resume_id[:12]} is already running in session "
+                f"{_dup_owner}; send the message to that session instead of "
+                f"starting a second copy")
+
     # Resume → pre-load the prior conversation into log_lines so the chat
     # displays the full history when the user taps Continue, not just the new
     # prompt. Same renderer the read-only /reconstruct endpoint uses, so the
@@ -6096,7 +6248,15 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # and must never pin the project lock (the RC-2 constraint above). The id
     # itself is minted further up (it also has to reach the system prompt, so
     # the agent can name its own figure); only the tree is created here.
-    _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
+    # A resume goes back to the tree its transcript was written from instead of
+    # a brand-new worktree (2026-09-14: every resumed copy of one chat got its
+    # own tree). Not marked isolated, so this session ending never merges or
+    # removes a tree it does not own.
+    _resume_tree = _resume_cwd_for(pp, resume_id) if resume_id else None
+    if _resume_tree:
+        _agent_cwd, _isolated = _resume_tree, False
+    else:
+        _agent_cwd, _isolated = _maybe_isolate_worktree(p, _planned_sid, incognito)
 
     with mgr.lock:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
@@ -6105,6 +6265,18 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             session_id = reuse_session_id
         else:
             session_id = _fresh_sid
+
+        # Re-check under the lock: two sends can both pass the early check
+        # before either one registers its session.
+        if resume_id and _refuse_duplicate_spawn(project_id, resume_id, session_id,
+                                                 'dispatch-locked'):
+            if _sp_path:
+                try:
+                    os.unlink(_sp_path)
+                except OSError as e:
+                    _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
+            raise ValueError(f"conversation {resume_id[:12]} is already running "
+                             f"in another session")
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -6502,6 +6674,22 @@ def agent_send(project_id):
     if not message:
         return jsonify({'error': 'message required'}), 400
 
+    # The client can address a chat by an id that is not its live session: its
+    # CLAUDE session id (transcript-reconstruct tab), a superseded MC id, or a
+    # session whose process died while another session runs the conversation.
+    # The message belongs to the session that owns the conversation. Rewriting
+    # the id in the cached JSON body carries it into agent_followup /
+    # agent_interrupt, which re-read request.get_json(). Without this, every
+    # message to such a tab spawned another `claude -r` in another worktree
+    # (2026-09-14: one chat, four live processes).
+    if session_id:
+        _owner = _resolve_conversation_owner(project_id, session_id)
+        if _owner:
+            _log(f"[send] {session_id[:12]} names a conversation held by session "
+                 f"{_owner}; routing there instead of spawning a second process")
+            data['session_id'] = _owner
+            session_id = _owner
+
     # Decision under the lock — this is the ONLY place that picks the route.
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id) if session_id else None
@@ -6829,6 +7017,16 @@ def agent_followup(project_id):
     with mgr_pre.lock:
         _has_session = (session_id in agent_sessions
                         and agent_sessions[session_id].get('project_id') == project_id)
+    if not _has_session:
+        # Same conversation-owner resolution as /agent/send: never revive a
+        # second process for a chat another session already holds.
+        _owner = _resolve_conversation_owner(project_id, session_id)
+        if _owner:
+            _log(f"[followup] {session_id[:12]} names a conversation held by session "
+                 f"{_owner}; routing there instead of reviving a second process")
+            data['session_id'] = _owner
+            session_id = _owner
+            _has_session = True
     if not _has_session:
         revived = _revive_from_agent_log(project_id, session_id, message, p)
         if revived:
@@ -7267,10 +7465,28 @@ def agent_followup(project_id):
             _kill_proc_background(rb['old_proc'])
         def _do_respawn_b():
             try:
+                if '-r' in rb['cmd']:
+                    _dup_owner = _refuse_duplicate_spawn(
+                        rb['project_id'], rb['existing'].get('claude_session_id'),
+                        rb['session_id'], 'respawn-B')
+                    if _dup_owner:
+                        rb['existing']['log_lines'].append(
+                            f'[Not resumed here: this conversation is already running '
+                            f'in session {_dup_owner}. Open that copy to continue.]')
+                        rb['existing']['status'] = 'idle'
+                        rb['existing']['process_alive'] = False
+                        rb['existing']['last_status_change_time'] = _time.time()
+                        _sp_dup = rb.get('sysprompt_path')
+                        if _sp_dup:
+                            try:
+                                os.unlink(_sp_dup)
+                            except OSError as e:
+                                _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
+                        return
                 _log(f"[respawn-B] {rb['project_id']}: spawning cmd={' '.join(rb['cmd'][:5])}...")
                 proc = subprocess.Popen(
                     rb['cmd'], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=rb['pp'],
+                    stderr=subprocess.STDOUT, cwd=_session_cwd(rb['existing'], rb['pp']),
                     text=True, encoding='utf-8', errors='replace',
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
                 )
@@ -7365,7 +7581,7 @@ def agent_followup(project_id):
                 stdin=subprocess.DEVNULL,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
-                cwd=pp,
+                cwd=_session_cwd(existing, pp),
                 text=True,
                 encoding='utf-8',
                 errors='replace',
@@ -7578,6 +7794,18 @@ def agent_interrupt(project_id):
     def _do_respawn():
         _sp_path = None  # bound here so the except below can sweep on early failure
         try:
+            if claude_sid:
+                _dup_owner = _refuse_duplicate_spawn(project_id, claude_sid, session_id,
+                                                     'interrupt')
+                if _dup_owner:
+                    session['log_lines'].append(
+                        f'[Not resumed here: this conversation is already running '
+                        f'in session {_dup_owner}. Open that copy to continue.]')
+                    session['status'] = 'idle'
+                    session['process_alive'] = False
+                    session['last_status_change_time'] = _time.time()
+                    session.pop('_interrupting', None)
+                    return
             # Check transcript size
             resume_flags = []
             context = None
@@ -7608,7 +7836,7 @@ def agent_interrupt(project_id):
                     cmd.extend(_sp_args)
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=pp,
+                    stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
                 )
@@ -7656,7 +7884,7 @@ def agent_interrupt(project_id):
 
                 proc = subprocess.Popen(
                     cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
-                    stderr=subprocess.STDOUT, cwd=pp,
+                    stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
                 )
@@ -7967,6 +8195,14 @@ def agent_status(project_id):
     # the stream init event, possibly after the client's last poll). The client
     # renders the pin marker from this flag instead of resolving identity itself.
     _pinned_csids = _proj.get('pinned_conversations') or []
+    # Live-copy map (2026-09-14): conversations with a live claude process in
+    # more than one session. Each copy's chat names the others, so a fork is
+    # visible instead of the chat silently showing one branch of it.
+    _live_by_csid = {}
+    for _lsid, _ls in list(agent_sessions.items()):
+        if (_ls.get('project_id') == project_id and _ls.get('claude_session_id')
+                and _session_proc_alive(_ls)):
+            _live_by_csid.setdefault(_ls['claude_session_id'], []).append(_lsid)
     for sid, s in agent_sessions.items():
         if s['project_id'] == project_id:
             sessions.append({
@@ -8040,6 +8276,11 @@ def agent_status(project_id):
                 # session that isn't 'running' — computed without a scan.
                 'active_subagents': _active_subagents_for_session(
                     s, _proj.get('project_path', '')),
+                # Other sessions running this same conversation (see
+                # _live_by_csid) and a worktree move; the chat shows a notice.
+                'live_copies': [o for o in _live_by_csid.get(s.get('claude_session_id') or '', [])
+                                if o != sid],
+                'cwd_moved_from': s.get('_cwd_moved_from', ''),
             })
     # Sort: running first, then newest first (ISO timestamps sort lexically)
     sessions.sort(key=lambda s: (

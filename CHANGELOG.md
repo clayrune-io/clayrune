@@ -6,6 +6,34 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-14b] — One live process per conversation; chat never shrinks its history
+
+- **Root cause:** a chat tab keyed on the CLAUDE session id (the
+  transcript-reconstruct view) POSTed `/agent/send` with that csid as
+  `session_id`. No session is registered under a csid, so the route fell to its
+  csid-resume branch and dispatched a fresh `claude -r` in a brand-new worktree
+  for EVERY message, while the idle Mode B session that owned the conversation
+  kept its live process. Measured: one Dave chat ran as four processes
+  (13:21, 13:39, 13:42, 13:55), all appending to one transcript and forking it;
+  replies vanished from screen and messages went unanswered.
+- **Routing:** `/agent/send` and `/agent/followup` resolve the addressed id to
+  the session that owns the conversation (`_resolve_conversation_owner`: csid,
+  a superseded MC id via agent_log, or a dead session whose conversation is live
+  elsewhere) and deliver there.
+- **Spawn guard:** `_refuse_duplicate_spawn` refuses and logs
+  (`[spawn-guard] REFUSED`) a second concurrent process for a
+  claude_session_id at dispatch (before the worktree, and again under the
+  lock), revive, respawn-B and interrupt. `_note_claude_sid` logs a `FORK`.
+- **cwd:** resumes run in the tree their transcript was written from
+  (`_resume_cwd_for`); respawns stay in the session's own worktree
+  (`_session_cwd`; the old comment claimed this, no respawn did it).
+- **Chat view:** status poll, reconcile and SSE `reset` never replace rendered
+  history with a shorter copy (`_mergeShorterHistory`, logged as
+  `[history-guard]`); `/agent/status` emits `live_copies` + `cwd_moved_from`
+  and the chat shows a notice linking to the other copy.
+- Tests: `tests/test_one_process_per_conversation.py`; smoke:
+  `tools/smoke/chat-fork-guard.mjs`.
+
 ## [2026-09-14] — Unattended-agent security, vault key durability, live workflow steps, Memory V2 steps 1-4
 
 - **Codex sandbox** (`57a10c9`): unattended Codex launches (trigger_type

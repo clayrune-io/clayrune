@@ -4256,6 +4256,15 @@
     .typing-indicator .act-word span { animation-duration: 2.6s; }
   }
 
+  /* Fork notice (2026-09-14): this conversation has another live process, or
+     its session moved to a new working directory. Sits above the transcript. */
+  .fork-notice {
+    flex-shrink: 0; margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid rgba(239,68,68,.45); background: rgba(239,68,68,.10);
+    color: inherit; font-size: 13px; line-height: 1.45;
+  }
+  .fork-notice a { color: #ef4444; font-weight: 600; }
+
   /* Nested subagent card (MC-937 Phase 4, channel spec §7): "a collapsed card
      inside the message of whoever spawned it" — indented under the narration
      bubble it belongs to (never a top-level bubble, no avatar — a subagent's
