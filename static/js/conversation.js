@@ -2215,9 +2215,11 @@ function mobileUserConversationsHTML(p, convos, opts) {
       ? (csid === activeCsid)
       : (mcsid && mcsid === activeSid);
     // Split-view affordance (desktop only): open this conversation as a 2nd pane
-    // beside the current one. Only offered for a LIVE conversation that isn't the
-    // one already open. Hidden on mobile (single-pane drill-down there).
-    const _canSplit = !mobileMode && c.live && mcsid && !isActive && activeAgentTab[p.id];
+    // beside the current one. Offered for ANY conversation (live, idle, or
+    // finished) that isn't the one already open — openInSplit resolves idle/
+    // finished sessions via the same reconstruct routes openConversation uses.
+    // Hidden on mobile (single-pane drill-down there).
+    const _canSplit = !mobileMode && (mcsid || csid) && !isActive && activeAgentTab[p.id];
     const splitBtn = _canSplit
       ? `<button class="conv-split" onclick="event.stopPropagation();openInSplit('${esc(p.id)}','${esc(csid)}','${esc(mcsid)}',${c.live ? 'true' : 'false'})" title="Open beside the current chat (split view)" aria-label="Open in split view">&#9707;</button>`
       : '';
@@ -3568,14 +3570,14 @@ function splitPaneHTML(p, sid, isPrimary) {
       <div class="agent-chat-input"><div class="agent-chat-input-row">
         <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
-          placeholder="${isRunning ? 'Interrupt and redirect… (Enter)' : 'Send follow-up…'}"
+          placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
           onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"></textarea>
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
     <div class="agent-split-head">
       ${dot}<span class="agent-split-label" title="${esc(s.task || '')}">${esc(label)}</span>
-      ${statusLbl}<span style="flex:1"></span>${stopBtn}${closeBtn}
+      ${statusLbl}${stopBtn}${closeBtn}
     </div>
     <div class="agent-chat">
       <div class="agent-output" id="agent-output-${esc(sid)}"></div>
@@ -3584,13 +3586,17 @@ function splitPaneHTML(p, sid, isPrimary) {
   </div>`;
 }
 
-// Open a rail conversation as the 2nd (split) pane. MVP: live sessions only.
-function openInSplit(projectId, csid, mcSessionId, isLive) {
-  let sid = null;
+// Resolve a rail conversation to an openable session id WITHOUT deciding which
+// pane it lands in. Mirrors openConversation's live/reconstruct/csid fallback
+// chain (see openConversation and _openConversationByCsid above) so a chat
+// that opens fine as the single pane opens the same way as a split pane —
+// idle and finished conversations included, not just live ones.
+async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
   if (mcSessionId && agentStatusCache[mcSessionId]) {
-    sid = mcSessionId;
+    const _cachedCsid = agentStatusCache[mcSessionId].claudeSessionId || '';
+    if (!csid || !_cachedCsid || _cachedCsid === csid) return mcSessionId;
+    // Shared mc id but a different transcript — resolve by csid instead.
   } else if (isLive && mcSessionId) {
-    // Seed the cache like openConversation's live route so SSE + status fill in.
     const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
     agentStatusCache[mcSessionId] = { status: 'running', task: '', projectId,
       startedAt: '', claudeSessionId: csid || '', _liveSeeded: true };
@@ -3598,9 +3604,71 @@ function openInSplit(projectId, csid, mcSessionId, isLive) {
       agentHistory.unshift({ projectId, sessionId: mcSessionId, projectName: pName,
         task: '', status: 'running', startedAt: '' });
     }
-    sid = mcSessionId;
+    return mcSessionId;
+  } else if (mcSessionId) {
+    try {
+      const rr = await fetch(API_BASE + `/api/project/${projectId}/session/${encodeURIComponent(mcSessionId)}/reconstruct`);
+      if (rr.status === 409) return mcSessionId;  // raced a session that just went live
+      if (rr.ok) {
+        const rd = await rr.json();
+        agentStatusCache[mcSessionId] = {
+          status: 'completed', task: rd.task || '', projectId,
+          startedAt: rd.started_at || '', claudeSessionId: rd.claude_session_id || csid || '',
+          _readOnlyRevived: true,
+        };
+        agentOutputBuffers[mcSessionId] = rd.log_lines || [];
+        agentServerLines[mcSessionId] = (rd.log_lines || []).length;
+        if (!agentHistory.find(h => h.sessionId === mcSessionId)) {
+          const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
+          agentHistory.unshift({ projectId, sessionId: mcSessionId, projectName: pName,
+            task: rd.task || '', status: 'completed', startedAt: rd.started_at || '' });
+        }
+        return mcSessionId;
+      }
+    } catch (e) { /* fall through to csid */ }
   }
-  if (!sid) { if (typeof showToast === 'function') showToast('Split view supports live conversations', 2500); return; }
+  if (!csid) return null;
+  // csid-based resolution, mirroring _openConversationByCsid minus the
+  // switchAgentTab side effect and the compose-resume fallback (a split pane
+  // has no room for an interactive "resume this dead chat" form).
+  const liveSid = Object.keys(agentStatusCache).find(sid => {
+    const s = agentStatusCache[sid];
+    return s && s.projectId === projectId && s.claudeSessionId === csid &&
+      (s.status === 'running' || s.waitingForQuestion || s.waitingForPlanApproval);
+  });
+  if (liveSid) return liveSid;
+  if (agentStatusCache[csid]) return csid;
+  try {
+    const rr = await fetch(API_BASE + `/api/project/${projectId}/transcript/${encodeURIComponent(csid)}/reconstruct`);
+    if (rr.status === 409) {
+      const rd = await rr.json().catch(() => ({}));
+      if (rd.session_id) return rd.session_id;
+    }
+    if (rr.ok) {
+      const rd = await rr.json();
+      agentStatusCache[csid] = {
+        status: 'completed', task: rd.task || '', projectId,
+        startedAt: rd.started_at || '', claudeSessionId: csid,
+        _readOnlyRevived: true,
+      };
+      agentOutputBuffers[csid] = rd.log_lines || [];
+      agentServerLines[csid] = (rd.log_lines || []).length;
+      if (!agentHistory.find(h => h.sessionId === csid)) {
+        const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
+        agentHistory.unshift({ projectId, sessionId: csid, projectName: pName,
+          task: rd.task || '', status: 'completed', startedAt: rd.started_at || '' });
+      }
+      return csid;
+    }
+  } catch (e) { /* nothing left to try */ }
+  return null;
+}
+window._resolveConversationSid = _resolveConversationSid;
+
+// Open a rail conversation as the 2nd (split) pane — live, idle, or finished.
+async function openInSplit(projectId, csid, mcSessionId, isLive) {
+  const sid = await _resolveConversationSid(projectId, csid, mcSessionId, isLive);
+  if (!sid) { if (typeof showToast === 'function') showToast('Could not open this conversation in split view', 2500); return; }
   const active = activeAgentTab[projectId];
   if (!active) { switchAgentTab(projectId, sid); return; }  // nothing to split against
   if (sid === active) return;  // can't split a conversation with itself
@@ -4608,7 +4676,11 @@ async function sendFollowup(projectId, sessionId) {
         agentHistory.unshift({ ...oldHist, sessionId: targetSessionId, status: 'running', startedAt: new Date().toISOString() });
       }
       agentStatusCache[targetSessionId] = { ...(agentStatusCache[sessionId] || {}), status: 'running', startedAt: new Date().toISOString(), claudeSessionId: '' };
-      activeAgentTab[projectId] = targetSessionId;
+      // Retarget the pane the send came FROM. Unconditionally moving
+      // activeAgentTab made a send from the split (2nd) pane replace the
+      // primary pane with the 2nd conversation.
+      if (splitAgentTab[projectId] === sessionId) splitAgentTab[projectId] = targetSessionId;
+      else activeAgentTab[projectId] = targetSessionId;
       _sendInFlight[targetSessionId] = _sendInFlight[sessionId] || Date.now();
       delete _sendInFlight[sessionId];
       refreshModal();

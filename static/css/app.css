@@ -3006,10 +3006,17 @@
     display: flex; align-items: center; gap: 8px; margin-bottom: 8px;
     flex-shrink: 0; min-height: 24px;
   }
+  /* The label is the only thing telling the two panes apart. It used to carry
+     max-width:40% with the default flex-shrink, so in a ~220px pane the
+     nowrap status pill + Stop + close claimed the row and the label measured
+     0px wide. It now takes the free space (the old flex:1 spacer is gone) and
+     keeps a floor. */
   .agent-split-head .agent-split-label {
     font-weight: 600; font-size: 12.5px; color: var(--text);
-    white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 40%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+    flex: 1 1 auto; min-width: 4em;
   }
+  .agent-split-head .agent-status-label { flex-shrink: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .agent-split-close {
     background: none; border: none; cursor: pointer; color: var(--text-faint);
     font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 4px;
@@ -3018,14 +3025,20 @@
   /* Reuse the 3-pane thread sizing for each split pane's chat/output/composer. */
   .agent-3pane .agent-main.split .agent-split-pane .agent-chat { height: auto !important; flex: 1 1 auto; min-height: 0; }
   .agent-3pane .agent-main.split .agent-split-pane .agent-output { flex: 1 1 auto; min-height: 0; background: var(--bg); padding: 12px 12px; gap: 10px; }
-  /* Rail row split affordance — mirrors .conv-hide, appears on hover. */
+  /* The pane already pads 16px; the composer's own 14px sides left the reply
+     box ~76px wide in a default-size modal. */
+  .agent-3pane .agent-main.split .agent-split-pane .agent-chat-input { padding: 8px 0 4px; }
+  /* Rail row split affordance — low-contrast but always visible (was opacity:0,
+     hover-only, which meant the row's only path to split view was invisible
+     until you happened to hover it). Strengthens on row hover / own hover so
+     it still reads as secondary to the row's primary click target. */
   .conv-row .conv-split {
     background: none; border: none; cursor: pointer; color: var(--text-faint);
     font-size: 13px; line-height: 1; padding: 4px 6px; border-radius: 4px;
-    opacity: 0; transition: opacity .12s;
+    opacity: 0.4; transition: opacity .12s;
   }
-  .conv-row:hover .conv-split { opacity: 1; }
-  .conv-row .conv-split:hover { background: var(--hover, rgba(0,0,0,.06)); color: var(--accent); }
+  .conv-row:hover .conv-split { opacity: 0.85; }
+  .conv-row .conv-split:hover { opacity: 1; background: var(--hover, rgba(0,0,0,.06)); color: var(--accent); }
   /* Let flex size the thread — override sizeAgentChat's (skipped) inline height. */
   .agent-3pane .agent-main .agent-chat { height: auto !important; flex: 1 1 auto; min-height: 0; }
   .agent-3pane .agent-main .agent-output { flex: 1 1 auto; min-height: 0; }

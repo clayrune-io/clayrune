@@ -2029,6 +2029,10 @@ function refreshModalById(modalId) {
     const rec = _savedInputs[psid];
     const newInput = document.getElementById(`agent-followup-${psid}`);
     if (newInput) {
+      // The kept node carries the placeholder of the layout it was born in, so
+      // entering split view left the primary pane reading "Send follow-up…"
+      // wrapped over two lines. Placeholder is not IME state; take the fresh one.
+      rec.node.placeholder = newInput.placeholder;
       newInput.replaceWith(rec.node);
       _preservedInputIds.add(rec.node.id);
       // Enforce textareaValues as the source of truth for the preserved node
