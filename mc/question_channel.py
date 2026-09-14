@@ -170,18 +170,29 @@ def render(project_name: str, session: dict, qid: str, questions: list) -> tuple
             lines.append(f"    {oi}. {label}" + (f" — {desc}" if desc else ""))
         lines.append("")
 
+    has_options = any(isinstance(q, dict) and (q.get("options") or [])
+                      for q in questions)
+    lines += ["-" * 60, ""]
+    if has_options:
+        # Must match handle_reply: an unmatched reply is ignored, never forwarded.
+        lines += [
+            "TO ANSWER: reply to this email. Keep the subject line intact (it carries",
+            f"the question id q:{qid[:8]}). The first line of your reply is the answer:",
+            "",
+            "  • a number   -> picks that option (e.g. \"2\")",
+            "  • a label    -> picks that option by name",
+            "  • anything else -> ignored; the question stays open",
+        ]
+    else:
+        # Free-text questions are never auto-answered from mail (see handle_reply).
+        lines += [
+            "This question needs a free-text answer, which cannot be given by email.",
+            "Open the session in Clayrune to answer it.",
+        ]
     lines += [
-        "-" * 60,
         "",
-        "TO ANSWER: reply to this email. Keep the subject line intact (it carries",
-        f"the question id q:{qid[:8]}). The first line of your reply is the answer:",
-        "",
-        "  • a number   -> picks that option (e.g. \"2\")",
-        "  • a label    -> picks that option by name",
-        "  • anything else -> sent to the agent verbatim",
-        "",
-        "The agent stays parked until you reply. If you never do, nothing happens —",
-        "it simply never resumes.",
+        "The agent stays parked until it is answered. If it never is, nothing",
+        "happens — it simply never resumes.",
         "",
         "-- Clayrune",
     ]

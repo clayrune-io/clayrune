@@ -466,3 +466,20 @@ def test_the_turn_boundary_hook_never_raises():
     s = _session(_mc_turn_buf=['```mc:question\n{not json at all\n```'])
     agent_routes._apply_mc_tool_blocks_for_turn(s)   # must not raise
     assert not s.get('pending_questions')
+
+
+# ── The email's instructions must match what handle_reply actually does ─────
+
+def test_the_option_email_does_not_promise_verbatim_forwarding():
+    _, body = qc.render("P", {}, "abcdef1234", [
+        {"question": "Pick", "options": [{"label": "A"}, {"label": "B"}]}])
+    assert "verbatim" not in body
+    assert "ignored" in body
+    assert body.startswith(qc._OWN_BODY_MARKER)
+
+
+def test_the_free_text_email_says_mail_cannot_answer_it():
+    _, body = qc.render("P", {}, "abcdef1234", [{"question": "Why?"}])
+    assert "verbatim" not in body
+    assert "cannot be given by email" in body
+    assert body.startswith(qc._OWN_BODY_MARKER)
