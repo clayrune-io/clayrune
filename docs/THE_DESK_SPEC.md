@@ -84,11 +84,12 @@ indefensible:
 - **X publishes through the API.** Pay-per-use since 2026-02-06, no subscription.
   Verified directly at `docs.x.com/x-api/getting-started/pricing`, not taken from
   the scan: **$0.015 a post, $0.200 if it contains a URL, $0.005 a read.**
-- **LinkedIn publishes through Share on LinkedIn** (`w_member_social`), which is
-  free and rate-limited at 150 requests per member per day. It needs no
-  registered entity. The Community Management API does, and we do not need it,
-  because the `clayrune` voice posts from a personal profile by the decision
-  below.
+- **LinkedIn publishes as the Clayrune Company Page** (revised 2026-09-14, see
+  the finding below). Posting as an organization needs the `w_organization_social`
+  scope under LinkedIn's Community Management API, which requires app review.
+  The free, self-serve Share on LinkedIn (`w_member_social`, 150 requests per
+  member per day) only posts as a person, so it no longer covers the `clayrune`
+  voice. The LinkedIn publishing office is gated on that approval.
 
 Clayrune's posts point at releases and repos, so nearly all of them pay X's link
 rate. **100 link-posts a month is $20.** That is the real number and it is not
@@ -339,23 +340,28 @@ banned-construction list is the mechanism, not a style note in a prompt.
 ### Platforms: X and LinkedIn, v1
 
 Reddit, Discord and Facebook are out of v1 even though the vault holds
-credentials for all three. Reddit in particular is not a publishing target —
-it rewards participation and punishes broadcast, so it needs a different
-function than the one specified here.
+credentials for all three. Reddit in parti### Finding — "Clayrune on LinkedIn": the Company Page, with its own voice (revised 2026-09-14)
 
-### Finding — "Clayrune on LinkedIn" has two implementations, and the obvious one is wrong
+**Superseded decision (2026-09-09):** v1 was to post the `clayrune` voice from
+Ron's personal LinkedIn profile, because a new Company Page starts at zero
+followers and his profile already had distribution.
 
-A LinkedIn **Company Page** is the literal reading, and it starts at zero
-followers reaching nobody. That is precisely the failure this design exists to
-avoid, and it would make the Desk look broken for months for reasons that have
-nothing to do with the writing.
+**Current decision (Ron, 2026-09-14):** "Clayrune page should have its own
+voice." Ron created the Company Page. The `clayrune` voice (store name
+`product`, register "the product speaking about itself, never first person")
+publishes there, with `destination` set accordingly. Ron's personal LinkedIn is
+not a Desk destination unless he says so. X still carries the `ron` voice.
 
-**v1 posts the `clayrune` voice from Ron's existing personal LinkedIn profile**
-— product register, product subject matter, his distribution. The vault's
-LinkedIn entry already authenticates that profile, so nothing new is needed.
+What this costs, stated so nobody reads it as a failure later:
+- The page starts at zero followers. Early LinkedIn measurement will read as
+  near-silence; judge the voice on edits and saves, not reach, until the page
+  has an audience.
+- Organization posting is gated on LinkedIn app review (`w_organization_social`),
+  so the LinkedIn half of the publishing office cannot ship before approval.
 
-This is reversible: a Company Page can be created later and the `clayrune`
-profile re-pointed at it once there is an audience worth moving. Creating the
+Unchanged from 2026-09-09: two voices with different standing to make claims, a
+story written twice from one signal and never cross-posted, and Reddit, Discord
+and Facebook out of v1. it once there is an audience worth moving. Creating the
 page is outward-facing, so it is Ron's call, not the Desk's, and it is not on
 the v1 path.
 
