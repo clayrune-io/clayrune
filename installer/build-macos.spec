@@ -14,7 +14,11 @@
 #
 # Output: dist/Clayrune.app  →  zip into MissionControl-macOS.zip for release.
 
+import datetime
+import json
 import os
+import subprocess
+import tempfile
 
 from PyInstaller.utils.hooks import collect_submodules, collect_data_files
 
@@ -83,6 +87,38 @@ if os.path.exists(R('CHANGELOG.md')):
     datas.append((R('CHANGELOG.md'), '.'))
 if os.path.isdir(R('docs', 'claydo')):
     datas.append((R('docs', 'claydo'), 'docs/claydo'))
+
+# Bake this build's commit identity into the bundle so a frozen install (no
+# .git, see mc/blueprints/system_routes.py _APP_DIR checks) can still tell
+# whether it's current. Read at runtime via _load_bundled_build_info as
+# `<_APP_DIR>/build_info.json`. tools/notarize-macos.sh copies this exact
+# file into the published Clayrune-macOS.build.json release asset so the two
+# can never drift apart — see docs/MACOS_NOTARIZATION.md.
+#
+# Written to a tempfile rather than into the repo tree: this is build output,
+# not source, and must never land in a commit (the "nothing operator-specific
+# in the repo" rule applies to build artifacts too — a stray build_info.json
+# from a personal checkout would ship the builder's local commit as if it
+# were canonical).
+def _git_out(*args):
+    try:
+        r = subprocess.run(['git', *args], cwd=REPO_ROOT, capture_output=True,
+                            text=True, timeout=10)
+        return r.stdout.strip() if r.returncode == 0 else ''
+    except Exception:
+        return ''
+
+
+_build_info = {
+    'commit': _git_out('rev-parse', '--short', 'HEAD'),
+    'commit_full': _git_out('rev-parse', 'HEAD'),
+    'branch': _git_out('rev-parse', '--abbrev-ref', 'HEAD'),
+    'built_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
+}
+_build_info_path = os.path.join(tempfile.gettempdir(), 'clayrune_build_info.json')
+with open(_build_info_path, 'w', encoding='utf-8') as _f:
+    json.dump(_build_info, _f)
+datas.append((_build_info_path, '.'))
 
 # Include any extra Python modules the app loads from the repo root.
 # server.py is implicitly bundled because app.py imports it.

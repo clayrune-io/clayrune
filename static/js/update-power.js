@@ -64,6 +64,34 @@ async function refreshUpdateStatus() {
   try {
     const res = await fetch(API_BASE + '/api/system/update/status');
     const data = await res.json();
+
+    // Frozen (PyInstaller) Mac .app — no .git, so none of the pull/behind-count
+    // machinery below applies. Never show its "not a git checkout" text here;
+    // that's a dev/Windows-installer message, meaningless to a Mac app user.
+    if (data.frozen) {
+      btn.dataset.frozen = '1';
+      btn.dataset.downloadUrl = data.download_url || '';
+      const builtLine = data.built_at ? ` <span style="opacity:.6">(built ${esc(data.built_at)})</span>` : '';
+      if (data.update_available) {
+        hint.innerHTML =
+          `<div style="font-size:12px;margin-bottom:4px"><strong>A new Mac build is available</strong>` +
+          `${data.release_tag ? ' — ' + esc(data.release_tag) : ''}</div>` +
+          `<div style="font-size:12px;color:var(--text-dim)">Quit Clayrune, download the new build, and replace the app in Applications.</div>`;
+        btn.disabled = false;
+        btn.textContent = 'Download update';
+      } else if (data.message) {
+        hint.textContent = data.message;
+        btn.disabled = true;
+        btn.textContent = 'Unavailable';
+      } else {
+        hint.innerHTML = `<span style="color:var(--green-text,#22c55e)">Up to date</span>${builtLine}`;
+        btn.disabled = true;
+        btn.textContent = 'Up to date';
+      }
+      return;
+    }
+    delete btn.dataset.frozen;
+
     if (!data.is_git_repo) {
       hint.textContent = data.message || 'Not a git checkout — automatic updates unavailable.';
       btn.disabled = true;
@@ -114,6 +142,15 @@ async function performClayruneUpdate() {
   const btn = document.getElementById('update-btn');
   const hint = document.getElementById('update-status-hint');
   if (!btn || !hint) return;
+
+  // Frozen Mac .app: no git pull to run. Open the download in the system
+  // browser instead of hitting POST /api/system/update (which, for this
+  // install, just hands back the same download_url anyway).
+  if (btn.dataset.frozen === '1') {
+    if (btn.dataset.downloadUrl) window.open(btn.dataset.downloadUrl, '_blank', 'noopener');
+    return;
+  }
+
   if (!confirm('Pull the latest version from GitHub? Your data and config are preserved.')) return;
   btn.disabled = true;
   btn.textContent = 'Pulling...';

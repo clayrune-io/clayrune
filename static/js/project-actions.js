@@ -99,14 +99,22 @@ async function checkClayruneUpdateAvailable() {
   const remindAfter = parseInt(localStorage.getItem('mc_update_remind_after_ts') || '0', 10);
   if (remindAfter && Date.now() < remindAfter) return; // snoozed window
 
-  // Build a brief message: "<N> behind · <ver> → <newver>"
-  const n = data.behind || 0;
+  // Build a brief message. Frozen (Mac .app) installs have no behind-count —
+  // there's no local git history to count against — so don't print "0
+  // commits behind"; just name the two builds.
   const cur = data.version || (data.commit || '').slice(0, 7);
   const remote = data.remote_version || (data.remote_commit || '').slice(0, 7);
-  const msg = `<strong>Clayrune update available</strong><br>` +
-              `<span style="color:var(--text-faint);font-size:12px">` +
-              `${n} commit${n === 1 ? '' : 's'} behind &middot; ` +
-              `${esc(cur)} → ${esc(remote)}</span>`;
+  const msg = data.frozen
+    ? `<strong>A new Mac build is available</strong><br>` +
+      `<span style="color:var(--text-faint);font-size:12px">` +
+      `${esc(cur)} → ${esc(remote)}</span>`
+    : (() => {
+        const n = data.behind || 0;
+        return `<strong>Clayrune update available</strong><br>` +
+               `<span style="color:var(--text-faint);font-size:12px">` +
+               `${n} commit${n === 1 ? '' : 's'} behind &middot; ` +
+               `${esc(cur)} → ${esc(remote)}</span>`;
+      })();
 
   showActionToast(msg, [
     {
