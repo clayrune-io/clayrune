@@ -38,7 +38,21 @@ def _log(*args, level='info', **kw):
     if _LOG_LEVELS.get(level, 20) < threshold:
         return
     kw.setdefault('flush', True)
-    _builtins.print(*args, **kw)
+    try:
+        _builtins.print(*args, **kw)
+    except UnicodeEncodeError:
+        # A cp1252 stdout (the redirected server console on Windows) cannot
+        # encode e.g. an arrow, and print() RAISES. _log runs inside completion
+        # paths, so that raise used to abort its caller: clayrune.log holds
+        # "[runtime-completion] agent-log write failed: 'charmap' codec can't
+        # encode character '→'" -- the agent-log row and the workflow/
+        # spawner wake after it were both skipped. A log line must never be
+        # able to cancel the work it is describing.
+        try:
+            _builtins.print(*(str(a).encode('ascii', 'backslashreplace').decode('ascii')
+                              for a in args), **kw)
+        except Exception:
+            pass
 
 
 def _atomic_write_text(path, text, encoding='utf-8'):

@@ -31,12 +31,14 @@ _load_agent_log: Optional[Callable[[str], list]] = None  # kept for parity/tests
 
 
 def wire(*, workflows_path=None, workflow_runs_dir=None,
-         dispatch_agent_internal_fn=None, load_agent_log_fn=None):
+         dispatch_agent_internal_fn=None, load_agent_log_fn=None,
+         session_summary_fn=None):
     global _load_agent_log
     _load_agent_log = load_agent_log_fn
     _wf.wire(workflows_path=workflows_path, workflow_runs_dir=workflow_runs_dir,
              dispatch_agent_internal_fn=dispatch_agent_internal_fn,
-             load_agent_log_fn=load_agent_log_fn)
+             load_agent_log_fn=load_agent_log_fn,
+             session_summary_fn=session_summary_fn)
 
 
 # Inbound shim (startup boot phase) — server.py calls this after wire(), the

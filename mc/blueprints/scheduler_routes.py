@@ -746,6 +746,13 @@ def _scheduler_loop():
         # sleeping, so a wait of any length is just a timestamp comparison
         # here, polled every 30s, and survives a restart for free since the
         # deadline lives on disk.
+        # Running agent steps whose completion hook never arrived (MC-871
+        # backstop): advance a confirmed end, surface a stall. Idempotent.
+        try:
+            _wf.reconcile_running_steps()
+        except Exception as e:
+            _log(f"[scheduler] workflow step reconcile error: {e}")
+
         try:
             _wf.resume_due_waits()
         except Exception as e:

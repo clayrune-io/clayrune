@@ -106,6 +106,12 @@ ACTION_ALLOWLIST = ('backlog_create', 'backlog_patch', 'desk_harvest',
                      'journal_append', 'notify_operator', 'restore_point_create')
 TRIGGER_TYPES = ('manual', 'schedule')
 RESERVED_WHEN = 'otherwise'
+# The only agent-session end states that are a RESULT for the next step
+# (`_read_agent_stream[_b]` and `_mode_a_reader` write them on a normal
+# finish). 'interrupted' means "we don't know what happened"
+# (`_reconcile_pending_agent_log_entries` at boot), 'stopped' means someone hit
+# Stop, 'error' is a failure. See on_agent_step_complete.
+STEP_SUCCESS_STATUSES = ('completed', 'idle')
 WAIT_MODES = ('delay', 'until')
 
 _SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}')
@@ -113,9 +119,13 @@ _WF_RESULT_RE = re.compile(r'```[ \t]*wf:result[ \t\r\n]*(.*?)```', re.DOTALL | 
 
 
 def wire(*, workflows_path=None, workflow_runs_dir=None,
-         dispatch_agent_internal_fn=None, load_agent_log_fn=None):
+         dispatch_agent_internal_fn=None, load_agent_log_fn=None,
+         session_summary_fn=None):
     """Late-bind cross-family deps + paths. Called once by server.py."""
     global WORKFLOWS_PATH, WORKFLOW_RUNS_DIR, _dispatch_agent_internal, _load_agent_log
+    global _session_summary
+    if session_summary_fn is not None:
+        _session_summary = session_summary_fn
     if workflows_path is not None:
         WORKFLOWS_PATH = Path(workflows_path)
     if workflow_runs_dir is not None:
@@ -1049,6 +1059,23 @@ def on_agent_step_complete(run_id: str, step_name: str, project_id: str,
             }
             _fail_run(run, f"step '{step_name}' agent ended in error")
             return
+        if status not in STEP_SUCCESS_STATUSES:
+            # 'stopped' (someone hit Stop), 'interrupted' (boot reconcile's
+            # "we don't know what happened") or anything unrecognised is NOT a
+            # result. This used to fall through to 'completed', so stopping a
+            # workflow's agent mid-task handed its half-finished text to the
+            # next step as if it were the answer. Same fail-closed rule
+            # adopt_on_startup always applied, now applied to every caller.
+            run['steps'][step_name] = {
+                **st, 'status': 'failed',
+                'error': f"agent session ended '{status or 'unknown'}', not completed",
+            }
+            run['status'] = 'interrupted'
+            run['error'] = (f"step '{step_name}' session {(session_id or '')[:12]} "
+                            f"ended '{status or 'unknown'}' without completing")
+            _write_run(run)
+            _log(f"[workflows] run {run_id[:12]} marked interrupted: {run['error']}")
+            return
 
         outcomes = node.get('outcomes') or []
         result = _parse_wf_result(summary) if outcomes else None
@@ -1376,47 +1403,173 @@ def adopt_on_startup() -> None:
             continue
         if run.get('status') != 'running':
             continue
-        step_name = next((n for n, st in (run.get('steps') or {}).items()
-                          if st.get('status') == 'running'), None)
+        step_name = _running_step(run)
         if step_name is None:
             # Nothing in flight -- re-derive the frontier and continue
             # (covers e.g. an action step that hadn't been picked up yet).
             _advance_run(run['id'])
             continue
-        step_state = run['steps'][step_name]
-        sid = step_state.get('session_id')
-        pid = step_state.get('project_id')
-        if not sid or not pid:
-            run['status'] = 'interrupted'
-            run['error'] = f"step '{step_name}' has no recorded session to confirm"
-            _write_run(run)
-            continue
-        try:
-            log = _load_agent_log(pid) or []
-        except Exception as e:
-            log = []
-            _log(f'[workflows] adopt: agent_log read failed for {pid}: {e}')
-        entry = next((e for e in log if e.get('session_id') == sid), None)
-        # "Confirmed complete" means the child actually finished its turn --
-        # NOT merely that its agent_log row is no longer 'in_progress'.
-        # `_reconcile_pending_agent_log_entries` (which runs immediately
-        # before this, at boot) flips an orphaned in-flight row's status to
-        # 'interrupted' -- that string means exactly "we don't know what
-        # happened", the opposite of confirmed, and treating it as success
-        # here would silently advance a run on a fabricated result. 'error'/
-        # 'stopped' are equally not a confirmation. Only the two statuses
-        # `_read_agent_stream[_b]` actually writes on a normal finish count.
-        if entry and entry.get('status') in ('completed', 'idle'):
-            _log(f"[workflows] adopting run {run['id'][:12]} step '{step_name}' "
-                 f"-- child {sid[:12]} completed while down, advancing")
-            on_agent_step_complete(
-                run_id=run['id'], step_name=step_name, project_id=pid,
-                session_id=sid, status=entry.get('status', 'unknown'),
-                summary=entry.get('summary', ''))
+        # Boot: no session can be live yet, so only the durable agent_log
+        # can confirm. Anything short of a confirmed end is interrupted.
+        verdict, status, summary = _step_session_verdict(run['steps'][step_name],
+                                                         use_live=False)
+        if verdict == 'ended':
+            _replay_step_end(run, step_name, status, summary, 'completed while down')
         else:
-            run['status'] = 'interrupted'
-            run['error'] = (f"step '{step_name}' session {sid[:12]} not confirmed "
-                            f"complete after restart")
-            _write_run(run)
-            _log(f"[workflows] run {run['id'][:12]} marked interrupted "
-                 f"(step '{step_name}' unconfirmed)")
+            _interrupt_unconfirmed(run['id'], step_name,
+                                   'not confirmed complete after restart')
+
+
+# ── Running-step reconciler (the backstop for a missed completion hook) ─────
+
+# Every status a session can END in. A live session in any other status
+# (normally 'running') is still working and is left alone, however long.
+_STEP_END_STATUSES = STEP_SUCCESS_STATUSES + ('error', 'stopped', 'interrupted')
+# How long a running agent step may have NO live session and NO completion
+# record before the reconciler stops waiting and marks the run interrupted.
+# Only a race window needs covering here (dispatch -> session registered,
+# process exit -> agent-log row written), so minutes, not hours.
+STALLED_STEP_SECONDS_DEFAULT = 600
+# agent_routes._last_reply_text, wired by server.py: the summary a Mode B
+# turn-boundary hook would have delivered, for a live session whose agent_log
+# row is still the dispatch-time 'in_progress' placeholder.
+_session_summary: Optional[Callable[[dict], str]] = None
+
+
+def _running_step(run: dict) -> Optional[str]:
+    return next((n for n, st in (run.get('steps') or {}).items()
+                 if st.get('status') == 'running'), None)
+
+
+def _step_session_verdict(step_state: dict, *, use_live: bool) -> tuple:
+    """('in_flight' | 'ended' | 'unconfirmed', status, summary) for one
+    running agent step -- the ONE place both restart adoption and the periodic
+    reconciler decide whether a step's agent actually finished.
+
+    Order: a live session that is still working wins (never touch it). Then
+    the durable agent_log row, if it is past its dispatch-time 'in_progress'
+    placeholder -- the same row and summary `_log_agent_completion` handed the
+    hook. Then a live session that has ended but whose row is not written yet
+    (a Mode B turn boundary never writes one), using the hook's own summary
+    function. Nothing else confirms anything."""
+    sid = step_state.get('session_id') or ''
+    pid = step_state.get('project_id') or ''
+    if not sid or not pid:
+        return 'unconfirmed', None, ''
+    live = state.agent_sessions.get(sid) if use_live else None
+    if live is not None and live.get('status') not in _STEP_END_STATUSES:
+        return 'in_flight', live.get('status'), ''
+    entry = None
+    if _load_agent_log is not None:
+        try:
+            entry = next((e for e in (_load_agent_log(pid) or [])
+                          if e.get('session_id') == sid), None)
+        except Exception as e:
+            _log(f'[workflows] agent_log read failed for {pid}: {e}')
+    if entry and entry.get('status') and entry.get('status') != 'in_progress':
+        return 'ended', entry.get('status'), entry.get('summary', '') or ''
+    if live is not None:
+        if _session_summary is None:
+            return 'in_flight', live.get('status'), ''  # wait for the row
+        try:
+            summary = _session_summary(live) or ''
+        except Exception as e:
+            _log(f'[workflows] live summary failed for {sid[:12]}: {e}')
+            summary = ''
+        return 'ended', live.get('status'), summary
+    return 'unconfirmed', None, ''
+
+
+def _replay_step_end(run: dict, step_name: str, status, summary: str, why: str) -> None:
+    st = run['steps'][step_name]
+    _log(f"[workflows] run {run['id'][:12]} step '{step_name}': child "
+         f"{(st.get('session_id') or '')[:12]} ended '{status}' ({why}), replaying "
+         f"through on_agent_step_complete")
+    on_agent_step_complete(
+        run_id=run['id'], step_name=step_name, project_id=st.get('project_id', ''),
+        session_id=st.get('session_id', ''), status=status or 'unknown',
+        summary=summary or '')
+
+
+def _interrupt_unconfirmed(run_id: str, step_name: str, reason: str) -> bool:
+    """Mark a run interrupted because its running step's end can't be
+    confirmed. Re-checked under the lock: only if that exact step is still
+    running, so a completion that landed meanwhile always wins."""
+    with _runs_lock:
+        run = _read_run(run_id)
+        if run is None or run.get('status') != 'running':
+            return False
+        st = (run.get('steps') or {}).get(step_name) or {}
+        if st.get('status') != 'running':
+            return False
+        sid = (st.get('session_id') or '')[:12]
+        run['steps'][step_name] = {**st, 'stalled_at': now_iso()}
+        run['status'] = 'interrupted'
+        run['error'] = (f"step '{step_name}' session {sid or '(none recorded)'} {reason}"
+                        if sid else f"step '{step_name}' has no recorded session to confirm")
+        _write_run(run)
+    _log(f"[workflows] run {run_id[:12]} marked interrupted: {run['error']}")
+    return True
+
+
+def reconcile_running_steps(now: Optional[datetime] = None) -> dict:
+    """Periodic backstop for the completion hook (scheduler tick, every 30s).
+
+    The live wake path (`agent_routes._maybe_notify_spawner` ->
+    `on_agent_step_complete`) is a single best-effort chain; when any link
+    drops, the run sits `running` forever and `_has_live_run` refuses every
+    future run. Measured 2026-09-14: run-5de9dfa5's codex step completed
+    (agent_log row `completed`) and nothing advanced it -- the server process
+    predated the fix that carried `_notify_workflow` onto non-claude sessions.
+
+    For each `running` run's running agent step: a live, still-working
+    session is left alone; a confirmed end (see `_step_session_verdict`) is
+    replayed through `on_agent_step_complete`, which applies the same
+    success/error/stopped rules as the live hook and is idempotent against a
+    hook that fires late; no live session and no completion record past
+    `workflow_stalled_step_seconds` marks the run interrupted, with the reason
+    on `run.error` and logged -- never silent, and it frees the one-live-run
+    guard. Returns counts; never raises per run."""
+    counts = {'advanced': 0, 'stalled': 0}
+    if WORKFLOW_RUNS_DIR is None or not WORKFLOW_RUNS_DIR.exists():
+        return counts
+    now = now or datetime.now(timezone.utc)
+    try:
+        grace = float(state.CONFIG.get('workflow_stalled_step_seconds',
+                                       STALLED_STEP_SECONDS_DEFAULT))
+    except (TypeError, ValueError):
+        grace = STALLED_STEP_SECONDS_DEFAULT
+    for f in WORKFLOW_RUNS_DIR.glob('*.json'):
+        run_id = f.stem
+        try:
+            run = _read_run(run_id)
+            if run is None or run.get('status') != 'running':
+                continue
+            step_name = _running_step(run)
+            if step_name is None:
+                continue
+            st = run['steps'][step_name]
+            verdict, status, summary = _step_session_verdict(st, use_live=True)
+            if verdict == 'in_flight':
+                continue
+            if verdict == 'ended':
+                _replay_step_end(run, step_name, status, summary,
+                                 'completion hook never arrived')
+                after = _read_run(run_id) or {}
+                if ((after.get('steps') or {}).get(step_name) or {}).get('status') != 'running':
+                    counts['advanced'] += 1
+                continue
+            try:
+                age = (now - _parse_iso(st.get('dispatched_at') or '')).total_seconds()
+            except Exception:
+                age = float('inf')  # no usable timestamp: surface, don't wait forever
+            if age < grace:
+                continue
+            if _interrupt_unconfirmed(
+                    run_id, step_name,
+                    f"has no live session and no completion record "
+                    f"{int(age // 60)} min after dispatch -- its completion never arrived"):
+                counts['stalled'] += 1
+        except Exception as e:
+            _log(f'[workflows] reconcile: run {run_id[:12]} skipped: {e}')
+    return counts

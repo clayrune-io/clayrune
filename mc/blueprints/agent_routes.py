@@ -4681,7 +4681,27 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
 
 
 def _log_agent_completion(session):
-    """Save a summary entry when an agent session finishes."""
+    """Save a summary entry when an agent session finishes.
+
+    The work lives in `_log_agent_completion_body`. This wrapper guarantees
+    the spawner/workflow wake is attempted even when the body raises before
+    reaching it: that wake is the ONLY thing that advances a workflow run, and
+    this function is reached from reader-thread `finally` blocks and the
+    runtime exit hook, whose callers swallow the exception into one log line.
+    `_maybe_notify_spawner` is latched, so the normal path's own call inside
+    the body makes this a no-op.
+    """
+    try:
+        _log_agent_completion_body(session)
+    finally:
+        try:
+            _maybe_notify_spawner(session, _last_reply_text(session))
+        except Exception as e:
+            _log(f"[notify] completion wake backstop failed for "
+                 f"{session.get('session_id', '')[:12]}: {e}")
+
+
+def _log_agent_completion_body(session):
     project_id = session.get('project_id')
     if not project_id:
         return
@@ -4917,6 +4937,11 @@ def _runtime_log_completion(ev, session):
             # the same scan `_last_real_error_line` does) so a future silent
             # failure has SOMETHING in clayrune.log besides the seed line.
             if session.get('status') == 'error':
+              # Diagnostics only: a failure here must never skip the
+              # completion write + workflow wake below. It did -- clayrune.log
+              # holds "[runtime-completion] agent-log write failed: 'charmap'
+              # codec can't encode character '→'", raised by this _log.
+              try:
                 tail = '\n'.join(session.get('log_lines') or [])
                 detail = (_agent_runtime._last_real_error_line(tail)
                           or 'no error text captured on the session tail')
@@ -4936,9 +4961,17 @@ def _runtime_log_completion(ev, session):
                      f"model={session.get('model') or session.get('agent_model', '')} "
                      f"session={session.get('session_id', '')} "
                      f"ts={now_iso()}: {detail}")
+              except Exception as e:
+                _log(f"[runtime-error] diagnostic line failed: {e!r}")
             _log_agent_completion(session)
     except Exception as e:
         _log(f"[runtime-completion] agent-log write failed: {e}")
+        # The lock or anything before _log_agent_completion raised: still
+        # attempt the (latched) wake, or a workflow run parks forever.
+        try:
+            _maybe_notify_spawner(session, _last_reply_text(session))
+        except Exception as e2:
+            _log(f"[runtime-completion] wake backstop failed: {e2}")
 
 
 # Wired onto every SessionHandle MC hands a non-claude runtime. Module-level
