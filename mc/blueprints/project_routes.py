@@ -55,6 +55,7 @@ from mc.state import (
 
 import mc.github_sync as _gh_sync
 import mc.project_sync as _proj_sync
+from steward import core as _steward_core
 
 # Cross-blueprint import (the 1.4/1.5 _resolve_project_path_or_400 precedent):
 # delete_project kills this project's terminal sessions via the terminal
@@ -488,6 +489,26 @@ def update_project(project_id):
         existing['activity_log'] = log[:20]
 
     save_project(project_id, existing)
+
+    # Install the steward reversibility fence's PreToolUse hook on every NEW
+    # project with a real path (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT
+    # §7) — without this, the next project Ron adds starts with zero coverage
+    # for its schedules/workflow steps/dispatched agents/hivemind workers,
+    # reopening the exact gap §4 closed for existing projects. Steward itself
+    # stays OFF for the project (install_fence_to_project only ever writes the
+    # hook; it never enables steward or a schedule) — the hook self-gates on
+    # trigger_type/the [Steward cycle] marker either way (fence.py), so this is
+    # inert until the project actually dispatches something unattended.
+    # Idempotent, merges into (never clobbers) an existing .claude/settings.json,
+    # and refuses rather than guesses on an unparseable one — install_fence_to_project's
+    # own contract. Best-effort: a failure here must never fail project creation.
+    if is_new:
+        new_path = existing.get('project_path', '')
+        if new_path and Path(new_path).is_dir():
+            try:
+                _steward_core.install_fence_to_project(new_path)
+            except Exception as e:
+                _log(f"[project] fence auto-install for new project {project_id} failed: {e}")
 
     return jsonify({'ok': True, 'id': project_id})
 

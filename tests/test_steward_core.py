@@ -161,6 +161,83 @@ def test_loop_health(store):
     assert any('decision' in a for a in h['alerts'])
 
 
+# ── install_fence_to_project / remove_fence_from_project ───────────────────
+# 2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT §7: pinning the installer's
+# existing "merge, never clobber; refuse rather than guess" contract, since
+# the project-create path (mc/blueprints/project_routes.py) now calls this
+# automatically for every new project and depends on both properties holding.
+
+def test_install_fence_writes_hook_into_fresh_settings(tmp_path):
+    ok = core.install_fence_to_project(str(tmp_path))
+    assert ok is True
+    settings_path = tmp_path / '.claude' / 'settings.json'
+    settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    hook = settings['hooks']['PreToolUse'][0]
+    assert 'Bash' in hook['matcher']
+    assert 'fence.py' in hook['hooks'][0]['command']
+
+
+def test_install_fence_merges_into_existing_settings_without_clobbering(tmp_path):
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    settings_path = claude_dir / 'settings.json'
+    settings_path.write_text(json.dumps({
+        'hooks': {'PreToolUse': [{'matcher': 'Write', 'hooks': [
+            {'type': 'command', 'command': 'some-user-hook.py'}]}]},
+        'permissions': {'allow': ['Bash(ls:*)']},
+    }), encoding='utf-8')
+
+    ok = core.install_fence_to_project(str(tmp_path))
+    assert ok is True
+
+    settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    # The user's own hook and unrelated top-level keys survive untouched.
+    assert settings['permissions'] == {'allow': ['Bash(ls:*)']}
+    commands = [h['command'] for e in settings['hooks']['PreToolUse'] for h in e['hooks']]
+    assert 'some-user-hook.py' in commands
+    assert any('fence.py' in c for c in commands)
+
+
+def test_install_fence_is_idempotent_no_duplicate_entries(tmp_path):
+    core.install_fence_to_project(str(tmp_path))
+    core.install_fence_to_project(str(tmp_path))
+    settings_path = tmp_path / '.claude' / 'settings.json'
+    settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    fence_entries = [e for e in settings['hooks']['PreToolUse']
+                     if any('fence.py' in h['command'] for h in e['hooks'])]
+    assert len(fence_entries) == 1
+
+
+def test_install_fence_refuses_unparseable_settings_without_clobbering(tmp_path):
+    claude_dir = tmp_path / '.claude'
+    claude_dir.mkdir()
+    settings_path = claude_dir / 'settings.json'
+    settings_path.write_text('{not valid json', encoding='utf-8')
+
+    ok = core.install_fence_to_project(str(tmp_path))
+    assert ok is False
+    # Refused, not clobbered — the broken file is untouched.
+    assert settings_path.read_text(encoding='utf-8') == '{not valid json'
+
+
+def test_remove_fence_leaves_other_hooks_and_settings_alone(tmp_path):
+    core.install_fence_to_project(str(tmp_path))
+    settings_path = tmp_path / '.claude' / 'settings.json'
+    settings = json.loads(settings_path.read_text(encoding='utf-8'))
+    settings['hooks']['PreToolUse'].append(
+        {'matcher': 'Write', 'hooks': [{'type': 'command', 'command': 'some-user-hook.py'}]})
+    settings['permissions'] = {'allow': ['Bash(ls:*)']}
+    settings_path.write_text(json.dumps(settings), encoding='utf-8')
+
+    ok = core.remove_fence_from_project(str(tmp_path))
+    assert ok is True
+    after = json.loads(settings_path.read_text(encoding='utf-8'))
+    commands = [h['command'] for e in after['hooks']['PreToolUse'] for h in e['hooks']]
+    assert 'some-user-hook.py' in commands
+    assert not any('fence.py' in c for c in commands)
+    assert after['permissions'] == {'allow': ['Bash(ls:*)']}
+
+
 def test_public_api_exports():
     for name in ('steward_enabled', 'ensure_charter', 'build_cycle_task',
                  'steward_notify', 'ensure_fence_settings', 'loop_health',

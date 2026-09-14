@@ -14,6 +14,8 @@ from pathlib import Path
 REPO = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(REPO))
 
+from flask import Flask  # noqa: E402
+
 from mc.state import agent_sessions  # noqa: E402
 from mc.unattended import is_unattended_caller  # noqa: E402
 
@@ -66,6 +68,45 @@ def test_project_scope_none_counts_every_project():
     agent_sessions['s1'] = {'status': 'running', 'trigger_type': 'schedule',
                             'project_id': 'other'}
     assert is_unattended_caller(project_id=None) is True
+
+
+# ── Origin-header fix (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT §7) ──
+# The prior "any non-manual session anywhere" check refused Ron's own
+# dashboard PUT /api/config whenever an unrelated agent happened to be
+# running. A request carrying the browser Origin header must never be
+# refused, regardless of server-wide session state.
+
+_dummy_app = Flask(__name__)
+
+
+def test_request_with_origin_header_is_never_unattended():
+    agent_sessions['s1'] = {'status': 'running', 'trigger_type': 'schedule',
+                            'project_id': 'p'}
+    with _dummy_app.test_request_context('/api/config', method='PUT',
+                                         headers={'Origin': 'http://localhost:5199'}):
+        assert is_unattended_caller() is False
+        assert is_unattended_caller(project_id=None) is False
+
+
+def test_request_without_origin_header_keeps_old_behavior():
+    agent_sessions['s1'] = {'status': 'running', 'trigger_type': 'schedule',
+                            'project_id': 'p'}
+    with _dummy_app.test_request_context('/api/config', method='PUT'):
+        assert is_unattended_caller() is True
+
+
+def test_request_without_origin_header_and_no_unattended_session_allows():
+    with _dummy_app.test_request_context('/api/config', method='PUT'):
+        assert is_unattended_caller() is False
+
+
+def test_direct_call_with_no_request_context_is_unaffected():
+    # Every test above this one in the file calls is_unattended_caller() with
+    # no Flask request context at all — pin that this fix didn't change that
+    # (has_request_context() must gate the Origin check, not crash on it).
+    agent_sessions['s1'] = {'status': 'running', 'trigger_type': 'schedule',
+                            'project_id': 'p'}
+    assert is_unattended_caller() is True
 
 
 def test_exactly_one_definition_in_the_repo():

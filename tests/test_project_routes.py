@@ -278,6 +278,31 @@ def test_create_project_auto_workspace(client):
     assert ws.is_dir() and ws.name == 'newproj'
 
 
+def test_create_project_auto_installs_fence_hook(client):
+    # 2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT §7: without this, every
+    # NEW project starts with zero steward-fence coverage for its schedules/
+    # workflow steps/dispatched agents/hivemind workers — the exact gap §4
+    # closed for existing projects reopens silently on the next project Ron
+    # adds. Steward itself must stay OFF; only the hook is installed.
+    r = client.post('/api/project/newproj', json={'name': 'New'})
+    assert r.status_code == 200
+    rec = json.loads((client.data_dir / 'newproj.json').read_text(encoding='utf-8'))
+    ws = Path(rec['project_path'])
+    settings = json.loads((ws / '.claude' / 'settings.json').read_text(encoding='utf-8'))
+    hook = settings['hooks']['PreToolUse'][0]
+    assert 'fence.py' in hook['hooks'][0]['command']
+    assert rec.get('steward_mode') != 'on'
+
+
+def test_create_project_with_explicit_path_also_installs_fence(client, tmp_path):
+    explicit = tmp_path / 'explicit-proj'
+    explicit.mkdir()
+    r = client.post('/api/project/explicitproj',
+                    json={'name': 'Explicit', 'project_path': str(explicit)})
+    assert r.status_code == 200
+    assert (explicit / '.claude' / 'settings.json').exists()
+
+
 def test_update_project_log_msg_and_no_data(client):
     _seed(client)
     r = client.post('/api/project/tproj', json={'log_msg': 'did a thing'})

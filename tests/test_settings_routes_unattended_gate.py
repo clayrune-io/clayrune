@@ -75,6 +75,19 @@ def test_unidentifiable_running_session_fails_closed(ctx):
     assert ctx.state.CONFIG.get('scheduler_paused') == before
 
 
+def test_dashboard_request_succeeds_even_while_an_agent_is_running(ctx):
+    # 2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT §7: a real, live bug —
+    # Ron's own dashboard PUT (always carries the browser Origin header) used
+    # to get refused by this exact gate whenever ANY agent, anywhere, was
+    # running non-manually — not just one touching this project.
+    ctx.state.agent_sessions['scheduled-1'] = {
+        'status': 'running', 'trigger_type': 'schedule', 'project_id': 'p'}
+    res = ctx.client.put('/api/config', json={'agent_permission_mode': 'bypassPermissions'},
+                         headers={'Origin': 'http://localhost:5199'})
+    assert res.status_code == 200
+    assert ctx.state.CONFIG.get('agent_permission_mode') == 'bypassPermissions'
+
+
 def test_manual_session_and_no_session_still_succeed(ctx):
     res = ctx.client.put('/api/config', json={'agent_name': 'Vector'})
     assert res.status_code == 200
