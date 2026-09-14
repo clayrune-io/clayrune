@@ -54,19 +54,33 @@ def _unattended_refusal():
 def api_secrets_list():
     project_id = request.args.get('project_id') or None
     try:
-        items = vault.list_secrets(project_id)
-        backend = vault.key_backend()
+        # check_readable actually decrypts each entry to prove it, rather
+        # than just confirming it exists — the 2026-09-14 silent-remint
+        # incident orphaned 8 entries that a plain existence check kept
+        # reporting as fine. Still metadata-only: the booleans go out, the
+        # values never do.
+        items = vault.list_secrets(project_id, check_readable=True)
     except vault.SecretsError as e:
         return _err(e, 500)
+    try:
+        backend = vault.key_backend()
+        warning = ('Master key is in a 0600 file — no usable OS keyring '
+                   'backend was found.' if backend == 'file' else '')
+    except vault.SecretsUnavailable:
+        # No key anywhere (keyring and file mirror both gone) but the store
+        # itself is readable — still return the list so the UI can show
+        # which entries need re-entry, rather than 500ing the whole panel.
+        backend = 'unavailable'
+        warning = 'Master key is missing — stored secrets cannot be decrypted.'
+    unreadable = sum(1 for s in items if not s.get('readable', True))
     return jsonify({
         'secrets': items,
         'key_backend': backend,
         # The UI badges this: a file-backed key is readable by anything running
         # as this user, whereas the OS keyring is at least gated by the login
         # session. Worth telling the operator which one they're on.
-        'key_at_rest_warning': (
-            'Master key is in a 0600 file — no usable OS keyring backend was '
-            'found.' if backend == 'file' else ''),
+        'key_at_rest_warning': warning,
+        'unreadable_count': unreadable,
     })
 
 
@@ -250,8 +264,11 @@ def api_secrets_audit():
 @bp.route('/api/secrets/check', methods=['POST'])
 def api_secrets_check():
     """Dry-run a template: report which secrets it references and whether each
-    would resolve for the given project/attendedness — without decrypting
-    anything. Lets an agent verify a command before running it."""
+    would actually resolve for the given project/attendedness. Tries a real
+    decrypt of each referenced entry (never returns the value) rather than
+    just confirming it exists — an existence-only check reported an
+    undecryptable entry as fine during the 2026-09-14 silent-remint
+    incident. Lets an agent verify a command before running it."""
     data = request.get_json(silent=True) or {}
     text = data.get('text') or ''
     project_id = data.get('project_id') or None
@@ -270,6 +287,8 @@ def api_secrets_check():
             report.append({'name': n, 'ok': False, 'reason': 'unattended_blocked'})
         elif n in wants_user and not s.get('username'):
             report.append({'name': n, 'ok': False, 'reason': 'no_username'})
+        elif not vault.is_readable(n):
+            report.append({'name': n, 'ok': False, 'reason': 'undecryptable'})
         else:
             report.append({'name': n, 'ok': True})
     return jsonify({'referenced': report,

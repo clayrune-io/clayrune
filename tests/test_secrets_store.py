@@ -5,6 +5,7 @@ values never appear in metadata, scope/attendedness denials actually deny,
 and nothing is ever written inside the repo.
 """
 
+import base64
 import json
 import os
 import subprocess
@@ -437,3 +438,150 @@ def test_with_secret_refuses_to_run_on_a_missing_secret(vault, tmp_path):
         capture_output=True, text=True, env=env)
     assert res.returncode == 2
     assert 'SHOULD NOT RUN' not in res.stdout
+
+
+# ── Master key durability (2026-09-14 silent-remint incident) ───────────────
+#
+# Root cause: a wiped OS keyring makes keyring.get_password() return None —
+# the same shape as "never had a key" — so load_master_key() minted a fresh
+# key over old ciphertext with no log line, orphaning 8 of 10 saved logins.
+# These tests pin the fail-closed check before minting, and the file-mirror
+# self-heal, using CLAYRUNE_SECRETS_KEY_BACKEND=file or a fake keyring —
+# never the real OS keyring.
+
+class _FakeKeyringBackend:
+    """In-memory stand-in for the OS credential store, same shape as
+    test_identity_mirror.py's fixture: `wipe()` simulates the incident
+    (entry gone, no exception), and a raising get_password simulates a
+    merely-locked store (different failure, must not be conflated)."""
+
+    def __init__(self):
+        self.store: dict[tuple[str, str], str] = {}
+        self.raise_on_get: Exception | None = None
+
+    def get_password(self, service, account):
+        if self.raise_on_get is not None:
+            raise self.raise_on_get
+        return self.store.get((service, account))
+
+    def set_password(self, service, account, value):
+        self.store[(service, account)] = value
+
+    def wipe(self):
+        self.store.clear()
+
+
+@pytest.fixture()
+def fake_keyring_vault(tmp_path, monkeypatch):
+    """A vault where the *keyring* backend is live (backed by an in-memory
+    fake, never the real OS keyring) so self-heal/reseed behavior can be
+    exercised. Distinct from the `vault` fixture, which forces the file
+    backend and never touches keyring code at all."""
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    monkeypatch.delenv('CLAYRUNE_SECRETS_KEY_BACKEND', raising=False)
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    import keyring as keyring_pkg
+    fake = _FakeKeyringBackend()
+    monkeypatch.setattr(keyring_pkg, 'get_password', fake.get_password)
+    monkeypatch.setattr(keyring_pkg, 'set_password', fake.set_password)
+    from mc import secrets_store
+    secrets_store._dispensed.clear()
+    return secrets_store, fake
+
+
+def test_empty_store_mints_via_keyring_and_mirrors_to_file(fake_keyring_vault):
+    vault, fake = fake_keyring_vault
+    backend = vault.load_master_key()[1]
+    assert backend == 'keyring'
+    assert fake.store  # keyring actually got the key
+    assert vault.key_file_path().is_file()  # mirrored, not just fallback
+
+
+def test_wiped_keyring_with_existing_secrets_and_no_mirror_raises(vault):
+    """`vault` fixture forces the file backend, so this simulates total loss:
+    both the keyring (disabled) and the file mirror (deleted) are gone while
+    sealed ciphertext still exists — must raise, never mint a replacement."""
+    vault.set_secret('reddit.password', 'orphan-me-not')
+    vault.key_file_path().unlink()
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='t')
+    # No new key was minted in the process of failing.
+    assert not vault.key_file_path().is_file()
+
+
+def test_wiped_keyring_self_heals_from_file_mirror(fake_keyring_vault):
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'still-here')
+    fake.wipe()  # THE INCIDENT: keyring returns None, not an exception
+
+    # Self-healed via the file mirror, not a freshly minted (wrong) key.
+    assert vault.get_secret_value('reddit.password', consumer='t') == 'still-here'
+    # And reseeded the keyring for next time.
+    assert fake.store, 'self-heal did not restore the keyring'
+
+
+def test_locked_keyring_falls_back_to_mirror_without_minting(fake_keyring_vault):
+    """A merely-locked keystore (raises, doesn't return None) must not be
+    treated as 'lost' either — the file mirror already covers it, so the
+    read succeeds transparently instead of orphaning anything."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'still-here-too')
+    fake.raise_on_get = RuntimeError('keyring locked')
+
+    assert vault.get_secret_value('reddit.password', consumer='t') == 'still-here-too'
+
+
+def test_second_secret_after_wipe_does_not_orphan_the_first(fake_keyring_vault):
+    """The exact 2026-09-14 shape: an entry stored AFTER a keyring wipe must
+    not silently mint a key that makes an earlier entry unreadable."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('linkedin.password', 'pre-wipe-value')
+    fake.wipe()
+    vault.set_secret('github.password', 'post-wipe-value')  # self-heals first
+
+    assert vault.get_secret_value('linkedin.password', consumer='t') == 'pre-wipe-value'
+    assert vault.get_secret_value('github.password', consumer='t') == 'post-wipe-value'
+
+
+# ── Health check: is_readable / list_secrets(check_readable=True) ──────────
+
+def test_is_readable_true_for_a_healthy_entry(vault):
+    vault.set_secret('a.b', 'value-value')
+    assert vault.is_readable('a.b') is True
+
+
+def test_is_readable_false_for_unknown_name(vault):
+    assert vault.is_readable('nope.nothing') is False
+
+
+def test_is_readable_false_after_master_key_replaced(vault):
+    """Simulates the incident's end state directly: ciphertext sealed under
+    one key, a different key now in the file. Must report unreadable, not
+    raise, and must never touch/return the value."""
+    vault.set_secret('linkedin.password', 'orphaned-value')
+    # Swap the key file's contents for a fresh, unrelated key — same effect
+    # as a silent remint, without going through load_master_key() to get
+    # there (that path is now guarded; this proves is_readable independently).
+    vault.key_file_path().write_text(
+        base64.b64encode(os.urandom(32)).decode('ascii'), encoding='utf-8')
+    assert vault.is_readable('linkedin.password') is False
+
+
+def test_list_secrets_check_readable_reports_per_name(vault):
+    vault.set_secret('good.one', 'fine-value')
+    vault.set_secret('bad.one', 'about-to-be-orphaned')
+    vault.key_file_path().write_text(
+        base64.b64encode(os.urandom(32)).decode('ascii'), encoding='utf-8')
+    # good.one and bad.one are BOTH now unreadable (same key rotated under
+    # both) — this asserts the report shape, not selective breakage.
+    items = {s['name']: s for s in vault.list_secrets(check_readable=True)}
+    assert items['good.one']['readable'] is False
+    assert items['bad.one']['readable'] is False
+    assert 'fine-value' not in json.dumps(items)
+    assert 'about-to-be-orphaned' not in json.dumps(items)
+
+
+def test_list_secrets_without_check_readable_omits_the_field(vault):
+    vault.set_secret('a.b', 'value-value')
+    items = vault.list_secrets()
+    assert 'readable' not in items[0]

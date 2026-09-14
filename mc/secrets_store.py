@@ -22,9 +22,13 @@ swept in by a future ``git add -f``, build spec, or installer glob.
 ## Crypto
 
 Master key: 32 random bytes held in the OS keyring (Windows Credential Manager
-/ macOS Keychain / SecretService). If no keyring backend is usable — headless
-Linux, typically — we degrade to a 0600 key file and record the degradation in
-the store so the UI can warn.
+/ macOS Keychain / SecretService), mirrored into a 0600 key file
+(``secrets.key``) on every successful keyring read so a keystore wipe — see
+``load_master_key()`` for the 2026-09-14 incident this defends against — has
+a second copy to self-heal from instead of silently minting a replacement
+over undecryptable ciphertext. If no keyring backend is usable at all —
+headless Linux, typically — that same file is the sole copy, and the
+degradation is recorded in the store so the UI can warn.
 
 Each value is sealed with AES-256-GCM under a fresh 12-byte nonce, with the
 secret's own name as additional authenticated data, so a ciphertext cannot be
@@ -202,29 +206,96 @@ def _write_key_file(value: str) -> None:
 
 
 def load_master_key() -> tuple[bytes, str]:
-    """Return ``(key_bytes, backend)``, creating the key on first use.
+    """Return ``(key_bytes, backend)``, creating the key ONLY when the store
+    has nothing sealed under it yet.
 
     ``backend`` is ``'keyring'`` or ``'file'`` — surfaced so the UI can warn
     when the OS keyring wasn't usable and the key is sitting on disk.
+
+    ## The incident this guards against
+
+    2026-09-14: a Windows keystore wipe (see ``mc_remote/identity_mirror.py``
+    for the 2026-09-08 sibling incident) emptied Credential Manager.
+    ``keyring.get_password()`` on a wiped vault returns ``None`` — the same
+    shape as "never had a key" — so the old version of this function treated
+    the wipe as first-use and minted a replacement, silently orphaning every
+    secret already sealed under the old key. 8 of 10 saved logins became
+    permanently undecryptable before anyone noticed; nothing logged the mint
+    because the keyring branch had no log line at all.
+
+    ## The fix: a durable file mirror, and a fail-closed check before minting
+
+    The 0600 key file (``key_file_path()``) already existed as the
+    keyring-unavailable fallback, but was only ever written on that fallback
+    path — a device using the keyring backend kept the master key in exactly
+    ONE place, no better than ``identity_mirror``'s single point of failure.
+    Now every successful keyring read/write also syncs the file, so it is a
+    real second copy (same reasoning as ``identity_mirror``: durability over
+    a purer at-rest story). The tradeoff, stated plainly: the master key now
+    sits in a plaintext 0600 file on disk *even when the OS keyring is
+    healthy*, not only when it is absent — anything running as this OS user
+    can already read it, same as the pre-existing file-backend fallback, so
+    this trades a narrower "only when keyring is unusable" exposure window
+    for the mirror actually being there when a wipe happens. Unlike
+    ``identity_mirror``, this key cannot be sealed with itself — it IS the
+    encryption key — so plaintext-at-rest is the only shape available,
+    exactly why ``identity_mirror`` documents the same constraint for its own
+    key file.
+
+    Before minting, we now check whether the store already holds sealed
+    secrets. A wipe with no mirror and existing ciphertext raises
+    :class:`SecretsUnavailable` instead of quietly minting a key nothing can
+    be read with — the caller (or the human at the Secrets panel) finds out
+    immediately instead of losing data silently. Minting stays automatic only
+    when the store is genuinely empty (a fresh install), and is now always
+    logged.
     """
     with _lock:
         encoded = _keyring_get()
         if encoded:
+            # Keep the file mirror in sync on every successful keyring read
+            # so a later wipe has something to self-heal from. Best-effort:
+            # the keyring read above already succeeded, this must not fail
+            # the call.
+            try:
+                if _read_key_file() != encoded:
+                    _write_key_file(encoded)
+            except OSError as e:
+                _log(f"[secrets] key mirror sync failed: {e}")
             return base64.b64decode(encoded), 'keyring'
 
         encoded = _read_key_file()
         if encoded:
+            # Keyring came back empty (wiped, or merely locked and swallowed
+            # by _keyring_get's fallback) but the file mirror has the key —
+            # this is the self-heal path. Reseed the keyring so future reads
+            # don't depend on the file forever; best-effort, the file read
+            # already succeeded.
+            if _keyring_set(encoded):
+                _log('[secrets] keyring had no master key; restored from '
+                     'local mirror and reseeded the keyring')
             return base64.b64decode(encoded), 'file'
 
-        # First use: mint one.
+        # Neither the keyring nor the file mirror has a key. If the store
+        # already holds sealed secrets, this is a wipe with no surviving
+        # copy of the key — NOT a fresh install — so minting would silently
+        # orphan every one of them (the 2026-09-14 incident). Fail closed.
+        store = _load_store()
+        n = len(store['secrets'])
+        if n:
+            raise SecretsUnavailable(
+                f"master key missing: {n} stored secret(s) cannot be read "
+                f"(no key in the OS keyring or the local mirror file) — "
+                f"re-enter them or restore the key")
+
+        # First use, store genuinely empty: mint one.
         raw = os.urandom(32)
         encoded = base64.b64encode(raw).decode('ascii')
-        if _keyring_set(encoded):
-            return raw, 'keyring'
-        _write_key_file(encoded)
-        _log('[secrets] master key stored in a 0600 key file '
-             '(no usable OS keyring backend)')
-        return raw, 'file'
+        backend = 'keyring' if _keyring_set(encoded) else 'file'
+        _write_key_file(encoded)  # always mirrored, even on the keyring path
+        _log(f"[secrets] minted new master key (backend={backend}, "
+             f"store was empty)")
+        return raw, backend
 
 
 # ── Sealed values ────────────────────────────────────────────────────────────
@@ -440,9 +511,14 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_secrets(project_id: str | None = None) -> list[dict[str, Any]]:
+def list_secrets(project_id: str | None = None,
+                 *, check_readable: bool = False) -> list[dict[str, Any]]:
     """Metadata for every secret visible to ``project_id`` (global + that
-    project's own). Pass ``None`` for the full inventory."""
+    project's own). Pass ``None`` for the full inventory.
+
+    ``check_readable=True`` adds a ``'readable'`` bool to each entry (see
+    :func:`is_readable`) — still metadata-only, never the value itself.
+    """
     with _lock:
         store = _load_store()
     out = []
@@ -450,8 +526,32 @@ def list_secrets(project_id: str | None = None) -> list[dict[str, Any]]:
         scope = rec.get('scope', 'global')
         if project_id is not None and scope != 'global' and scope != project_id:
             continue
-        out.append(_public(name, rec))
+        pub = _public(name, rec)
+        if check_readable:
+            pub['readable'] = is_readable(name)
+        out.append(pub)
     return out
+
+
+def is_readable(name: str) -> bool:
+    """Can ``name``'s ciphertext actually be decrypted with the current
+    master key? Never dispenses, audits, or bumps use-count — this is a
+    health probe, not a use. Returns ``False`` (never raises) for a missing
+    entry, a corrupted blob, or a master key that can no longer open it
+    (the exact failure mode the 2026-09-14 silent-remint incident produced:
+    the old ``/api/secrets/check`` dry-run only confirmed an entry existed
+    and reported an undecryptable entry as fine).
+    """
+    with _lock:
+        store = _load_store()
+        rec = store['secrets'].get(name)
+    if rec is None:
+        return False
+    try:
+        _open(name, rec)
+        return True
+    except SecretsError:
+        return False
 
 
 def key_backend() -> str:
