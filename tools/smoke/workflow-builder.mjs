@@ -2511,6 +2511,34 @@ try {
   (strip7 && /run-42a3f2aa/.test(stripText7) && /us-stock-investor/.test(stripText7))
     ? ok('opening a workflow with a live run shows the run strip naming the run and its in-flight step')
     : fail(`expected a live-run strip naming run-42a3f2aa / us-stock-investor, got: ${JSON.stringify(stripText7)}`);
+
+  // MC-946: the running step's CANVAS NODE must carry the live-running class
+  // + badge, not just the text strip above it.
+  const nodeLiveState7 = await page7.evaluate(() => {
+    const el = document.querySelector('.wfb-node[data-name="us-stock-investor"]');
+    return el ? { hasRunningClass: el.classList.contains('wfb-node-live-running'),
+      hasBadge: !!el.querySelector('.wfb-node-live-badge-running') } : null;
+  });
+  (nodeLiveState7 && nodeLiveState7.hasRunningClass && nodeLiveState7.hasBadge)
+    ? ok('the running step\'s canvas node carries wfb-node-live-running + its badge')
+    : fail(`expected the us-stock-investor node to carry wfb-node-live-running + its badge, got: ${JSON.stringify(nodeLiveState7)}`);
+
+  // MC-946: the step name in the strip is a click target that pans the
+  // canvas to the running node (_wfFocusLiveNode).
+  const viewportBefore7 = await page7.evaluate(() => ({ ...window._wfEntry()._wf.viewport }));
+  const stepLink7 = await page7.$('.wfb-live-run-step-link');
+  stepLink7
+    ? ok('the strip renders the in-flight step name as a clickable link')
+    : fail('expected a .wfb-live-run-step-link in the live-run strip');
+  if (stepLink7) {
+    await stepLink7.click();
+    await page7.waitForTimeout(50);
+    const viewportAfter7 = await page7.evaluate(() => ({ ...window._wfEntry()._wf.viewport }));
+    (viewportAfter7.x !== viewportBefore7.x || viewportAfter7.y !== viewportBefore7.y)
+      ? ok('clicking the step name panned the canvas viewport to the running node')
+      : fail(`expected the viewport to move after clicking the step link, stayed at ${JSON.stringify(viewportAfter7)}`);
+  }
+
   if (strip7) {
     await page7.click('.wfb-live-run-cancel');
     await page7.waitForTimeout(250);
@@ -2524,6 +2552,13 @@ try {
     toasts7.some(t => /cancelled/i.test(t) && /4e31ad33938b/.test(t))
       ? ok('the cancel toast names the agent session that is still running')
       : fail(`expected a toast naming session 4e31ad33938b, got ${JSON.stringify(toasts7)}`);
+    const nodeAfterCancel7 = await page7.evaluate(() => {
+      const el = document.querySelector('.wfb-node[data-name="us-stock-investor"]');
+      return el ? el.className : null;
+    });
+    (nodeAfterCancel7 && !/wfb-node-live-/.test(nodeAfterCancel7))
+      ? ok('the canvas node drops its live-run styling once the run is cancelled')
+      : fail(`expected no live-run class on the node after cancel, got className="${nodeAfterCancel7}"`);
   }
   const uncaught7 = page7Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught7.length) uncaught7.forEach((e) => fail('uncaught exception in the live-run cancel flow: ' + e));

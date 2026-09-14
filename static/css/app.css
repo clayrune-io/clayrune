@@ -9337,3 +9337,52 @@
 .wfb-live-run-text { flex: 1; min-width: 0; overflow-wrap: anywhere; }
 .wfb-live-run-text code { font-family: var(--mono, monospace); font-size: 11px; }
 .wfb-live-run-cancel { flex-shrink: 0; color: var(--red-text, #c0392b); border-color: var(--red, #c0392b); }
+/* MC-946: the step name(s) in the strip are click targets (_wfFocusLiveNode)
+   -- a real <button> reset to read as inline text, underlined so it still
+   looks clickable without competing with the strip's own bold/amber styling. */
+.wfb-live-run-step-link {
+  background: none; border: none; padding: 0; margin: 0; font: inherit; font-weight: 700;
+  color: inherit; text-decoration: underline; text-underline-offset: 2px; cursor: pointer;
+}
+.wfb-live-run-step-link:hover, .wfb-live-run-step-link:focus-visible { color: var(--accent); }
+
+/* MC-946: per-node live-run status, on the canvas itself -- the strip above
+   only ever named the step in text; these mark the actual card so the
+   running step is obvious at a glance without reading the strip. Kept
+   separate from `.wfb-node-error`/`.wfb-node-warning` (Save/Run-now
+   validation) since both can theoretically apply to different concerns at
+   once; ordered after them here so a live status wins the shared
+   border/box-shadow property when a card somehow carries both. `pending`
+   intentionally gets no rule -- see _wfRenderNode. */
+.wfb-node.wfb-node-live-running {
+  border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-dim), 0 0 14px 1px var(--accent);
+  animation: wfb-node-live-pulse 1.6s ease-in-out infinite;
+}
+@keyframes wfb-node-live-pulse {
+  0%, 100% { box-shadow: 0 0 0 2px var(--accent-dim), 0 0 14px 1px var(--accent); }
+  50% { box-shadow: 0 0 0 4px var(--accent-dim), 0 0 20px 4px var(--accent); }
+}
+.wfb-node.wfb-node-live-waiting { border-color: var(--amber, #d98a00); box-shadow: 0 0 0 2px var(--amber-dim); }
+.wfb-node.wfb-node-live-completed { border-color: var(--green, #34d399); }
+.wfb-node.wfb-node-live-failed { border-color: var(--red); box-shadow: 0 0 0 2px var(--red-dim, rgba(220,53,69,0.25)); }
+.wfb-node.wfb-node-live-cancelled, .wfb-node.wfb-node-live-skipped {
+  border-color: var(--text-faint); border-style: dashed; opacity: 0.72;
+}
+.wfb-node-live-badge {
+  font-size: 11px; line-height: 1; flex-shrink: 0; cursor: default;
+}
+.wfb-node-live-badge-running { color: var(--accent); }
+.wfb-node-live-badge-waiting { color: var(--amber-text, #d98a00); }
+.wfb-node-live-badge-done { color: var(--green-text, #34d399); font-weight: 700; }
+.wfb-node-live-badge-failed { color: var(--red-text, #c0392b); font-weight: 700; }
+.wfb-node-live-badge-skipped { color: var(--text-faint); }
+/* Mobile (<=960px, brief §1): the canvas is smaller and often zoomed out, so
+   the running node needs a heavier glow to read at a glance than desktop's
+   already does -- the pulse keyframe above is the same, this only widens it. */
+@media (max-width: 960px) {
+  .wfb-node.wfb-node-live-running { box-shadow: 0 0 0 3px var(--accent-dim), 0 0 18px 3px var(--accent); }
+  @keyframes wfb-node-live-pulse {
+    0%, 100% { box-shadow: 0 0 0 3px var(--accent-dim), 0 0 18px 3px var(--accent); }
+    50% { box-shadow: 0 0 0 5px var(--accent-dim), 0 0 26px 6px var(--accent); }
+  }
+}
