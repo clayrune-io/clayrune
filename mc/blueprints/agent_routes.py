@@ -3291,6 +3291,9 @@ def _read_agent_stream(proc, session):
     my_proc = proc
     # total_cost_usd is cumulative per CLI process; this reader IS the process.
     proc_cost = {}
+    # Turns THIS process produced (num_turns itself is per turn; see
+    # accumulate_result_turns). The failed-resume guard reads it.
+    proc_turns = {}
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:a')  # Phase 2 loop observability (1.12)
@@ -3436,8 +3439,7 @@ def _read_agent_stream(proc, session):
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
                     _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
-                    if 'num_turns' in msg:
-                        session['num_turns'] = msg['num_turns']
+                    _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
                     _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
@@ -3509,7 +3511,7 @@ def _read_agent_stream(proc, session):
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
-                and not session.get('num_turns')):
+                and not proc_turns.get('num_turns')):
             _auto_recover_failed_resume(session)
 
 
@@ -3522,6 +3524,9 @@ def _read_agent_stream_b(proc, session):
     my_proc = proc
     # total_cost_usd is cumulative per CLI process; this reader IS the process.
     proc_cost = {}
+    # Turns THIS process produced (num_turns itself is per turn; see
+    # accumulate_result_turns). The failed-resume guard reads it.
+    proc_turns = {}
     try:
         for raw_line in proc.stdout:
             obs.heartbeat('stream-reader:b')  # Phase 2 loop observability (1.12)
@@ -3653,8 +3658,7 @@ def _read_agent_stream_b(proc, session):
                     if 'usage' in msg:
                         _accumulate_session_usage(session, msg['usage'])
                     _agent_runtime.accumulate_result_cost(session, msg, proc_cost)
-                    if 'num_turns' in msg:
-                        session['num_turns'] = msg['num_turns']
+                    _agent_runtime.accumulate_result_turns(session, msg, proc_turns)
                     _record_permission_denials(session, msg)
                     _apply_mc_tool_blocks_for_turn(session)
                     _auto_snapshot_notes_on_turn(session)
@@ -3736,7 +3740,7 @@ def _read_agent_stream_b(proc, session):
                 and session.get('status') == 'error'
                 and not session.get('_resume_recovery_attempted')
                 and _time.time() - session.get('_dispatch_time', 0) < 60
-                and not session.get('num_turns')):
+                and not proc_turns.get('num_turns')):
             _auto_recover_failed_resume(session)
 
 
