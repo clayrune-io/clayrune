@@ -4453,8 +4453,28 @@ async function sendFollowup(projectId, sessionId) {
     return;
   }
 
+  // Restore full height BEFORE any of the send work below (upload, SSE
+  // connect, POST, rebuilds) \u2014 those all run on the main thread and their
+  // duration depends on the agent's response, which is exactly why the
+  // screen used to sit at keyboard height for a variable, sometimes long,
+  // time. Blurring first makes mobile.js's apply() see no focused field and
+  // force the keyboard inset to 0 on the very next call, so calling
+  // mcRestoreFullHeight() here (rather than waiting for a rAF/timeout/
+  // watchdog pass) expands the layout in this tick. Desktop keeps typing \u2014
+  // only blur when this was actually a tap on a focused mobile composer.
+  const _mobileSend = window.innerWidth <= 960 && document.activeElement === input;
+
+  // Clear the field BEFORE the frame yield below: a second Send tap landing
+  // inside that frame would otherwise see the message still there (and the
+  // field no longer focused, so no yield) and send it a second time.
   input.value = '';
   if (input.id) delete textareaValues[input.id];
+
+  if (_mobileSend) {
+    try { input.blur(); } catch (e) {}
+    if (typeof window.mcRestoreFullHeight === 'function') window.mcRestoreFullHeight();
+    await new Promise(requestAnimationFrame); // let the browser paint the expanded layout
+  }
 
   // Immediate local echo — show the user's message in DOM only (not buffer)
   // The server will send the real version via SSE which gets added to the buffer
