@@ -551,13 +551,32 @@ def main() -> int:
     """PreToolUse hook entrypoint. Reads the hook JSON on stdin.
 
     SELF-GATING: the fence is installed repo-wide (project .claude/settings.json)
-    but ENFORCES only for steward-cycle sessions plus, since 2026-09-14, any
-    OTHER session MC recorded as unattended (schedule/workflow/dispatch/
-    hivemind — see _should_arm_for_unattended_trigger above) — so manual/dev
-    sessions in the same project are unaffected. Gate: `confirmed non-steward
-    → check the generalized trigger_type signal before allowing`; `steward OR
-    unknown (from the marker check) → enforce` (fail-closed on ambiguity,
-    since the fence is only ever installed in steward-enabled projects).
+    but ENFORCES only for steward-cycle sessions (confirmed by the transcript
+    marker) plus, since 2026-09-14, any OTHER session MC recorded as
+    unattended (schedule/workflow/dispatch/hivemind — see
+    _should_arm_for_unattended_trigger above) — so manual/dev sessions in the
+    same project are unaffected.
+
+    Gate, corrected 2026-09-14 (UNATTENDED_AGENT_PERMISSIONS_AUDIT §7 — a real
+    bug, found live, not a hypothetical): `confirmed steward (marker=True) →
+    always enforce`; everything else (marker=False, i.e. confirmed non-steward,
+    OR marker=None, i.e. the transcript is missing/unreadable/has no user text
+    yet) → fall through to the trigger_type check and enforce ONLY on a
+    positive confirmed match.
+
+    The marker=None case used to enforce outright ("fail-closed on ambiguity,
+    since the fence is only ever installed in steward-enabled projects") — that
+    assumption broke the moment the hook could be installed into every project
+    (not just steward-enabled ones): a brand-new interactive session's very
+    FIRST tool call has no transcript file yet, and any transient transcript
+    read hiccup has the identical shape. Both used to hard-block that human's
+    own `git push`/`rm -rf`/`gh pr merge`. A steward cycle's transcript being
+    unreadable is not a hole under the new gate — steward cycles are
+    dispatched as ordinary schedule fires (`trigger_type='schedule'`,
+    `mc/blueprints/scheduler_routes.py:712/1367` — the `[Steward cycle]`
+    prompt marker is additional, not instead of, that stamp), so
+    `_should_arm_for_unattended_trigger` still arms it through the
+    server-recorded signal even when the marker can't be read at all.
 
     On a blocked action, exits 2 (stderr reason) — the fail-closed block contract.
     Fails OPEN on any parse error — a broken fence must never wedge the agent."""
@@ -567,12 +586,10 @@ def main() -> int:
     except Exception:
         return 0  # fail open — never wedge the agent on a malformed hook event
 
-    # Confirmed non-steward by the transcript marker: still check the
-    # generalized unattended signal (trigger_type) before letting a
-    # genuinely unattended session — schedule/workflow/dispatch/hivemind —
-    # go unfenced. Manual/interactive sessions and anything ambiguous stay
-    # unfenced here, same as before this check existed.
-    if _session_is_steward(payload) is False:
+    # Confirmed steward (marker=True) always enforces. Everything else
+    # (confirmed non-steward OR genuinely unknown) falls through to the
+    # generalized trigger_type signal — see the corrected gate above.
+    if _session_is_steward(payload) is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
 

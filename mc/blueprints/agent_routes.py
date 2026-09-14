@@ -6335,12 +6335,18 @@ def agent_dispatch(project_id):
     source = (data.get('source') or '').strip().lower()
     if not source and not request.headers.get('Origin') and not data.get('client'):
         source = 'agent'
-    # trigger_type stays 'manual' even for an agent-sourced call — HELD BACK
-    # pending Ron's decision (UNATTENDED_AGENT_PERMISSIONS_AUDIT §5). Stamping
-    # 'dispatch' here would arm the fence for these children, but
-    # is_unattended_caller() is global: while ANY such child is running it
-    # would also refuse the human's own PUT /api/config and vault writes.
-    trigger_type = 'manual'
+    # trigger_type='dispatch' for an agent-sourced call (2026-09-14,
+    # UNATTENDED_AGENT_PERMISSIONS_AUDIT): this route previously left
+    # trigger_type at its 'manual' default REGARDLESS of who called it, so a
+    # session another agent spawned unattended via this exact endpoint —
+    # full tool+MCP fleet, --dangerously-skip-permissions, nobody reading its
+    # tool calls the way a human reads a UI chat — was indistinguishable from
+    # a human clicking "+New chat". That's the one signal every trigger_type
+    # consumer trusts (is_unattended_caller, the secrets vault's
+    # detect_unattended_context, PUT /api/config's unattended gate, and now
+    # steward/fence.py's generalized arming) to tell attended from unattended.
+    # A UI-originated dispatch (source == 'ui' or '') stays 'manual'.
+    trigger_type = 'dispatch' if source == 'agent' else 'manual'
     try:
         session_id = _dispatch_agent_internal(project_id, claude_task, resume_id,
                                               incognito=incognito,

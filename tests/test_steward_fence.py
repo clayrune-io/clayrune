@@ -5,6 +5,7 @@ ZERO false-negatives on the catastrophic/irreversible set. False-positives
 (blocking a safe command) are acceptable — they just make the steward ask.
 """
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -119,16 +120,35 @@ def test_empty_and_none_safe():
 
 
 # ── Hook entrypoint (subprocess) — real stdin/stdout/exit-code contract ────────
-def _run_hook(payload: dict):
+def _run_hook(payload: dict, *, claude_session_id=None):
+    """Run the real hook subprocess. CLAUDE_CODE_SESSION_ID is stripped from
+    the child's environment by default (not just left unset in the test) —
+    without this, a test run FROM INSIDE a live Claude Code session (this
+    suite's own dev/CI shell included) would leak the outer session's real id
+    into the child, making `_should_arm_for_unattended_trigger` attempt a
+    genuine network call to the live MC server instead of the deterministic
+    no-session-id short-circuit these tests are pinning. Pass
+    `claude_session_id=` to deliberately exercise the opposite path."""
+    env = dict(os.environ)
+    if claude_session_id is None:
+        env.pop('CLAUDE_CODE_SESSION_ID', None)
+    else:
+        env['CLAUDE_CODE_SESSION_ID'] = claude_session_id
     return subprocess.run(
         [sys.executable, str(FENCE)],
-        input=json.dumps(payload), capture_output=True, text=True,
+        input=json.dumps(payload), capture_output=True, text=True, env=env,
     )
 
 
-def test_hook_blocks_with_exit_2_and_stderr():
-    # Fail-closed contract: exit 2 + stderr reason, nothing on stdout.
-    r = _run_hook({'tool_name': 'Bash', 'tool_input': {'command': 'git push'}})
+def test_hook_blocks_with_exit_2_and_stderr(tmp_path):
+    # Fail-closed contract: exit 2 + stderr reason, nothing on stdout. A
+    # confirmed-steward transcript (not "no transcript at all" — see
+    # test_unknown_session_with_no_signal_is_allowed_not_fail_closed below
+    # for that case, which is a DIFFERENT, no-longer-blocking contract since
+    # 2026-09-14) is what makes this session unambiguously enforced.
+    tp = _transcript(tmp_path, '[Steward cycle] run one cycle')
+    r = _run_hook({'tool_name': 'Bash', 'tool_input': {'command': 'git push'},
+                   'transcript_path': tp})
     assert r.returncode == 2
     assert 'STEWARD FENCE blocked' in r.stderr
     assert r.stdout.strip() == ''
@@ -176,11 +196,29 @@ def test_steward_session_allows_reversible(tmp_path):
     assert r.returncode == 0
 
 
-def test_unknown_session_fails_closed(tmp_path):
-    # No transcript → can't confirm dev → enforce (fail-closed; fence only lives
-    # in steward-enabled projects anyway).
+def test_unknown_session_with_no_signal_is_allowed_not_fail_closed():
+    # 2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT §7 — reversed a real,
+    # live bug. The fence used to fail CLOSED here on the (no longer safe)
+    # assumption that it is only ever installed in steward-enabled projects.
+    # Once it can be installed into every project (§7), an unreadable
+    # transcript with no CLAUDE_CODE_SESSION_ID — a brand-new interactive
+    # session's very FIRST tool call has exactly this shape — must never
+    # block a human's own git push. No transcript_path key at all.
     r = _run_hook({'tool_name': 'Bash', 'tool_input': {'command': 'git push'}})
-    assert r.returncode == 2
+    assert r.returncode == 0
+
+
+def test_empty_transcript_path_with_no_signal_is_allowed(tmp_path):
+    r = _run_hook({'tool_name': 'Bash', 'tool_input': {'command': 'git push'},
+                   'transcript_path': ''})
+    assert r.returncode == 0
+
+
+def test_nonexistent_transcript_path_with_no_signal_is_allowed(tmp_path):
+    missing = str(tmp_path / 'does-not-exist-yet.jsonl')
+    r = _run_hook({'tool_name': 'Bash', 'tool_input': {'command': 'git push'},
+                   'transcript_path': missing})
+    assert r.returncode == 0
 
 
 # ── Inert-prose masking (2026-07-16 precision fix) ────────────────────────────

@@ -508,13 +508,15 @@ def test_trigger_type_reports_fence_unattended_enabled_false_when_configured(cli
         mc_state.CONFIG['fence_unattended_enabled'] = before
 
 
-# ── POST /api/project/<id>/agent/dispatch trigger_type ───────────────────────
-# Agent-sourced dispatches stay 'manual' for now (UNATTENDED_AGENT_PERMISSIONS_AUDIT
-# §5): stamping 'dispatch' would make is_unattended_caller() refuse the human's
-# own Settings/vault writes while any dispatched child runs. Flip this pin only
-# together with a fix for that gate.
+# ── POST /api/project/<id>/agent/dispatch stamps trigger_type='dispatch' ────
+# for an agent-sourced call (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT).
+# Before this fix the route always left trigger_type at its 'manual' default,
+# so a session another agent spawned unattended via this exact endpoint was
+# indistinguishable from a human clicking "+New chat" — invisible to
+# is_unattended_caller, the secrets vault's detect_unattended_context, and
+# steward/fence.py's generalized arming, all of which trust trigger_type.
 
-def test_dispatch_route_agent_source_stays_manual_pending_decision(client, monkeypatch):
+def test_dispatch_route_stamps_dispatch_trigger_type_for_agent_source(client, monkeypatch):
     from mc.blueprints import agent_routes as ar
     captured = {}
     monkeypatch.setattr(ar, '_dispatch_agent_internal',
@@ -524,7 +526,7 @@ def test_dispatch_route_agent_source_stays_manual_pending_decision(client, monke
     resp = client.post('/api/project/p1/agent/dispatch', json={'task': 'do a thing'})
     assert resp.status_code == 200
     assert captured.get('source') == 'agent'
-    assert captured.get('trigger_type') == 'manual'
+    assert captured.get('trigger_type') == 'dispatch'
 
 
 def test_dispatch_route_keeps_manual_trigger_type_for_ui_source(client, monkeypatch):

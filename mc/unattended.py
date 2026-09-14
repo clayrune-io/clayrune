@@ -26,7 +26,36 @@ Fails CLOSED: a running session whose `trigger_type` is missing or blank
 (e.g. a revived session — some revive paths don't carry it) is treated as
 unattended, not given the lenient `'manual'` default other display-only
 call sites use.
+
+2026-09-14 (UNATTENDED_AGENT_PERMISSIONS_AUDIT §7): the "any non-manual
+session anywhere counts" heuristic below was a real, live bug, not just a
+conservative-by-design tradeoff — it made this decision about THE WHOLE
+SERVER instead of THE CALLER. `PUT /api/config`
+(`settings_routes.update_config`) and every secrets-vault write call this
+with `project_id=None` specifically because a config key or a credential
+isn't scoped to one project, so ANY agent running anywhere — Dave hiring a
+helper, a hivemind fan-out, one of this project's own schedules — made
+Ron's own dashboard PUT get refused with a 403, for as long as that
+unrelated session stayed `running`. Adding `trigger_type='dispatch'`
+(UNATTENDED_AGENT_PERMISSIONS_AUDIT §4) made this materially more frequent:
+agent-to-agent dispatch is common, dashboard config edits are not rare
+either, and the two now collide often instead of rarely.
+
+Fixed by checking the REQUEST first: a browser Origin header is the same
+structural signal `workflow_routes._is_agent_caller` already uses to prove
+a call came from the SPA and not an agent's Bash/curl tool (that route has
+no session/CSRF layer either — the whole local API surface is
+localhost-trust, MC-914). A request carrying it is presumed human and is
+NEVER refused by this function, no matter what else is running on the
+server. Every dispatched agent's own curl call has no Origin header — this
+narrows the check, it does not weaken it: a genuine agent caller (no
+Origin) still hits the exact same running-session logic as before.
+`has_request_context()` guards the many existing unit tests that call this
+function directly with no Flask app/request context at all — those keep
+testing the session-only logic unchanged.
 """
+
+from flask import has_request_context, request
 
 from mc.state import agent_sessions
 
@@ -40,7 +69,12 @@ def is_unattended_caller(project_id: str | None = None) -> bool:
     decision is global, like a secret or a config key) — every running
     session anywhere then counts, the conservative "one witness taints the
     candidate" OR the learning-safety rails use elsewhere.
+
+    A request carrying the browser Origin header is never refused — see the
+    module docstring above for why this is a fix, not a loosening.
     """
+    if has_request_context() and request.headers.get('Origin'):
+        return False
     for s in agent_sessions.values():
         if s.get('status') != 'running':
             continue

@@ -135,6 +135,18 @@ def test_dispatched_agent_session_blocked_on_catastrophic_command(monkeypatch, t
     assert rc == 2
 
 
+def test_dispatched_agent_session_blocked_on_git_push(monkeypatch, tmp_path):
+    # The exact scenario Piece 2 needed pinned: a session another agent
+    # dispatched via POST .../agent/dispatch (trigger_type='dispatch',
+    # agent_routes.py) is fenced from pushing, same as the steward always was.
+    rc = _run_main(monkeypatch, tmp_path,
+                   first_user_text='Please go implement the fix we discussed',
+                   command='git push origin master',
+                   session_id='sid-dispatch',
+                   lookup={'trigger_type': 'dispatch', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
 def test_workflow_step_session_blocked(monkeypatch, tmp_path):
     rc = _run_main(monkeypatch, tmp_path,
                    first_user_text='Step 2 of the release workflow',
@@ -197,3 +209,60 @@ def test_steward_marker_still_wins_over_manual_lookup(monkeypatch, tmp_path):
                    first_user_text='[Steward cycle] run one cycle',
                    command='git push', session_id='sid-steward')
     assert rc == 2
+
+
+# ── Unreadable transcript (marker=None) — the 2026-09-14 correction ──────────
+# UNATTENDED_AGENT_PERMISSIONS_AUDIT §7: an unreadable/missing transcript used
+# to fail CLOSED unconditionally. Now it falls through to the trigger_type
+# check, same as a confirmed-non-steward transcript — these pin both halves:
+# no signal → allow, a positive unattended signal → still block even though
+# the marker itself couldn't be read (this is exactly how a steward cycle
+# whose transcript file hasn't been flushed yet stays covered — steward
+# cycles are dispatched with trigger_type='schedule', not a distinct value).
+
+def _run_main_no_transcript(monkeypatch, *, transcript_path, command,
+                            session_id=None, lookup=None):
+    payload = {'tool_name': 'Bash', 'tool_input': {'command': command}}
+    if transcript_path is not None:
+        payload['transcript_path'] = transcript_path
+    monkeypatch.setattr(sys, 'stdin', io.StringIO(json.dumps(payload)))
+    if session_id is None:
+        monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    else:
+        monkeypatch.setenv('CLAUDE_CODE_SESSION_ID', session_id)
+    if lookup is not None:
+        monkeypatch.setattr(fence, '_lookup_trigger_type', lambda sid: lookup)
+    return fence.main()
+
+
+def test_missing_transcript_with_no_session_id_allows(monkeypatch):
+    rc = _run_main_no_transcript(monkeypatch, transcript_path=None,
+                                 command='git push')
+    assert rc == 0
+
+
+def test_unreadable_transcript_path_with_no_session_id_allows(monkeypatch, tmp_path):
+    rc = _run_main_no_transcript(
+        monkeypatch, transcript_path=str(tmp_path / 'nope.jsonl'),
+        command='rm -rf /home/user/project')
+    assert rc == 0
+
+
+def test_unreadable_transcript_combined_with_schedule_trigger_still_blocks(monkeypatch, tmp_path):
+    # This is the steward-cycle-with-a-not-yet-flushed-transcript case: the
+    # marker can't be confirmed, but MC's own server-side record of the
+    # session (trigger_type='schedule' — what steward cycles are actually
+    # stamped, scheduler_routes.py) still arms the fence.
+    rc = _run_main_no_transcript(
+        monkeypatch, transcript_path=str(tmp_path / 'nope.jsonl'),
+        command='git push', session_id='sid-sched',
+        lookup={'trigger_type': 'schedule', 'fence_unattended_enabled': True})
+    assert rc == 2
+
+
+def test_unreadable_transcript_combined_with_manual_trigger_still_allows(monkeypatch, tmp_path):
+    rc = _run_main_no_transcript(
+        monkeypatch, transcript_path=str(tmp_path / 'nope.jsonl'),
+        command='git push', session_id='sid-manual',
+        lookup={'trigger_type': 'manual', 'fence_unattended_enabled': True})
+    assert rc == 0

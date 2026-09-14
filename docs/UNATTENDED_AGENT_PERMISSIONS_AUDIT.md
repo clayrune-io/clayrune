@@ -229,7 +229,7 @@ wiring Codex's sandbox mode as the unattended default (§3c, tested and
 ready); a deeper Mode B-shaped test of Claude `--permission-mode` (§3b);
 installing the fence hook in projects that have never enabled steward.
 
-## 5. Held back at merge: the `dispatch` stamp (Vector, 2026-09-14)
+## 4b. Held back at merge, then RESOLVED: the `dispatch` stamp (2026-09-14)
 
 The fence arming merged as written. The `trigger_type='dispatch'` stamp on
 agent-sourced `POST .../agent/dispatch` did NOT. It was backed out to `'manual'`
@@ -252,6 +252,113 @@ sessions were never affected. `'dispatch'` remains in the fence's allowlist,
 so turning the stamp on later is a one-line change, but it has to ship with a
 fix to `is_unattended_caller` so it stops locking out the human.
 
-**Full pytest run:** `python -m pytest tests/ -q` → clean, exit code 0. 6
+**Resolved the same day (Dave, merging 95ca5ac):** the blocker above was `is_unattended_caller()` judging the whole server instead of the caller. §5-7 below fix it (caller identified by the dashboard's Origin header, same signal as `workflow_routes._is_agent_caller`), so the stamp was re-enabled in the same merge: an agent-sourced dispatch now records `trigger_type='dispatch'` and its child is fenced. The "builder merges and pushes master" flow is intentionally ended: builders merge locally, Dave pushes.
+
+**Full pytest run (§4):** `python -m pytest tests/ -q` → clean, exit code 0. 6
 environment-conditional skips (live-auth CLI test, operator-local doc paths),
-zero failures. Full tail in the chat reply to Dave.
+zero failures.
+
+---
+
+## 5. Follow-up (2026-09-14, same day) — Ron approved the rest, split across sessions
+
+Ron approved implementing the rest of §4's "left for decision" list
+("implement everything needed to make sure we are fully secured"), relayed
+via a peer session coordinating this work. Two pieces landed on this branch;
+installing the fence into other registered projects (apex_trader, day_
+trading_engulfing_scanner, clayrune_website) is being done by that peer
+session directly in each of those repos — out of this auditor's scope (this
+character's binding project boundary: work only inside the dispatched
+project, ask rather than reach into another one). That installer also found
+no legitimate unattended job in those projects depends on a fence-blocked
+construct (checked before installing).
+
+**Correction to the peer's premise:** the coordinating message described
+`trigger_type='dispatch'` as "held back at merge" pending an
+`is_unattended_caller()` fix. That is not what happened — §4 shipped the
+stamp fully live in commit `8a1ec95`. What *is* real is the consequence: once
+live, it exposed a genuine pre-existing bug in `is_unattended_caller()` (§6).
+
+## 6. `is_unattended_caller()` scoped to the caller, not the whole server
+
+**The bug.** `mc/unattended.py:is_unattended_caller(project_id=None)` — used
+by `PUT /api/config` and every secrets-vault write — returned `True` if ANY
+running session ANYWHERE was non-`manual`. `PUT /api/config` calls it with
+`project_id=None` specifically because a config key isn't scoped to one
+project, so it counted every session on the box. Before §4, agent-to-agent
+dispatch was mislabeled `'manual'` (§4 risk #3) so this rarely tripped. After
+§4 fixed that mislabeling, it became common: Ron's own dashboard `PUT
+/api/config` — a real browser request — would get refused with a 403 for as
+long as any unrelated dispatched helper, schedule, or hivemind worker was
+running anywhere in the install, on any project.
+
+**The fix.** `is_unattended_caller()` now checks the request first: a
+request carrying the browser `Origin` header — the same structural signal
+`workflow_routes._is_agent_caller()` already uses to prove a call came from
+the SPA and not an agent's Bash/curl tool call, since this app has no
+session/CSRF layer to check instead (MC-914's localhost-trust precedent) —
+is **never** refused, regardless of server-wide session state. A request
+with no Origin header (an agent's own curl call) still hits the exact same
+running-session check as before — this narrows the false-positive, it does
+not loosen the gate for a genuine agent caller. `has_request_context()`
+guards the existing unit tests that call this function directly with no
+Flask context at all (`tests/test_unattended_gate.py`), so the session-only
+logic they pin is unchanged.
+
+**Consequence check, as asked:**
+- *Builders pushing after a dispatched fix.* No character/agent prompt in
+  `data/characters/` or `.claude/agents/` instructs an agent to `git push`
+  as routine work (grepped, zero hits) — consistent with the standing
+  practice that Dave/a human does the merge-and-push. No active workflow was
+  found that depends on a dispatched child pushing.
+- *Secrets vault, `allow_unattended=false`.* Queried the live vault
+  (`GET /api/secrets`): exactly one secret is set to attended-only —
+  `google` (global scope, `use_count: 0` — never used). No dispatched-agent
+  workflow currently depends on it. Not changed — that flag is a human-only
+  write per `CLAUDE.md`'s vault rules; flagged here for Ron to review, not
+  altered.
+
+## 7. Fence bug found live during the cross-repo rollout — fail-closed-on-ambiguity was never safe
+
+The peer session installing the fence into other projects (§5) reproduced a
+real bug from `apex_trader`'s checkout before rolling out further, and
+rolled back 18 installs until it was fixed here.
+
+**The bug.** `steward/fence.py`'s `main()` enforced whenever
+`_session_is_steward()` returned `None` — transcript missing, unreadable, or
+with no user text yet — on the documented assumption that "the fence is only
+ever installed in steward-enabled projects," where that ambiguity was rare
+and effectively steward-adjacent. That assumption stopped being true the
+moment §5 began installing the hook into every registered project: a
+brand-new interactive session's very **first** tool call has no transcript
+file yet (identical shape to the ambiguous case), and any transient
+transcript-read hiccup has the same shape. Reproduced: `transcript_path`
+pointing at a nonexistent file, or omitted entirely, with no
+`CLAUDE_CODE_SESSION_ID` set → `git push` blocked with the "you are running
+unattended" message, in an ordinary interactive session. The identical latent
+bug already existed in mission_control itself before this change; it just
+had no chance to fire because the hook was only ever installed in
+steward-enabled projects, where the ambiguous case is far rarer.
+
+**The fix.** `main()`'s gate is now: confirmed steward (`marker is True`)
+always enforces, unchanged. Everything else — confirmed non-steward **or**
+genuinely unknown — falls through to the trigger_type check (§4) and
+enforces only on a positive confirmed match, exactly like the non-steward
+branch already did. No new gap for steward cycles: they are dispatched as
+ordinary schedule fires (`trigger_type='schedule'`,
+`mc/blueprints/scheduler_routes.py:712,1367` — the `[Steward cycle]` prompt
+marker rides *in addition to*, not instead of, that stamp), so a steward
+session whose transcript can't be read yet still arms through the
+server-recorded `trigger_type` rather than through blanket fail-closed. No
+dispatch-site change was needed — `'schedule'` was already in
+`_UNATTENDED_TRIGGER_TYPES`.
+
+Two pre-existing tests encoded the old (now incorrect) assumption and were
+updated, not deleted, with the reasoning left in place as a comment:
+`test_unknown_session_fails_closed` → `test_unknown_session_with_no_signal_
+is_allowed_not_fail_closed` (rc 2 → rc 0), and `test_hook_blocks_with_exit_2_
+and_stderr` now uses a confirmed-steward transcript instead of a missing one,
+so it is testing the block *contract*, not the session-gating decision.
+
+**Full pytest run (§5–§7):** `python -m pytest tests/ -q` → clean, exit code
+0, zero failures. Tail in the chat reply.
