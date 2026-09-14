@@ -61,6 +61,10 @@ datas = [
     # operator-neutral Clayrune API doc. Leave it out and the frozen app's
     # agents curl-probe endpoints every session.
     (R('data', 'agent_reference'), 'data/agent_reference'),
+    # Built-in agent characters (Claydo) installed into ~/.claude/agents/ at
+    # startup (character_routes._install_builtin_characters). Leave it out
+    # and a fresh frozen install never gets the base agent.
+    (R('data', 'agents', 'builtin'), 'data/agents/builtin'),
 ]
 
 # SHARED_RULES.md is deliberately NOT bundled. It is user data — read verbatim

@@ -900,7 +900,7 @@ app.register_blueprint(_bp_guide.bp)
 # scope). Logic in mc/characters.py; design docs/PROMPT_BUILDER_DESIGN.md.
 from mc.blueprints import character_routes as _bp_characters  # noqa: E402
 
-_bp_characters.wire(load_project_fn=_bp_projects.load_project)
+_bp_characters.wire(load_project_fn=_bp_projects.load_project, app_dir=_APP_DIR)
 app.register_blueprint(_bp_characters.bp)
 
 
@@ -2882,6 +2882,10 @@ def boot(check_port=True):
     # Install/backfill built-in MCP servers (filesystem per-project,
     # sequential-thinking global). Same checksum-preservation pattern.
     _boot_phase('install builtin MCPs', _install_builtin_mcps)
+    # Install the built-in agent characters (Claydo) into ~/.claude/agents/.
+    # Same checksum-preservation pattern; never overwrites a user's own
+    # character of the same name.
+    _boot_phase('install builtin characters', _bp_characters._install_builtin_characters)
     # Sweep stale Git-import staging dirs (>24h old) so they don't accumulate.
     try:
         n = _skills.cleanup_stale_staging(max_age_hours=24)

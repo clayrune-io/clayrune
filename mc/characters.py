@@ -453,3 +453,73 @@ def delete_character(scope: str, name: str,
         return False
     path.unlink()
     return True
+
+
+# ── Built-in install ─────────────────────────────────────────────────────────
+# Mirrors skills.install_builtins (checksum-preserved user edits), adapted for
+# a flat `<name>.md` character file rather than a `<name>/SKILL.md` directory:
+# there is no per-character subdir to hold a marker, so the marker sits
+# alongside the file as `<name>.md.mc-builtin-hash` in GLOBAL_AGENTS_DIR
+# itself. rglob('*.md') in _scan_dir never picks it up (wrong suffix), so it
+# is invisible to list_characters.
+
+_BUILTIN_MARKER_SUFFIX = '.mc-builtin-hash'
+
+
+def install_builtin_characters(builtin_root: Path) -> dict[str, list[str]]:
+    """Install/update built-in characters from `builtin_root` into
+    GLOBAL_AGENTS_DIR. For each `<name>.md` in `builtin_root`:
+
+      - Target doesn't exist -> copy it, write the hash marker. Installed.
+      - Target exists, NO marker -> user-owned (hand-written or pre-dates
+        this scheme) -> never touch. Skipped. This is what stops a fresh
+        install from clobbering a user's own character that happens to
+        share a builtin's name.
+      - Target exists, marker present, current hash != marker hash -> the
+        user edited what MC installed -> preserve.
+      - Target exists, marker present, current hash == marker hash,
+        marker == source hash -> already in sync -> skipped.
+      - Target exists, marker present, current hash == marker hash,
+        marker != source hash -> safe to update -> updated.
+    """
+    result: dict[str, list[str]] = {'installed': [], 'updated': [],
+                                    'preserved': [], 'skipped': []}
+    if not builtin_root.exists():
+        return result
+
+    GLOBAL_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    for src in sorted(builtin_root.glob('*.md')):
+        name = src.stem
+        dest = GLOBAL_AGENTS_DIR / f'{name}.md'
+        marker = GLOBAL_AGENTS_DIR / f'{name}.md{_BUILTIN_MARKER_SUFFIX}'
+        src_hash = _skills._file_sha256(src)
+
+        if not dest.exists():
+            dest.write_bytes(src.read_bytes())
+            marker.write_text(src_hash, encoding='utf-8')
+            result['installed'].append(name)
+            continue
+
+        if not marker.exists():
+            result['skipped'].append(name)
+            continue
+
+        try:
+            marker_hash = marker.read_text(encoding='utf-8').strip()
+        except OSError:
+            marker_hash = ''
+
+        current_hash = _skills._file_sha256(dest)
+        if current_hash != marker_hash:
+            result['preserved'].append(name)
+            continue
+
+        if marker_hash == src_hash:
+            result['skipped'].append(name)
+            continue
+
+        dest.write_bytes(src.read_bytes())
+        marker.write_text(src_hash, encoding='utf-8')
+        result['updated'].append(name)
+
+    return result

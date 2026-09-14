@@ -10,6 +10,7 @@ MC's dispatched session.
 
 import random
 import re
+from pathlib import Path
 from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
@@ -25,12 +26,46 @@ bp = Blueprint('characters', __name__)
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────
 load_project: Callable[[str], Any] = None  # type: ignore[assignment]
+_APP_DIR: Path = None  # type: ignore[assignment]
 
 
-def wire(*, load_project_fn):
-    """Late-bind the projects-family accessor (same pattern as 1.3/1.9)."""
-    global load_project
+def wire(*, load_project_fn, app_dir=None):
+    """Late-bind the projects-family accessor (same pattern as 1.3/1.9).
+
+    `app_dir` is optional so existing callers (tests) that don't need
+    builtin-install keep working without an update.
+    """
+    global load_project, _APP_DIR
     load_project = load_project_fn
+    if app_dir is not None:
+        _APP_DIR = app_dir
+
+
+def _install_builtin_characters():
+    """Install/update built-in characters bundled with MC (e.g. Claydo) into
+    ~/.claude/agents/. Mirrors `skills_routes._install_builtin_skills`.
+
+    Called from __main__ on startup. Safe to run on every boot: checksum-aware
+    and never touches a character it didn't install itself — a user's own
+    agent with the same name is left alone (see
+    `characters.install_builtin_characters`'s "no marker -> skipped" branch).
+    """
+    try:
+        if _APP_DIR is None:
+            return
+        builtin_root = _APP_DIR / 'data' / 'agents' / 'builtin'
+        if not builtin_root.exists():
+            return
+        result = _chars.install_builtin_characters(builtin_root)
+        installed = result.get('installed') or []
+        updated = result.get('updated') or []
+        preserved = result.get('preserved') or []
+        if installed or updated:
+            _log(f"[characters] installed={installed} updated={updated}")
+        if preserved:
+            _log(f"[characters] preserved user-modified builtins: {preserved}")
+    except Exception as e:
+        _log(f"[characters] builtin install failed: {e}")
 
 
 def _project_path_for_list(project_id: str | None) -> str | None:
