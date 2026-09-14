@@ -2182,6 +2182,160 @@ def _mem_class_avgdl(units):
     return {c: (tot[c] / cnt[c]) if cnt[c] else 1.0 for c in tot}
 
 
+# ── D0/D1 — discovery, zero authoring (§7.2, §7.3, §7.4; build step 3) ──────
+#
+# D0 derives a default `triggers:` vocabulary for a note that has none, from
+# its own `name` + `description` — no human types anything (Condition 27).
+# D1 is the retrievability gate (§7.4) run as a full-vault sweep: for every
+# topic note, would its OWN default vocabulary find it? The failures are the
+# work list for whatever authoring step comes next — this step performs none.
+
+_TRIGGER_STOPWORDS = _POSITION_STOPWORDS  # same 28-word list, generalized (Cond 27)
+
+
+def _trigger_phrase_bigrams_enabled():
+    try:
+        return bool(state.CONFIG.get('trigger_phrase_bigrams', True))
+    except Exception:
+        return True
+
+
+def _note_default_triggers(name, description):
+    """Condition 27: default arrival vocabulary derived from `name` +
+    `description`, zero authoring cost. Returns (singles, phrases):
+    `singles` is the raw token set (the df gate is applied by the caller,
+    per unit class — Condition 29); `phrases` is the adjacent-token bigram
+    list (Condition 28), which is EXEMPT from the df gate by construction —
+    a phrase needs every one of its terms present, and that conjunction is
+    its own rarity test.
+    """
+    name_stem = str(name or '').rsplit('.', 1)[0]
+    toks = _mem_tokens(name_stem) + _mem_tokens(description or '')
+    kept = [t for t in toks if t not in _TRIGGER_STOPWORDS]
+    singles = set(kept)
+    phrases = []
+    if _trigger_phrase_bigrams_enabled():
+        seen = set()
+        for a, b in zip(kept, kept[1:]):
+            phrase = f'{a} {b}'
+            if phrase not in seen:
+                seen.add(phrase)
+                phrases.append(phrase)
+    return singles, phrases
+
+
+def _class_df(units, cls):
+    """Document frequency of every term, computed over ONE unit class only
+    (Condition 29). Archive is 87% of the corpus and echoes prompts, which
+    would inflate every subject word's df and make the gate stricter than
+    anyone chose if it were computed corpus-wide.
+    """
+    class_units = [u for u in units if u.get('cls') == cls]
+    df: dict = {}
+    for u in class_units:
+        for t in u['tf']:
+            df[t] = df.get(t, 0) + 1
+    return df, len(class_units)
+
+
+def _df_gate_pass(term, df, n_docs):
+    """A single term passes the rarity gate (Condition 28/29) unless it is
+    common enough, IN THIS CLASS, to be prompt furniture. Mirrors
+    `_position_trigger_max_df`'s floor: a term in `_POSITION_TRIGGER_MIN_DOCS`
+    or fewer documents is rare by any measure and always passes, so the test
+    cannot fire meaninglessly on a tiny corpus.
+    """
+    d = df.get(term, 0)
+    if d <= _POSITION_TRIGGER_MIN_DOCS:
+        return True
+    return d <= _position_trigger_max_df() * max(1, n_docs)
+
+
+def _note_frontmatter(text):
+    """Best-effort name/description/triggers read from a topic note's
+    frontmatter, for D0/D1 and audit tooling ONLY. Deliberately NOT used by
+    `_mem_corpus`/`_mem_tokenize_unit` — §10.4 point 1 keeps topic-note
+    frontmatter unparsed by the live ranker/tokenizer, unchanged by this step.
+    """
+    try:
+        meta, _b = _skills.parse_skill_md(text)
+    except Exception:
+        return {}
+    if not isinstance(meta, dict) or not meta:
+        return {}
+    return {'name': str(meta.get('name') or ''),
+            'description': str(meta.get('description') or ''),
+            'triggers': str(meta.get('triggers') or '')}
+
+
+def note_triggers(project, name, description, explicit_triggers='', units=None):
+    """The full trigger set a note fires on: explicit `triggers:` (always
+    kept, exempt from the df gate — Condition 27/§7.2: a human naming a term
+    is stating intent) UNIONED with the df-gated D0 default singles, plus the
+    always-exempt default phrases returned separately. `units` lets a caller
+    supply an already-built corpus (D1's sweep builds it once for every note
+    instead of once per note — O(N) instead of O(N^2) just for this part).
+
+    Returns (terms: set[str], phrases: list[str]).
+    """
+    explicit = set(_mem_tokens((explicit_triggers or '').replace(',', ' ')))
+    singles, phrases = _note_default_triggers(name, description)
+    if units is None:
+        mem_path = _get_memory_path(project)
+        units = _mem_corpus(mem_path.parent, mem_path.name,
+                             _get_archive_path(project).name)
+    df, n_docs = _class_df(units, 'topic')
+    gated = {t for t in singles if _df_gate_pass(t, df, n_docs)}
+    return explicit | gated, phrases
+
+
+def _note_retrievable(project, note_file, terms, phrases, topk=None):
+    """§7.4's guarantee, CHECKED rather than asserted:
+
+        retrievable(n) <=> n in top_k(query = triggers(n) U tokens(description(n)))
+
+    One search, O(N) — safe at write time for the single note being written.
+    Returns (ok: bool, top_hit_files: list[str]) so a caller can report the
+    specific miss (Condition: "flagged with the specific miss, and the fix is
+    to add triggers:, not to add a pointer").
+    """
+    topk = topk if topk is not None else int(
+        state.CONFIG.get('read_floor_topk', 6) or 6)
+    query = ' '.join(sorted(terms) + list(phrases))
+    if not query.strip():
+        return False, []
+    hits = _memory_search(project, query, topk=topk, expand=0)
+    hit_files = [h['file'] for h in hits]
+    return note_file in hit_files, hit_files
+
+
+def retrievability_sweep(project):
+    """D1 (§7.4, §11.2 phase D1): the full-vault sweep. O(N^2) unit-scorings
+    (§13.2 prices it) — never called per-write, only on a schedule or as an
+    explicit audit run. For every topic note currently in the corpus, derives
+    its D0 vocabulary and checks retrievability under it.
+
+    Returns a list of {file, terms, phrases, retrievable, top_hits}, sorted by
+    filename — "the failures are the work list for everything that follows"
+    (§16 step 3): D2+ only hand-author `triggers:` for notes that fail here.
+    """
+    mem_path = _get_memory_path(project)
+    mem_dir = mem_path.parent
+    units = _mem_corpus(mem_dir, mem_path.name, _get_archive_path(project).name)
+    by_file = {u['file']: u for u in units if u.get('cls') == 'topic'}
+    out = []
+    for fname in sorted(by_file):
+        u = by_file[fname]
+        meta = _note_frontmatter(u['text'])
+        terms, phrases = note_triggers(
+            project, fname, meta.get('description', ''),
+            meta.get('triggers', ''), units=units)
+        ok, hit_files = _note_retrievable(project, fname, terms, phrases)
+        out.append({'file': fname, 'terms': sorted(terms), 'phrases': phrases,
+                    'retrievable': ok, 'top_hits': hit_files})
+    return out
+
+
 def _condense_combined_bytes(project):
     """Combined size of a project's MEMORY.md + archive (0 if absent)."""
     total = 0
