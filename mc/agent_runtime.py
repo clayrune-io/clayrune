@@ -4126,7 +4126,12 @@ class CodexRuntime(AgentRuntime):
         the same flag its own thread was started with, not a weaker one.
         """
         prefix = self._cmd_prefix()
-        sandbox_flags = (['-s', 'workspace-write'] if unattended_sandbox
+        # `--skip-git-repo-check` rides with the sandbox: the bypass flag used to
+        # skip codex's trusted-directory check implicitly, and `-s` does not.
+        # Without it every unattended run in a non-git project died at launch
+        # ("Not inside a trusted directory"), e.g. apex_trader's workflow on
+        # 2026-09-14. It relaxes only that check; the OS sandbox is unchanged.
+        sandbox_flags = (['-s', 'workspace-write', '--skip-git-repo-check'] if unattended_sandbox
                          else ['--dangerously-bypass-approvals-and-sandbox'])
         if resume_id:
             cmd = prefix + ['exec', 'resume']

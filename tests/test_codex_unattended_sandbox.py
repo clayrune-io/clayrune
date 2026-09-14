@@ -150,3 +150,16 @@ def test_sandbox_denial_regex_matches_real_captured_output():
 def test_sandbox_denial_regex_does_not_match_ordinary_output():
     assert not agent_runtime_mod._CODEX_SANDBOX_DENIAL_RE.search(
         "inside-ok\nfile written successfully, exit code 0")
+
+
+def test_sandboxed_launch_skips_git_repo_check_for_non_git_projects():
+    """Regression 2026-09-14: `-s workspace-write` (unlike the bypass flag)
+    enforces codex's trusted-directory check, so apex_trader (not a git repo)
+    failed every unattended run with 'Not inside a trusted directory and
+    --skip-git-repo-check was not specified'. Both launch branches must pass it."""
+    rt = agent_runtime_mod.CodexRuntime()
+    rt._bin_cache = 'codex'  # skip real binary resolution
+    for kwargs in ({}, {'resume_id': 'last'}, {'resume_id': 'some-thread-id'}):
+        cmd = rt.build_command(unattended_sandbox=True, **kwargs)
+        assert '--skip-git-repo-check' in cmd, (kwargs, cmd)
+        assert '--dangerously-bypass-approvals-and-sandbox' not in cmd
