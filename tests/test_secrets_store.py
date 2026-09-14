@@ -586,14 +586,28 @@ def test_migration_removes_legacy_plaintext_mirror_once_dpapi_verified(fake_keyr
     vault.load_master_key()  # keyring now holds a key; DPAPI mirror written too
     assert vault.dpapi_mirror_path().is_file()
 
-    # Simulate a leftover mirror from before this fix.
+    # Simulate a leftover a7e4ebb mirror: the same key, in plaintext.
     vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
-    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+    vault.key_file_path().write_text(vault._keyring_get(), encoding='utf-8')
 
     vault.load_master_key()  # keyring read succeeds again -> migration runs
 
     assert not vault.key_file_path().is_file()
     assert vault.dpapi_mirror_path().is_file()
+
+
+def test_migration_keeps_plaintext_file_holding_a_different_key(fake_keyring_vault):
+    """A secrets.key that does NOT match the keyring may be the only copy of
+    an older key that sealed existing entries; deleting it would make the
+    orphaning permanent. Must be left in place on both OS shapes."""
+    vault, fake = fake_keyring_vault
+    vault.load_master_key()
+    vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
+    vault.key_file_path().write_text('a-different-older-key', encoding='utf-8')
+
+    vault.load_master_key()
+
+    assert vault.key_file_path().read_text(encoding='utf-8') == 'a-different-older-key'
 
 
 def test_migration_leaves_plaintext_mirror_if_dpapi_mirror_cannot_be_verified(fake_keyring_vault, monkeypatch):
@@ -604,7 +618,7 @@ def test_migration_leaves_plaintext_mirror_if_dpapi_mirror_cannot_be_verified(fa
     vault, fake = fake_keyring_vault
     vault.load_master_key()  # keyring now holds a key (and a real DPAPI mirror)
     vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
-    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+    vault.key_file_path().write_text(vault._keyring_get(), encoding='utf-8')
     # Force the post-write verification read to look like a failed round-trip,
     # regardless of what the (unpatched) write actually did.
     monkeypatch.setattr(vault, '_read_dpapi_mirror', lambda: None)
@@ -628,11 +642,22 @@ def test_no_dpapi_migration_removes_legacy_plaintext_mirror_immediately(fake_key
     vault, fake = fake_keyring_vault_no_dpapi
     vault.load_master_key()  # keyring now holds a key
     vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
-    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+    vault.key_file_path().write_text(vault._keyring_get(), encoding='utf-8')
 
     vault.load_master_key()  # keyring read succeeds again -> migration runs
 
     assert not vault.key_file_path().is_file()
+
+
+def test_no_dpapi_keeps_plaintext_file_holding_a_different_key(fake_keyring_vault_no_dpapi):
+    vault, fake = fake_keyring_vault_no_dpapi
+    vault.load_master_key()
+    vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
+    vault.key_file_path().write_text('a-different-older-key', encoding='utf-8')
+
+    vault.load_master_key()
+
+    assert vault.key_file_path().is_file()
 
 
 def test_no_dpapi_wiped_keyring_fails_closed_instead_of_self_healing(fake_keyring_vault_no_dpapi):

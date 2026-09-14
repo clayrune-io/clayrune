@@ -373,13 +373,23 @@ def _maintain_key_mirror(encoded: str) -> None:
         if _dpapi_available():
             if _read_dpapi_mirror() != encoded:
                 _write_dpapi_mirror(encoded)
-            if _read_dpapi_mirror() == encoded:
-                _remove_key_file(
-                    'replaced by a DPAPI-sealed mirror, verified round-trip')
+            if _read_dpapi_mirror() != encoded:
+                return
+            reason = 'replaced by a DPAPI-sealed mirror, verified round-trip'
         else:
-            _remove_key_file(
-                'OS keyring is healthy and this OS has no sealed local '
-                'mirror; the fail-closed check is the protection instead')
+            reason = ('OS keyring is healthy and this OS has no sealed local '
+                      'mirror; the fail-closed check is the protection instead')
+        # Only ever delete a plaintext file that holds THIS key. A file with a
+        # different key may be the last copy of whatever sealed older entries
+        # (the 2026-09-14 incident orphaned 8 of them) -- keep it and say so.
+        existing = _read_key_file()
+        if existing is None:
+            return
+        if existing != encoded:
+            _log("[secrets] secrets.key holds a different key than the keyring; "
+                 "left in place (may be the only copy of an older key)")
+            return
+        _remove_key_file(reason)
     except OSError as e:
         _log(f"[secrets] key mirror sync failed: {e}")
 
