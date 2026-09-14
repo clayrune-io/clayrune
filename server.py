@@ -766,6 +766,8 @@ _parse_transcript_messages = memory._parse_transcript_messages
 _native_memory_path = memory._native_memory_path
 _get_memory_path = memory._get_memory_path
 _get_archive_path = memory._get_archive_path
+_get_session_log_path = memory._get_session_log_path
+_session_log_read = memory._session_log_read
 _mem_split_full = memory._mem_split_full
 _mem_split = memory._mem_split
 _mem_compose = memory._mem_compose
@@ -775,6 +777,7 @@ _wm_parse = memory._wm_parse
 _wm_find = memory._wm_find
 _wm_upsert = memory._wm_upsert
 _wm_remove = memory._wm_remove
+_wm_merge = memory._wm_merge
 _memory_search = memory._memory_search
 _condense_combined_bytes = memory._condense_combined_bytes
 _set_condense_status = memory._set_condense_status
@@ -1242,9 +1245,15 @@ def _reconcile_unscribed_sessions():
             # mid-flight while checkpointing → finalize from its running
             # summary (no Haiku) instead of a full re-scribe.
             try:
+                # §16 step 4: markers live in SESSION_LOG.md now; still
+                # merges in a legacy MEMORY.md's inline markers so an
+                # unmigrated project's reconciliation keeps working
+                # (§10.4 both-formats-coexist).
+                _log_wm = _session_log_read(p)[1]
                 _mp = _get_memory_path(p)
-                _wm = (_mem_split_full(_mp.read_text(encoding='utf-8'))[2]
-                       if _mp.exists() else [])
+                _legacy_wm = (_mem_split_full(_mp.read_text(encoding='utf-8'))[2]
+                             if _mp.exists() else [])
+                _wm = _wm_merge(_log_wm, _legacy_wm)
             except Exception:
                 _wm = []
             wrote = False

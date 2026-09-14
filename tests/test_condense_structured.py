@@ -119,8 +119,8 @@ def test_apply_keep_demote_fold_and_wm_preserved(tmp_data_dir):
     st = s._condense_apply(p, payload)
     assert (st["kept"], st["demoted"], st["folded"]) == (1, 1, 1)
 
-    final = mp.read_text(encoding="utf-8")
-    cur, ents, gotwm = s._mem_split_full(final)
+    cur = mp.read_text(encoding="utf-8")          # curated-only after the split
+    ents, gotwm = s._session_log_read(p)
     # keep stays, demote+fold removed from managed
     assert ents == [e_keep]
     # wm marker byte-preserved
@@ -148,7 +148,7 @@ def test_apply_rebase_skips_vanished_and_keeps_unmentioned(tmp_data_dir):
     st = s._condense_apply(p, payload)
     assert st["skipped_rebased"] == 1          # the ghost decision
     assert st["demoted"] == 1 and st["kept"] == 1
-    _c, ents, _w = s._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, _wm = s._session_log_read(p)
     assert ents == [e2]                         # unmentioned entry survives
 
 
@@ -283,18 +283,26 @@ def test_structured_trigger_fires_on_byte_pressure(tmp_data_dir):
     assert s._should_condense(p, include_claude_md=True) is True
 
 
-def test_mechanical_floor_evicts_on_byte_pressure(tmp_data_dir):
-    """The floor was line-keyed only: 30KB of entries in 30 lines sailed
-    under a 185-line floor while the harness truncated the file. The byte
-    floor (~23KB) must evict oldest entries to the archive."""
+def test_ring_evicts_by_entry_count_on_commit(tmp_data_dir):
+    """§16 step 4: SESSION_LOG.md is not in the prompt, so its eviction is
+    entry-COUNT keyed (the ring, session_log_ring, default 20) — not byte
+    pressure, which is what the old MEMORY.md-inline line/byte floor used to
+    key on (30KB of entries in 30 lines sailed under a 185-line floor while
+    the harness truncated the file; that failure mode is what the floor
+    existed to catch). The ring catches the same shape of problem by a
+    different, now-correct axis: entries beyond the cap rotate to the
+    archive regardless of their total byte size."""
     s = _server(tmp_data_dir)
-    _config()["index_line_hard_floor"] = 500      # line floor can't fire
+    _config()["session_log_ring"] = 20
     entries = [f"- [2026-07-01] **e{i}** — " + "x" * 1000 for i in range(30)]
     p, mp = _seed(s, "# Index", entries)
-    s._commit_managed_entry(p)                    # no-op entry; floor runs
-    out = mp.read_text(encoding="utf-8")
-    assert len(out.encode("utf-8")) <= 24 * 1024 - 1024
+    s._commit_managed_entry(p)                    # no-op entry; ring eviction runs
+    ents, _wm = s._session_log_read(p)
     # Oldest evicted, newest kept, all evictees verbatim in the archive.
-    assert "**e29**" in out and "**e0**" not in out
+    assert len(ents) == 20
+    assert any("**e29**" in ln for ln in ents)
+    assert not any("**e0**" in ln for ln in ents)
     arch = s._get_archive_path(p).read_text(encoding="utf-8")
     assert "**e0**" in arch
+    # MEMORY.md itself never carries any of this after the split.
+    assert mp.read_text(encoding="utf-8").strip() == "# Index"

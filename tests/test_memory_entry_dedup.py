@@ -116,6 +116,9 @@ def test_collapse_never_drops_unparseable_lines():
 # ── end-to-end through the real leaf-locked atomic write ─────────────────────
 
 def test_commit_collapses_duplicates_and_archives_them(tmp_data_dir):
+    """Seeds a LEGACY-format MEMORY.md (inline managed region, pre-§16-step-4
+    shape) to also exercise the coexist migration path: the first
+    _commit_managed_entry call pulls these entries into SESSION_LOG.md."""
     m = _mem(tmp_data_dir)
     p = {"id": "dedupproj"}
     mp = m._get_memory_path(p)
@@ -126,8 +129,10 @@ def test_commit_collapses_duplicates_and_archives_them(tmp_data_dir):
 
     m._commit_managed_entry(p, mem_entry=_e("2026-08-05", "Steward cycle", "new"))
 
-    cur, ents, _wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    cur, legacy_ents, _wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
     assert cur == "# Curated\n- [k](k.md)"          # curated byte-preserved
+    assert legacy_ents == []                        # nothing left inline
+    ents, _wm2 = m._session_log_read(p)
     assert len(ents) == m._MANAGED_DUP_KEEP
     assert ents[-1] == _e("2026-08-05", "Steward cycle", "new")
     # the demoted surplus is in the permanent archive, not deleted
@@ -154,7 +159,7 @@ def test_checkpoint_entry_supersedes_its_predecessor(tmp_data_dir):
     m._commit_managed_entry(p, mem_entry=_e("2026-08-05", "Steward cycle", "v2"),
                             wm_upsert=rec2, supersede_sid="sidA")
 
-    _c, ents, wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, wm = m._session_log_read(p)
     assert ents == [_e("2026-08-05", "Steward cycle", "v2")]
     r = m._wm_find(wm, "sidA")
     assert r and r.get("byte_offset") == 20
@@ -174,7 +179,7 @@ def test_supersede_leaves_other_sessions_entries_alone(tmp_data_dir):
     m._commit_managed_entry(p, mem_entry=_e("2026-08-05", "task B", "v2"),
                             wm_upsert=dict(rec), supersede_sid="sidB")
 
-    _c, ents, _w = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, _wm = m._session_log_read(p)
     assert other in ents
     assert _e("2026-08-05", "task B", "v1") not in ents
     assert _e("2026-08-05", "task B", "v2") in ents
@@ -196,14 +201,14 @@ def test_thin_delta_carries_supersede_pointer_forward(tmp_data_dir):
     # thin delta: offset advances, no entry
     m._commit_managed_entry(p, wm_upsert={"session_id": "sidC",
                                           "byte_offset": 2})
-    _c, _e2, wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    _ents, wm = m._session_log_read(p)
     r = m._wm_find(wm, "sidC")
     assert r and r.get("last_entry_hash")
 
     m._commit_managed_entry(p, mem_entry=_e("2026-08-05", "task C", "v2"),
                             wm_upsert={"session_id": "sidC", "byte_offset": 3},
                             supersede_sid="sidC")
-    _c, ents, _w = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, _wm2 = m._session_log_read(p)
     assert ents == [_e("2026-08-05", "task C", "v2")]
 
 
@@ -223,6 +228,6 @@ def test_terminal_entry_supersedes_last_live_checkpoint(tmp_data_dir):
     m._commit_managed_entry(p, mem_entry=_e("2026-08-05", "task D", "final"),
                             wm_remove_sid="sidD", supersede_sid="sidD")
 
-    _c, ents, wm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, wm = m._session_log_read(p)
     assert ents == [_e("2026-08-05", "task D", "final")]
     assert wm == []  # clean teardown still drops the marker

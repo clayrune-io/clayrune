@@ -376,6 +376,23 @@ def _get_archive_path(project):
     return mem_path.parent / 'MEMORY_ARCHIVE.md'
 
 
+SESSION_LOG_FILE = 'SESSION_LOG.md'
+
+
+def _get_session_log_path(project):
+    """Get the SESSION_LOG.md path — sibling to the project's MEMORY.md.
+
+    MEMORY_DESIGN_V2_SPEC.md §16 step 4 / §9.1: the sentinel-delimited managed
+    region (the '## Session Log' block: `- [` entries + `clayrune:wm:<sid>`
+    watermarks) lives HERE now, not inside MEMORY.md. Not auto-loaded by the
+    CLI and not injected by `_build_agent_context` — it is a plain sibling
+    file the memory-search corpus still reads (see `_mem_corpus`'s
+    `session_log_name` param), same as `MEMORY_ARCHIVE.md`.
+    """
+    mem_path = _get_memory_path(project)
+    return mem_path.parent / SESSION_LOG_FILE
+
+
 _MEM_BEGIN = '<!-- clayrune:managed:begin -->'
 
 
@@ -1816,11 +1833,18 @@ def _unit_uid(label, text, cls):
     return label
 
 
-def _mem_file_units(f, mem_name, arch_name):
+def _mem_file_units(f, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
     """The raw (label, text, cls) triples ONE file on disk contributes to the
     corpus, before tokenization. Split out of `_mem_corpus` so the per-file
     cache (Condition 53) can invalidate a single file without re-deriving the
     rest of the vault.
+
+    `session_log_name` (§16 step 4): SESSION_LOG.md carries the SAME managed
+    format (`_mem_split`) as MEMORY.md's pre-split managed block did, just in
+    its own sibling file — retrieval is unchanged, only the source file moved.
+    `mem_name`'s own managed block is still read too (return, not elif) for
+    an unmigrated project's MEMORY.md, which may still carry one inline —
+    §10.4's "both formats coexist for the whole migration" invariant.
     """
     if f.name == CONTINUITY_FILE:
         # Already injected verbatim into every prompt. Letting it also win a
@@ -1832,7 +1856,7 @@ def _mem_file_units(f, mem_name, arch_name):
         txt = f.read_text(encoding='utf-8', errors='replace')
     except Exception:
         return []
-    if f.name == mem_name:
+    if f.name == mem_name or f.name == session_log_name:
         return [(f'{f.name}#managed', e, 'managed')
                 for e in _mem_split(txt)[1]]
     if f.name == arch_name:
@@ -1887,13 +1911,15 @@ def _mem_tokenize_unit(label, text, cls):
             'links': _mem_link_targets(text) if cls == 'topic' else []}
 
 
-def _mem_corpus(mem_dir, mem_name, arch_name):
+def _mem_corpus(mem_dir, mem_name, arch_name, session_log_name=SESSION_LOG_FILE):
     """Parse + tokenize the memory corpus into scoring units (cached per file).
 
     Unit classes, which the scorer keeps separate (see _memory_search):
       'topic'   — a whole topic .md file
       'archive' — one '- [' line of MEMORY_ARCHIVE.md
-      'managed' — one managed entry of MEMORY.md
+      'managed' — one managed entry of MEMORY.md OR of SESSION_LOG.md
+                  (§16 step 4 — the managed region moved file, the corpus
+                  unit class and retrieval behaviour did not)
 
     Cache invalidation is per FILE (Condition 53), not per directory: each
     file's units are kept keyed on that file's own (mtime_ns, size), so a
@@ -1921,7 +1947,8 @@ def _mem_corpus(mem_dir, mem_name, arch_name):
             out.extend(hit[1])
             continue
         units = [_mem_tokenize_unit(label, text, cls)
-                 for label, text, cls in _mem_file_units(f, mem_name, arch_name)]
+                 for label, text, cls in
+                 _mem_file_units(f, mem_name, arch_name, session_log_name)]
         units = [u for u in units if u is not None]
         fresh[name] = (st, units)
         out.extend(units)
@@ -2337,15 +2364,126 @@ def retrievability_sweep(project):
 
 
 def _condense_combined_bytes(project):
-    """Combined size of a project's MEMORY.md + archive (0 if absent)."""
+    """Combined size of a project's MEMORY.md + SESSION_LOG.md + archive
+    (0 if absent). SESSION_LOG.md added in §16 step 4 — the managed region's
+    bytes moved OUT of MEMORY.md, not out of what this gauge should measure."""
     total = 0
-    for p in (_get_memory_path(project), _get_archive_path(project)):
+    for p in (_get_memory_path(project), _get_session_log_path(project),
+             _get_archive_path(project)):
         try:
             if p and p.exists():
                 total += p.stat().st_size
         except OSError:
             pass
     return total
+
+
+def _session_log_ring():
+    """§9.2 B2's entry-count ring — an ENTRY count, not a byte cap: legible to
+    a human ("the last 20 sessions"), and immune to the mean-entry-size drift
+    (325 -> 510 B measured) a byte cap would silently convert into fewer
+    entries."""
+    try:
+        return max(1, int(state.CONFIG.get('session_log_ring', 20) or 20))
+    except (TypeError, ValueError):
+        return 20
+
+
+def _session_log_read(project):
+    """(entries, wm_markers) from SESSION_LOG.md — pure read, no migration.
+    Empty lists if the file does not exist yet."""
+    path = _get_session_log_path(project)
+    if not path.exists():
+        return [], []
+    try:
+        text = path.read_text(encoding='utf-8')
+    except Exception:
+        return [], []
+    _curated, entries, wm = _mem_split_full(text)
+    return entries, wm
+
+
+def _session_log_entries(project):
+    """Just the entries — the read `_should_condense`'s structured-mode
+    trigger needs, without the wm-marker bookkeeping."""
+    entries, _wm = _session_log_read(project)
+    return entries
+
+
+def _write_curated_only(mem_path, curated):
+    """MEMORY.md post-split (§16 step 4): curated pointer lines, nothing
+    else — no sentinel, no managed block, ever. Trailing-whitespace-trimmed,
+    matching `_mem_migrate`'s existing "curated content preserved verbatim
+    modulo trailing whitespace" contract."""
+    text = (curated or '').rstrip()
+    _atomic_write_text(mem_path, (text + '\n') if text else '')
+
+
+def _write_session_log(project, entries, wm_markers):
+    """SESSION_LOG.md's canonical form — reuses `_mem_compose` with an empty
+    curated prefix, so the sentinel/header/wm-marker format is byte-identical
+    to what MEMORY.md's managed block used to look like, just in its own
+    file."""
+    path = _get_session_log_path(project)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _atomic_write_text(path, _mem_compose('', entries or [], wm_markers or []))
+
+
+def _wm_merge(primary, secondary):
+    """Union of two wm_markers lists, de-duplicated by session_id — `primary`
+    wins a collision. Used only by the one-time migration and by
+    `_commit_managed_entry`'s tolerance for an unmigrated MEMORY.md that still
+    carries markers inline (§10.4: both formats coexist for the whole
+    migration)."""
+    have = {(_wm_parse(ln) or {}).get('session_id') for ln in (primary or [])}
+    return list(primary or []) + [
+        ln for ln in (secondary or [])
+        if (_wm_parse(ln) or {}).get('session_id') not in have]
+
+
+def migrate_session_log_split(project):
+    """§16 step 4's migration: pull any managed content still inline in
+    MEMORY.md (the sentinel-delimited block: entries + wm markers) out into
+    SESSION_LOG.md.
+
+    §11 design constraints: (1) NOTHING IS DELETED — entries and wm markers
+    move verbatim, curated lines are preserved modulo trailing whitespace
+    (the same contract `_mem_migrate` already keeps); (2) RE-RUNNABLE — an
+    already-migrated project (MEMORY.md carries no sentinel block) round-trips
+    the curated text unchanged and moves zero entries/markers on a second
+    run, because the first run already emptied MEMORY.md's managed region.
+
+    Returns a stats dict: moved_entries/moved_wm_markers count what THIS run
+    pulled out of MEMORY.md specifically (0 on a re-run), plus the resulting
+    file sizes/line counts for reporting.
+    """
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    mem_path = _get_memory_path(project)
+    with _get_mem_write_lock(project_id):
+        existing = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+        before_bytes = len(existing.encode('utf-8'))
+        before_lines = len(existing.splitlines())
+        curated, legacy_entries, legacy_wm = _mem_split_full(_mem_migrate(existing))
+        log_entries, log_wm = _session_log_read(project)
+        merged_entries = legacy_entries + log_entries
+        merged_wm = _wm_merge(log_wm, legacy_wm)
+        existing_log_sids = {(_wm_parse(ln) or {}).get('session_id') for ln in log_wm}
+        moved_wm = sum(1 for ln in legacy_wm
+                       if (_wm_parse(ln) or {}).get('session_id')
+                       not in existing_log_sids)
+        _write_curated_only(mem_path, curated)
+        _write_session_log(project, merged_entries, merged_wm)
+        after_text = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+    return {
+        'moved_entries': len(legacy_entries),
+        'moved_wm_markers': moved_wm,
+        'memory_md_bytes_before': before_bytes,
+        'memory_md_lines_before': before_lines,
+        'memory_md_bytes_after': len(after_text.encode('utf-8')),
+        'memory_md_lines_after': len(after_text.splitlines()),
+        'session_log_entries': len(merged_entries),
+        'session_log_wm_markers': len(merged_wm),
+    }
 
 
 def _set_condense_status(pid, **kw):
@@ -2424,8 +2562,14 @@ def _should_condense(project, include_claude_md=False):
         # make the un-actionable bloat loudly visible (once per run per
         # project): only a human or the condense model tier may shrink the
         # curated region.
+        # §16 step 4: the managed region this branch means to check now lives
+        # in SESSION_LOG.md, not inline in MEMORY.md's own text (a migrated
+        # project's MEMORY.md carries no entries at all, ever). A legacy
+        # unmigrated MEMORY.md's inline entries are still merged in — same
+        # coexist read shape _condense_plan/_condense_apply use.
         try:
-            _, entries, _ = _mem_split_full(_mem_migrate(text))
+            _c, legacy_entries, _w = _mem_split_full(_mem_migrate(text))
+            entries = legacy_entries + _session_log_entries(project)
         except Exception:
             return False
         if not entries:
@@ -2442,9 +2586,12 @@ def _should_condense(project, include_claude_md=False):
         return True
     mem_path = _get_memory_path(project)
     archive_path = _get_archive_path(project)
+    session_log_path = _get_session_log_path(project)
     combined = 0
     if mem_path.exists():
         combined += mem_path.stat().st_size
+    if session_log_path.exists():
+        combined += session_log_path.stat().st_size
     if archive_path.exists():
         combined += archive_path.stat().st_size
     if include_claude_md:
@@ -2557,6 +2704,110 @@ def _enforce_index_cap(candidate_text):
     ov = _index_overflow(candidate_text)
     if ov is not None:
         raise MemoryCapExceeded(*ov)
+
+
+# ── The demoter (§9.1 Condition 36/37, §16 step 4) ───────────────────────────
+#
+# Once MEMORY.md holds nothing but curated content (the split, above), a cap
+# with nothing else to evict either evicts curated or is not a cap — but the
+# eviction is a DEMOTION, never a deletion: the pointer line goes, the note
+# stays, reachable by BM25 and the one hop. A line with no resolvable target
+# (59% of curated bytes corpus-wide, measured) is NOT demotable — deleting it
+# deletes the only copy of that knowledge — it is MINTABLE, and the refusal
+# list below is D4's work list (§11 phase D4, out of scope here).
+#
+# NOT WIRED TO FIRE AUTOMATICALLY YET (Condition 37): the cap that would
+# actually trigger a demotion is the terminal 8,192 B value, gated on D4
+# completing; this step's cap stays at the current budget (index_byte_budget,
+# 24,576 B by default), which — as the step 1-3 commits' own vault shows — is
+# not being exceeded today. This section builds and tests the mechanism; it
+# does not flip the switch.
+
+_CURATED_POINTER_RE = re.compile(r'\[([^\]]*)\]\(([^)\s]+)\)')
+
+
+class DemotionRefused(ValueError):
+    """Raised by `demote_line` for a line `demote_candidates` did not list as
+    demotable — see that function's docstring."""
+
+
+def _curated_pointer_lines(curated_text):
+    """Every '- ' line in the curated region, tagged with its markdown-link
+    target if it has one. Returns [(line_index, line_text, label, target_stem
+    or None), ...]. A line with no markdown link, or a link whose target
+    can't be resolved to an in-vault note, carries `target=None` — Condition
+    37's "not demotable, it is mintable" case.
+    """
+    out = []
+    for i, ln in enumerate(curated_text.splitlines()):
+        if not ln.strip().startswith('-'):
+            continue
+        m = _CURATED_POINTER_RE.search(ln)
+        if not m:
+            out.append((i, ln, '', None))
+            continue
+        label, target = m.group(1), m.group(2).split('#', 1)[0].strip()
+        stem = target[:-3] if target.lower().endswith('.md') else target
+        out.append((i, ln, label, stem or None))
+    return out
+
+
+def demote_candidates(project):
+    """{'demotable': [...], 'refused': [...]} — every curated pointer-shaped
+    line, sorted into whether it has a target this vault can actually
+    resolve to a live topic note (Condition 36) or not (Condition 37).
+    Report-only: identifies candidates, removes nothing.
+    """
+    mem_path = _get_memory_path(project)
+    if not mem_path.exists():
+        return {'demotable': [], 'refused': []}
+    curated, _e, _w = _mem_split_full(mem_path.read_text(encoding='utf-8'))
+    units = _mem_corpus(mem_path.parent, mem_path.name,
+                        _get_archive_path(project).name)
+    topic_keys = {_mem_link_key(u['file'].rsplit('.', 1)[0])
+                  for u in units if u.get('cls') == 'topic'}
+    demotable, refused = [], []
+    for i, ln, label, stem in _curated_pointer_lines(curated):
+        row = {'line': i, 'text': ln, 'label': label, 'target': stem}
+        if stem and _mem_link_key(stem) in topic_keys:
+            demotable.append(row)
+        else:
+            refused.append(row)
+    return {'demotable': demotable, 'refused': refused}
+
+
+def demote_line(project, line_index):
+    """Remove ONE curated pointer line by its line index in the curated
+    region — a demotion, never a deletion (the note file itself is never
+    touched). Refuses (`DemotionRefused`) a line that is not in
+    `demote_candidates`'s `demotable` list — Condition 37. Returns the
+    removed line's raw text.
+    """
+    cand = demote_candidates(project)
+    match = next((c for c in cand['demotable'] if c['line'] == line_index), None)
+    if match is None:
+        is_refused = any(c['line'] == line_index for c in cand['refused'])
+        reason = ('no resolvable target — not demotable, only mintable (§11 D4)'
+                  if is_refused else 'not a demotable pointer line')
+        raise DemotionRefused(f'line {line_index}: {reason}')
+    project_id = project.get('id', '') if isinstance(project, dict) else ''
+    with _get_mem_write_lock(project_id):
+        mem_path = _get_memory_path(project)
+        text = mem_path.read_text(encoding='utf-8') if mem_path.exists() else ''
+        curated, _e, _w = _mem_split_full(text)
+        lines = curated.splitlines()
+        if line_index >= len(lines) or lines[line_index] != match['text']:
+            raise DemotionRefused(
+                f'line {line_index}: curated region changed since it was read')
+        demoted = lines.pop(line_index)
+        new_curated = '\n'.join(lines)
+        _write_curated_only(mem_path, new_curated)
+        cap = _index_byte_cap()
+        n = len(new_curated.encode('utf-8'))
+        _log(f'[mem-index] {project_id}: demoted pointer '
+             f'"{match["label"] or demoted.strip()[:60]}" → {match["target"]} '
+             f'(index at {n}/{cap} B; note remains searchable)')
+    return demoted
 
 
 # Projects already warned (once per server run) that their curated region
@@ -2685,18 +2936,24 @@ def _supersedable_hashes(wm_markers):
 
 def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
                           supersede_sid=None):
-    """Leaf-locked atomic MEMORY.md commit — the write path shared by the
-    completion scribe, the Step-6 checkpoint worker, and teardown (the
-    structured Leg C `_condense_apply` is a co-equal writer under the SAME
-    leaf lock + atomic primitive; both route archive overflow through
-    `_append_to_archive`). In a single
-    per-project mem-write-locked, atomic (temp+replace) operation:
+    """Leaf-locked atomic commit — the write path shared by the completion
+    scribe, the Step-6 checkpoint worker, and teardown (the structured Leg C
+    `_condense_apply` is a co-equal writer under the SAME leaf lock + atomic
+    primitive; both route archive overflow through `_append_to_archive`).
+
+    §16 step 4 — THE SPLIT: the managed region lives in SESSION_LOG.md now,
+    a sibling of MEMORY.md, not inline in it. In a single per-project
+    mem-write-locked operation:
       • optionally drop `supersede_sid`'s previous entry (see below),
-      • optionally append `mem_entry` ('- [' line) to the managed region,
+      • optionally append `mem_entry` ('- [' line) to SESSION_LOG.md,
       • optionally `_wm_upsert`/`_wm_remove` this session's watermark marker,
-      • run the lossless line-keyed floor (relocates only '- [' entries;
-        wm markers never popped but DO count toward the budget),
-      • write MEMORY.md (+archive overflow) atomically.
+      • run the entry-count RING (§9.2 B2, `session_log_ring`, default 20 —
+        replaces the old byte/line floor, which existed to protect
+        MEMORY.md's per-prompt budget; SESSION_LOG.md is never in the
+        prompt, so that budget no longer applies to it),
+      • write MEMORY.md (curated only — untouched here except for a
+        one-time, lossless pull of any managed content an UNMIGRATED file
+        still carries inline, §10.4) and SESSION_LOG.md, each atomically.
     No scribe call and no condense dispatch inside the lock (the slow/process
     parts stay out). Returns whether condense should fire; caller dispatches it
     OUTSIDE the lock. Never raises. SPEC §3.A.MID committee blocker #3.
@@ -2717,12 +2974,20 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
     project_id = p.get('id', '')
     mem_path = _get_memory_path(p)
     mem_path.parent.mkdir(parents=True, exist_ok=True)
-    hard_floor = int(state.CONFIG.get('index_line_hard_floor', 185) or 185)
+    ring = _session_log_ring()
     with _get_mem_write_lock(project_id):
         existing = (mem_path.read_text(encoding='utf-8')
                     if mem_path.exists() else '')
-        # Leg 0: idempotent, additive migration; curated region untouched.
-        curated, mem_entries, wm_markers = _mem_split_full(_mem_migrate(existing))
+        # Leg 0: idempotent, additive migration on whatever MEMORY.md still
+        # holds; `legacy_entries`/`legacy_wm` are non-empty ONLY for a project
+        # not yet migrated to the split (§10.4 both-formats-coexist window) —
+        # pulling them out here, into SESSION_LOG.md, in the same write this
+        # function was going to make anyway, is what makes the migration
+        # re-runnable-to-a-no-op rather than needing a separate pass first.
+        curated, legacy_entries, legacy_wm = _mem_split_full(_mem_migrate(existing))
+        log_entries, log_wm = _session_log_read(p)
+        mem_entries = legacy_entries + log_entries
+        wm_markers = _wm_merge(log_wm, legacy_wm)
         if supersede_sid is not None:
             prev_hash = (_wm_find(wm_markers, supersede_sid)
                          or {}).get('last_entry_hash', '')
@@ -2750,39 +3015,46 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
             wm_markers = _wm_remove(wm_markers, wm_remove_sid)
         if wm_upsert is not None:
             wm_markers = _wm_upsert(wm_markers, wm_upsert)
-        # Collapse repetition BEFORE the oldest-first floor, so a burst of
-        # same-day same-label cycles can't evict unrelated history that the
-        # index still needs (see _MANAGED_DUP_KEEP).
+        # Collapse repetition BEFORE the oldest-first ring eviction, so a
+        # burst of same-day same-label cycles can't evict unrelated history
+        # the log still needs (see _MANAGED_DUP_KEEP).
         mem_entries, overflow = _collapse_duplicate_entries(mem_entries)
         if overflow:
             _log(f"[mem-dedup] {project_id}: demoted {len(overflow)} duplicate "
                  f"managed entr{'y' if len(overflow) == 1 else 'ies'} to archive "
                  f"(keeping {_MANAGED_DUP_KEEP} per date+label)")
-        # Oldest-first eviction, but never the line a live session is about to
-        # supersede (see _supersedable_hashes). Skipping past it preserves the
-        # ordering; a protected line is released the moment its session ends and
-        # `_wm_remove`/`_gc_stale_watermarks` drops the marker, so nothing is
-        # pinned permanently.
+        # Oldest-first ring eviction (§9.2 B2), but never the line a live
+        # session is about to supersede (see _supersedable_hashes). Skipping
+        # past it preserves the ordering; a protected line is released the
+        # moment its session ends and `_wm_remove`/`_gc_stale_watermarks`
+        # drops the marker, so nothing is pinned permanently.
         _protected = _supersedable_hashes(wm_markers)
-        _i, _skipped = 0, 0
-        while _i < len(mem_entries) and _over_floor(
-                _mem_compose(curated, mem_entries, wm_markers), hard_floor):
+        _i, _skipped, _rotated = 0, 0, 0
+        while _i < len(mem_entries) and len(mem_entries) > ring:
             if _sha8(mem_entries[_i]) in _protected:
                 _i += 1
                 _skipped += 1
                 continue
             overflow.append(mem_entries.pop(_i))  # oldest evictable → archive
-        if _skipped and _over_floor(
-                _mem_compose(curated, mem_entries, wm_markers), hard_floor):
+            _rotated += 1
+        if _rotated:
+            # The bound that must start logging (Condition, §9.2 B2): the
+            # ORDINARY case — every day, this ring simply rotating — used to
+            # emit nothing at all under the old byte/line floor.
+            _log(f"[mem-log] {project_id}: rotated {_rotated} entr"
+                 f"{'y' if _rotated == 1 else 'ies'} to archive "
+                 f"(ring cap {ring}, oldest first)")
+        if _skipped and len(mem_entries) > ring:
             # Every remaining entry belongs to a live session. Going over the
-            # floor for a few turns is the cheaper failure: the alternative is
+            # ring for a few turns is the cheaper failure: the alternative is
             # archiving a line that is still being updated, which is the bug
             # this guard exists to prevent.
-            _log(f"[mem-floor] {project_id}: over floor with {_skipped} live "
+            _log(f"[mem-log] {project_id}: over ring cap "
+                 f"({len(mem_entries)}/{ring}) with {_skipped} live "
                  f"entr{'y' if _skipped == 1 else 'ies'} protected from eviction")
         _append_to_archive(p, overflow)
-        _atomic_write_text(mem_path,
-                           _mem_compose(curated, mem_entries, wm_markers))
+        _write_curated_only(mem_path, curated)
+        _write_session_log(p, mem_entries, wm_markers)
         return _should_condense(p, include_claude_md=True)
 
 
@@ -2802,36 +3074,52 @@ def _gc_stale_watermarks(projects):
     revived concurrently with this sweep can't lose its marker. A pruned dead
     marker costs nothing: its session can never checkpoint again.
 
-    Same discipline as every other MEMORY.md writer: per-project leaf lock,
+    Same discipline as every other memory writer: per-project leaf lock,
     atomic write, curated + entry lines byte-preserved. Best-effort — never
     raises, never blocks startup.
+
+    §16 step 4: markers live in SESSION_LOG.md now. Also sweeps any markers
+    still inline in an UNMIGRATED project's MEMORY.md (§10.4 both-formats-
+    coexist) — a project that has not yet had the migration run should not
+    silently stop getting GC'd.
     """
     total = 0
     for p in projects or []:
         project_id = p.get('id', '')
         if not project_id:
             continue
+        live = {s.get('session_id') or s.get('id')
+                for s in agent_sessions.values()}
         try:
-            mem_path = _get_memory_path(p)
-            if not mem_path.exists():
-                continue
             with _get_mem_write_lock(project_id):
-                existing = mem_path.read_text(encoding='utf-8')
-                curated, mem_entries, wm_markers = _mem_split_full(existing)
-                if not wm_markers:
-                    continue
-                live = {s.get('session_id') or s.get('id')
-                        for s in agent_sessions.values()}
-                kept = [ln for ln in wm_markers
-                        if (_wm_parse(ln) or {}).get('session_id') in live]
-                dropped = len(wm_markers) - len(kept)
-                if not dropped:
-                    continue
-                _atomic_write_text(mem_path,
-                                   _mem_compose(curated, mem_entries, kept))
-                total += dropped
-                _log(f"[wm-gc] {project_id}: pruned {dropped} stale watermark(s), "
-                     f"kept {len(kept)} live")
+                log_path = _get_session_log_path(p)
+                if log_path.exists():
+                    _c, log_entries, log_wm = _mem_split_full(
+                        log_path.read_text(encoding='utf-8'))
+                    if log_wm:
+                        kept = [ln for ln in log_wm
+                                if (_wm_parse(ln) or {}).get('session_id') in live]
+                        dropped = len(log_wm) - len(kept)
+                        if dropped:
+                            _write_session_log(p, log_entries, kept)
+                            total += dropped
+                            _log(f"[wm-gc] {project_id}: pruned {dropped} stale "
+                                 f"watermark(s), kept {len(kept)} live")
+                mem_path = _get_memory_path(p)
+                if mem_path.exists():
+                    existing = mem_path.read_text(encoding='utf-8')
+                    curated, mem_entries, mem_wm = _mem_split_full(existing)
+                    if mem_wm:
+                        kept = [ln for ln in mem_wm
+                                if (_wm_parse(ln) or {}).get('session_id') in live]
+                        dropped = len(mem_wm) - len(kept)
+                        if dropped:
+                            _atomic_write_text(
+                                mem_path, _mem_compose(curated, mem_entries, kept))
+                            total += dropped
+                            _log(f"[wm-gc] {project_id}: pruned {dropped} stale "
+                                 f"watermark(s) from unmigrated MEMORY.md, kept "
+                                 f"{len(kept)} live")
         except Exception as e:
             _log(f"[wm-gc] {project_id}: sweep failed: {e}")
     return total
@@ -2964,13 +3252,21 @@ def _get_checkpoint_sema(pid):
 
 
 def _checkpoint_prev_offset(p, sid):
-    """Cheap read of this session's last watermark byte_offset (0 if none)."""
+    """Cheap read of this session's last watermark byte_offset (0 if none).
+
+    §16 step 4: markers live in SESSION_LOG.md; a legacy MEMORY.md is still
+    consulted for a not-yet-migrated project (§10.4 both-formats-coexist).
+    """
     try:
+        _log_wm = _session_log_read(p)[1]
+        r = _wm_find(_log_wm, sid)
+        if r:
+            return int(r.get('byte_offset', 0))
         mp = _get_memory_path(p)
         if not mp.exists():
             return 0
-        _c, _e, wm = _mem_split_full(mp.read_text(encoding='utf-8'))
-        r = _wm_find(wm, sid)
+        _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
+        r = _wm_find(legacy_wm, sid)
         return int(r.get('byte_offset', 0)) if r else 0
     except Exception:
         return 0
@@ -3049,18 +3345,23 @@ def _checkpoint_worker(snap):
             return
         prev_off, prev_summary = 0, ''
         try:
-            mp = _get_memory_path(p)
-            if mp.exists():
-                _c, _e, wm = _mem_split_full(mp.read_text(encoding='utf-8'))
-                r = _wm_find(wm, sid)
-                if r:
-                    prev_summary = r.get('running_summary', '') or ''
-                    if r.get('transcript_path') == tf:
-                        prev_off = int(r.get('byte_offset', 0))
-                    else:
-                        # resume opened a new .jsonl → restart offset, KEEP
-                        # the running summary as the reduce base (no loss).
-                        _scribe_stat(pid, 'checkpoint_offset_reset')
+            # §16 step 4: markers live in SESSION_LOG.md; a legacy MEMORY.md
+            # is still consulted for a not-yet-migrated project.
+            wm = _session_log_read(p)[1]
+            r = _wm_find(wm, sid)
+            if not r:
+                mp = _get_memory_path(p)
+                if mp.exists():
+                    _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
+                    r = _wm_find(legacy_wm, sid)
+            if r:
+                prev_summary = r.get('running_summary', '') or ''
+                if r.get('transcript_path') == tf:
+                    prev_off = int(r.get('byte_offset', 0))
+                else:
+                    # resume opened a new .jsonl → restart offset, KEEP
+                    # the running summary as the reduce base (no loss).
+                    _scribe_stat(pid, 'checkpoint_offset_reset')
         except Exception:
             prev_off, prev_summary = 0, ''
         delta, new_off = _scribe_render_delta(tf, prev_off)
@@ -3858,8 +4159,13 @@ def _condense_plan(project):
         mem_path = _get_memory_path(project)
         if not mem_path.exists():
             return None, 'no_memory_file', 0
-        curated, entries, _wm = _mem_split_full(
+        # §16 step 4: entries live in SESSION_LOG.md now; a legacy MEMORY.md's
+        # inline entries are still folded in for a not-yet-migrated project
+        # (§10.4 both-formats-coexist) — same read shape _condense_apply uses,
+        # so ids computed here stay valid at apply time.
+        curated, legacy_entries, _wm = _mem_split_full(
             _mem_migrate(mem_path.read_text(encoding='utf-8')))
+        entries = legacy_entries + _session_log_entries(project)
         if not entries:
             return None, 'noop', 0
         # Collect curated headings as fold targets, but skip any '#' line
@@ -3936,18 +4242,31 @@ def _condense_plan(project):
 def _condense_apply(project, payload):
     """Rebased, transactional apply under the SAME leaf lock the completion
     scribe + Step-6 use. Decisions are keyed by _sha8(entry); any decision
-    whose entry vanished meanwhile (Step-6 fold / teardown / floor) is silently
-    skipped. wm markers pass through untouched. Returns a stats dict."""
+    whose entry vanished meanwhile (Step-6 fold / teardown / ring rotation)
+    is silently skipped. wm markers pass through untouched. Returns a stats
+    dict.
+
+    §16 step 4: entries + wm markers are read from and written back to
+    SESSION_LOG.md; curated pointer lines (fold's only way to grow anything)
+    are read from and written back to MEMORY.md. The two files are read and
+    written together under the SAME leaf lock, so no OTHER writer can observe
+    a half-applied decision — not true single-file atomicity across two
+    files, but the same accepted risk this function already carried between
+    `_append_to_archive` and its own MEMORY.md write.
+    """
     pid = project.get('id', '')
     mem_path = _get_memory_path(project)
-    hard_floor = int(state.CONFIG.get('index_line_hard_floor', 185) or 185)
+    ring = _session_log_ring()
     decs = {d['id']: d for d in payload.get('entry_decisions', [])}
     st = {'kept': 0, 'demoted': 0, 'folded': 0,
           'skipped_rebased': 0, 'fold_downgraded': 0, 'curated_lines': 0}
     with _get_mem_write_lock(pid):
         existing = (mem_path.read_text(encoding='utf-8')
                     if mem_path.exists() else '')
-        curated, entries, wm = _mem_split_full(_mem_migrate(existing))
+        curated, legacy_entries, wm = _mem_split_full(_mem_migrate(existing))
+        log_entries, log_wm = _session_log_read(project)
+        entries = legacy_entries + log_entries
+        wm = _wm_merge(log_wm, wm)
         cur_lines = curated.splitlines()
         cur_norm = {ln.strip() for ln in cur_lines}
         present_ids = set()
@@ -3997,15 +4316,17 @@ def _condense_apply(project, payload):
         st['skipped_rebased'] = sum(
             1 for did in decs if did not in present_ids)
         curated2 = '\n'.join(cur_lines)
-        # Mechanical line+byte floor backstop (same rule as
-        # _commit_managed_entry).
-        while new_entries and _over_floor(
-                _mem_compose(curated2, new_entries, wm), hard_floor):
+        # Mechanical ring backstop (§9.2 B2, same rule as
+        # _commit_managed_entry — SESSION_LOG.md's own entry count, not a
+        # byte/line floor shared with curated: the two no longer share a
+        # budget after the split).
+        while new_entries and len(new_entries) > ring:
             overflow.append(new_entries.pop(0))
         # MC-917: fold is the only way this function grows curated, and
         # curated has no mechanical drain — evicting every evictable managed
-        # entry above can't free a single curated byte. If the composed
-        # result is STILL over the hard index_byte_budget, undo fold
+        # entry above can't free a single curated byte. If curated is STILL
+        # over the hard index_byte_budget on its OWN (post-split, it no
+        # longer shares that budget with entries/wm at all), undo fold
         # pointer inserts, most-recently-inserted first, until it fits or
         # none remain. No fact is lost either way: every folded entry
         # already went to `overflow` (the archive) above regardless of
@@ -4013,7 +4334,7 @@ def _condense_apply(project, payload):
         # `fold_downgraded` outcome as an ambiguous/vanished heading.
         rolled_back = 0
         while folded_pointers and _index_overflow(
-                _mem_compose('\n'.join(cur_lines), new_entries, wm)) is not None:
+                '\n'.join(cur_lines)) is not None:
             pl = folded_pointers.pop()
             for _k in range(len(cur_lines) - 1, -1, -1):
                 if cur_lines[_k] == pl:
@@ -4034,7 +4355,8 @@ def _condense_apply(project, payload):
         # (additive-only fold has no mechanical eviction path until v2).
         st['curated_lines'] = len(cur_lines)
         _append_to_archive(project, overflow)
-        _atomic_write_text(mem_path, _mem_compose(curated2, new_entries, wm))
+        _write_curated_only(mem_path, curated2)
+        _write_session_log(project, new_entries, wm)
     return st
 
 

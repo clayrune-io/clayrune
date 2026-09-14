@@ -91,30 +91,34 @@ def test_mem_migrate_wraps_legacy_bare_header(tmp_data_dir):
 
 
 # ── _commit_managed_entry: leaf-locked atomic write preserves sentinels + wm ──
+# §16 step 4 (MC-944): entries + wm markers live in SESSION_LOG.md now, not
+# inline in MEMORY.md — MEMORY.md is curated-only after this write path runs.
 
 def test_commit_managed_entry_preserves_sentinel_and_watermark(tmp_data_dir):
     m = _mem(tmp_data_dir)
     p = {"id": "memproj"}  # no project_path → MEMORY_DIR/<id>.md (tmp-isolated)
     mp = m._get_memory_path(p)
     mp.parent.mkdir(parents=True, exist_ok=True)
-    # Seed a curated index + one live-session watermark marker.
+    mp.write_text("# Idx\n\n## Notes\n- [k](k.md)", encoding="utf-8")
+    # Seed SESSION_LOG.md with one live-session watermark marker + an entry.
     wm = ['<!-- clayrune:wm:sidLIVE {"session_id":"sidLIVE",'
           '"running_summary":"in flight"} -->']
-    mp.write_text(m._mem_compose("# Idx\n\n## Notes\n- [k](k.md)",
-                                 ["- [2026-06-10] **seed** — pre-existing"], wm),
-                  encoding="utf-8")
+    m._write_session_log(p, ["- [2026-06-10] **seed** — pre-existing"], wm)
 
     # Append a new managed entry; the watermark for the OTHER live session must
     # be carried through untouched (we don't remove sidLIVE here).
     m._commit_managed_entry(
         p, mem_entry="- [2026-06-10] **fresh** — appended this turn")
 
+    # MEMORY.md carries no managed region at all after the split.
     out = mp.read_text(encoding="utf-8")
-    # sentinels intact
-    assert out.count(m._MEM_BEGIN) == 1 and out.count(m._MEM_END) == 1
-    # curated region byte-preserved
-    cur, ents, gotwm = m._mem_split_full(out)
-    assert cur == "# Idx\n\n## Notes\n- [k](k.md)"
+    assert m._MEM_BEGIN not in out and m._MEM_END not in out
+    assert out.rstrip() == "# Idx\n\n## Notes\n- [k](k.md)"
+
+    # SESSION_LOG.md holds the entries + watermark, sentinels intact.
+    log_text = m._get_session_log_path(p).read_text(encoding="utf-8")
+    assert log_text.count(m._MEM_BEGIN) == 1 and log_text.count(m._MEM_END) == 1
+    ents, gotwm = m._session_log_read(p)
     # both the seed and the fresh entry are present, in order
     assert ents == ["- [2026-06-10] **seed** — pre-existing",
                     "- [2026-06-10] **fresh** — appended this turn"]
@@ -129,14 +133,15 @@ def test_commit_managed_entry_wm_remove_on_teardown(tmp_data_dir):
     p = {"id": "memproj2"}
     mp = m._get_memory_path(p)
     mp.parent.mkdir(parents=True, exist_ok=True)
+    mp.write_text("# Idx", encoding="utf-8")
     wm = ['<!-- clayrune:wm:sidGONE {"session_id":"sidGONE",'
           '"running_summary":"x"} -->']
-    mp.write_text(m._mem_compose("# Idx", [], wm), encoding="utf-8")
+    m._write_session_log(p, [], wm)
     # Terminal write removes this session's wm marker (clean teardown).
     m._commit_managed_entry(
         p, mem_entry="- [2026-06-10] **done** — finished",
         wm_remove_sid="sidGONE")
-    _c, ents, gotwm = m._mem_split_full(mp.read_text(encoding="utf-8"))
+    ents, gotwm = m._session_log_read(p)
     assert ents == ["- [2026-06-10] **done** — finished"]
     assert gotwm == []  # marker dropped on teardown
 
