@@ -173,6 +173,12 @@ _CONFIG_EDITABLE_KEYS = {
     # every other key here: an agent session cannot switch its own backstop
     # off.
     'fence_unattended_enabled',
+    # Codex unattended sandbox (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1).
+    # Read at dispatch/followup time by mc/blueprints/agent_routes.py
+    # (_dispatch_via_runtime) — no respawn or restart needed. Same
+    # unattended-caller gate as every other key here: an unattended Codex
+    # session cannot switch its own sandboxing off.
+    'codex_unattended_sandbox',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',

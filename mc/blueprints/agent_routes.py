@@ -5461,6 +5461,14 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # be handed to it as a hook or no agent-log row is ever written for
             # this session. See _runtime_log_completion.
             callbacks=_RUNTIME_CALLBACKS,
+            # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4: only CodexRuntime.dispatch
+            # declares/consumes this kwarg (every other runtime's dispatch()
+            # has a **_extra catchall, so it's a no-op for them). CONFIG is
+            # read HERE, not inside agent_runtime.py — that module deliberately
+            # never reads server CONFIG directly (see ClaudeRuntime.build_command's
+            # docstring), so the flag has to cross the seam as a plain bool.
+            unattended_sandbox_enabled=bool(
+                state.CONFIG.get('codex_unattended_sandbox', True)),
         )
     except Exception as e:
         session['status'] = 'error'
