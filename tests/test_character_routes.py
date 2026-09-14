@@ -45,6 +45,9 @@ def client(tmp_path, monkeypatch):
 
     server.app.config['TESTING'] = True
     c = server.app.test_client()
+    # Character mutations are human-only (the SPA's fetch carries Origin, an
+    # agent's curl does not); these tests act as the browser.
+    c.environ_base['HTTP_ORIGIN'] = 'http://localhost:5199'
     c.global_dir = global_dir          # type: ignore[attr-defined]
     c.proj_agents = proj_path / '.claude' / 'agents'  # type: ignore[attr-defined]
     return c

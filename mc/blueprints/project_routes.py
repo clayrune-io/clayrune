@@ -1219,25 +1219,39 @@ def hire_to_roster(project_id):
     if not rec:
         return jsonify({'error': f"character '{character}' not found"}), 404
 
-    roster = p.setdefault('roster', [])
     ref = f'{scope}:{name}'
-    live = next((r for r in roster if r.get('character') == ref and not r.get('removed_at')), None)
-    already_hired = live is not None
-    if not already_hired:
+    hired, _ = apply_roster_hires(p, [ref], data.get('hired_by') or 'drag')
+    if hired:
+        p['last_updated'] = now_iso()
+        save_project(project_id, p)
+    return jsonify({'roster': p['roster'], 'already_hired': not hired})
+
+
+def apply_roster_hires(p, refs, hired_by):
+    """Add or revive roster rows for already-resolved character refs, on the
+    in-memory project record only. Returns (newly_hired, already_hired); the
+    caller saves. Shared by the hire route and the team-create route so a team
+    hire is the same roster write as a drag-drop, not a second copy of it.
+    """
+    roster = p.setdefault('roster', [])
+    hired, already = [], []
+    for ref in refs:
+        live = next((r for r in roster if r.get('character') == ref and not r.get('removed_at')), None)
+        if live is not None:
+            already.append(ref)
+            continue
         # Revive a previously-removed row rather than append a second one —
         # un-hire never deletes (§3.1), so a re-hire finds its old entry.
         revived = next((r for r in roster if r.get('character') == ref), None)
         if revived is not None:
             revived['removed_at'] = None
             revived['hired_at'] = now_iso()
-            revived['hired_by'] = (data.get('hired_by') or 'drag')
+            revived['hired_by'] = hired_by
         else:
             roster.append({'character': ref, 'hired_at': now_iso(),
-                            'hired_by': (data.get('hired_by') or 'drag'),
-                            'removed_at': None})
-        p['last_updated'] = now_iso()
-        save_project(project_id, p)
-    return jsonify({'roster': roster, 'already_hired': already_hired})
+                           'hired_by': hired_by, 'removed_at': None})
+        hired.append(ref)
+    return hired, already
 
 
 @bp.route('/api/project/<project_id>/roster/<character_ref>', methods=['DELETE'])

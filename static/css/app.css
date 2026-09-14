@@ -4379,6 +4379,62 @@
     padding: 14px 16px; margin: 8px 4px;
   }
   .agent-question.answered { border-color: var(--border); opacity: 0.7; }
+
+  /* Team proposal card (```mc:team```, static/js/team-card.js) */
+  .team-card {
+    background: var(--surface3); border: 1px solid var(--accent); border-radius: 8px;
+    padding: 12px 14px; margin: 8px 4px; display: flex; flex-direction: column; gap: 10px;
+  }
+  .team-card.created { border-color: var(--border); }
+  .team-card-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .team-card-kicker {
+    font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase; letter-spacing: 0.6px;
+  }
+  .team-card-title { font-size: 13px; font-weight: 600; color: var(--text); }
+  .team-card-count { font-size: 11px; color: var(--text-faint); margin-left: auto; }
+  .team-member {
+    border: 1px solid var(--border); border-radius: 6px; padding: 8px 10px;
+    background: var(--surface2); display: flex; flex-direction: column; gap: 6px;
+  }
+  .team-member.reuse { border-left: 3px solid var(--green, var(--accent)); }
+  .team-member.new { border-left: 3px solid var(--accent); }
+  .team-member-top { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .team-member-label { font-size: 11px; color: var(--text-dim); letter-spacing: 0.3px; }
+  .team-member-label strong { color: var(--text); letter-spacing: 0; }
+  .team-mode { display: inline-flex; margin-left: auto; border: 1px solid var(--border); border-radius: 5px; overflow: hidden; }
+  .team-mode button {
+    background: transparent; border: 0; color: var(--text-dim); font-size: 11px; padding: 3px 8px; cursor: pointer;
+  }
+  .team-mode button.sel { background: var(--accent-dim); color: var(--accent); font-weight: 600; }
+  .team-mode button:disabled { cursor: default; opacity: 0.55; }
+  .team-member-remove {
+    background: transparent; border: 0; color: var(--text-faint); cursor: pointer; font-size: 12px; padding: 2px 4px;
+  }
+  .team-member-remove:hover:not(:disabled) { color: var(--red-text, var(--text)); }
+  .team-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(150px, 1fr)); gap: 6px 8px; }
+  .team-f { display: flex; flex-direction: column; gap: 2px; font-size: 10px; color: var(--text-faint); min-width: 0; }
+  .team-f.wide { grid-column: 1 / -1; }
+  .team-f input, .team-f select, .team-f textarea {
+    background: var(--bg); border: 1px solid var(--border); color: var(--text); border-radius: 4px;
+    font-size: 12px; padding: 4px 6px; font-family: inherit; min-width: 0; box-sizing: border-box; width: 100%;
+  }
+  .team-f textarea { resize: vertical; line-height: 1.4; }
+  .team-member-reason, .team-member-engine { font-size: 12px; color: var(--text-dim); }
+  .team-member-note { font-size: 12px; color: var(--amber, var(--accent)); }
+  .team-member-err { font-size: 12px; color: var(--red-text, #d9534f); }
+  .team-conflict { font-size: 12px; color: var(--text); display: flex; gap: 6px; align-items: flex-start; }
+  .team-card-foot { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+  .team-add { background: transparent; border: 1px dashed var(--border); color: var(--text-dim); border-radius: 5px; font-size: 12px; padding: 4px 10px; cursor: pointer; }
+  .team-hire { font-size: 12px; color: var(--text-dim); display: flex; gap: 6px; align-items: center; }
+  .team-hire.muted { color: var(--text-faint); }
+  .team-card-msg { font-size: 12px; color: var(--text-dim); flex: 1; min-width: 120px; }
+  .team-card-msg.err { color: var(--red-text, #d9534f); }
+  .team-create {
+    background: var(--accent); color: var(--bg); border: 0; border-radius: 6px; font-weight: 600;
+    font-size: 12px; padding: 6px 14px; cursor: pointer; margin-left: auto;
+  }
+  .team-create:disabled { opacity: 0.6; cursor: default; }
+  .team-card-pending, .team-card-invalid { font-size: 12px; color: var(--text-faint); padding: 6px 4px; }
   .agent-question-header {
     font-size: 10px; color: var(--accent); font-weight: 700; text-transform: uppercase;
     letter-spacing: 0.6px; margin-bottom: 6px;

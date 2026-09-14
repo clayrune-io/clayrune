@@ -8,13 +8,13 @@ const WT_STEPS = [
   {
     id: 'welcome',
     title: 'Welcome to Clayrune',
-    body: 'Clayrune is your operator console for long-running Claude agents \u2014 a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Quick tour: about 12 steps, 2 minutes.',
+    body: 'Clayrune is your operator console for long-running Claude agents — a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Quick tour: about 10 steps, 2 minutes.',
     target: null, pos: 'center',
   },
   {
     id: 'advanced-picker',
     title: 'Choose your level',
-    body: () => `Clayrune starts in a simple view. Turn on any power-user features you want to see \u2014 you can change these anytime in Settings.<div id="wt-adv-list" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+    body: () => `Clayrune starts in a simple view. Turn on any power-user features you want to see — you can change these anytime in Settings.<div id="wt-adv-list" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
       ADV_FEATURES.map(f => `
         <label style="display:flex;align-items:flex-start;gap:10px;cursor:pointer;padding:6px;border-radius:4px;background:var(--surface2)">
           <input type="checkbox" ${advancedFlags[f.key] ? 'checked' : ''}
@@ -27,28 +27,23 @@ const WT_STEPS = [
   {
     id: 'sidebar',
     title: 'Sidebar Navigation',
-    body: 'The sidebar is your top-level navigation: <strong>Dashboard</strong>, <strong>Inbox</strong> (anything waiting on you), <strong>+ New Project</strong>, then a workspace group \u2014 <strong>Backlog</strong> (cross-project task list), <strong>Automation</strong> (recurring agent runs) and <strong>History</strong>. Power surfaces (\ud83d\udc1d Hivemind, Skills &amp; MCP, Personas, Media, Shared Rules, Processes, Incognito) sit under <strong>Advanced</strong> \u2014 click it to expand. Hover to expand the sidebar itself.',
+    body: 'Top of the sidebar: <strong>Dashboard</strong>, <strong>Inbox</strong> (anything waiting on you), <strong>Floor</strong> (every agent, working or idle, across every project — more on that shortly) and <strong>Incognito</strong> (a scratch chat with no memory or rules). Then a workspace group — <strong>Backlog</strong>, <strong>Desk</strong> (the marketing/social surface), <strong>Automation</strong>, <strong>Calendar</strong> and <strong>History</strong>. Less-frequent surfaces (🐝 Hivemind, Skills, Secrets, Backup &amp; Restore, Personas, Media, Shared Rules, Processes) sit under <strong>Advanced</strong> — click it to expand. Hover to expand the sidebar itself.',
     target: '#sidebar', pos: 'right',
     skip: () => window.innerWidth <= 960, // hidden on mobile
   },
   {
     id: 'header',
-    title: 'Header Bar',
-    body: 'Search projects + commands with <strong>Ctrl+K</strong>, see active agents at a glance, and check the live badge that pulses while auto-refresh is on. The <strong>?</strong> button on the right re-runs this tour any time.',
+    title: 'Header & Toolbar',
+    body: 'Search projects + commands with <strong>Ctrl+K</strong> (fuzzy search, jump to any view, re-run this tour), see active agents at a glance, and check the live badge that pulses while auto-refresh is on. The <strong>?</strong> button re-runs this tour any time. Just below: switch <strong>Grid</strong>/<strong>List</strong> views, filter by status or domain, or create a new project.',
     target: '.header', pos: 'bottom',
-  },
-  {
-    id: 'toolbar',
-    title: 'Toolbar',
-    body: 'Switch between <strong>Grid</strong> and <strong>List</strong> views, filter projects by status or domain, toggle compact density, or create a new project.',
-    target: '.toolbar', pos: 'bottom',
+    skip: () => window.innerWidth <= 960, // .header is display:none on mobile
   },
   {
     id: 'sample-tile',
     title: 'Project Tiles',
-    body: 'Each tile shows a project\u2019s status and last activity. Click one to open it as a modal window. We\u2019ve created a starter project for you \u2014 <strong>Clayrune</strong> \u2014 its agent is your in-app help desk.',
+    body: 'Each tile shows a project’s status and last activity. Click one to open it as a modal window — multiple modals can be open at once, drag them around, resize, minimize; open conversations and their layouts even survive a page refresh. We’ve created a starter project for you — <strong>Clayrune</strong> — its agent is your in-app help desk.',
     // Spotlight the REAL tile (created on first boot / by onEnter below) so
-    // the highlight sits exactly on it \u2014 the injected demo tile floated at a
+    // the highlight sits exactly on it — the injected demo tile floated at a
     // hardcoded offset next to the real one. `demo` stays as the fallback
     // for DOMs without grid tiles (mobile list view).
     target: '.card[data-id="clayrune"]', pos: 'right', demo: 'tile',
@@ -58,41 +53,35 @@ const WT_STEPS = [
     },
   },
   {
-    id: 'open-modal',
-    title: 'Project Modal',
-    body: 'Click a tile to open the project. Multiple modals can be open at once \u2014 drag them around, resize, minimize. Open conversations and their layouts even survive a page refresh.',
-    target: null, pos: 'left', demo: 'modal',
-  },
-  {
     id: 'tabs',
-    title: 'Tabs',
-    body: 'A project modal has five tabs: <strong>Agent</strong> (the conversation + dispatch), <strong>Backlog</strong> (tasks for this project), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Documents</strong> (plans + markdown an agent wrote for this project), and <strong>Activity</strong>. They live at the top of the <strong>three-dot menu</strong> so the chat gets the full window.',
+    title: 'Tabs & Menu',
+    body: 'A project modal has seven tabs at the top of its <strong>three-dot menu</strong>: <strong>Agent</strong> (conversation + dispatch), <strong>Backlog</strong>, <strong>Social</strong> (this project’s Desk queue), <strong>Agent Log</strong> (completed sessions — click any to read its transcript), <strong>Documents</strong>, <strong>Activity</strong> and <strong>Workflows</strong>. Below them, the same menu holds Status, Appearance, Edit Profile, Agent Settings, and an <strong>Advanced</strong> group — GitHub &amp; Code Sync, Memory, Rules, Skills, Export, MCP servers, Personas, Media, and this project’s Hiveminds.',
     target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.wt-menu-tabs',
   },
   {
     id: 'agent',
     title: 'Agent Dispatch',
-    body: 'Type a task in the Agent tab and click Dispatch. The agent runs in the background and streams output here AND into the bottom Agent Console so you can keep watching from anywhere. Plans triggered by the agent show approve/collapse buttons \u2014 nothing dangerous runs without your click.',
+    body: 'Type a task in the Agent tab and click Dispatch. The agent runs in the background and streams output here AND into the bottom Agent Console so you can keep watching from anywhere — including a sub-agent it dispatches on its own, which reports back into this same chat when it finishes. Plans triggered by the agent show approve/collapse buttons — nothing dangerous runs without your click.',
     target: null, pos: 'left', demo: 'modal-agent',
   },
   {
-    id: 'menu',
-    title: 'Three-Dot Menu',
-    body: 'The three-dot button in any project modal opens a menu with:' +
-      '<ul style="margin:8px 0 0 18px;padding:0">' +
-      '<li><strong>\ud83d\udc1d Hiveminds</strong> for this project</li>' +
-      '<li><strong>Status</strong> / <strong>Appearance</strong> / <strong>Edit Profile</strong></li>' +
-      '<li><strong>Agent Settings</strong> \u2014 per-project model, effort &amp; mode</li>' +
-      '<li><strong>GitHub</strong> &amp; <strong>Code Sync</strong></li>' +
-      '<li><strong>Memory</strong>, <strong>Rules</strong>, <strong>Skills</strong> &amp; <strong>MCP servers</strong></li>' +
-      '</ul>' +
-      '<div style="margin-top:8px">The project tabs (Agent / Backlog / …) sit at the top of this same menu.</div>',
-    target: null, pos: 'left', demo: 'modal-menu', demoTarget: '.modal-menu-dropdown',
+    id: 'floor',
+    title: 'The Floor — every agent, at a glance',
+    body: 'The Floor shows every agent session across every project as a figure on a board — working, idle, or blocked. The <strong>Bench</strong> along the side lists every agent type you can hire; drag a figure onto a project (or use its no-drag hire button) to add that type to the project’s roster. Click any figure to open its chat.',
+    target: '[data-nav="floor"]', pos: 'right',
+    skip: () => window.innerWidth <= 960, // mobile: reachable via the nav drawer
+  },
+  {
+    id: 'desk',
+    title: 'The Desk — marketing & social',
+    body: 'The <strong>Desk</strong> is Clayrune’s in-house marketing surface: a <strong>Board</strong> for campaigns and ideas, a <strong>Queue</strong> of drafts waiting on your approval, a <strong>Calendar</strong> of what’s scheduled to go out, and a <strong>Ledger</strong> of what’s already been said. Nothing posts without a click from you.',
+    target: '[data-nav="social"]', pos: 'right',
+    skip: () => window.innerWidth <= 960, // mobile: reachable via the nav drawer
   },
   {
     id: 'hivemind-sidebar',
-    title: '\ud83d\udc1d Hivemind \u2014 multi-agent runs',
-    body: 'Hivemind is Clayrune\u2019s signature feature: an orchestrator agent decomposes a goal into workstreams, then parallel worker agents tackle them in coordination. The <strong>\ud83d\udc1d Hivemind</strong> sidebar entry shows every hivemind across every project \u2014 each card has a planner-to-workers tree, status pill, and stats. Long-idle "active" hiveminds auto-mark themselves <strong>stale</strong> with a Restart control.',
+    title: '🐝 Hivemind — multi-agent runs',
+    body: 'Hivemind is Clayrune’s signature feature: an orchestrator agent decomposes a goal into workstreams, then parallel worker agents tackle them in coordination. The <strong>🐝 Hivemind</strong> sidebar entry shows every hivemind across every project — each card has a planner-to-workers tree, status pill, and stats. Long-idle "active" hiveminds auto-mark themselves <strong>stale</strong> with a Restart control.',
     target: '[data-nav="hivemind"]', pos: 'right',
     // Hivemind lives in the sidebar's "Advanced" group, which is collapsed
     // (display:none) by default — without this the step spotlighted a 0x0
@@ -103,115 +92,30 @@ const WT_STEPS = [
   },
   {
     id: 'scheduler',
-    title: 'Automation \u2014 recurring agents',
-    body: 'The <strong>Automation</strong> sidebar entry sets up tasks that fire on a daily / cron / interval schedule. Each schedule has a <strong>\u25b6 Run Now</strong> button to fire immediately and a <strong>Runs</strong> button that opens an inline panel listing the most recent runs (50 per page). Click any run row to read its transcript.',
+    title: 'Automation — recurring agents',
+    body: 'The <strong>Automation</strong> sidebar entry sets up tasks that fire on a daily / cron / interval schedule. Each schedule has a <strong>▶ Run Now</strong> button to fire immediately and a <strong>Runs</strong> button that opens an inline panel listing the most recent runs (50 per page). A schedule can also run a multi-step <strong>workflow</strong> — open one to edit it visually on the workflow canvas.',
     target: '[data-nav="scheduler"]', pos: 'right',
     skip: () => window.innerWidth <= 960, // mobile bottom-tab covers this
   },
   {
-    id: 'console',
-    title: 'Agent Console',
-    body: 'Running agent sessions \u2014 from any project, manual or automated \u2014 appear in this bottom tray. Expand it to view output, send follow-ups, or stop a session without leaving wherever you are.',
-    target: '#agent-console', pos: 'top',
-    // The console is hidden when no sessions are running (default state). Force
-    // it visible for this step so the highlight has something to point at,
-    // restore the prior class set on leave.
-    onEnter: () => {
-      const el = document.getElementById('agent-console');
-      if (el) {
-        el.dataset.wtPrevHidden = el.classList.contains('hidden') ? '1' : '';
-        el.classList.remove('hidden');
-      }
-    },
-    onLeave: () => {
-      const el = document.getElementById('agent-console');
-      if (el && el.dataset.wtPrevHidden === '1') {
-        el.classList.add('hidden');
-        delete el.dataset.wtPrevHidden;
-      }
-    },
-    skip: () => window.innerWidth <= 960, // bottom tab bar covers this on mobile
-  },
-  {
     id: 'bottom-tabs',
-    title: 'Bottom Tabs',
-    body: 'Mobile navigation: <strong>Home</strong>, <strong>Backlog</strong>, <strong>+ FAB</strong> (new project), <strong>Scheduler</strong>, <strong>\ud83d\udc1d Hivemind</strong>. Settings is reachable via the avatar circle in the top app bar.',
+    title: 'Mobile navigation',
+    body: 'The bottom bar is quick access: <strong>Inbox</strong>, <strong>Search</strong>, <strong>+ New project</strong>, <strong>Claydo</strong>, and <strong>You</strong> (settings). Everything else — Dashboard, Floor, Backlog, Desk, Hivemind, Automation, Calendar, History — is one tap away in the ☰ menu, top-left.',
     target: '#bottom-tab-bar', pos: 'top',
     skip: () => window.innerWidth > 960, // only on mobile
   },
   {
-    id: 'cmd-palette',
-    title: 'Command Palette',
-    body: 'Press <strong>Ctrl+K</strong> anywhere to fuzzy-search projects, jump to any view, open settings, or re-take this tour.',
-    target: '.cmd-palette', pos: 'bottom',
-    // The CSS class is `.visible` (not `.open` — that was a copy-paste bug).
-    // Without this, the overlay stays hidden and the highlight box appears
-    // to point at empty space.
-    // Also pre-render results so the palette has visible content (otherwise
-    // it's just an empty input box).
-    //
-    // Critical: cmd-overlay has z-index 9999 which is ABOVE the walkthrough
-    // overlay (2000). When .visible is added the overlay also has
-    // pointer-events: auto + an onclick that closes the palette on
-    // backdrop clicks. Result: when the user tries to click "Next" on the
-    // wt-card, the click is intercepted by cmd-overlay, which closes the
-    // palette — leaving the wt-highlight glowing around an empty rectangle
-    // ("the second step 14 shows blank square"). We disable click-through
-    // on the overlay (pointer-events: none) and re-enable it on the palette
-    // itself so the rendered palette stays visible but the wt-card's Next
-    // button isn't shadowed by the overlay anymore.
-    onEnter: async () => {
-      const overlay = document.getElementById('cmd-overlay');
-      if (!overlay) return;
-      const palette = overlay.querySelector('.cmd-palette');
-      overlay.classList.add('visible');
-      overlay.style.background = 'transparent';
-      overlay.style.backdropFilter = 'none';
-      overlay.style.webkitBackdropFilter = 'none';
-      overlay.style.pointerEvents = 'none';
-      if (palette) {
-        // Defeat the open-animation transition so we don't measure
-        // mid-flight (cmd-palette uses transform translateY(-10px)
-        // scale(0.98) → 0/1 over 0.15s, so getBoundingClientRect right
-        // after .visible is added returns the pre-animation rect, leaving
-        // the highlight pointing at the empty pre-position). Force final
-        // state synchronously.
-        palette.style.transition = 'none';
-        palette.style.transform = 'translateY(0) scale(1)';
-        palette.style.pointerEvents = 'auto';
-      }
-      cmdPaletteOpen = true;
-      try { renderCommandResults(''); } catch (e) {}
-      // Yield one frame so DOM/layout flush before wtShow measures the rect.
-      await new Promise(r => requestAnimationFrame(() => r()));
-    },
-    onLeave: () => {
-      const overlay = document.getElementById('cmd-overlay');
-      if (!overlay) return;
-      const palette = overlay.querySelector('.cmd-palette');
-      overlay.classList.remove('visible');
-      overlay.style.background = '';
-      overlay.style.backdropFilter = '';
-      overlay.style.webkitBackdropFilter = '';
-      overlay.style.pointerEvents = '';
-      if (palette) {
-        palette.style.transition = '';
-        palette.style.transform = '';
-        palette.style.pointerEvents = '';
-      }
-      cmdPaletteOpen = false;
-    },
-  },
-  {
     id: 'ask-claydo',
     title: 'Ask Claydo any time',
-    body: 'Click the floating <strong>Claydo</strong> button bottom-right (it\u2019s pulsing for you) to ask questions about Clayrune in plain English \u2014 Claydo can highlight the relevant UI element while explaining. It reads the same User Guide that powers this tour, so it always knows what\u2019s available.',
-    target: '#claydo-fab', pos: 'left',
+    body: 'Click the floating <strong>Claydo</strong> button bottom-right (it’s pulsing for you) to ask questions about Clayrune in plain English — Claydo can highlight the relevant UI element while explaining. For hands-on project work, Claydo is also a hireable agent type from the Floor, same name and face — the FAB explains and points, hired Claydo does the work.',
+    // The FAB is display:none at <=960px; on mobile Claydo is a bottom-bar slot.
+    target: () => window.innerWidth <= 960 ? '#bottom-tab-bar [data-nav="claydo"]' : '#claydo-fab',
+    pos: 'left',
   },
   {
     id: 'done',
-    title: 'You\u2019re all set',
-    body: 'Start by exploring the <strong>Clayrune</strong> starter project or create your own with <strong>+ New Project</strong>. Re-run this tour any time from Settings, the Command Palette (Ctrl+K \u2192 "Take Tour"), or the <strong>?</strong> button in the header.',
+    title: 'You’re all set',
+    body: 'Start by exploring the <strong>Clayrune</strong> starter project or create your own with <strong>+ New Project</strong>. Full-install backups and restore points live under Advanced → Backup; your phone can reach Clayrune too, from Settings → Remote Access. Re-run this tour any time from Settings, the Command Palette (Ctrl+K), or the <strong>?</strong> button in the header.',
     target: null, pos: 'center',
   },
 ];
@@ -299,9 +203,9 @@ function wtDemoModalHTML(activeTab) {
 // The tab strip the demo shows lives INSIDE the three-dot menu — that's where
 // the real app puts it now (`.mc-tabs-in-menu`; the old `.modal-tab-bar` is
 // display:none on both desktop and mobile). `wtTabsSectionHTML` is spotlighted
-// by the "Tabs" step and reused as the top of the menu step.
+// by the "Tabs & Menu" step. Order matches render-core.js's real tab row.
 function wtTabsSectionHTML(activeTab) {
-  const tabs = ['Agent','Backlog','Agent Log','Documents','Activity'];
+  const tabs = ['Agent','Backlog','Social','Agent Log','Documents','Activity','Workflows'];
   return `<div class="mc-tabs-in-menu wt-menu-tabs">` + tabs.map(t => {
     const key = t.toLowerCase().replace(' ', '-');
     return `<button class="modal-menu-item${key === activeTab ? ' active' : ''}" style="pointer-events:none">${t}</button>`;
@@ -338,11 +242,9 @@ function wtDemoMenuHTML(activeTab) {
             </button>
             <div class="modal-menu-sep"></div>
             <button class="modal-menu-item" style="pointer-events:none">
-              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-memory"/></svg></span> Memory
+              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-advanced"/></svg></span> Advanced <span style="margin-left:auto;color:var(--text-faint);font-size:11px">&#x25B8;</span>
             </button>
-            <button class="modal-menu-item" style="pointer-events:none">
-              <span class="menu-icon"><svg class="menu-svg"><use href="#ic-rules"/></svg></span> Rules
-            </button>
+            <div class="modal-menu-item" style="pointer-events:none;padding-left:22px;font-size:11px;color:var(--text-faint)">Code Sync &middot; Memory &middot; Rules &middot; Skills &middot; Export &middot; MCP servers &middot; Personas &middot; Media &middot; Hiveminds</div>
             <div class="modal-menu-sep"></div>
             <button class="modal-menu-item danger" style="pointer-events:none">
               <span class="menu-icon"><svg class="menu-svg"><use href="#ic-trash"/></svg></span> Delete Project
@@ -423,11 +325,16 @@ async function wtShow(idx) {
   backdrop.className = 'wt-backdrop';
   backdrop.onclick = () => {}; // block clicks
   overlay.appendChild(backdrop);
+  // Attach BEFORE measuring: an injected demo lives inside this overlay, and a
+  // detached node measures 0x0, so wtIsMeasurable() dropped every demo target
+  // (Tiles/Tabs/Agent steps drew no highlight and an unpositioned card).
+  document.body.appendChild(overlay);
 
   // Remove previous elevation
   document.querySelectorAll('.wt-elevated').forEach(el => el.classList.remove('wt-elevated'));
 
-  let targetEl = step.target ? document.querySelector(step.target) : null;
+  const targetSel = typeof step.target === 'function' ? step.target() : step.target;
+  let targetEl = targetSel ? document.querySelector(targetSel) : null;
 
   // A target that exists in the DOM but has no box (display:none — e.g. the
   // collapsed "Advanced" sidebar group, or a row a media query hides) measures

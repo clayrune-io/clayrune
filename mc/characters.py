@@ -354,6 +354,30 @@ def ref_by_agent_name(agent_name: str,
     return None
 
 
+def validate_fields(name: str, description: str, body: str) -> tuple[str, str]:
+    """The field rules every character write enforces, without writing.
+
+    Split out of write_character so a multi-member create can check every
+    member BEFORE the first file lands, against the same rules rather than a
+    second copy of them. Returns (description, body) stripped; raises
+    ValueError with the messages write_character always raised.
+    """
+    err = _skills.validate_name(name)
+    if err:
+        raise ValueError(err)
+    description = (description or '').strip()
+    if not description:
+        raise ValueError('description is required (it drives auto-delegation)')
+    body = (body or '').strip()
+    if not body:
+        raise ValueError('body is required — it is the character\'s system prompt')
+    if len(body.encode('utf-8')) > MAX_BODY_BYTES:
+        raise ValueError(
+            f'body too large (max {MAX_BODY_BYTES // 1024} KB — characters '
+            f'ride inside the agent system prompt)')
+    return description, body
+
+
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,
@@ -369,19 +393,7 @@ def write_character(scope: str, name: str, description: str, body: str,
     the editor removes the pin instead of persisting a falsy one that would
     shadow the project default.
     """
-    err = _skills.validate_name(name)
-    if err:
-        raise ValueError(err)
-    description = (description or '').strip()
-    if not description:
-        raise ValueError('description is required (it drives auto-delegation)')
-    body = (body or '').strip()
-    if not body:
-        raise ValueError('body is required — it is the character\'s system prompt')
-    if len(body.encode('utf-8')) > MAX_BODY_BYTES:
-        raise ValueError(
-            f'body too large (max {MAX_BODY_BYTES // 1024} KB — characters '
-            f'ride inside the agent system prompt)')
+    description, body = validate_fields(name, description, body)
 
     existing = _find_file(scope, name, project_path)
     if existing is not None and not overwrite:
@@ -453,3 +465,73 @@ def delete_character(scope: str, name: str,
         return False
     path.unlink()
     return True
+
+
+# ── Built-in install ─────────────────────────────────────────────────────────
+# Mirrors skills.install_builtins (checksum-preserved user edits), adapted for
+# a flat `<name>.md` character file rather than a `<name>/SKILL.md` directory:
+# there is no per-character subdir to hold a marker, so the marker sits
+# alongside the file as `<name>.md.mc-builtin-hash` in GLOBAL_AGENTS_DIR
+# itself. rglob('*.md') in _scan_dir never picks it up (wrong suffix), so it
+# is invisible to list_characters.
+
+_BUILTIN_MARKER_SUFFIX = '.mc-builtin-hash'
+
+
+def install_builtin_characters(builtin_root: Path) -> dict[str, list[str]]:
+    """Install/update built-in characters from `builtin_root` into
+    GLOBAL_AGENTS_DIR. For each `<name>.md` in `builtin_root`:
+
+      - Target doesn't exist -> copy it, write the hash marker. Installed.
+      - Target exists, NO marker -> user-owned (hand-written or pre-dates
+        this scheme) -> never touch. Skipped. This is what stops a fresh
+        install from clobbering a user's own character that happens to
+        share a builtin's name.
+      - Target exists, marker present, current hash != marker hash -> the
+        user edited what MC installed -> preserve.
+      - Target exists, marker present, current hash == marker hash,
+        marker == source hash -> already in sync -> skipped.
+      - Target exists, marker present, current hash == marker hash,
+        marker != source hash -> safe to update -> updated.
+    """
+    result: dict[str, list[str]] = {'installed': [], 'updated': [],
+                                    'preserved': [], 'skipped': []}
+    if not builtin_root.exists():
+        return result
+
+    GLOBAL_AGENTS_DIR.mkdir(parents=True, exist_ok=True)
+    for src in sorted(builtin_root.glob('*.md')):
+        name = src.stem
+        dest = GLOBAL_AGENTS_DIR / f'{name}.md'
+        marker = GLOBAL_AGENTS_DIR / f'{name}.md{_BUILTIN_MARKER_SUFFIX}'
+        src_hash = _skills._file_sha256(src)
+
+        if not dest.exists():
+            dest.write_bytes(src.read_bytes())
+            marker.write_text(src_hash, encoding='utf-8')
+            result['installed'].append(name)
+            continue
+
+        if not marker.exists():
+            result['skipped'].append(name)
+            continue
+
+        try:
+            marker_hash = marker.read_text(encoding='utf-8').strip()
+        except OSError:
+            marker_hash = ''
+
+        current_hash = _skills._file_sha256(dest)
+        if current_hash != marker_hash:
+            result['preserved'].append(name)
+            continue
+
+        if marker_hash == src_hash:
+            result['skipped'].append(name)
+            continue
+
+        dest.write_bytes(src.read_bytes())
+        marker.write_text(src_hash, encoding='utf-8')
+        result['updated'].append(name)
+
+    return result

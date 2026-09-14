@@ -377,3 +377,96 @@ is the part that bites daily.
    wrong engine is worse than one that refuses to save.
 5. **Next item to design** — Ron: "not sure". MC-897 / MC-885 / MC-871 / MC-898
    all sit behind this. MC-871 genuinely wants MC-895 first; the others do not.
+
+## 11. Claydo, the built-in base agent (2026-09-14)
+
+Every install — fresh or existing — now ships one character out of the box:
+`global:claydo` (`data/agents/builtin/claydo.md`, installed into
+`~/.claude/agents/claydo.md` at boot by
+`character_routes._install_builtin_characters`, wired in `server.py`'s
+`__main__` boot phases next to `_install_builtin_skills` /
+`_install_builtin_mcps`). Same checksum-preserve contract as those two
+(`mc.characters.install_builtin_characters`, marker sidecar
+`<name>.md.mc-builtin-hash` since a bare `.md` file has no directory of its
+own to hold one): a user's own `claydo.md` with no marker is never touched,
+edits to the installed copy are preserved, and a source update only lands
+when the installed copy still matches the last MC-written hash.
+
+**Identity:** `agent_name: Claydo`, `avatar: fig:newcomer`
+(`assets/avatars/newcomer.webp` — Claydo's newcomer portrait; distinct from
+the top-level `assets/claydo-*.webp` mascot stills the FAB/chat-modal use).
+Persona is generic and public-safe by design (§3's "nothing operator-specific"
+requirement): a generalist base hire, no pinned engine (falls through to
+project/global default per §4's precedence chain), no elevated authority —
+hiring Claydo grants nothing the authority guard (§6, `_authority_violation`)
+would otherwise refuse.
+
+### How Claydo (the hire) relates to "Ask Claydo" (the FAB)
+
+**Decision: one identity, two mechanisms — do not merge them.** "Ask Claydo"
+(`static/js/claydo.js` + `mc/blueprints/guide_routes.py`) is a purpose-built,
+locked-down engine: no tools, no MCP servers (`_CLAYDO_NO_TOOLS_FLAGS`), a
+materialized `docs/USER_GUIDE.md` + recent-CHANGELOG brief, streaming SSE,
+and its own `[clayrune:...]` UI-action marker vocabulary. Routing it through
+the general character/dispatch system would hand it the user's full toolset
+and MCP servers — exactly the failure `_CLAYDO_NO_TOOLS_FLAGS`'s own comment
+says it exists to prevent — and lose its dedicated transcript sandbox
+(`_claydo_cwd`). That is a materially different job from "a hireable
+generalist agent that does project work with normal tool access," so the two
+stay separate mechanisms.
+
+What unifies them is the identity a user sees: same name, same face. The FAB
+is the always-on advisor — it explains and navigates but never changes state
+(`guide_routes` hard rule 6). Hired Claydo is the one who does the work. The
+hand-off between them is documented, not coded: `docs/USER_GUIDE.md`'s
+"How to be Claydo" section (Claydo's own brief) now tells the FAB persona
+that hired-Claydo exists and how to point a user at it — `goto view="floor"`
++ a highlight on the Bench's no-drag hire button (`.fl-hire-to`,
+docs/DRAG_TO_HIRE_SPEC.md §8) — for the case where what the user is actually
+asking for is delegate-able project work, not a question. No new marker type
+was needed; `floor` was already a valid `sidebarNav` target
+(`static/index.html`), just absent from the FAB's self-restricted enum.
+
+**Known gap, not fixed here:** `docs/USER_GUIDE.md` — the FAB's entire
+knowledge base — predates Floor, Hivemind roster hiring, drag-to-hire, the
+Desk, backup/restore, and several other shipped surfaces (no "Floor" section
+exists at all; confirmed by grep before writing this). The FAB partially
+compensates via its recent-CHANGELOG tail (`_claydo_recent_changelog`,
+last 15 entries), but a full audit of `USER_GUIDE.md` against current the
+product is its own task, out of scope here (this pass only touched the one
+"How to be Claydo" section for the hand-off above). Filing it as a follow-up
+is the right next step, not doing it inline with this one.
+
+## 12. One-prompt teams, and characters are human-only (2026-09-14)
+
+**Propose, never create.** Any agent (hired Claydo, Ask Claydo, anyone) answers
+"which agents does this need?" with one fenced `mc:team` block. The chat
+renderer and Ask Claydo both mount it as an editable card
+(`static/js/team-card.js`); nothing is created until the human clicks
+**Create team**, which calls `POST /api/characters/team`.
+
+**Reuse before create.** Each member is either `{"reuse": "<scope>:<name>",
+"reason", "note"}` or a new definition. Hired agents read what exists through
+`GET /api/characters?project_id=` and `GET /api/floor` (the system-prompt
+"Teams:" line and Claydo's persona say so); Ask Claydo has no tools, so
+`guide_routes._claydo_existing_agents_block` puts the same list in its request.
+The card shows a reuse row's engine read-only and lets the human flip any row
+between reuse and new. A reused agent is sent as a ref only: the card cannot
+change its persona or engine.
+
+**All or nothing.** The route validates every member first (the same
+`characters.validate_fields` and `_validated_engine` rules single create uses,
+plus figure, name and duplicate checks), returns `member_errors` (400) or
+`conflicts` (409, a new name that already exists and was not confirmed for
+overwrite) before any write, then writes the new files, then hires reused (and,
+if ticked, new) members through `project_routes.apply_roster_hires`, the
+drag-drop hire's own write, in one project save. A failure at any point unlinks
+created files and restores overwritten ones.
+
+**The lockdown.** Every character mutation route (create, team, voice,
+identity, PUT, name, avatar, move, delete) refuses an agent caller via
+`workflow_routes._is_agent_caller` (no browser Origin header), the MC-871
+precedent. `is_unattended_caller` was rejected for this: it lets an attended
+manual chat's own curl through, and that is an agent. Reads stay open. The
+builtin installer (section 11) calls `mc.characters` directly and is
+unaffected.

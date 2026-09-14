@@ -35,6 +35,7 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 import mc.skills as _skills
+from mc import characters as _chars_mod
 from mc import memory_fts as _mem_fts
 from mc import state
 from mc.core import now_iso, _log
@@ -252,6 +253,39 @@ def _claydo_project_context_block(project_id):
     return '\n'.join(lines)[:2500]
 
 
+def _claydo_existing_agents_block(project_id):
+    """The agent types that already exist, for ask mode.
+
+    Ask Claydo runs with no tools, so unlike a hired agent it cannot GET
+    /api/characters itself. A team proposal has to reuse what exists before
+    inventing more, so the same list the roster and the Floor read rides the
+    per-request prompt (never the cached CLAUDE.md). Best-effort: '' on any
+    failure, which only means Claydo proposes without reuse.
+    """
+    try:
+        project_path = None
+        if project_id:
+            p = load_project(project_id)
+            project_path = (p or {}).get('project_path') or None
+        items = _chars_mod.list_characters(project_path=project_path,
+                                           project_id=project_id)
+    except Exception as e:
+        _log(f'[claydo] existing-agents block skipped: {e}')
+        return ''
+    if not items:
+        return ''
+    lines = ['Existing agents on this install (reuse these in a team '
+             'proposal before proposing new ones):']
+    for c in items[:40]:
+        eng = c.get('engine') or {}
+        engine = ' / '.join(v for v in (eng.get('provider'), eng.get('model'),
+                                        eng.get('effort')) if v) or 'project default engine'
+        goes_by = f" (goes by {c['agent_name']})" if c.get('agent_name') else ''
+        desc = str(c.get('description') or '')[:120]
+        lines.append(f"- {c['scope']}:{c['name']}{goes_by} [{engine}]: {desc}")
+    return '\n'.join(lines)[:3000]
+
+
 @bp.route('/api/guide/stream', methods=['POST'])
 def guide_stream():
     """Streaming variant of /api/guide/ask. Spawns claude with stream-json output
@@ -274,7 +308,9 @@ def guide_stream():
         return jsonify({'error': 'question too long (max 2000 chars)'}), 400
 
     # Builder modes (Prompt Builder Phase 1): same engine, different brief
-    # + sandbox. 'ask' stays byte-identical to the original behavior.
+    # + sandbox. 'ask' keeps its brief and sandbox; its only addition is the
+    # existing-agents list (_claydo_existing_agents_block), so a team proposal
+    # reuses what the install already has.
     mode = (str(data.get('mode') or 'ask')).strip().lower()
     if mode not in _CLAYDO_MODES:
         return jsonify({'error': 'mode must be ask|prompt|character'}), 400
@@ -298,7 +334,8 @@ def guide_stream():
     if err is not None:
         return jsonify({'error': err[0]}), err[1]
 
-    ctx_block = _claydo_project_context_block(project_id) if mode != 'ask' else ''
+    ctx_block = (_claydo_project_context_block(project_id) if mode != 'ask'
+                 else _claydo_existing_agents_block(project_id))
 
     lines = []
     if ctx_block:
