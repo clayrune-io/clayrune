@@ -23,6 +23,7 @@ Cross-family deps (dispatch helpers + path/config roots) arrive via wire(),
 called once by server.py before the blueprints' own wire() stanzas resolve the
 memory values they pass on.
 """
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Optional
 import hashlib
@@ -820,19 +821,285 @@ def _position_reserve():
         return 2
 
 
+# ── holds_while — one machine predicate, one grammar (§4.5, Condition 7) ─────
+#
+# "<metric> <op> <number>", op in < <= > >=, joined by a SINGLE homogeneous
+# `and` or `or` (deliberately no nesting/precedence — mixing the two in one
+# expression is refused as unparseable rather than guessed at). `revisit_if`
+# (free prose) is the field for anything this can't express.
+
+_HOLDS_WHILE_SIMPLE_METRICS = {
+    'index_bytes', 'index_headroom_bytes', 'corpus_units', 'topic_notes',
+    'positions', 'broken_links', 'days_since_decided',
+}
+_HOLDS_WHILE_METRIC_REGISTRY = _HOLDS_WHILE_SIMPLE_METRICS | {'delivered'}
+
+_HOLDS_WHILE_OPS = {
+    '<': lambda a, b: a < b, '<=': lambda a, b: a <= b,
+    '>': lambda a, b: a > b, '>=': lambda a, b: a >= b,
+}
+
+_HOLDS_WHILE_CLAUSE_RE = re.compile(
+    r'^\s*([a-z_]+)(?:\(([^()]*)\))?\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*$')
+
+
+class HoldsWhileError(ValueError):
+    """A non-empty `holds_while` value that does not match the grammar."""
+
+
+def _parse_holds_while(expr):
+    """Parse into (join, [(metric, arg, op, number), ...]).
+
+    Returns `(None, [])` for an empty/absent expression — Condition 8: an
+    ABSENT predicate is never refused. Raises `HoldsWhileError` for a
+    NON-EMPTY one that fails to parse, naming the registry and `revisit_if`
+    as the alternative, so a caller can report (not silently drop) it.
+    """
+    raw = (expr or '').strip()
+    if not raw:
+        return None, []
+    lowered = raw.lower()
+    has_and = re.search(r'\band\b', lowered) is not None
+    has_or = re.search(r'\bor\b', lowered) is not None
+    if has_and and has_or:
+        raise HoldsWhileError(
+            f"holds_while {raw!r} mixes 'and' and 'or' — the grammar is flat, "
+            f"no nesting or precedence; split it or use `revisit_if` (free prose)")
+    join = 'or' if has_or else 'and'
+    parts = re.split(r'\band\b' if join == 'and' else r'\bor\b', raw, flags=re.I)
+    clauses = []
+    for part in parts:
+        m = _HOLDS_WHILE_CLAUSE_RE.match(part.strip())
+        if not m:
+            raise HoldsWhileError(
+                f"unparseable holds_while clause {part.strip()!r} in {raw!r} — "
+                f"registry: {sorted(_HOLDS_WHILE_METRIC_REGISTRY)}; consider "
+                f"`revisit_if` (free prose) instead")
+        metric, arg, op, num = m.groups()
+        if metric not in _HOLDS_WHILE_METRIC_REGISTRY:
+            raise HoldsWhileError(
+                f"unknown holds_while metric {metric!r} in {raw!r} — "
+                f"registry: {sorted(_HOLDS_WHILE_METRIC_REGISTRY)}; consider "
+                f"`revisit_if` (free prose) instead")
+        if metric == 'delivered' and not (arg or '').strip():
+            raise HoldsWhileError(f"delivered(...) needs a unit argument in {raw!r}")
+        clauses.append((metric, (arg or '').strip(), op, float(num)))
+    return join, clauses
+
+
+def _eval_holds_while(expr, metrics):
+    """True/False, or None when the predicate is empty, unparseable, or names
+    a metric `metrics` does not carry a value for (e.g. `delivered(<unit>)`
+    with no live sidecar — see `evaluate_positions_holds_while`). A caller
+    must treat None as "not evaluable", never as either True or False.
+    """
+    try:
+        join, clauses = _parse_holds_while(expr)
+    except HoldsWhileError as e:
+        _log(f'[holds_while] {e}')
+        return None
+    if join is None:
+        return None
+    results = []
+    for metric, arg, op, num in clauses:
+        key = f'{metric}({arg})' if arg else metric
+        if key not in metrics:
+            return None
+        results.append(_HOLDS_WHILE_OPS[op](metrics[key], num))
+    return all(results) if join == 'and' else any(results)
+
+
+def _count_broken_links(units):
+    """How many `[[wikilink]]` targets among topic units resolve to nothing in
+    THIS vault (§4.4 class D — the `broken_links` holds_while metric). Class A
+    (extension in target) is fixed by R2's canonicaliser and class C
+    (cross-vault) is out of scope for this in-vault graph, so neither is
+    double-counted here; only genuinely unresolved targets are.
+    """
+    by_key = set()
+    for u in units:
+        if u.get('cls') == 'topic':
+            by_key.add(_mem_link_key(u['file'].rsplit('.', 1)[0]))
+    n = 0
+    for u in units:
+        if u.get('cls') != 'topic':
+            continue
+        for tgt in u.get('links') or []:
+            if _mem_link_key(tgt) not in by_key:
+                n += 1
+    return n
+
+
+_holds_while_metrics_cache: dict = {}
+_holds_while_metrics_cache_lock = threading.Lock()
+
+
+def _holds_while_global_metrics(project):
+    """The corpus-wide holds_while metrics: everything in the registry except
+    the per-position `days_since_decided` and `delivered(<unit>)` (no live
+    production delivery sidecar exists yet — `evaluate_positions_holds_while`
+    reports that gap rather than fabricating a number). Cached on the corpus
+    signature (Condition 7): recomputed only when a file in the memory dir
+    changes, same discipline as `_mem_corpus`'s cache.
+    """
+    mem_path = _get_memory_path(project)
+    mem_dir = mem_path.parent
+    arch_path = _get_archive_path(project)
+    try:
+        sig = tuple(sorted(
+            (f.name, f.stat().st_mtime_ns, f.stat().st_size)
+            for f in mem_dir.glob('*.md')))
+    except OSError:
+        sig = ()
+    key = str(mem_dir)
+    with _holds_while_metrics_cache_lock:
+        hit = _holds_while_metrics_cache.get(key)
+        if hit and hit[0] == sig:
+            return hit[1]
+    units = _mem_corpus(mem_dir, mem_path.name, arch_path.name)
+    index_bytes = mem_path.stat().st_size if mem_path.exists() else 0
+    cap = int(state.CONFIG.get('index_byte_budget', 24576) or 24576)
+    metrics = {
+        'index_bytes': float(index_bytes),
+        'index_headroom_bytes': float(cap - index_bytes),
+        'corpus_units': float(len(units)),
+        'topic_notes': float(sum(1 for u in units if u.get('cls') == 'topic')),
+        'positions': float(sum(1 for u in units if u.get('cls') == 'position')),
+        'broken_links': float(_count_broken_links(units)),
+    }
+    with _holds_while_metrics_cache_lock:
+        _holds_while_metrics_cache[key] = (sig, metrics)
+    return metrics
+
+
+def evaluate_positions_holds_while(project):
+    """{position filename: {'trips': bool|None, 'expr': str}} for every live
+    position carrying a non-empty `holds_while`. `trips` True means the
+    reopening condition a human wrote is CURRENTLY satisfied — the case
+    §4.5 shows already happened once, silently, because nothing evaluated
+    free English against the live metric. REPORT only (§16 step 2): nothing
+    here refuses a write or a corpus build, it only makes the fact visible to
+    a caller such as the weekly positions-review job.
+    """
+    base = _holds_while_global_metrics(project)
+    out = {}
+    for rec in list_positions(project):
+        expr = (rec.get('holds_while') or '').strip()
+        if not expr:
+            continue
+        metrics = dict(base)
+        decided = (rec.get('decided') or '').strip()
+        if decided:
+            try:
+                d = datetime.strptime(decided[:10], '%Y-%m-%d')
+                metrics['days_since_decided'] = float(
+                    (datetime.now(timezone.utc).replace(tzinfo=None) - d).days)
+            except ValueError:
+                pass
+        out[rec['file']] = {'trips': _eval_holds_while(expr, metrics), 'expr': expr}
+    return out
+
+
+# ── Provenance stamps (§4.3) — prerequisites for mint (§6.5, build step 7) ──
+#
+# Nothing calls these yet: no code writes a NEW topic note today (§1.5
+# Condition 2 — that write path is mint, step 7, not this one). Built now so
+# mint has a tested, spec-correct stamp to call instead of inventing one
+# under deadline later.
+
+def _stamp_origin(task, trigger_type):
+    """Condition 4: `origin` is SERVER-STAMPED from session identity, never a
+    caller-supplied parameter — reuses the Distiller's existing allowlist
+    (`mc.distiller.is_unattended_session`) verbatim rather than defining a
+    second one. 'interactive' only when trigger_type is literally 'manual'
+    and the task text carries no unattended marker; missing/unknown/
+    backfilled trigger_type defaults to 'unattended' (fail safe).
+    """
+    return ('unattended' if _distiller.is_unattended_session(task, trigger_type)
+            else 'interactive')
+
+
+def _stamp_generated(actor):
+    """Condition 4's `generated: {by, at}` stamp. `actor` is caller-supplied
+    identity (a session id, 'legacy:import', a Scribe model name, ...) — it is
+    NOT a trust claim the way `verified[]` is, so it carries no gate.
+    """
+    return {'by': str(actor or ''), 'at': now_iso()}
+
+
+def _derive_verified(trigger_type, human_followup, actor=''):
+    """Condition 5: `verified[]` is DERIVED, never human-appendable — a field
+    only a human can fill, in a system whose founding premise is that the
+    human will not curate, stays empty forever and the guard rail depending
+    on it never fires. Human-witnessed means: written in a session with
+    trigger_type == 'manual' AND the human sent a SUBSEQUENT message in that
+    session. `human_followup` is that fact, looked up by the caller (session /
+    agent-log join) — this function has no access to live session state and
+    never fabricates the answer. `origin: legacy` (§4.3) is a SEPARATE,
+    stricter exception made explicitly ineligible for `verified[]` at the
+    call site, not here — this function only encodes the general rule.
+    """
+    if trigger_type != 'manual' or not human_followup:
+        return []
+    return [{'by': f'human:{actor}' if actor else 'human', 'at': now_iso()}]
+
+
 def _is_position_file(name):
     return str(name or '').startswith(POSITION_PREFIX) and str(name).endswith('.md')
 
 
+_DURABILITY_VALUES = {'principle', 'measured', 'provisional'}
+
+
+def _validate_position_record(rec):
+    """Report-only checks over a position record (§4.2 schema superset).
+    Returns a list of warning strings; never raises, never mutates `rec`.
+
+    G4's disposition is fail-open (repair what is repairable, log, never
+    raise) and Condition 48 defaults `memory_gate_mode` to 'report' in every
+    project — MEMORY_DESIGN_V2_SPEC.md §16 step 2 VALIDATES a position's
+    frontmatter at write and at build; it does not yet GATE on the result.
+    Flipping to a rejecting gate is a later, separately-decided step.
+    """
+    warnings = []
+    durability = str(rec.get('durability') or '').strip()
+    holds_while = str(rec.get('holds_while') or '').strip()
+    if durability and durability not in _DURABILITY_VALUES:
+        warnings.append(
+            f'durability {durability!r} is not one of {sorted(_DURABILITY_VALUES)}')
+    if durability == 'principle' and holds_while:
+        warnings.append(
+            'holds_while is forbidden when durability: principle (§4.2) — '
+            'a principle is reopened by a human, never by a metric')
+    if holds_while:
+        try:
+            _parse_holds_while(holds_while)
+        except HoldsWhileError as e:
+            warnings.append(str(e))
+    return warnings
+
+
 def _parse_position(text):
-    """Frontmatter of a position note -> dict, or {} when it isn't one."""
+    """Frontmatter of a position note -> dict, or {} when it isn't one.
+
+    §4.2 schema superset (MEMORY_DESIGN_V2_SPEC.md §16 step 2): every new
+    field is optional and absent on the 46 pre-V2 files, which stay valid
+    records unchanged (Condition 7). `revisit_if` is the canonical name for
+    the old `expires_when`; the old key is kept as a PERMANENT read alias —
+    a file written under either key reads the same normalized value, and no
+    existing file needs migrating. `evidence` is a newline list, stored as one
+    block-scalar frontmatter value and split back into a list here. `pin` is
+    the only boolean field, written/read as the literal string 'true'.
+    """
     try:
         meta, body = _skills.parse_skill_md(text)
     except Exception:
         return {}
     if not isinstance(meta, dict) or not meta.get('subject'):
         return {}
-    return {
+    revisit_if = str(meta.get('revisit_if') or meta.get('expires_when') or '')
+    evidence_raw = str(meta.get('evidence') or '')
+    rec = {
         'subject': str(meta.get('subject') or ''),
         'triggers': str(meta.get('triggers') or ''),
         'verdict': str(meta.get('position') or meta.get('verdict') or ''),
@@ -840,7 +1107,21 @@ def _parse_position(text):
         'expires_when': str(meta.get('expires_when') or ''),
         'decided': str(meta.get('decided') or ''),
         'body': body,
+        # §4.2 NEW fields — see _parse_position's docstring.
+        'name': str(meta.get('name') or ''),
+        'claim': str(meta.get('claim') or ''),
+        'evidence': [ln.strip() for ln in evidence_raw.split('\n') if ln.strip()],
+        'durability': str(meta.get('durability') or ''),
+        'holds_while': str(meta.get('holds_while') or ''),
+        'revisit_if': revisit_if,
+        'supersedes': str(meta.get('supersedes') or ''),
+        'pin': str(meta.get('pin') or '').strip().lower() == 'true',
     }
+    warnings = _validate_position_record(rec)
+    if warnings:
+        _log(f"[position] {rec['name'] or rec['subject'][:48]}: "
+             + '; '.join(warnings))
+    return rec
 
 
 # ── Continuity: what is in flight, and what we owe each other ───────────────
@@ -1358,7 +1639,9 @@ def _extract_continuity(project, delta, model, owner=None):
 
 
 def write_position(project, subject, verdict, reason,
-                   expires_when='', decided='', body='', slug='', triggers=''):
+                   expires_when='', decided='', body='', slug='', triggers='',
+                   claim='', evidence=None, durability='', holds_while='',
+                   revisit_if='', supersedes='', pin=False):
     """Record a decision — usually a decision NOT to do something.
 
     Returns the note's filename. Supersedes in place: recording a position on a
@@ -1371,6 +1654,20 @@ def write_position(project, subject, verdict, reason,
     `reason` is required on purpose. A bare verdict is dogma an agent can only
     obey; a reason is checkable, which is what lets a position be re-opened
     honestly rather than either ignored or followed blindly.
+
+    §4.2 schema superset (MEMORY_DESIGN_V2_SPEC.md §16 step 2), all optional:
+    `claim` (the sentence a re-proposer would write, for §5.4's matcher —
+    distinct from `subject`, which is what supersession keys on); `evidence`
+    (a list or a pre-joined newline string); `durability`
+    (principle|measured|provisional); `holds_while` (§4.5's machine
+    predicate — validated, report-only, via `_validate_position_record`);
+    `revisit_if`, the canonical name for `expires_when` (Condition 7: passing
+    `revisit_if` writes the new key, passing `expires_when` keeps writing the
+    old one — existing callers are unaffected and no existing file needs
+    migrating); `supersedes` (this position may itself supersede a TOPIC
+    note, distinct from the in-place same-subject supersession below); `pin`
+    (ledger override, capped at 5 — the cap is enforced by the ledger reader
+    in a later build step, not here).
 
     Leaf-locked (MEMORY_DESIGN_V2_SPEC.md §16 step 1 / §10.3 G4): the
     read-prior / compose / write sequence below is a read-modify-write over
@@ -1391,6 +1688,19 @@ def write_position(project, subject, verdict, reason,
         raise ValueError(
             'reason is required — a verdict without one cannot be re-evaluated')
     verdict = (verdict or 'declined').strip().lower()
+    claim = (claim or '').strip()
+    durability = (durability or '').strip()
+    holds_while = (holds_while or '').strip()
+    revisit_if = (revisit_if or '').strip()
+    supersedes = (supersedes or '').strip()
+    if isinstance(evidence, (list, tuple)):
+        evidence_str = '\n'.join(str(e).strip() for e in evidence if str(e).strip())
+    else:
+        evidence_str = (evidence or '').strip()
+
+    for w in _validate_position_record(
+            {'durability': durability, 'holds_while': holds_while}):
+        _log(f'[position] {slug or subject}: {w}')
 
     mem_dir = _get_memory_path(project).parent
     mem_dir.mkdir(parents=True, exist_ok=True)
@@ -1417,8 +1727,22 @@ def write_position(project, subject, verdict, reason,
                  'reason': reason}
         if triggers:
             front['triggers'] = triggers.strip()
-        if expires_when:
+        if revisit_if:
+            front['revisit_if'] = revisit_if
+        elif expires_when:
             front['expires_when'] = expires_when.strip()
+        if claim:
+            front['claim'] = claim
+        if evidence_str:
+            front['evidence'] = evidence_str
+        if durability:
+            front['durability'] = durability
+        if holds_while:
+            front['holds_while'] = holds_while
+        if supersedes:
+            front['supersedes'] = supersedes
+        if pin:
+            front['pin'] = 'true'
         front['decided'] = (decided or '').strip() or now_iso()[:10]
         text = _skills.dump_skill_md(front, (body or '').strip() + prior + '\n')
         _atomic_write_text(path, text)
