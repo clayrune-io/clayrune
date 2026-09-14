@@ -103,6 +103,19 @@ function _engShortLabel(engine) {
   return engine.provider || '';
 }
 
+// With a project default set, an empty pick is NOT "no persona" — it inherits.
+// Labelling it "None" would state the opposite of what dispatch will do. Shared
+// between the <select> picker below and the WHO face-card grid so the two
+// surfaces can never show different text for the same state.
+function _composerNoneLabel(p, list) {
+  const defRec = p.default_character
+    ? list.find(c => ((c.scope || 'global') + ':' + c.name) === p.default_character)
+    : null;
+  return p.default_character
+    ? 'Project default' + (defRec ? ' (' + esc(defRec.display_name || defRec.name) + ')' : '')
+    : 'None';
+}
+
 // Character/persona dropdown for the +New composer. Returns '' (no picker)
 // only on resume (persona is fixed at spawn). Always offered otherwise so the
 // "Create new persona…" entry is reachable even with no characters yet.
@@ -123,14 +136,7 @@ function _composerCharacterPicker(p, resumeId) {
       + (eng ? ' · ' + esc(_engShortLabel(c.engine)) : '');
     return `<option value="${val}" ${val === cur ? 'selected' : ''}>${label}</option>`;
   }).join('');
-  // With a project default set, an empty pick is NOT "no persona" — it inherits.
-  // Labelling it "None" would state the opposite of what dispatch will do.
-  const _defRec = p.default_character
-    ? list.find(c => ((c.scope || 'global') + ':' + c.name) === p.default_character)
-    : null;
-  const noneLabel = p.default_character
-    ? 'Project default' + (_defRec ? ' (' + esc(_defRec.display_name || _defRec.name) + ')' : '')
-    : 'None';
+  const noneLabel = _composerNoneLabel(p, list);
   // Pencil → edit the SELECTED persona (description / instructions / delete).
   // Only shown when one is selected: there's nothing to edit otherwise, and it
   // keeps the row quiet in the common "None" case.
@@ -145,6 +151,60 @@ function _composerCharacterPicker(p, resumeId) {
       <option value="__create__">&#43; Create new persona&hellip;</option>
     </select>
     ${editBtn}
+  </div>`;
+}
+
+// Who the composer would actually dispatch to right now — the selected
+// persona, else the project default it would inherit, else the plain-agent
+// fallback. Drives the "What should <Name> work on?" headline and the
+// placeholder text; NOT a new state, just a read of the same
+// pendingDispatchCharacter / p.default_character the picker/sheet use.
+function _composerActiveCharName(p) {
+  if (!p) return 'Claude';
+  const list = characterCache[p.id] || [];
+  const cur = pendingDispatchCharacter[p.id] || '';
+  const key = cur || p.default_character || '';
+  if (!key) return 'Claude';
+  const i = key.indexOf(':');
+  const scope = key.slice(0, i), name = key.slice(i + 1);
+  const rec = list.find(c => (c.scope || 'global') === scope && c.name === name);
+  return (rec && (rec.agent_name || rec.display_name || rec.name)) || 'Claude';
+}
+
+// Ron, 2026-09-14 (phone screenshot): the persona picker was a tiny "…Change"
+// line nobody found. This is the fix — face cards leading the +New empty
+// state, "who" before "what". Every card's onclick calls the SAME
+// setComposerCharacter() the <select> above and the §8 sheet use, so this is
+// a second VIEW of pendingDispatchCharacter, never a second source of truth.
+// Gated like _composerCharacterPicker (resume freezes persona) PLUS the
+// thread-shell case, where _channelThreadHeaderHTML above already names the
+// person — showing the grid again would just invite switching away from them.
+function _composerPersonPickerHTML(p, resumeId, threadShellKey) {
+  if (!p || resumeId || threadShellKey) return '';
+  _ensureCharacters(p.id);
+  const list = characterCache[p.id] || [];
+  const cur = pendingDispatchCharacter[p.id] || '';
+  const card = (val, face, name, role, eng, selected, extraClass) => {
+    const titleAttr = esc(name) + (role && role !== name ? ' — ' + esc(role) : '');
+    return `<button type="button" class="ces-person-card${selected ? ' selected' : ''}${extraClass ? ' ' + extraClass : ''}"
+      onclick="setComposerCharacter('${esc(p.id)}','${esc(val)}')" title="${titleAttr}">
+      <span class="ces-person-face">${face}</span>
+      <span class="ces-person-name">${esc(name)}</span>
+      ${role && role !== name ? `<span class="ces-person-role">${esc(role)}</span>` : ''}
+      ${eng ? `<span class="ces-person-eng">${esc(eng)}</span>` : ''}
+    </button>`;
+  };
+  const noneCard = card('', window.avatarHTML('', 36), _composerNoneLabel(p, list), '', '', !cur, 'ces-person-none');
+  const cards = list.map(c => {
+    const val = (c.scope || 'global') + ':' + c.name;
+    const eng = c.engine ? _engShortLabel(c.engine) : '';
+    return card(val, window.avatarHTML(c.avatar || '', 36),
+      c.agent_name || c.display_name || c.name, c.display_name || c.name, eng, val === cur, '');
+  }).join('');
+  const addCard = card('__create__', '<span class="ces-person-add-icon">&#43;</span>', 'New persona', '', '', false, 'ces-person-add');
+  return `<div class="ces-people">
+    <div class="ces-people-heading">Who do you want to work with?</div>
+    <div class="ces-people-row">${noneCard}${cards}${addCard}</div>
   </div>`;
 }
 
@@ -975,7 +1035,11 @@ function agentPanelHTML(p) {
   const incOn = getIncognitoFor(p.id);
   const incForced = isIncognitoProject(p);
   const incognitoChip = noActiveTab ? _incognitoChipHTML(p) : '';  // shared with the §8 sheet
-  const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : 'Describe a task for the agent...';
+  // Front-and-center persona picker (Ron, 2026-09-14): who the headline names
+  // and the placeholder addresses is the SAME read used by the face-card grid
+  // below, the status line, and the §8 sheet — one source of truth.
+  const _personName = noActiveTab ? _composerActiveCharName(p) : 'Claude';
+  const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
   const _attachInput = _pcaps.image_input ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
       onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
@@ -995,9 +1059,15 @@ function agentPanelHTML(p) {
   const showEmptyState = noActiveTab && !resumeId;
   // Thread-shell landing: the header above already names the agent, so the
   // empty state reads as "nothing said yet" rather than the cold-start pitch.
+  // WHO leads WHAT (Ron, 2026-09-14): the face-card grid renders first (empty
+  // when resuming/thread-shell, same gate _composerCharacterPicker uses plus
+  // the thread-shell case where the header above already names the person),
+  // then the headline follows the same selection.
+  const _personPickerHTML = _composerPersonPickerHTML(p, resumeId, _threadShellKey);
   const emptyStateHTML = showEmptyState ? `<div class="composer-empty-state">
-    ${_threadShellKey ? '' : '<div class="ces-icon">&#128172;</div>'}
-    <div class="ces-heading">${_threadShellKey ? 'No conversations yet' : 'What should Claude work on?'}</div>
+    ${_personPickerHTML}
+    ${_threadShellKey || _personPickerHTML ? '' : '<div class="ces-icon">&#128172;</div>'}
+    <div class="ces-heading">${_threadShellKey ? 'No conversations yet' : `What should ${esc(_personName)} work on?`}</div>
     <div class="ces-sub">${_threadShellKey ? 'Say something to start the thread.' : 'Describe a task in plain language.<br>The agent plans, edits files, and reports back.'}</div>
     <div class="ces-chips">${STARTER_CHIPS.map(c =>
       `<button type="button" class="ces-chip" data-chip-text="${esc(c.label)}" onclick="fillStarterChip('${esc(p.id)}', this.dataset.chipText)">
