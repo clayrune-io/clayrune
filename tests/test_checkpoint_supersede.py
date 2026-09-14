@@ -52,8 +52,8 @@ def _arch_lines(tmp_path):
 
 
 def _managed(mem, tmp_path):
-    txt = (tmp_path / 'MEMORY.md').read_text(encoding='utf-8')
-    return _split_entries(mem, txt)
+    """§16 step 4: managed entries live in SESSION_LOG.md now."""
+    return mem._session_log_read(_proj())[0]
 
 
 def _split_entries(mem, txt):
@@ -83,7 +83,7 @@ def test_a_live_entry_is_not_evicted_under_floor_pressure(env, monkeypatch):
     """The exact failure: budget pressure archives the line the next checkpoint
     was going to replace, and supersession is silently lost from then on."""
     mem, tmp = env
-    monkeypatch.setitem(mem.state.CONFIG, 'index_line_hard_floor', 3)
+    monkeypatch.setitem(mem.state.CONFIG, 'session_log_ring', 3)
     p = _proj()
 
     # Unrelated history, enough to sit at the floor.
@@ -111,7 +111,7 @@ def test_unrelated_history_still_overflows(env, monkeypatch):
     """The guard must protect the live line WITHOUT stopping the floor from
     doing its job on everything else."""
     mem, tmp = env
-    monkeypatch.setitem(mem.state.CONFIG, 'index_line_hard_floor', 3)
+    monkeypatch.setitem(mem.state.CONFIG, 'session_log_ring', 3)
     p = _proj()
     for i in range(10):
         mem._commit_managed_entry(p, mem_entry=f'- [2026-08-01] **old {i}** — x')
@@ -125,7 +125,7 @@ def test_the_entry_archives_normally_once_the_session_ends(env, monkeypatch):
     """Protection is tied to a LIVE watermark. Teardown removes it, and the
     final entry becomes ordinary evictable history — nothing is pinned."""
     mem, tmp = env
-    monkeypatch.setitem(mem.state.CONFIG, 'index_line_hard_floor', 3)
+    monkeypatch.setitem(mem.state.CONFIG, 'session_log_ring', 3)
     p = _proj()
     mem._commit_managed_entry(
         p, mem_entry='- [2026-08-23] **done task** _(live)_ — final',
@@ -139,7 +139,7 @@ def test_the_entry_archives_normally_once_the_session_ends(env, monkeypatch):
 
 def test_two_concurrent_sessions_each_keep_one_entry(env, monkeypatch):
     mem, tmp = env
-    monkeypatch.setitem(mem.state.CONFIG, 'index_line_hard_floor', 3)
+    monkeypatch.setitem(mem.state.CONFIG, 'session_log_ring', 3)
     p = _proj()
     for n in range(5):
         for sid, label in (('sA', 'task A'), ('sB', 'task B')):

@@ -108,6 +108,16 @@ def _cold_probe_enabled() -> bool:
         return True
 
 
+def _cold_probe_k() -> int:
+    """§9.4's cold-hit count. Default 1 matches the value this call site used
+    as a bare literal before MEMORY_DESIGN_V2_SPEC.md §16 step 1 registered
+    the key — reading it live is a no-op until someone changes it."""
+    try:
+        return max(1, int(_cfg('memory_cold_probe_k', 1) or 1))
+    except (TypeError, ValueError):
+        return 1
+
+
 def _is_position_hit(h: dict) -> bool:
     try:
         return _mem._is_position_file(_os.path.basename(str(h.get('file', ''))))
@@ -293,7 +303,7 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
     if not note_hits and not pos_hits and _cold_probe_enabled():
         try:
             from mc import memory_fts as _fts
-            cold = _fts.cold_search(project, message, limit=1)
+            cold = _fts.cold_search(project, message, limit=_cold_probe_k())
         except Exception as e:
             _log(f"[mem-turn] cold probe skipped for {pid}: {e}")
             cold = []

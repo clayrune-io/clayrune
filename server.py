@@ -372,6 +372,58 @@ def _load_config():
         # make the 🌐 Browser button reuse one persistent, signed-in profile.
         # Per-launch opt-out: POST /api/browser/launch {"ephemeral": true}.
         'browser_default_profile': '',
+
+        # ── MEMORY_DESIGN_V2_SPEC.md §16 step 1 (MC-944) ─────────────────────
+        # Condition 9: these four were already read from CONFIG.get(...) with a
+        # fallback (mc/memory.py) but never appeared in this dict OR in
+        # _CONFIG_EDITABLE_KEYS — silently unconfigurable, PUT returned
+        # 200 {"updated": []}. Fixed in the same pass as the new keys below;
+        # every default here matches the fallback already live in the code, so
+        # landing this is a no-op until someone deliberately flips one.
+        'positions_enabled': True,               # agent_routes.py:2801
+        'read_floor_position_reserve': 2,         # memory.py _position_reserve
+        'position_trigger_max_df': 0.10,          # memory.py _position_trigger_max_df
+        'continuity_enabled': True,               # memory.py :2571 (Scribe continuity)
+
+        # §4.6's thirteen new keys. Three of the thirteen (negation_interrupt_
+        # mode, negation_interrupt_max_hits — step 8, a49d269; and the concept
+        # behind memory_cold_probe_enabled — step 5's memory_turn_cold_probe_
+        # enabled, ba1e955) already shipped out of build-sequence order under
+        # names chosen before this pass; they are NOT duplicated here under the
+        # spec's table names; see docs/_journal/9adaef68-memory-v2.md. The
+        # other ten are new and, except where a docstring below says
+        # otherwise, are registered but not yet READ by any code path —
+        # later build-sequence steps wire them.
+        #
+        # §9.1 — the terminal post-split index cap (Condition 37: 8,192 B is a
+        # TERMINAL state gated on D4 minting completing, not a day-one value).
+        # Inert until the split (step 4) and the demoter (step 10) exist;
+        # `index_byte_budget` above remains the live cap until then.
+        'memory_index_byte_cap': 24576,
+        # §9.2 B2 — SESSION_LOG.md's entry-count ring, built in step 4.
+        'session_log_ring': 20,
+        # §5.3 — the negation ledger's resident line count and pin cap.
+        'negation_ledger_max': 20,
+        'negation_pin_max': 5,
+        # §9.4 — reserved read-floor slots for negation-bearing units, mirrors
+        # read_floor_position_reserve's reserve-not-score-boost admission path.
+        'read_floor_negation_reserve': 4,
+        # §10.5 — the G1-G4 write-path gates' enforcement switch. report-only
+        # for the whole of the minimum viable cut (Condition 15/48: no gate
+        # refuses anything before its false-rejection rate has been measured).
+        'memory_gate_mode': 'report',
+        # §9.4 — cold-FTS hit count the per-turn miss-triggered probe appends.
+        # Registered so `mc/memory_turn.py`'s `cold_search(..., limit=1)` can
+        # read a configured value instead of a bare literal; default matches
+        # today's hardcoded 1, so wiring it in is a no-op until flipped.
+        'memory_cold_probe_k': 1,
+        # §9.5 — the on-demand fetch budget's per-turn call cap.
+        'memory_fetch_calls_per_turn': 3,
+        # §6.5 — the deterministic mint-on-close trigger's kill switch.
+        'memory_mint_on_close': True,
+        # §7.3 — multi-term trigger phrases stay exempt from the single-term
+        # df gate; auto-emitted bigrams feed D0's default triggers (step 3).
+        'trigger_phrase_bigrams': True,
     }
     if CONFIG_PATH.exists():
         try:
@@ -714,6 +766,8 @@ _parse_transcript_messages = memory._parse_transcript_messages
 _native_memory_path = memory._native_memory_path
 _get_memory_path = memory._get_memory_path
 _get_archive_path = memory._get_archive_path
+_get_session_log_path = memory._get_session_log_path
+_session_log_read = memory._session_log_read
 _mem_split_full = memory._mem_split_full
 _mem_split = memory._mem_split
 _mem_compose = memory._mem_compose
@@ -723,6 +777,7 @@ _wm_parse = memory._wm_parse
 _wm_find = memory._wm_find
 _wm_upsert = memory._wm_upsert
 _wm_remove = memory._wm_remove
+_wm_merge = memory._wm_merge
 _memory_search = memory._memory_search
 _condense_combined_bytes = memory._condense_combined_bytes
 _set_condense_status = memory._set_condense_status
@@ -1190,9 +1245,15 @@ def _reconcile_unscribed_sessions():
             # mid-flight while checkpointing → finalize from its running
             # summary (no Haiku) instead of a full re-scribe.
             try:
+                # §16 step 4: markers live in SESSION_LOG.md now; still
+                # merges in a legacy MEMORY.md's inline markers so an
+                # unmigrated project's reconciliation keeps working
+                # (§10.4 both-formats-coexist).
+                _log_wm = _session_log_read(p)[1]
                 _mp = _get_memory_path(p)
-                _wm = (_mem_split_full(_mp.read_text(encoding='utf-8'))[2]
-                       if _mp.exists() else [])
+                _legacy_wm = (_mem_split_full(_mp.read_text(encoding='utf-8'))[2]
+                             if _mp.exists() else [])
+                _wm = _wm_merge(_log_wm, _legacy_wm)
             except Exception:
                 _wm = []
             wrote = False
