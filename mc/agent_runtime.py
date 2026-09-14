@@ -3507,6 +3507,32 @@ def accumulate_result_cost(session, msg, proc_cost):
     session['cost_usd'] = (session.get('cost_usd') or 0.0) + delta
 
 
+def accumulate_result_turns(session, msg, proc_turns):
+    """Add one turn's `num_turns`, from a `result`-style dict, to the session.
+
+    Unlike `total_cost_usd`, Claude Code's `num_turns` is PER TURN: the model
+    round-trips inside that one user message (1, plus one per tool-use step).
+    It does not accumulate across the process. Measured 2026-09-14 on CLI
+    2.1.268 (haiku), one Mode-B process, three turns: 1 (plain reply), 3 (two
+    Bash calls), 1 (plain reply). The same session resumed in a new process:
+    1, then 2 (one Bash call). The readers overwrote the session value with
+    each turn's, so a long session showed 1 turn.
+
+    So the session total is a plain sum; no delta tracking is needed. The
+    caller still keeps `proc_turns` per process, because the failed-resume
+    guard must ask whether THIS process produced a turn: a revived session
+    carries its old total from the agent log, so the session value alone
+    can't tell a dead-on-arrival resume from a working one.
+    """
+    if not isinstance(msg, dict):
+        return
+    n = msg.get('num_turns')
+    if isinstance(n, bool) or not isinstance(n, int) or n < 0:
+        return
+    session['num_turns'] = int(session.get('num_turns') or 0) + n
+    proc_turns['num_turns'] = proc_turns.get('num_turns', 0) + n
+
+
 # ── Tool-line formatting — shared by Claude's native reader (agent_routes.py
 # `_read_agent_stream`) and every Mode-A provider (`_mode_a_reader`, below) ──
 #
@@ -3607,6 +3633,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
     turn_text_parts: List[str] = []
     _mc_suppressing = False
     proc_cost: Dict[str, float] = {}  # this proc's running total_cost_usd
+    proc_turns: Dict[str, int] = {}   # turns this proc produced
 
     def _cb(name: str, ev: AgentEvent) -> None:
         fn = cbs.get(name)
@@ -3672,6 +3699,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
                 accumulate_result_cost(session, ev.payload, proc_cost)
+                accumulate_result_turns(session, ev.payload, proc_turns)
                 _cb('on_turn_end', ev)
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
