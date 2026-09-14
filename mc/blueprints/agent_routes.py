@@ -3931,13 +3931,22 @@ def get_session_trigger_type():
     Falls back to every project's persisted log for sessions that already
     exited. No auth (matches this project's existing localhost-trust posture,
     e.g. /api/config — see MC-914).
+
+    `fence_unattended_enabled` rides along on every response (2026-09-14,
+    UNATTENDED_AGENT_PERMISSIONS_AUDIT): `steward/fence.py`'s generalized
+    unattended-arming check needs both this session's trigger_type AND that
+    config flag, and it runs as a stateless subprocess on every single
+    PreToolUse hook call — piggybacking here halves its per-tool-call HTTP
+    overhead instead of adding a second `/api/config` round trip.
     """
     csid = (request.args.get('claude_session_id') or '').strip()
     if not csid:
         return jsonify({'found': False, 'error': 'claude_session_id required'}), 400
+    fue = bool(state.CONFIG.get('fence_unattended_enabled', True))
     for s in agent_sessions.values():
         if s.get('claude_session_id') == csid:
-            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual'})
+            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
+                            'fence_unattended_enabled': fue})
     for log_file in DATA_DIR.glob('*_agent_log.json'):
         try:
             entries = json.loads(log_file.read_text(encoding='utf-8'))
@@ -3945,8 +3954,9 @@ def get_session_trigger_type():
             continue
         for e in entries:
             if e.get('claude_session_id') == csid:
-                return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual'})
-    return jsonify({'found': False})
+                return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual',
+                                'fence_unattended_enabled': fue})
+    return jsonify({'found': False, 'fence_unattended_enabled': fue})
 
 
 def _save_agent_log(project_id, log):
@@ -4803,8 +4813,10 @@ def _log_agent_completion(session):
         'hivemind_ws_id': session.get('hivemind_ws_id', ''),
         'hivemind_role': session.get('hivemind_role', ''),
         # Trigger correlation: lets us list runs by what spawned them.
-        # trigger_type: 'manual' | 'schedule' | 'hivemind_orchestrator' | 'hivemind_worker'
-        # trigger_id: schedule_id, hivemind_id, or workstream_id depending on type
+        # trigger_type: 'manual' | 'schedule' | 'workflow' | 'dispatch' |
+        #               'hivemind_orchestrator' | 'hivemind_worker'
+        # trigger_id: schedule_id, workflow run:step, hivemind_id, or
+        # workstream_id depending on type
         'trigger_type': session.get('trigger_type', 'manual'),
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
@@ -6323,12 +6335,19 @@ def agent_dispatch(project_id):
     source = (data.get('source') or '').strip().lower()
     if not source and not request.headers.get('Origin') and not data.get('client'):
         source = 'agent'
+    # trigger_type stays 'manual' even for an agent-sourced call — HELD BACK
+    # pending Ron's decision (UNATTENDED_AGENT_PERMISSIONS_AUDIT §5). Stamping
+    # 'dispatch' here would arm the fence for these children, but
+    # is_unattended_caller() is global: while ANY such child is running it
+    # would also refuse the human's own PUT /api/config and vault writes.
+    trigger_type = 'manual'
     try:
         session_id = _dispatch_agent_internal(project_id, claude_task, resume_id,
                                               incognito=incognito,
                                               provider_override=provider_override,
                                               display_task=task, character=character,
                                               source=source,
+                                              trigger_type=trigger_type,
                                               model_override=model_override,
                                               # A fresh, explicit ask this turn
                                               # (character is '' on a resume,

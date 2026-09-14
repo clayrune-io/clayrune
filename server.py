@@ -241,6 +241,21 @@ def _load_config():
         # merged back when the session ends. A project with one live agent is
         # completely unaffected. Default OFF.
         'worktree_isolation_enabled': False,
+        # Generalized steward-fence arming (2026-09-14,
+        # UNATTENDED_AGENT_PERMISSIONS_AUDIT). The steward reversibility fence
+        # (steward/fence.py) originally enforced ONLY for sessions carrying the
+        # literal `[Steward cycle]` transcript marker — every other unattended
+        # launch path (schedule, workflow step, agent-to-agent dispatch,
+        # hivemind worker) ran with --dangerously-skip-permissions and NO
+        # backstop, in any project where a human had already turned steward ON
+        # for that project (the fence hook is only ever installed there).
+        # Default ON: a scheduled/workflow/dispatched/hivemind session now
+        # gets the same catastrophic-command backstop the steward already has.
+        # Off-switch for a legitimate unattended job the fence turns out to
+        # block: flip this to False from Settings. It is one of
+        # _CONFIG_EDITABLE_KEYS, so PUT /api/config already refuses an
+        # unattended caller for it (F5) — only a human can turn it back off.
+        'fence_unattended_enabled': True,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,

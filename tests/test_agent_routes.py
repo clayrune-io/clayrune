@@ -438,7 +438,10 @@ def test_trigger_type_requires_a_session_id(client):
 def test_trigger_type_not_found_when_unknown(client):
     resp = client.get('/api/session/trigger-type?claude_session_id=nope-nobody')
     assert resp.status_code == 200
-    assert resp.get_json() == {'found': False}
+    # fence_unattended_enabled rides along on every response (2026-09-14,
+    # UNATTENDED_AGENT_PERMISSIONS_AUDIT) — steward/fence.py's generalized
+    # arming check piggybacks it here to save a second /api/config round trip.
+    assert resp.get_json() == {'found': False, 'fence_unattended_enabled': True}
 
 
 def test_trigger_type_found_in_live_session(client):
@@ -451,7 +454,8 @@ def test_trigger_type_found_in_live_session(client):
     }
     try:
         resp = client.get('/api/session/trigger-type?claude_session_id=live-csid-123')
-        assert resp.get_json() == {'found': True, 'trigger_type': 'schedule'}
+        assert resp.get_json() == {'found': True, 'trigger_type': 'schedule',
+                                   'fence_unattended_enabled': True}
     finally:
         mc_state.agent_sessions.pop('s1', None)
 
@@ -465,7 +469,8 @@ def test_trigger_type_falls_back_to_persisted_agent_log(client):
          'trigger_type': 'hivemind_worker'},
     ]), encoding='utf-8')
     resp = client.get('/api/session/trigger-type?claude_session_id=done-csid-999')
-    assert resp.get_json() == {'found': True, 'trigger_type': 'hivemind_worker'}
+    assert resp.get_json() == {'found': True, 'trigger_type': 'hivemind_worker',
+                               'fence_unattended_enabled': True}
 
 
 def test_trigger_type_missing_field_defaults_to_manual(client):
@@ -478,6 +483,68 @@ def test_trigger_type_missing_field_defaults_to_manual(client):
     }
     try:
         resp = client.get('/api/session/trigger-type?claude_session_id=no-tt-csid')
-        assert resp.get_json() == {'found': True, 'trigger_type': 'manual'}
+        assert resp.get_json() == {'found': True, 'trigger_type': 'manual',
+                                   'fence_unattended_enabled': True}
     finally:
         mc_state.agent_sessions.pop('s2', None)
+
+
+def test_trigger_type_reports_fence_unattended_enabled_false_when_configured(client):
+    """A human turning the fence-arming off-switch off (Settings) must be
+    visible through this endpoint — it's what steward/fence.py reads live."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['s3'] = {
+        'project_id': 'proj-a', 'claude_session_id': 'flag-off-csid',
+        'trigger_type': 'schedule',
+    }
+    before = mc_state.CONFIG.get('fence_unattended_enabled')
+    mc_state.CONFIG['fence_unattended_enabled'] = False
+    try:
+        resp = client.get('/api/session/trigger-type?claude_session_id=flag-off-csid')
+        assert resp.get_json() == {'found': True, 'trigger_type': 'schedule',
+                                   'fence_unattended_enabled': False}
+    finally:
+        mc_state.agent_sessions.pop('s3', None)
+        mc_state.CONFIG['fence_unattended_enabled'] = before
+
+
+# ── POST /api/project/<id>/agent/dispatch trigger_type ───────────────────────
+# Agent-sourced dispatches stay 'manual' for now (UNATTENDED_AGENT_PERMISSIONS_AUDIT
+# §5): stamping 'dispatch' would make is_unattended_caller() refuse the human's
+# own Settings/vault writes while any dispatched child runs. Flip this pin only
+# together with a fix for that gate.
+
+def test_dispatch_route_agent_source_stays_manual_pending_decision(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    captured = {}
+    monkeypatch.setattr(ar, '_dispatch_agent_internal',
+                        lambda *a, **kw: captured.update(kw) or 'sid-x')
+    # No Origin header, no 'client' field → the existing source='agent'
+    # heuristic (a raw agent/curl dispatch, not the browser UI).
+    resp = client.post('/api/project/p1/agent/dispatch', json={'task': 'do a thing'})
+    assert resp.status_code == 200
+    assert captured.get('source') == 'agent'
+    assert captured.get('trigger_type') == 'manual'
+
+
+def test_dispatch_route_keeps_manual_trigger_type_for_ui_source(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    captured = {}
+    monkeypatch.setattr(ar, '_dispatch_agent_internal',
+                        lambda *a, **kw: captured.update(kw) or 'sid-x')
+    resp = client.post('/api/project/p1/agent/dispatch', json={'task': 'do a thing'},
+                       headers={'Origin': 'http://localhost:5199'})
+    assert resp.status_code == 200
+    assert captured.get('source') != 'agent'
+    assert captured.get('trigger_type') == 'manual'
+
+
+def test_dispatch_route_keeps_manual_trigger_type_for_explicit_ui_client(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    captured = {}
+    monkeypatch.setattr(ar, '_dispatch_agent_internal',
+                        lambda *a, **kw: captured.update(kw) or 'sid-x')
+    resp = client.post('/api/project/p1/agent/dispatch',
+                       json={'task': 'do a thing', 'source': 'ui'})
+    assert resp.status_code == 200
+    assert captured.get('trigger_type') == 'manual'
