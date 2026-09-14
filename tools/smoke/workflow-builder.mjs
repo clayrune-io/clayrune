@@ -2529,6 +2529,65 @@ try {
   if (uncaught7.length) uncaught7.forEach((e) => fail('uncaught exception in the live-run cancel flow: ' + e));
   await ctx7.close();
 
+  // ── Cancel against a server WITHOUT the cancel route (incident run-5de9dfa5,
+  // 2026-09-14): the live server predated the route, so POST .../cancel got
+  // Flask's HTML 404. The UI read any 404 as "already ended", cleared the
+  // strip and said so, while the run stayed live and kept refusing new runs.
+  // A 404 with no JSON body is not proof of anything: the strip must stay and
+  // the toast must say the cancel FAILED.
+  const RUN8 = { ...RUN7, id: 'run-5de9dfa5',
+    steps: { 'us-stock-investor': { status: 'running', project_id: PID, session_id: '3ee1e9fa0865' } } };
+  const ctx8 = await browser.newContext({ viewport: { width: 1280, height: 900 } });
+  const page8 = await ctx8.newPage();
+  const page8Errors = [];
+  page8.on('pageerror', (e) => page8Errors.push(e.message || String(e)));
+  page8.on('dialog', (d) => d.accept());
+  await page8.route('**/*', (route) => {
+    const req = route.request();
+    const path = new URL(req.url()).pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
+    if (path === '/api/floor') return route.fulfill({ status: 200, contentType: 'application/json', body: FLOOR_JSON });
+    if (path === '/api/schedules') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path.startsWith('/api/avatars/')) return route.fulfill({ status: 200, contentType: 'image/png', body: PNG_1PX });
+    if (path === '/api/workflows' && req.method() === 'GET') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([WF7]) });
+    if (path === `/api/workflows/${WF7.id}/runs`) return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([RUN8]) });
+    if (path === `/api/workflow-runs/${RUN8.id}/cancel` && req.method() === 'POST') {
+      return route.fulfill({ status: 404, contentType: 'text/html; charset=utf-8', body: '<!doctype html><title>404 Not Found</title><h1>Not Found</h1>' });
+    }
+    if (path === `/api/project/${PID}/workflows`) return route.fulfill({ status: 200, contentType: 'application/json', body: '{"workflows":[]}' });
+    return route.abort();
+  });
+  await page8.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await page8.waitForSelector('#projects-col .card', { timeout: 15000 });
+  await page8.evaluate(() => {
+    window.__toasts = [];
+    const orig = window.showToast;
+    window.showToast = (msg, ms) => { window.__toasts.push(msg); if (orig) orig(msg, ms); };
+  });
+  await openWorkflowsTab(page8, PID);
+  const strip8 = await page8.waitForSelector('.wfb-live-run', { timeout: 5000 }).catch(() => null);
+  if (!strip8) {
+    fail('expected the live-run strip for run-5de9dfa5 before cancelling');
+  } else {
+    await page8.click('.wfb-live-run-cancel');
+    await page8.waitForTimeout(250);
+    (await page8.$('.wfb-live-run'))
+      ? ok('a cancel that hit a missing route (HTML 404) leaves the live-run strip up')
+      : fail('the live-run strip cleared although the cancel route returned an HTML 404 -- the run is still live');
+    const toasts8 = await page8.evaluate(() => window.__toasts || []);
+    (toasts8.some(t => /cancel failed/i.test(t)) && !toasts8.some(t => /already ended/i.test(t)))
+      ? ok('the toast says the cancel failed, not that the run had already ended')
+      : fail(`expected a "Cancel failed" toast and no "already ended", got ${JSON.stringify(toasts8)}`);
+  }
+  const uncaught8 = page8Errors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaught8.length) uncaught8.forEach((e) => fail('uncaught exception in the missing-cancel-route flow: ' + e));
+  await ctx8.close();
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
     ? '\n✅ PASS — the palette IS the Bench (real avatars, initial only where a face is genuinely absent, unrenderable values never echoed), drag-a-person-to-place with its persona preset, the port + popover and drop-onto-card auto-place-and-wire, port-to-port connect, a refused cycle, a refused slot break, an unconnected-port stop stub, mobile bottom-sheet layout, touch-action scroll-lock guard, save (format 2), and the schedule-trigger cadence form all behave correctly.'

@@ -4241,13 +4241,21 @@ async function _wfCancelRun() {
   _wfRender();
   try {
     const res = await fetch(`${API_BASE}/api/workflow-runs/${encodeURIComponent(run.id)}/cancel`, { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
-      if (res.status === 409 || res.status === 404) {
-        st.liveRun = null;
-        showToast('That run had already ended: ' + (data.error || ('HTTP ' + res.status)), 5000);
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data || !data.ok) {
+      // Only the cancel route's OWN JSON answer proves the run is no longer
+      // live. A 404 with no JSON body is the server saying the route does not
+      // exist -- a server process older than the route. 2026-09-14: Ron's
+      // Cancel of run-5de9dfa5 got exactly that; this branch cleared the strip
+      // and toasted "already ended" while the run stayed live and kept
+      // refusing every new run.
+      const err = data && data.error;
+      if (err && (res.status === 409 || res.status === 404)) {
+        await _wfLoadLiveRun(st);  // re-read the truth rather than assume it
+        showToast('That run had already ended: ' + err, 5000);
       } else {
-        showToast('Cancel failed: ' + (data.error || ('HTTP ' + res.status)), 6000);
+        showToast('Cancel failed: ' + (err || ('HTTP ' + res.status +
+          (data ? '' : ' — the server did not recognise the cancel request; it may be running older code and need a restart'))), 9000);
       }
       return;
     }

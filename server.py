@@ -1833,6 +1833,7 @@ _bp_workflows.wire(
     workflow_runs_dir=WORKFLOW_RUNS_DIR,
     dispatch_agent_internal_fn=_bp_agent._dispatch_agent_internal,
     load_agent_log_fn=_bp_agent._load_agent_log,
+    session_summary_fn=_bp_agent._last_reply_text,
 )
 app.register_blueprint(_bp_workflows.bp)
 

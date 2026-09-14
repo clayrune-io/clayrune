@@ -6,6 +6,38 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-14] — Workflow agent steps that finish now always advance the run
+
+**Incidents run-42a3f2aa (09-12) and run-5de9dfa5 (09-14).** Both codex agent
+steps completed (agent_log row `completed`) and their runs sat `running`,
+refusing every new run. Root cause: the live server (pid 37076, started
+2026-09-12T06:11Z) predates `cd2f9f3`, which carried `_notify_workflow` onto
+non-claude sessions — merged 18 h later, never restarted into. Zero
+`[notify-workflow]`/`[workflows]` lines in clayrune.log. Ron's Cancel of
+run-5de9dfa5 hit the same stale process: `POST .../cancel` returned Flask's
+HTML 404 (the route came in `26da1a7`), and the UI read any 404 as "already
+ended" and cleared the strip.
+
+- **Reconciler backstop** (`workflows.reconcile_running_steps`, scheduler tick):
+  a running agent step whose session has ended (agent_log row, or a live
+  idle/completed session) is replayed through `on_agent_step_complete`;
+  idempotent. No live session and no record after
+  `workflow_stalled_step_seconds` (default 600) marks the run `interrupted`
+  with the reason on `run.error`, logged. Shares `_step_session_verdict` with
+  `adopt_on_startup`.
+- **Stop is not success:** `on_agent_step_complete` treated every non-`error`
+  status as completed, so a stopped step handed partial text to the next
+  step. `stopped`/`interrupted`/unknown now mark the run `interrupted`.
+- **The wake can't be skipped by an exception:** `_log_agent_completion` wraps
+  its body and fires the latched wake in `finally`; `_runtime_log_completion`
+  does the same. `_log` no longer raises on a cp1252 console (clayrune.log
+  showed a `'charmap'` error aborting that hook).
+- **Cancel UI:** only the cancel route's own JSON 404/409 means "already
+  ended"; anything else toasts "Cancel failed" and keeps the strip.
+- Tests: `tests/test_workflow_step_reconcile.py` (real CodexRuntime subprocess
+  through the live hook and through the reconciler); smoke check 8 in
+  `tools/smoke/workflow-builder.mjs`.
+
 ## [2026-09-13] — v2.3.0
 
 260 commits since v2.2.0 (185 excluding merges), 2026-09-03 to 2026-09-13.
