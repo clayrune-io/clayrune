@@ -130,6 +130,9 @@ _CONFIG_EDITABLE_KEYS = {
     # live per scan, no respawn needed.
     'negation_interrupt_mode', 'negation_interrupt_max_hits',
     'negation_interrupt_window_tokens',
+    # Mid-task memory push (MC-944) — mc/memory_push.py. Read live per tool
+    # call, no respawn needed.
+    'memory_push_mode', 'memory_push_min_score', 'memory_push_max_per_turn',
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled',

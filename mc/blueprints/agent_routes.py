@@ -96,6 +96,7 @@ import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b26
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
+import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
@@ -2074,6 +2075,74 @@ def _observe_negation_interrupt(session, tool_name, tool_input) -> None:
         _log(f"[negation-interrupt] observe failed: {e}")
 
 
+def _observe_memory_push_input(session, tool_name, tool_input) -> None:
+    """Mid-task memory push (MC-944, `mc/memory_push.py`) — INPUT side.
+    Called from the same `tool_use` stream sites as `_observe_negation_interrupt`,
+    right after it, for the same reason: this runs AFTER the tool call has
+    already dispatched, so it can never delay, deny, or alter one.
+
+    `extract_input_query` is a pure string check (no I/O) run on every tool
+    call; `load_project` only runs on the subset that yields an actual query
+    (a Read/Edit/Write/Grep with a real path or pattern). Never raises.
+    """
+    try:
+        q = _memory_push.extract_input_query(tool_name, tool_input)
+        if not q:
+            return
+        proj = load_project(session.get('project_id', ''))
+        if not proj:
+            return
+        _memory_push.observe(proj, session, tool_name, 'tool_input', q,
+                              provider=session.get('provider'))
+    except Exception as e:
+        _log(f"[memory-push] observe input failed: {e}")
+
+
+def _observe_memory_push_result(session, tool_name, result_text) -> None:
+    """Mid-task memory push — RESULT side. Called from the `tool_result`
+    branch of the same two stream readers, once per completed tool call.
+    Same never-delay/deny/raise contract as `_observe_memory_push_input`.
+    """
+    try:
+        q = _memory_push.extract_result_query(result_text)
+        if not q:
+            return
+        proj = load_project(session.get('project_id', ''))
+        if not proj:
+            return
+        _memory_push.observe(proj, session, tool_name, 'tool_result', q,
+                              provider=session.get('provider'))
+    except Exception as e:
+        _log(f"[memory-push] observe result failed: {e}")
+
+
+def _note_tool_use_id(session, tool_name, tool_use_id) -> None:
+    """Bookkeeping for the RESULT side: a Claude `tool_result` block carries
+    only `tool_use_id`, never the tool's name (mirrors the Gemini
+    `_gemini_tool_names` map in `mc/agent_runtime.py`, same 64-entry bound —
+    a marathon session must not grow this unboundedly)."""
+    if not tool_use_id:
+        return
+    tmap = session.setdefault('_tool_id_name', {})
+    tmap[tool_use_id] = tool_name
+    if len(tmap) > 64:
+        for k in list(tmap.keys())[:-64]:
+            tmap.pop(k, None)
+
+
+def _extract_tool_result_text(block) -> str:
+    """Claude tool_result `content` is either a plain string or a list of
+    content blocks (only `type: 'text'` blocks carry text worth scanning —
+    mirrors `ClaudeRuntime.parse_transcript_file`'s USER_MESSAGE handling of
+    the same shape in mc/agent_runtime.py)."""
+    content = block.get('content')
+    if isinstance(content, list):
+        texts = [str(b.get('text', '')) for b in content
+                 if isinstance(b, dict) and b.get('type') == 'text']
+        return ' '.join(t for t in texts if t)
+    return str(content or '')
+
+
 # ── Artifact coverage (see mc/artifact_coverage.py for the incident) ─────────
 # Three passive hooks on the live stream, all best-effort, none of which can
 # affect a tool call: record each call's inputs, then at turn end compare them
@@ -3371,6 +3440,8 @@ def _read_agent_stream(proc, session):
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
                             _observe_negation_interrupt(session, tool_name, tool_input)
+                            _observe_memory_push_input(session, tool_name, tool_input)
+                            _note_tool_use_id(session, tool_name, block.get('id'))
                             _coverage_note_tool(session, tool_name, tool_input)
                             # Track .md file edits for plan file detection
                             if tool_name in ('Write', 'Edit'):
@@ -3430,6 +3501,23 @@ def _read_agent_stream(proc, session):
                                     proc.kill()
                                 except OSError:
                                     pass
+                elif msg_type == 'user' and isinstance(msg.get('message'), dict):
+                    # Mid-task memory push (MC-944, mc/memory_push.py) — the
+                    # RESULT side. Claude echoes a completed tool call back as
+                    # a role:'user' message whose content carries a
+                    # tool_result block (tool_use_id + content, no name — see
+                    # _note_tool_use_id). Nothing else in this project reads
+                    # this message type from the live stream; it exists
+                    # solely to feed the push observer a tool's OUTPUT, which
+                    # `_observe_negation_interrupt`/`_observe_memory_push_input`
+                    # never see (they only see the tool_use block's INPUT).
+                    for _block in msg['message'].get('content', []) or []:
+                        if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
+                            continue
+                        _tuid = _block.get('tool_use_id')
+                        _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
+                        _observe_memory_push_result(
+                            session, _tname, _extract_tool_result_text(_block))
                 elif msg_type == 'result':
                     # Capture session_id from result as fallback
                     if 'session_id' in msg:
@@ -3597,6 +3685,8 @@ def _read_agent_stream_b(proc, session):
                             session['log_lines'].append(activity)
                             session['last_output_time'] = _time.time()
                             _observe_negation_interrupt(session, tool_name, tool_input)
+                            _observe_memory_push_input(session, tool_name, tool_input)
+                            _note_tool_use_id(session, tool_name, block.get('id'))
                             _coverage_note_tool(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
@@ -3652,6 +3742,23 @@ def _read_agent_stream_b(proc, session):
                                     proc.kill()
                                 except OSError:
                                     pass
+                elif msg_type == 'user' and isinstance(msg.get('message'), dict):
+                    # Mid-task memory push (MC-944, mc/memory_push.py) — the
+                    # RESULT side. Claude echoes a completed tool call back as
+                    # a role:'user' message whose content carries a
+                    # tool_result block (tool_use_id + content, no name — see
+                    # _note_tool_use_id). Nothing else in this project reads
+                    # this message type from the live stream; it exists
+                    # solely to feed the push observer a tool's OUTPUT, which
+                    # `_observe_negation_interrupt`/`_observe_memory_push_input`
+                    # never see (they only see the tool_use block's INPUT).
+                    for _block in msg['message'].get('content', []) or []:
+                        if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
+                            continue
+                        _tuid = _block.get('tool_use_id')
+                        _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
+                        _observe_memory_push_result(
+                            session, _tname, _extract_tool_result_text(_block))
                 elif msg_type == 'result':
                     if 'session_id' in msg:
                         _note_claude_sid(session, msg['session_id'])

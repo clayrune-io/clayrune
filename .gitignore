@@ -43,6 +43,12 @@ data/logs/
 # locally to compute the interrupt's false-positive rate before any promotion
 # past report mode.
 data/negation_interrupt_log/
+# Mid-task memory push observability log (MC-944, Ron's idea 2026-09-14) —
+# per-project JSONL of would-send/near-miss decisions, written by
+# mc/memory_push.py. Runtime telemetry, not source; tools/memory-eval/
+# push_review.py reads it locally to grade precision before any promotion
+# past report mode.
+data/memory_push_log/
 # Chat-reducer archive of original (pre-summary) replies. The reducer is OFF
 # (decision 2026-06-12) but the archived originals are user data — keep on
 # disk, never publish.
