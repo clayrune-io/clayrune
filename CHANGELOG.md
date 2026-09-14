@@ -6,6 +6,43 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-14] — Unattended-agent security, vault key durability, live workflow steps, Memory V2 steps 1-4
+
+- **Codex sandbox** (`57a10c9`): unattended Codex launches (trigger_type
+  schedule/workflow/dispatch/hivemind_*) run `-s workspace-write`, confined
+  to the launch cwd, instead of `--dangerously-bypass-approvals-and-sandbox`.
+  Fails safe to sandboxed on anything not confirmed `manual`. Config
+  `codex_unattended_sandbox` (default on, human-only). Detail:
+  `docs/UNATTENDED_AGENT_PERMISSIONS_AUDIT.md` §8.
+- **Fence armed for every unattended launch** (`cc2db14`, `f344303`):
+  schedule/workflow/hivemind/dispatch sessions; `is_unattended_caller()` scoped
+  to the caller; fence no longer fails closed on an unreadable transcript;
+  auto-installed on new projects; dispatch `trigger_type` stamp re-enabled.
+- **Question-channel reply authentication** (`2633a9f`).
+- **Vault master key** (`23ac698`, `85d63b8`): a Windows credential-store wipe
+  makes `keyring.get_password()` return None, which `load_master_key` treated
+  as first use, silently minting a new key and orphaning every sealed entry
+  (8 of 10 on this box, 2026-09-14). Now: never mint while sealed entries exist
+  (raises `SecretsUnavailable`); Windows keeps a DPAPI-sealed mirror
+  (`secrets.key.dpapi`) and self-heals; macOS/Linux fail closed; a plaintext
+  `secrets.key` is removed only when it holds the same key. `GET /api/secrets`
+  reports per-entry `readable` + `unreadable_count`; `/api/secrets/check`
+  actually decrypts.
+- **Workflow canvas live status** (`8c1aeb5`): nodes show running / waiting /
+  completed / failed / cancelled / skipped from the live run; step names in the
+  run strip pan to the node; 4 s poll while a run is live.
+- **Memory V2 steps 1-4** (`58fe56b`, MC-944, `docs/MEMORY_DESIGN_V2_SPEC.md`
+  §16): per-file corpus cache, `write_position` write lock, R2 canonicaliser,
+  17 config keys registered; server-stamped `origin`/`generated`, derived
+  `verified[]`, `holds_while`; D0 default triggers + D1 retrievability gate
+  (89/89 notes retrievable); the split, managed Session Log + watermarks move to
+  `SESSION_LOG.md` (not auto-loaded, 20-entry ring), migrated lazily on each
+  project's next Scribe write.
+- **mc_tunnel** (`d099875`): rustls 0.23.40 -> 0.23.45 (RUSTSEC-2026-0285),
+  chacha20 0.10.1 -> 0.10.2 (yanked).
+- **Mobile send** (`f80b9e8`): full-height layout restored before send work;
+  composer cleared before the frame yield to block a double send.
+
 ## [2026-09-14] — Workflow agent steps that finish now always advance the run
 
 **Incidents run-42a3f2aa (09-12) and run-5de9dfa5 (09-14).** Both codex agent
