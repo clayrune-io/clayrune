@@ -3601,6 +3601,53 @@
   .composer-empty-state .ces-chip-label { flex: 1; }
   .composer-empty-state .ces-chip-chev { color: var(--text-faint); font-size: 17px; flex-shrink: 0; }
 
+  /* WHO leads WHAT (Ron, 2026-09-14, phone screenshot) — face cards ahead of
+     the "What should X work on?" heading. A horizontal scroll row rather than
+     a wrapped grid: its height never grows with the character count, so the
+     row stays above the fold on a phone regardless of roster size. Desktop
+     (min-width:961px below) switches to a wrapped grid — the empty main pane
+     has the width to spare and wrapping reads better there. */
+  .composer-empty-state .ces-people { text-align: left; margin-bottom: 16px; }
+  .composer-empty-state .ces-people-heading {
+    font-size: 11px; color: var(--text-faint); font-weight: 600;
+    text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 8px;
+  }
+  .composer-empty-state .ces-people-row {
+    display: flex; gap: 8px; overflow-x: auto; padding-bottom: 4px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none; -ms-overflow-style: none;
+  }
+  .composer-empty-state .ces-people-row::-webkit-scrollbar { width: 0; height: 0; display: none; }
+  .composer-empty-state .ces-person-card {
+    flex: 0 0 84px; scroll-snap-align: start;
+    display: flex; flex-direction: column; align-items: center; gap: 4px;
+    min-height: 44px; padding: 10px 6px;
+    background: var(--surface); border: 1px solid var(--border); border-radius: 14px;
+    cursor: pointer; font-family: inherit; transition: border-color .15s, background .15s;
+  }
+  .composer-empty-state .ces-person-card:hover { border-color: var(--accent); }
+  .composer-empty-state .ces-person-card.selected {
+    border-color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, transparent);
+  }
+  .composer-empty-state .ces-person-face { line-height: 0; }
+  .composer-empty-state .ces-person-add-icon {
+    width: 36px; height: 36px; border-radius: 50%; background: var(--surface3);
+    color: var(--accent); font-size: 18px; display: flex; align-items: center; justify-content: center;
+  }
+  .composer-empty-state .ces-person-add { border-style: dashed; }
+  .composer-empty-state .ces-person-name {
+    font-size: 11px; font-weight: 600; color: var(--text); max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .composer-empty-state .ces-person-role, .composer-empty-state .ces-person-eng {
+    font-size: 9.5px; color: var(--text-faint); max-width: 100%;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  @media (min-width: 961px) {
+    .composer-empty-state .ces-people-row { flex-wrap: wrap; overflow-x: visible; justify-content: center; }
+    .composer-empty-state .ces-person-card { flex: 0 0 96px; }
+  }
+
   /* Fresh-hire thread shell (Ron, 2026-09-10): a hired agent with no history
      has no session to open, so this stands in for a real thread header —
      face + name atop the empty-state body, composer already armed below. */
