@@ -424,6 +424,26 @@ def _load_config():
         # §7.3 — multi-term trigger phrases stay exempt from the single-term
         # df gate; auto-emitted bigrams feed D0's default triggers (step 3).
         'trigger_phrase_bigrams': True,
+
+        # Mid-task memory push (MC-944, Ron's idea 2026-09-14 — generalises
+        # the plan-time negation interrupt, negation_interrupt_mode above,
+        # from standing positions to the whole memory corpus and from an
+        # agent's WRITTEN OUTPUT to its TOOL STREAM). Watches Read/Edit/
+        # Write/Grep tool inputs and every tool's result text for a failure
+        # signal (error line, exception name, HTTP status), matches it
+        # against the corpus via the same mc.memory._memory_search BM25
+        # ranker the read floor uses, and LOGS would-send/near-miss
+        # decisions (never delivers to the agent) to
+        # data/memory_push_log/ — see mc/memory_push.py.
+        # `memory_push_mode`: only 'report' is implemented; 'advisory' is a
+        # later stage gated on this log's measured precision, not yet built.
+        # `memory_push_min_score` is the BM25 score bar for a would-send
+        # (measured against the live vault — see mc/memory_push.py's module
+        # docstring for the calibration evidence). `memory_push_max_per_turn`
+        # caps new fires logged per observed tool call.
+        'memory_push_mode': 'report',
+        'memory_push_min_score': 15.0,
+        'memory_push_max_per_turn': 2,
     }
     if CONFIG_PATH.exists():
         try:
