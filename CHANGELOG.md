@@ -6,7 +6,279 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
-## [Unreleased] — Workflow builder: runner + stores (MC-871 Phase 1, backend only)
+## [2026-09-13] — v2.3.0
+
+260 commits since v2.2.0 (185 excluding merges), 2026-09-03 to 2026-09-13.
+Supersedes the stale prep on `release/v2.3.0-prep` (`adb43e8`, 2026-09-11),
+which predates everything from 09-11 onward. Every line below was checked
+against `git log v2.2.0..master`; the dated entries under this heading carry the
+detail and the commit ids. Tag not cut.
+
+**New**
+- **Workflow builder, end to end** (MC-871): a free canvas over a nodes+edges
+  DAG, four node types (agent, approval, action, wait), six allowlisted
+  actions, schedules that start a workflow, a live-run strip with Cancel run.
+- **The Desk**: an in-house marketing surface next to the Floor (Board, Queue,
+  Calendar, Ledger, signals feed, editable voices), with Posy triaging the
+  feed. Publishing stays a human action; the Desk records the receipt.
+  Supersedes the Social Approvals Queue (2026-09-05).
+- **Backup & Restore** (MC-945): full-install backup/restore, per-project
+  export/import with path remap and vault re-encrypt, restore points, a
+  Backup panel with progress, Cancel and reattach.
+- **Drag-to-hire**: drag a Floor figure onto a project tile to put it on that
+  project's roster. Provider marks on Floor figures; the Channel rail opens a
+  person's conversations inline.
+- **Dispatched agents wake their spawner** (MC-946): `notify_session` on
+  dispatch delivers the child's result into the parent chat; the worker nests
+  under its spawner in the rail.
+- **The browser pane can read a page** (`POST /api/browser/read`), fail-closed
+  and built around the documented tool-downgrade attack.
+- **Artifact coverage**: a turn whose tool calls never touched what the user
+  named gets flagged.
+- **Memory V2 delivery** (MC-944): standing positions and relevant memory are
+  recomputed every turn, not once at spawn; plan-time negation interrupt in
+  report mode.
+- **Models**: Fable 5.1 in the Claude picker, GPT-6 Astra in the Codex picker.
+
+**Security**
+- One unattended-caller gate over the human-only routes (vault secrets,
+  distiller promote, `PUT /api/config`, the backup surface), replacing a
+  header check no caller ever sent.
+- Steward fence: blocks enabling constructs (runtime-decided command words,
+  decode-then-execute, xargs into a denied verb, `eval`/`-c` on an expansion),
+  refuses the browser API regardless of verb, blocks the raw mail MCP.
+- Inbound mail is laundered through a toolless call before a tooled session
+  sees it; the mailer has a kill switch and a sender ledger.
+- Incognito survives a restart and stays out of chat search.
+
+**Reliability**
+- Atomic JSON writes across 21 state writers, and a failed read no longer
+  triggers a rebuild that overwrote real agent history.
+- Session cost was permanently 0; it now reads `total_cost_usd` as
+  per-process deltas.
+- Refused tool calls (`permission_denials`) are kept per turn instead of
+  discarded.
+- Backlog `status_history`: a reopen can no longer erase a closure.
+- Floor: 5s poll, a failed fetch or render no longer freezes the board, a
+  waiting parent's helpers stay visible, hivemind workers show.
+- Codex parity: real transcript path, resumed follow-ups instead of a new
+  thread per message, Scribe extraction, tool-line rendering.
+- Remote access survives Windows credential-store loss, alerts when
+  enrollment disappears, and re-alerts on an outage that never recovers;
+  CLIs under a custom npm prefix are found.
+- Documents tab: a warm request took 2.77 s at a 0% cache hit rate; fixed.
+- Agent prompt: conduct rules re-delivered every turn; the API reference is a
+  pointer card (~4.6k tokens less per dispatch).
+
+**Carried from the 2026-09-11 prep, still true:**
+- MC-912 (skill import security scanner) already shipped in v2.2.0: its commit
+  `cecbcf4` is an ancestor of the tag, and the v2.2.0 CHANGELOG still carried
+  it as `[Unreleased]`. Re-dated to 2026-09-01 below, not claimed here.
+- The Desk had no CHANGELOG entry at all. Added below (166 tests across
+  `tests/test_desk*.py`, re-counted on this branch).
+
+**Not written up as entries:** docs, specs and research commits (Desk spec,
+workflow builder spec revisions 1-3, backup spec, memory V2 design, untrusted
+input surface map, incident write-ups, security review), and test-isolation
+fixes (a test run no longer opens an OAuth tab, emails the operator, or leaks
+the tunnel supervisor thread).
+
+## [2026-09-13] — Session cost stops reading a field that does not exist
+
+Session cost was permanently 0. Claude Code's stream-json `result` carries
+`total_cost_usd`, not `cost_usd`, and every reader (agent_routes Mode A and
+Mode B, runtime `_mode_a_reader`) read `cost_usd` (`12933d4`).
+
+- Measured on CLI 2.1.268: `total_cost_usd` is cumulative per CLI **process**
+  and restarts with a new one (a `--resume` is a new process). Taking the last
+  value under-reports after a respawn; summing every event double-counts.
+- `accumulate_result_cost()` adds the delta against a per-reader tracker,
+  treats a backwards total as a restart, keeps per-turn `cost_usd` as a
+  fallback. The Claude TURN_END payload now carries `total_cost_usd`.
+- `tests/test_session_cost_total.py` (9) pins the measured fixture; all fail
+  on the prior master.
+
+## [2026-09-12] — Workflow builder: a canvas over a DAG, wired to the scheduler (MC-871, Phases 2-4)
+
+Everything after the Phase 1 backend (entry dated 2026-09-10b below), which it
+partly replaces.
+
+- **DAG store and frontier runner** (`0baf7ae`, 2026-09-10). `nodes`+`edges`
+  replace the nested step tree (`format: 2`; a v1 record upgrades in memory on
+  read). A node runs once every parent is terminal and at least one took its
+  edge; dead branches are skip-propagated in one topological pass. Cycles are
+  refused at save and again at run start. Execution stays serial.
+- **The canvas** (`c744aac`, 2026-09-11) replaces the one-day-old vertical
+  spine (`3c67e73`): palette with drag-to-place, port-to-port edges.
+  Branching is a property of the edge (`when`), with a labelled port per
+  outcome and a mandatory `otherwise` port; the Paths node type is gone. A
+  cycle is refused at drop.
+- **Schedules can start a workflow** (`cf038f3`). A schedule carries
+  `workflow_id` or `task`, never both; a deleted, disabled or busy workflow is
+  logged as a skip, never a silent drop. The master `scheduler_paused` switch
+  covers it.
+- **Wait node** (`cd5242d`): delay N minutes or until a datetime. The run
+  parks as `waiting` with `resume_at`; the scheduler's existing 30s tick
+  resumes it, so a restart needs no adoption code.
+- **Six allowlisted actions**: `backlog_create`, `backlog_patch`,
+  `desk_harvest`, `restore_point_create`, plus `journal_append` and
+  `notify_operator` (`ea8e5e9`). No recipient field exists; the mailer resolves
+  the address.
+- **A run executes a frozen snapshot of its definition** (`26da1a7`): editing a
+  workflow only affects future runs. `POST /api/workflow-runs/<id>/cancel`
+  (human-only) unsticks a run; in-flight agent sessions are listed, not
+  killed. The builder shows a live-run strip with Cancel run (`da57bc3`).
+- **Non-Claude steps complete** (`cd2f9f3`): `notify_session`/`notify_workflow`
+  were dropped on the non-Claude dispatch branch, so a Codex step left its run
+  running forever.
+- **Engine visibility**: tooltip and palette line show a step's model/effort
+  and where it came from; an engine problem warns rather than blocking Save
+  (`909d0bb`, reversing `365f9bb`).
+- Canvas iteration from first real use: 14 defects including mobile
+  drag-onto-canvas (`0983fc9`), the Insert control that never persisted
+  (`4825a20`), ports anchored to the card edge (`e3dfb6d`), the palette
+  portalled to `<body>` (`665f6b3`), and a weekly schedule that described
+  itself as the word "weekly" (`b5573ba`).
+- 66 tests across `tests/test_workflows.py` and
+  `tests/test_workflow_runtime_notify.py`.
+
+## [2026-09-12] — Steward fence: block the construct, not the spelling
+
+- **Enabling constructs** (`76ce263`). `classify_bash` matched text, so
+  `P=push; git $P --force`, `$(printf ...)` as the command word, `xargs`
+  feeding git from stdin and `base64 -d | bash` all passed. `_enabling_construct()`
+  blocks the closed set of constructs that decide a command's identity at
+  runtime, scoped per shell segment.
+- **Review pass** (`455c921`): the function-definition block is anchored on
+  the brace, so `grep -n function app.js` passes; `eval "$CMD"` and
+  `bash -c "$CMD"` block only when the interpreted text carries an expansion.
+  Known residuals by design: empty-quote splices, and decode-to-file then
+  execute across two turns.
+- **Earlier the same week** (2026-09-10): the browser API is refused regardless
+  of verb, because localhost calls were waved through and made the
+  `mcp__browser__*` block cosmetic (`a010bfd`); the raw mail MCP is blocked for
+  steward cycles (`b0b41bc`); the network-mutation check is scoped per shell
+  segment so `cut -d` no longer false-blocks a GET (`dd01e02`).
+
+## [2026-09-12] — Refused tool calls are kept, not discarded
+
+Claude Code reports every refused tool call in the stream-json `result` as
+`permission_denials`; Clayrune parsed usage and cost from that object and
+dropped the field (`0693234`).
+
+- Verified: a PreToolUse hook block lands in this list, and
+  `--dangerously-skip-permissions` does not suppress it, so it is the steward
+  fence's audit trail. An entry carries `{tool_name, tool_use_id, tool_input}`
+  and no reason: you learn what was refused, not which rule refused it.
+- Parsed into the Claude TURN_END payload, accumulated per session, mirrored
+  into the transcript as `[denied: <tool>] <command>`, and included in the SSE
+  usage and session status payloads.
+
+## [2026-09-12] — Backlog keeps status_history
+
+Status and `done_at` were overwritten in place, so reopening an item erased
+that it had ever been closed (`29eef84`). PATCH and GitHub sync append
+`{ts, from, to, by, prior_done_at}` to `status_history` (cap 100, logged when
+it bites); PATCH accepts an optional `by` and bumps `updated_at` on a real
+transition.
+
+## [2026-09-11] — Atomic state writes, and a failed read never rebuilds a file (MC-946)
+
+Every conversation in a project rendered as the default agent because its
+agent log had been replaced with synthesized rows (`cdfe248`).
+
+- `/api/system/restart` runs two servers side by side for up to 10s, so a kill
+  could land between truncate and write. The loader swallowed the parse error
+  and returned `[]`, which the startup transcript backfill read as "no
+  history" and saved over the real file.
+- `mc/atomic_json.py` `write_json_atomic` (temp file in the same dir, fsync,
+  `os.replace`). Six writers converted in `cdfe248`, 15 more plus a canary test
+  in `4ee0435`, including the startup provider migration that rewrites every
+  project's agent log.
+
+## [2026-09-11] — Documents tab: the cache that never hit
+
+`GET /api/project/<id>/documents` measured 2.77 s warm (`d78439e`). The
+doc-write cache was capped at 512 entries and evicted the oldest 25% when full;
+a project with 640 transcripts evicted every entry before the next pass
+reached it, re-parsing 850 MB per request while reporting 512 live entries.
+
+## [2026-09-10] — Security review fixes: human-only routes, mail, incognito
+
+From `docs/_review/2026-09-10_security.md`.
+
+- **Human-only decisions get a real gate** (`ddaedf3`, F3/F5). Vault secret
+  create/edit/delete, distiller promote and operator config were plain
+  localhost routes every dispatched agent could call; an agent could flip a
+  secret's `allow_unattended` and then read it. `mc/unattended.py`
+  `is_unattended_caller()` is now the one check, lifted from the backup routes
+  after `ad6b07a` found those trusted a header no caller ever sent. The
+  authenticator-import commit path was gated too (`2d89b45`).
+- **Mail** (`030619c`): an unattended cycle's read of the operator's reply
+  passes through a toolless `oneshot()` and returns only a structured digest,
+  never the raw body. The mailer itself gained a kill switch
+  (`~/.clayrune/mail_paused`) and a sender ledger (`70dc8d0`).
+- **Incognito survives a restart** (`eb501c1`, F7): a durable marker at
+  `~/.clayrune/incognito_sessions.json` stops the backfill, Scribe and
+  prompt-context readers from re-ingesting an incognito transcript; chat
+  search honours it too (`80729ab`).
+
+## [2026-09-10] — The Desk: an in-house marketing department, four surfaces and a publishing office
+
+Supersedes the framing behind the Social Approvals Queue (`203082e`,
+2026-09-05): that queue held three pending drafts in one project with nothing
+generating them, remembering what was already said, or publishing. Built from
+Ron's own framing (`docs/THE_DESK_SPEC.md`): *"not just a persona, it has to be
+the whole suite which also manage it all in one place."* 2026-09-09 to
+2026-09-11.
+
+- **Five stores, four of them new** (`mc/desk.py`): a signal feed
+  (`data/desk_signals.jsonl`, append-only, no silent cap), voice profiles built
+  by diffing every edit a human makes to a draft, campaigns, and a story ledger
+  of what was actually published. The draft queue itself is unchanged, still
+  `social_queue` on the project record, now read as a filtered view.
+- **Posy triages the feed instead of a keyword score** (`faf9b13`).
+  `POST /api/desk/triage` hands the unscored feed to the social-media-strategist
+  persona; `GET/POST /api/desk/proposals` are her picks, each citing a real
+  signal id with her reasoning attached. Accepting a proposal drafts it;
+  releasing the draft is a separate gate. A dismissal is latched on the signal
+  id, so a fresh proposal can't walk around a no.
+- **A voice is seeded from how the user already writes** (`3b495f7`), closing
+  the cold start; the incognito guard on that seeder was cosmetic and fixed
+  (`6fe47fa`). A voice names its destination, so two can share a platform.
+- **Push-back re-dispatches the write, not just the note** (`1240c8c`).
+  `desk_brief.build_rework_brief()` wraps the rejected body and the note into
+  a new brief and dispatches the same writer through `dispatch_rework`; a
+  dispatch failure never costs the push-back note.
+- **The receipt chain closes** (`7f9f9fd`). Release never called
+  `desk.record_published`, so the ledger was written only by its own unit
+  tests. `POST /api/project/<pid>/social/queue/<id>/posted` records that a human
+  already posted (optional permalink, idempotent, only legal from `approved`).
+- **The UI brief, steps 1-4** (2026-09-11): shell header with a cadence chip
+  that opens the workflow builder (`fedfdbd`), a redesigned Board, the Queue as
+  a list plus review pane with a soft-locked Release (`56a3a59`), and a Thread
+  with Posy in the review pane built from the chat's own components (`d6104c9`).
+- **No publish route, on purpose.** The Desk records receipts; nothing here
+  makes an outbound call.
+- 166 tests across `tests/test_desk*.py`; `tools/smoke/desk.mjs` (45 checks,
+  including that Release calls the non-publishing approve route).
+
+## [2026-09-10] — Agent prompts: a pointer card instead of the full API reference
+
+`data/agent_reference/CLAYRUNE_API.md` (19.9 KB) was pasted into every agent's
+system prompt, the largest slice of a 53.5 KB fixed floor (`9270d9d`). Both
+context builders (agents and hivemind workers) now splice in a ~1 KB card
+naming the common endpoints, with process registration kept as MANDATORY and
+a directive to read the full file before guessing. Measured on the real
+mission_control project: 54,084 to 35,535 bytes per dispatch.
+
+## [2026-09-10b] — Workflow builder: runner + stores (MC-871 Phase 1, backend only)
+
+**Partly superseded two days later.** The nested step tree, the Paths node
+and the trigger node described here were replaced by the nodes+edges DAG and
+the canvas (2026-09-12 workflow builder entry above). The stores, the
+spawner-latch handoff, the human-only authoring gate and fail-closed restart
+adoption still stand.
 
 `mc/workflows.py` + `mc/blueprints/workflow_routes.py`. First of the spec's
 four-phase build order (`docs/WORKFLOW_BUILDER_SPEC.md`); no UI and no
@@ -42,7 +314,7 @@ scheduler wiring yet — those are later passes.
 - 26 new tests (`tests/test_workflows.py`); `mc/workflows.py` and
   `mc/blueprints/workflow_routes.py` pass `pyright` basic clean.
 
-## [Unreleased] — The browser pane can read a page now, designed around the real attack
+## [2026-09-10c] — The browser pane can read a page now, designed around the real attack
 
 `POST /api/browser/read` (`mc/blueprints/browser_routes.py`) returns a page's
 visible text — the whole page or one CSS-selected region — closing the gap
@@ -96,7 +368,84 @@ second client.
   incident: the real boundary is OS isolation and network egress control,
   not output filtering.
 
-## [Unreleased] — Drag-to-hire: the drag survives the board, and the drop arms the composer
+## [2026-09-09] — Backup & Restore: full install, per project, and restore points (MC-945)
+
+The engine and surface the two Backup panel entries below refine.
+Spec: `docs/BACKUP_EXPORT_SPEC.md` v1.2.
+
+- **Phase 1** (`a7b9d9a`, 2026-09-08): `mc/backup.py` size-preview, create,
+  list and restore over five opt-out categories, standalone so
+  `tools/clayrune-backup.py` can recover a broken install with no server.
+  Found by running it on the live install: restored JSON flipped CRLF to LF,
+  and a project whose checkout is the install itself was archived twice.
+- **Phase 2** (`14b1c7b`): per-project export/import with a dry-run collision
+  report, path remap that relocates the memory vault, and vault re-encrypt
+  under a user passphrase. The vault question starts unset; an unattended run
+  can never answer yes.
+- **Phase 3a** (`44fe203`): per-project restore points under
+  `~/.clayrune/restore-points/`, retention of 10 unpinned plus all pinned, and
+  a rollback that reports what it cannot reverse; `dry_run` computes the full
+  report without writing.
+- **Phase 3b** (`38891b8`): the Backup & Restore sidebar surface (Backup,
+  Restore, Import project) and a per-project Export entry.
+- **Configurable destination** (`6b3b778`): `backup_dest_dir`, refusing a path
+  inside the repo or `data/projects/`.
+
+## [2026-09-09] — Drag-to-hire: a project roster you build by dragging
+
+Implements `docs/DRAG_TO_HIRE_SPEC.md` (`211ec64`); the entry dated
+2026-09-09b below fixes two defects in it.
+
+- Dragging a Floor figure onto a project tile hires that character onto the
+  project's `roster` (a field on the project record; un-hire sets `removed_at`
+  and never deletes) and opens the project's Channel view on that agent.
+  `POST /api/project/<id>/roster/hire` is idempotent.
+- **Provider marks** on every Floor figure and bench card (`d82db45`,
+  `a1a26eb`), in brand colours (`3b31443`).
+- **Mobile pass** (`c1d757e`, 2026-09-10): the bench scrolls (`touch-action`
+  is `pan-y` until a 400ms long-press), the drop works, and a hire with no
+  history lands on a thread shell rather than the +New screen (`802d56e`).
+  A hire arrives named and faced, and the edit pencil takes a real click
+  (`66212d8`, 2026-09-11).
+- **Channel rail**: a roster row expands that person's conversations inline
+  instead of replacing the roster (`a259474`); the accordion opens collapsed
+  (`9ff665d`).
+
+## [2026-09-09] — Dispatched agents wake their spawner (MC-946)
+
+An agent that dispatched another over HTTP went dark: nothing told it the
+child finished (`bd546ca`).
+
+- `/agent/dispatch` takes `notify_session`; the child's status, task and final
+  message are delivered into that chat, which wakes the spawner. Best-effort;
+  self-notification refused; an incognito child still leaves no trace.
+- Fires at the Mode B turn boundary, not only at process exit, since a Mode B
+  process lives on between turns (`400d6fc`). The callback names the agent,
+  not its whole record (`8302a5f`).
+- The link is persisted as `spawned_by_session_id`, and the rail nests a
+  dispatched worker under its spawner (`bb8c0c1`).
+
+## [2026-09-09] — Remote access survives losing the OS credential store
+
+A Windows servicing reboot (KB5124008, 2026-09-08) emptied the Credential
+Manager vault that held device enrollment, which read as "never enrolled";
+the supervisor that owned down-alerting refused to start without an identity,
+so nobody was told for ~8 hours (`3583069`).
+
+- An enrollment liveness watchdog runs at startup independent of the
+  supervisor and alerts on an enrolled-to-not-enrolled transition, telling a
+  real loss apart from a keystore read failure.
+- The down-alert latch only cleared on recovery, so an outage that never
+  recovered alerted exactly once; it now re-alerts every cooldown
+  (`MC_REMOTE_ALERT_COOLDOWN_S`, default 6h).
+- Enrollment is mirrored write-through to a second encrypted file under
+  `~/.clayrune/` and self-heals back into the keystore when used.
+
+Same day: Claude and Gemini are found under a custom npm prefix on Windows
+(`d846765`), and `tools/cli-version-check.py` audits installed versions and PATH
+shadowing (`8afa465`).
+
+## [2026-09-09b] — Drag-to-hire: the drag survives the board, and the drop arms the composer
 
 Two defects against the drag-to-hire gesture (docs/DRAG_TO_HIRE_SPEC.md), both
 found by driving the real UI rather than by reading the diff.
@@ -138,7 +487,7 @@ found by driving the real UI rather than by reading the diff.
   and proves every cancel path — off-target release, Escape, window blur —
   leaves no ghost and a board that can still start another drag.
 
-## [Unreleased] — Backup panel: a Cancel button, a destination you pick at Create, and a panel that reattaches
+## [2026-09-09c] — Backup panel: a Cancel button, a destination you pick at Create, and a panel that reattaches
 
 Three more defects against the Backup panel (MC-945), same real install where
 the default archive is ~48 GB.
@@ -183,7 +532,7 @@ retention bounds; `tools/smoke/backup-panel-breakdown.mjs` grew to 38 checks
 including cancel, reattach and the last-backup card. 108 backup tests + the
 boot smoke stay green.
 
-## [Unreleased] — Backup panel: a breakdown you can close, a picker, and a progress bar
+## [2026-09-09d] — Backup panel: a breakdown you can close, a picker, and a progress bar
 
 Four defects against the shipped Backup panel (MC-945), all found by using it
 on a real install where the default archive is ~48 GB.
@@ -233,7 +582,22 @@ behaviour. 91 backup tests + the boot smoke stay green.
 backup. The panel now flags it amber and can show it; whether it belongs in
 the default archive is a policy call.
 
-## [Unreleased] — Artifact coverage: catching a substituted answer
+## [2026-09-08] — Codex parity, and two new models
+
+- **Transcripts** (`3bb5863`, 2026-09-07): `CodexRuntime.transcript_path()`
+  looked for a layout that never existed, so history, in-chat search,
+  Documents, delete and the Scribe were dark on Codex. It now reads the real
+  `~/.codex/sessions/<YYYY>/<MM>/<DD>/rollout-*.jsonl` layout.
+- **Follow-ups resume the thread** (`37f2bc1`) with `codex exec resume`
+  instead of spawning a new thread per message, which showed one chat as ten
+  rail rows.
+- Scribe extraction, resume threading and `mc:question` on Codex (`7653dc5`);
+  Mode A runtimes (Codex, opencode, goose, aider, kiro) get Claude's tool-line
+  rendering (`fc4ba38`).
+- **Models**: GPT-6 Astra in the Codex picker (`2df6b6a`), Fable 5.1 in the
+  Claude picker (`c19e612`).
+
+## [2026-09-08] — Artifact coverage: catching a substituted answer
 
 An agent was asked to review a LinkedIn search from a pasted URL carrying
 `f_EA=true`, `distance=0.0` and specific keywords. Its fetch of that page
@@ -263,7 +627,52 @@ rounds of pushback to surface, and the first correction still hid the defect.
 - 16 tests in `tests/test_artifact_coverage.py`, anchored on the real incident
   plus the false-positive classes each design rule pays for; suite 2169 green.
 
-## [Unreleased] — Skill import security scanner (MC-912)
+## [2026-09-07] — Per-turn delivery: memory and conduct rules (MC-944)
+
+A long Mode B session never rebuilt its system prompt, so both retrieved
+memory and the standing conduct rules decayed with distance.
+
+- **Memory** (`ba1e955`): `mc/memory_turn.py` recomputes STANDING POSITIONS and
+  RELEVANT MEMORY per turn at the four stdin sites, deduping notes already
+  delivered; positions always re-fire.
+- **Negation interrupt, report mode** (`a49d269`): an Agent dispatch prompt or
+  a plan/docs write that re-proposes a standing position is logged to
+  `data/negation_interrupt_log/<project_id>.jsonl`. A passive observer after
+  dispatch, never a hook on the execution path.
+- **Conduct rules** (`0aeda91`): `mc/behavior_tail.py` appends reply shape,
+  no-dangling-promise and no-narration rules as the last part of every prompt
+  and every live follow-up (`behavior_tail_enabled`, default ON). The tail
+  states the task as a goal with a verified completion criterion
+  (`7952c8f`, `08004f3`, 2026-09-09).
+
+## [2026-09-07] — The Floor shows the work it watches
+
+- Polls every 5s instead of 30 (`5dd4ecd`); a failed fetch (`920b05b`) or a
+  throw during render (`2c0819f`) no longer freezes the board permanently.
+- A helper stays visible while its parent waits between turns (`37cc20d`,
+  `5bd3d95`), and the parent reads as working while it has one (`4ac1f96`).
+- Hivemind workers show instead of being hidden as housekeeping (`656a25a`).
+- Conversations: the rail no longer blanks on its own refetch (`ceeae4f`), a
+  running chat can't be truncated off its list (`2265f00`), the default agent
+  appears on the Channel roster (`c597a56`), and the stale-session purge keys
+  on last activity, not dispatch time (`068869a`).
+- Identity: a dead non-Claude chat revives with its persona instead of being
+  replaced (`73c4a05`, `bb45376`), and three context-rebuild sites keep the
+  full identity (`b338295`).
+
+## [2026-09-05] — Social Approvals Queue (superseded by the Desk)
+
+A per-project queue of drafted posts with Edit, Release and Push back, and no
+outbound call (`203082e`); every card carries its project badge and a
+cross-project Social pane lists them all (`910d38f`). Superseded five days
+later by the Desk (2026-09-10 entry above), which reads the same
+`social_queue` field.
+
+## [2026-09-01] — Skill import security scanner (MC-912), already shipped in v2.2.0
+
+**Not part of v2.3.0.** Carried as `[Unreleased]` in the CHANGELOG at the
+v2.2.0 tag, but the work (`cecbcf4`, landed via `f5390b5` on 2026-09-01) is an
+ancestor of `v2.2.0`. It shipped in that build without being announced.
 
 Clayrune imported skills from paste, folder, git and plugin sources with no
 scanning at all. The Distiller's authority guard (`distiller._authority_violation`)
@@ -316,6 +725,7 @@ documented gap closed rather than inherited.
   (exfiltration, prompt injection, destructive command, persistence,
   config-mod, and a benign negative control), covered by
   `tests/test_skill_import_guard.py`.
+
 ## [2026-09-01] — Root-entry cut: 45 → 28, so the README's hero GIF is reachable without scrolling past the file tree
 
 GitHub always renders the file tree above the README on github.com, with no
