@@ -56,6 +56,8 @@ detail and the commit ids. Tag not cut.
   triggers a rebuild that overwrote real agent history.
 - Session cost was permanently 0; it now reads `total_cost_usd` as
   per-process deltas.
+- Session turn count was overwritten each turn instead of summed; it now
+  accumulates, and the resume guard reads only this process's turns.
 - Refused tool calls (`permission_denials`) are kept per turn instead of
   discarded.
 - Backlog `status_history`: a reopen can no longer erase a closure.
