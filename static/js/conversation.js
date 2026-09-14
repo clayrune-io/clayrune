@@ -1417,6 +1417,7 @@ function agentPanelHTML(p) {
       </div>
       <div class="agent-chat">
         ${(typeof chatSearchBarHTML === 'function') ? chatSearchBarHTML(p.id, activeSessionId) : ''}
+        ${_forkNoticeHTML(activeSessionId)}
         <div class="agent-output" id="agent-output-${esc(activeSessionId)}">${outputLines}${_subagentCardsHTML(activeSessionId)}${typingHTML}</div>
         ${chatInput ? `<div class="agent-chat-separator"></div>${chatInput}` : ''}
       </div>`;
@@ -3342,10 +3343,14 @@ async function _openConversationByCsid(projectId, csid) {
   // fabricate a read-only "STOPPED" tab keyed on the csid while the sidebar
   // badge — driven by the same byCsid signal — correctly shows "Working…", a
   // desync that only a hard reload cleared. Predicate mirrors _liveConvStates().
+  // 'idle' counts: an idle Mode B session still holds the live process, and
+  // opening a csid-keyed read-only tab beside it is how one chat got a second,
+  // third and fourth `claude -r` (2026-09-14). The server now routes such a
+  // send to the owner anyway; this keeps the user on the real tab.
   const liveSid = Object.keys(agentStatusCache).find(sid => {
     const s = agentStatusCache[sid];
     return s && s.projectId === projectId && s.claudeSessionId === csid &&
-      (s.status === 'running' || s.waitingForQuestion || s.waitingForPlanApproval);
+      (s.status === 'running' || s.status === 'idle' || s.waitingForQuestion || s.waitingForPlanApproval);
   });
   if (liveSid) { switchAgentTab(projectId, liveSid); return; }
   if (agentStatusCache[csid]) { switchAgentTab(projectId, csid); return; }
@@ -3578,6 +3583,7 @@ function splitPaneHTML(p, sid, isPrimary) {
       ${statusLbl}<span style="flex:1"></span>${stopBtn}${closeBtn}
     </div>
     <div class="agent-chat">
+      ${_forkNoticeHTML(sid)}
       <div class="agent-output" id="agent-output-${esc(sid)}"></div>
       ${compose}
     </div>
@@ -3899,6 +3905,49 @@ function _renderSubagentCards(sessionId) {
   if (wasPinned) _scheduleAgentPinScroll(sessionId, el, false);
 }
 window._renderSubagentCards = _renderSubagentCards;
+
+// Fork notice (2026-09-14). A conversation must run as one process. When the
+// server reports other live copies of it (/agent/status `live_copies`), or that
+// the session moved to a new working directory, say so above the transcript
+// with a link to the other copy, instead of silently showing one branch while
+// replies land in another.
+function _forkNoticeHTML(sessionId) {
+  const c = agentStatusCache[sessionId] || {};
+  const others = c.liveCopies || [];
+  const moved = c.cwdMovedFrom || '';
+  if (!others.length && !moved) return '';
+  const pid = c.projectId || '';
+  const links = others.map(o =>
+    `<a href="#" class="fork-notice-link" data-sid="${esc(o)}" onclick="event.preventDefault();switchAgentTab('${esc(pid)}','${esc(o)}')">copy ${esc(o.slice(0, 8))}</a>`).join(', ');
+  const n = others.length + (c.processAlive ? 1 : 0);
+  const parts = [];
+  if (others.length) {
+    parts.push(n >= 2
+      ? `This conversation is running in ${n} copies; replies may appear in another copy. Open: ${links}`
+      : `This conversation is running in another copy; replies will appear there. Open: ${links}`);
+  }
+  if (moved) {
+    parts.push(`This session moved to a new working directory (was <code>${esc(moved)}</code>); earlier work may be in the old location.`);
+  }
+  const key = `${n}|${others.join(',')}|${moved}`;
+  return `<div class="fork-notice" id="fork-notice-${esc(sessionId)}" data-key="${esc(key)}" role="alert">${parts.join('<br>')}</div>`;
+}
+function _renderForkNotice(sessionId) {
+  const old = document.getElementById(`fork-notice-${sessionId}`);
+  const html = _forkNoticeHTML(sessionId);
+  if (!html) { if (old) old.remove(); return; }
+  const host = document.createElement('div');
+  host.innerHTML = html;
+  const fresh = host.firstElementChild;
+  if (old) {
+    if (old.dataset.key !== fresh.dataset.key) old.replaceWith(fresh);
+    return;
+  }
+  const out = document.getElementById(`agent-output-${sessionId}`);
+  if (out && out.parentNode) out.parentNode.insertBefore(fresh, out);
+}
+window._forkNoticeHTML = _forkNoticeHTML;
+window._renderForkNotice = _renderForkNotice;
 
 // Self-canceling poll (mirrors agent-console.js's _wfStartPolling for the
 // Workflows tab): active_subagents' elapsed_seconds/tool_calls are a
@@ -4786,7 +4835,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [] };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch
@@ -4794,6 +4843,7 @@ async function fetchAgentStatus(projectId) {
       // not come, per the turn_start/turn_complete "no rebuild" rule).
       _renderSubagentCards(sid);
       window.updateRailRowStatus?.(sid);
+      _renderForkNotice(sid);
       // A FRESH conversation has no claude_session_id at dispatch time, so the
       // zero-gap upsert in startAgent() (resume-preview.js) is skipped for it —
       // `if (resumeId && task)` is false. Nothing else inserted it, so the new
@@ -4837,10 +4887,12 @@ async function fetchAgentStatus(projectId) {
         // first message would disappear from the chat. Prepend it back when
         // missing so the chat survives a refresh.
         const _hasPrompt = s.log_lines.some(l => (l || '').trimStart().startsWith('> '));
-        if (!_hasPrompt && s.task) {
-          agentOutputBuffers[sid] = [`> ${s.task}`, ...s.log_lines];
-        } else {
-          agentOutputBuffers[sid] = s.log_lines;
+        const _incoming = (!_hasPrompt && s.task) ? [`> ${s.task}`, ...s.log_lines] : s.log_lines;
+        // Never replace rendered history with a shorter copy: a forked or
+        // rebuilt server buffer made a reply vanish until the next message.
+        // See _mergeShorterHistory (resume-preview.js).
+        if (!window._mergeShorterHistory?.(sid, _incoming, 'status-poll')) {
+          agentOutputBuffers[sid] = _incoming;
         }
         // Anchor the SSE since= cursor to the server's authoritative count so
         // a subsequent connectAgentStream() resumes at the right index instead
