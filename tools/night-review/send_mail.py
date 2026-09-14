@@ -140,6 +140,10 @@ def main() -> int:
     ap.add_argument("--verify", action="store_true",
                     help="After sending, reconnect over IMAP and confirm the "
                          "message actually landed. Exit 3 if it did not.")
+    ap.add_argument("--message-id",
+                    help="Use this exact Message-ID instead of generating one. "
+                         "For callers (e.g. question_channel.py) that must know "
+                         "the id in advance to match a later In-Reply-To.")
     args = ap.parse_args()
 
     import datetime as _dt
@@ -154,6 +158,17 @@ def main() -> int:
         print("send_mail: refused, ~/.clayrune/mail_paused exists", flush=True)
         return 4
 
+    # PYTEST GUARD. On 2026-09-11 tests/test_tunnel_watchdog.py sent four real
+    # "Remote access DOWN" emails to Ron before those specific tests were
+    # patched -- the ledger below already recorded PYTEST_CURRENT_TEST but
+    # still let the send through. Same gate mc/workflows.py already uses
+    # (_notify_approval_waiting / _send_operator_notification, ~lines
+    # 1195/1264): refuse under pytest unless explicitly opted in. This closes
+    # the class, not just the tests that were already caught.
+    under_pytest = bool(_os.environ.get("PYTEST_CURRENT_TEST"))
+    live_mail_opt_in = bool(_os.environ.get("MC_LIVE_MAIL_TESTS"))
+    refused_for_pytest = under_pytest and not live_mail_opt_in
+
     # SENDER LEDGER. Every caller is an anonymous subprocess, so nothing
     # recorded WHO sent what. One append-only line per attempt.
     try:
@@ -165,9 +180,15 @@ def main() -> int:
                 _os.environ.get("CLAUDE_CODE_SESSION_ID", "-"),
                 _os.environ.get("PYTEST_CURRENT_TEST", "-")[:60],
                 (args.subject or "")[:100].replace("\t", " "),
+                "refused" if refused_for_pytest else "attempted",
             ]) + "\n")
     except Exception:
         pass  # a ledger failure must never stop a real send
+
+    if refused_for_pytest:
+        print("[send_mail] refused: running under pytest (set MC_LIVE_MAIL_TESTS=1 "
+              "to actually send from a test)", file=sys.stderr)
+        return 5
 
     # Resolve body: --body > --body-file > stdin.
     if args.body is not None:
@@ -214,7 +235,11 @@ def main() -> int:
     msg["To"] = to_addr
     # Set explicitly rather than letting the MTA assign one, so --verify has an
     # exact needle to search on. See _verify_delivered for why not the subject.
-    msg["Message-ID"] = make_msgid(domain="clayrune.local")
+    if args.message_id:
+        mid = args.message_id.strip()
+        msg["Message-ID"] = mid if mid.startswith("<") else f"<{mid}>"
+    else:
+        msg["Message-ID"] = make_msgid(domain="clayrune.local")
     msg.set_content(body)
 
     try:

@@ -146,7 +146,7 @@ def test_delivery_is_skipped_if_answered_during_the_grace_window(monkeypatch):
 def test_an_unattended_question_is_delivered(monkeypatch):
     sent = []
     monkeypatch.setattr(qc, '_send_email',
-                        lambda subj, body, to: sent.append((subj, body)) or True)
+                        lambda subj, body, to, mid: sent.append((subj, body)) or True)
 
     s = _session(waiting_for_question=True)  # no viewer, ever
     agent_runtime.apply_mc_tool_blocks(s, QUESTION_TURN)
@@ -213,23 +213,38 @@ def test_replies_map_onto_options(reply, expected):
     assert qc.match_answer(reply, OPTS) == expected
 
 
-def test_an_unrecognised_reply_is_passed_through_verbatim():
-    """We never GUESS an option from a vague reply. Passing the words to the agent
-    is always safe; silently picking the wrong option is not."""
-    assert qc.match_answer('do neither, wait for me', OPTS) == 'do neither, wait for me'
+def test_an_unrecognised_reply_to_an_option_question_does_not_match():
+    """We never GUESS an option from a vague reply, and — since 2026-09-14 —
+    we never pass the raw words through either: an option-bearing question
+    must resume with an option it actually offered, or not resume at all."""
+    assert qc.match_answer('do neither, wait for me', OPTS) == ''
 
 
 def test_an_out_of_range_number_is_not_an_option():
-    assert qc.match_answer('9', OPTS) == '9'
+    assert qc.match_answer('9', OPTS) == ''
+
+
+def test_a_genuinely_free_text_question_passes_the_raw_reply_through():
+    """No options anywhere -> match_answer still returns the raw text; it is
+    handle_reply's job (not match_answer's) to decide whether that is safe to
+    forward. See test_a_free_text_question_is_never_auto_resumed_from_mail."""
+    no_opts = [{'question': 'What should the release notes say?'}]
+    assert qc.match_answer('Ship the new importer', no_opts) == 'Ship the new importer'
+
+
+def _outbox_entry(qid='deadbeefcafe', *, questions=OPTS, to=None, message_id='<q-1@clayrune.local>'):
+    qc._outbox[qid] = {'project_id': 'p', 'project_name': 'P', 'session_id': 's',
+                       'questions': questions, 'to': to, 'message_id': message_id}
+    return qid
 
 
 def test_a_reply_answers_the_right_question(monkeypatch):
     answered = []
     monkeypatch.setattr(qc, '_answer', lambda qid, ans: answered.append((qid, ans)) or True)
 
-    qc._outbox['deadbeefcafe'] = {'project_id': 'p', 'project_name': 'P',
-                                  'session_id': 's', 'questions': OPTS, 'to': None}
-    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '2\n\n> quoted junk')
+    _outbox_entry()
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '2\n\n> quoted junk',
+                         message_id='<reply-1@gmail.com>', in_reply_to='<q-1@clayrune.local>')
     assert ok is True
     assert answered == [('deadbeefcafe', 'Hold')]
 
@@ -238,13 +253,13 @@ def test_a_reply_is_acted_on_only_once(monkeypatch):
     """A poller re-reads the inbox. The same reply must not resume the agent twice."""
     calls = []
     monkeypatch.setattr(qc, '_answer', lambda qid, ans: calls.append(qid) or True)
-    qc._outbox['deadbeefcafe'] = {'project_id': 'p', 'project_name': 'P',
-                                  'session_id': 's', 'questions': OPTS, 'to': None}
+    _outbox_entry()
 
     subj, body = 'Re: [Clayrune question] P · q:deadbeef', '1'
-    assert qc.handle_reply(subj, body) is True
-    assert qc.handle_reply(subj, body) is False
-    assert qc.handle_reply(subj, body) is False
+    kw = dict(message_id='<reply-1@gmail.com>', in_reply_to='<q-1@clayrune.local>')
+    assert qc.handle_reply(subj, body, **kw) is True
+    assert qc.handle_reply(subj, body, **kw) is False
+    assert qc.handle_reply(subj, body, **kw) is False
     assert len(calls) == 1
 
 
@@ -263,12 +278,112 @@ def test_quoted_reply_text_is_skipped(monkeypatch):
     line the human actually typed."""
     got = []
     monkeypatch.setattr(qc, '_answer', lambda qid, ans: got.append(ans) or True)
-    qc._outbox['deadbeefcafe'] = {'project_id': 'p', 'project_name': 'P',
-                                  'session_id': 's', 'questions': OPTS, 'to': None}
+    _outbox_entry()
 
     body = "\n\nHold\n\nOn Sun, Jul 13, Clayrune wrote:\n> An agent is waiting\n> 1. Ship it\n"
-    qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', body)
+    qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', body,
+                    message_id='<reply-1@gmail.com>', in_reply_to='<q-1@clayrune.local>')
     assert got == ['Hold']
+
+
+# ─── 4b. The actual security fix: subject match alone is not a reply ────────
+
+
+def test_our_own_outgoing_question_mail_resumes_nothing(monkeypatch):
+    """The mailer sends to Ron's own address, so the outgoing question mail
+    itself lands in INBOX with the matching subject/qid. This is the bug: it
+    used to be read back as an 'answer' consisting of its own first line."""
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    qid = _outbox_entry()
+    subject, body = qc.render('P', {'task': ''}, qid, OPTS)
+
+    # Our own sent copy: no In-Reply-To/References (it's the original, not a
+    # reply), and its Message-ID is exactly the one we recorded.
+    ok = qc.handle_reply(subject, body, message_id='<q-1@clayrune.local>')
+    assert ok is False
+    assert qid not in qc._answered, "must not poison _answered for the real reply"
+
+
+def test_a_spoofed_subject_with_no_in_reply_to_resumes_nothing(monkeypatch):
+    """A guessable 8-hex qid and the right subject text is not enough -- the
+    class of attack AGENT_RULES.md's mail-laundering rule exists to close."""
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    _outbox_entry()
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '1',
+                         message_id='<attacker@evil.example>')  # no In-Reply-To at all
+    assert ok is False
+    assert 'deadbeefcafe' not in qc._answered
+
+
+def test_an_in_reply_to_that_names_a_different_message_resumes_nothing(monkeypatch):
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    _outbox_entry()
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '1',
+                         message_id='<attacker@evil.example>',
+                         in_reply_to='<something-unrelated@example.com>')
+    assert ok is False
+
+
+def test_a_genuine_reply_with_a_valid_option_resumes_the_agent(monkeypatch):
+    answered = []
+    monkeypatch.setattr(qc, '_answer', lambda qid, ans: answered.append((qid, ans)) or True)
+    _outbox_entry()
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '1',
+                         message_id='<reply-1@gmail.com>',
+                         in_reply_to='<q-1@clayrune.local>')
+    assert ok is True
+    assert answered == [('deadbeefcafe', 'Ship it')]
+
+
+def test_an_option_question_with_a_non_matching_reply_stays_open(monkeypatch):
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    _outbox_entry()
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', 'maybe later',
+                         message_id='<reply-1@gmail.com>',
+                         in_reply_to='<q-1@clayrune.local>')
+    assert ok is False
+    assert 'deadbeefcafe' not in qc._answered, "a non-match must not block a later real reply"
+
+
+def test_a_later_genuine_reply_still_lands_after_an_earlier_bad_one(monkeypatch):
+    answered = []
+    monkeypatch.setattr(qc, '_answer', lambda qid, ans: answered.append((qid, ans)) or True)
+    _outbox_entry()
+
+    # First: a spoofed/non-reply message for the same qid.
+    assert qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '1',
+                           message_id='<attacker@evil.example>') is False
+    # Then: the real reply.
+    assert qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '2',
+                           message_id='<reply-1@gmail.com>',
+                           in_reply_to='<q-1@clayrune.local>') is True
+    assert answered == [('deadbeefcafe', 'Hold')]
+
+
+def test_a_free_text_question_is_never_auto_resumed_from_mail(monkeypatch):
+    """Free-text (no options) questions are never auto-answered from the mail
+    channel, even with a fully-authenticated reply -- see the module docstring
+    on handle_reply for why laundering was rejected in favor of just refusing."""
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    no_opts = [{'question': 'What should the release notes say?'}]
+    _outbox_entry(questions=no_opts)
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', 'Ship the new importer',
+                         message_id='<reply-1@gmail.com>',
+                         in_reply_to='<q-1@clayrune.local>')
+    assert ok is False
+    assert 'deadbeefcafe' not in qc._answered
+
+
+def test_from_header_mismatch_is_an_extra_filter_not_the_only_one(monkeypatch):
+    """From: is unauthenticated and never proof by itself, but when we DO know
+    the expected operator address it still has to match."""
+    monkeypatch.setattr(qc, '_answer', lambda *a: pytest.fail("must not resume"))
+    _outbox_entry(to='ron@example.com')
+    ok = qc.handle_reply('Re: [Clayrune question] P · q:deadbeef', '1',
+                         message_id='<reply-1@gmail.com>',
+                         in_reply_to='<q-1@clayrune.local>',
+                         from_header='attacker@evil.example')
+    assert ok is False
 
 
 def test_the_poller_does_nothing_when_no_question_is_outstanding():
