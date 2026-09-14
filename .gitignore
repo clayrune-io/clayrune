@@ -291,6 +291,7 @@ static/downloads/*
 # encrypted or not. Ron, 2026-08-01.
 secrets.json
 secrets.key
+secrets.key.dpapi
 secrets_audit.jsonl
 data/secrets*
 *.secrets.json

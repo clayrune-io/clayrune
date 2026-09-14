@@ -471,12 +471,36 @@ class _FakeKeyringBackend:
         self.store.clear()
 
 
+class _FakeDpapi:
+    """In-memory stand-in for Windows DPAPI — a reversible transform, never
+    the real `crypt32` call. A blob missing the marker prefix can't be
+    unsealed, which is how tests simulate a corrupted or foreign-profile
+    seal without needing a second machine or real CryptUnprotectData."""
+
+    _PREFIX = b'FAKE-DPAPI-SEAL:'
+
+    def protect(self, data: bytes) -> bytes:
+        return self._PREFIX + bytes(reversed(data))
+
+    def unprotect(self, blob: bytes) -> bytes:
+        if not blob.startswith(self._PREFIX):
+            raise ValueError('not a recognized (fake) DPAPI seal')
+        return bytes(reversed(blob[len(self._PREFIX):]))
+
+
 @pytest.fixture()
 def fake_keyring_vault(tmp_path, monkeypatch):
     """A vault where the *keyring* backend is live (backed by an in-memory
     fake, never the real OS keyring) so self-heal/reseed behavior can be
     exercised. Distinct from the `vault` fixture, which forces the file
-    backend and never touches keyring code at all."""
+    backend and never touches keyring code at all.
+
+    DPAPI is also faked here (never the real Windows API — this suite runs
+    on a real Windows box, and calling the actual `crypt32` would violate
+    "never touch real DPAPI state" even though it only touches bytes we
+    control). This represents the Windows-with-a-sealed-mirror shape; see
+    `fake_keyring_vault_no_dpapi` for the macOS/Linux shape.
+    """
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
     monkeypatch.delenv('CLAYRUNE_SECRETS_KEY_BACKEND', raising=False)
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
@@ -486,15 +510,34 @@ def fake_keyring_vault(tmp_path, monkeypatch):
     monkeypatch.setattr(keyring_pkg, 'set_password', fake.set_password)
     from mc import secrets_store
     secrets_store._dispensed.clear()
+    fake_dpapi = _FakeDpapi()
+    monkeypatch.setattr(secrets_store, '_dpapi_available', lambda: True)
+    monkeypatch.setattr(secrets_store, '_dpapi_protect', fake_dpapi.protect)
+    monkeypatch.setattr(secrets_store, '_dpapi_unprotect', fake_dpapi.unprotect)
     return secrets_store, fake
 
 
-def test_empty_store_mints_via_keyring_and_mirrors_to_file(fake_keyring_vault):
+@pytest.fixture()
+def fake_keyring_vault_no_dpapi(fake_keyring_vault, monkeypatch):
+    """Same in-memory fake keyring, but DPAPI is unavailable — simulating
+    macOS/Linux, where there is no OS primitive to seal a local mirror to
+    this user (Keychain/SecretService already *are* the keyring backend).
+    Per the module docstring, the keyring is the sole copy on this OS: a
+    wipe fails closed instead of self-healing."""
+    vault, fake = fake_keyring_vault
+    monkeypatch.setattr(vault, '_dpapi_available', lambda: False)
+    return vault, fake
+
+
+def test_empty_store_mints_via_keyring_and_mirrors_via_dpapi(fake_keyring_vault):
     vault, fake = fake_keyring_vault
     backend = vault.load_master_key()[1]
     assert backend == 'keyring'
     assert fake.store  # keyring actually got the key
-    assert vault.key_file_path().is_file()  # mirrored, not just fallback
+    assert vault.dpapi_mirror_path().is_file()  # sealed mirror, not just fallback
+    # a7e4ebb wrote a plaintext mirror unconditionally; this fix restricts
+    # that to platforms with no sealed alternative — Windows never needs it.
+    assert not vault.key_file_path().is_file()
 
 
 def test_wiped_keyring_with_existing_secrets_and_no_mirror_raises(vault):
@@ -509,15 +552,109 @@ def test_wiped_keyring_with_existing_secrets_and_no_mirror_raises(vault):
     assert not vault.key_file_path().is_file()
 
 
-def test_wiped_keyring_self_heals_from_file_mirror(fake_keyring_vault):
+def test_wiped_keyring_self_heals_from_dpapi_mirror(fake_keyring_vault):
     vault, fake = fake_keyring_vault
     vault.set_secret('reddit.password', 'still-here')
     fake.wipe()  # THE INCIDENT: keyring returns None, not an exception
 
-    # Self-healed via the file mirror, not a freshly minted (wrong) key.
+    # Self-healed via the sealed mirror, not a freshly minted (wrong) key.
     assert vault.get_secret_value('reddit.password', consumer='t') == 'still-here'
     # And reseeded the keyring for next time.
     assert fake.store, 'self-heal did not restore the keyring'
+
+
+def test_dpapi_mirror_that_fails_to_unseal_is_treated_as_unavailable_and_does_not_mint(fake_keyring_vault):
+    """A DPAPI blob that can no longer be opened (wrong user profile, disk
+    copy from a different machine, corruption) must be treated exactly like
+    'no mirror' — fail closed, never minted over."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'orphan-me-not')
+    fake.wipe()
+    vault.dpapi_mirror_path().write_bytes(b'not-a-real-seal')
+
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='t')
+    # No replacement key was minted into the keyring during the failed attempt.
+    assert not fake.store
+
+
+def test_migration_removes_legacy_plaintext_mirror_once_dpapi_verified(fake_keyring_vault):
+    """A pre-existing a7e4ebb-era plaintext `secrets.key` must not survive
+    next to a verified DPAPI-sealed mirror — once the sealed replacement is
+    proven to hold the same key, the plaintext copy is pure exposure."""
+    vault, fake = fake_keyring_vault
+    vault.load_master_key()  # keyring now holds a key; DPAPI mirror written too
+    assert vault.dpapi_mirror_path().is_file()
+
+    # Simulate a leftover mirror from before this fix.
+    vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
+    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+
+    vault.load_master_key()  # keyring read succeeds again -> migration runs
+
+    assert not vault.key_file_path().is_file()
+    assert vault.dpapi_mirror_path().is_file()
+
+
+def test_migration_leaves_plaintext_mirror_if_dpapi_mirror_cannot_be_verified(fake_keyring_vault, monkeypatch):
+    """If writing the sealed mirror doesn't actually take (silently-failed
+    disk write, or anything that makes the round-trip check fail), the
+    plaintext copy must NOT be deleted — losing both would be worse than the
+    at-rest downgrade this migration exists to fix."""
+    vault, fake = fake_keyring_vault
+    vault.load_master_key()  # keyring now holds a key (and a real DPAPI mirror)
+    vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
+    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+    # Force the post-write verification read to look like a failed round-trip,
+    # regardless of what the (unpatched) write actually did.
+    monkeypatch.setattr(vault, '_read_dpapi_mirror', lambda: None)
+
+    vault.load_master_key()
+
+    assert vault.key_file_path().is_file()  # NOT removed — verification failed
+
+
+def test_no_dpapi_healthy_keyring_writes_no_mirror_at_all(fake_keyring_vault_no_dpapi):
+    vault, fake = fake_keyring_vault_no_dpapi
+    vault.load_master_key()
+    assert not vault.key_file_path().is_file()
+    assert not vault.dpapi_mirror_path().is_file()
+
+
+def test_no_dpapi_migration_removes_legacy_plaintext_mirror_immediately(fake_keyring_vault_no_dpapi):
+    """No sealed alternative exists on this OS, so once the keyring is
+    proven healthy the plaintext copy is pure exposure with nothing to
+    verify against — removed on sight, per the module docstring."""
+    vault, fake = fake_keyring_vault_no_dpapi
+    vault.load_master_key()  # keyring now holds a key
+    vault.key_file_path().parent.mkdir(parents=True, exist_ok=True)
+    vault.key_file_path().write_text('stale-plaintext-mirror-value', encoding='utf-8')
+
+    vault.load_master_key()  # keyring read succeeds again -> migration runs
+
+    assert not vault.key_file_path().is_file()
+
+
+def test_no_dpapi_wiped_keyring_fails_closed_instead_of_self_healing(fake_keyring_vault_no_dpapi):
+    """The point-2 protection: no mirror exists on this OS, so a wipe must
+    refuse rather than silently mint or magically recover."""
+    vault, fake = fake_keyring_vault_no_dpapi
+    vault.set_secret('reddit.password', 'no-mirror-on-this-os')
+    fake.wipe()
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='t')
+
+
+@pytest.mark.skipif(sys.platform != 'win32', reason='DPAPI is Windows-only')
+def test_real_dpapi_protect_unprotect_round_trip():
+    """Exercises the ACTUAL Windows DPAPI call once, on plain bytes with no
+    file path involved — never touches CLAYRUNE_HOME, ~/.clayrune, or the
+    real keyring. Every other DPAPI-shaped test above uses `_FakeDpapi`."""
+    from mc import secrets_store
+    data = b'32-bytes-of-fake-master-key-mat'
+    sealed = secrets_store._dpapi_protect(data)
+    assert sealed != data
+    assert secrets_store._dpapi_unprotect(sealed) == data
 
 
 def test_locked_keyring_falls_back_to_mirror_without_minting(fake_keyring_vault):
