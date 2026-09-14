@@ -722,6 +722,7 @@ async function _wfLoadInto(entry, workflowId, hintProjectId) {
       hintProjectId);
     if (found) await _wfLoadLinkedSchedule(entry._wf);
     if (found) await _wfLoadLiveRun(entry._wf);
+    _wfStartLivePollIfNeeded(entry._wf);
   } catch (e) {
     entry._wf = _wfFreshState(_wfBlankDef(), null, 'Failed to load workflow', hintProjectId);
   }
@@ -1674,7 +1675,7 @@ function _wfRenderBody(st) {
     ${descOpen ? `<div class="wfb-toolbar-desc-row">
       <textarea id="wfb-desc" rows="1" placeholder="What this pipeline is for">${esc(def.description || '')}</textarea>
     </div>` : ''}
-    ${_wfRenderLiveRun(st)}
+    <div id="wfb-live-run-slot">${_wfRenderLiveRun(st)}</div>
     <div class="wfb-builder">
       <div class="wfb-palette" id="wfb-palette">${_wfRenderPalette(st)}</div>
       <div id="wfb-canvas-viewport" class="wfb-canvas-viewport" onpointerdown="_wfViewportDown(event)">
@@ -1960,6 +1961,25 @@ function _wfTypeIcon(t) {
   return { approval: '&#9995;', action: '&#9881;', wait: '&#9203;' }[t] || '';
 }
 
+// One glyph per live run-step status (build §1: running/waiting/completed/
+// failed/cancelled/skipped each get a distinct look; pending stays plain).
+// Kept a lookup table, not inline ternaries, so `_wfApplyLiveRunToDom`'s
+// poll-driven DOM patch can call the exact same function the full render
+// path uses -- one source of truth for what a status looks like.
+function _wfLiveStatusBadge(status) {
+  const map = {
+    running: ['wfb-node-live-badge-running', '&#9679;', 'Running now'],
+    waiting: ['wfb-node-live-badge-waiting', '&#8987;', 'Waiting'],
+    completed: ['wfb-node-live-badge-done', '&#10003;', 'Completed'],
+    failed: ['wfb-node-live-badge-failed', '&#10007;', 'Failed'],
+    cancelled: ['wfb-node-live-badge-skipped', '&#8856;', 'Cancelled'],
+    skipped: ['wfb-node-live-badge-skipped', '&#8856;', 'Skipped'],
+  };
+  const hit = status ? map[status] : null;
+  if (!hit) return '';
+  return `<span class="wfb-node-live-badge ${hit[0]}" title="${hit[2]}">${hit[1]}</span>`;
+}
+
 function _wfRenderNode(st, node) {
   const nameAttr = esc(node.name || '');
   let own = '';
@@ -2028,8 +2048,19 @@ function _wfRenderNode(st, node) {
     ? `<span class="wfb-node-unwired-badge" title="No incoming edges, so this runs automatically as soon as the workflow starts — even though it isn't wired to the Trigger tile.">&#9888;</span>`
     : '';
   const nodeStateCls = runError ? ' wfb-node-error' : (authWarning ? ' wfb-node-warning' : '');
-  return `<div class="wfb-node${nodeStateCls}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
+  // MC-946: show which step a LIVE run is on, right on the canvas node --
+  // the strip alone (_wfRenderLiveRun) named the step in text but the card
+  // itself showed nothing. Keyed by node name, the same key run.steps uses
+  // (mc/workflows.py _propagate_skips/_compute_frontier). 'pending' is
+  // deliberately left unstyled -- it's the vast majority of nodes on any
+  // in-progress run and "unchanged" IS the pending state (brief §1).
+  const liveStep = (st.liveRun && st.liveRun.steps) ? st.liveRun.steps[node.name] : null;
+  const liveStatus = liveStep ? liveStep.status : null;
+  const liveCls = (liveStatus && liveStatus !== 'pending') ? ` wfb-node-live-${liveStatus}` : '';
+  const liveBadge = _wfLiveStatusBadge(liveStatus);
+  return `<div class="wfb-node${nodeStateCls}${liveCls}" data-name="${nameAttr}" style="left:${node.x || 0}px;top:${node.y || 0}px">
     <div class="wfb-node-head" onpointerdown="_wfNodeDragDown(event)">
+      ${liveBadge}
       ${unwiredBadge}
       ${headHtml}
       <button class="wfb-node-menu-btn" title="Step options" onclick="_wfNodeMenuToggle(event,'${_wfJsStrEsc(node.name)}')">&#8230;</button>
@@ -4181,7 +4212,7 @@ async function _wfRunNow() {
       // 409 busy = a run is already live. Surface it (with its Cancel) rather
       // than leaving only a toast -- a run whose completion never arrives
       // otherwise blocks every future run with no visible way out.
-      if (data.busy) { await _wfLoadLiveRun(st); _wfRender(); }
+      if (data.busy) { await _wfLoadLiveRun(st); _wfStartLivePollIfNeeded(st); _wfRender(); }
       const names = (st.def.nodes || []).map(n => n.name);
       const hit = names.find(n => msg.includes(`'${n}'`));
       if (hit) _wfApplyRunErrors(st, [{ node: hit, message: msg }]);
@@ -4189,6 +4220,7 @@ async function _wfRunNow() {
       return;
     }
     st.liveRun = (data.run && _WF_LIVE_RUN_STATUSES.includes(data.run.status)) ? data.run : null;
+    _wfStartLivePollIfNeeded(st);
     _wfRender();
     showToast('Run started.', 3000);
   } catch (e) {
@@ -4198,11 +4230,12 @@ async function _wfRunNow() {
 
 // ── Live run strip + Cancel ──────────────────────────────────────────────────
 // One live run per workflow (mc/workflows.py `_has_live_run`), so the strip
-// shows at most one. Loaded when a saved workflow mounts and after Run now;
-// not polled -- a run that has since finished is caught by Cancel's own 409,
-// which clears the strip. Cancel marks the RUN cancelled and deliberately
-// leaves any in-flight agent session running (its chat's Stop owns that), so
-// the toast names what is still going.
+// shows at most one. Loaded when a saved workflow mounts and after Run now,
+// then kept fresh by the poll below while the run is live (MC-946) -- a run
+// that has since finished is also caught by Cancel's own 409, which clears
+// the strip. Cancel marks the RUN cancelled and deliberately leaves any
+// in-flight agent session running (its chat's Stop owns that), so the toast
+// names what is still going.
 const _WF_LIVE_RUN_STATUSES = ['running', 'waiting'];
 
 async function _wfLoadLiveRun(st) {
@@ -4216,6 +4249,65 @@ async function _wfLoadLiveRun(st) {
   }
 }
 
+// ── Live run polling (MC-946 build §3) ───────────────────────────────────────
+// A GET every few seconds beats a new SSE stream here: Chromium caps HTTP/1.1
+// at 6 connections per origin (arch_sse_slot_management) and this canvas
+// already competes for a slot with the chat pane's own stream, so a stream
+// dedicated to one workflow tab isn't worth the budget for a value that only
+// needs to be a few seconds fresh. One module-level timer, singleton like
+// `_wfState` itself -- `_wfStartLivePollIfNeeded` is a no-op while a timer is
+// already running, so callers never have to know whether one exists.
+let _wfLivePollTimer = null;
+const _WF_LIVE_POLL_MS = 4000;
+
+function _wfStopLivePoll() {
+  if (_wfLivePollTimer) { clearInterval(_wfLivePollTimer); _wfLivePollTimer = null; }
+}
+
+function _wfStartLivePollIfNeeded(st) {
+  if (!st || !st.liveRun) { _wfStopLivePoll(); return; }
+  if (_wfLivePollTimer) return; // already polling
+  _wfLivePollTimer = setInterval(_wfPollLiveRunTick, _WF_LIVE_POLL_MS);
+}
+
+// Re-reads the run and patches the DOM directly (_wfApplyLiveRunToDom) rather
+// than calling the full _wfRender() -- a poll tick fires while Ron may be
+// mid-edit on a card (typing a prompt, an open dropdown); wiping #wfb-body's
+// innerHTML every 4s would drop focus and cursor position on every card, not
+// just the one whose status changed. Self-stops the moment either the host
+// DOM is gone (tab/workflow switched away -- _wfRenderIdleHost/_wfRemountDom
+// replace #wfb-live-run-slot) or the run itself is no longer live.
+async function _wfPollLiveRunTick() {
+  const entry = _wfEntry();
+  const st = entry && entry._wf;
+  if (!st || !st.liveRun || !document.getElementById('wfb-live-run-slot')) { _wfStopLivePoll(); return; }
+  await _wfLoadLiveRun(st);
+  if (!document.getElementById('wfb-live-run-slot')) { _wfStopLivePoll(); return; }
+  _wfApplyLiveRunToDom(st);
+  if (!st.liveRun) _wfStopLivePoll();
+}
+
+const _WF_LIVE_STATUS_CLASSES = ['wfb-node-live-running', 'wfb-node-live-waiting',
+  'wfb-node-live-completed', 'wfb-node-live-failed', 'wfb-node-live-cancelled', 'wfb-node-live-skipped'];
+
+function _wfApplyLiveRunToDom(st) {
+  const slot = document.getElementById('wfb-live-run-slot');
+  if (slot) slot.innerHTML = _wfRenderLiveRun(st);
+  document.querySelectorAll('#wfb-world .wfb-node[data-name]').forEach((el) => {
+    const name = el.dataset.name;
+    el.classList.remove(..._WF_LIVE_STATUS_CLASSES);
+    const oldBadge = el.querySelector('.wfb-node-head > .wfb-node-live-badge');
+    if (oldBadge) oldBadge.remove();
+    const liveStep = (st.liveRun && st.liveRun.steps) ? st.liveRun.steps[name] : null;
+    const status = liveStep ? liveStep.status : null;
+    if (status && status !== 'pending') {
+      el.classList.add(`wfb-node-live-${status}`);
+      const head = el.querySelector('.wfb-node-head');
+      if (head) head.insertAdjacentHTML('afterbegin', _wfLiveStatusBadge(status));
+    }
+  });
+}
+
 function _wfRenderLiveRun(st) {
   const run = st.liveRun;
   if (!run) return '';
@@ -4223,12 +4315,29 @@ function _wfRenderLiveRun(st) {
     .filter(([, s]) => _WF_LIVE_RUN_STATUSES.includes(s.status)).map(([n]) => n);
   const since = (run.trigger && run.trigger.fired_at) || run.created || '';
   const sinceLabel = since ? new Date(since).toLocaleString() : '';
+  // MC-946 build §2: the step name is now a click target that pans the
+  // canvas to its node (_wfFocusLiveNode) -- a real <button>, not a styled
+  // <span>, so it's reachable the same way the Cancel button already is.
+  const inFlightHtml = inFlight
+    .map(n => `<button type="button" class="wfb-live-run-step-link" onclick="_wfFocusLiveNode('${_wfJsStrEsc(n)}')">${esc(n)}</button>`)
+    .join(', ');
   return `<div class="wfb-live-run" data-run-id="${esc(run.id)}">
       <span class="wfb-live-run-dot"></span>
-      <span class="wfb-live-run-text">Run <code>${esc(run.id)}</code> is ${esc(run.status)}${inFlight.length ? ` on <b>${esc(inFlight.join(', '))}</b>` : ''}${sinceLabel ? ` · started ${esc(sinceLabel)}` : ''}. A new run can't start until it ends.</span>
+      <span class="wfb-live-run-text">Run <code>${esc(run.id)}</code> is ${esc(run.status)}${inFlightHtml ? ` on ${inFlightHtml}` : ''}${sinceLabel ? ` · started ${esc(sinceLabel)}` : ''}. A new run can't start until it ends.</span>
       <button type="button" class="wfb-toolbar-btn wfb-live-run-cancel" onclick="_wfCancelRun()" ${st.cancellingRun ? 'disabled' : ''}
         title="Stop this run from advancing. Any agent already working keeps going — stop it from its own chat.">${st.cancellingRun ? 'Cancelling…' : 'Cancel run'}</button>
     </div>`;
+}
+
+// Pans the canvas to a live run's node without a full _wfRender() -- a poll
+// tick or a strip click during active typing elsewhere on the card must not
+// wipe #wfb-body and drop focus/selection (see _wfApplyLiveRunToDom below,
+// same reasoning).
+function _wfFocusLiveNode(name) {
+  const entry = _wfEntry(); if (!entry || !entry._wf) return;
+  const st = entry._wf;
+  _wfPanToNode(st, name);
+  _wfApplyViewport(st);
 }
 
 async function _wfCancelRun() {
@@ -4260,6 +4369,10 @@ async function _wfCancelRun() {
     showToast('Cancel failed: ' + e.message, 6000);
   } finally {
     st.cancellingRun = false;
+    // Reuses the same null-check the poll starter already does: liveRun is
+    // null on both cancel-succeeded paths above, so this stops the timer;
+    // a genuine network failure leaves liveRun set and the poll running.
+    _wfStartLivePollIfNeeded(st);
     _wfRender();
   }
 }
@@ -4331,3 +4444,4 @@ window._wfCancelRun = _wfCancelRun;
 window._wfMarkDirty = _wfMarkDirty;
 window._wfSetSchedType = _wfSetSchedType;
 window._wfToggleSchedEnabled = _wfToggleSchedEnabled;
+window._wfFocusLiveNode = _wfFocusLiveNode;
