@@ -554,7 +554,12 @@ if __name__ == '__main__':
     _webview_ok = False
     try:
         import webview
-        import clr  # noqa: F401 — probe import: triggers CoreCLR + .NET load, fail fast if broken
+        if sys.platform == 'win32':
+            # Probe import: triggers CoreCLR + .NET load, fail fast if broken.
+            # Windows only: pythonnet is stripped from the macOS build, so an
+            # unguarded probe raised there and every Mac launch fell back to
+            # the browser instead of opening the native Cocoa window.
+            import clr  # noqa: F401
         _webview_ok = True
     except Exception as _e:
         _err = f'Native window unavailable ({type(_e).__name__}: {_e})'
