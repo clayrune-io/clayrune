@@ -4,6 +4,8 @@ The load-bearing assertion here is negative: **no route returns a plaintext
 value**. Everything else is ordinary CRUD.
 """
 
+import base64
+import os
 import sys
 from pathlib import Path
 
@@ -127,7 +129,7 @@ def test_audit_records_the_write(client):
     assert records[0]['name'] == 'reddit.password'
 
 
-def test_check_reports_resolvability_without_decrypting(client):
+def test_check_reports_resolvability_and_actually_tries_decryption(client):
     _create(client, scope='alpha')
     r = client.post('/api/secrets/check',
                     json={'text': 'login {{secret:reddit.password}} '
@@ -138,8 +140,40 @@ def test_check_reports_resolvability_without_decrypting(client):
     by_name = {x['name']: x for x in data['referenced']}
     assert by_name['reddit.password']['ok'] is True
     assert by_name['absent.one']['reason'] == 'not_found'
-    # A check must not count as a use.
+    # A check must not count as a use, even though it now decrypts for real.
     assert client.get('/api/secrets').get_json()['secrets'][0]['use_count'] == 0
+
+
+def test_check_flags_undecryptable_entry_not_just_existence(client):
+    """2026-09-14 regression: the old dry-run only confirmed a name existed,
+    so it reported an entry orphaned by a silent master-key remint as fine.
+    Corrupt the key file in place (same effect as a remint) and confirm the
+    check now catches it instead of reporting ok=True."""
+    _create(client)
+    from mc import secrets_store as vault
+    vault.key_file_path().write_text(
+        base64.b64encode(os.urandom(32)).decode('ascii'), encoding='utf-8')
+    r = client.post('/api/secrets/check',
+                    json={'text': '{{secret:reddit.password}}'})
+    data = r.get_json()
+    assert data['resolvable'] is False
+    assert data['referenced'][0]['reason'] == 'undecryptable'
+
+
+def test_list_exposes_unreadable_count(client):
+    _create(client)
+    r = client.get('/api/secrets')
+    assert r.get_json()['unreadable_count'] == 0
+
+    from mc import secrets_store as vault
+    vault.key_file_path().write_text(
+        base64.b64encode(os.urandom(32)).decode('ascii'), encoding='utf-8')
+
+    r = client.get('/api/secrets')
+    data = r.get_json()
+    assert data['unreadable_count'] == 1
+    assert data['secrets'][0]['readable'] is False
+    assert SECRET not in r.get_data(as_text=True)
 
 
 def test_authenticator_import_previews_without_storing_or_leaking_seeds(client):

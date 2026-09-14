@@ -19,7 +19,8 @@ Everything lives under `~/.clayrune/` — **outside the checkout**:
 | Path | Contents | Mode |
 |---|---|---|
 | `~/.clayrune/secrets.json` | ciphertext + metadata | 0600 |
-| `~/.clayrune/secrets.key` | master key, *only* if the OS keyring is unusable | 0600 |
+| `~/.clayrune/secrets.key` | master key, plaintext, *only* if no OS keyring backend is usable at all | 0600 |
+| `~/.clayrune/secrets.key.dpapi` | master key, DPAPI-sealed self-heal mirror — **Windows only**, written whenever the keyring is healthy | 0600 |
 | `~/.clayrune/secrets_audit.jsonl` | append-only access log | 0600 |
 
 This is deliberate and is stronger than gitignoring. Clayrune has already been
@@ -38,8 +39,52 @@ Override the root with `CLAYRUNE_HOME` (tests use this).
 
 The master key is 32 random bytes held in the OS keyring — Windows Credential
 Manager, macOS Keychain, or SecretService on Linux. If no keyring backend is
-usable (typically headless Linux) it degrades to a 0600 key file, and
-`GET /api/secrets` returns a `key_at_rest_warning` so the UI can say so.
+usable at all (typically headless Linux) it degrades to a plaintext 0600 key
+file, and `GET /api/secrets` returns a `key_at_rest_warning` so the UI can say
+so.
+
+### The wipe incident and the self-heal mirror (2026-09-14)
+
+A wiped Windows keystore made `keyring.get_password()` return `None` — the
+same shape as "never had a key" — so `load_master_key()` minted a fresh key
+over live ciphertext with no log line, orphaning 8 of 10 saved logins (the
+dry-run `/api/secrets/check` only confirmed a name existed, never decrypted,
+so it kept reporting the orphaned entries as fine). Two fixes, both in
+`load_master_key()` (`mc/secrets_store.py`):
+
+1. **Fail closed before minting.** If the store already holds sealed secrets
+   and no key is found anywhere (keyring empty, no mirror), `load_master_key`
+   raises `SecretsUnavailable` instead of silently minting a replacement.
+   Minting stays automatic only for a genuinely empty store, and is now
+   always logged. `is_readable(name)` / `list_secrets(check_readable=True)`
+   actually attempt a decrypt, so `/api/secrets` can no longer report an
+   orphaned entry as fine.
+2. **A self-heal mirror, scoped to what the OS can actually protect.** A
+   first attempt at this mirrored the master key into a plaintext 0600 file
+   on *every* successful keyring read, on every OS — durable, but a silent
+   at-rest downgrade: the key would sit in plaintext next to the ciphertext
+   it protects, forever, even on a perfectly healthy box. The shipped design
+   instead scopes the mirror to what each OS actually offers:
+   - **Windows**: sealed with **DPAPI**, user scope (`CryptProtectData` /
+     `CryptUnprotectData` via `ctypes.windll.crypt32` — no new dependency,
+     `pywin32` is not required). Written to `secrets.key.dpapi` on every
+     successful keyring read. A pre-existing plaintext `secrets.key` is
+     removed only after the DPAPI mirror is written **and** read back to
+     confirm it holds the same key — never before, so a verification failure
+     leaves the plaintext copy in place rather than deleting the only
+     working mirror on a guess.
+   - **macOS/Linux**: there is no OS primitive equivalent to DPAPI here —
+     Keychain/SecretService already *are* the keyring backend in use, so
+     there is nothing further to seal a local file with. **No mirror is
+     written** while the keyring is healthy; a wipe with nothing to self-heal
+     from fails closed (case 1 above) instead of degrading at-rest security
+     to cover for it. Any plaintext mirror found on such a box (e.g. left
+     over from the first, since-revised fix) is removed the next time the
+     keyring is confirmed healthy — it has no self-heal benefit left to
+     justify the exposure.
+   - **No keyring backend at all**: unchanged from before this mirror
+     existed — the plaintext 0600 key file is the sole copy, and
+     `key_at_rest_warning` fires for exactly this case.
 
 Each value is sealed with **AES-256-GCM**, a fresh 12-byte nonce, and the
 secret's own name as additional authenticated data — so a ciphertext cannot be

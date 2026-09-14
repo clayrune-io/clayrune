@@ -9,9 +9,10 @@ distilled skill, or the git repo.
 Everything is under ``~/.clayrune/`` (override with ``CLAYRUNE_HOME`` for
 tests). There is deliberately NO path under the repo that can hold a secret:
 
-    ~/.clayrune/secrets.json         ciphertext + metadata      (0600)
-    ~/.clayrune/secrets.key          fallback master key         (0600)
-    ~/.clayrune/secrets_audit.jsonl  append-only access log      (0600)
+    ~/.clayrune/secrets.json         ciphertext + metadata            (0600)
+    ~/.clayrune/secrets.key          fallback master key, plaintext   (0600)
+    ~/.clayrune/secrets.key.dpapi    DPAPI-sealed mirror, Windows-only (0600)
+    ~/.clayrune/secrets_audit.jsonl  append-only access log           (0600)
 
 That is stronger than gitignoring. This project has already been bitten once by
 "gitignored but bundled anyway" — ``build-macos.spec`` packaged
@@ -22,9 +23,26 @@ swept in by a future ``git add -f``, build spec, or installer glob.
 ## Crypto
 
 Master key: 32 random bytes held in the OS keyring (Windows Credential Manager
-/ macOS Keychain / SecretService). If no keyring backend is usable — headless
-Linux, typically — we degrade to a 0600 key file and record the degradation in
-the store so the UI can warn.
+/ macOS Keychain / SecretService). A keystore wipe — see ``load_master_key()``
+for the 2026-09-14 incident this defends against — needs a second copy to
+self-heal from instead of silently minting a replacement over undecryptable
+ciphertext, but that second copy's own at-rest protection depends on the OS:
+
+- **Windows**: mirrored into ``secrets.key.dpapi``, sealed with DPAPI
+  (user-scope ``CryptProtectData``) on every successful keyring read. DPAPI
+  ties the seal to this Windows user account, so the file is not a bare
+  plaintext copy of the master key even though nothing else guards it.
+- **macOS / Linux**: there is no equivalent OS primitive for sealing a file to
+  "this user" the way Keychain/SecretService already do for the keyring
+  entry itself, so **no mirror is written** while the keyring is healthy. A
+  wipe with nothing to self-heal from fails closed
+  (:class:`SecretsUnavailable`) rather than degrading at-rest security to
+  cover for it — see ``load_master_key()``.
+- **No keyring backend usable at all** (headless Linux, typically, or a
+  keyring forced off via ``CLAYRUNE_SECRETS_KEY_BACKEND=file``): the
+  plaintext 0600 ``secrets.key`` file is the sole copy, exactly as before
+  this module grew a Windows mirror. That degradation is recorded in the
+  store so the UI can warn.
 
 Each value is sealed with AES-256-GCM under a fresh 12-byte nonce, with the
 secret's own name as additional authenticated data, so a ciphertext cannot be
@@ -51,6 +69,7 @@ expand the agent's own capability set.
 from __future__ import annotations
 
 import base64
+import ctypes
 import json
 import os
 import re
@@ -112,6 +131,12 @@ def store_path() -> Path:
 
 def key_file_path() -> Path:
     return clayrune_home() / 'secrets.key'
+
+
+def dpapi_mirror_path() -> Path:
+    """Windows-only DPAPI-sealed mirror of the master key. Never written on
+    other platforms — see the module docstring."""
+    return clayrune_home() / 'secrets.key.dpapi'
 
 
 def audit_path() -> Path:
@@ -201,30 +226,259 @@ def _write_key_file(value: str) -> None:
     _write_private_text(p, value)
 
 
+def _remove_key_file(reason: str) -> None:
+    """Delete the plaintext key-file mirror, best-effort, and log why. Called
+    only once a stronger copy is in place (DPAPI mirror, verified) or once
+    none is needed at all (a healthy keyring on an OS with no sealed-mirror
+    option) — never speculatively."""
+    p = key_file_path()
+    try:
+        if p.is_file():
+            p.unlink()
+            _log(f"[secrets] removed plaintext master-key mirror ({reason})")
+    except OSError as e:
+        _log(f"[secrets] could not remove stale plaintext master-key mirror: {e}")
+
+
+# ── DPAPI-sealed mirror (Windows only) ──────────────────────────────────────
+#
+# Windows Data Protection API seals arbitrary bytes to "this OS user, this
+# machine" without needing a key of our own to manage — the exact primitive
+# identity_mirror.py's docstring notes doesn't exist for its own key file
+# either. No new dependency: `ctypes.windll.crypt32` is stdlib, same pattern
+# already used in mc/process_ledger.py and mc/blueprints/agent_routes.py.
+# `pywin32` is not in requirements.txt and this doesn't need it.
+
+def _dpapi_available() -> bool:
+    """True only on Windows. A plain platform check, not a capability probe —
+    if DPAPI is somehow broken on a Windows box, `_dpapi_protect`/`_unprotect`
+    raise and callers treat that as mirror-unavailable, same as any other
+    OSError from this section."""
+    return os.name == 'nt'
+
+
+class _DpapiBlob(ctypes.Structure):
+    _fields_ = [('cbData', ctypes.c_uint32), ('pbData', ctypes.c_void_p)]
+
+
+def _dpapi_crypt32_and_kernel32():
+    """`crypt32`/`kernel32` handles with explicit argtypes/restype.
+
+    Without these, ctypes falls back to guessing a plain ``c_int`` for
+    ``LocalFree``'s pointer argument, which overflows on 64-bit addresses
+    (measured: ``ArgumentError: int too long to convert``). Declared once
+    per call rather than at import time so importing this module on a
+    non-Windows OS never touches ``ctypes.windll`` (which doesn't exist
+    there) — callers already gate on `_dpapi_available()` first.
+    """
+    crypt32 = ctypes.windll.crypt32  # type: ignore[attr-defined]
+    kernel32 = ctypes.windll.kernel32  # type: ignore[attr-defined]
+    blob_p = ctypes.POINTER(_DpapiBlob)
+    crypt32.CryptProtectData.argtypes = [
+        blob_p, ctypes.c_wchar_p, blob_p, ctypes.c_void_p, ctypes.c_void_p,
+        ctypes.c_uint32, blob_p]
+    crypt32.CryptProtectData.restype = ctypes.c_int
+    crypt32.CryptUnprotectData.argtypes = [
+        blob_p, ctypes.POINTER(ctypes.c_wchar_p), blob_p, ctypes.c_void_p,
+        ctypes.c_void_p, ctypes.c_uint32, blob_p]
+    crypt32.CryptUnprotectData.restype = ctypes.c_int
+    kernel32.LocalFree.argtypes = [ctypes.c_void_p]
+    kernel32.LocalFree.restype = ctypes.c_void_p
+    return crypt32, kernel32
+
+
+def _dpapi_protect(data: bytes) -> bytes:
+    """Seal ``data`` with user-scope DPAPI. Windows-only; callers must check
+    `_dpapi_available()` first."""
+    crypt32, kernel32 = _dpapi_crypt32_and_kernel32()
+    buf = ctypes.create_string_buffer(data, len(data))
+    in_blob = _DpapiBlob(len(data), ctypes.cast(buf, ctypes.c_void_p))
+    out_blob = _DpapiBlob()
+    CRYPTPROTECT_UI_FORBIDDEN = 0x01
+    ok = crypt32.CryptProtectData(
+        ctypes.byref(in_blob), 'clayrune-secrets-master-key', None, None, None,
+        CRYPTPROTECT_UI_FORBIDDEN, ctypes.byref(out_blob))
+    if not ok:
+        raise OSError(f'CryptProtectData failed (error {ctypes.get_last_error()})')
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(out_blob.pbData)
+
+
+def _dpapi_unprotect(blob: bytes) -> bytes:
+    """Reverse of `_dpapi_protect`. Windows-only; callers must check
+    `_dpapi_available()` first."""
+    crypt32, kernel32 = _dpapi_crypt32_and_kernel32()
+    buf = ctypes.create_string_buffer(blob, len(blob))
+    in_blob = _DpapiBlob(len(blob), ctypes.cast(buf, ctypes.c_void_p))
+    out_blob = _DpapiBlob()
+    ok = crypt32.CryptUnprotectData(
+        ctypes.byref(in_blob), None, None, None, None, 0, ctypes.byref(out_blob))
+    if not ok:
+        raise OSError(f'CryptUnprotectData failed (error {ctypes.get_last_error()})')
+    try:
+        return ctypes.string_at(out_blob.pbData, out_blob.cbData)
+    finally:
+        kernel32.LocalFree(out_blob.pbData)
+
+
+def _read_dpapi_mirror() -> str | None:
+    """The base64-encoded key from the DPAPI-sealed mirror, or ``None`` if
+    absent, unreadable, or the seal can no longer be opened (wrong user
+    profile, corrupted file) — never raises, so callers can treat it exactly
+    like a missing mirror rather than a hard failure."""
+    p = dpapi_mirror_path()
+    try:
+        if not p.is_file():
+            return None
+        sealed = p.read_bytes()
+    except OSError as e:
+        _log(f"[secrets] DPAPI mirror read failed: {e}")
+        return None
+    try:
+        return _dpapi_unprotect(sealed).decode('ascii')
+    except Exception as e:
+        _log(f"[secrets] DPAPI mirror failed to unseal: {e}")
+        return None
+
+
+def _write_dpapi_mirror(encoded: str) -> None:
+    sealed = _dpapi_protect(encoded.encode('ascii'))
+    _write_private_bytes(dpapi_mirror_path(), sealed)
+
+
+def _maintain_key_mirror(encoded: str) -> None:
+    """Best-effort self-heal-mirror upkeep after a successful keyring read.
+    Must never fail the caller — a sync failure just means the next read
+    tries again, whereas an exception here would break every legitimate
+    credential use whenever the mirror happens to be stale.
+
+    Windows: reseal the DPAPI mirror if it doesn't already unseal to this
+    key, then remove any pre-existing PLAINTEXT ``secrets.key`` — but only
+    once the DPAPI mirror has been read back and confirmed to hold the same
+    key. A verification failure leaves the plaintext copy in place rather
+    than deleting the only working mirror on a guess.
+
+    macOS/Linux: there is no OS primitive equivalent to DPAPI here (Keychain
+    and SecretService already *are* the keyring backend in use), so no
+    mirror is written at all. Per the module docstring, a keyring wipe on
+    these platforms fails closed instead of self-healing — that is the
+    deliberate protection, not a gap. If a plaintext mirror exists from
+    before this fix, it is removed immediately: the keyring we just read
+    from is proven live, so the plaintext copy is pure exposure with no
+    self-heal benefit left to justify it.
+    """
+    try:
+        if _dpapi_available():
+            if _read_dpapi_mirror() != encoded:
+                _write_dpapi_mirror(encoded)
+            if _read_dpapi_mirror() == encoded:
+                _remove_key_file(
+                    'replaced by a DPAPI-sealed mirror, verified round-trip')
+        else:
+            _remove_key_file(
+                'OS keyring is healthy and this OS has no sealed local '
+                'mirror; the fail-closed check is the protection instead')
+    except OSError as e:
+        _log(f"[secrets] key mirror sync failed: {e}")
+
+
+def _read_self_heal_mirror() -> str | None:
+    """The best available second copy of the master key for when the keyring
+    itself came back empty, tried strongest-at-rest first: the DPAPI-sealed
+    mirror (Windows) before the plaintext file (the no-keyring-backend
+    fallback, unchanged since before this module grew a Windows mirror)."""
+    if _dpapi_available():
+        encoded = _read_dpapi_mirror()
+        if encoded:
+            return encoded
+    return _read_key_file()
+
+
 def load_master_key() -> tuple[bytes, str]:
-    """Return ``(key_bytes, backend)``, creating the key on first use.
+    """Return ``(key_bytes, backend)``, creating the key ONLY when the store
+    has nothing sealed under it yet.
 
     ``backend`` is ``'keyring'`` or ``'file'`` — surfaced so the UI can warn
     when the OS keyring wasn't usable and the key is sitting on disk.
+
+    ## The incident this guards against
+
+    2026-09-14: a Windows keystore wipe (see ``mc_remote/identity_mirror.py``
+    for the 2026-09-08 sibling incident) emptied Credential Manager.
+    ``keyring.get_password()`` on a wiped vault returns ``None`` — the same
+    shape as "never had a key" — so the old version of this function treated
+    the wipe as first-use and minted a replacement, silently orphaning every
+    secret already sealed under the old key. 8 of 10 saved logins became
+    permanently undecryptable before anyone noticed; nothing logged the mint
+    because the keyring branch had no log line at all.
+
+    ## The fix: a fail-closed check before minting, plus an at-rest-honest mirror
+
+    Before minting, we check whether the store already holds sealed secrets.
+    A wipe with no mirror and existing ciphertext raises
+    :class:`SecretsUnavailable` instead of quietly minting a key nothing can
+    be read with — the caller (or the human at the Secrets panel) finds out
+    immediately instead of losing data silently. Minting stays automatic only
+    when the store is genuinely empty (a fresh install), and is now always
+    logged.
+
+    A prior version of this fix (2026-09-14, since revised) mirrored the
+    master key into a plaintext 0600 ``secrets.key`` on *every* successful
+    keyring read, on every OS — durable, but a silent at-rest downgrade on a
+    healthy box: the key would sit in plaintext next to the ciphertext it
+    protects, forever, even though nothing was wrong. This version keeps the
+    self-heal *behavior* but scopes the mirror's strength to what the OS
+    actually offers (see :func:`_maintain_key_mirror` and the module
+    docstring): DPAPI-sealed on Windows, no mirror at all on macOS/Linux
+    (fail-closed is the protection there instead), plaintext only on the
+    pre-existing no-keyring-backend fallback path.
     """
     with _lock:
         encoded = _keyring_get()
         if encoded:
+            _maintain_key_mirror(encoded)
             return base64.b64decode(encoded), 'keyring'
 
-        encoded = _read_key_file()
+        encoded = _read_self_heal_mirror()
         if encoded:
+            # Keyring came back empty (wiped, or merely locked and swallowed
+            # by _keyring_get's fallback) but a mirror has the key — this is
+            # the self-heal path. Reseed the keyring so future reads don't
+            # depend on the mirror forever; best-effort, the mirror read
+            # already succeeded.
+            if _keyring_set(encoded):
+                _log('[secrets] keyring had no master key; restored from '
+                     'local mirror and reseeded the keyring')
             return base64.b64decode(encoded), 'file'
 
-        # First use: mint one.
+        # Neither the keyring nor any mirror has a key. If the store already
+        # holds sealed secrets, this is a wipe with no surviving copy of the
+        # key — NOT a fresh install — so minting would silently orphan every
+        # one of them (the 2026-09-14 incident). Fail closed.
+        store = _load_store()
+        n = len(store['secrets'])
+        if n:
+            raise SecretsUnavailable(
+                f"master key missing: {n} stored secret(s) cannot be read "
+                f"(no key in the OS keyring or a local mirror) — "
+                f"re-enter them or restore the key")
+
+        # First use, store genuinely empty: mint one.
         raw = os.urandom(32)
         encoded = base64.b64encode(raw).decode('ascii')
-        if _keyring_set(encoded):
-            return raw, 'keyring'
-        _write_key_file(encoded)
-        _log('[secrets] master key stored in a 0600 key file '
-             '(no usable OS keyring backend)')
-        return raw, 'file'
+        backend = 'keyring' if _keyring_set(encoded) else 'file'
+        if backend == 'keyring':
+            _maintain_key_mirror(encoded)
+        else:
+            # No keyring backend at all (headless Linux, or forced off via
+            # CLAYRUNE_SECRETS_KEY_BACKEND=file) — the plaintext file is the
+            # sole copy, exactly as before this module grew a Windows mirror.
+            _write_key_file(encoded)
+        _log(f"[secrets] minted new master key (backend={backend}, "
+             f"store was empty)")
+        return raw, backend
 
 
 # ── Sealed values ────────────────────────────────────────────────────────────
@@ -278,7 +532,7 @@ def _open(name: str, rec: dict[str, Any]) -> str:
 
 # ── Store I/O ────────────────────────────────────────────────────────────────
 
-def _write_private_text(path: Path, text: str) -> None:
+def _write_private_bytes(path: Path, data: bytes) -> None:
     """Atomic write where the *temp file* is private from the moment it exists.
 
     ``mc.core._atomic_write_text`` creates its temp with default permissions;
@@ -290,8 +544,8 @@ def _write_private_text(path: Path, text: str) -> None:
     tmp = path.with_name(f'.{path.name}.tmp{os.getpid()}')
     fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
     try:
-        with os.fdopen(fd, 'w', encoding='utf-8') as fh:
-            fh.write(text)
+        with os.fdopen(fd, 'wb') as fh:
+            fh.write(data)
         _harden_secret_perms(tmp)
         os.replace(tmp, path)
         _harden_secret_perms(path)
@@ -301,6 +555,10 @@ def _write_private_text(path: Path, text: str) -> None:
                 tmp.unlink()
         except OSError:
             pass
+
+
+def _write_private_text(path: Path, text: str) -> None:
+    _write_private_bytes(path, text.encode('utf-8'))
 
 
 def _empty_store() -> dict[str, Any]:
@@ -440,9 +698,14 @@ def _public(name: str, rec: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def list_secrets(project_id: str | None = None) -> list[dict[str, Any]]:
+def list_secrets(project_id: str | None = None,
+                 *, check_readable: bool = False) -> list[dict[str, Any]]:
     """Metadata for every secret visible to ``project_id`` (global + that
-    project's own). Pass ``None`` for the full inventory."""
+    project's own). Pass ``None`` for the full inventory.
+
+    ``check_readable=True`` adds a ``'readable'`` bool to each entry (see
+    :func:`is_readable`) — still metadata-only, never the value itself.
+    """
     with _lock:
         store = _load_store()
     out = []
@@ -450,8 +713,32 @@ def list_secrets(project_id: str | None = None) -> list[dict[str, Any]]:
         scope = rec.get('scope', 'global')
         if project_id is not None and scope != 'global' and scope != project_id:
             continue
-        out.append(_public(name, rec))
+        pub = _public(name, rec)
+        if check_readable:
+            pub['readable'] = is_readable(name)
+        out.append(pub)
     return out
+
+
+def is_readable(name: str) -> bool:
+    """Can ``name``'s ciphertext actually be decrypted with the current
+    master key? Never dispenses, audits, or bumps use-count — this is a
+    health probe, not a use. Returns ``False`` (never raises) for a missing
+    entry, a corrupted blob, or a master key that can no longer open it
+    (the exact failure mode the 2026-09-14 silent-remint incident produced:
+    the old ``/api/secrets/check`` dry-run only confirmed an entry existed
+    and reported an undecryptable entry as fine).
+    """
+    with _lock:
+        store = _load_store()
+        rec = store['secrets'].get(name)
+    if rec is None:
+        return False
+    try:
+        _open(name, rec)
+        return True
+    except SecretsError:
+        return False
 
 
 def key_backend() -> str:
