@@ -4463,14 +4463,18 @@ async function sendFollowup(projectId, sessionId) {
   // watchdog pass) expands the layout in this tick. Desktop keeps typing \u2014
   // only blur when this was actually a tap on a focused mobile composer.
   const _mobileSend = window.innerWidth <= 960 && document.activeElement === input;
+
+  // Clear the field BEFORE the frame yield below: a second Send tap landing
+  // inside that frame would otherwise see the message still there (and the
+  // field no longer focused, so no yield) and send it a second time.
+  input.value = '';
+  if (input.id) delete textareaValues[input.id];
+
   if (_mobileSend) {
     try { input.blur(); } catch (e) {}
     if (typeof window.mcRestoreFullHeight === 'function') window.mcRestoreFullHeight();
     await new Promise(requestAnimationFrame); // let the browser paint the expanded layout
   }
-
-  input.value = '';
-  if (input.id) delete textareaValues[input.id];
 
   // Immediate local echo — show the user's message in DOM only (not buffer)
   // The server will send the real version via SSE which gets added to the buffer
