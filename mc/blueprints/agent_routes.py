@@ -3931,13 +3931,22 @@ def get_session_trigger_type():
     Falls back to every project's persisted log for sessions that already
     exited. No auth (matches this project's existing localhost-trust posture,
     e.g. /api/config — see MC-914).
+
+    `fence_unattended_enabled` rides along on every response (2026-09-14,
+    UNATTENDED_AGENT_PERMISSIONS_AUDIT): `steward/fence.py`'s generalized
+    unattended-arming check needs both this session's trigger_type AND that
+    config flag, and it runs as a stateless subprocess on every single
+    PreToolUse hook call — piggybacking here halves its per-tool-call HTTP
+    overhead instead of adding a second `/api/config` round trip.
     """
     csid = (request.args.get('claude_session_id') or '').strip()
     if not csid:
         return jsonify({'found': False, 'error': 'claude_session_id required'}), 400
+    fue = bool(state.CONFIG.get('fence_unattended_enabled', True))
     for s in agent_sessions.values():
         if s.get('claude_session_id') == csid:
-            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual'})
+            return jsonify({'found': True, 'trigger_type': s.get('trigger_type') or 'manual',
+                            'fence_unattended_enabled': fue})
     for log_file in DATA_DIR.glob('*_agent_log.json'):
         try:
             entries = json.loads(log_file.read_text(encoding='utf-8'))
@@ -3945,8 +3954,9 @@ def get_session_trigger_type():
             continue
         for e in entries:
             if e.get('claude_session_id') == csid:
-                return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual'})
-    return jsonify({'found': False})
+                return jsonify({'found': True, 'trigger_type': e.get('trigger_type') or 'manual',
+                                'fence_unattended_enabled': fue})
+    return jsonify({'found': False, 'fence_unattended_enabled': fue})
 
 
 def _save_agent_log(project_id, log):
@@ -4803,8 +4813,10 @@ def _log_agent_completion(session):
         'hivemind_ws_id': session.get('hivemind_ws_id', ''),
         'hivemind_role': session.get('hivemind_role', ''),
         # Trigger correlation: lets us list runs by what spawned them.
-        # trigger_type: 'manual' | 'schedule' | 'hivemind_orchestrator' | 'hivemind_worker'
-        # trigger_id: schedule_id, hivemind_id, or workstream_id depending on type
+        # trigger_type: 'manual' | 'schedule' | 'workflow' | 'dispatch' |
+        #               'hivemind_orchestrator' | 'hivemind_worker'
+        # trigger_id: schedule_id, workflow run:step, hivemind_id, or
+        # workstream_id depending on type
         'trigger_type': session.get('trigger_type', 'manual'),
         'source': session.get('source', ''),
         'trigger_id': session.get('trigger_id', ''),
@@ -6323,12 +6335,25 @@ def agent_dispatch(project_id):
     source = (data.get('source') or '').strip().lower()
     if not source and not request.headers.get('Origin') and not data.get('client'):
         source = 'agent'
+    # trigger_type='dispatch' for an agent-sourced call (2026-09-14,
+    # UNATTENDED_AGENT_PERMISSIONS_AUDIT): this route previously left
+    # trigger_type at its 'manual' default REGARDLESS of who called it, so a
+    # session another agent spawned unattended via this exact endpoint —
+    # full tool+MCP fleet, --dangerously-skip-permissions, nobody reading its
+    # tool calls the way a human reads a UI chat — was indistinguishable from
+    # a human clicking "+New chat". That's the one signal every trigger_type
+    # consumer trusts (is_unattended_caller, the secrets vault's
+    # detect_unattended_context, PUT /api/config's unattended gate, and now
+    # steward/fence.py's generalized arming) to tell attended from unattended.
+    # A UI-originated dispatch (source == 'ui' or '') stays 'manual'.
+    trigger_type = 'dispatch' if source == 'agent' else 'manual'
     try:
         session_id = _dispatch_agent_internal(project_id, claude_task, resume_id,
                                               incognito=incognito,
                                               provider_override=provider_override,
                                               display_task=task, character=character,
                                               source=source,
+                                              trigger_type=trigger_type,
                                               model_override=model_override,
                                               # A fresh, explicit ask this turn
                                               # (character is '' on a resume,

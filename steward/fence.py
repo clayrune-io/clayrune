@@ -19,9 +19,12 @@ Self-contained (stdlib only) so it runs as a standalone hook script from any cwd
     python "<repo>/steward/fence.py"      # reads PreToolUse JSON on stdin
 """
 import json
+import os
 import re
 import sys
-from typing import NamedTuple
+import urllib.parse
+import urllib.request
+from typing import NamedTuple, Optional
 
 
 class FenceDecision(NamedTuple):
@@ -459,14 +462,102 @@ def _session_is_steward(payload: dict):
     return STEWARD_MARKER in text
 
 
+# ── Generalized unattended arming (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT) ──
+# The fence originally enforced ONLY for steward-cycle sessions (the marker
+# check above). Every other unattended launch path this MC install has — a
+# scheduled task, a workflow agent step, an agent dispatching a helper via the
+# HTTP dispatch endpoint, a hivemind worker — shares the steward's exact
+# posture (--dangerously-skip-permissions, full tool+MCP fleet, no human
+# reading every tool call) in any project where a human already turned the
+# steward feature ON for that project (this hook is only ever installed
+# there — see steward/core.py:install_fence_to_project). None of those paths
+# got this backstop, because the only signal the fence ever checked was the
+# literal `[Steward cycle]` marker string.
+#
+# Detection reuses the MC-923 precedent (mc/secrets_store.py
+# detect_unattended_context, same "the harness told us, the agent didn't"
+# class of signal the transcript marker already is): the Claude CLI sets
+# CLAUDE_CODE_SESSION_ID in every subprocess it spawns, including this hook,
+# and MC recorded the session's trigger_type server-side at dispatch time
+# (GET /api/session/trigger-type) — ground truth the session itself cannot
+# rewrite by anything it types.
+#
+# Fails OPEN here, the opposite of MC-923's fail-closed: this hook is also
+# installed for perfectly ordinary interactive dev sessions in the same
+# steward-enabled project (self-gating is the whole point of this module —
+# see the top-of-file docstring), and those must NEVER be blocked by an
+# unreachable lookup or an unrecognized trigger_type. Only a POSITIVE,
+# confirmed match against a known unattended trigger_type arms the fence;
+# anything else (manual, unknown, lookup failure) leaves the session exactly
+# as unfenced as it was before this change — this is purely additive on top
+# of the existing marker check, never a replacement for it.
+#
+# Gated behind `fence_unattended_enabled` (config default True) so a human
+# can flip it off from Settings without a code change if it ever blocks a
+# legitimate unattended job — PUT /api/config already refuses an unattended
+# caller for every key in _CONFIG_EDITABLE_KEYS (2026-09-10_security.md F5),
+# so only a human can turn it back off.
+
+_MC_API_BASE = 'http://127.0.0.1:5199'
+
+# Every trigger_type MC stamps for a launch path with no human reading each
+# individual tool call. Deliberately excludes 'manual' — a plain UI chat or an
+# agent-to-agent dispatch a human is actively reading.
+_UNATTENDED_TRIGGER_TYPES = {
+    'schedule', 'workflow', 'dispatch', 'hivemind_orchestrator', 'hivemind_worker',
+}
+
+
+def _session_id_from_env() -> str:
+    return (os.environ.get('CLAUDE_CODE_SESSION_ID') or '').strip()
+
+
+def _lookup_trigger_type(claude_session_id: str) -> Optional[dict]:
+    """{'trigger_type': ..., 'fence_unattended_enabled': ...} for this Claude
+    session, or None if the server is unreachable or doesn't know the session.
+    Split out so tests can monkeypatch this one function instead of standing
+    up a live server (same shape as secrets_store._lookup_trigger_type)."""
+    try:
+        url = (f'{_MC_API_BASE}/api/session/trigger-type'
+               f'?claude_session_id={urllib.parse.quote(claude_session_id)}')
+        with urllib.request.urlopen(url, timeout=2) as resp:
+            data = json.loads(resp.read().decode('utf-8'))
+    except Exception:
+        return None
+    if not data.get('found'):
+        return None
+    return {
+        'trigger_type': str(data.get('trigger_type') or 'manual'),
+        'fence_unattended_enabled': bool(data.get('fence_unattended_enabled', True)),
+    }
+
+
+def _should_arm_for_unattended_trigger() -> bool:
+    """True only on a positive, confirmed match — see module comment above.
+    Only ever ADDS enforcement on top of the existing steward-marker check,
+    never removes it."""
+    sid = _session_id_from_env()
+    if not sid:
+        return False
+    info = _lookup_trigger_type(sid)
+    if not info:
+        return False
+    if info['trigger_type'] not in _UNATTENDED_TRIGGER_TYPES:
+        return False
+    return info['fence_unattended_enabled']
+
+
 def main() -> int:
     """PreToolUse hook entrypoint. Reads the hook JSON on stdin.
 
     SELF-GATING: the fence is installed repo-wide (project .claude/settings.json)
-    but ENFORCES only for steward-cycle sessions — so manual/dev sessions in the
-    same project are unaffected. Gate: `confirmed non-steward → allow all`;
-    `steward OR unknown → enforce` (fail-closed on ambiguity, since the fence is
-    only ever installed in steward-enabled projects).
+    but ENFORCES only for steward-cycle sessions plus, since 2026-09-14, any
+    OTHER session MC recorded as unattended (schedule/workflow/dispatch/
+    hivemind — see _should_arm_for_unattended_trigger above) — so manual/dev
+    sessions in the same project are unaffected. Gate: `confirmed non-steward
+    → check the generalized trigger_type signal before allowing`; `steward OR
+    unknown (from the marker check) → enforce` (fail-closed on ambiguity,
+    since the fence is only ever installed in steward-enabled projects).
 
     On a blocked action, exits 2 (stderr reason) — the fail-closed block contract.
     Fails OPEN on any parse error — a broken fence must never wedge the agent."""
@@ -476,9 +567,14 @@ def main() -> int:
     except Exception:
         return 0  # fail open — never wedge the agent on a malformed hook event
 
-    # Only steward-cycle sessions are fenced; confirmed dev/manual sessions pass.
+    # Confirmed non-steward by the transcript marker: still check the
+    # generalized unattended signal (trigger_type) before letting a
+    # genuinely unattended session — schedule/workflow/dispatch/hivemind —
+    # go unfenced. Manual/interactive sessions and anything ambiguous stay
+    # unfenced here, same as before this check existed.
     if _session_is_steward(payload) is False:
-        return 0
+        if not _should_arm_for_unattended_trigger():
+            return 0
 
     tool_name = payload.get('tool_name') or payload.get('toolName') or ''
     tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
