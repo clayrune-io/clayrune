@@ -1149,14 +1149,153 @@ def _git_version(repo_root, committish):
     return {'display': f'untagged ({out})', 'base': '', 'build': 0, 'sha': out}
 
 
+# ── Frozen (PyInstaller) update check — macOS .app has no .git ─────────────
+# A git checkout updates via `git pull`; the notarized Mac .app is a frozen
+# bundle with no .git, so the git-based logic above always hit the
+# "not a git checkout" branch and Mac users got no update signal at all.
+#
+# We can't compare commits by tag/version: the release process re-uploads
+# Clayrune-macOS.zip under the SAME tag when a build needs a fix (v2.3.0 was
+# replaced 3 times in one day), so the tag alone can't tell "same build" from
+# "newer build". Instead each build bakes its own commit + build time into
+# build_info.json (installer/build-macos.spec), and each release publishes
+# the identical file (copied from the built app, not recomputed — see
+# tools/notarize-macos.sh) as the Clayrune-macOS.build.json release asset.
+# Comparing those two is comparing the app's actual bundled identity, not a
+# proxy for it.
+_MACOS_GITHUB_REPO = 'clayrune-io/clayrune'
+_MACOS_RELEASE_API = f'https://api.github.com/repos/{_MACOS_GITHUB_REPO}/releases/latest'
+_MACOS_BUILD_MANIFEST_ASSET = 'Clayrune-macOS.build.json'
+_MACOS_ZIP_ASSET = 'Clayrune-macOS.zip'
+_MACOS_DOWNLOAD_URL = f'https://github.com/{_MACOS_GITHUB_REPO}/releases/latest/download/{_MACOS_ZIP_ASSET}'
+
+
+def _load_bundled_build_info(repo_root):
+    """Read the commit identity baked into a frozen build at build time.
+
+    Returns None if absent (a build from before this shipped, or a dev
+    checkout) or malformed -- both are treated as "can't tell", never as an
+    error.
+    """
+    path = repo_root / 'build_info.json'
+    if not path.exists():
+        return None
+    try:
+        return json.loads(path.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+
+
+def _fetch_latest_macos_release_info(timeout=8):
+    """Fetch the build manifest published alongside the latest GitHub release.
+
+    Unauthenticated GitHub API, short timeout, fails quiet (returns None) on
+    any error -- a network hiccup must degrade to "could not check", never to
+    a raw exception surfaced to a Mac user clicking a menu item.
+    """
+    try:
+        req = urllib.request.Request(
+            _MACOS_RELEASE_API,
+            headers={'User-Agent': 'Clayrune-update-check', 'Accept': 'application/vnd.github+json'},
+        )
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            release = json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        _log(f"[update-check] GitHub release lookup failed: {e}", flush=True)
+        return None
+
+    assets = release.get('assets') or []
+    manifest_url = next(
+        (a.get('browser_download_url') for a in assets
+         if a.get('name') == _MACOS_BUILD_MANIFEST_ASSET), None,
+    )
+    if not manifest_url:
+        return None
+
+    try:
+        req = urllib.request.Request(manifest_url, headers={'User-Agent': 'Clayrune-update-check'})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            manifest = json.loads(resp.read().decode('utf-8'))
+    except Exception as e:
+        _log(f"[update-check] GitHub build manifest fetch failed: {e}", flush=True)
+        return None
+
+    manifest['release_tag'] = release.get('tag_name', '')
+    manifest['release_notes'] = (release.get('body') or '').strip()
+    manifest['download_url'] = next(
+        (a.get('browser_download_url') for a in assets if a.get('name') == _MACOS_ZIP_ASSET),
+        _MACOS_DOWNLOAD_URL,
+    )
+    return manifest
+
+
+def _remote_build_is_newer(remote_built_at, local_built_at):
+    """True if the remote build's timestamp is strictly after the local one.
+
+    If either timestamp is missing or unparseable we can't tell -- default to
+    True (a differing commit is already the primary signal; this only guards
+    against flagging a genuinely OLDER remote build as an update).
+    """
+    try:
+        return datetime.fromisoformat(remote_built_at) > datetime.fromisoformat(local_built_at)
+    except Exception:
+        return True
+
+
+def _frozen_update_status(bundled):
+    """Update status for a frozen (non-git) install, given its bundled
+    build_info.json. Mirrors the shape of the git-based status closely enough
+    for the same frontend to branch on `frozen` and reuse most of its layout.
+    """
+    local_commit = (bundled.get('commit_full') or bundled.get('commit') or '').strip()
+    base = {
+        'is_git_repo': False,
+        'frozen': True,
+        'commit': bundled.get('commit', ''),
+        'built_at': bundled.get('built_at', ''),
+    }
+    remote = _fetch_latest_macos_release_info()
+    if remote is None:
+        base.update({
+            'update_available': False,
+            'message': 'Could not reach GitHub to check for updates.',
+        })
+        return base
+
+    remote_commit = (remote.get('commit_full') or remote.get('commit') or '').strip()
+    same_commit = bool(local_commit) and bool(remote_commit) and (
+        local_commit == remote_commit
+        or local_commit.startswith(remote_commit) or remote_commit.startswith(local_commit)
+    )
+    update_available = (
+        bool(remote_commit) and not same_commit
+        and _remote_build_is_newer(remote.get('built_at', ''), bundled.get('built_at', ''))
+    )
+    base.update({
+        'remote_commit': remote.get('commit', ''),
+        'remote_built_at': remote.get('built_at', ''),
+        'release_tag': remote.get('release_tag', ''),
+        'release_notes': (remote.get('release_notes', '') or '')[:500],
+        'download_url': remote.get('download_url', _MACOS_DOWNLOAD_URL),
+        'update_available': update_available,
+    })
+    return base
+
+
 @bp.route('/api/system/update/status')
 def system_update_status():
     """Report whether the install dir is a git repo, current commit + branch,
     and how far behind origin master we are. The Settings UI uses this to
     show a "X commits behind" badge.
+
+    A frozen (PyInstaller) install has no .git -- see _frozen_update_status.
     """
     repo_root = _APP_DIR  # repo root in dev, app dir frozen; __file__ here is mc/blueprints/ — not the checkout
     if not (repo_root / '.git').exists():
+        if getattr(sys, 'frozen', False):
+            bundled = _load_bundled_build_info(repo_root)
+            if bundled:
+                return jsonify(_frozen_update_status(bundled))
         return jsonify({
             'is_git_repo': False,
             'message': 'Install directory is not a git checkout — automatic updates not available.',
@@ -1233,11 +1372,17 @@ def _refresh_update_cache():
     _UPDATE_CHECK_CACHE. Idempotent; safe to call from any thread."""
     repo_root = _APP_DIR  # repo root in dev, app dir frozen; __file__ here is mc/blueprints/ — not the checkout
     if not (repo_root / '.git').exists():
+        bundled = _load_bundled_build_info(repo_root) if getattr(sys, 'frozen', False) else None
         with _UPDATE_CHECK_LOCK:
-            _UPDATE_CHECK_CACHE.update({
-                'last_check_ts': _time.time(),
-                'is_git_repo': False,
-            })
+            if bundled:
+                _UPDATE_CHECK_CACHE.clear()
+                _UPDATE_CHECK_CACHE.update(_frozen_update_status(bundled))
+                _UPDATE_CHECK_CACHE['last_check_ts'] = _time.time()
+            else:
+                _UPDATE_CHECK_CACHE.update({
+                    'last_check_ts': _time.time(),
+                    'is_git_repo': False,
+                })
         return
 
     rc, sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
@@ -1337,6 +1482,19 @@ def system_update():
     """
     repo_root = _APP_DIR  # repo root in dev, app dir frozen; __file__ here is mc/blueprints/ — not the checkout
     if not (repo_root / '.git').exists():
+        if getattr(sys, 'frozen', False):
+            bundled = _load_bundled_build_info(repo_root)
+            if bundled:
+                frozen_status = _frozen_update_status(bundled)
+                return jsonify({
+                    'ok': False,
+                    'frozen': True,
+                    'download_required': True,
+                    'download_url': frozen_status.get('download_url', _MACOS_DOWNLOAD_URL),
+                    'message': 'This is a downloaded Mac build, not a git checkout. Quit '
+                               'Clayrune, download the new build, and replace the app in '
+                               'Applications.',
+                })
         return jsonify({'error': 'install dir is not a git checkout'}), 400
 
     rc, status_out = _git(_DIRTY_TREE_ARGS, repo_root)

@@ -6,12 +6,18 @@
 # after building the app:
 #
 #     pyinstaller installer/build-macos.spec --noconfirm     # produces dist/Clayrune.app
-#     tools/notarize-macos.sh                        # -> Clayrune-macOS.zip
+#     tools/notarize-macos.sh                        # -> Clayrune-macOS.zip + .build.json
 #
 # The output Clayrune-macOS.zip is the notarized, Gatekeeper-clean
 # artifact to upload to the website / GitHub release. It is a drop-in
 # replacement for the UNSIGNED zip that .github/workflows/build-macos.yml
 # currently produces and auto-attaches to releases — always replace that one.
+#
+# Also produces Clayrune-macOS.build.json — upload it alongside the zip.
+# It's how a frozen (non-git) .app checks itself for updates: see
+# docs/MACOS_NOTARIZATION.md and mc/blueprints/system_routes.py
+# _frozen_update_status. Skipping it just means Mac users' in-app update
+# check can't tell this release apart from the last one.
 #
 # ── One-time setup (do this once, ever) ─────────────────────────────────────
 # Full walkthrough: docs/MACOS_NOTARIZATION.md. The short version:
@@ -132,5 +138,36 @@ say "Zipping notarized app -> $OUT_ZIP"
 rm -f "$OUT_ZIP"
 ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT_ZIP"
 
-say "Done — this is Gatekeeper-clean. Upload it over the website / release asset:"
-ls -lh "$OUT_ZIP"
+# ── 6. Publish the build manifest ────────────────────────────────────────────
+# The frozen app's own update check (system_routes.py _frozen_update_status)
+# compares its bundled commit against THIS file, published as a release
+# asset — never against the release tag/version, which gets re-uploaded under
+# the same tag when a build needs a same-day fix. We read the identity back
+# OUT of the app we just built (build_info.json, baked in by
+# installer/build-macos.spec) rather than recomputing it, so the published
+# manifest and the app's own belief about itself can never drift apart.
+say "Writing build manifest"
+BUILD_INFO_SRC="$(find "$APP" -name build_info.json -print -quit)"
+[ -n "$BUILD_INFO_SRC" ] || die "build_info.json not found inside $APP — rebuild with the current installer/build-macos.spec."
+BUILD_JSON="${OUT_ZIP%.zip}.build.json"
+SHA256="$(shasum -a 256 "$OUT_ZIP" | awk '{print $1}')"
+SIZE="$(stat -f%z "$OUT_ZIP" 2>/dev/null || stat -c%s "$OUT_ZIP")"
+python3 - "$BUILD_INFO_SRC" "$(basename "$OUT_ZIP")" "$SHA256" "$SIZE" "$BUILD_JSON" <<'PY'
+import json, sys
+src, zip_name, sha256, size, out = sys.argv[1:6]
+with open(src, encoding='utf-8') as f:
+    info = json.load(f)
+manifest = {
+    'commit': info.get('commit', ''),
+    'commit_full': info.get('commit_full', ''),
+    'built_at': info.get('built_at', ''),
+    'zip_name': zip_name,
+    'sha256': sha256,
+    'size': int(size),
+}
+with open(out, 'w', encoding='utf-8') as f:
+    json.dump(manifest, f, indent=2)
+PY
+
+say "Done — this is Gatekeeper-clean. Upload BOTH to the release:"
+ls -lh "$OUT_ZIP" "$BUILD_JSON"

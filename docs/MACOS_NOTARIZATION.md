@@ -17,14 +17,14 @@ only** — the closed-source Rust `mc-tunnel` moat is unaffected.
 
 ```bash
 pyinstaller installer/build-macos.spec --noconfirm     # builds dist/Clayrune.app
-tools/notarize-macos.sh                        # -> Clayrune-macOS.zip (signed + notarized)
+tools/notarize-macos.sh                        # -> Clayrune-macOS.zip + .build.json
 ```
 
-Then **upload `Clayrune-macOS.zip` to the GitHub release.** This is not
-optional polish — it is the release itself:
+Then **upload BOTH files to the GitHub release.** This is not optional
+polish — it is the release itself:
 
 ```bash
-gh release upload vX.Y.Z Clayrune-macOS.zip --clobber
+gh release upload vX.Y.Z Clayrune-macOS.zip Clayrune-macOS.build.json --clobber
 ```
 
 The website's macOS button is a fixed URL,
@@ -33,6 +33,16 @@ which GitHub resolves against whatever release is *latest*. **Publish a release
 without that asset and the download button 404s for every Mac visitor**, with
 nothing on our side reporting a problem. That is what v2.0.1 and v2.0.2 did
 (caught 2026-08-29 by a user, not by us).
+
+`Clayrune-macOS.build.json` is newer (added 2026-09-14) and just as easy to
+forget: it's how a running frozen `.app`'s own **Check for updates** menu item
+tells this release apart from the last one. We re-upload the zip under the
+same tag whenever a same-day build needs a fix (v2.3.0 was replaced 3 times in
+one day) — the tag/version alone can't detect that, so the frozen app compares
+its own bundled `build_info.json` (baked in by `build-macos.spec`) against
+this published manifest. Skip uploading it and Mac users just never see an
+update is available; nothing errors. See `mc/blueprints/system_routes.py`
+`_frozen_update_status`.
 
 CI (`build-macos.yml`) attaches `Clayrune-macOS-unsigned.zip` — a deliberately
 different name, so an unsigned build can never end up behind the website's
@@ -95,6 +105,10 @@ button. It is a build check, not a shipping artifact.
 5. `stapler staple`s the ticket into the `.app` and confirms `spctl` reports
    `source=Notarized Developer ID`.
 6. Re-zips the **stapled** app to `Clayrune-macOS.zip`.
+7. Reads `build_info.json` back out of the just-built `.app`, hashes the zip,
+   and writes `Clayrune-macOS.build.json` (commit, built_at, zip name, sha256,
+   size) — the manifest the frozen app's own update check compares itself
+   against.
 
 ---
 
@@ -128,3 +142,51 @@ notarized automatically, `build-macos.yml` would need to, on a macОS runner:
 Secrets needed: `MACOS_CERT_P12_BASE64`, `MACOS_CERT_PASSWORD`,
 `MACOS_NOTARY_APPLE_ID`, `MACOS_NOTARY_TEAM_ID` (`<TEAMID>`),
 `MACOS_NOTARY_PASSWORD`. Tracked as a follow-up; not yet wired.
+
+---
+
+## Deferred: in-app "Install update" (v2, design only — no code)
+
+Today "Check for updates" (v1, shipped 2026-09-14) gets a Mac user as far as
+a **Download** button that opens `Clayrune-macOS.zip`'s URL in the system
+browser — they still manually quit, unzip, and drag-replace the app in
+`Applications`. A Sparkle-style **Install update** would download, verify,
+swap, and relaunch in place. Sketch, not a commitment:
+
+1. **Download** the zip from `download_url` (already returned by
+   `/api/system/update/status`) to a temp dir, showing progress.
+2. **Verify before touching anything on disk that matters**: sha256 against
+   `Clayrune-macOS.build.json`'s `sha256` field, *and* `codesign --verify
+   --deep --strict` + `spctl -a -t exec` against the unzipped `.app` to
+   confirm it's still the notarized artifact we published — the manifest
+   alone only proves the bytes weren't corrupted in transit, not that they're
+   ours. A checksum match on a tampered manifest is not a security check.
+3. **Swap**: move the running `/Applications/Clayrune.app` aside, move the
+   new one in, relaunch, delete the old one only after the new one starts
+   clean.
+4. **Relaunch** via `open` / re-exec, mirroring the existing git-path
+   `restart_recommended` flow.
+
+Risks worth resolving *before* writing code, not after:
+
+- **Gatekeeper translocation.** A `.app` launched from a quarantined location
+  (e.g. still under `~/Downloads` or a temp dir) runs from a randomized
+  read-only path (App Translocation) — self-replacing logic that assumes its
+  own `sys.executable` path is `/Applications/Clayrune.app` will silently
+  operate on the wrong copy, or fail to write, if the *new* download is
+  translocated at the moment we try to launch it pre-swap.
+- **Quarantine flag propagation.** The freshly downloaded zip carries
+  `com.apple.quarantine`; unzipping preserves it onto the `.app`. Our own
+  in-app installer removing that flag ourselves (`xattr -d
+  com.apple.quarantine`) to make the swap seamless would defeat the exact
+  Gatekeeper check this whole notarization pipeline exists to satisfy — don't.
+  Let Gatekeeper re-evaluate the swapped-in app normally (it will pass; it's
+  notarized) rather than stripping the flag to skip that step.
+- **Permissions**: writing into `/Applications` requires the invoking user own
+  or have write access to that specific `.app` bundle (true for a
+  single-user install, not guaranteed if it was installed by another admin
+  account or via MDM) — detect and fall back to the v1 manual-download flow
+  rather than failing an in-place write silently.
+- **A crash mid-swap must not leave "no Clayrune.app that launches" as a
+  possible end state.** The old app must not be deleted until the new one has
+  been confirmed to start.
