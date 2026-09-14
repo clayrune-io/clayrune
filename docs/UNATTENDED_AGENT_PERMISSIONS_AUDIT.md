@@ -229,6 +229,29 @@ wiring Codex's sandbox mode as the unattended default (§3c, tested and
 ready); a deeper Mode B-shaped test of Claude `--permission-mode` (§3b);
 installing the fence hook in projects that have never enabled steward.
 
+## 5. Held back at merge: the `dispatch` stamp (Vector, 2026-09-14)
+
+The fence arming merged as written. The `trigger_type='dispatch'` stamp on
+agent-sourced `POST .../agent/dispatch` did NOT. It was backed out to `'manual'`
+before landing, because `trigger_type` feeds more than the fence:
+
+- `mc/unattended.py:is_unattended_caller()` returns True if ANY running session
+  anywhere has a non-`manual` trigger_type. It gates `PUT /api/config`
+  (settings_routes.py), vault create/edit/delete/import (secrets_routes.py
+  x4) and distiller_routes.py. With the stamp, Ron's own Settings and vault
+  saves would be refused whenever any agent-dispatched child is running:
+  18 such sessions in mission_control in the week to 2026-09-14.
+- The fence would block those children from `git push`, `gh pr create/merge`,
+  external POSTs, the browser API and `.claude/` edits, which breaks the
+  usual "builder merges and pushes master" flow.
+- `with-secret.py` would treat them as unattended (`allow_unattended=false`
+  secrets refused).
+
+The callback that wakes a spawner uses `/agent/send`, not dispatch, so parent
+sessions were never affected. `'dispatch'` remains in the fence's allowlist,
+so turning the stamp on later is a one-line change, but it has to ship with a
+fix to `is_unattended_caller` so it stops locking out the human.
+
 **Full pytest run:** `python -m pytest tests/ -q` → clean, exit code 0. 6
 environment-conditional skips (live-auth CLI test, operator-local doc paths),
 zero failures. Full tail in the chat reply to Dave.
