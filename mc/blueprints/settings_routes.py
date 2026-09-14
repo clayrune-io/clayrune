@@ -166,6 +166,13 @@ _CONFIG_EDITABLE_KEYS = {
     # Per-agent worktree isolation (b264200a). Read at dispatch — takes effect
     # for the next agent started, no respawn or restart needed.
     'worktree_isolation_enabled',
+    # Generalized steward-fence arming (UNATTENDED_AGENT_PERMISSIONS_AUDIT).
+    # Read live by steward/fence.py (via GET /api/session/trigger-type,
+    # which piggybacks this flag) on every PreToolUse call — no respawn or
+    # restart needed. Protected by the unattended-caller gate below like
+    # every other key here: an agent session cannot switch its own backstop
+    # off.
+    'fence_unattended_enabled',
     # Phase 4 Distiller (v2.1 §11 global keys).
     'distiller_enabled_global', 'distiller_cross_project_enabled',
     'distiller_model', 'distiller_window_days',
