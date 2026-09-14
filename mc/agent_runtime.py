@@ -35,6 +35,13 @@ from enum import Enum
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 
+# Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
+# set of trigger_types steward/fence.py already treats as "nobody is reading
+# this session's tool calls turn-by-turn". steward/ is stdlib-only and imports
+# nothing from mc/, so this is a one-way, cycle-free dependency (mirrors the
+# existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
+from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Subprocess flags (mirror server.py — keep windows from popping up consoles)
@@ -3685,6 +3692,29 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # `[codex tool: shell]` lines with no command shown).
                 session['log_lines'].append(_format_tool_activity(tname, tinput))
                 session['last_output_time'] = _time.time()
+                # Codex workspace-write sandbox denial (UNATTENDED_AGENT_
+                # PERMISSIONS_AUDIT §4): a refused write does NOT fail the
+                # `codex exec` process (rc stays 0 — it's the INNER shell
+                # command that gets a nonzero exit, reported in codex's own
+                # text), so the rc!=0 -> explain_exit_error() hint below never
+                # fires for this case. Scanned here instead, gated to codex
+                # sessions we ourselves put in sandbox mode, so an unrelated
+                # "access denied" on another provider — or a manually-launched
+                # (bypassed) Codex session, which has no such boundary — is
+                # never mislabeled as the sandbox's doing.
+                if (runtime.name == 'codex' and tname == 'shell'
+                        and session.get('_codex_unattended_sandbox')):
+                    _exit_code = tinput.get('exit_code')
+                    _shell_output = blocks[0].get('output', '') if blocks else ''
+                    if (_exit_code not in (None, 0)
+                            and _CODEX_SANDBOX_DENIAL_RE.search(_shell_output or '')):
+                        session['log_lines'].append(
+                            "[hint] That command was refused by the unattended "
+                            "sandbox (-s workspace-write, confined to this "
+                            "session's own working directory) — not a codex "
+                            "failure. If this job legitimately needs to write "
+                            "outside its project folder, that needs an "
+                            "allowance for this job, not a retry.")
             elif ev.type == EventType.INIT:
                 session.setdefault('provider_session_id',
                                    ev.payload.get('session_id') or
@@ -3787,6 +3817,67 @@ def _mode_a_interrupt(handle: SessionHandle) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 # CodexRuntime — OpenAI Codex CLI (codex exec --json)
 # ─────────────────────────────────────────────────────────────────────────────
+
+# Ties codex_unattended_sandbox_decision's != 'manual' shortcut back to the
+# reused definition: if fence.py's set ever grew to include 'manual', that
+# would silently make an ordinary interactive Codex chat indistinguishable
+# from an unattended one to THIS function too. Runs once, at import.
+assert 'manual' not in _CODEX_UNATTENDED_TRIGGER_TYPES, (
+    "'manual' must never be a member of the unattended trigger_type set — "
+    "codex_unattended_sandbox_decision()'s != 'manual' shortcut assumes it")
+
+
+def codex_unattended_sandbox_decision(session_dict: Optional[Dict[str, Any]],
+                                      sandbox_config_enabled: bool) -> bool:
+    """True when a Codex launch should run sandbox-confined (`-s workspace-write`,
+    scoped to the launch cwd) instead of `--dangerously-bypass-approvals-and-
+    sandbox` (UNATTENDED_AGENT_PERMISSIONS_AUDIT §3c/§4, risk #1).
+
+    Reads `session_dict['trigger_type']` directly — this runs IN-PROCESS
+    (CodexRuntime.dispatch/write_followup), unlike steward/fence.py's
+    PreToolUse hook, which is a detached subprocess with no access to server
+    memory and has to ask over HTTP. No lookup, no second detector: same
+    `_CODEX_UNATTENDED_TRIGGER_TYPES` set the fence itself arms on.
+
+    Fails SAFE — sandboxed — on anything that isn't a POSITIVE, confirmed
+    `trigger_type == 'manual'`, the opposite of the fence's fail-OPEN posture
+    (fence.py's own `_UNATTENDED_TRIGGER_TYPES` membership check treats an
+    unrecognized future value as "don't arm" — deliberately, since IT runs on
+    every single tool call in an already-steward-enabled project, and a wrong
+    block there only interrupts one action out of many a human can still see
+    and retry). This decision runs ONCE, before the process even spawns, and
+    sets the posture for an entire unattended run nobody is watching
+    turn-by-turn: a wrong 'bypass' guess there is not a pause, it is an
+    unconfined shell for the whole session — so any value that isn't
+    confirmed-manual (missing, unreadable, or a trigger_type this function
+    has never seen) sandboxes, not just membership in
+    `_CODEX_UNATTENDED_TRIGGER_TYPES`. A wrong 'sandbox' guess just makes one
+    write fail visibly (see the denial hint in `_mode_a_reader`) and costs a
+    rerun, never a silent compromise. `_CODEX_UNATTENDED_TRIGGER_TYPES` is
+    still the one place "what counts as unattended" is spelled out — reused
+    here for the docstring/tests, not re-derived — but is not this
+    function's sole gate the way it is the fence's.
+    """
+    if not sandbox_config_enabled:
+        return False
+    try:
+        trigger_type = (session_dict or {}).get('trigger_type')
+    except Exception:
+        return True  # can't classify this session -> sandbox, not bypass
+    return trigger_type != 'manual'
+
+
+# Real, on-box output (2026-09-14, Windows, codex-cli 0.154.0, `-s workspace-
+# write`): a write denied by the sandbox does NOT fail the `codex exec`
+# process itself (rc stays 0 — codex just reports the inner shell command's
+# own nonzero exit in its own agent_message text), so the existing
+# rc!=0 -> explain_exit_error() hint never fires for this case. Matched
+# against the actual PowerShell text a denied Set-Content produced:
+# "...Access to the path '...' is \r\ndenied...CategoryInfo : PermissionDenied
+# ...UnauthorizedAccessException". Only the two unbroken tokens are matched —
+# "is denied" itself wraps across a \r\n in the real output.
+_CODEX_SANDBOX_DENIAL_RE = re.compile(
+    r'UnauthorizedAccessException|PermissionDenied', re.I)
 
 # Codex's real on-disk session store. NOT ~/.codex/sessions/<thread_id>/ (that
 # layout has never existed — see transcript_path()). Verified live against
@@ -4000,7 +4091,8 @@ class CodexRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '') -> List[str]:
+                      resume_id: str = '',
+                      unattended_sandbox: bool = False) -> List[str]:
         """Return the codex exec command for non-interactive use.
 
         Flags verified against codex 0.133.0 `codex exec --help` and
@@ -4010,23 +4102,32 @@ class CodexRuntime(AgentRuntime):
           exec [PROMPT]                    -- non-interactive; reads prompt from stdin
           --json                           -- JSONL event stream to stdout
           --dangerously-bypass-approvals-and-sandbox -- skip all prompts (CI use)
+          -s workspace-write                -- OS-enforced sandbox, confined to
+                                                the launch cwd (Popen's cwd=, not
+                                                set here); no prompt, no hang,
+                                                verified live on Windows
+                                                (UNATTENDED_AGENT_PERMISSIONS_AUDIT
+                                                §3c) — a write outside cwd is
+                                                denied at the OS layer instead of
+                                                running unconfined
           -m / --model MODEL               -- override model
           -C / --cd DIR                    -- working dir (set by Popen cwd, not here)
           exec resume --last               -- resume most recent session
           exec resume SESSION_ID           -- resume specific session by thread_id
 
-        The bypass flag is added on BOTH branches. It was missing from the
-        resume branch until this fix — every non-resume dispatch runs
-        unattended (no TTY on `subprocess.Popen(stdin=PIPE)`), and a resumed
-        session is no different, but without the flag a tool call that needs
-        approval blocks on a confirmation prompt nothing can answer; the
-        write on a closed stdin pipe reads as EOF, and codex exits non-zero.
-        This was unreachable dead code until `write_followup` started passing
-        `resume_id` (see its docstring) — fixing that path without this one
-        would have traded "forks every turn" for "the first tool call kills
-        the resumed turn".
+        Exactly one of the bypass flag or `-s workspace-write` is added, on
+        BOTH branches (`unattended_sandbox` — see
+        `codex_unattended_sandbox_decision()`, computed once at dispatch time
+        from this session's trigger_type and carried into every respawn by
+        `write_followup`). Never both: `-s` and
+        `--dangerously-bypass-approvals-and-sandbox` are mutually exclusive
+        sandbox policies, and every non-resume dispatch runs with no TTY
+        either way (`subprocess.Popen(stdin=PIPE)`) — a resumed session needs
+        the same flag its own thread was started with, not a weaker one.
         """
         prefix = self._cmd_prefix()
+        sandbox_flags = (['-s', 'workspace-write'] if unattended_sandbox
+                         else ['--dangerously-bypass-approvals-and-sandbox'])
         if resume_id:
             cmd = prefix + ['exec', 'resume']
             if resume_id.lower() == 'last':
@@ -4034,10 +4135,9 @@ class CodexRuntime(AgentRuntime):
             else:
                 cmd.append(resume_id)
             cmd.append('--json')
-            cmd.append('--dangerously-bypass-approvals-and-sandbox')
+            cmd.extend(sandbox_flags)
         else:
-            cmd = prefix + ['exec', '--json',
-                            '--dangerously-bypass-approvals-and-sandbox']
+            cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
         return cmd
@@ -4649,12 +4749,23 @@ class CodexRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 unattended_sandbox_enabled: bool = True,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
             raise RuntimeError("codex CLI not installed — run: npm install -g @openai/codex")
 
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
-        cmd = self.build_command(model=model, resume_id=resume_id or '')
+        # Decided ONCE per launch, from this session's own trigger_type
+        # (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4) — see
+        # codex_unattended_sandbox_decision()'s docstring for the fail-safe
+        # rationale. `unattended_sandbox_enabled` is the config flag
+        # (`codex_unattended_sandbox`, default True); it comes from the
+        # caller, not read from CONFIG here, matching this module's existing
+        # "config passed explicitly" convention (see ClaudeRuntime.build_command).
+        use_sandbox = codex_unattended_sandbox_decision(
+            session_dict, unattended_sandbox_enabled)
+        cmd = self.build_command(model=model, resume_id=resume_id or '',
+                                 unattended_sandbox=use_sandbox)
         # MC Tool Protocol (mc:question — parity audit item 4): the universal
         # context block already TELLS Codex to use this fence
         # (_build_agent_context); without appending the protocol text itself
@@ -4670,6 +4781,20 @@ class CodexRuntime(AgentRuntime):
         if system_prompt and not resume_id:
             # AGENTS.md hierarchy is primary; prepend to task as a quick override.
             full_prompt = f"{system_prompt}\n\n---\n\n{task}"
+
+        # Stashed on the CALLER's dict (not read back off the returned
+        # handle — _mode_a_dispatch's session_dict param IS the same object
+        # `agent_sessions[session_id]` already points at, so this is visible
+        # to write_followup, which only receives `handle`, not the config
+        # flag, and must reuse the SAME posture on every respawn rather than
+        # re-deriving it: a session's sandbox posture must not change
+        # mid-conversation just because a human flipped the config flag
+        # while it was running). `session_dict is None` only happens when a
+        # caller skips MC's own session bookkeeping entirely (no real
+        # dispatch path does) — write_followup's own default (sandboxed)
+        # covers that case.
+        if session_dict is not None:
+            session_dict['_codex_unattended_sandbox'] = use_sandbox
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -4742,7 +4867,15 @@ class CodexRuntime(AgentRuntime):
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
         # Re-state -m: this respawns codex, and the flag doesn't carry over.
-        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
+        # Sandbox posture is READ back, not re-derived: dispatch() decided it
+        # once from the session's trigger_type (codex_unattended_sandbox_decision)
+        # and stashed it on the session dict. Missing key (a session dispatched
+        # before this change, or via a path that bypassed dispatch()) fails
+        # safe to sandboxed, same posture as the decision function's own
+        # missing-trigger_type case.
+        cmd = self.build_command(
+            model=self.session_model(handle), resume_id=resume_id,
+            unattended_sandbox=session.get('_codex_unattended_sandbox', True))
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

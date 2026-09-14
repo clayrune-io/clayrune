@@ -256,6 +256,18 @@ def _load_config():
         # _CONFIG_EDITABLE_KEYS, so PUT /api/config already refuses an
         # unattended caller for it (F5) — only a human can turn it back off.
         'fence_unattended_enabled': True,
+        # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1: Codex has no fence
+        # equivalent (steward/fence.py is a Claude Code PreToolUse hook), so
+        # every Codex session ever ran with
+        # --dangerously-bypass-approvals-and-sandbox — real, OS-level
+        # sandboxing was never wired up at all. Default ON: an unattended
+        # Codex launch (schedule/workflow/dispatch/hivemind trigger_type) now
+        # runs `-s workspace-write` (confined to the launch cwd, tested live
+        # on Windows — a write outside cwd is denied at the OS layer, no
+        # prompt, no hang) instead of the unconfined bypass flag. Manual
+        # (interactive) Codex sessions are unaffected. One of
+        # _CONFIG_EDITABLE_KEYS, so only a human can turn it back off.
+        'codex_unattended_sandbox': True,
         'agent_channels': '',
         'agent_remote_control': False,
         'agent_revive_from_log': True,

@@ -548,3 +548,79 @@ def test_dispatch_route_keeps_manual_trigger_type_for_explicit_ui_client(client,
                        json={'task': 'do a thing', 'source': 'ui'})
     assert resp.status_code == 200
     assert captured.get('trigger_type') == 'manual'
+
+
+# ── _dispatch_via_runtime -> CodexRuntime.dispatch sandbox wiring ─────────────
+# (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4 risk #1). agent_runtime.py never
+# reads server CONFIG directly (testability — see ClaudeRuntime.build_command's
+# docstring), so `_dispatch_via_runtime` must compute the flag from
+# mc.state.CONFIG and hand it across the seam as a plain bool on every codex
+# dispatch. A stub runtime stands in for CodexRuntime so this doesn't need a
+# real `codex` binary — only the wiring is under test here (the decision
+# logic itself is covered by tests/test_codex_unattended_sandbox.py).
+
+class _StubCodexRuntime:
+    def __init__(self):
+        self.dispatch_kwargs = None
+
+    def build_command(self, **kwargs):
+        return ['codex', 'exec']
+
+    def dispatch(self, **kwargs):
+        self.dispatch_kwargs = kwargs
+        from mc import agent_runtime as art
+        return art.SessionHandle(
+            mc_session_id=kwargs.get('mc_session_id') or 'sid-stub',
+            provider='codex', mode='A',
+            project_path=kwargs.get('project_path', ''),
+            project_id=kwargs.get('project_id', ''),
+            session_dict=kwargs.get('session_dict') or {},
+            started_at='2026-09-14T00:00:00Z',
+            capabilities=None, meta={},
+        )
+
+
+def _dispatch_via_runtime_with_stub(monkeypatch, *, trigger_type,
+                                    codex_unattended_sandbox_config):
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    stub = _StubCodexRuntime()
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    before = mc_state.CONFIG.get('codex_unattended_sandbox')
+    mc_state.CONFIG['codex_unattended_sandbox'] = codex_unattended_sandbox_config
+    try:
+        ar._dispatch_via_runtime(
+            {'id': 'proj-stub', 'project_path': str(Path(__file__).parent)},
+            'do a thing', provider_name='codex', trigger_type=trigger_type)
+    finally:
+        mc_state.CONFIG['codex_unattended_sandbox'] = before
+        mc_state.agent_sessions.clear()
+    return stub
+
+
+def test_dispatch_via_runtime_passes_config_flag_true_to_codex(monkeypatch, client):
+    stub = _dispatch_via_runtime_with_stub(
+        monkeypatch, trigger_type='schedule', codex_unattended_sandbox_config=True)
+    assert stub.dispatch_kwargs['unattended_sandbox_enabled'] is True
+
+
+def test_dispatch_via_runtime_passes_config_flag_false_to_codex(monkeypatch, client):
+    stub = _dispatch_via_runtime_with_stub(
+        monkeypatch, trigger_type='schedule', codex_unattended_sandbox_config=False)
+    assert stub.dispatch_kwargs['unattended_sandbox_enabled'] is False
+
+
+def test_dispatch_via_runtime_defaults_flag_true_when_unset(monkeypatch, client):
+    from mc import state as mc_state
+    mc_state.CONFIG.pop('codex_unattended_sandbox', None)
+    stub = _dispatch_via_runtime_with_stub(
+        monkeypatch, trigger_type='workflow', codex_unattended_sandbox_config=True)
+    # Config key absent entirely (fresh install pre-migration) still resolves
+    # to the documented default (True) via state.CONFIG.get(..., True).
+    assert stub.dispatch_kwargs['unattended_sandbox_enabled'] is True
+
+
+def test_dispatch_via_runtime_carries_trigger_type_onto_session_dict(monkeypatch, client):
+    stub = _dispatch_via_runtime_with_stub(
+        monkeypatch, trigger_type='hivemind_worker', codex_unattended_sandbox_config=True)
+    assert stub.dispatch_kwargs['session_dict']['trigger_type'] == 'hivemind_worker'

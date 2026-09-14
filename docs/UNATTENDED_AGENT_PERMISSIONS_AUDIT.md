@@ -255,3 +255,159 @@ fix to `is_unattended_caller` so it stops locking out the human.
 **Full pytest run:** `python -m pytest tests/ -q` → clean, exit code 0. 6
 environment-conditional skips (live-auth CLI test, operator-local doc paths),
 zero failures. Full tail in the chat reply to Dave.
+
+---
+
+## 6. Follow-up shipped: Codex unattended sandboxing (Tobin, 2026-09-14)
+
+Closes risk #1 (§2) for the launch paths where it's safe to close: Codex
+launches with a `trigger_type` MC itself recorded as unattended
+(`schedule`/`workflow`/`dispatch`/`hivemind_orchestrator`/`hivemind_worker`)
+now run `-s workspace-write`, confined to the launch cwd, instead of
+`--dangerously-bypass-approvals-and-sandbox`. Manual (interactive) Codex
+sessions are unaffected — untouched code path, same flag as before.
+
+### What shipped
+
+1. **`mc/agent_runtime.py`** —
+   `codex_unattended_sandbox_decision(session_dict, sandbox_config_enabled)`:
+   reads `session_dict['trigger_type']` directly (no HTTP round trip — unlike
+   `steward/fence.py`'s PreToolUse hook, this runs IN-PROCESS with the
+   session dict already in hand). Imports `steward.fence._UNATTENDED_TRIGGER_TYPES`
+   for "what counts as unattended" (no second detector), but the actual gate
+   is `trigger_type != 'manual'` when the flag is on — a DELIBERATE
+   divergence from the fence's own fail-OPEN posture on an unrecognized
+   value. The fence runs per-tool-call inside an already-steward-enabled
+   project, so a false block only interrupts one action a human can retry;
+   this decision runs ONCE, before the process spawns, and sets the posture
+   for an entire unattended run nobody is watching — a wrong 'bypass' there
+   is not a pause, it's an unconfined shell for the whole session. A module-
+   level `assert 'manual' not in _UNATTENDED_TRIGGER_TYPES` pins the
+   assumption the shortcut relies on.
+   `CodexRuntime.build_command(unattended_sandbox=...)`: exactly one of
+   `-s workspace-write` or the bypass flag, on both the fresh-dispatch and
+   `exec resume` branches. `dispatch()` computes the decision once and
+   stashes it on the session dict (`_codex_unattended_sandbox`) so
+   `write_followup` reuses the SAME posture on every respawn rather than
+   re-deriving it (a human flipping the config flag mid-conversation must
+   not change an in-flight session's posture). `write_followup` reads the
+   stash with a `True` (sandboxed) default if it's ever missing.
+   `_mode_a_reader`'s `TOOL_USE` branch (shared across all Mode-A providers,
+   gated to `runtime.name == 'codex' and session.get('_codex_unattended_sandbox')`
+   so it can't mislabel an unrelated permission error on another provider or
+   a manually-launched Codex session): detects a sandbox-denied shell command
+   and appends a `[hint]` log line. This is NOT caught by the existing
+   `rc != 0 -> explain_exit_error()` path — measured live (§ below): a denied
+   inner write does NOT fail the `codex exec` process itself (rc stays 0;
+   codex just reports the inner command's own nonzero exit in its own text).
+   The regex (`_CODEX_SANDBOX_DENIAL_RE`) matches `UnauthorizedAccessException`
+   / `PermissionDenied` — the two unbroken tokens a real denied `Set-Content`
+   produced on this box (`is denied` itself wraps across a `\r\n` in the real
+   output, so it isn't matched).
+2. **`mc/blueprints/agent_routes.py`** — `_dispatch_via_runtime` reads
+   `state.CONFIG.get('codex_unattended_sandbox', True)` and passes it as
+   `unattended_sandbox_enabled` on the `runtime.dispatch(...)` call.
+   `agent_runtime.py` deliberately never reads server CONFIG directly (same
+   convention as `ClaudeRuntime.build_command`'s "config passed explicitly"
+   docstring) — every other runtime's `dispatch()` has a `**_extra` catchall
+   so the new kwarg is a no-op for them.
+3. **`server.py` / `mc/blueprints/settings_routes.py`** —
+   `codex_unattended_sandbox` config default `True`, added to
+   `_CONFIG_EDITABLE_KEYS` (same unattended-caller-cannot-write gate as
+   `fence_unattended_enabled`).
+4. **Tests** — `tests/test_codex_unattended_sandbox.py` (new, 18 tests):
+   the decision function's full matrix (each unattended trigger_type
+   sandboxes; manual bypasses regardless of the flag; flag off always
+   bypasses; an unrecognized future trigger_type fails safe to sandboxed;
+   a missing/`None`/exception-raising session_dict fails safe to sandboxed
+   without crashing) plus `build_command()`'s flag shape on both branches
+   plus the denial regex against the REAL captured PowerShell output (below).
+   `tests/test_agent_routes.py` (+4): `_dispatch_via_runtime` threads the
+   CONFIG flag to a stub `CodexRuntime.dispatch()` correctly, including the
+   config-key-absent-entirely case.
+
+### Jobs affected / write-outside-cwd audit (item 3)
+
+Checked every schedule (`GET /api/schedules`, 29 entries) and the one saved
+workflow (`GET /api/workflows`). Neither `day_trading_engulfing_scanner` nor
+`apex_trader` (the brief's likely candidates) runs Codex via a **schedule** —
+both projects have `agent_provider: None` (defaults to Claude) and there is
+no global `agent_provider` override, so every schedule dispatches Claude.
+
+**One live unattended Codex launch exists on this box:** the "Check US
+stocks" workflow (`wf-d7942f5a`, schedule-triggered, `apex_trader` project),
+whose agent step runs character `global:us-stock-investor` (Vance,
+`provider: codex`, `model: gpt-6-astra`) — `trigger_type='workflow'`, so it
+IS now sandboxed by this change. Read `~/.claude/agents/us-stock-investor.md`
+(the character's own directive) and the workflow definition: the task is
+market analysis ("scan the US stock exchange... find opportunities") with a
+`notify_operator` (email) action as the workflow's own follow-up step — not
+something the Codex agent process itself runs as a shell command. The
+character prompt has no file-write directive at all. **No write-outside-cwd
+need found** — this job should run unaffected by the new sandbox. If Vance
+ever needs to write outside `apex_trader`'s project folder, there is no
+per-job override today (§3d of this audit already declined a per-schedule
+opt-in) — the human-only `codex_unattended_sandbox` config flag is the only
+lever, and it's global, not per-job.
+
+### Real-box verification (item 5)
+
+Two, not one: a hand-typed `codex exec -s workspace-write` CLI call (proving
+the CLI flag's raw behavior) AND a second run through the actual wired code
+(`CodexRuntime.dispatch()`, `_scratch/codex_sandbox_real_wiring_test.py`,
+not committed — gitignored scratch) proving the FULL path: trigger_type ->
+`codex_unattended_sandbox_decision` -> `build_command` -> real subprocess ->
+denial hint.
+
+```
+$ codex exec --json -s workspace-write -C <scratch dir> "write inside.txt; then attempt ../outside_write_test.txt"
+```
+Result: `inside.txt` written (`inside-ok`), `codex exec` process exit 0, no
+hang. The inner PowerShell write to `../outside_write_test.txt` came back as
+its own `command_execution` item with `exit_code:1`,
+`"Set-Content : Access to the path '...' is \r\ndenied." ... PermissionDenied
+... UnauthorizedAccessException` — no file created outside the sandboxed dir
+(confirmed by listing).
+
+```
+$ python _scratch/codex_sandbox_real_wiring_test.py
+[ok] session._codex_unattended_sandbox = True
+[ok] hung=False (must be False)
+[ok] final status=completed
+[ok] inside file exists=True content='wired-inside-ok'
+[ok] outside file exists=False (must be False)
+...
+[hint] That command was refused by the unattended sandbox (-s workspace-write,
+confined to this session's own working directory) — not a codex failure. ...
+ALL ASSERTIONS PASSED
+```
+`session['trigger_type'] = 'schedule'` drove the sandbox decision end to end,
+the process completed (no hang), the inside write succeeded, the outside
+write was denied, and the sandbox-denial hint (item 4) fired correctly in
+`log_lines` — all four verified together, not separately.
+
+### Residual gaps (not implemented, out of scope this pass)
+
+- **`CodexRuntime.oneshot()`** (the brief's third named line, `~4789`, now
+  shifted) is **unreachable dead code for Codex today** — grepped every
+  caller of `.oneshot(` in `mc/`: `mail_launder.py` and `memory.py` (the
+  toolless-oneshot pattern) both hardcode `get_runtime('claude')`, never
+  `'codex'`. It still carries the unconditional bypass flag, untouched. It
+  has no session/trigger_type concept to hook the same decision into (no
+  session dict, no dispatch-time stash) — if it's ever wired up for Codex,
+  that needs its own design, not a copy of this one.
+- **The `dispatch` trigger_type stamp** (§5) is still held back — an
+  agent-dispatched Codex helper stays `trigger_type='manual'` and is
+  therefore still on the bypass flag, unaffected by this change. Brief
+  explicitly excluded touching this.
+- **Codex sandbox is global, not per-project/per-job** (mirrors §3d's
+  reasoning for the fence: no evidence yet that a legitimate unattended job
+  needs `git push`/cloud-mutation-equivalent write reach outside its own
+  cwd). Revisit if one turns up — Vance's job doesn't need it today.
+- Item #4's detection lives in the SHARED `_mode_a_reader` (all Mode-A
+  providers), gated to `runtime.name == 'codex'` — a small, deliberate
+  provider-specific branch in shared code, same shape as the existing
+  `_format_tool_activity` cross-provider dispatch a few lines above it.
+
+**Full pytest run (this follow-up):** `python -m pytest tests/ -q` → clean,
+exit code 0, same 6 environment-conditional skips as §5, zero failures.
