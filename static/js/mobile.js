@@ -121,6 +121,13 @@
     try { a.blur(); } catch (err) {}
     settle();
   }, { passive: true });
+  // Exposed for the send path (conversation.js): after Send blurs the
+  // composer, call this synchronously (before any await/network/render) so
+  // the layout expands in the SAME frame instead of waiting for whichever
+  // rAF/timeout/watchdog next happens to fire. `apply()` already forces
+  // inset=0 once the field is no longer focused, so this doesn't need its
+  // own "pretend the keyboard is gone" branch — it just needs to run NOW.
+  window.mcRestoreFullHeight = apply;
 })();
 
 // ── Mobile UI: app bar greeting + filter pills (≤960px, warm tone) ──────────
