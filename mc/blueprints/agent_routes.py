@@ -2233,6 +2233,22 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
         "Do NOT call an `AskUserQuestion` tool: it does not exist headless. For "
         "open-ended input, just ask in plain text.",
 
+        # Teams — propose, never create. Character mutation routes refuse agent
+        # callers (character_routes._refuse_if_agent_caller); the card the
+        # block renders is where a human creates and hires.
+        "Teams: when the user asks which agents a job needs, first read who "
+        "already exists (GET /api/characters?project_id=<this project> lists "
+        "every agent type with its engine; GET /api/floor shows the Bench and "
+        "who is hired where), then emit ONE fenced ```mc:team``` block and stop. "
+        "Body: {\"title\": \"...\", \"members\": [{\"reuse\": \"global:<name>\", "
+        "\"reason\": \"why it fits\", \"note\": \"only if its engine is a poor fit\"}, "
+        "{\"name\": \"kebab-name\", \"agent_name\": \"Name\", \"role\": \"when to use it\", "
+        "\"persona\": \"its system prompt\", \"avatar\": \"fig:<GET /api/avatars>\", "
+        "\"provider\": \"\", \"model\": \"\", \"effort\": \"\", \"scope\": \"project\"}]}. "
+        "Reuse an existing agent whenever one fits. Clayrune renders an editable "
+        "card; only the user's click creates or hires. You cannot create or edit "
+        "characters yourself.",
+
         # Mermaid blocks render inline in the chat panel.
         "Diagrams: Clayrune renders ```mermaid fenced blocks INLINE in your "
         "chat response — the user sees a rendered diagram (hand-drawn style, "

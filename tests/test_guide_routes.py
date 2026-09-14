@@ -519,7 +519,11 @@ class TestGuideStreamModes:
         assert client.popen_calls[0][1]['cwd'] == str(
             client.tmp / 'data' / 'claydo' / 'builder-character')
 
-    def test_ask_mode_ignores_project_id(self, client):
+    def test_ask_mode_ignores_project_context(self, client, monkeypatch):
+        # Ask mode never carries the project's name/rules/skills. With no agent
+        # types on the install it sends the bare question, byte for byte.
+        from mc import characters as ch
+        monkeypatch.setattr(ch, 'GLOBAL_AGENTS_DIR', client.tmp / 'no-agents')
         r = client.post('/api/guide/stream', json={
             'question': 'how do I tile modals?', 'project_id': 'tguide'})
         assert r.status_code == 200
@@ -527,6 +531,26 @@ class TestGuideStreamModes:
         assert sent['message']['content'] == 'how do I tile modals?'
         assert client.popen_calls[0][1]['cwd'] == str(
             client.tmp / 'data' / 'claydo')
+
+    def test_ask_mode_lists_existing_agents_so_a_team_can_reuse_them(self, client, monkeypatch):
+        # Ask Claydo has no tools, so it cannot GET /api/characters; the list
+        # rides the request instead. Project context still does not.
+        from mc import characters as ch
+        agents = client.tmp / 'some-agents'
+        agents.mkdir()
+        (agents / 'code-reviewer.md').write_text(
+            '---\nname: code-reviewer\ndescription: reviews diffs\nmodel: claude-sonnet-5\n---\nBody.\n',
+            encoding='utf-8')
+        monkeypatch.setattr(ch, 'GLOBAL_AGENTS_DIR', agents)
+        (client.tmp / 'AGENT_RULES.md').write_text('# my rules head\n', encoding='utf-8')
+        r = client.post('/api/guide/stream', json={
+            'question': 'who do I need for a platformer?', 'project_id': 'tguide'})
+        assert r.status_code == 200
+        prompt = json.loads(client.popen_procs[0].stdin.data)['message']['content']
+        assert prompt.startswith('Existing agents on this install')
+        assert 'global:code-reviewer [claude-sonnet-5]: reviews diffs' in prompt
+        assert '# my rules head' not in prompt
+        assert prompt.rstrip().endswith('Current question: who do I need for a platformer?')
 
     def test_unknown_mode_400(self, client):
         r = client.post('/api/guide/stream',

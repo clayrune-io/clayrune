@@ -436,3 +436,37 @@ last 15 entries), but a full audit of `USER_GUIDE.md` against current the
 product is its own task, out of scope here (this pass only touched the one
 "How to be Claydo" section for the hand-off above). Filing it as a follow-up
 is the right next step, not doing it inline with this one.
+
+## 12. One-prompt teams, and characters are human-only (2026-09-14)
+
+**Propose, never create.** Any agent (hired Claydo, Ask Claydo, anyone) answers
+"which agents does this need?" with one fenced `mc:team` block. The chat
+renderer and Ask Claydo both mount it as an editable card
+(`static/js/team-card.js`); nothing is created until the human clicks
+**Create team**, which calls `POST /api/characters/team`.
+
+**Reuse before create.** Each member is either `{"reuse": "<scope>:<name>",
+"reason", "note"}` or a new definition. Hired agents read what exists through
+`GET /api/characters?project_id=` and `GET /api/floor` (the system-prompt
+"Teams:" line and Claydo's persona say so); Ask Claydo has no tools, so
+`guide_routes._claydo_existing_agents_block` puts the same list in its request.
+The card shows a reuse row's engine read-only and lets the human flip any row
+between reuse and new. A reused agent is sent as a ref only: the card cannot
+change its persona or engine.
+
+**All or nothing.** The route validates every member first (the same
+`characters.validate_fields` and `_validated_engine` rules single create uses,
+plus figure, name and duplicate checks), returns `member_errors` (400) or
+`conflicts` (409, a new name that already exists and was not confirmed for
+overwrite) before any write, then writes the new files, then hires reused (and,
+if ticked, new) members through `project_routes.apply_roster_hires`, the
+drag-drop hire's own write, in one project save. A failure at any point unlinks
+created files and restores overwritten ones.
+
+**The lockdown.** Every character mutation route (create, team, voice,
+identity, PUT, name, avatar, move, delete) refuses an agent caller via
+`workflow_routes._is_agent_caller` (no browser Origin header), the MC-871
+precedent. `is_unattended_caller` was rejected for this: it lets an attended
+manual chat's own curl through, and that is an agent. Reads stay open. The
+builtin installer (section 11) calls `mc.characters` directly and is
+unaffected.

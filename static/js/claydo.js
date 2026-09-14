@@ -205,7 +205,7 @@ async function restoreClaydoSession() {
       const el = document.createElement('div');
       el.className = 'claydo-msg ' + (m.role === 'user' ? 'user' : 'bot');
       if (m.role === 'user') el.textContent = m.text || '';
-      else el.innerHTML = _claydoFormatText(m.text || '');
+      else { el.innerHTML = _claydoFormatText(m.text || ''); _claydoMountTeams(el); }
       histDiv.appendChild(el);
       // A draft you can read but no longer save would be worse than no
       // restore at all, so the hand-off card comes back with its message.
@@ -466,7 +466,9 @@ async function submitClaydo() {
         question,
         history: historyPayload,
         mode: _claydoMode,
-        project_id: _claydoMode === 'ask' ? null : _claydoFocusedProjectId(),
+        // Ask mode uses it only to list the agents that already exist there, so
+        // a team proposal can reuse them; the builder modes also ground in it.
+        project_id: _claydoFocusedProjectId(),
       }),
     });
     if (!res.ok || !res.body) {
@@ -503,6 +505,7 @@ async function submitClaydo() {
           // dispatched on `done`). Light formatting matches non-streaming path.
           const {cleanText} = _claydoParseMarkers(assembled);
           botMsg.innerHTML = _claydoFormatText(cleanText);
+          _claydoMountTeams(botMsg);
           histDiv.scrollTop = histDiv.scrollHeight;
         } else if (payload.type === 'error') {
           _claydoRenderError(botMsg, payload.message || 'Claydo errored', question);
@@ -514,6 +517,7 @@ async function submitClaydo() {
           const finalText = (payload.answer || assembled).trim();
           const {cleanText, actions} = _claydoParseMarkers(finalText);
           botMsg.innerHTML = _claydoFormatText(cleanText);
+          _claydoMountTeams(botMsg);
           // Store the cleaned text (NO markers) so Claydo's next turn doesn't
           // re-emit the same highlights from seeing them in its own prior reply.
           // The ready-card kind rides along. The stored text has its markers
@@ -640,6 +644,13 @@ function _claydoRunAction(a) {
 // emit (defense in depth). While a fence is still streaming (odd count),
 // the open tail renders as <pre> too — settles correctly at `done`.
 function _claydoFormatText(s) {
+  // A ```mc:team``` proposal becomes the editable team card (team-card.js),
+  // tokenised out first so the fence splitter below never shreds its JSON.
+  const _teams = [];
+  s = String(s).replace(/```[ \t]*mc:team[^\n]*\n([\s\S]*?)```/g, (m, body) => {
+    _teams.push(body);
+    return '@@CLTeam' + (_teams.length - 1) + '@@';
+  });
   const segs = String(s).split(/```(?:[\w-]+)?\n?/);
   let out = '';
   for (let i = 0; i < segs.length; i++) {
@@ -652,7 +663,17 @@ function _claydoFormatText(s) {
         .replace(/\n/g, '<br>');
     }
   }
-  return out;
+  return out.replace(/@@CLTeam(\d+)@@/g, (m, i) => (typeof window.teamCardPlaceholderHTML === 'function')
+    ? window.teamCardPlaceholderHTML(_teams[+i], '')
+    : '<pre class="claydo-code">' + esc(_teams[+i]) + '</pre>');
+}
+
+// Mount any team cards a reply just rendered, grounded in the project the user
+// is in (a reuse or a hire needs one).
+function _claydoMountTeams(el) {
+  if (el && typeof window.mountTeamCards === 'function') {
+    window.mountTeamCards(el, { projectId: _claydoFocusedProjectId() || '' });
+  }
 }
 
 // ── Builder handoff: ready cards, insert/copy, save panel ─────────────────

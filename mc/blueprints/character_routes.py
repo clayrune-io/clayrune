@@ -18,9 +18,10 @@ from flask import Blueprint, jsonify, request
 import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars
 from mc import state
-from mc.core import _log
+from mc.core import _log, now_iso
 from mc.memory import _scribe_call
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
+from mc.blueprints.workflow_routes import _is_agent_caller
 
 bp = Blueprint('characters', __name__)
 
@@ -66,6 +67,27 @@ def _install_builtin_characters():
             _log(f"[characters] preserved user-modified builtins: {preserved}")
     except Exception as e:
         _log(f"[characters] builtin install failed: {e}")
+
+
+def _refuse_if_agent_caller():
+    """Every character mutation is human-only.
+
+    A character is a system prompt, an engine and a face that later dispatches
+    run under, so an agent writing one is self-expansion (CLAUDE.md authority
+    guard). The structural signal is workflow_routes._is_agent_caller: the SPA's
+    fetch always carries an Origin header, an agent's curl does not, and nothing
+    in the body can flip it. is_unattended_caller was the other candidate; it
+    deliberately lets an attended manual chat through, which is exactly the
+    agent this has to stop. Internal callers (the builtin installer) call
+    mc.characters directly and never pass through here.
+    """
+    if _is_agent_caller():
+        return jsonify({
+            'error': ('creating or changing characters is human-only: an agent may '
+                      'propose a team with a ```mc:team``` block, and a click in the '
+                      'Clayrune UI creates it (CLAUDE.md authority guard).'),
+        }), 403
+    return None
 
 
 def _project_path_for_list(project_id: str | None) -> str | None:
@@ -144,6 +166,9 @@ def list_characters_route():
 
 @bp.route('/api/characters', methods=['POST'])
 def create_character_route():
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     data = request.get_json() or {}
     name = (data.get('name') or '').strip()
     description = (data.get('description') or '').strip()
@@ -176,6 +201,209 @@ def create_character_route():
     except OSError as e:
         return jsonify({'error': f'write failed: {e}'}), 500
     return jsonify(rec), 201
+
+
+# ── Team creation (one-prompt team, 2026-09-14) ─────────────────────────────
+# An agent may PROPOSE a team as a fenced ```mc:team``` block; the chat renders
+# it as an editable card (static/js/team-card.js) and only the human's click
+# reaches this route. It is the existing creation path (write_character) run
+# once per member, with two properties a loop of POST /api/characters calls
+# cannot give: nothing is written until every member has passed every check,
+# and a write that still fails midway is rolled back, so the result is the
+# whole team or none of it.
+
+MAX_TEAM_SIZE = 12
+
+
+def _error_text(resp):
+    """The message out of a (jsonify(...), status) pair a shared validator
+    returned, so member errors can be collected rather than returned one at a
+    time."""
+    try:
+        return (resp[0].get_json() or {}).get('error') or 'invalid'
+    except Exception:
+        return 'invalid'
+
+
+def _plan_team_member(m, project_id):
+    """Validate one proposed member. Returns (plan, error_text)."""
+    name = str(m.get('name') or '').strip().lower()
+    description = m.get('description') or m.get('role') or ''
+    body = m.get('body') or m.get('persona') or ''
+    scope = str(m.get('scope') or 'project').strip().lower()
+    if scope not in ('global', 'project'):
+        return None, 'scope must be global|project'
+    try:
+        description, body = _chars.validate_fields(name, str(description), str(body))
+    except ValueError as e:
+        return None, str(e)
+
+    project_path = None
+    if scope == 'project':
+        if not project_id:
+            return None, 'project scope needs a project; pick global or open the team in a project'
+        p = load_project(project_id)
+        if not p:
+            return None, 'project not found'
+        project_path = p.get('project_path') or None
+        if not project_path:
+            return None, 'this project has no folder configured; pick global scope'
+
+    # Accept the engine nested ({"engine": {...}}) or flat on the member; the
+    # rules are the POST /api/characters rules, not a second copy.
+    engine_src = m.get('engine') if isinstance(m.get('engine'), dict) else m
+    engine, eng_err = _validated_engine(engine_src)
+    if eng_err:
+        return None, _error_text(eng_err)
+
+    raw_name = str(m.get('agent_name') or '').strip()
+    agent_name = _chars.clean_agent_name(raw_name)
+    if raw_name and not agent_name:
+        return None, 'the "goes by" name is unusable: one to three words'
+
+    raw_avatar = str(m.get('avatar') or '').strip()
+    avatar = _chars.clean_avatar(raw_avatar)
+    if raw_avatar and not avatar:
+        return None, 'the avatar is unusable: one emoji, or fig:<figure>'
+    fig = _chars.avatar_figure(avatar)
+    if avatar.startswith(_chars.AVATAR_FIG_PREFIX) and fig not in _chars.list_figures():
+        return None, f'no figure named {raw_avatar!r} on this install'
+
+    return {'name': name, 'scope': scope, 'project_path': project_path,
+            'description': description, 'body': body, 'engine': engine,
+            'agent_name': agent_name, 'avatar': avatar}, None
+
+
+@bp.route('/api/characters/team', methods=['POST'])
+def create_team_route():
+    """Create a proposed team: every change, or none.
+
+    Body: {members: [...], project_id, overwrite: ["<scope>:<name>"], hire_new}
+    A member is either
+      {mode: "reuse", ref: "<scope>:<name>"}  an existing character, hired into
+                                              project_id and never written, or
+      {mode: "new", name, agent_name, description|role, body|persona, avatar,
+       scope, provider, model, effort | engine: {...}}  created here.
+    `hire_new` also hires the created members into project_id.
+
+    400 `member_errors` = per-member failures; 409 `conflicts` = new names that
+    already exist and are not listed in `overwrite`. Neither writes anything.
+    Roster hires go through project_routes.apply_roster_hires (the drag-drop
+    hire's own write) in one project save, after the character files; if that
+    save fails the files are rolled back too.
+    """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
+    data = request.get_json(silent=True) or {}
+    members = data.get('members')
+    project_id = data.get('project_id') or None
+    overwrite = {str(k) for k in (data.get('overwrite') or [])}
+    hire_new = bool(data.get('hire_new'))
+    if not isinstance(members, list) or not members:
+        return jsonify({'error': 'members must be a non-empty list'}), 400
+    if len(members) > MAX_TEAM_SIZE:
+        return jsonify({'error': f'a team is at most {MAX_TEAM_SIZE} members'}), 400
+
+    plans, reuse_refs, member_errors, conflicts, seen = [], [], [], [], set()
+
+    def _fail(i, name, err):
+        member_errors.append({'index': i, 'name': name, 'error': err})
+
+    for i, m in enumerate(members):
+        if not isinstance(m, dict):
+            _fail(i, '', 'member must be an object')
+            continue
+        mode = str(m.get('mode') or 'new').strip().lower()
+        if mode == 'reuse':
+            ref = str(m.get('ref') or '').strip()
+            scope, _, name = ref.partition(':')
+            scope, name = scope.strip().lower(), name.strip()
+            if scope not in ('global', 'project') or not name:
+                _fail(i, ref, "reuse needs ref '<scope>:<name>'")
+                continue
+            if not project_id:
+                _fail(i, ref, 'reusing an agent hires it into a project; open the team in a project')
+                continue
+            pp = _project_path_for_list(project_id) if scope == 'project' else None
+            if _chars.read_character(scope, name, project_path=pp, include_body=False) is None:
+                _fail(i, ref, f'no existing character {ref} to reuse')
+                continue
+            key = f'{scope}:{name}'
+            if key in seen:
+                _fail(i, name, f'{key} appears twice in this team')
+                continue
+            seen.add(key)
+            reuse_refs.append(key)
+            continue
+        if mode != 'new':
+            _fail(i, str(m.get('name') or ''), 'mode must be new|reuse')
+            continue
+        plan, err = _plan_team_member(m, project_id)
+        if err or plan is None:
+            _fail(i, str(m.get('name') or ''), err or 'invalid')
+            continue
+        key = f"{plan['scope']}:{plan['name']}"
+        if key in seen:
+            _fail(i, plan['name'], f'{key} appears twice in this team')
+            continue
+        seen.add(key)
+        plan['index'], plan['key'] = i, key
+        plan['existing'] = _chars._find_file(plan['scope'], plan['name'], plan['project_path'])
+        if plan['existing'] is not None and key not in overwrite:
+            conflicts.append({'index': i, 'name': plan['name'], 'scope': plan['scope'], 'key': key})
+        plans.append(plan)
+
+    if member_errors:
+        return jsonify({'error': f'{len(member_errors)} member(s) need fixing; nothing was created',
+                        'member_errors': member_errors, 'conflicts': conflicts}), 400
+    if conflicts:
+        return jsonify({'error': f'{len(conflicts)} name(s) already exist; nothing was created. '
+                                 'Rename them, reuse the existing agent, or confirm overwriting.',
+                        'conflicts': conflicts}), 409
+
+    hire_refs = reuse_refs + ([pl['key'] for pl in plans] if hire_new else [])
+    project = None
+    if hire_refs:
+        project = load_project(project_id) if project_id else None
+        if project is None:
+            return jsonify({'error': 'hiring into a project needs a real project_id; nothing was created'}), 400
+
+    created, snapshots, records, hired, already = [], [], [], [], []
+    try:
+        for plan in plans:
+            existing = plan['existing']
+            if existing is not None:
+                snapshots.append((existing, existing.read_bytes()))
+            rec = _chars.write_character(
+                plan['scope'], plan['name'], plan['description'], plan['body'],
+                project_path=plan['project_path'], overwrite=existing is not None,
+                engine=plan['engine'], agent_name=plan['agent_name'],
+                avatar=plan['avatar'])
+            if existing is None:
+                path = _chars._find_file(plan['scope'], plan['name'], plan['project_path'])
+                if path is not None:
+                    created.append(path)
+            records.append(rec)
+        if project is not None and project_id:
+            from mc.blueprints import project_routes as _pr
+            hired, already = _pr.apply_roster_hires(project, hire_refs, 'team')
+            if hired:
+                project['last_updated'] = now_iso()
+                _pr.save_project(project_id, project)
+    except Exception as e:
+        for path in created:
+            try:
+                path.unlink()
+            except OSError as re_:
+                _log(f"[characters] team rollback could not remove {path}: {re_}")
+        for path, blob in snapshots:
+            try:
+                path.write_bytes(blob)
+            except OSError as re_:
+                _log(f"[characters] team rollback could not restore {path}: {re_}")
+        return jsonify({'error': f'team create failed, nothing kept: {e}'}), 500
+    return jsonify({'created': records, 'hired': hired, 'already_hired': already}), 201
 
 
 # ── Voice generation (MC-943) ────────────────────────────────────────────────
@@ -256,6 +484,9 @@ def generate_voice_route():
     itself has no write-side effects to test beyond "returns text or a
     clear error."
     """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     data = request.get_json(silent=True) or {}
     description = (data.get('description') or '').strip()
     body = (data.get('body') or '').strip()
@@ -325,6 +556,9 @@ def suggest_identity_route():
     persists, and the save panel folds the result into the create POST. Always
     returns a usable {agent_name, avatar} pair — see the fallback note above.
     """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     data = request.get_json(silent=True) or {}
     description = (data.get('description') or '').strip()
     body = (data.get('body') or '').strip()
@@ -396,6 +630,9 @@ def read_character_route(scope, name):
 
 @bp.route('/api/characters/<scope>/<name>', methods=['PUT'])
 def update_character_route(scope, name):
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global|project'}), 400
     data = request.get_json() or {}
@@ -516,6 +753,9 @@ def name_character_route(scope, name):
     override); POST with no body to have the model choose. An empty string
     clears it and the type falls back to its file name.
     """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global|project'}), 400
     data = request.get_json(silent=True) or {}
@@ -644,6 +884,9 @@ def avatar_character_route(scope, name):
     editor's manual override); POST with no body to have the model pick from
     this install's figures. An empty string clears it.
     """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global|project'}), 400
     data = request.get_json(silent=True) or {}
@@ -721,6 +964,9 @@ def move_character_route(scope, name):
     ORIGINAL standing. The alternative loses the file when the destination
     write fails, and the body is the part nobody can retype from memory.
     """
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     data = request.get_json() or {}
     to_scope = (data.get('to_scope') or '').strip()
     to_project_id = data.get('to_project_id')
@@ -768,6 +1014,9 @@ def move_character_route(scope, name):
 
 @bp.route('/api/characters/<scope>/<name>', methods=['DELETE'])
 def delete_character_route(scope, name):
+    refusal = _refuse_if_agent_caller()
+    if refusal:
+        return refusal
     if scope not in ('global', 'project'):
         return jsonify({'error': 'scope must be global|project'}), 400
     project_id = request.args.get('project_id')

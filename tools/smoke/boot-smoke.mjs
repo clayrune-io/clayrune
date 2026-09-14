@@ -118,6 +118,8 @@ const AGENT_LOG_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'agent-log.
 const RESUME_PREVIEW_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'resume-preview.js'), 'utf8');
 const CONVERSATION_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'conversation.js'), 'utf8');
 const RICH_TEXT_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'rich-text.js'), 'utf8');
+// Team proposal card (```mc:team```) — same serve-or-it-boots-without-it rule.
+const TEAM_CARD_JS = readFileSync(resolve(REPO_ROOT, 'static', 'js', 'team-card.js'), 'utf8');
 const PROJECTS_JSON = readFileSync(resolve(__dirname, 'fixtures', 'projects.json'), 'utf8');
 
 const ORIGIN = 'http://mc.smoke.test';   // arbitrary; every request is intercepted
@@ -191,6 +193,7 @@ const STATIC_MAP = {
   '/static/js/resume-preview.js': ['text/javascript; charset=utf-8', RESUME_PREVIEW_JS],
   '/static/js/conversation.js': ['text/javascript; charset=utf-8', CONVERSATION_JS],
   '/static/js/rich-text.js': ['text/javascript; charset=utf-8', RICH_TEXT_JS],
+  '/static/js/team-card.js': ['text/javascript; charset=utf-8', TEAM_CARD_JS],
 };
 
 // Hermetic router: serve the page + every extracted module + canned

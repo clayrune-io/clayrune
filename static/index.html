@@ -2087,6 +2087,7 @@ function refreshModalById(modalId) {
   // Render any mermaid placeholders that came from the outputLines builder
   // (the streaming path renders inline; this catches the rebuild path).
   _renderAllMermaidPlaceholders(content);
+  if (typeof window.mountTeamCards === 'function') window.mountTeamCards(content);
   // Re-apply the 3-pane rail search filter after the rebuild (the input value +
   // focus are already restored above; this re-hides the non-matching rows).
   if (typeof _applyRailFilter === 'function') { try { _applyRailFilter(entry.projectId); } catch (_) {} }
@@ -3644,6 +3645,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>
+<script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/skills-panel.js"></script>
 <script type="module" src="/static/js/media.js"></script>
 <script type="module" src="/static/js/settings-drill.js"></script>

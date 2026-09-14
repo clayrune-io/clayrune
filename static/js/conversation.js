@@ -1100,6 +1100,7 @@ function agentPanelHTML(p) {
       let planBlock = '';   // accumulates non-tool lines for plan detection
       let planRawLines = []; // raw text for plan viewer
       let mermaidLines = null;  // null when not inside a ```mermaid block; array otherwise
+      let teamLines = null;     // same, for a ```mc:team proposal (static/js/team-card.js)
       function flushTable() {
         if (tableLines.length === 0) return;
         if (isPipeTable(tableLines)) {
@@ -1128,6 +1129,22 @@ function agentPanelHTML(p) {
             mermaidLines.push(line);
             planRawLines.push(line);
           }
+          continue;
+        }
+        if (teamLines === null && /^\s*```\s*mc:team\b/.test(line) && typeof window.teamCardPlaceholderHTML === 'function') {
+          flushTable();
+          teamLines = [];
+          planRawLines.push(line);
+          continue;
+        }
+        if (teamLines !== null) {
+          if (/^\s*```\s*$/.test(line)) {
+            planBlock += window.teamCardPlaceholderHTML(teamLines.join('\n'), p.id);
+            teamLines = null;
+          } else {
+            teamLines.push(line);
+          }
+          planRawLines.push(line);
           continue;
         }
         // Plan detection: when ExitPlanMode is hit, collapse prior non-tool lines
@@ -3955,6 +3972,10 @@ function appendAgentLine(sessionId, text) {
 
   // Mermaid diagram interception. Must come before all other line handling
   // so ```mermaid fences are caught even if they look like other syntaxes.
+  if (typeof window._handleTeamLine === 'function' && window._handleTeamLine(sessionId, text, el)) {
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
+    return;
+  }
   if (_handleMermaidLine(sessionId, text, el)) {
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;

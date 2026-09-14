@@ -354,6 +354,30 @@ def ref_by_agent_name(agent_name: str,
     return None
 
 
+def validate_fields(name: str, description: str, body: str) -> tuple[str, str]:
+    """The field rules every character write enforces, without writing.
+
+    Split out of write_character so a multi-member create can check every
+    member BEFORE the first file lands, against the same rules rather than a
+    second copy of them. Returns (description, body) stripped; raises
+    ValueError with the messages write_character always raised.
+    """
+    err = _skills.validate_name(name)
+    if err:
+        raise ValueError(err)
+    description = (description or '').strip()
+    if not description:
+        raise ValueError('description is required (it drives auto-delegation)')
+    body = (body or '').strip()
+    if not body:
+        raise ValueError('body is required — it is the character\'s system prompt')
+    if len(body.encode('utf-8')) > MAX_BODY_BYTES:
+        raise ValueError(
+            f'body too large (max {MAX_BODY_BYTES // 1024} KB — characters '
+            f'ride inside the agent system prompt)')
+    return description, body
+
+
 def write_character(scope: str, name: str, description: str, body: str,
                     project_path: str | None = None,
                     overwrite: bool = False,
@@ -369,19 +393,7 @@ def write_character(scope: str, name: str, description: str, body: str,
     the editor removes the pin instead of persisting a falsy one that would
     shadow the project default.
     """
-    err = _skills.validate_name(name)
-    if err:
-        raise ValueError(err)
-    description = (description or '').strip()
-    if not description:
-        raise ValueError('description is required (it drives auto-delegation)')
-    body = (body or '').strip()
-    if not body:
-        raise ValueError('body is required — it is the character\'s system prompt')
-    if len(body.encode('utf-8')) > MAX_BODY_BYTES:
-        raise ValueError(
-            f'body too large (max {MAX_BODY_BYTES // 1024} KB — characters '
-            f'ride inside the agent system prompt)')
+    description, body = validate_fields(name, description, body)
 
     existing = _find_file(scope, name, project_path)
     if existing is not None and not overwrite:
