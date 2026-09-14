@@ -115,7 +115,12 @@ _build_info = {
     'branch': _git_out('rev-parse', '--abbrev-ref', 'HEAD'),
     'built_at': datetime.datetime.now(datetime.timezone.utc).isoformat(timespec='seconds'),
 }
-_build_info_path = os.path.join(tempfile.gettempdir(), 'clayrune_build_info.json')
+# The bundled basename MUST be exactly `build_info.json`: PyInstaller keeps the
+# source file's name, and both _load_bundled_build_info and
+# tools/notarize-macos.sh look it up by that name. A unique tempdir (not a
+# prefixed filename) keeps it out of the repo without renaming it. Pinned by
+# tests/test_build_info_bundle_name.py.
+_build_info_path = os.path.join(tempfile.mkdtemp(prefix='clayrune_build_'), 'build_info.json')
 with open(_build_info_path, 'w', encoding='utf-8') as _f:
     json.dump(_build_info, _f)
 datas.append((_build_info_path, '.'))
