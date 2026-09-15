@@ -350,6 +350,44 @@ def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
     return str(content).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX)
 
 
+def stop_hook_precedes(records: Dict[str, Dict[str, Any]], uuid: str) -> bool:
+    """True when the transcript record `uuid` (an assistant message) was
+    produced right after a blocked Stop hook.
+
+    The live stream-json output never carries the hook's isMeta feedback turn
+    (verified on a revived Mode B chat: the transcript has it, the reader never
+    saw it), so the live readers confirm against the transcript instead. The
+    stream's assistant `uuid` IS the transcript record's uuid. Walk parentUuid
+    back past records of the same API message: a blocked hook left
+    `stop_hook_summary` with hookErrors, a `hook_blocking_error` attachment
+    (hookEvent Stop) or the isMeta feedback turn; reaching a different
+    assistant message or a real user turn first means no block. A clean turn's
+    `stop_hook_summary` (no hookErrors) is walked past, not matched."""
+    rec = records.get(uuid)
+    if not rec:
+        return False
+    mid = (rec.get('message') or {}).get('id')
+    cur = records.get(str(rec.get('parentUuid') or ''))
+    for _ in range(50):
+        if cur is None:
+            return False
+        t = cur.get('type')
+        if t == 'assistant':
+            if not mid or (cur.get('message') or {}).get('id') != mid:
+                return False
+        elif t == 'system' and cur.get('subtype') == 'stop_hook_summary' \
+                and cur.get('hookErrors'):
+            return True
+        elif t == 'attachment':
+            att = cur.get('attachment') or {}
+            if att.get('type') == 'hook_blocking_error' and att.get('hookEvent') == 'Stop':
+                return True
+        elif t == 'user':
+            return is_stop_hook_feedback(cur)
+        cur = records.get(cur.get('parentUuid'))
+    return False
+
+
 def _mark_stop_hook_from_record(raw_line: str, messages: List[Dict[str, Any]]) -> None:
     """Second structural signal for a Stop-hook block, from the records the CLI
     writes AFTER the feedback turn: an `attachment` of type
