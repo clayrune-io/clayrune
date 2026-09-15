@@ -255,6 +255,59 @@ def test_status_reports_live_copies_and_moves(env):
     assert rows['solo']['live_copies'] == []
 
 
+FAKE_CSID = '00000000-0000-4000-8000-00000000fe11'
+
+
+class _InertThread:
+    """Never runs its target: agent_interrupt's respawn thread would otherwise
+    outlive the monkeypatches and launch a real `claude -r`."""
+    def __init__(self, *a, **k):
+        pass
+
+    def start(self):
+        pass
+
+
+def test_followup_on_alive_process_rearms_the_spawner_latch(env, monkeypatch):
+    """Dispatch callback follow-up gap (2026-09-15): a dispatched child that
+    already reported back to its spawner once must be able to report back
+    again on its NEXT turn. Simulates the state right after a first turn
+    completed and notified (`_notify_session_sent=True`) and checks that a
+    plain /agent/followup on the still-alive process clears the latch before
+    the new turn's stdin write, so `_maybe_notify_spawner` isn't a no-op when
+    this turn finishes."""
+    ar = env['ar']
+    monkeypatch.setattr(ar.threading, 'Thread', _InertThread)
+    sess = _session('a', csid=FAKE_CSID)
+    sess['_notify_session'] = 'parent-1'
+    sess['_notify_session_sent'] = True
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'a', 'message': 'and then?'})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert '_notify_session_sent' not in sess
+
+
+def test_interrupt_rearms_the_spawner_latch(env, monkeypatch):
+    """Same gap as above, on the interrupt-and-resume path."""
+    ar = env['ar']
+    monkeypatch.setattr(ar, '_kill_proc_background', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_unregister_process', lambda *a, **k: None)
+    monkeypatch.setattr(ar.threading, 'Thread', _InertThread)
+    sess = _session('a', csid=FAKE_CSID)
+    sess['_notify_session'] = 'parent-1'
+    sess['_notify_session_sent'] = True
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/interrupt', json={
+        'session_id': 'a', 'message': 'stop, do this instead'})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert '_notify_session_sent' not in sess
+
+
 def test_resume_cwd_is_the_transcript_tree(env, monkeypatch):
     ar = env['ar']
     pp = env['pp']

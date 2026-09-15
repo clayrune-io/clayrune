@@ -4566,6 +4566,24 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     if not claude_sid:
         return None
 
+    # Carry the completion callback across the revive. A revive builds a
+    # brand-new session dict from scratch (below), so without this a session
+    # that had a spawner loses `_notify_session` the moment it gets purged and
+    # revived — the spawner asked "is she done?" and nothing was ever going to
+    # answer, because the field that would have triggered the callback simply
+    # didn't exist on the new dict. `spawned_by_session_id` is the durable
+    # form `_log_agent_completion` writes for exactly this (agent_routes.py
+    # ~5256). `_notify_workflow` has no durable field of its own, but a
+    # workflow-triggered dispatch's trigger_id IS "{run_id}:{step}"
+    # (mc/workflows.py:1006) — reconstruct it the same way for parity.
+    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip()
+    _revive_notify_workflow = None
+    if entry.get('trigger_type') == 'workflow':
+        _trig = entry.get('trigger_id') or ''
+        _run_id, _sep, _step = _trig.partition(':')
+        if _sep and _run_id and _step:
+            _revive_notify_workflow = {'run_id': _run_id, 'step': _step}
+
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
         return None
@@ -4720,6 +4738,11 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             'incognito': _revive_incognito,
             'source': _revive_source,
             'provider': entry.get('provider') or 'claude',
+            # See the comment above `_revive_notify_session` at the top of
+            # this function — carries the completion callback across the
+            # revive instead of silently dropping it.
+            '_notify_session': _revive_notify_session,
+            '_notify_workflow': _revive_notify_workflow,
         }
         with mgr.lock:
             agent_sessions[session_id] = session
@@ -4792,6 +4815,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'incognito': _revive_incognito,
         'source': _revive_source,
         'provider': entry.get('provider') or 'claude',
+        '_notify_session': _revive_notify_session,   # see top-of-function comment
+        '_notify_workflow': _revive_notify_workflow,
     }
     with mgr.lock:
         agent_sessions[session_id] = session
@@ -4841,12 +4866,25 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     _char_name = (_character.get('name') or '').strip()
     character_ref = (f'{_char_scope}:{_char_name}'
                      if _char_name and _char_scope in ('project', 'global') else '')
+    # Same carry-across-revive as `_revive_from_agent_log` (see its top-of-
+    # function comment) — this path also builds a brand-new session dict via
+    # `_dispatch_agent_internal`, so without passing these through explicitly
+    # a revived non-Claude child with a spawner would lose the callback too.
+    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip()
+    _revive_notify_workflow = None
+    if entry.get('trigger_type') == 'workflow':
+        _trig = entry.get('trigger_id') or ''
+        _run_id, _sep, _step = _trig.partition(':')
+        if _sep and _run_id and _step:
+            _revive_notify_workflow = {'run_id': _run_id, 'step': _step}
     try:
         _dispatch_agent_internal(project_id, message, incognito=bool(entry.get('incognito')),
                                  reuse_session_id=session_id,
                                  provider_override=provider,
                                  character=character_ref,
-                                 source=entry.get('source') or '')
+                                 source=entry.get('source') or '',
+                                 notify_session=_revive_notify_session,
+                                 notify_workflow=_revive_notify_workflow)
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
@@ -5017,7 +5055,7 @@ def _last_reply_text(session):
 
 
 def _maybe_notify_spawner(session, summary):
-    """Fire the spawner/workflow callback at most once for this session.
+    """Fire the spawner/workflow callback at most once PER TURN for this session.
 
     Called from TWO places because "the child is done" has two different
     meanings depending on runtime, and the first version only handled one:
@@ -5029,30 +5067,55 @@ def _maybe_notify_spawner(session, summary):
         callback fired long after the answer existed, or never. Measured
         2026-09-09: child d1f5942f0701 answered and went idle; no callback.
 
-    Both paths can run for one session, hence the _notify_sent latch.
+    Latched by TWO INDEPENDENT flags, not one: `_notify_session_sent` guards
+    the spawner-chat callback and `_notify_workflow_sent` guards the workflow
+    one. A single shared `_notify_sent` (the original MC-946 design) latched
+    forever after the FIRST completion ever, so a spawner that sent a
+    dispatched child a follow-up (or revived it after a purge) never heard
+    about its second answer — the child finished, but nothing told the parent.
+    `_rearm_notify_for_new_turn` clears `_notify_session_sent` whenever a new
+    turn actually starts (followup/interrupt/revive), so the callback can fire
+    again for THAT turn. It deliberately never clears `_notify_workflow_sent`:
+    a workflow step completes at most once no matter how many follow-ups land
+    on the session afterward — see test_workflow_runtime_notify.py.
 
     MC-871 Phase 1 generalises this to a SECOND kind of waiter: a workflow run
     parked on an agent step (`_notify_workflow`, set at dispatch alongside
     `_notify_session` -- see `_dispatch_agent_internal`). A session is spawned
-    by at most one of the two, never both, but both are checked under the same
-    latch so adding the workflow path cannot double-fire the existing spawner
+    by at most one of the two, never both, but both are checked here so
+    adding the workflow path cannot double-fire the existing spawner
     notification or vice versa.
     """
-    if session.get('_notify_sent'):
-        return
     if session.get('incognito'):
         return
     notify_sid = (session.get('_notify_session') or '').strip()
     has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
     wf_wait = session.get('_notify_workflow') or None
     has_workflow = bool(wf_wait) and bool(wf_wait.get('run_id'))
-    if not has_spawner and not has_workflow:
-        return
-    session['_notify_sent'] = True
-    if has_spawner:
+    if has_spawner and not session.get('_notify_session_sent'):
+        session['_notify_session_sent'] = True
         _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary)
-    if has_workflow:
+    if has_workflow and not session.get('_notify_workflow_sent'):
+        session['_notify_workflow_sent'] = True
         _notify_workflow_step(wf_wait, session, summary)
+
+
+def _rearm_notify_for_new_turn(session):
+    """Re-arm the spawner-chat completion callback for a NEW turn.
+
+    Call this whenever a followup/interrupt/revive is about to start a
+    genuinely new turn on a session that may already have completed once
+    before (and so may already carry a spent `_notify_session_sent` latch).
+    Without it, only the FIRST turn of a dispatched child ever reported back
+    to its spawner — every follow-up after that finished silently. Measured
+    2026-09-15: Tilda (session 77fc8166f11e) answered a follow-up Dave sent
+    her, landed commit 0c43e91, and Dave never heard about it.
+
+    Deliberately does not touch `_notify_workflow_sent` -- see
+    `_maybe_notify_spawner`'s docstring for why that latch must stay
+    permanent.
+    """
+    session.pop('_notify_session_sent', None)
 
 
 def _notify_workflow_step(wf_wait, session, summary):
@@ -5483,6 +5546,7 @@ def _auto_dispatch_followup(session, message):
     if old_proc:
         _unregister_process(old_proc.pid)
     session['proc'] = proc
+    _rearm_notify_for_new_turn(session)
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session['last_output_time'] = _time.time()
@@ -7365,6 +7429,7 @@ def agent_followup(project_id):
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):
                 existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+            _rearm_notify_for_new_turn(existing)
             existing['status'] = 'running'
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
@@ -7466,6 +7531,7 @@ def agent_followup(project_id):
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                _rearm_notify_for_new_turn(existing)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
@@ -7521,6 +7587,7 @@ def agent_followup(project_id):
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
+                _rearm_notify_for_new_turn(existing)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
@@ -7657,6 +7724,7 @@ def agent_followup(project_id):
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
             # Mark as running and return quickly — spawn process in background
+            _rearm_notify_for_new_turn(existing)
             existing['status'] = 'running'
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
@@ -8018,6 +8086,7 @@ def agent_interrupt(project_id):
             if not session.pop('_send_already_logged', False):
                 session['log_lines'].append('[Got your message]')
                 session['log_lines'].append(f"\n> {user_label}: {message}\n")
+            _rearm_notify_for_new_turn(session)
             session.pop('pending_followups', None)
             # Refresh stashed context (see the followup path for rationale).
             if not session.get('incognito'):
@@ -8066,6 +8135,7 @@ def agent_interrupt(project_id):
         # by user" — the user already knows they interrupted; this is the
         # acknowledgement bubble.
         session['log_lines'].append('[Got your message]')
+        _rearm_notify_for_new_turn(session)
         session.pop('pending_followups', None)
         session.pop('_dispatching_followup', None)
         session['waiting_for_plan_approval'] = False
