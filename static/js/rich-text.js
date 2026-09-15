@@ -204,6 +204,20 @@ function isSlashCommandLine(text) {
   return SLASH_COMMAND_RE.test(msg.trimStart());
 }
 
+// A Stop-hook block/resend boundary. The server emits '[stop-hook-redo]'
+// (agent_runtime.is_stop_hook_feedback). Buffers rebuilt from a transcript
+// BEFORE that fix instead hold the hook's feedback as a fake user prompt,
+// "> Ron: Stop hook feedback:\n...", and those stay in a live session's memory
+// until it is rebuilt again, so they are recognised here too.
+function isStopHookRedoLine(text) {
+  const t = (text || '').trim();
+  if (t === '[stop-hook-redo]') return true;
+  if (!t.startsWith('> ')) return false;
+  const body = t.slice(2);
+  const sep = body.indexOf(': ');
+  return sep !== -1 && body.slice(sep + 2).startsWith('Stop hook feedback:');
+}
+
 function agentLineCls(text) {
   const t = text.trim();
   if (t.startsWith('> [queued]')) return 'agent-line agent-line-queued';
@@ -224,7 +238,7 @@ function agentLineCls(text) {
   // BEFORE agentLineCls to collapse the preceding draft into a toggle; this
   // fallback is for renderers that don't (agent-console.js, project-forms.js)
   // so the raw marker never shows up as a visible line there either.
-  if (t === '[stop-hook-redo]') return 'agent-line agent-line-hidden';
+  if (isStopHookRedoLine(t)) return 'agent-line agent-line-hidden';
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';
@@ -361,6 +375,7 @@ window.isSlashCommandLine = isSlashCommandLine;
 window.SLASH_COMMAND_RE = SLASH_COMMAND_RE;
 window.collapseIntoPlanButton = collapseIntoPlanButton;
 window.collapseIntoDraftBlock = collapseIntoDraftBlock;
+window.isStopHookRedoLine = isStopHookRedoLine;
 window.expandAgentOutput = expandAgentOutput;
 window._isAgentOutputPinned = _isAgentOutputPinned;
 window._scheduleAgentPinScroll = _scheduleAgentPinScroll;

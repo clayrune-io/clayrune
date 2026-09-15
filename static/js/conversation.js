@@ -1222,7 +1222,7 @@ function agentPanelHTML(p) {
         // prompt line into a native <details> toggle instead of rendering
         // both the retracted draft and the resend as if they were two
         // separate replies. The marker itself renders nothing.
-        if (line.trim() === '[stop-hook-redo]') {
+        if (isStopHookRedoLine(line)) {
           flushTable();
           if (planRawLines.length > 0) {
             result += `<details class="draft-block"><summary>Show earlier draft</summary>${planBlock}</details>`;
@@ -4174,7 +4174,7 @@ function appendAgentLine(sessionId, text) {
   // a "Show earlier draft" toggle instead of rendering the marker itself.
   // Must come before the other interceptions below; the marker is never a
   // mermaid/team/table line.
-  if (text.trim() === '[stop-hook-redo]') {
+  if (isStopHookRedoLine(text)) {
     collapseIntoDraftBlock(sessionId, el);
     if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;

@@ -350,6 +350,41 @@ def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
     return str(content).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX)
 
 
+def _mark_stop_hook_from_record(raw_line: str, messages: List[Dict[str, Any]]) -> None:
+    """Second structural signal for a Stop-hook block, from the records the CLI
+    writes AFTER the feedback turn: an `attachment` of type
+    `hook_blocking_error` (hookEvent Stop), one per blocking hook, and a
+    `system`/`stop_hook_summary` whose `hookErrors` lists each block's reason.
+    If the feedback turn preceding them was not already recognised (no isMeta
+    in some CLI version), convert it here so it never renders as a user turn."""
+    try:
+        rec = json.loads(raw_line)
+    except (ValueError, TypeError):
+        return
+    if not isinstance(rec, dict):
+        return
+    att = rec.get('attachment') if rec.get('type') == 'attachment' else None
+    if isinstance(att, dict) and att.get('type') == 'hook_blocking_error' \
+            and att.get('hookEvent') == 'Stop':
+        if messages and messages[-1].get('role') == 'user':
+            messages[-1] = {'role': 'stop_hook_redo', 'text': '',
+                            'timestamp': messages[-1].get('timestamp', '')}
+        return
+    if rec.get('type') == 'system' and rec.get('subtype') == 'stop_hook_summary':
+        errors = [str(e).strip()[:60] for e in (rec.get('hookErrors') or []) if str(e).strip()]
+        if not errors:
+            return
+        for i in range(len(messages) - 1, -1, -1):
+            m = messages[i]
+            if m.get('role') == 'stop_hook_redo':
+                continue
+            if m.get('role') == 'user' and any(e in (m.get('text') or '') for e in errors):
+                messages[i] = {'role': 'stop_hook_redo', 'text': '',
+                               'timestamp': m.get('timestamp', '')}
+                continue
+            break
+
+
 def _strip_codex_system_prefix(text: str) -> str:
     """Drop a Codex dispatch/respawn's leading system-prompt+context blob,
     keeping only the real user message that was appended after it — see
@@ -1964,6 +1999,7 @@ class ClaudeRuntime(AgentRuntime):
                 for raw_line in fh:
                     ev = self.parse_event(raw_line)
                     if ev is None:
+                        _mark_stop_hook_from_record(raw_line, messages)
                         continue
                     ts = (ev.raw or {}).get('timestamp', '')
                     if ev.type == EventType.USER_MESSAGE:
