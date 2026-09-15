@@ -114,7 +114,12 @@ RESERVED_WHEN = 'otherwise'
 STEP_SUCCESS_STATUSES = ('completed', 'idle')
 WAIT_MODES = ('delay', 'until')
 
-_SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.]+)\s*\}\}')
+# Hyphens are allowed: step names come from agent/character type names such as
+# `us-stock-investor`, and the builder tells users to reference a step as
+# {{steps.NAME.output}}. Without `-` the slot never matched, so it was neither
+# validated nor filled, and apex_trader's email went out as the literal
+# placeholder text (run-20ca7b13, 2026-09-15).
+_SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}')
 _WF_RESULT_RE = re.compile(r'```[ \t]*wf:result[ \t\r\n]*(.*?)```', re.DOTALL | re.IGNORECASE)
 
 

@@ -276,6 +276,20 @@ def test_render_template_fails_loudly_on_an_unresolved_slot(wf):
                              {'steps': {}, 'prev': {}, 'trigger': {}, 'run': {}})
 
 
+def test_hyphenated_step_name_slot_renders_and_validates(wf):
+    """Regression 2026-09-15 (apex_trader run-20ca7b13): step names come from
+    agent type names like `us-stock-investor`. The slot regex had no `-`, so
+    {{steps.us-stock-investor.output}} was never matched: not validated, not
+    filled, and the email went out as the literal placeholder."""
+    out = wf.m.render_template(
+        'Report: {{steps.us-stock-investor.output}}',
+        {'steps': {'us-stock-investor': {'output': 'FPS watch'}}, 'prev': {}, 'trigger': {}, 'run': {}})
+    assert out == 'Report: FPS watch'
+    doc = _doc('hyphen-ref', [_agent('only', prompt='needs {{steps.no-such-step.output}}')])
+    errors = wf.m.validate_workflow(doc)
+    assert any("unknown step 'no-such-step'" in e for e in errors)
+
+
 def test_prev_slot_rejected_at_a_join(wf):
     """R2-D5: {{prev.output}} is only valid with exactly one parent."""
     doc = _doc('ambiguous-prev', [
