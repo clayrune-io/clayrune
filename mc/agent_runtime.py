@@ -805,6 +805,21 @@ def runtime_for_project(project: Dict[str, Any]) -> AgentRuntime:
     return _RUNTIMES[name]
 
 
+def claude_installed() -> bool:
+    """True if the claude CLI binary actually resolves on this machine.
+
+    ClaudeRuntime.resolve_binary() never returns None: its last resort is the
+    bare relative Path('claude'), which is truthy but only FileNotFoundErrors
+    on spawn. Every real hit (shutil.which or a candidate that exists()) is
+    absolute, so absoluteness is the not-installed signal. No subprocess.
+    """
+    try:
+        p = get_runtime('claude').resolve_binary()
+    except Exception:
+        return False
+    return bool(p) and Path(p).is_absolute()
+
+
 def claude_oneshot_available() -> bool:
     """True if a toolless Claude oneshot call (ClaudeRuntime.oneshot) is
     likely to succeed right now.
@@ -825,12 +840,9 @@ def claude_oneshot_available() -> bool:
     Both checks below are cheap: resolve_binary() is a cached path lookup and
     ClaudeRuntime.auth_status() reads a cached dict — neither spawns anything.
     """
-    rt = get_runtime('claude')
-    try:
-        if not rt.resolve_binary():
-            return False
-    except Exception:
+    if not claude_installed():
         return False
+    rt = get_runtime('claude')
     try:
         auth = rt.auth_status() or {}
     except Exception:

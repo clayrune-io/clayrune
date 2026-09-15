@@ -1356,7 +1356,14 @@ def _providers_in_use() -> set:
     boot and cached client-side, not polled.
     """
     from mc import characters as _chars
-    in_use = {_agent_runtime.default_runtime_name()}
+    in_use = set()
+    # An UNSET default resolves to 'claude' only as a fallback. On a machine
+    # without the claude CLI that fallback is not a choice anybody made, so it
+    # must not count: a Codex-only install (the Keegan case) never sees the
+    # provider picker (nothing to choose between) and would otherwise keep the
+    # Claude banner forever.
+    if (state.CONFIG.get('default_provider') or '').strip() or _agent_runtime.claude_installed():
+        in_use.add(_agent_runtime.default_runtime_name())
     try:
         projects = load_projects()
     except Exception:

@@ -1771,3 +1771,17 @@ def test_record_permission_denials_is_a_noop_when_nothing_was_refused():
         _record_permission_denials(session, msg)
         assert session['log_lines'] == []
         assert 'permission_denials' not in session
+
+
+def test_claude_installed_false_for_bare_relative_fallback(monkeypatch, tmp_path):
+    """resolve_binary() never returns None: not-installed yields the relative
+    Path('claude'), which is truthy. claude_installed() must read that as
+    missing, or claude_oneshot_available() spawns doomed calls every cycle."""
+    from pathlib import Path
+    from mc import agent_runtime
+    rt = agent_runtime.get_runtime('claude')
+    monkeypatch.setattr(rt, 'resolve_binary', lambda: Path('claude'))
+    assert agent_runtime.claude_installed() is False
+    assert agent_runtime.claude_oneshot_available() is False
+    monkeypatch.setattr(rt, 'resolve_binary', lambda: tmp_path / 'claude')
+    assert agent_runtime.claude_installed() is True

@@ -179,6 +179,7 @@ def test_providers_endpoint_reports_in_use(client, monkeypatch):
     import mc.characters as _chars
     monkeypatch.setattr(ar, 'load_projects', lambda: [])
     monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
     resp = client.get('/api/agent/providers')
     body = resp.get_json()
     by_name = {p['name']: p for p in body['providers']}
@@ -199,6 +200,7 @@ def test_providers_in_use_includes_project_pin(client, monkeypatch):
     import mc.characters as _chars
     monkeypatch.setattr(ar, 'load_projects', lambda: [{'id': 'p1', 'provider': 'codex'}])
     monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
     in_use = ar._providers_in_use()
     assert 'codex' in in_use
     assert 'claude' in in_use  # still the unset-config default
@@ -223,6 +225,7 @@ def test_providers_in_use_excludes_untouched_provider(client, monkeypatch):
     import mc.characters as _chars
     monkeypatch.setattr(ar, 'load_projects', lambda: [{'id': 'p1'}])  # no pin
     monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
     in_use = ar._providers_in_use()
     assert in_use == {'claude'}  # nothing pinned aider/gemini/etc → not in_use
 
@@ -685,3 +688,21 @@ def test_dispatch_via_runtime_carries_trigger_type_onto_session_dict(monkeypatch
     stub = _dispatch_via_runtime_with_stub(
         monkeypatch, trigger_type='hivemind_worker', codex_unattended_sandbox_config=True)
     assert stub.dispatch_kwargs['session_dict']['trigger_type'] == 'hivemind_worker'
+
+
+def test_providers_in_use_codex_only_install_drops_claude_fallback(client, monkeypatch):
+    """The Keegan case: default_provider unset, claude CLI not installed. The
+    'claude' fallback is not a choice anyone made, so claude must not be
+    in_use, or the Claude sign-in banner nags a Codex-only user forever (the
+    picker never offers itself when only one CLI is installed)."""
+    from mc.blueprints import agent_routes as ar
+    from mc import state
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [])
+    monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: False)
+    monkeypatch.setitem(state.CONFIG, 'default_provider', '')
+    assert 'claude' not in ar._providers_in_use()
+    # An explicit choice always counts, installed or not.
+    monkeypatch.setitem(state.CONFIG, 'default_provider', 'codex')
+    assert ar._providers_in_use() == {'codex'}
