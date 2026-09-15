@@ -24,12 +24,31 @@ import re
 import sys
 import urllib.parse
 import urllib.request
+from pathlib import Path
 from typing import NamedTuple, Optional
 
 
 class FenceDecision(NamedTuple):
     blocked: bool
     reason: str
+
+
+# ── Install-dir write guard (2026-09-14, Amit's "update blocked" report) ────
+# Every project that has ever enabled steward gets this exact file copied
+# nowhere — the hook entry (steward/core.py:_fence_settings_content) invokes
+# THIS script by its path in the Clayrune install that installed the hook, so
+# __file__ here always resolves inside that install's own repo root, in every
+# project the hook runs for. That makes it a free, tamper-proof handle on
+# "the running app's own source tree" with no server round-trip needed.
+_INSTALL_DIR = Path(__file__).resolve().parent.parent
+
+
+def _is_within(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+        return True
+    except ValueError:
+        return False
 
 
 # Markers that make a destructive path clearly scratch-scoped (→ allow deletes).
@@ -349,6 +368,53 @@ def classify_bash(command: str) -> FenceDecision:
     return FenceDecision(False, '')
 
 
+def check_install_dir_write(tool_name: str, tool_input: dict,
+                             session_cwd: Optional[str] = None) -> FenceDecision:
+    """Block a Write/Edit/MultiEdit/NotebookEdit whose target resolves inside
+    the running Clayrune install's own source tree (`_INSTALL_DIR`), UNLESS
+    this session's own project IS that install dir (a legitimate dev
+    checkout — this box included, see mission_control's own project_path).
+
+    Deliberately called UNCONDITIONALLY from main(), before the steward-cycle
+    / unattended-arming gate below: that gate decides whether the
+    IRREVERSIBILITY backstop (git push, rm -rf, ...) applies to THIS session,
+    which is a judgment call for unattended work specifically. Whether an
+    agent may edit a DIFFERENT project's install directory is not that kind
+    of judgment call — it is a project-boundary rule that has to hold for
+    every session the fence runs in, attended or not, the same way a project
+    can't read another project's secrets.
+
+    MC launches `claude` with cwd = project_path (steward/core.py), and hooks
+    inherit that cwd, so Path.cwd() at call time IS the session's own project
+    root — session_cwd exists only so tests can override it without an
+    os.chdir dance across the whole suite.
+    """
+    name = (tool_name or '')
+    if name not in ('Write', 'Edit', 'MultiEdit', 'NotebookEdit'):
+        return FenceDecision(False, '')
+    ti = tool_input or {}
+    raw = str(ti.get('file_path', '') or ti.get('notebook_path', '') or '')
+    if not raw:
+        return FenceDecision(False, '')
+    try:
+        base = Path(session_cwd) if session_cwd else Path.cwd()
+        target = Path(raw)
+        if not target.is_absolute():
+            target = base / target
+        target = target.resolve()
+        install_dir = _INSTALL_DIR.resolve()
+        session_root = base.resolve()
+    except Exception:
+        return FenceDecision(False, '')  # can't resolve -> best-effort, fail open
+    if not (target == install_dir or _is_within(target, install_dir)):
+        return FenceDecision(False, '')
+    if session_root == install_dir or _is_within(session_root, install_dir):
+        return FenceDecision(False, '')  # this session's OWN project is the install dir
+    return FenceDecision(True, f"write targets the Clayrune install directory "
+                                f"({install_dir}) from a different project — an "
+                                f"agent may not edit the running app's own source")
+
+
 def classify_action(tool_name: str, tool_input: dict) -> FenceDecision:
     """Classify any tool call. Bash is where terminal danger lives; other tools
     default to allow (edits/writes are working-tree-reversible). Extend here if a
@@ -586,15 +652,28 @@ def main() -> int:
     except Exception:
         return 0  # fail open — never wedge the agent on a malformed hook event
 
+    tool_name = payload.get('tool_name') or payload.get('toolName') or ''
+    tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
+
+    # Project-boundary guard runs UNCONDITIONALLY, ahead of the steward/
+    # unattended gate below — see check_install_dir_write's docstring for why
+    # this one check is not a judgment call the way the irreversibility
+    # backstop is.
+    try:
+        boundary = check_install_dir_write(tool_name, tool_input)
+    except Exception:
+        boundary = FenceDecision(False, '')
+    if boundary.blocked:
+        print(f"STEWARD FENCE blocked this action: {boundary.reason}. "
+              f"Do NOT retry it against this path.", file=sys.stderr)
+        return 2
+
     # Confirmed steward (marker=True) always enforces. Everything else
     # (confirmed non-steward OR genuinely unknown) falls through to the
     # generalized trigger_type signal — see the corrected gate above.
     if _session_is_steward(payload) is not True:
         if not _should_arm_for_unattended_trigger():
             return 0
-
-    tool_name = payload.get('tool_name') or payload.get('toolName') or ''
-    tool_input = payload.get('tool_input') or payload.get('toolInput') or {}
 
     try:
         decision = classify_action(tool_name, tool_input)

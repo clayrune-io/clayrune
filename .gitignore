@@ -66,6 +66,20 @@ data/playdo/
 install-launch.log
 install.log
 
+# Runtime state written directly under data/ (siblings of DATA_DIR, same
+# precedent as data/desk.json's docstring) that had no suffix/dir rule —
+# found live on a user's install (2026-09-14, Amit's Update-blocked report):
+# these showed up as tracked-looking local changes even though nobody had
+# edited code. server.py: DESK_STORE_PATH, floor_routes.LABELS_PATH,
+# remote_routes' enrollment_liveness_path, coordination_routes.py,
+# scheduler_routes.py's CLAIMS_DIR.
+data/desk.json
+data/desk_signals.jsonl
+data/agent_labels.json
+data/remote_enrollment_liveness.json
+data/coordination/
+data/.schedule_claims/
+
 # Build artifacts
 build/
 dist/

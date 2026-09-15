@@ -26,9 +26,10 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import obs, state
+from mc.blueprints.workflow_routes import _is_agent_caller
 from mc import slash_commands as slash_cmds
 from mc.atomic_json import write_json_atomic
-from mc.core import _atomic_write_text, _log, now_iso, time_ago
+from mc.core import _atomic_write_text, _log, now_iso, path_is_within, time_ago
 from mc.state import (
     _UPDATE_CHECK_BOOT_DELAY_S,
     _hivemind_lock,
@@ -1354,7 +1355,34 @@ def system_update_status():
         'ahead': ahead,
         'has_local_changes': has_local_changes,
         'update_available': behind > 0 and not has_local_changes and ahead == 0,
+        # Settings warning (2026-09-14, Amit's "update blocked" report): a
+        # project whose workspace is this install's own source tree is how an
+        # agent ends up editing Clayrune itself and freezing self-updates.
+        # project_routes.update_project blocks NEW assignments of this kind
+        # (unless allow_project_in_install_dir is on), but an install upgraded
+        # from before that guard existed can already have one on disk — this
+        # is what tells the human, rather than leaving it silent.
+        'projects_in_install_dir': _projects_pointing_at_install_dir(repo_root),
     })
+
+
+def _projects_pointing_at_install_dir(repo_root):
+    """[{'id':..., 'name':...}] for every project whose project_path is the
+    install dir or inside it. Empty once allow_project_in_install_dir is on —
+    that flag is the human's explicit acknowledgement, so the warning would
+    have nothing left to tell them."""
+    if state.CONFIG.get('allow_project_in_install_dir') or load_projects is None:
+        return []
+    hits = []
+    try:
+        for p in load_projects():
+            pp = (p.get('project_path') or '').strip()
+            if pp and path_is_within(pp, repo_root):
+                hits.append({'id': p.get('id'), 'name': p.get('name') or p.get('id')})
+    except Exception as e:
+        _log(f"[update] projects_in_install_dir scan failed: {e}", flush=True)
+        return []
+    return hits
 
 
 # ── Background update-check daemon ──────────────────────────────────────────
@@ -1468,17 +1496,24 @@ def system_update():
     after the user confirms. Returns the git output so the user sees what
     changed. Does NOT auto-restart — the UI prompts the user separately.
 
+    Body: {"stash": true} — self-service path for a dirty tree (2026-09-14,
+    Amit's "Blocked" report). A non-developer has no way to run `git stash`
+    themselves, so a dirty tree used to freeze updates forever with no path
+    forward except asking someone who can use git. Human-only, same guard as
+    every other update/config action: an agent must never silently discard or
+    set aside its own or another session's uncommitted work.
+
     LOAD-BEARING: `git pull --ff-only` is tried first, but it is NOT sufficient
     on its own. When the release branch is force-pushed upstream, ff-only
     aborts ("fatal: Not possible to fast-forward, aborting") and this endpoint —
     the ONLY update channel most users have — fails forever, silently. So we
     fall back to `fetch` + `reset --hard origin/<branch>`.
 
-    Safe because: (a) we already refused above if the working tree is dirty, and
-    (b) `reset --hard` rewrites TRACKED files only. All user data lives in
-    untracked/gitignored paths (data/projects/, data/settings.json, config.json,
-    data/logs/, .venv/) and is untouched. NEVER add `git clean` here — that
-    WOULD delete it.
+    Safe because: (a) we already refused above if the working tree is dirty
+    (unless stashed first), and (b) `reset --hard` rewrites TRACKED files only.
+    All user data lives in untracked/gitignored paths (data/projects/,
+    data/settings.json, config.json, data/logs/, .venv/) and is untouched.
+    NEVER add `git clean` here — that WOULD delete it.
     """
     repo_root = _APP_DIR  # repo root in dev, app dir frozen; __file__ here is mc/blueprints/ — not the checkout
     if not (repo_root / '.git').exists():
@@ -1497,15 +1532,40 @@ def system_update():
                 })
         return jsonify({'error': 'install dir is not a git checkout'}), 400
 
+    data = request.get_json(silent=True) or {}
+    want_stash = bool(data.get('stash'))
+
     rc, status_out = _git(_DIRTY_TREE_ARGS, repo_root)
     if rc != 0:
         return jsonify({'error': f'git status failed: {status_out}'}), 500
+
+    stash_ref = ''
     if status_out:
-        return jsonify({
-            'error': 'Working tree has local changes — pull would conflict.',
-            'detail': status_out[:500],
-            'hint': 'Stash or commit local changes, then re-try.',
-        }), 409
+        if not want_stash:
+            return jsonify({
+                'error': 'Working tree has local changes — pull would conflict.',
+                'detail': status_out[:500],
+                'hint': 'Stash or commit local changes, then re-try.',
+            }), 409
+        if _is_agent_caller():
+            return jsonify({
+                'error': ('setting aside local changes to update is human-only: an agent '
+                          'must never discard or shelve uncommitted work (its own or '
+                          'someone else\'s) without a person confirming it in the UI.'),
+            }), 403
+        rc_pre, pre_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
+        stash_msg = f"clayrune-auto-stash {now_iso()} {pre_sha if rc_pre == 0 else 'unknown'}"
+        # No -u: this only shelves TRACKED changes (the dirty-check above is
+        # -uno, i.e. tracked-only too) — untracked user data must never be
+        # swept into a stash entry.
+        rc_stash, stash_out = _git(['stash', 'push', '-m', stash_msg], repo_root, timeout=30)
+        if rc_stash != 0:
+            return jsonify({
+                'error': f'git stash failed (rc={rc_stash})',
+                'detail': stash_out[:500],
+            }), 500
+        stash_ref = stash_msg
+        _log(f"[update] stashed local changes before update: {stash_msg}", flush=True)
 
     rc_old, old_sha = _git(['rev-parse', '--short', 'HEAD'], repo_root)
     previous_commit = old_sha if rc_old == 0 else ''
@@ -1557,6 +1617,10 @@ def system_update():
         'resynced': resynced,
         'recent_log': log_out if rc2 == 0 else '',
         'restart_recommended': True,  # FE should prompt for restart after pull
+        # Non-empty only when we stashed local changes first (want_stash=True).
+        # The UI shows this verbatim so the user knows how to get the work
+        # back: `git stash list` to find it, `git stash apply` to restore.
+        'stashed': stash_ref,
     })
 
 

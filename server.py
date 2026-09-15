@@ -79,6 +79,14 @@ def _load_config():
         'shared_rules_path': str(_DATA_ROOT / 'data' / 'SHARED_RULES.md'),
         'projects_base': str(Path.home()),
         'auto_workspace_base': str(Path.home() / 'MissionControl'),
+        # Off by default: a project's workspace folder must never be the
+        # running install's own source tree (2026-09-14, Amit's "Blocked
+        # update" report — root cause was a project pointed there with
+        # nothing to stop it, so an agent ended up editing Clayrune's own
+        # code). A source-checkout dev box (this one included) legitimately
+        # wants exactly that, so it's one explicit opt-in flag, not a
+        # heuristic — see project_routes._refuse_project_path_in_install_dir.
+        'allow_project_in_install_dir': False,
         # First-run provider choice (MC — "which AI do you work with?"). ''
         # means unset: every resolver that reads this key already falls back
         # to 'claude' with `or 'claude'` (agent_routes.py, hivemind_routes.py,
@@ -847,6 +855,7 @@ _bp_projects.wire(
     unregister_process_fn=_bp_agent._unregister_process,
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
+    app_dir=_APP_DIR,
 )
 app.register_blueprint(_bp_projects.bp)
 # Inbound shims — dispatch/scheduler/scribe/condense and the github/project

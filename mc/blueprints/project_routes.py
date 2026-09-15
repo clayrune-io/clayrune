@@ -45,7 +45,7 @@ from flask import Blueprint, abort, jsonify, request, send_file
 
 from mc import state
 from mc.atomic_json import write_json_atomic
-from mc.core import _log, file_type, now_iso, record_backlog_status_change, time_ago
+from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
     _backlog_sync_lock,
     agent_sessions,
@@ -62,6 +62,10 @@ from steward import core as _steward_core
 # family's killer. Called at request time only — terminal_routes is wired by
 # server.py long before the first request.
 from mc.blueprints.terminal_routes import _kill_terminal_session
+# Same precedent: reused by _refuse_project_path_in_install_dir (below) to
+# tell a human's Settings save from an agent's POST — same structural signal
+# character_routes.py's _refuse_if_agent_caller already uses.
+from mc.blueprints.workflow_routes import _is_agent_caller
 
 bp = Blueprint('project_routes', __name__)
 
@@ -71,6 +75,7 @@ _DATA_ROOT: Path = None  # type: ignore[assignment]
 UPLOADS_DIR: Path = None  # type: ignore[assignment]
 PROJECTS_BASE: Path = None  # type: ignore[assignment]
 SHARED_RULES_PATH: Path = None  # type: ignore[assignment]
+_APP_DIR: Path = None  # type: ignore[assignment]
 _get_memory_path: Callable[[dict], Path] = None  # type: ignore[assignment]
 _resolve_claude: Callable[[], str] = None  # type: ignore[assignment]
 get_manager: Callable[[str], Any] = None  # type: ignore[assignment]
@@ -81,19 +86,25 @@ _STARTUPINFO: Any = None
 
 def wire(*, data_dir, data_root, uploads_dir, projects_base,
          shared_rules_path, get_memory_path_fn, resolve_claude_fn,
-         get_manager_fn, unregister_process_fn, popen_flags, startupinfo):
+         get_manager_fn, unregister_process_fn, popen_flags, startupinfo,
+         app_dir=None):
     """Late-bind the path constants (they stay in server.py — many families
     still read them there) and the cross-family fns: _get_memory_path is
     shared with the Scribe/condense machinery, _resolve_claude + the Popen
-    consts + get_manager + _unregister_process are dispatch family (1.12)."""
+    consts + get_manager + _unregister_process are dispatch family (1.12).
+
+    app_dir defaults to data_root (matches _resolve_dirs()'s pre-existing
+    fallback for the callers that don't pass it explicitly) so
+    _refuse_project_path_in_install_dir always has a usable value."""
     global DATA_DIR, _DATA_ROOT, UPLOADS_DIR, PROJECTS_BASE, SHARED_RULES_PATH
     global _get_memory_path, _resolve_claude, get_manager, _unregister_process
-    global _POPEN_FLAGS, _STARTUPINFO
+    global _POPEN_FLAGS, _STARTUPINFO, _APP_DIR
     DATA_DIR = data_dir
     _DATA_ROOT = data_root
     UPLOADS_DIR = uploads_dir
     PROJECTS_BASE = projects_base
     SHARED_RULES_PATH = shared_rules_path
+    _APP_DIR = app_dir if app_dir is not None else data_root
     _get_memory_path = get_memory_path_fn
     _resolve_claude = resolve_claude_fn
     get_manager = get_manager_fn
@@ -388,6 +399,45 @@ def api_projects():
     return jsonify(projects)
 
 
+def _refuse_project_path_in_install_dir(candidate_path: str, previous_path):
+    """None if `candidate_path` is fine; else a (jsonify(...), status) tuple to
+    return straight from the route.
+
+    Blocks a project's workspace from being the running Clayrune install's own
+    source tree (or anywhere under it) — see the CLAUDE.md UPDATES-MUST-NEVER-
+    BE-BLOCKED task and `allow_project_in_install_dir`'s docstring in
+    server.py's config defaults. Root-caused 2026-09-14 (Amit): nothing ever
+    stopped `project_path` from pointing there, an agent dispatched against
+    that project did real feature work, and Settings -> Update Clayrune came
+    up permanently "Blocked: local changes" with no self-service way out for
+    someone who doesn't use git.
+
+    Two escape hatches, both required so this box (and any other legitimate
+    source-checkout dev install) keeps working:
+      1. `allow_project_in_install_dir` config — explicit, off by default.
+      2. Grandfathering: a path a project ALREADY had before this guard
+         existed is not a new assignment, so re-saving unrelated fields (name,
+         description, ...) on that project must not suddenly start failing.
+    Only a genuinely NEW assignment of the install dir (a fresh project, or an
+    existing one whose path is CHANGING to land there) is refused.
+    """
+    if not candidate_path or _APP_DIR is None:
+        return None
+    if not path_is_within(candidate_path, _APP_DIR):
+        return None
+    if str(previous_path or '').strip() == candidate_path:
+        return None  # grandfathered — this project already pointed here
+    if bool(state.CONFIG.get('allow_project_in_install_dir')):
+        return None
+    return jsonify({
+        'error': (f'"{candidate_path}" is the Clayrune install directory (or inside it) — '
+                  'a project workspace can\'t point at the app\'s own source, or an agent '
+                  'dispatched against it will edit Clayrune itself. If this really is your '
+                  'own source checkout you want to develop Clayrune with, turn on '
+                  '"allow_project_in_install_dir" in Settings first.'),
+    }), 400
+
+
 @bp.route('/api/project/<project_id>', methods=['POST'])
 def update_project(project_id):
     data = request.get_json()
@@ -415,6 +465,12 @@ def update_project(project_id):
                 data['project_path'] = str(candidate)
             except Exception as e:
                 return jsonify({'error': f'could not create workspace folder: {e}'}), 500
+
+    # ── Refuse a workspace inside the running install's own source tree.
+    install_dir_refusal = _refuse_project_path_in_install_dir(
+        (data.get('project_path') or '').strip(), existing.get('project_path'))
+    if install_dir_refusal:
+        return install_dir_refusal
 
     # ── Prevent two projects from sharing the same folder.
     candidate_path = (data.get('project_path') or '').strip()

@@ -378,6 +378,92 @@ def test_create_project_duplicate_path_409(client):
     assert 'already used' in r.get_json()['error']
 
 
+# ── project_path vs. the install directory (2026-09-14, Amit's "update
+#    blocked" report) — root cause was this exact field, unguarded ─────────
+
+def _install_dir(client, monkeypatch):
+    """Point pr._APP_DIR at a fresh tmp dir standing in for 'the running
+    Clayrune install' and return it. The fixture never sets this, so a test
+    that skips it would silently run against the REAL worktree checkout."""
+    install = client.tmp / 'install'
+    install.mkdir()
+    monkeypatch.setattr(client.pr, '_APP_DIR', install)
+    return install
+
+
+def test_new_project_at_install_dir_refused(client, monkeypatch):
+    install = _install_dir(client, monkeypatch)
+    r = client.post('/api/project/newproj',
+                    json={'name': 'New', 'project_path': str(install)})
+    assert r.status_code == 400
+    assert 'install directory' in r.get_json()['error']
+    assert not (client.data_dir / 'newproj.json').exists()
+
+
+def test_new_project_inside_install_dir_refused(client, monkeypatch):
+    """Not just the exact dir — anywhere underneath it too."""
+    install = _install_dir(client, monkeypatch)
+    sub = install / 'some' / 'nested' / 'folder'
+    sub.mkdir(parents=True)
+    r = client.post('/api/project/newproj',
+                    json={'name': 'New', 'project_path': str(sub)})
+    assert r.status_code == 400
+    assert not (client.data_dir / 'newproj.json').exists()
+
+
+def test_project_outside_install_dir_unaffected(client, monkeypatch):
+    """Control: an ordinary workspace elsewhere must be completely unaffected
+    by this guard existing at all."""
+    _install_dir(client, monkeypatch)
+    ws = client.tmp / 'elsewhere'
+    ws.mkdir()
+    r = client.post('/api/project/newproj',
+                    json={'name': 'New', 'project_path': str(ws)})
+    assert r.status_code == 200
+
+
+def test_install_dir_opt_in_config_allows_it(client, monkeypatch):
+    """Explicit opt-in (allow_project_in_install_dir), off by default — this
+    is how a genuine source-checkout dev install (this box included) keeps
+    working."""
+    install = _install_dir(client, monkeypatch)
+    monkeypatch.setitem(client.state.CONFIG, 'allow_project_in_install_dir', True)
+    r = client.post('/api/project/newproj',
+                    json={'name': 'New', 'project_path': str(install)})
+    assert r.status_code == 200
+    rec = json.loads((client.data_dir / 'newproj.json').read_text(encoding='utf-8'))
+    assert rec['project_path'] == str(install)
+
+
+def test_existing_project_already_at_install_dir_is_grandfathered(client, monkeypatch):
+    """An install upgraded from before this guard existed (mission_control's
+    own project on this very box) must keep saving — re-sending the SAME
+    project_path on an unrelated field edit is not a NEW assignment."""
+    install = _install_dir(client, monkeypatch)
+    _seed(client, pid='mission_control', project_path=str(install))
+    r = client.post('/api/project/mission_control',
+                    json={'name': 'Renamed', 'project_path': str(install)})
+    assert r.status_code == 200
+    rec = json.loads((client.data_dir / 'mission_control.json').read_text(encoding='utf-8'))
+    assert rec['name'] == 'Renamed'
+    assert rec['project_path'] == str(install)
+
+
+def test_existing_project_path_change_to_install_dir_still_refused(client, monkeypatch):
+    """Grandfathering covers the value it already had — it must not become a
+    blanket exemption for that project to move ANYWHERE, including the
+    install dir, afterward."""
+    install = _install_dir(client, monkeypatch)
+    elsewhere = client.tmp / 'elsewhere'
+    elsewhere.mkdir()
+    _seed(client, pid='proj', project_path=str(elsewhere))
+    r = client.post('/api/project/proj',
+                    json={'name': 'Test Project', 'project_path': str(install)})
+    assert r.status_code == 400
+    rec = json.loads((client.data_dir / 'proj.json').read_text(encoding='utf-8'))
+    assert rec['project_path'] == str(elsewhere)  # unchanged on disk
+
+
 # ── generate_summary ─────────────────────────────────────────────────────────
 
 def test_generate_summary_happy(client):

@@ -60,10 +60,27 @@ setTimeout(() => { _checkServerRestart(); }, 1500);
 async function refreshUpdateStatus() {
   const hint = document.getElementById('update-status-hint');
   const btn = document.getElementById('update-btn');
+  const stashBtn = document.getElementById('update-stash-btn');
+  const dirWarning = document.getElementById('update-install-dir-warning');
   if (!hint || !btn) return;
+  if (stashBtn) stashBtn.style.display = 'none';
   try {
     const res = await fetch(API_BASE + '/api/system/update/status');
     const data = await res.json();
+
+    if (dirWarning) {
+      const hits = data.projects_in_install_dir || [];
+      if (hits.length) {
+        const names = hits.map(p => esc(p.name || p.id)).join(', ');
+        dirWarning.innerHTML = `&#9888; ${hits.length === 1 ? 'Project' : 'Projects'} <strong>${names}</strong> ` +
+          `${hits.length === 1 ? 'points' : 'point'} at this Clayrune install's own folder — an agent working ` +
+          `${hits.length === 1 ? 'there' : 'in them'} can edit Clayrune's own source. Give ${hits.length === 1 ? 'it' : 'them'} a separate workspace folder, ` +
+          `or turn on "allow_project_in_install_dir" in Settings if this is intentional.`;
+        dirWarning.style.display = '';
+      } else {
+        dirWarning.style.display = 'none';
+      }
+    }
 
     // Frozen (PyInstaller) Mac .app — no .git, so none of the pull/behind-count
     // machinery below applies. Never show its "not a git checkout" text here;
@@ -115,9 +132,10 @@ async function refreshUpdateStatus() {
       (isCurrent ? ` &nbsp;<span style="color:var(--green-text,#22c55e)">✓ identical</span>` : '') +
       `</div>`;
     if (data.has_local_changes) {
-      hint.innerHTML = versionLine + `Local changes in ${branchInfo} — pull would conflict. Stash or commit first.`;
+      hint.innerHTML = versionLine + `Local changes in ${branchInfo} — pull would conflict.`;
       btn.disabled = true;
       btn.textContent = 'Blocked';
+      if (stashBtn) stashBtn.style.display = '';
     } else if (data.behind > 0) {
       hint.innerHTML = versionLine + `<strong style="color:var(--accent)">${data.behind} commit${data.behind === 1 ? '' : 's'} behind</strong> &middot; ${branchInfo}. Click to pull + restart.`;
       btn.disabled = false;
@@ -179,6 +197,61 @@ async function performClayruneUpdate() {
   } catch (e) {
     hint.textContent = 'Update error: ' + (e.message || e);
     btn.textContent = 'Failed';
+  }
+}
+
+async function performClayruneUpdateWithStash() {
+  // Self-service path for a dirty tree (2026-09-14) — the plain Update button
+  // stays disabled ("Blocked") until this runs, because a non-developer has
+  // no other way to get past a local-changes conflict. Shares the same POST
+  // as performClayruneUpdate, just with {stash:true}; the server does the
+  // `git stash push` (tracked files only) before pulling.
+  const btn = document.getElementById('update-stash-btn');
+  const hint = document.getElementById('update-status-hint');
+  if (!btn || !hint) return;
+  if (!confirm('This will set aside your local changes (git stash) and pull the latest '
+    + 'version from GitHub. Your data and config are preserved, and the stashed changes '
+    + 'are recoverable afterward — they are not deleted. Continue?')) return;
+  btn.disabled = true;
+  btn.textContent = 'Stashing...';
+  hint.textContent = 'Stashing local changes and running git pull...';
+  try {
+    const res = await fetch(API_BASE + '/api/system/update', {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ stash: true }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.ok) {
+      hint.textContent = (data.error || `Update failed (${res.status})`) + (data.detail ? ' — ' + data.detail.split('\n')[0] : '');
+      btn.textContent = 'Set aside local changes and update';
+      btn.disabled = false;
+      return;
+    }
+    const stashLine = data.stashed
+      ? `<div style="margin-top:4px;font-size:12px;color:var(--text-dim)">Your local changes were saved: ` +
+        `<code>${esc(data.stashed)}</code>. Find them with <code>git stash list</code>, restore with ` +
+        `<code>git stash apply</code> (or <code>git stash pop</code>) in the install directory.</div>`
+      : '';
+    hint.innerHTML = `<strong style="color:var(--green-text,#22c55e)">Updated to ${esc(data.new_commit)}</strong>. ` +
+      `${data.restart_recommended ? 'Restart the server now to pick up the changes.' : ''}${stashLine}`;
+    btn.style.display = 'none';
+    const updateBtn = document.getElementById('update-btn');
+    if (updateBtn) {
+      updateBtn.textContent = data.restart_recommended ? 'Restart now' : 'Done';
+      updateBtn.disabled = false;
+      if (data.restart_recommended) {
+        updateBtn.onclick = () => { closeModalById('__settings'); openPowerDialog(); };
+      }
+    }
+    const settingsItem = document.querySelector('.sidebar-item[data-nav="settings"]');
+    if (settingsItem) settingsItem.classList.remove('has-update');
+    localStorage.removeItem('mc_update_dismissed_for');
+    localStorage.removeItem('mc_update_remind_after_ts');
+  } catch (e) {
+    hint.textContent = 'Update error: ' + (e.message || e);
+    btn.textContent = 'Set aside local changes and update';
+    btn.disabled = false;
   }
 }
 
@@ -464,6 +537,7 @@ function showPoweredOffOverlay() {
 window._checkServerRestart = _checkServerRestart;   // SSE-drop handler + 15s fallback poll (inline)
 window.openPowerDialog = openPowerDialog;           // sidebar Power item + settings-drill.js
 window.performClayruneUpdate = performClayruneUpdate; // settings-drill.js Update button
+window.performClayruneUpdateWithStash = performClayruneUpdateWithStash; // settings-drill.js stash+update button
 window.refreshUpdateStatus = refreshUpdateStatus;   // settings-drill.js render/hydration
 // region-generated on*= handler targets (power dialog buttons):
 window.performRestart = performRestart;

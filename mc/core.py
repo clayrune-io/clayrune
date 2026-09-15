@@ -193,3 +193,20 @@ def _is_loopback_request() -> bool:
         return True
     # IPv4-mapped IPv6 loopback (e.g. ::ffff:127.0.0.1)
     return ra.startswith('::ffff:127.')
+
+
+def path_is_within(candidate, base) -> bool:
+    """True if `candidate` IS `base` or lives anywhere under it, comparing
+    fully-resolved paths (so `..`, symlinks and case (Windows) can't dodge the
+    check). Both accept str or Path. Returns False on any resolution error
+    (unreadable/malformed path) rather than raising — callers use this as a
+    safety gate, not a correctness assertion, so a path that can't even be
+    resolved is treated as "not inside", never as "block by default"."""
+    try:
+        c = Path(candidate).resolve()
+        b = Path(base).resolve()
+    except Exception:
+        return False
+    if os.name == 'nt':
+        return str(c).lower() == str(b).lower() or str(c).lower().startswith(str(b).lower() + os.sep)
+    return c == b or str(c).startswith(str(b) + os.sep)
