@@ -785,7 +785,16 @@ def installed_runtimes() -> List[AgentRuntime]:
 
 
 def default_runtime_name() -> str:
-    return 'claude'
+    """The provider a new session/dispatch uses when nothing more specific
+    pins one (composer/project/character all take precedence — see the
+    resolver chain in agent_routes.py's dispatch route).
+
+    Reads the user's first-run / Settings choice (`default_provider`); ''
+    (unset — every install before this key existed) falls back to 'claude'
+    so nobody's behavior changes until they actually pick something.
+    """
+    from mc import state
+    return (state.CONFIG.get('default_provider') or '').strip().lower() or 'claude'
 
 
 def runtime_for_project(project: Dict[str, Any]) -> AgentRuntime:
@@ -794,6 +803,51 @@ def runtime_for_project(project: Dict[str, Any]) -> AgentRuntime:
         # Unknown provider on a project record — fall back silently to claude.
         name = default_runtime_name()
     return _RUNTIMES[name]
+
+
+def claude_installed() -> bool:
+    """True if the claude CLI binary actually resolves on this machine.
+
+    ClaudeRuntime.resolve_binary() never returns None: its last resort is the
+    bare relative Path('claude'), which is truthy but only FileNotFoundErrors
+    on spawn. Every real hit (shutil.which or a candidate that exists()) is
+    absolute, so absoluteness is the not-installed signal. No subprocess.
+    """
+    try:
+        p = get_runtime('claude').resolve_binary()
+    except Exception:
+        return False
+    return bool(p) and Path(p).is_absolute()
+
+
+def claude_oneshot_available() -> bool:
+    """True if a toolless Claude oneshot call (ClaudeRuntime.oneshot) is
+    likely to succeed right now.
+
+    Scribe/condense/the Distiller (mc.memory._scribe_call) and mail_launder
+    all delegate their model call to Claude specifically, regardless of the
+    user's chosen `default_provider` — ClaudeRuntime.oneshot() is the only
+    runtime whose oneshot() carries a verified no-tools guarantee
+    (`--allowedTools ''` + `--strict-mcp-config`; see its docstring). Another
+    provider's oneshot() has no such guarantee, so there is no substitute —
+    a user who never installed/signed into Claude just doesn't get these
+    background features, rather than getting them run through a runtime that
+    can't promise the tool sandbox mail_launder's security model depends on.
+
+    Checked so callers can skip with a log line instead of spawning a doomed
+    `claude -p` subprocess on every cycle (Scribe/condense run per session,
+    Distiller runs on a schedule) for an install that will never have Claude.
+    Both checks below are cheap: resolve_binary() is a cached path lookup and
+    ClaudeRuntime.auth_status() reads a cached dict — neither spawns anything.
+    """
+    if not claude_installed():
+        return False
+    rt = get_runtime('claude')
+    try:
+        auth = rt.auth_status() or {}
+    except Exception:
+        return True  # auth check itself failing isn't evidence claude is unusable
+    return auth.get('ok') is not False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

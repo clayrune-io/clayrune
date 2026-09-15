@@ -1343,6 +1343,56 @@ def _cli_missing_message(provider: str = '') -> str:
     return msg
 
 
+def _providers_in_use() -> set:
+    """Every provider name that's actually pinned somewhere — the default
+    choice, any project's `provider` field, or any character's (global or
+    project-scoped) pinned engine.
+
+    Drives the auth-alert banner's suppression (provider-auth.js): a provider
+    nobody pinned or defaulted to shouldn't nag a user who never touches it
+    (MC — "Keegan is using only OpenAI and Clayrune keeps alerting he's not
+    logged in to Claude"). Cheap enough to run per `/api/agent/providers`
+    call (a handful of small dir scans) — that endpoint is fetched once per
+    boot and cached client-side, not polled.
+    """
+    from mc import characters as _chars
+    in_use = set()
+    # An UNSET default resolves to 'claude' only as a fallback. On a machine
+    # without the claude CLI that fallback is not a choice anybody made, so it
+    # must not count: a Codex-only install (the Keegan case) never sees the
+    # provider picker (nothing to choose between) and would otherwise keep the
+    # Claude banner forever.
+    if (state.CONFIG.get('default_provider') or '').strip() or _agent_runtime.claude_installed():
+        in_use.add(_agent_runtime.default_runtime_name())
+    try:
+        projects = load_projects()
+    except Exception:
+        projects = []
+    for p in projects:
+        prov = (p.get('provider') or '').strip().lower()
+        if prov:
+            in_use.add(prov)
+    try:
+        for c in _chars.list_characters(project_path=None):
+            prov = ((c.get('engine') or {}).get('provider') or '').strip().lower()
+            if prov:
+                in_use.add(prov)
+    except Exception:
+        pass
+    for p in projects:
+        pp = p.get('project_path')
+        if not pp:
+            continue
+        try:
+            for c in _chars.list_characters(project_path=pp, project_id=p.get('id')):
+                prov = ((c.get('engine') or {}).get('provider') or '').strip().lower()
+                if prov:
+                    in_use.add(prov)
+        except Exception:
+            continue
+    return in_use
+
+
 @bp.route('/api/agent/providers')
 def agent_providers():
     """List all registered agent runtimes (claude + alternatives) with their
@@ -1350,10 +1400,14 @@ def agent_providers():
     the per-project provider dropdown.
 
     Returns: [{name, display_name, installed, version, install_hint,
-               capabilities: {...}, default: bool}]
+               capabilities: {...}, default: bool, in_use: bool}]
     """
     out = []
     default_name = _agent_runtime.default_runtime_name()
+    try:
+        in_use = _providers_in_use()
+    except Exception:
+        in_use = {default_name}
     for rt in _agent_runtime.available_runtimes():
         try:
             h = rt.health_check()
@@ -1419,6 +1473,10 @@ def agent_providers():
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
             'default': (rt.name == default_name),
+            # Auth-alert gate (provider-auth.js): true if this provider is the
+            # default, or pinned by some project/character. A provider nobody
+            # touches shouldn't nag its unused login state.
+            'in_use': (rt.name in in_use),
         })
     return jsonify({'providers': out, 'default': default_name})
 

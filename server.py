@@ -79,6 +79,13 @@ def _load_config():
         'shared_rules_path': str(_DATA_ROOT / 'data' / 'SHARED_RULES.md'),
         'projects_base': str(Path.home()),
         'auto_workspace_base': str(Path.home() / 'MissionControl'),
+        # First-run provider choice (MC — "which AI do you work with?"). ''
+        # means unset: every resolver that reads this key already falls back
+        # to 'claude' with `or 'claude'` (agent_routes.py, hivemind_routes.py,
+        # mc.agent_runtime.default_runtime_name), so an existing install that
+        # never sees the picker keeps behaving exactly as before. Set by the
+        # onboarding provider-choice step or Settings -> Default provider.
+        'default_provider': '',
         # Flagship model for new installs (2026-07-27). '' would mean "whatever
         # the CLI defaults to", which drifts with the CLI and left fresh installs
         # on an older tier than the picker advertises. Only applies to configs

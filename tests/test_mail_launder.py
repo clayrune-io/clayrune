@@ -95,6 +95,21 @@ def test_empty_message_list_short_circuits_without_calling_the_runtime():
     assert rt.calls == []
 
 
+def test_no_claude_fails_closed_without_touching_the_real_runtime_registry(monkeypatch):
+    """The default (runtime=None) path resolves the real ClaudeRuntime — the
+    only oneshot() with a verified no-tools guarantee (see
+    agent_runtime.claude_oneshot_available's docstring). On a Codex/Gemini-only
+    install this must fail closed with a clear reason, not spawn a doomed
+    `claude -p` subprocess or fall back to a different, unverified runtime."""
+    import mc.agent_runtime as _agent_runtime
+    monkeypatch.setattr(_agent_runtime, 'claude_oneshot_available', lambda: False)
+    out = ml.launder_mail_digest(_ONE_MESSAGE, query='q')  # no runtime= injected
+    assert out['ok'] is False
+    assert out['error'] == 'claude_unavailable'
+    assert out['guidance'] == ml._NO_FALLBACK_GUIDANCE
+    assert _SECRET_MARKER not in str(out)
+
+
 # ── fail-closed path ─────────────────────────────────────────────────────────
 
 def test_oneshot_returning_none_fails_closed_with_guidance():

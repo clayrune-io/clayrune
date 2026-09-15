@@ -147,6 +147,46 @@ async function checkClayruneUpdateAvailable() {
   ], { dismissOnAction: true });
 }
 
+// One-time provider-choice offer for an EXISTING install (realProjectCount >
+// 0, so the walkthrough — and its 'provider-choice' step — never auto-runs).
+// Every install before default_provider existed has it unset, so without this
+// an install that only uses Codex/Gemini never learns the setting exists and
+// keeps eating Claude's login banner forever. Fires once at boot; a "Not now"
+// dismissal or an actual saved default both silence it for good.
+async function _maybeOfferProviderChoice() {
+  if (_globalConfig && _globalConfig.default_provider) return; // already chosen
+  // Boot only PRIMES the providers fetch, it doesn't await it — reading
+  // _agentProviders synchronously here raced it and usually saw null.
+  let all = [];
+  try { all = (await _ensureAgentProviders()) || []; } catch (e) { return; }
+  const provs = all.filter(p => p.installed);
+  // Exactly one CLI and it isn't Claude: there is nothing to ask, but leaving
+  // the default unset means every new chat still resolves to 'claude'. Save the
+  // only real answer (reversible in Settings -> Default provider).
+  if (provs.length === 1 && provs[0].name !== 'claude') {
+    saveSetting('default_provider', provs[0].name);
+    return;
+  }
+  if (localStorage.getItem('mc_provider_choice_dismissed')) return;
+  if (provs.length <= 1) return; // nothing to choose — stay silent
+  showActionToast(
+    `<strong>Which AI do you work with?</strong><br>` +
+    `<span style="color:var(--text-faint);font-size:12px">Set a default provider so Clayrune stops assuming Claude.</span>`,
+    [
+      {
+        label: 'Not now',
+        onclick: () => localStorage.setItem('mc_provider_choice_dismissed', '1'),
+      },
+      {
+        label: 'Choose',
+        primary: true,
+        onclick: () => { try { sidebarNav('settings'); } catch (e) {} },
+      },
+    ],
+    { dismissOnAction: true, key: 'provider-choice' }
+  );
+}
+
 function timeAgoJS(ts) {
   if (!ts) return 'never';
   try {
@@ -659,6 +699,7 @@ window.createDragOver = createDragOver;
 window.createDragLeave = createDragLeave;
 window.createDrop = createDrop;
 window.checkClayruneUpdateAvailable = checkClayruneUpdateAvailable;
+window._maybeOfferProviderChoice = _maybeOfferProviderChoice;
 window.timeAgoJS = timeAgoJS;
 window.githubConnect = githubConnect;
 window.githubDisconnect = githubDisconnect;

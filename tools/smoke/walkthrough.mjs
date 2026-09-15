@@ -51,6 +51,17 @@ const CLAYRUNE_PROJECT = {
   use_streaming_agent: true, roster: [],
 };
 
+// Two installed providers so the 'provider-choice' step's skip() guard
+// (skip when <=1 installed) actually clears — a claude-only machine (the
+// common case) would otherwise never exercise this step's own render path.
+const PROVIDERS_FIXTURE = {
+  providers: [
+    { name: 'claude', display_name: 'Claude Code', installed: true, in_use: true, default: true },
+    { name: 'codex', display_name: 'Codex', installed: true, in_use: false, default: false },
+  ],
+  default: 'claude',
+};
+
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
 const fail = (m) => { console.error('  ✗ ' + m); bad++; };
@@ -134,6 +145,7 @@ try {
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
     return route.abort();
   });
 
@@ -161,6 +173,7 @@ try {
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
     return route.abort();
   });
   await pageMobile.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });

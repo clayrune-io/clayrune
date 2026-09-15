@@ -12,6 +12,8 @@ against tmp_data_dir, then we drive mc.memory directly.
 import importlib
 import importlib.util
 
+import pytest
+
 
 def _mem(tmp_data_dir):
     """Reload server (runs memory.wire() against the isolated tmp data dir),
@@ -383,3 +385,36 @@ def test_scribe_refusal_still_wins_over_why(tmp_data_dir, monkeypatch):
     out, reason = m._scribe_summarize_text("ACTION x", "haiku", want_why=True)
     assert reason == "model_refused"
     assert out is None
+
+
+# ── _scribe_call skips cleanly on a non-Claude install ───────────────────────
+# Scribe/condense/the Distiller all choke through this ONE function regardless
+# of the session's own provider (see its docstring) — a Codex/Gemini-only
+# install must not spawn a doomed `claude -p` subprocess on every call.
+
+def test_scribe_call_skips_when_claude_unavailable(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: False)
+    called = []
+    monkeypatch.setattr(
+        m._agent_runtime, "get_runtime",
+        lambda name: called.append(name) or (_ for _ in ()).throw(
+            AssertionError("oneshot must not be reached when claude is unavailable")))
+    with pytest.raises(RuntimeError, match="claude unavailable"):
+        m._scribe_call("haiku", "summarize", "body text")
+    assert called == []  # get_runtime('claude') was never reached
+
+
+def test_scribe_call_proceeds_when_claude_available(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: True)
+
+    class _FakeResult:
+        text = "a summary"
+
+    class _FakeRuntime:
+        def oneshot(self, **kwargs):
+            return _FakeResult()
+
+    monkeypatch.setattr(m._agent_runtime, "get_runtime", lambda name: _FakeRuntime())
+    assert m._scribe_call("haiku", "summarize", "body text") == "a summary"

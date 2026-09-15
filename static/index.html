@@ -3339,6 +3339,12 @@ fetchProjects().then(async () => {
   const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p)).length;
   if (realProjectCount === 0 && !localStorage.getItem('walkthrough_done')) {
     setTimeout(() => startWalkthrough(), 600);
+  } else {
+    // Existing install that never saw the walkthrough's provider-choice step
+    // (it only runs on a truly fresh install). Offered once, dismissible —
+    // never a surprise first-run prompt, never nagged again once dismissed
+    // or once a default is actually saved.
+    _maybeOfferProviderChoice();
   }
   _mcBootMark('boot continuation done');
 });

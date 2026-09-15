@@ -93,6 +93,20 @@ function _hasLiveClaudeAgent() {
   } catch (e) { return false; }
 }
 
+// A provider nobody chose or pinned shouldn't nag about its login state — the
+// Codex-only-user-sees-a-Claude-banner complaint. Backed by /api/agent/providers'
+// `in_use` flag (default_provider + every project/character pin), fetched once
+// at boot into _agentProviders. Errs toward SHOWING the banner (returns true)
+// when the list hasn't loaded yet, since the old unconditional behavior was to
+// always check claude — a cold-boot race should never silently hide a real
+// "you're not signed in" problem.
+function _isProviderInUse(name) {
+  const list = _agentProviders || [];
+  if (!list.length) return true;
+  const entry = list.find(p => p.name === name);
+  return entry ? !!entry.in_use : false;
+}
+
 function _renderAuthBanner(state) {
   const banner = document.getElementById('auth-banner');
   if (!banner) return;
@@ -103,6 +117,10 @@ function _renderAuthBanner(state) {
     return;
   }
   const _prov = (state && state._provider) || 'claude';
+  if (!_isProviderInUse(_prov)) {
+    banner.classList.add('hidden');
+    return;
+  }
   if (_prov === 'claude' && _hasLiveClaudeAgent()) {
     banner.classList.add('hidden');
     return;

@@ -168,6 +168,68 @@ def test_providers_endpoint_ok(client):
     assert isinstance(resp.get_json(), (list, dict))
 
 
+def test_providers_endpoint_reports_in_use(client, monkeypatch):
+    """The `default` provider is always in_use; providers nobody touches
+    aren't. Backs the auth-banner suppression in provider-auth.js.
+
+    Patches load_projects/list_characters — this repo's own real project/
+    character data (e.g. the market-scout character pins gemini) would
+    otherwise leak into `in_use` and make the assertion environment-dependent."""
+    from mc.blueprints import agent_routes as ar
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [])
+    monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
+    resp = client.get('/api/agent/providers')
+    body = resp.get_json()
+    by_name = {p['name']: p for p in body['providers']}
+    assert by_name['claude']['in_use'] is True   # unset default_provider → claude
+    assert 'gemini' in by_name and by_name['gemini']['in_use'] is False
+
+
+# ── _providers_in_use() — resolver precedence for the auth-banner gate ────────
+# Isolated from the real project/character stores: `client` only patches
+# ar.DATA_DIR (read by the usage/router-stats globs), not the separately-wired
+# `load_projects` reference or the global characters dir — so these patch
+# ar.load_projects and mc.characters.list_characters directly (the function
+# does `from mc import characters as _chars` internally, which resolves the
+# same live module object patched here).
+
+def test_providers_in_use_includes_project_pin(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [{'id': 'p1', 'provider': 'codex'}])
+    monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
+    in_use = ar._providers_in_use()
+    assert 'codex' in in_use
+    assert 'claude' in in_use  # still the unset-config default
+
+
+def test_providers_in_use_includes_global_character_pin(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [])
+
+    def _fake_list_characters(project_path=None, project_id=None, **kw):
+        if project_path is None:
+            return [{'name': 'reviewer', 'engine': {'provider': 'gemini'}}]
+        return []
+    monkeypatch.setattr(_chars, 'list_characters', _fake_list_characters)
+    in_use = ar._providers_in_use()
+    assert 'gemini' in in_use
+
+
+def test_providers_in_use_excludes_untouched_provider(client, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [{'id': 'p1'}])  # no pin
+    monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: True)
+    in_use = ar._providers_in_use()
+    assert in_use == {'claude'}  # nothing pinned aider/gemini/etc → not in_use
+
+
 def test_usage_endpoint_ok_empty(client):
     """Clean data dir → usage responds 200 with the documented shape."""
     resp = client.get('/api/usage')
@@ -626,3 +688,21 @@ def test_dispatch_via_runtime_carries_trigger_type_onto_session_dict(monkeypatch
     stub = _dispatch_via_runtime_with_stub(
         monkeypatch, trigger_type='hivemind_worker', codex_unattended_sandbox_config=True)
     assert stub.dispatch_kwargs['session_dict']['trigger_type'] == 'hivemind_worker'
+
+
+def test_providers_in_use_codex_only_install_drops_claude_fallback(client, monkeypatch):
+    """The Keegan case: default_provider unset, claude CLI not installed. The
+    'claude' fallback is not a choice anyone made, so claude must not be
+    in_use, or the Claude sign-in banner nags a Codex-only user forever (the
+    picker never offers itself when only one CLI is installed)."""
+    from mc.blueprints import agent_routes as ar
+    from mc import state
+    import mc.characters as _chars
+    monkeypatch.setattr(ar, 'load_projects', lambda: [])
+    monkeypatch.setattr(_chars, 'list_characters', lambda **kw: [])
+    monkeypatch.setattr(ar._agent_runtime, 'claude_installed', lambda: False)
+    monkeypatch.setitem(state.CONFIG, 'default_provider', '')
+    assert 'claude' not in ar._providers_in_use()
+    # An explicit choice always counts, installed or not.
+    monkeypatch.setitem(state.CONFIG, 'default_provider', 'codex')
+    assert ar._providers_in_use() == {'codex'}

@@ -167,6 +167,19 @@ def launder_mail_digest(messages: List[Dict[str, Any]], *, query: str,
 
     if runtime is None:
         import mc.agent_runtime as _agent_runtime  # lazy: keep this module import-light
+        # This module only ever launders through Claude's oneshot — it's the
+        # one runtime with a verified toolless guarantee (see
+        # claude_oneshot_available's docstring); another provider's oneshot()
+        # can't promise the same sandbox, so there's no substitute to fall
+        # back to. A Codex/Gemini-only install just doesn't get mail
+        # laundering, rather than getting it through an unverified runtime.
+        if not _agent_runtime.claude_oneshot_available():
+            from mc.core import _log
+            _log("[mail-launder] claude not installed/authenticated — "
+                 "skipping (no other runtime's oneshot() is verified "
+                 "toolless)", flush=True)
+            return _launder_error('claude_unavailable',
+                                   'claude is not installed or not signed in on this machine')
         runtime = _agent_runtime.get_runtime('claude')
 
     thread_text = _format_thread(messages)

@@ -3716,10 +3716,25 @@ def _scribe_call(model, instruction, body):
     """One blocking `claude -p` call (prompt via stdin to dodge arg limits).
 
     Returns the model's text output, or raises on failure/timeout.
-    Delegates to ClaudeRuntime.oneshot() — single source of truth.
+    Delegates to ClaudeRuntime.oneshot() — single source of truth. This is
+    the ONE choke point for Scribe, condense AND the Distiller (which calls
+    in via the wired _scribe_call hook, mc/distiller.py) — all three
+    summarize through Claude specifically regardless of the session's own
+    provider (parity note at _scribe_extract above), because it's the only
+    runtime with a verified toolless oneshot (see
+    agent_runtime.claude_oneshot_available's docstring).
     Callers that catch subprocess.TimeoutExpired should also catch RuntimeError
     since oneshot() normalises all failures to a None return which we raise here.
     """
+    if not _agent_runtime.claude_oneshot_available():
+        # A Codex/Gemini-only install has no Claude to spawn — every one of
+        # these calls would otherwise fail the same way, forever, on every
+        # session. Skip with one honest log line per call site instead of a
+        # generic subprocess-failure trace that reads like an auth incident.
+        _log("[scribe] claude not installed/authenticated — skipping "
+             "summarization call (Scribe/condense/Distiller degrade on a "
+             "non-Claude install)", flush=True)
+        raise RuntimeError("scribe claude call skipped: claude unavailable")
     rt = _agent_runtime.get_runtime('claude')
     result = rt.oneshot(
         prompt=instruction,

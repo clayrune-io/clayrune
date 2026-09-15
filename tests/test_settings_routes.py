@@ -172,6 +172,21 @@ def test_update_config_cleans_the_agent_face(ctx):
     assert ctx.state.CONFIG['agent_avatar'] == 'fig:navigator'
 
 
+def test_update_config_validates_default_provider(ctx):
+    """default_provider is validated against the real runtime registry (same
+    reasoning as agent_avatar above and character_routes._validated_engine's
+    provider check) — an unregistered name is refused outright, not silently
+    persisted to fall through to 'claude' everywhere it's read."""
+    resp = ctx.client.put('/api/config', json={'default_provider': 'Codex'})
+    assert resp.status_code == 200
+    assert ctx.state.CONFIG['default_provider'] == 'codex'  # lowercased
+
+    resp = ctx.client.put('/api/config', json={'default_provider': 'not-a-real-cli'})
+    assert resp.status_code == 400
+    assert 'unknown provider' in resp.get_json()['error']
+    assert ctx.state.CONFIG['default_provider'] == 'codex'  # unchanged by the 400
+
+
 def test_update_config_ignores_non_editable_key(ctx):
     resp = ctx.client.put('/api/config', json={'totally_made_up_key': 1})
     assert resp.status_code == 200

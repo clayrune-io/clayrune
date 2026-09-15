@@ -6,6 +6,40 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-14c] — First-run provider choice; stop nagging non-Claude users about Claude
+
+- **Root cause:** `default_provider` was already read by the dispatch/hivemind
+  resolvers and by the composer's `_composerProvider()` (both `or 'claude'`
+  fallbacks), but the key existed in neither `server.py`'s config defaults nor
+  `_CONFIG_EDITABLE_KEYS` — so `GET/PUT /api/config` never saw it and no user
+  could ever set it. A Codex/Gemini-only install had no way to tell Clayrune,
+  and kept eating the Claude sign-in banner forever.
+- **Config:** `default_provider` (`''` = unset → falls back to `'claude'`,
+  no behavior change for existing installs) added to both surfaces;
+  `PUT /api/config` validates it against the real runtime registry (400 on an
+  unregistered name, same pattern as a character's pinned engine).
+  `mc.agent_runtime.default_runtime_name()` now reads it instead of returning
+  a hardcoded `'claude'` literal.
+- **First run:** a new walkthrough step, "Which AI do you work with?", right
+  after Welcome — skipped when only one CLI is installed (the common case,
+  pixel-identical to before). An existing install that never saw the
+  walkthrough gets the same choice once via a dismissible toast
+  (`_maybeOfferProviderChoice`), pointing at the (pre-existing) Settings →
+  Default provider row. Neither ever reappears once a default is saved or the
+  toast is dismissed.
+- **Auth banner suppression:** `GET /api/agent/providers` now reports
+  `in_use` per provider (`_providers_in_use()`: the default, plus every
+  project's and character's pinned `provider`); `provider-auth.js`'s
+  `_renderAuthBanner` hides the banner for a provider nobody touched. A
+  Codex-only user no longer sees "Authenticate Claude."
+- **Background jobs degrade cleanly, not silently:** Scribe/condense/the
+  Distiller (all through `mc.memory._scribe_call`) and `mail_launder` are
+  hardcoded to Claude specifically — it's the only runtime with a verified
+  toolless `oneshot()` (`--allowedTools ''` + `--strict-mcp-config`), so
+  there's no substitute to fall back to. `agent_runtime.claude_oneshot_available()`
+  short-circuits with one clear log line instead of spawning a doomed
+  `claude -p` subprocess on every cycle when Claude isn't installed/signed in.
+
 ## [2026-09-14b] — One live process per conversation; chat never shrinks its history
 
 - **Root cause:** a chat tab keyed on the CLAUDE session id (the

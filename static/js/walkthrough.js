@@ -12,6 +12,27 @@ const WT_STEPS = [
     target: null, pos: 'center',
   },
   {
+    id: 'provider-choice',
+    title: 'Which AI do you work with?',
+    body: () => {
+      const provs = (_agentProviders || []).filter(p => p.installed);
+      const cur = (_globalConfig && _globalConfig.default_provider) || 'claude';
+      return `Clayrune drives whichever coding agent you already sign in with. Pick your default — you can change this any time in Settings, or per-chat in the composer.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+        provs.map(p => `
+          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
+            <input type="radio" name="wt-provider" value="${esc(p.name)}" ${cur === p.name ? 'checked' : ''}
+              onchange="wtSetDefaultProvider('${esc(p.name)}')"
+              style="width:15px;height:15px;accent-color:var(--accent)">
+            <span style="font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
+          </label>`).join('') + `</div>`;
+    },
+    target: null, pos: 'center',
+    // Nothing to choose when only one CLI is installed — a claude-only
+    // machine (the common case today) skips straight to 'advanced-picker',
+    // pixel-identical to the tour before this step existed.
+    skip: () => (_agentProviders || []).filter(p => p.installed).length <= 1,
+  },
+  {
     id: 'advanced-picker',
     title: 'Choose your level',
     body: () => `Clayrune starts in a simple view. Turn on any power-user features you want to see — you can change these anytime in Settings.<div id="wt-adv-list" style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
@@ -119,6 +140,12 @@ const WT_STEPS = [
     target: null, pos: 'center',
   },
 ];
+
+// Provider-choice step handler. Reuses the generic saveSetting() PUT that
+// Settings -> Default provider already calls — one write path, not two.
+function wtSetDefaultProvider(name) {
+  saveSetting('default_provider', name);
+}
 
 // Build virtual demo elements for the walkthrough
 function wtDemoTileHTML() {
@@ -572,6 +599,7 @@ window.wtNext = wtNext; // interop: wt-card generated onclick (Start Tour / Next
 window.wtBack = wtBack; // interop: wt-card generated onclick (Back)
 window.wtSkip = wtSkip; // interop: wt-card generated onclick (Skip)
 window.wtEnd = wtEnd;   // interop: wt-card generated onclick (Get Started)
+window.wtSetDefaultProvider = wtSetDefaultProvider; // interop: provider-choice step's generated onchange
 // interop: the "Don't show this again" checkbox writes `wtDontShow=this.checked`
 // from a generated onchange attribute. Inline handlers resolve against the
 // global object and can't see module-scoped `let` bindings — without this
