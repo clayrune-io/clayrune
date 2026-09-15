@@ -206,6 +206,11 @@ _CONFIG_EDITABLE_KEYS = {
     'negation_ledger_max', 'negation_pin_max', 'read_floor_negation_reserve',
     'memory_gate_mode', 'memory_cold_probe_k', 'memory_fetch_calls_per_turn',
     'memory_mint_on_close', 'trigger_phrase_bigrams',
+    # First-run / Settings provider choice. Read live by every dispatch path
+    # that doesn't have a more specific pin (agent_routes.py, hivemind_routes.py,
+    # mc.agent_runtime.default_runtime_name) — no respawn needed, it only
+    # matters for the NEXT session/dispatch, never a live one.
+    'default_provider',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the
@@ -265,6 +270,21 @@ def update_config():
             _backup.validate_backup_dest_dir(data['backup_dest_dir'])
         except _backup.BackupError as e:
             return jsonify({'error': str(e)}), 400
+    if data.get('default_provider') and 'default_provider' in _CONFIG_EDITABLE_KEYS:
+        # Same reasoning as character_routes._validated_engine's provider
+        # check: a saved default that isn't a registered runtime would
+        # silently fall through to 'claude' everywhere it's read, which is
+        # more confusing than refusing the write outright.
+        from mc import agent_runtime as _agent_runtime
+        try:
+            known = {r.name for r in _agent_runtime.available_runtimes()}
+        except Exception:
+            known = set()
+        prov = str(data['default_provider']).strip().lower()
+        if known and prov not in known:
+            return jsonify({'error': f'unknown provider {prov!r} — available: '
+                                     f'{", ".join(sorted(known))}'}), 400
+        data['default_provider'] = prov
     updated = {}
     for k, v in data.items():
         if k in _CONFIG_EDITABLE_KEYS:

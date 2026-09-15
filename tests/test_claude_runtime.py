@@ -78,6 +78,46 @@ def test_default_runtime_name():
     assert agent_runtime.default_runtime_name() == 'claude'
 
 
+def test_default_runtime_name_honors_config(monkeypatch):
+    """MC first-run provider choice: an unset key still falls back to
+    'claude' (no behavior change for pre-existing installs); a saved choice
+    is honored so every caller of this function (runtime_for_project,
+    agent_routes' _cli_missing_message, the /api/agent/providers `default`
+    flag) picks up the same resolved default with no separate wiring."""
+    from mc import agent_runtime, state
+    monkeypatch.setitem(state.CONFIG, 'default_provider', 'codex')
+    assert agent_runtime.default_runtime_name() == 'codex'
+    monkeypatch.setitem(state.CONFIG, 'default_provider', '')
+    assert agent_runtime.default_runtime_name() == 'claude'
+
+
+def test_claude_oneshot_available_false_when_binary_missing(monkeypatch):
+    from mc import agent_runtime
+    rt = agent_runtime.get_runtime('claude')
+    monkeypatch.setattr(rt, 'resolve_binary', lambda: None)
+    assert agent_runtime.claude_oneshot_available() is False
+
+
+def test_claude_oneshot_available_false_when_auth_known_bad(monkeypatch, tmp_path):
+    from mc import agent_runtime
+    rt = agent_runtime.get_runtime('claude')
+    monkeypatch.setattr(rt, 'resolve_binary', lambda: tmp_path / 'claude')
+    monkeypatch.setattr(rt, 'auth_status', lambda: {'ok': False, 'reason': 'not_logged_in'})
+    assert agent_runtime.claude_oneshot_available() is False
+
+
+def test_claude_oneshot_available_true_when_installed_and_not_known_bad(monkeypatch, tmp_path):
+    from mc import agent_runtime
+    rt = agent_runtime.get_runtime('claude')
+    monkeypatch.setattr(rt, 'resolve_binary', lambda: tmp_path / 'claude')
+    # ok:True (verified) and ok:None/unknown (never probed) both count —
+    # only a CONFIRMED bad state should stop the background job from trying.
+    monkeypatch.setattr(rt, 'auth_status', lambda: {'ok': True})
+    assert agent_runtime.claude_oneshot_available() is True
+    monkeypatch.setattr(rt, 'auth_status', lambda: {})
+    assert agent_runtime.claude_oneshot_available() is True
+
+
 def test_runtime_for_project_defaults_to_claude():
     from mc import agent_runtime
     rt = agent_runtime.runtime_for_project({})

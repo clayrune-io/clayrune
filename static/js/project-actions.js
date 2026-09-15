@@ -147,6 +147,35 @@ async function checkClayruneUpdateAvailable() {
   ], { dismissOnAction: true });
 }
 
+// One-time provider-choice offer for an EXISTING install (realProjectCount >
+// 0, so the walkthrough — and its 'provider-choice' step — never auto-runs).
+// Every install before default_provider existed has it unset, so without this
+// an install that only uses Codex/Gemini never learns the setting exists and
+// keeps eating Claude's login banner forever. Fires once at boot; a "Not now"
+// dismissal or an actual saved default both silence it for good.
+function _maybeOfferProviderChoice() {
+  if (_globalConfig && _globalConfig.default_provider) return; // already chosen
+  if (localStorage.getItem('mc_provider_choice_dismissed')) return;
+  const provs = (_agentProviders || []).filter(p => p.installed);
+  if (provs.length <= 1) return; // nothing to choose — stay silent
+  showActionToast(
+    `<strong>Which AI do you work with?</strong><br>` +
+    `<span style="color:var(--text-faint);font-size:12px">Set a default provider so Clayrune stops assuming Claude.</span>`,
+    [
+      {
+        label: 'Not now',
+        onclick: () => localStorage.setItem('mc_provider_choice_dismissed', '1'),
+      },
+      {
+        label: 'Choose',
+        primary: true,
+        onclick: () => { try { sidebarNav('settings'); } catch (e) {} },
+      },
+    ],
+    { dismissOnAction: true, key: 'provider-choice' }
+  );
+}
+
 function timeAgoJS(ts) {
   if (!ts) return 'never';
   try {
@@ -659,6 +688,7 @@ window.createDragOver = createDragOver;
 window.createDragLeave = createDragLeave;
 window.createDrop = createDrop;
 window.checkClayruneUpdateAvailable = checkClayruneUpdateAvailable;
+window._maybeOfferProviderChoice = _maybeOfferProviderChoice;
 window.timeAgoJS = timeAgoJS;
 window.githubConnect = githubConnect;
 window.githubDisconnect = githubDisconnect;
