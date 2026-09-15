@@ -727,8 +727,14 @@ async function _renderSettings() {
         <div>
           <div class="settings-label">Update Clayrune</div>
           <div class="settings-hint" id="update-status-hint">Checking for updates...</div>
+          <div class="settings-hint" id="update-install-dir-warning" style="display:none;color:var(--amber-text,#c98a2c);margin-top:4px"></div>
         </div>
-        <button class="btn-dispatch" id="update-btn" onclick="performClayruneUpdate()" disabled>Update</button>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;justify-content:flex-end">
+          <button class="btn-dispatch" id="update-stash-btn" onclick="performClayruneUpdateWithStash()"
+            style="display:none;background:var(--surface3);border-color:var(--border2);color:var(--text)"
+            title="Move your local changes aside with git stash, then update">Set aside local changes and update</button>
+          <button class="btn-dispatch" id="update-btn" onclick="performClayruneUpdate()" disabled>Update</button>
+        </div>
       </div>
     </div>
 

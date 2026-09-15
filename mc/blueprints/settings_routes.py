@@ -211,6 +211,11 @@ _CONFIG_EDITABLE_KEYS = {
     # mc.agent_runtime.default_runtime_name) — no respawn needed, it only
     # matters for the NEXT session/dispatch, never a live one.
     'default_provider',
+    # Dev-checkout opt-in (2026-09-14 update-blocked incident) — read live by
+    # project_routes.update_project on every project-path save. Operator
+    # knob like the rest of this set: an unattended agent must not be able to
+    # grant itself write access to the app's own source by flipping this on.
+    'allow_project_in_install_dir',
 }
 
 # Respawn-trigger ("Tier-1") settings: baked into the spawn (CLI flags or the

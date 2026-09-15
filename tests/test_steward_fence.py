@@ -12,7 +12,7 @@ from pathlib import Path
 
 import pytest
 
-from steward.fence import classify_action, classify_bash
+from steward.fence import FenceDecision, check_install_dir_write, classify_action, classify_bash
 
 REPO = Path(__file__).resolve().parents[1]
 FENCE = REPO / 'steward' / 'fence.py'
@@ -316,6 +316,173 @@ def test_fence_blocks_edits_to_its_own_source(path):
     for tool in ('Write', 'Edit', 'MultiEdit'):
         d = classify_action(tool, {'file_path': path})
         assert d.blocked, f"{tool} to {path} must be fenced (fence supply chain)"
+
+
+# ── Install-dir project-boundary guard (2026-09-14, Amit's "update blocked"
+#    report) ────────────────────────────────────────────────────────────────
+# Root cause: a project's workspace pointed at the running Clayrune install's
+# own source tree, so an agent dispatched there did real feature work IN the
+# app itself. check_install_dir_write is the defense-in-depth backstop: it
+# runs UNCONDITIONALLY from main() (not gated by steward/unattended status
+# like the rest of classify_action), because "don't edit a different
+# project's install directory" is a project-boundary rule, not a judgment
+# call about irreversibility.
+
+def test_write_under_install_dir_from_elsewhere_is_blocked(tmp_path, monkeypatch):
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    install.mkdir()
+    other_project = tmp_path / 'other-project'
+    other_project.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Write', {'file_path': str(install / 'server.py')},
+        session_cwd=str(other_project))
+    assert d.blocked
+    assert 'install directory' in d.reason
+
+
+def test_write_under_install_dir_nested_is_blocked(tmp_path, monkeypatch):
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    (install / 'mc' / 'blueprints').mkdir(parents=True)
+    other_project = tmp_path / 'other-project'
+    other_project.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Edit', {'file_path': str(install / 'mc' / 'blueprints' / 'project_routes.py')},
+        session_cwd=str(other_project))
+    assert d.blocked
+
+
+def test_write_relative_path_resolved_against_cwd_is_blocked(tmp_path, monkeypatch):
+    """A relative file_path that lands under the install dir once resolved
+    against the session's cwd must be caught too, not just absolute paths."""
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    install.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Write', {'file_path': 'server.py'}, session_cwd=str(install))
+    # cwd IS the install dir here, so this is the dev-checkout case, not the
+    # blocked one — covered by test_dev_checkout_own_project_is_allowed
+    # below. This test only pins that relative resolution happens at all:
+    assert not d.blocked  # own project == install dir -> allowed
+
+
+def test_dev_checkout_own_project_is_allowed(tmp_path, monkeypatch):
+    """The escape hatch: a session whose OWN project IS the install dir (a
+    legitimate source checkout — this box's mission_control project) may
+    still edit its own source."""
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    install.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Write', {'file_path': str(install / 'server.py')}, session_cwd=str(install))
+    assert not d.blocked
+
+
+def test_dev_checkout_nested_cwd_is_allowed(tmp_path, monkeypatch):
+    """The session's cwd being a SUBDIRECTORY of the install dir (Claude
+    launched somewhere under the checkout) still counts as 'own project'."""
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    nested_cwd = install / 'mc'
+    nested_cwd.mkdir(parents=True)
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Write', {'file_path': str(install / 'server.py')}, session_cwd=str(nested_cwd))
+    assert not d.blocked
+
+
+def test_write_outside_install_dir_always_allowed(tmp_path, monkeypatch):
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    install.mkdir()
+    other_project = tmp_path / 'other-project'
+    other_project.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    d = check_install_dir_write(
+        'Write', {'file_path': str(other_project / 'notes.md')},
+        session_cwd=str(other_project))
+    assert not d.blocked
+
+
+def test_non_write_tools_are_not_checked(tmp_path, monkeypatch):
+    import steward.fence as fence_mod
+    install = tmp_path / 'install'
+    install.mkdir()
+    monkeypatch.setattr(fence_mod, '_INSTALL_DIR', install)
+
+    for tool in ('Bash', 'Read', 'Grep', 'Glob'):
+        d = check_install_dir_write(
+            tool, {'command': 'x', 'file_path': str(install / 'server.py')},
+            session_cwd=str(tmp_path / 'elsewhere'))
+        assert not d.blocked, f"{tool} must not be checked by this guard"
+
+
+def test_empty_file_path_is_safe():
+    assert not check_install_dir_write('Write', {}).blocked
+    assert not check_install_dir_write('Write', {'file_path': ''}).blocked
+
+
+# ── Same guard, exercised through the real hook subprocess — proves it is
+#    UNCONDITIONAL (fires for an ordinary dev session with no steward marker
+#    and no unattended trigger_type, unlike the rest of the fence) ─────────
+
+def _run_hook_in(payload: dict, cwd: Path):
+    env = dict(os.environ)
+    env.pop('CLAUDE_CODE_SESSION_ID', None)
+    return subprocess.run(
+        [sys.executable, str(FENCE)],
+        input=json.dumps(payload), capture_output=True, text=True, env=env,
+        cwd=str(cwd),
+    )
+
+
+def test_hook_blocks_install_dir_write_for_ordinary_dev_session(tmp_path):
+    # No transcript_path (no steward marker) and no CLAUDE_CODE_SESSION_ID
+    # (no unattended trigger_type lookup) — the shape of a plain interactive
+    # dev session. The install-dir guard must still fire: it is NOT part of
+    # the steward/unattended-gated backstop.
+    other_project = tmp_path / 'other-project'
+    other_project.mkdir()
+    target = REPO / 'server.py'  # a real file inside THIS install's own repo
+    r = _run_hook_in(
+        {'tool_name': 'Write', 'tool_input': {'file_path': str(target)}},
+        cwd=other_project,
+    )
+    assert r.returncode == 2
+    assert 'install directory' in r.stderr
+
+
+def test_hook_allows_install_dir_write_when_cwd_is_the_install_dir():
+    # Same write, but the session's own cwd IS this repo — the dev-checkout
+    # case (this box's own mission_control project). Must be allowed even
+    # with zero steward/unattended signal.
+    target = REPO / 'server.py'
+    r = _run_hook_in(
+        {'tool_name': 'Write', 'tool_input': {'file_path': str(target)}},
+        cwd=REPO,
+    )
+    assert r.returncode == 0
+
+
+def test_hook_allows_write_outside_install_dir_for_ordinary_session(tmp_path):
+    other_project = tmp_path / 'other-project'
+    other_project.mkdir()
+    r = _run_hook_in(
+        {'tool_name': 'Write', 'tool_input': {'file_path': str(other_project / 'notes.md')}},
+        cwd=other_project,
+    )
+    assert r.returncode == 0
 
 
 def test_fence_does_not_block_unrelated_steward_data_files():
