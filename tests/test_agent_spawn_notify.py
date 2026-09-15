@@ -10,6 +10,8 @@ on the session, and completion delivers a message back.
 import sys
 from pathlib import Path
 
+import pytest
+
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import mc.state as state  # noqa: E402
@@ -17,6 +19,15 @@ import mc.state as state  # noqa: E402
 state.CONFIG.setdefault('port', 5199)
 
 from mc.blueprints import agent_routes as ar  # noqa: E402
+
+
+@pytest.fixture(autouse=True)
+def _no_real_scribe(monkeypatch):
+    """`_log_agent_completion` runs the Scribe memory capture, which is a real
+    `claude -p --model haiku` call once any earlier test has imported `server`
+    and wired `_scribe_call`. Measured 2026-09-15: 3 real model calls when this
+    file ran after test_one_process_per_conversation.py."""
+    monkeypatch.setattr(ar, '_write_session_memory', lambda *a, **k: True)
 
 
 def test_dispatch_accepts_notify_session_kwarg():
@@ -130,7 +141,7 @@ def test_notify_fires_once_and_is_latched(monkeypatch):
     ar._maybe_notify_spawner(sess, 'the answer is 4')
     ar._maybe_notify_spawner(sess, 'the answer is 4')
     assert len(calls) == 1
-    assert sess['_notify_sent'] is True
+    assert sess['_notify_session_sent'] is True
 
 
 def test_last_reply_text_skips_status_lines_and_the_task_seed():
