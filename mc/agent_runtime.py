@@ -323,6 +323,33 @@ def is_nonuser_message(text: str) -> bool:
     return bool(_NONUSER_LABEL_RE.match(text or ''))
 
 
+# A blocked Stop hook (~/.claude/hooks/{reply-length,permission-ask,turn}-guard.py
+# — all three, plus any future one) feeds its `reason` back as the CLI's own
+# synthetic next turn so the model keeps generating in the SAME turn instead of
+# yielding. Verified against a live transcript
+# (~/.claude/projects/.../<sid>.jsonl): that turn is `type:"user"`,
+# `isMeta:true`, `message.content` a PLAIN STRING (not a block list) starting
+# with the CLI's own fixed prefix below — never the guard's own wording, so
+# this is stable across all three hooks and any future one. `isMeta` alone is
+# NOT enough: the CLI also sets it on other synthetic turns (e.g. a compaction
+# "Continue from where you left off." nudge) that are ordinary continuations,
+# not a retracted draft — only the prefix narrows to the hook-block shape this
+# exists to catch.
+STOP_HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:'
+
+
+def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
+    """True for a synthetic Stop-hook block/resend turn in a raw stream-json /
+    transcript message dict (the same shape `parse_event()` receives)."""
+    if not isinstance(raw_msg, dict) or not raw_msg.get('isMeta'):
+        return False
+    content = (raw_msg.get('message') or {}).get('content', '')
+    if isinstance(content, list):
+        content = ' '.join(
+            str(b.get('text', '')) for b in content if isinstance(b, dict))
+    return str(content).lstrip().startswith(STOP_HOOK_FEEDBACK_PREFIX)
+
+
 def _strip_codex_system_prefix(text: str) -> str:
     """Drop a Codex dispatch/respawn's leading system-prompt+context blob,
     keeping only the real user message that was appended after it — see
@@ -1940,6 +1967,18 @@ class ClaudeRuntime(AgentRuntime):
                         continue
                     ts = (ev.raw or {}).get('timestamp', '')
                     if ev.type == EventType.USER_MESSAGE:
+                        if is_stop_hook_feedback(ev.raw or {}):
+                            # A blocked Stop hook's synthetic re-ask, not
+                            # something the user typed — rendering it as a
+                            # "> Label: Stop hook feedback: ..." bubble on
+                            # history reload would show the retracted draft,
+                            # this marker, AND the resend as three visible
+                            # turns. Emit a boundary instead; the assistant
+                            # text already in `messages` (the retracted draft)
+                            # gets collapsed by the caller when it sees this.
+                            messages.append({'role': 'stop_hook_redo',
+                                             'text': '', 'timestamp': ts})
+                            continue
                         content = ev.payload.get('content', '')
                         if isinstance(content, list):
                             texts = [

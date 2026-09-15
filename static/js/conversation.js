@@ -1217,6 +1217,19 @@ function agentPanelHTML(p) {
           planRawLines.push(line);
           continue;
         }
+        // Stop-hook block/resend boundary (see agent_runtime.is_stop_hook_
+        // feedback): collapse the draft accumulated since the last tool/
+        // prompt line into a native <details> toggle instead of rendering
+        // both the retracted draft and the resend as if they were two
+        // separate replies. The marker itself renders nothing.
+        if (line.trim() === '[stop-hook-redo]') {
+          flushTable();
+          if (planRawLines.length > 0) {
+            result += `<details class="draft-block"><summary>Show earlier draft</summary>${planBlock}</details>`;
+          }
+          planBlock = ''; planRawLines = [];
+          continue;
+        }
         // Plan detection: when ExitPlanMode is hit, collapse prior non-tool lines
         if (line.trim() === '[tool: ExitPlanMode]') {
           flushTable();
@@ -4154,6 +4167,16 @@ function appendAgentLine(sessionId, text) {
     for (const line of text.split('\n')) {
       appendAgentLine(sessionId, line);
     }
+    return;
+  }
+
+  // Stop-hook block/resend boundary — collapse the draft just appended into
+  // a "Show earlier draft" toggle instead of rendering the marker itself.
+  // Must come before the other interceptions below; the marker is never a
+  // mermaid/team/table line.
+  if (text.trim() === '[stop-hook-redo]') {
+    collapseIntoDraftBlock(sessionId, el);
+    if (wasPinned) _scheduleAgentPinScroll(sessionId, el, freshMount);
     return;
   }
 
