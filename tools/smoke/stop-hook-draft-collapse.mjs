@@ -109,6 +109,34 @@ try {
   check(!result.hasMarkerText, 'the raw "[stop-hook-redo]" marker text never reaches the screen');
   check(errors.length === 0, `no page errors (${errors.length}): ${errors.slice(0, 3).join(' | ')}`);
 
+  // Legacy buffer: a chat rebuilt from its transcript BEFORE the server fix
+  // holds the hook feedback as a fake user prompt. It must still collapse the
+  // draft and never show as a Ron bubble.
+  const LEGACY_SID = SID + 'legacy';
+  const legacy = await page.evaluate(({ sid, draft, final }) => {
+    const out = document.createElement('div');
+    out.className = 'agent-output';
+    out.id = `agent-output-${sid}`;
+    document.querySelector('.agent-chat').appendChild(out);
+    appendAgentLine(sid, '\n> Ron: What is the status?\n');
+    appendAgentLine(sid, draft);
+    appendAgentLine(sid, '\n> Ron: Stop hook feedback:\nBREVITY RULE VIOLATED: that reply was 211 prose words.\n');
+    appendAgentLine(sid, '\n> Ron: Stop hook feedback:\nYou ended your turn ASKING PERMISSION to do something reversible.\n');
+    appendAgentLine(sid, final);
+    const prompts = Array.from(out.querySelectorAll('.agent-line-prompt')).map((e) => e.textContent);
+    const details = out.querySelectorAll('details.draft-block');
+    const visible = Array.from(out.children).filter((c) => c.tagName !== 'DETAILS').map((c) => c.textContent).join('\n');
+    out.remove();
+    return { prompts, detailCount: details.length,
+      draftHidden: details.length === 1 && !details[0].open && details[0].textContent.includes(draft),
+      visibleHasDraft: visible.includes(draft), visibleHasFinal: visible.includes(final),
+      hookText: /Stop hook feedback/.test(visible) };
+  }, { sid: LEGACY_SID, draft: DRAFT, final: FINAL });
+  check(legacy.prompts.length === 1 && !legacy.prompts.some((p) => /Stop hook feedback/.test(p)),
+    'legacy buffer: "> Ron: Stop hook feedback" never renders as a Ron bubble');
+  check(legacy.draftHidden && !legacy.visibleHasDraft, 'legacy buffer: the draft collapses into one closed toggle');
+  check(legacy.visibleHasFinal && !legacy.hookText, 'legacy buffer: only the final reply is visible, no hook text');
+
   const shotDir = join(ROOT, 'data', 'uploads');
   mkdirSync(shotDir, { recursive: true });
   const closedShotPath = join(shotDir, 'smoke-stop-hook-draft-collapse-closed.png');

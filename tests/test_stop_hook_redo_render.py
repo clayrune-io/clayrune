@@ -264,3 +264,56 @@ def test_last_reply_text_uses_final_reply_after_stop_hook():
         'Short final reply.',
     ]}
     assert ar._last_reply_text(session) == 'Short final reply.'
+
+
+# ── REAL records (anonymized) from a live Mode B Clayrune session ────────────
+# tests/fixtures/stop_hook_real_transcript.jsonl is copied from Claude Code
+# 2.1.270's own transcript of a Clayrune Mode B chat: one single block
+# (brevity) and one double block (brevity then permission-ask) on the SAME
+# draft. Each block is: assistant draft -> isMeta user "Stop hook feedback:"
+# -> attachment hook_blocking_error (hookEvent Stop) -> system
+# stop_hook_summary (hookErrors) -> assistant resend. Only assistant prose,
+# ids and machine paths were replaced.
+
+_REAL_FIXTURE = Path(__file__).parent / 'fixtures' / 'stop_hook_real_transcript.jsonl'
+_REAL_ROLES = ['user', 'assistant', 'stop_hook_redo', 'assistant',
+               'assistant', 'stop_hook_redo', 'stop_hook_redo', 'assistant']
+
+
+def test_real_transcript_marks_every_hook_turn():
+    msgs = ClaudeRuntime().parse_transcript_file(_REAL_FIXTURE)
+    assert [m['role'] for m in msgs if m['role'] != 'tool_call'] == _REAL_ROLES
+    assert not any('Stop hook feedback' in (m.get('text') or '') for m in msgs)
+
+
+def test_real_transcript_without_is_meta_uses_hook_records(tmp_path):
+    """If a CLI version drops isMeta, the hook_blocking_error attachment and
+    stop_hook_summary that follow the feedback turn still identify it."""
+    stripped = []
+    for line in _REAL_FIXTURE.read_text(encoding='utf-8').splitlines():
+        rec = json.loads(line)
+        rec.pop('isMeta', None)
+        stripped.append(json.dumps(rec))
+    msgs = ClaudeRuntime().parse_transcript_file(_write(tmp_path, stripped))
+    assert [m['role'] for m in msgs if m['role'] != 'tool_call'] == _REAL_ROLES
+
+
+def test_real_transcript_history_reload_never_shows_hook_as_user(monkeypatch):
+    """The actual bug: a revived Mode B chat rendered '> Ron: Stop hook
+    feedback: ...' above the restore marker. Real parser, real records."""
+    monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: _REAL_FIXTURE)
+    lines = ar._transcript_buffer_lines('/p', 'csid', 'Ron')
+    assert not any('Stop hook feedback' in l for l in lines)
+    assert [l for l in lines if l.lstrip().startswith('> ')] == ['\n> Ron: What is the status?\n']
+    assert lines == ['\n> Ron: What is the status?\n',
+                     'DRAFT ONE: long first reply that tripped the brevity guard.',
+                     '[stop-hook-redo]', 'FINAL ONE: short resend.',
+                     'DRAFT TWO: long reply ending on a permission ask.',
+                     '[stop-hook-redo]', '[stop-hook-redo]',
+                     'FINAL TWO: short resend after two blocks.']
+
+
+def test_real_reply_text_after_double_block_is_the_resend(monkeypatch):
+    monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: _REAL_FIXTURE)
+    lines = ar._transcript_buffer_lines('/p', 'csid', 'Ron')
+    assert ar._last_reply_text({'log_lines': lines}) == 'FINAL TWO: short resend after two blocks.'
