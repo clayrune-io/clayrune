@@ -3702,22 +3702,35 @@ def _read_agent_stream(proc, session):
                                 except OSError:
                                     pass
                 elif msg_type == 'user' and isinstance(msg.get('message'), dict):
-                    # Mid-task memory push (MC-944, mc/memory_push.py) — the
-                    # RESULT side. Claude echoes a completed tool call back as
-                    # a role:'user' message whose content carries a
-                    # tool_result block (tool_use_id + content, no name — see
-                    # _note_tool_use_id). Nothing else in this project reads
-                    # this message type from the live stream; it exists
-                    # solely to feed the push observer a tool's OUTPUT, which
-                    # `_observe_negation_interrupt`/`_observe_memory_push_input`
-                    # never see (they only see the tool_use block's INPUT).
-                    for _block in msg['message'].get('content', []) or []:
-                        if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
-                            continue
-                        _tuid = _block.get('tool_use_id')
-                        _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                        _observe_memory_push_result(
-                            session, _tname, _extract_tool_result_text(_block))
+                    if _agent_runtime.is_stop_hook_feedback(msg):
+                        # A Stop hook (reply-length/permission-ask/turn-guard)
+                        # blocked the draft just streamed above and fed its
+                        # `reason` back as this synthetic turn so the model
+                        # re-sends a compressed version in the SAME turn — see
+                        # is_stop_hook_feedback for the structural signal.
+                        # Record a boundary so the renderer collapses the
+                        # retracted draft into a "show earlier draft" toggle
+                        # instead of showing both replies as if they were two
+                        # separate answers.
+                        session['log_lines'].append('[stop-hook-redo]')
+                        session['last_output_time'] = _time.time()
+                    else:
+                        # Mid-task memory push (MC-944, mc/memory_push.py) — the
+                        # RESULT side. Claude echoes a completed tool call back as
+                        # a role:'user' message whose content carries a
+                        # tool_result block (tool_use_id + content, no name — see
+                        # _note_tool_use_id). Nothing else in this project reads
+                        # this message type from the live stream; it exists
+                        # solely to feed the push observer a tool's OUTPUT, which
+                        # `_observe_negation_interrupt`/`_observe_memory_push_input`
+                        # never see (they only see the tool_use block's INPUT).
+                        for _block in msg['message'].get('content', []) or []:
+                            if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
+                                continue
+                            _tuid = _block.get('tool_use_id')
+                            _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
+                            _observe_memory_push_result(
+                                session, _tname, _extract_tool_result_text(_block))
                 elif msg_type == 'result':
                     # Capture session_id from result as fallback
                     if 'session_id' in msg:
@@ -3943,22 +3956,28 @@ def _read_agent_stream_b(proc, session):
                                 except OSError:
                                     pass
                 elif msg_type == 'user' and isinstance(msg.get('message'), dict):
-                    # Mid-task memory push (MC-944, mc/memory_push.py) — the
-                    # RESULT side. Claude echoes a completed tool call back as
-                    # a role:'user' message whose content carries a
-                    # tool_result block (tool_use_id + content, no name — see
-                    # _note_tool_use_id). Nothing else in this project reads
-                    # this message type from the live stream; it exists
-                    # solely to feed the push observer a tool's OUTPUT, which
-                    # `_observe_negation_interrupt`/`_observe_memory_push_input`
-                    # never see (they only see the tool_use block's INPUT).
-                    for _block in msg['message'].get('content', []) or []:
-                        if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
-                            continue
-                        _tuid = _block.get('tool_use_id')
-                        _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                        _observe_memory_push_result(
-                            session, _tname, _extract_tool_result_text(_block))
+                    if _agent_runtime.is_stop_hook_feedback(msg):
+                        # See Mode A reader for the structural signal and why
+                        # this collapses the draft instead of dropping it.
+                        session['log_lines'].append('[stop-hook-redo]')
+                        session['last_output_time'] = _time.time()
+                    else:
+                        # Mid-task memory push (MC-944, mc/memory_push.py) — the
+                        # RESULT side. Claude echoes a completed tool call back as
+                        # a role:'user' message whose content carries a
+                        # tool_result block (tool_use_id + content, no name — see
+                        # _note_tool_use_id). Nothing else in this project reads
+                        # this message type from the live stream; it exists
+                        # solely to feed the push observer a tool's OUTPUT, which
+                        # `_observe_negation_interrupt`/`_observe_memory_push_input`
+                        # never see (they only see the tool_use block's INPUT).
+                        for _block in msg['message'].get('content', []) or []:
+                            if not isinstance(_block, dict) or _block.get('type') != 'tool_result':
+                                continue
+                            _tuid = _block.get('tool_use_id')
+                            _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
+                            _observe_memory_push_result(
+                                session, _tname, _extract_tool_result_text(_block))
                 elif msg_type == 'result':
                     if 'session_id' in msg:
                         _note_claude_sid(session, msg['session_id'])
@@ -4415,6 +4434,13 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
                 txt = (m.get('text') or '').strip()
                 if txt:
                     lines.append(txt)
+            elif role == 'stop_hook_redo':
+                # A blocked Stop hook's synthetic re-ask (see
+                # agent_runtime.is_stop_hook_feedback) — not a real user turn.
+                # The renderer collapses the assistant text just appended above
+                # into a "show earlier draft" toggle when it sees this marker,
+                # same convention the live stream reader uses.
+                lines.append('[stop-hook-redo]')
         return lines
     except Exception as e:
         _log(f"[transcript-render] failed: {e}")

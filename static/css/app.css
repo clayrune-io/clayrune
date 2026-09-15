@@ -4093,12 +4093,12 @@
   .agent-output .agent-line-tool { color: var(--amber-text); }
   .agent-output .agent-line-status { color: var(--green-text); font-weight: 600; }
   .agent-output .agent-line-error { color: var(--red-text); }
-  .agent-output .agent-line-coverage {
-    color: var(--amber-text); background: var(--amber-dim);
-    border-left: 3px solid var(--amber);
-    padding: 6px 10px; border-radius: 4px; margin: 6px 0;
-    font-size: 12px; line-height: 1.45;
-  }
+  /* Substitution advisory (mc/artifact_coverage.py) is agent-facing guidance,
+     not something Ron needs to read in the chat — the underlying log_lines
+     entry (and therefore the agent_log / API data) is untouched, this only
+     hides the chat bubble. See .ac-session-output for the technical console
+     view, which is NOT scoped by this rule and still shows it. */
+  .agent-output .agent-line-coverage { display: none; }
   .agent-output .agent-line-followup { color: var(--accent); font-weight: 600; }
   .agent-output .agent-line-queued { color: var(--yellow, #e5c07b); font-weight: 600; font-style: italic; }
 
@@ -4790,6 +4790,26 @@
   }
   .plan-show-btn:hover { background: rgba(139,92,246,0.25); border-color: #8b5cf6; color: #e9e5ff; }
   .plan-hidden-block { display: none; }
+  /* A Stop hook (reply-length/permission-ask/turn-guard) blocked a draft and
+     the model re-sent a compressed reply in the same turn — the retracted
+     draft is collapsed into this native <details>, closed by default, instead
+     of showing both replies back to back (see collapseIntoDraftBlock). */
+  .agent-output .draft-block {
+    align-self: stretch; max-width: 100%; flex-shrink: 0;
+    margin: 4px 0;
+  }
+  .agent-output .draft-block summary {
+    cursor: pointer; font-size: 11px; color: var(--text-dim);
+    font-family: 'Inter', sans-serif; padding: 2px 8px; list-style: none;
+  }
+  .agent-output .draft-block summary::-webkit-details-marker { display: none; }
+  .agent-output .draft-block summary::before { content: '\25B8 '; }
+  .agent-output .draft-block[open] summary::before { content: '\25BE '; }
+  .agent-output .draft-block[open] summary { color: var(--text); }
+  /* Server-side markers that carry no user-facing content (currently just the
+     stop-hook-redo boundary) when a renderer doesn't specially intercept them
+     (conversation.js does, ahead of agentLineCls — see collapseIntoDraftBlock). */
+  .agent-line-hidden { display: none; }
   .btn-popout {
     background: var(--surface3); border: 1px solid var(--border);
     color: var(--text-dim); padding: 3px 10px; border-radius: 5px;

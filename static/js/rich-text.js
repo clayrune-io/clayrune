@@ -219,6 +219,12 @@ function agentLineCls(text) {
   // not as the green status lines, because it is a claim about the answer
   // the user is about to trust.
   if (t.startsWith('[coverage]')) return 'agent-line agent-line-coverage';
+  // Stop-hook block/resend boundary (server-side: agent_runtime.is_stop_hook_
+  // feedback). conversation.js's two render paths intercept this marker
+  // BEFORE agentLineCls to collapse the preceding draft into a toggle; this
+  // fallback is for renderers that don't (agent-console.js, project-forms.js)
+  // so the raw marker never shows up as a visible line there either.
+  if (t === '[stop-hook-redo]') return 'agent-line agent-line-hidden';
   if (t.startsWith('[tool:')) return 'agent-line agent-line-tool';
   if (t.startsWith('[') && t.endsWith(']')) return 'agent-line agent-line-status';
   if (t.startsWith('[exited') || t.startsWith('[stream error')) return 'agent-line agent-line-error';
@@ -263,6 +269,37 @@ function collapseIntoPlanButton(sessionId, container) {
   btn.innerHTML = '&#128196; Show Plan';
   btn.onclick = () => openPlanViewer(sessionId);
   container.insertBefore(btn, wrapper);
+}
+
+// A Stop hook (reply-length/permission-ask/turn-guard) blocked the draft that
+// just streamed and the model re-sent a compressed version in the SAME turn —
+// server marks the boundary with a '[stop-hook-redo]' line (see
+// agent_runtime.is_stop_hook_feedback). Collapse whatever narration/output
+// landed since the last tool/prompt line (i.e. the retracted draft) into a
+// native <details> toggle, hidden by default, so the chat shows only the
+// final reply plus a small "Show earlier draft" affordance instead of both
+// replies back to back. Mirrors collapseIntoPlanButton's walk-back shape.
+function collapseIntoDraftBlock(sessionId, container) {
+  const children = Array.from(container.children);
+  const draftElements = [];
+  for (let i = children.length - 1; i >= 0; i--) {
+    const child = children[i];
+    if (child.classList.contains('agent-line-tool') ||
+        child.classList.contains('agent-line-prompt') ||
+        child.classList.contains('plan-show-btn') ||
+        child.classList.contains('draft-block')) break;
+    draftElements.unshift(child);
+  }
+  if (draftElements.length === 0) return; // nothing to collapse — never hide a bare marker
+
+  const details = document.createElement('details');
+  details.className = 'draft-block';
+  const summary = document.createElement('summary');
+  summary.textContent = 'Show earlier draft';
+  details.appendChild(summary);
+  const insertBefore = draftElements[0];
+  container.insertBefore(details, insertBefore);
+  for (const el of draftElements) details.appendChild(el);
 }
 
 
@@ -323,6 +360,7 @@ window.agentLineCls = agentLineCls;
 window.isSlashCommandLine = isSlashCommandLine;
 window.SLASH_COMMAND_RE = SLASH_COMMAND_RE;
 window.collapseIntoPlanButton = collapseIntoPlanButton;
+window.collapseIntoDraftBlock = collapseIntoDraftBlock;
 window.expandAgentOutput = expandAgentOutput;
 window._isAgentOutputPinned = _isAgentOutputPinned;
 window._scheduleAgentPinScroll = _scheduleAgentPinScroll;
