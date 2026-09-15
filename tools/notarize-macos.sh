@@ -54,6 +54,18 @@ IDENTITY="${CLAYRUNE_SIGN_IDENTITY:-}"
 PROFILE="${CLAYRUNE_NOTARY_PROFILE:-clayrune-notary}"
 OUT_ZIP="${CLAYRUNE_OUT_ZIP:-Clayrune-macOS.zip}"
 
+# Notary auth: an App Store Connect API key when all three vars are set
+# (CLAYRUNE_NOTARY_KEY = path to the AuthKey_*.p8, CLAYRUNE_NOTARY_KEY_ID,
+# CLAYRUNE_NOTARY_ISSUER), else the keychain profile above. The key route needs
+# no app-specific password and no unlocked login keychain, so a keychain reset
+# or a headless session can't break notarization. Values live in signing.env
+# (gitignored) or the env; the .p8 itself never belongs in the repo.
+if [ -n "${CLAYRUNE_NOTARY_KEY:-}" ] && [ -n "${CLAYRUNE_NOTARY_KEY_ID:-}" ] && [ -n "${CLAYRUNE_NOTARY_ISSUER:-}" ]; then
+  NOTARY_AUTH=(--key "$CLAYRUNE_NOTARY_KEY" --key-id "$CLAYRUNE_NOTARY_KEY_ID" --issuer "$CLAYRUNE_NOTARY_ISSUER")
+else
+  NOTARY_AUTH=(--keychain-profile "$PROFILE")
+fi
+
 # Note: die() is defined below, so this preflight prints its own error.
 if [ -z "$IDENTITY" ]; then
   printf '\n\033[1;31mERROR:\033[0m %s\n' "No signing identity configured.
@@ -117,11 +129,11 @@ SUBMIT_ZIP="$(mktemp -d)/Clayrune-submit.zip"
 ditto -c -k --keepParent "$APP" "$SUBMIT_ZIP"
 
 say "Submitting to Apple's notary service (waits ~2-5 min)…"
-SUBMIT_OUT="$(xcrun notarytool submit "$SUBMIT_ZIP" --keychain-profile "$PROFILE" --wait 2>&1)" || true
+SUBMIT_OUT="$(xcrun notarytool submit "$SUBMIT_ZIP" "${NOTARY_AUTH[@]}" --wait 2>&1)" || true
 echo "$SUBMIT_OUT"
 if ! grep -q "status: Accepted" <<<"$SUBMIT_OUT"; then
   SUB_ID="$(grep -m1 '  id:' <<<"$SUBMIT_OUT" | awk '{print $2}')"
-  [ -n "${SUB_ID:-}" ] && xcrun notarytool log "$SUB_ID" --keychain-profile "$PROFILE" || true
+  [ -n "${SUB_ID:-}" ] && xcrun notarytool log "$SUB_ID" "${NOTARY_AUTH[@]}" || true
   die "Notarization failed (see log above)."
 fi
 
