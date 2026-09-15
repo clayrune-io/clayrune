@@ -223,7 +223,8 @@ async function performClayruneUpdateWithStash() {
     });
     const data = await res.json();
     if (!res.ok || !data.ok) {
-      hint.textContent = (data.error || `Update failed (${res.status})`) + (data.detail ? ' — ' + data.detail.split('\n')[0] : '');
+      hint.textContent = (data.error || `Update failed (${res.status})`) + (data.detail ? ' — ' + data.detail.split('\n')[0] : '')
+        + (data.stashed ? ` Your local changes were already saved as "${data.stashed}" (git stash list).` : '');
       btn.textContent = 'Set aside local changes and update';
       btn.disabled = false;
       return;

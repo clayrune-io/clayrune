@@ -136,6 +136,21 @@ class TestDirtyTreeStash:
         _run(['git', 'stash', 'apply', 'stash@{0}'], co)
         assert (co / 'server.py').read_text() == 'precious local edit\n'
 
+    def test_failure_after_stash_still_reports_the_stash(self, client, lab):
+        """If the pull AND the fetch fall over after we already stashed, the
+        error must still name the stash: the tree is clean again, so the next
+        status check shows nothing and the user would never learn their
+        edits were shelved."""
+        co = lab['checkout']
+        (co / 'server.py').write_text('local edit\n')
+        _run(['git', 'remote', 'set-url', 'origin', str(lab['upstream']) + '-gone'], co)
+
+        resp = client.post('/api/system/update', json={'stash': True}, headers=UI_HEADERS)
+        assert resp.status_code == 500, resp.get_data(as_text=True)
+        body = resp.get_json()
+        assert body['stashed'].startswith('clayrune-auto-stash ')
+        assert body['stashed'] in _run(['git', 'stash', 'list'], co)
+
     def test_without_stash_flag_still_blocked_unchanged(self, client, lab):
         """The plain (no stash) 409 path must be completely unchanged."""
         push_new_commit(lab)

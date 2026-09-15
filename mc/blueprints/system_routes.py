@@ -1582,6 +1582,7 @@ def system_update():
                 'error': f'git fetch failed (rc={rc_f})',
                 'detail': fetch_out[:1000],
                 'hint': 'Check network connectivity to github.com.',
+                'stashed': stash_ref,  # changes already set aside: tell the user where
             }), 500
 
         rc_b, branch = _git(['rev-parse', '--abbrev-ref', 'HEAD'], repo_root)
@@ -1602,6 +1603,7 @@ def system_update():
                 'detail': (pull_out + '\n---\n' + reset_out)[:1000],
                 'hint': 'The checkout may be damaged. Re-run the Clayrune '
                         'installer, or re-clone and copy your data/ dir over.',
+                'stashed': stash_ref,
             }), 500
         resynced = True
 
