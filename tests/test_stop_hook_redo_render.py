@@ -317,3 +317,116 @@ def test_real_reply_text_after_double_block_is_the_resend(monkeypatch):
     monkeypatch.setattr(ar, '_find_transcript_file', lambda pp, cs: _REAL_FIXTURE)
     lines = ar._transcript_buffer_lines('/p', 'csid', 'Ron')
     assert ar._last_reply_text({'log_lines': lines}) == 'FINAL TWO: short resend after two blocks.'
+
+
+# ── REVIVED session, live turn (find_ron_a_job 5edd10858aec, 2026-09-15) ────
+# The live stream-json never carries the isMeta feedback turn: a revived Mode B
+# chat showed draft and resend back to back with no marker, while its
+# transcript held draft -> isMeta feedback -> hook_blocking_error ->
+# stop_hook_summary(hookErrors=1) -> resend. tests/fixtures/
+# stop_hook_revived_transcript.jsonl is those 10 real records, anonymized.
+# The stream replay below is exactly what the reader receives: the assistant
+# records plus the tool_result echo (same uuids), never the hook records.
+
+from mc.agent_runtime import stop_hook_precedes  # noqa: E402
+
+_REVIVED = Path(__file__).parent / 'fixtures' / 'stop_hook_revived_transcript.jsonl'
+
+
+def _revived_records():
+    return [json.loads(l) for l in _REVIVED.read_text(encoding='utf-8').splitlines() if l.strip()]
+
+
+def _text_of(rec):
+    return ' '.join(b.get('text', '') for b in (rec.get('message') or {}).get('content') or []
+                    if isinstance(b, dict) and b.get('type') == 'text')
+
+
+def _revived_stream(records):
+    out = []
+    for r in records:
+        if r.get('type') == 'assistant' or (
+                r.get('type') == 'user' and not r.get('isMeta')):
+            out.append(json.dumps({'type': r['type'], 'message': r['message'],
+                                   'uuid': r['uuid'], 'session_id': 'sess-revived-fixture'}))
+    out.append(json.dumps({'type': 'result', 'session_id': 'sess-revived-fixture', 'num_turns': 1}))
+    return out
+
+
+def test_stop_hook_precedes_on_real_records():
+    recs = _revived_records()
+    by = {r['uuid']: r for r in recs}
+    resend = next(r for r in recs if _text_of(r) == 'FINAL: compressed resend.')
+    draft = next(r for r in recs if _text_of(r) == 'DRAFT: long reply the brevity guard blocked.')
+    assert stop_hook_precedes(by, resend['uuid']) is True
+    assert stop_hook_precedes(by, draft['uuid']) is False
+
+
+def _run_revived(tmp_data_dir, monkeypatch, transcript_path, reader_name, stream=None):
+    server = importlib.import_module("server")
+    importlib.reload(server)
+    routes = importlib.import_module('mc.blueprints.agent_routes')
+    calls = []
+    monkeypatch.setattr(routes, '_find_transcript_file', lambda pp, cs: transcript_path)
+    real_tail = routes._transcript_tail_records
+    monkeypatch.setattr(routes, '_transcript_tail_records',
+                        lambda f: calls.append(str(f)) or real_tail(f))
+    monkeypatch.setattr(routes, 'load_project', lambda pid: {'project_path': '/p'})
+    session = _new_session('p-revived')
+    session['claude_session_id'] = 'sess-revived-fixture'
+    proc = _FakeProc(stream if stream is not None else _revived_stream(_revived_records()))
+    session['proc'] = proc
+    getattr(routes, reader_name)(proc, session)
+    return session['log_lines'], calls
+
+
+def _assert_collapsed(lines):
+    d = lines.index('DRAFT: long reply the brevity guard blocked.')
+    f = lines.index('FINAL: compressed resend.')
+    assert lines[d + 1:f] == ['[stop-hook-redo]'], lines
+
+
+def test_revived_mode_b_live_turn_emits_marker(tmp_data_dir, monkeypatch):
+    lines, calls = _run_revived(tmp_data_dir, monkeypatch, _REVIVED, '_read_agent_stream_b')
+    _assert_collapsed(lines)
+    assert calls == [str(_REVIVED)]  # one transcript read, for the resend only
+
+
+def test_revived_mode_a_live_turn_emits_marker(tmp_data_dir, monkeypatch):
+    lines, _ = _run_revived(tmp_data_dir, monkeypatch, _REVIVED, '_read_agent_stream')
+    _assert_collapsed(lines)
+
+
+def test_no_marker_when_transcript_shows_no_hook(tmp_data_dir, monkeypatch, tmp_path):
+    """Same stream, but the transcript links the second message straight to the
+    first (no hook records): never collapse on the stream shape alone."""
+    recs = _revived_records()
+    draft = next(r for r in recs if _text_of(r) == 'DRAFT: long reply the brevity guard blocked.')
+    kept = []
+    for r in recs:
+        if r.get('isMeta') or r.get('type') in ('attachment', 'system'):
+            continue
+        if _text_of(r) == 'FINAL: compressed resend.':
+            r = dict(r, parentUuid=draft['uuid'])
+        kept.append(json.dumps(r))
+    f = tmp_path / 'nohook.jsonl'
+    f.write_text('\n'.join(kept) + '\n', encoding='utf-8')
+    lines, _ = _run_revived(tmp_data_dir, monkeypatch, f, '_read_agent_stream_b')
+    assert '[stop-hook-redo]' not in lines
+
+
+def test_ordinary_tool_turn_never_reads_the_transcript(tmp_data_dir, monkeypatch):
+    """text + tool_use, tool_result, text, result: the common shape must not pay
+    for a transcript read."""
+    stream = [
+        json.dumps({'type': 'assistant', 'uuid': 'a1', 'message': {'id': 'm1', 'content': [
+            {'type': 'text', 'text': 'Let me check.'},
+            {'type': 'tool_use', 'id': 't1', 'name': 'Bash', 'input': {'command': 'ls'}}]}}),
+        json.dumps({'type': 'user', 'uuid': 'u1', 'message': {'role': 'user', 'content': [
+            {'type': 'tool_result', 'tool_use_id': 't1', 'content': 'ok'}]}}),
+        json.dumps({'type': 'assistant', 'uuid': 'a2', 'message': {'id': 'm2', 'content': [
+            {'type': 'text', 'text': 'Done.'}]}}),
+        json.dumps({'type': 'result', 'num_turns': 1}),
+    ]
+    lines, calls = _run_revived(tmp_data_dir, monkeypatch, _REVIVED, '_read_agent_stream_b', stream)
+    assert calls == [] and '[stop-hook-redo]' not in lines

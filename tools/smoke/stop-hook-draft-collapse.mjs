@@ -137,6 +137,20 @@ try {
   check(legacy.draftHidden && !legacy.visibleHasDraft, 'legacy buffer: the draft collapses into one closed toggle');
   check(legacy.visibleHasFinal && !legacy.hookText, 'legacy buffer: only the final reply is visible, no hook text');
 
+  // The substitution advisory stays in log_lines (agent-facing) but must not
+  // be visible in the chat.
+  const coverage = await page.evaluate((sid) => {
+    const out = document.getElementById(`agent-output-${sid}`);
+    appendAgentLine(sid, '[coverage] you specified /tmp/x.pdf — no tool call this turn used it');
+    const el = Array.from(out.children).pop();
+    const shown = el && getComputedStyle(el).display !== 'none';
+    const cls = el ? el.className : '';
+    el && el.remove();
+    return { shown, cls };
+  }, SID);
+  check(/agent-line-coverage/.test(coverage.cls) && !coverage.shown,
+    `[coverage] advisory is in the DOM but hidden (display:none) — class "${coverage.cls}"`);
+
   const shotDir = join(ROOT, 'data', 'uploads');
   mkdirSync(shotDir, { recursive: true });
   const closedShotPath = join(shotDir, 'smoke-stop-hook-draft-collapse-closed.png');

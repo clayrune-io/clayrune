@@ -2314,6 +2314,95 @@ def _note_tool_use_id(session, tool_name, tool_use_id) -> None:
             tmap.pop(k, None)
 
 
+_STOP_HOOK_TAIL_BYTES = 512 * 1024
+
+
+def _transcript_tail_records(path) -> dict:
+    """uuid -> record for the last _STOP_HOOK_TAIL_BYTES of a transcript."""
+    with open(path, 'rb') as fh:
+        fh.seek(0, 2)
+        size = fh.tell()
+        fh.seek(max(0, size - _STOP_HOOK_TAIL_BYTES))
+        data = fh.read().decode('utf-8', errors='replace')
+    lines = data.splitlines()
+    if size > _STOP_HOOK_TAIL_BYTES and lines:
+        lines = lines[1:]  # first line is a partial record
+    out = {}
+    for ln in lines:
+        try:
+            rec = json.loads(ln)
+        except ValueError:
+            continue
+        if isinstance(rec, dict) and rec.get('uuid'):
+            out[rec['uuid']] = rec
+    return out
+
+
+def _hook_blocked_before(session, msg_uuid) -> bool:
+    """Confirm from the transcript that this assistant message follows a
+    blocked Stop hook (agent_runtime.stop_hook_precedes). The CLI writes the
+    transcript alongside stdout, so a record not there yet gets a short retry;
+    anything unresolvable answers False — never collapse on a guess."""
+    if not msg_uuid:
+        return False
+    csid = session.get('claude_session_id')
+    pid = session.get('project_id')
+    if not csid or not pid:
+        return False
+    try:
+        f = _find_transcript_file((load_project(pid) or {}).get('project_path', ''), csid)
+        if not f:
+            return False
+        for _ in range(10):
+            recs = _transcript_tail_records(f)
+            if msg_uuid in recs:
+                return _agent_runtime.stop_hook_precedes(recs, msg_uuid)
+            _time.sleep(0.1)
+    except Exception as e:
+        _log(f"[stop-hook] transcript check failed: {e}")
+    return False
+
+
+def _track_stop_hook_boundary(session, msg) -> None:
+    """Live half of the stop-hook collapse. A Stop hook can only block a turn
+    whose last API message was text with no tool call; the model's resend is a
+    NEW message id with no tool_result or result in between. Only that shape
+    (rare: nothing else produces it) pays for a transcript check, and only a
+    confirmed block appends '[stop-hook-redo]' ahead of the resend so the
+    renderer collapses the draft."""
+    try:
+        mt = msg.get('type')
+        if mt == 'result':
+            session.pop('_sh_last_msg', None)
+            return
+        if mt == 'user':
+            content = (msg.get('message') or {}).get('content')
+            if isinstance(content, list) and any(
+                    isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
+                session.pop('_sh_last_msg', None)
+            return
+        m = msg.get('message')
+        if mt != 'assistant' or not isinstance(m, dict):
+            return
+        mid = m.get('id') or ''
+        blocks = [b for b in (m.get('content') or []) if isinstance(b, dict)]
+        last = session.get('_sh_last_msg')
+        if last and mid and mid != last['id'] and last['text'] and not last['tool']:
+            lines = session.setdefault('log_lines', [])
+            already = bool(lines) and lines[-1].strip() == '[stop-hook-redo]'
+            if not already and _hook_blocked_before(session, msg.get('uuid')):
+                lines.append('[stop-hook-redo]')
+                session['last_output_time'] = _time.time()
+        if not last or last['id'] != mid:
+            last = {'id': mid, 'text': False, 'tool': False}
+        last['text'] = last['text'] or any(
+            b.get('type') == 'text' and (b.get('text') or '').strip() for b in blocks)
+        last['tool'] = last['tool'] or any(b.get('type') == 'tool_use' for b in blocks)
+        session['_sh_last_msg'] = last
+    except Exception as e:
+        _log(f"[stop-hook] boundary tracking failed: {e}")
+
+
 def _extract_tool_result_text(block) -> str:
     """Claude tool_result `content` is either a plain string or a list of
     content blocks (only `type: 'text'` blocks carry text worth scanning —
@@ -3591,6 +3680,9 @@ def _read_agent_stream(proc, session):
                 # session emits these). No-op for any other message type.
                 _capture_system_init(msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
+                # Live stop-hook boundary: stream-json never carries the hook's
+                # feedback turn, so confirm a resend against the transcript.
+                _track_stop_hook_boundary(session, msg)
                 if msg_type == 'stream_event':
                     _note_activity_state(session, msg)
                     continue
@@ -3849,6 +3941,9 @@ def _read_agent_stream_b(proc, session):
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
+                # Live stop-hook boundary: stream-json never carries the hook's
+                # feedback turn, so confirm a resend against the transcript.
+                _track_stop_hook_boundary(session, msg)
                 if msg_type == 'stream_event':
                     _note_activity_state(session, msg)
                     continue
