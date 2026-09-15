@@ -81,6 +81,11 @@ def api_secrets_list():
         # session. Worth telling the operator which one they're on.
         'key_at_rest_warning': warning,
         'unreadable_count': unreadable,
+        # True if the OS keyring answered with a key that decrypts none of the
+        # store's records (2026-09-15: a test probe minted a fresh key into
+        # the real keyring entry). Metadata only, never a value — see
+        # vault.key_mismatch().
+        'key_mismatch': vault.key_mismatch(),
     })
 
 

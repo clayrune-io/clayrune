@@ -146,6 +146,10 @@ def audit_path() -> Path:
 # Serializes read-modify-write of the store and appends to the audit log.
 _lock = threading.RLock()
 
+# Set by load_master_key() whenever the OS keyring holds a key that decrypts
+# none of the store's records — see key_mismatch() below.
+_key_mismatch = False
+
 
 # ── Name validation ──────────────────────────────────────────────────────────
 
@@ -183,8 +187,27 @@ def valid_name(name: str) -> bool:
 
 def _keyring_disabled() -> bool:
     """Force the file backend — set by tests, and by operators on boxes where
-    the keyring prompts interactively (which would hang a headless server)."""
-    return str(os.environ.get('CLAYRUNE_SECRETS_KEY_BACKEND', '')).lower() == 'file'
+    the keyring prompts interactively (which would hang a headless server).
+
+    Also forced whenever ``CLAYRUNE_HOME`` is overridden (a temp home used by
+    a test or a one-off probe script), unless the caller explicitly opts back
+    into the real keyring with ``CLAYRUNE_SECRETS_KEY_BACKEND=keyring``. A temp
+    home means a throwaway store, but the keyring is a single GLOBAL entry
+    shared by every process on the box regardless of which store it's paired
+    with — a probe against a temp store that finds it empty still mints into
+    that real, persistent, global keyring entry and orphans whatever it was
+    protecting. That is exactly what happened 2026-09-15: a redaction probe
+    used ``CLAYRUNE_HOME=<mkdtemp>`` expecting isolation, minted a fresh master
+    key into the real `clayrune/secrets-master-key` Credential Manager entry
+    because its temp store was (correctly) empty, and the real server picked
+    that key up next and could decrypt none of its 10 real secrets.
+    """
+    if str(os.environ.get('CLAYRUNE_SECRETS_KEY_BACKEND', '')).lower() == 'file':
+        return True
+    if (os.environ.get('CLAYRUNE_HOME')
+            and str(os.environ.get('CLAYRUNE_SECRETS_KEY_BACKEND', '')).lower() != 'keyring'):
+        return True
+    return False
 
 
 def _keyring_get() -> str | None:
@@ -348,17 +371,28 @@ def _write_dpapi_mirror(encoded: str) -> None:
     _write_private_bytes(dpapi_mirror_path(), sealed)
 
 
-def _maintain_key_mirror(encoded: str) -> None:
+def _maintain_key_mirror(encoded: str, store: dict[str, Any]) -> None:
     """Best-effort self-heal-mirror upkeep after a successful keyring read.
     Must never fail the caller — a sync failure just means the next read
     tries again, whereas an exception here would break every legitimate
     credential use whenever the mirror happens to be stale.
 
-    Windows: reseal the DPAPI mirror if it doesn't already unseal to this
-    key, then remove any pre-existing PLAINTEXT ``secrets.key`` — but only
-    once the DPAPI mirror has been read back and confirmed to hold the same
-    key. A verification failure leaves the plaintext copy in place rather
-    than deleting the only working mirror on a guess.
+    Windows: reseal the DPAPI mirror only if it doesn't already unseal to
+    this key, AND EITHER the current mirror opens nothing in ``store`` OR the
+    new key does open something in it (or ``store`` is empty). Resealing
+    unconditionally — the pre-2026-09-15 behavior — meant any process that
+    successfully reads a key from the keyring, however that key got there,
+    overwrites the last surviving mirror of whatever an *older* key was
+    protecting. That's exactly what a 2026-09-15 test probe would have done
+    on a live server: it minted a fresh key into the real keyring because its
+    own temp store was empty, and had the DPAPI mirror been writable in that
+    session (S4U's DPAPI failure is the only reason it wasn't), it would have
+    overwritten the one surviving copy of the key protecting 10 real secrets.
+    Once resealed (or already matching), remove any pre-existing PLAINTEXT
+    ``secrets.key`` — but only once the DPAPI mirror has been read back and
+    confirmed to hold the same key. A verification failure leaves the
+    plaintext copy in place rather than deleting the only working mirror on
+    a guess.
 
     macOS/Linux: there is no OS primitive equivalent to DPAPI here (Keychain
     and SecretService already *are* the keyring backend in use), so no
@@ -371,8 +405,18 @@ def _maintain_key_mirror(encoded: str) -> None:
     """
     try:
         if _dpapi_available():
-            if _read_dpapi_mirror() != encoded:
-                _write_dpapi_mirror(encoded)
+            current = _read_dpapi_mirror()
+            if current != encoded:
+                new_opens = (not store['secrets']
+                             or _key_opens_any(base64.b64decode(encoded), store))
+                current_opens = bool(current) and _key_opens_any(
+                    base64.b64decode(current), store)
+                if new_opens and not current_opens:
+                    _write_dpapi_mirror(encoded)
+                else:
+                    _log("[secrets] not resealing the DPAPI mirror: the new "
+                         "key doesn't prove itself against the store, or the "
+                         "existing mirror already does — leaving it in place")
             if _read_dpapi_mirror() != encoded:
                 return
             reason = 'replaced by a DPAPI-sealed mirror, verified round-trip'
@@ -392,6 +436,36 @@ def _maintain_key_mirror(encoded: str) -> None:
         _remove_key_file(reason)
     except OSError as e:
         _log(f"[secrets] key mirror sync failed: {e}")
+
+
+def _key_opens_any(key_bytes: bytes, store: dict[str, Any]) -> bool:
+    """True as soon as ``key_bytes`` decrypts ANY record in ``store`` — a
+    single successful trial decrypt is enough to prove the key is live for
+    this store, so this short-circuits rather than proving every record.
+    Never raises: a per-record decrypt failure (wrong key, tampered blob) just
+    means try the next one. Deliberately bypasses ``_open``/``load_master_key``
+    (which would recurse) — this operates on a key that hasn't been decided
+    on yet."""
+    for name, rec in store['secrets'].items():
+        try:
+            nonce = base64.b64decode(rec['nonce'])
+            ct = base64.b64decode(rec['ciphertext'])
+            _aesgcm(key_bytes).decrypt(nonce, ct, name.encode('utf-8'))
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def key_mismatch() -> bool:
+    """True if the last ``load_master_key()`` call found a value in the OS
+    keyring that decrypted none of the store's records — the exact shape of
+    the 2026-09-15 incident (a test probe minted a fresh key into the real,
+    global keyring entry because its own throwaway store was empty; the real
+    server then loaded that key next and could decrypt 0 of its 10 secrets).
+    Metadata only — surfaced by ``GET /api/secrets`` so the UI can warn
+    without ever touching a value."""
+    return _key_mismatch
 
 
 def _read_self_heal_mirror() -> str | None:
@@ -444,12 +518,62 @@ def load_master_key() -> tuple[bytes, str]:
     docstring): DPAPI-sealed on Windows, no mirror at all on macOS/Linux
     (fail-closed is the protection there instead), plaintext only on the
     pre-existing no-keyring-backend fallback path.
+
+    ## The 2026-09-15 sibling incident: a WRONG key in the keyring, not a MISSING one
+
+    The 2026-09-14 fix above only covers the keyring coming back *empty*. On
+    2026-09-15 a test probe ran with ``CLAYRUNE_HOME`` pointed at a throwaway
+    temp directory, expecting isolation — but the OS keyring is one GLOBAL
+    entry (``clayrune/secrets-master-key``) shared by every process on the
+    box regardless of which store it's paired with. The probe's temp store
+    was (correctly) empty, so the fail-closed check above did not fire, and
+    it minted a fresh key straight into the real keyring entry. The real
+    server then read that key next and could decrypt 0 of its 10 real
+    secrets — a keyring that answers, but with someone else's key. (Also
+    fixed the same day: ``_keyring_disabled()`` now refuses to touch the
+    keyring at all under an overridden ``CLAYRUNE_HOME`` unless
+    ``CLAYRUNE_SECRETS_KEY_BACKEND=keyring`` is explicit, which closes the
+    class this incident belongs to. This check is the second layer, for a
+    keyring that is already wrong for some other reason.)
+
+    So a key returned by the keyring is now trial-decrypted against one of
+    the store's own records before being trusted (:func:`_key_opens_any`,
+    short-circuits at the first success). If the store is non-empty and the
+    key opens nothing in it, the keyring's answer is treated as untrustworthy,
+    not authoritative: fall back to the local mirror, and only use it if IT
+    opens something. If neither does, raise rather than hand back a key that
+    silently can't read anything — the same "found out immediately instead of
+    losing data silently" posture as the empty-keyring case above.
     """
+    global _key_mismatch
     with _lock:
+        store = _load_store()
+        n = len(store['secrets'])
+
         encoded = _keyring_get()
         if encoded:
-            _maintain_key_mirror(encoded)
-            return base64.b64decode(encoded), 'keyring'
+            key_bytes = base64.b64decode(encoded)
+            if n and not _key_opens_any(key_bytes, store):
+                _key_mismatch = True
+                _log(f"[secrets] keyring key mismatch: decrypts none of "
+                     f"{n} stored secret(s) — not trusting it, trying the "
+                     f"local mirror instead")
+                mirror_encoded = _read_self_heal_mirror()
+                if mirror_encoded:
+                    mirror_key = base64.b64decode(mirror_encoded)
+                    if _key_opens_any(mirror_key, store):
+                        if _keyring_set(mirror_encoded):
+                            _log('[secrets] keyring key mismatch; restored '
+                                 'from local mirror and reseeded the keyring')
+                        return mirror_key, 'file'
+                raise SecretsUnavailable(
+                    f"key mismatch: the OS keyring's master key decrypts "
+                    f"none of {n} stored secret(s), and no local mirror "
+                    f"opens one either — re-enter them or restore the "
+                    f"correct key")
+            _key_mismatch = False
+            _maintain_key_mirror(encoded, store)
+            return key_bytes, 'keyring'
 
         encoded = _read_self_heal_mirror()
         if encoded:
@@ -458,6 +582,7 @@ def load_master_key() -> tuple[bytes, str]:
             # the self-heal path. Reseed the keyring so future reads don't
             # depend on the mirror forever; best-effort, the mirror read
             # already succeeded.
+            _key_mismatch = False
             if _keyring_set(encoded):
                 _log('[secrets] keyring had no master key; restored from '
                      'local mirror and reseeded the keyring')
@@ -467,8 +592,6 @@ def load_master_key() -> tuple[bytes, str]:
         # holds sealed secrets, this is a wipe with no surviving copy of the
         # key — NOT a fresh install — so minting would silently orphan every
         # one of them (the 2026-09-14 incident). Fail closed.
-        store = _load_store()
-        n = len(store['secrets'])
         if n:
             raise SecretsUnavailable(
                 f"master key missing: {n} stored secret(s) cannot be read "
@@ -476,11 +599,12 @@ def load_master_key() -> tuple[bytes, str]:
                 f"re-enter them or restore the key")
 
         # First use, store genuinely empty: mint one.
+        _key_mismatch = False
         raw = os.urandom(32)
         encoded = base64.b64encode(raw).decode('ascii')
         backend = 'keyring' if _keyring_set(encoded) else 'file'
         if backend == 'keyring':
-            _maintain_key_mirror(encoded)
+            _maintain_key_mirror(encoded, store)
         else:
             # No keyring backend at all (headless Linux, or forced off via
             # CLAYRUNE_SECRETS_KEY_BACKEND=file) — the plaintext file is the

@@ -502,7 +502,13 @@ def fake_keyring_vault(tmp_path, monkeypatch):
     `fake_keyring_vault_no_dpapi` for the macOS/Linux shape.
     """
     monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
-    monkeypatch.delenv('CLAYRUNE_SECRETS_KEY_BACKEND', raising=False)
+    # A1 (2026-09-15): _keyring_disabled() now forces the file backend under
+    # any overridden CLAYRUNE_HOME unless this is explicit — these tests
+    # exist specifically to exercise keyring self-heal behavior, and never
+    # touch the real OS credential store (keyring.get_password/set_password
+    # are monkeypatched below), so opting back in here is exactly the
+    # legitimate case that override exists for.
+    monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'keyring')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     import keyring as keyring_pkg
     fake = _FakeKeyringBackend()
@@ -703,6 +709,141 @@ def test_second_secret_after_wipe_does_not_orphan_the_first(fake_keyring_vault):
 
     assert vault.get_secret_value('linkedin.password', consumer='t') == 'pre-wipe-value'
     assert vault.get_secret_value('github.password', consumer='t') == 'post-wipe-value'
+
+
+# ── 2026-09-15 test-probe-mint incident hardening (A1-A3) ───────────────────
+#
+# Root cause (docs/_journal/vault-keyring-remint-2026-09-15.md): a redaction
+# probe ran with CLAYRUNE_HOME pointed at a mkdtemp'd throwaway directory,
+# expecting isolation. But the OS keyring is one GLOBAL entry
+# (clayrune/secrets-master-key) shared by every process on the box regardless
+# of which store it's paired with — the probe's temp store was (correctly)
+# empty, so it minted a fresh key straight into the REAL keyring entry. The
+# real server then loaded that key and could decrypt 0 of its 10 real
+# secrets. Only S4U's own DPAPI failure kept the same mint from also
+# overwriting the last surviving copy of the key that protected them.
+
+def test_temp_home_never_touches_the_real_keyring_by_default(tmp_path, monkeypatch):
+    """A1: the exact gap the incident fell through — CLAYRUNE_HOME overridden,
+    CLAYRUNE_SECRETS_KEY_BACKEND left unset. keyring.set_password must never
+    be called; the vault must fall back to the file backend instead."""
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    monkeypatch.delenv('CLAYRUNE_SECRETS_KEY_BACKEND', raising=False)
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    import keyring as keyring_pkg
+    from mc import secrets_store
+    secrets_store._dispensed.clear()
+
+    set_calls = []
+    monkeypatch.setattr(keyring_pkg, 'set_password',
+                         lambda *a, **k: set_calls.append((a, k)))
+    monkeypatch.setattr(keyring_pkg, 'get_password', lambda *a, **k: None)
+
+    secrets_store.set_secret('a.b', 'value-value')
+
+    assert set_calls == [], ('keyring.set_password must never be called '
+                              'under an overridden CLAYRUNE_HOME')
+    assert secrets_store.key_file_path().is_file()
+    assert secrets_store.get_secret_value('a.b', consumer='t') == 'value-value'
+
+
+def test_explicit_keyring_backend_opts_back_in_under_temp_home(tmp_path, monkeypatch):
+    """The escape hatch A1 leaves open: an operator who really means to
+    exercise the real keyring under a temp home can still say so explicitly.
+
+    Uses `_FakeKeyringBackend` (an in-memory stand-in, same as
+    `fake_keyring_vault`) rather than a stateless lambda — `set_secret` reads
+    the key back via `key_backend()` in the same call, so a mock that always
+    answers "no key" would re-mint on every read and make a real reseed
+    indistinguishable from this bug. DPAPI is disabled: this box's session
+    cannot do real DPAPI (`test_real_dpapi_protect_unprotect_round_trip`
+    fails the same way on an unmodified checkout), and the mirror isn't what
+    this test is about.
+    """
+    monkeypatch.setenv('CLAYRUNE_HOME', str(tmp_path / '.clayrune'))
+    monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'keyring')
+    monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
+    import keyring as keyring_pkg
+    from mc import secrets_store
+    secrets_store._dispensed.clear()
+
+    fake = _FakeKeyringBackend()
+    monkeypatch.setattr(keyring_pkg, 'get_password', fake.get_password)
+    monkeypatch.setattr(keyring_pkg, 'set_password', fake.set_password)
+    monkeypatch.setattr(secrets_store, '_dpapi_available', lambda: False)
+
+    secrets_store.set_secret('a.b', 'value-value')
+
+    assert fake.store, 'the explicit opt-in must still reach the keyring'
+    assert secrets_store.get_secret_value('a.b', consumer='t') == 'value-value'
+
+
+def test_keyring_key_mismatch_falls_back_to_mirror(fake_keyring_vault):
+    """A2: the keyring answers, but with a key that decrypts none of the
+    store's secrets (the exact incident shape). Must not be trusted as-is —
+    fall back to the DPAPI mirror, use it, and reseed the keyring."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'sealed-under-real-key')
+    # Simulate a foreign mint landing in the (global) keyring entry, as the
+    # 2026-09-15 probe did — the DPAPI mirror still holds the real key.
+    foreign_key = base64.b64encode(os.urandom(32)).decode('ascii')
+    fake.store[(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT)] = foreign_key
+
+    assert vault.get_secret_value('reddit.password', consumer='t') == \
+        'sealed-under-real-key'
+    assert vault.key_mismatch() is True
+    # Reseeded with the recovered (real) key, not left pointing at the foreign one.
+    assert fake.store[(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT)] != foreign_key
+
+
+def test_keyring_key_mismatch_with_no_working_mirror_raises(fake_keyring_vault):
+    """A2: a mismatched keyring key with no fallback that opens anything must
+    raise, never silently hand back a key that decrypts nothing."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'sealed-under-real-key')
+    foreign_key = base64.b64encode(os.urandom(32)).decode('ascii')
+    fake.store[(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT)] = foreign_key
+    # Corrupt the DPAPI mirror too, so there is no working fallback either.
+    vault.dpapi_mirror_path().write_bytes(b'not-a-real-seal')
+
+    with pytest.raises(vault.SecretsUnavailable, match='key mismatch'):
+        vault.get_secret_value('reddit.password', consumer='t')
+    assert vault.key_mismatch() is True
+
+
+def test_mirror_not_overwritten_by_a_key_that_opens_nothing(fake_keyring_vault):
+    """A3: _maintain_key_mirror must not reseal a mirror that already
+    protects a real record with a new key that decrypts nothing in the
+    store — the exact way the 2026-09-15 incident would have destroyed the
+    last surviving copy of an older key on a live server, had S4U's DPAPI
+    write not (accidentally) failed."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'protected-by-real-key')
+    assert vault.dpapi_mirror_path().is_file()  # mirror now holds the real key
+
+    store = vault._load_store()
+    foreign_key = base64.b64encode(os.urandom(32)).decode('ascii')  # opens nothing
+    vault._maintain_key_mirror(foreign_key, store)
+
+    recovered = vault._read_dpapi_mirror()
+    assert recovered != foreign_key
+    assert vault._key_opens_any(base64.b64decode(recovered), store)
+
+
+def test_mirror_still_reseals_for_a_key_that_does_open_something(fake_keyring_vault):
+    """A3's gate is about protecting a mirror that already guards real
+    ciphertext — it must not block the ordinary case where the new key is
+    legitimate and simply hasn't been mirrored yet."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'sealed-under-real-key')
+    store = vault._load_store()
+    real_key = vault._keyring_get()
+
+    # Blank the mirror, simulating a first sync that hasn't happened yet.
+    vault.dpapi_mirror_path().unlink()
+    vault._maintain_key_mirror(real_key, store)
+
+    assert vault._read_dpapi_mirror() == real_key
 
 
 # ── Health check: is_readable / list_secrets(check_readable=True) ──────────
