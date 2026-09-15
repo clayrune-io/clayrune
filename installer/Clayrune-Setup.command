@@ -23,9 +23,9 @@ cat <<'EOF'
 This will install Clayrune on this Mac.
 
 It will:
-  1. Install Claude CLI (if missing) — Anthropic's installer or npm
-  2. Install Node.js 20 via nvm (user-space, no sudo)
-  3. Ask you to log in once (browser opens for OAuth)
+  1. Ask which AI you work with (Claude Code / OpenAI Codex / Gemini)
+  2. Install that CLI (if missing) and Node.js 20 via nvm (user-space, no sudo)
+  3. Ask you to sign in once, if the chosen CLI needs it
   4. Clone Clayrune to ~/Clayrune
   5. Set up Python venv + a launcher in ~/Applications/
   6. Open the dashboard in your browser

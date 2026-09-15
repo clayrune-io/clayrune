@@ -92,10 +92,10 @@ internal static class ClayruneInstaller
         Console.WriteLine("This will install Clayrune on this computer.");
         Console.WriteLine();
         Console.WriteLine("It will:");
-        Console.WriteLine("  1. Install Node.js LTS (if missing)");
-        Console.WriteLine("  2. Install Git for Windows (needed by Claude Code)");
-        Console.WriteLine("  3. Install Claude CLI");
-        Console.WriteLine("  4. Ask you to log in once (browser opens for OAuth)");
+        Console.WriteLine("  1. Ask which AI you work with (Claude Code / OpenAI Codex / Gemini)");
+        Console.WriteLine("  2. Install Node.js LTS and Git for Windows (if missing)");
+        Console.WriteLine("  3. Install that CLI");
+        Console.WriteLine("  4. Ask you to sign in once, if the chosen CLI needs it");
         Console.WriteLine("  5. Clone Clayrune to %USERPROFILE%\\Clayrune");
         Console.WriteLine("  6. Set up Python dependencies + a Desktop shortcut");
         Console.WriteLine("  7. Open the dashboard in your browser");

@@ -26,10 +26,10 @@ echo.
 echo This will install Clayrune on this computer.
 echo.
 echo It will:
-echo   1. Install Node.js LTS (if missing)
-echo   2. Install Git for Windows (needed by Claude Code)
-echo   3. Install Claude CLI
-echo   4. Ask you to log in once (browser opens for OAuth)
+echo   1. Ask which AI you work with (Claude Code / OpenAI Codex / Gemini)
+echo   2. Install Node.js LTS and Git for Windows (if missing)
+echo   3. Install that CLI
+echo   4. Ask you to sign in once, if the chosen CLI needs it
 echo   5. Clone Clayrune to %%USERPROFILE%%\Clayrune
 echo   6. Set up Python dependencies + a Desktop shortcut
 echo   7. Open the dashboard in your browser
