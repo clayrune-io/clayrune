@@ -27,10 +27,13 @@ const WT_STEPS = [
           </label>`).join('') + `</div>`;
     },
     target: null, pos: 'center',
-    // Nothing to choose when only one CLI is installed — a claude-only
-    // machine (the common case today) skips straight to 'advanced-picker',
-    // pixel-identical to the tour before this step existed.
-    skip: () => (_agentProviders || []).filter(p => p.installed).length <= 1,
+    // Skip when there's nothing left to ask: only one CLI installed (a
+    // claude-only machine, the common case), OR the installer already wrote
+    // default_provider into config.json before this first launch even
+    // happened (install.sh / install.ps1, 2026-09-14) — asking again here
+    // would be the exact double-prompt this step exists to avoid.
+    skip: () => !!(_globalConfig && _globalConfig.default_provider) ||
+      (_agentProviders || []).filter(p => p.installed).length <= 1,
   },
   {
     id: 'advanced-picker',

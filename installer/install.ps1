@@ -19,7 +19,10 @@
 #
 # Override URLs (for testing):
 #   $env:CLAYRUNE_PROMPT_URL = '...'
-#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window
+#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window; also
+#                                    # skips the interactive provider prompt
+#   $env:CLAYRUNE_PROVIDER = '...'  # claude|codex|gemini - skip the "which AI
+#                                    # do you work with?" prompt
 #
 # EXIT CODES — a contract, not an accident. installer/win-exe/ClayruneInstaller.cs
 # maps these to the remediation menu it shows the user, so DO NOT reuse or
@@ -513,6 +516,67 @@ function Exit-WithContact {
     [Environment]::Exit($Code)
 }
 
+# -- Which AI do you work with? ----------------------------------------------
+#
+# Asked ONCE, here, at install time -- not as an in-app popup an existing
+# user gets ambushed by on a routine dashboard refresh (Ron 2026-09-14).
+# Settings -> Default provider remains the place to change it later.
+$ProviderChoices = @('claude', 'codex', 'gemini')
+$ProviderLabels = @{ claude = 'Claude Code'; codex = 'OpenAI Codex'; gemini = 'Gemini' }
+
+function Get-InstalledProviders {
+    $found = @()
+    foreach ($p in $ProviderChoices) {
+        if (Get-Command $p -ErrorAction SilentlyContinue) { $found += $p }
+    }
+    return $found
+}
+
+$ChosenProvider = $env:CLAYRUNE_PROVIDER
+if ($ChosenProvider -and ($ProviderChoices -notcontains $ChosenProvider)) {
+    Write-Host "CLAYRUNE_PROVIDER=$ChosenProvider is not one of: $($ProviderChoices -join ', ')" -ForegroundColor Red
+    Exit-WithContact 1
+}
+if (-not $ChosenProvider) {
+    # @(...) is LOAD-BEARING: PowerShell unwraps a single-element array return
+    # to a bare scalar, so with exactly one CLI installed `$installedProvs`
+    # would be the STRING 'codex' and `$installedProvs[0]` would index its
+    # first CHARACTER ('c'), not the array's first element. Verified live -
+    # without this, a one-CLI machine silently defaulted to "c".
+    $installedProvs = @(Get-InstalledProviders)
+    $defaultProv = if ($installedProvs.Count -gt 0) { $installedProvs[0] } else { 'claude' }
+
+    # `iwr ... -useb | iex` still leaves Read-Host talking to the real
+    # console (unlike a POSIX pipe, PowerShell pipes objects, not stdin), so
+    # this works over the normal curl-equivalent install command. Only skip
+    # it when there is provably no one to ask: CLAYRUNE_NO_CONFIRM (already
+    # the "don't wait on me" signal) or genuinely redirected input (CI, a
+    # scheduled task, ClayruneInstaller.exe piping stdin).
+    if ($env:CLAYRUNE_NO_CONFIRM -or [Console]::IsInputRedirected) {
+        $ChosenProvider = $defaultProv
+        Write-Host "Non-interactive install: defaulting provider to $ChosenProvider (set CLAYRUNE_PROVIDER to override)."
+    } else {
+        Write-Host 'Which AI do you work with?' -ForegroundColor White
+        foreach ($p in $ProviderChoices) {
+            $mark = if ($p -eq $defaultProv) { ' (detected)' } else { '' }
+            Write-Host "  $($ProviderLabels[$p])$mark"
+        }
+        $ans = ''
+        try { $ans = Read-Host "Type one of [claude/codex/gemini], or press Enter for $defaultProv" } catch { $ans = '' }
+        $ans = ("$ans").Trim().ToLower()
+        if ([string]::IsNullOrWhiteSpace($ans)) {
+            $ChosenProvider = $defaultProv
+        } elseif ($ProviderChoices -contains $ans) {
+            $ChosenProvider = $ans
+        } else {
+            Write-Host "Unrecognized choice '$ans' - using $defaultProv." -ForegroundColor Yellow
+            $ChosenProvider = $defaultProv
+        }
+    }
+    Write-Host ''
+}
+Write-Host "OK Provider: $ChosenProvider" -ForegroundColor Green
+Write-Host ''
 
 # -- Step 0: Ensure Node 18+ is available -----------------------------------
 
@@ -526,7 +590,48 @@ if (-not (Get-BoolResult (Setup-Node))) {
     exit 1
 }
 
-# -- Step 1: Ensure a working Claude CLI ------------------------------------
+# -- Step 1/1.4/1.5: ensure + auth-check ONLY the chosen provider's CLI ----
+#
+# Used to unconditionally run the full Claude-specific dance (npm install,
+# bash.exe/PowerShell-7 runtime shell, `claude -p` auth probe) regardless of
+# what the user actually picked. Codex/Gemini share Step 0's Node, but have
+# no Claude-specific runtime-shell or auth-probe equivalent here.
+if ($ChosenProvider -ne 'claude') {
+    $provPkg = if ($ChosenProvider -eq 'codex') { '@openai/codex' } else { '@google/gemini-cli' }
+    Write-Host "Checking $ChosenProvider CLI..."
+    if (Get-Command $ChosenProvider -ErrorAction SilentlyContinue) {
+        Write-Host "OK $ChosenProvider CLI already installed." -ForegroundColor Green
+        Write-Host ''
+    } else {
+        if (-not (Get-Command npm -ErrorAction SilentlyContinue)) {
+            [void](Add-NodeToPathIfPresent)
+        }
+        if (Get-Command npm -ErrorAction SilentlyContinue) {
+            Write-Host "Installing via npm install -g $provPkg..."
+            $rc = Invoke-Native npm install -g $provPkg
+            if ($rc -eq 0 -and (Get-Command $ChosenProvider -ErrorAction SilentlyContinue)) {
+                Write-Host "OK $ChosenProvider CLI installed." -ForegroundColor Green
+                Write-Host ''
+            } else {
+                Write-Host ''
+                Write-Host "Could not install $ChosenProvider CLI automatically." -ForegroundColor Red
+                Write-Host "Install manually:  npm install -g $provPkg" -ForegroundColor Cyan
+                Write-Host 'Then re-run:       iwr https://clayrune.io/install.ps1 -useb | iex' -ForegroundColor Cyan
+                exit 1
+            }
+        } else {
+            Write-Host ''
+            Write-Host "$ChosenProvider CLI not found and npm is not on PATH even though Node is." -ForegroundColor Red
+            exit 1
+        }
+    }
+    # No auth-check here — unlike Claude, there is no verified "is this CLI
+    # logged in" probe for codex/gemini to run from a script. Clayrune's own
+    # in-app auth banner (provider-auth.js) surfaces sign-in state for
+    # whichever provider is in_use, the first time it's actually needed.
+    Write-Host "Sign in when Clayrune opens if it prompts you - it only asks once $ChosenProvider actually needs it."
+    Write-Host ''
+} else {
 
 if (Test-ClaudeWorks) {
     $claudeVersion = (& claude --version 2>&1 | Select-Object -First 1)
@@ -640,6 +745,7 @@ if (-not (Test-ClaudeAuth)) {
 }
 Write-Host 'OK Authenticated' -ForegroundColor Green
 Write-Host ''
+} # ChosenProvider -ne 'claude' / -eq 'claude'
 
 # -- Direct deterministic install (no Claude handoff) ----------------------
 #
@@ -872,6 +978,33 @@ if (Test-Path $reqPath) {
 Write-Host '[STEP 2/5] OK' -ForegroundColor Green
 Write-Host ''
 
+# -- Write the provider choice into config.json (before first launch) ------
+#
+# Must happen before Step 4 starts the server, and needs the venv's python
+# (just built above) to merge safely rather than clobber. A re-run of this
+# installer, or an upgrade, must never overwrite a choice already on disk -
+# Settings -> Default provider is the only place to change it after this.
+$venvPython = Join-Path $venvPath 'Scripts\python.exe'
+$configPath = Join-Path $installDir 'config.json'
+$mergeScript = @'
+import json, sys
+path, provider = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (FileNotFoundError, ValueError):
+    cfg = {}
+if not cfg.get('default_provider'):
+    cfg['default_provider'] = provider
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+'@
+try {
+    & $venvPython -c $mergeScript $configPath $ChosenProvider
+} catch {
+    Write-Host "  (could not write default_provider into config.json: $_)" -ForegroundColor DarkGray
+}
+
 # -- [STEP 3/5] Desktop + Start Menu shortcut ------------------------------
 Write-Host '[STEP 3/5] Creating Desktop + Start Menu shortcut...' -ForegroundColor White
 $startBat  = Join-Path $installDir 'installer\start.bat'
@@ -981,6 +1114,7 @@ Write-Host '  Clayrune is installed and running.' -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 Write-Host "  Open:     http://localhost:5199"
 Write-Host "  Location: $installDir"
+Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
 Write-Host '  Relaunch: double-click the Clayrune shortcut on your Desktop'
 Write-Host '            (also available in your Start Menu).'
 Write-Host '============================================================' -ForegroundColor Green

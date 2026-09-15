@@ -23,7 +23,11 @@
 #
 # Override:
 #   CLAYRUNE_HOME=...        (override default ~/Clayrune install dir)
-#   CLAYRUNE_NO_CONFIRM=1    (skip the 5-second abort window)
+#   CLAYRUNE_NO_CONFIRM=1    (skip the 5-second abort window; also skips the
+#                             interactive provider prompt, see below)
+#   CLAYRUNE_PROVIDER=...    (claude|codex|gemini — skip the "which AI do you
+#                             work with?" prompt; auto-picks the sole detected
+#                             CLI, else claude, when unset in a non-tty run)
 
 set -e
 
@@ -60,6 +64,94 @@ _clayrune_exit_footer() {
   fi
 }
 trap _clayrune_exit_footer EXIT
+
+# ── Which AI do you work with? ─────────────────────────────────────────────
+#
+# Asked ONCE, here, at install time. Ron 2026-09-14: an existing user got
+# ambushed by this as an in-app popup on a routine dashboard refresh — the
+# question belongs at install, not as a surprise inside a running app.
+# Settings -> Default provider remains the place to change it later.
+_PROVIDER_CHOICES="claude codex gemini"
+
+_detect_installed_providers() {
+  # Space-separated, in prompt order. Not a full auth check — the app's own
+  # auth banner (provider-auth.js) already surfaces sign-in state once it's
+  # running, for whichever provider ends up in_use.
+  out=""
+  command -v claude >/dev/null 2>&1 && out="$out claude"
+  command -v codex  >/dev/null 2>&1 && out="$out codex"
+  command -v gemini >/dev/null 2>&1 && out="$out gemini"
+  printf '%s' "$out" | sed 's/^ //'
+}
+
+CHOSEN_PROVIDER="${CLAYRUNE_PROVIDER:-}"
+if [ -n "$CHOSEN_PROVIDER" ]; then
+  case " $_PROVIDER_CHOICES " in
+    *" $CHOSEN_PROVIDER "*) ;;
+    *)
+      printf "%sCLAYRUNE_PROVIDER=%s is not one of: %s%s\n" "$E" "$CHOSEN_PROVIDER" "$_PROVIDER_CHOICES" "$R"
+      exit 1
+      ;;
+  esac
+fi
+
+if [ -z "$CHOSEN_PROVIDER" ]; then
+  _installed_provs=$(_detect_installed_providers)
+  _default_prov=$(printf '%s' "$_installed_provs" | awk '{print $1}')
+  [ -n "$_default_prov" ] || _default_prov="claude"
+
+  # A `curl | sh` pipe means stdin IS the script, not a terminal — read the
+  # answer from the controlling tty instead (same trick rustup/nvm use).
+  # CLAYRUNE_NO_CONFIRM doubles as "don't wait on me" here: CI sets it and
+  # has no controlling tty anyway, but this is a belt-and-suspenders guard
+  # against ever blocking an unattended run on a read that will never come.
+  _tty_src=""
+  if [ -z "${CLAYRUNE_NO_CONFIRM:-}" ]; then
+    if [ -t 0 ]; then
+      _tty_src="stdin"
+    elif [ -r /dev/tty ] 2>/dev/null; then
+      _tty_src="/dev/tty"
+    fi
+  fi
+
+  if [ -n "$_tty_src" ]; then
+    printf "%sWhich AI do you work with?%s\n" "$B" "$R"
+    for p in $_PROVIDER_CHOICES; do
+      case "$p" in
+        claude) label="Claude Code" ;;
+        codex)  label="OpenAI Codex" ;;
+        gemini) label="Gemini" ;;
+      esac
+      mark=""
+      [ "$p" = "$_default_prov" ] && mark=" (detected)"
+      printf "  %s%s%s\n" "$label" "$mark" ""
+    done
+    printf "Type one of [claude/codex/gemini], or press Enter for %s%s%s: " "$C" "$_default_prov" "$R"
+    _prov_ans=""
+    if [ "$_tty_src" = "stdin" ]; then
+      read -r _prov_ans || _prov_ans=""
+    else
+      # `-r /dev/tty` can lie (true) in a headless container with no
+      # controlling terminal — the node exists but opening it fails with
+      # ENXIO. Group-redirect stderr so that failure stays silent; the
+      # empty-answer fallback below still lands on $_default_prov either way.
+      { read -r _prov_ans < /dev/tty; } 2>/dev/null || _prov_ans=""
+    fi
+    case "$_prov_ans" in
+      "") CHOSEN_PROVIDER="$_default_prov" ;;
+      claude|codex|gemini) CHOSEN_PROVIDER="$_prov_ans" ;;
+      *)
+        printf "%sUnrecognized choice %s — using %s.%s\n" "$Y" "$_prov_ans" "$_default_prov" "$R"
+        CHOSEN_PROVIDER="$_default_prov"
+        ;;
+    esac
+  else
+    CHOSEN_PROVIDER="$_default_prov"
+    printf "Non-interactive install: defaulting provider to %s%s%s (set CLAYRUNE_PROVIDER to override).\n" "$C" "$CHOSEN_PROVIDER" "$R"
+  fi
+  printf "\n"
+fi
+printf "%sOK%s Provider: %s\n\n" "$G" "$R" "$CHOSEN_PROVIDER"
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -270,12 +362,9 @@ if [ "$(uname)" = "Darwin" ]; then
 fi
 
 # ── Step 0: Ensure Node 18+ is available ───────────────────────────────────
-
-# This must run BEFORE any Claude CLI install attempt because npm-installed
-# Claude CLI requires Node 18+ to even parse its own source (uses optional
-# chaining etc.). Without this check, we'd hit the WSL/old-nvm trap where
-# `npm install -g @anthropic-ai/claude-code` "succeeds" but every invocation
-# crashes with `SyntaxError: Unexpected token '?'`.
+#
+# Unconditional regardless of chosen provider: claude/codex/gemini are all
+# npm packages, so all three need a working Node first.
 if ! _setup_node; then
   printf "%sCould not set up a working Node 18+ runtime automatically.%s\n\n" "$E" "$R"
   printf "Please install Node 20+ manually, then re-run:\n"
@@ -285,6 +374,43 @@ if ! _setup_node; then
   printf "  Direct:   %shttps://nodejs.org/%s\n" "$C" "$R"
   exit 1
 fi
+
+# ── Step 1/1.5: ensure + auth-check ONLY the chosen provider's CLI ────────
+#
+# Used to unconditionally install + auth-check Claude regardless of what the
+# user actually picked — a Codex/Gemini-only user ate the full Claude-specific
+# dance (curl-installer, `claude -p` auth probe) for a CLI they'd never use.
+if [ "$CHOSEN_PROVIDER" != "claude" ]; then
+  case "$CHOSEN_PROVIDER" in
+    codex)  _prov_pkg="@openai/codex" ;;
+    gemini) _prov_pkg="@google/gemini-cli" ;;
+  esac
+  printf "Checking %s CLI...\n" "$CHOSEN_PROVIDER"
+  if command -v "$CHOSEN_PROVIDER" >/dev/null 2>&1; then
+    printf "%sOK%s %s CLI already installed.\n\n" "$G" "$R" "$CHOSEN_PROVIDER"
+  elif command -v npm >/dev/null 2>&1; then
+    printf "Installing via npm install -g %s...\n" "$_prov_pkg"
+    if npm install -g "$_prov_pkg" && command -v "$CHOSEN_PROVIDER" >/dev/null 2>&1; then
+      printf "%sOK%s %s CLI installed.\n\n" "$G" "$R" "$CHOSEN_PROVIDER"
+    else
+      printf "\n%sCould not install %s CLI automatically.%s\n\n" "$E" "$CHOSEN_PROVIDER" "$R"
+      printf "Install manually:  %snpm install -g %s%s\n" "$C" "$_prov_pkg" "$R"
+      printf "Then re-run:       %scurl -sSL https://clayrune.io/install.sh | sh%s\n" "$C" "$R"
+      exit 1
+    fi
+  else
+    printf "\n%s%s CLI not found and npm is not on PATH.%s\n\n" "$E" "$CHOSEN_PROVIDER" "$R"
+    printf "Install Node.js (https://nodejs.org/), then: %snpm install -g %s%s\n" "$C" "$_prov_pkg" "$R"
+    printf "Then re-run:       %scurl -sSL https://clayrune.io/install.sh | sh%s\n" "$C" "$R"
+    exit 1
+  fi
+  # No auth-check here — unlike Claude, we don't have a verified "is this CLI
+  # logged in" probe for codex/gemini to run from a shell script. Clayrune's
+  # own in-app auth banner (provider-auth.js) already surfaces sign-in state
+  # for whichever provider is in_use, the first time it's actually needed.
+  printf "Sign in when Clayrune opens if it prompts you — it only asks once %s\n" "$CHOSEN_PROVIDER"
+  printf "actually needs it.\n\n"
+else
 
 # ── Step 1: Ensure a working Claude CLI ────────────────────────────────────
 
@@ -390,6 +516,7 @@ elif ! _check_claude_auth; then
 else
   printf "%sOK%s Authenticated\n\n" "$G" "$R"
 fi
+fi # CHOSEN_PROVIDER != claude / == claude
 
 # ── Direct deterministic install (no Claude handoff) ──────────────────────
 #
@@ -615,6 +742,26 @@ if [ -f "$REQ_PATH" ]; then
 fi
 printf "%s[STEP 2/5] OK%s\n\n" "$G" "$R"
 
+# ── Write the provider choice into config.json (before first launch) ──────
+#
+# Must happen before Step 4 starts the server, and needs the venv's python
+# (just built above) to merge safely rather than clobber. A re-run of this
+# installer, or an upgrade, must never overwrite a choice already on disk —
+# Settings -> Default provider is the only place to change it after this.
+"$VENV_DIR/bin/python" - "$INSTALL_DIR/config.json" "$CHOSEN_PROVIDER" <<'PYEOF' || true
+import json, sys
+path, provider = sys.argv[1], sys.argv[2]
+try:
+    with open(path) as f:
+        cfg = json.load(f)
+except (FileNotFoundError, ValueError):
+    cfg = {}
+if not cfg.get('default_provider'):
+    cfg['default_provider'] = provider
+    with open(path, 'w') as f:
+        json.dump(cfg, f, indent=2)
+PYEOF
+
 # ── [STEP 3/5] Launcher entry ─────────────────────────────────────────────
 printf "%s[STEP 3/5]%s Creating launcher...\n" "$B" "$R"
 if [ "$OS" = "macos" ]; then
@@ -734,6 +881,7 @@ printf "%s  Clayrune is installed and running.%s\n" "$G" "$R"
 printf "%s============================================================%s\n" "$G" "$R"
 printf "  Open:     http://localhost:5199\n"
 printf "  Location: %s\n" "$INSTALL_DIR"
+printf "  Provider: %s (change any time in Settings)\n" "$CHOSEN_PROVIDER"
 if [ "$OS" = "macos" ]; then
   printf "  Relaunch: open ~/Applications/Clayrune.command\n"
 else

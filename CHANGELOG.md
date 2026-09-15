@@ -6,6 +6,50 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-14d] — Provider choice moves to install time; no more in-app popup
+
+- **Ron, 2026-09-14, after refreshing his dashboard and immediately hitting
+  the new provider selector:** "I don't think this should be an in-app
+  selection, rather an installation question." `bde642d`'s dismissible toast
+  (`_maybeOfferProviderChoice`) was ambushing existing users on a routine
+  reload — right behavior (ask once), wrong surface.
+- **Installers now ask.** `installer/install.sh` and `installer/install.ps1`
+  prompt "Which AI do you work with?" (Claude Code / OpenAI Codex / Gemini),
+  pre-selecting whatever's already detected on PATH, and write
+  `default_provider` into `config.json` before the server's first launch —
+  never clobbering a value already on disk (a re-run or upgrade leaves an
+  existing choice alone). `CLAYRUNE_PROVIDER=claude|codex|gemini` skips the
+  prompt for scripted/CI installs; a non-interactive run with no override
+  auto-picks the sole detected CLI, else `claude`. Only the chosen provider's
+  CLI gets installed/auth-checked now — a Codex/Gemini pick no longer runs
+  Claude's curl-installer or auth probe. `installer/Clayrune-Setup.bat`,
+  `Clayrune-Setup.command`, and `installer/win-exe/ClayruneInstaller.cs` (all
+  thin wrappers around the two scripts above) had their disclosure text
+  updated to match.
+- **The in-app popup is gone.** `_maybeOfferProviderChoice` (toast +
+  Settings-redirect) is deleted outright — `project-actions.js`'s
+  `_maybeSetSoleProviderDefault` replaces it and shows nothing, ever; its only
+  job is the one case that isn't really a choice: exactly one provider CLI
+  installed and no default saved yet, saved silently. The walkthrough's
+  first-run `'provider-choice'` step (still the only in-app path that can ask)
+  now also skips when `default_provider` is already set — so a user who
+  answered the installer's prompt doesn't get asked again on first launch.
+  Covers the "downloaded Mac .app, no installer script" case too: first
+  launch on a truly fresh data dir already runs the walkthrough, so the
+  existing skip logic (⩽1 CLI installed, or already configured) is enough —
+  no separate code path needed.
+- **Found while testing:** `install.ps1`'s single-CLI auto-detect had a live
+  bug — `$installedProvs[0]` on a function's single-element array return
+  silently unwraps to the STRING's first *character* in PowerShell
+  (`'codex'[0]` → `'c'`), so a one-CLI machine would have defaulted to a
+  provider literally named `"c"`. Fixed with `@(Get-InstalledProviders)` at
+  the call site; caught by extracting the decision block into a standalone
+  script and running it against a PATH with only `codex` reachable.
+- New smoke: `tools/smoke/provider-choice-no-popup.mjs` — an existing install
+  (real project on disk) never renders the popup regardless of CLI count, and
+  silently saves the sole CLI as default when exactly one is installed and
+  nothing is saved yet.
+
 ## [2026-09-14c] — First-run provider choice; stop nagging non-Claude users about Claude
 
 - **Root cause:** `default_provider` was already read by the dispatch/hivemind
