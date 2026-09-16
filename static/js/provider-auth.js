@@ -242,6 +242,10 @@ const PROVIDER_AUTH_KEYS = {
   opencode: 'OPENCODE_API_KEY',
   goose:    'OPENAI_API_KEY',
   kiro:     'AWS_PROFILE',
+  // Native Qwen OAuth was discontinued 2026-04-15; DASHSCOPE_API_KEY
+  // (Alibaba ModelStudio) is the primary key-based path (mc/agent_runtime.py
+  // QwenRuntime._qwen_auth_state also accepts OPENAI/ANTHROPIC/GEMINI keys).
+  qwen:     'DASHSCOPE_API_KEY',
 };
 
 async function settingsProviderSetEnv(provider, key, btnEl) {

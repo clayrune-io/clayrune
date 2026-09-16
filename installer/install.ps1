@@ -521,8 +521,8 @@ function Exit-WithContact {
 # Asked ONCE, here, at install time -- not as an in-app popup an existing
 # user gets ambushed by on a routine dashboard refresh (Ron 2026-09-14).
 # Settings -> Default provider remains the place to change it later.
-$ProviderChoices = @('claude', 'codex', 'gemini')
-$ProviderLabels = @{ claude = 'Claude Code'; codex = 'OpenAI Codex'; gemini = 'Gemini' }
+$ProviderChoices = @('claude', 'codex', 'gemini', 'qwen')
+$ProviderLabels = @{ claude = 'Claude Code'; codex = 'OpenAI Codex'; gemini = 'Gemini'; qwen = 'Qwen Code' }
 
 function Get-InstalledProviders {
     $found = @()
@@ -562,7 +562,7 @@ if (-not $ChosenProvider) {
             Write-Host "  $($ProviderLabels[$p])$mark"
         }
         $ans = ''
-        try { $ans = Read-Host "Type one of [claude/codex/gemini], or press Enter for $defaultProv" } catch { $ans = '' }
+        try { $ans = Read-Host "Type one of [claude/codex/gemini/qwen], or press Enter for $defaultProv" } catch { $ans = '' }
         $ans = ("$ans").Trim().ToLower()
         if ([string]::IsNullOrWhiteSpace($ans)) {
             $ChosenProvider = $defaultProv
@@ -597,7 +597,11 @@ if (-not (Get-BoolResult (Setup-Node))) {
 # what the user actually picked. Codex/Gemini share Step 0's Node, but have
 # no Claude-specific runtime-shell or auth-probe equivalent here.
 if ($ChosenProvider -ne 'claude') {
-    $provPkg = if ($ChosenProvider -eq 'codex') { '@openai/codex' } else { '@google/gemini-cli' }
+    $provPkg = switch ($ChosenProvider) {
+        'codex' { '@openai/codex' }
+        'qwen'  { '@qwen-code/qwen-code' }
+        default { '@google/gemini-cli' }
+    }
     Write-Host "Checking $ChosenProvider CLI..."
     if (Get-Command $ChosenProvider -ErrorAction SilentlyContinue) {
         Write-Host "OK $ChosenProvider CLI already installed." -ForegroundColor Green

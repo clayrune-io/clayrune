@@ -73,18 +73,18 @@ def _write_codex_rollout(root, thread_id, cwd, messages, dt='2026-09-07T12-53-28
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Registry: all 7 providers registered
+# Registry: all 8 providers registered
 # ─────────────────────────────────────────────────────────────────────────────
 
 
 def test_all_providers_registered():
     names = {r.name for r in agent_runtime.available_runtimes()}
-    expected = {'claude', 'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro'}
+    expected = {'claude', 'gemini', 'qwen', 'codex', 'opencode', 'goose', 'aider', 'kiro'}
     assert expected.issubset(names), f"Missing: {expected - names}"
 
 
 def test_get_runtime_all_providers():
-    for name in ('claude', 'gemini', 'codex', 'opencode', 'goose', 'aider', 'kiro'):
+    for name in ('claude', 'gemini', 'qwen', 'codex', 'opencode', 'goose', 'aider', 'kiro'):
         rt = agent_runtime.get_runtime(name)
         assert rt.name == name
 
@@ -818,6 +818,278 @@ class TestCodexRuntime:
 
         assert msg.get('type') == 'thread.started', f'Expected thread.started, got: {msg}'
         assert 'thread_id' in msg, f'Expected thread_id in: {msg}'
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# QwenRuntime — qwen-code CLI, a gemini-cli fork whose --output-format
+# stream-json is Claude-Code-shaped (live-verified 2026-09-15, qwen-code
+# 0.23.4). build_command/parse_event fixtures below are the real events
+# captured from that machine, not invented shapes.
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+class TestQwenRuntime:
+    def setup_method(self):
+        self.rt = agent_runtime.QwenRuntime()
+        self.rt._bin_cache = None
+
+    def test_build_command_basic(self):
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command()
+        assert cmd[0] == 'qwen'
+        assert '--output-format' in cmd
+        assert cmd[cmd.index('--output-format') + 1] == 'stream-json'
+        assert '--include-partial-messages' in cmd
+        assert '--yolo' in cmd
+        assert '--bare' in cmd
+        assert '--chat-recording' in cmd
+        assert '--resume' not in cmd
+
+    def test_build_command_with_model(self):
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(model='qwen3-coder-plus')
+        assert '--model' in cmd
+        idx = cmd.index('--model')
+        assert cmd[idx + 1] == 'qwen3-coder-plus'
+
+    def test_build_command_resume(self):
+        self.rt._bin_cache = 'qwen'
+        session_id = '325a5df7-b352-47cb-ba1f-86aecd7409de'
+        cmd = self.rt.build_command(resume_id=session_id)
+        assert '--resume' in cmd
+        idx = cmd.index('--resume')
+        assert cmd[idx + 1] == session_id
+        # --chat-recording is required on every respawn for --resume to work
+        # at all (the CLI's own --help text) — flags don't persist.
+        assert '--chat-recording' in cmd
+
+    def test_no_fixed_model_catalog(self):
+        """Can't verify Alibaba Coding/Token-Plan model ids against a live
+        call on this box (no DashScope credential) — empty catalog falls back
+        to Custom-only rather than inventing ids."""
+        assert self.rt.model_choices() == []
+
+    # ── mc:question wiring — same pattern as CodexRuntime's own tests ───────
+
+    def test_dispatch_appends_mc_tool_protocol_to_system_prompt(self, monkeypatch):
+        captured = {}
+
+        def _fake_mode_a_dispatch(*args, **kwargs):
+            captured['kwargs'] = kwargs
+            return 'HANDLE'
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
+        self.rt._bin_cache = 'qwen'
+        result = self.rt.dispatch(project_path='/p', task='do X',
+                                  system_prompt='MEMORY STUFF', session_dict={})
+        assert result == 'HANDLE'
+        stashed = captured['kwargs']['system_prompt']
+        assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in stashed
+        assert 'MEMORY STUFF' in stashed
+
+    def test_dispatch_env_extra_has_suppress_warning(self, monkeypatch):
+        captured = {}
+
+        def _fake(runtime, cmd, full_prompt, project_path, project_id, task,
+                 mc_sid, session_dict, incognito, env_extra, *rest, **kw):
+            captured['env_extra'] = env_extra
+            return 'HANDLE'
+
+        monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake)
+        self.rt._bin_cache = 'qwen'
+        self.rt.dispatch(project_path='/p', task='do X', session_dict={})
+        assert captured['env_extra'].get('QWEN_CODE_SUPPRESS_YOLO_WARNING') == '1'
+
+    # ── parse_event — fixtures are REAL captured events, not invented ───────
+
+    def test_parse_event_init(self):
+        line = json.dumps({
+            'type': 'system', 'subtype': 'init',
+            'session_id': 'da425c0c-6ca6-4b2e-a185-379de4b0dd8c',
+            'model': 'gemini-3.5-flash-lite', 'qwen_code_version': '0.23.4',
+            'mcp_servers': [], 'tools': ['read_file', 'run_shell_command'],
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.INIT
+        assert ev.session_id == 'da425c0c-6ca6-4b2e-a185-379de4b0dd8c'
+        # payload['session_id'] (not just the AgentEvent's own field) is what
+        # the shared _mode_a_reader reads to set provider_session_id — a
+        # live-caught bug (resume was permanently unreachable without this).
+        assert ev.payload['session_id'] == 'da425c0c-6ca6-4b2e-a185-379de4b0dd8c'
+        assert ev.payload['model'] == 'gemini-3.5-flash-lite'
+
+    def test_parse_event_assistant_text(self):
+        line = json.dumps({
+            'type': 'assistant', 'session_id': 's1',
+            'message': {'role': 'assistant',
+                       'content': [{'type': 'text', 'text': 'pong'}]},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ASSISTANT_TEXT
+        # Flat 'text', NOT 'blocks' — the shared _mode_a_reader's
+        # ASSISTANT_TEXT branch reads payload['text'] directly (same shape
+        # Codex/Gemini use); a 'blocks'-shaped payload here would fall back
+        # to the raw JSON line instead of the actual reply (live-caught bug).
+        assert ev.payload['text'] == 'pong'
+
+    def test_parse_event_tool_use_run_shell_command(self):
+        """Live-captured shape: tool name is 'run_shell_command', field is
+        'command' — same as Claude's own Bash tool's field name."""
+        line = json.dumps({
+            'type': 'assistant', 'session_id': 's1',
+            'message': {'role': 'assistant', 'content': [
+                {'type': 'tool_use', 'id': 'call_1', 'name': 'run_shell_command',
+                 'input': {'command': 'echo hi', 'description': 'test'}},
+            ]},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.TOOL_USE
+        block = ev.payload['blocks'][0]
+        assert block['name'] == 'run_shell_command'
+        assert block['input']['command'] == 'echo hi'
+
+    def test_parse_event_user_tool_result_suppressed(self):
+        """type:'user' (tool_result echo) must return None — the shared
+        _mode_a_reader has no USER_MESSAGE/TOOL_RESULT branch, so surfacing
+        it would dump raw JSON into the chat via its catch-all else."""
+        line = json.dumps({
+            'type': 'user', 'session_id': 's1',
+            'message': {'role': 'user', 'content': [
+                {'type': 'tool_result', 'tool_use_id': 'call_1',
+                 'is_error': False, 'content': 'hi'},
+            ]},
+        })
+        assert self.rt.parse_event(line) is None
+
+    def test_parse_event_stream_event_suppressed(self):
+        """Partial-message deltas (--include-partial-messages) are internal —
+        ClaudeRuntime's own parser ignores them the same way."""
+        line = json.dumps({'type': 'stream_event', 'session_id': 's1',
+                           'event': {'type': 'content_block_delta',
+                                    'delta': {'type': 'text_delta', 'text': 'p'}}})
+        assert self.rt.parse_event(line) is None
+
+    def test_parse_event_result_success(self):
+        line = json.dumps({
+            'type': 'result', 'subtype': 'success', 'session_id': 's1',
+            'is_error': False, 'num_turns': 1,
+            'usage': {'input_tokens': 10, 'output_tokens': 1},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.TURN_END
+        assert ev.payload['num_turns'] == 1
+        assert ev.payload['usage'] == {'input_tokens': 10, 'output_tokens': 1}
+
+    def test_parse_event_result_error(self):
+        """Live-captured shape: is_error + nested error.message (an invalid
+        model id returning a 404 from the underlying API)."""
+        line = json.dumps({
+            'type': 'result', 'subtype': 'error_during_execution', 'session_id': 's1',
+            'is_error': True,
+            'error': {'message': 'models/bogus-model is not found'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ERROR
+        assert 'not found' in ev.payload['text']
+
+    def test_parse_event_non_json_fallback(self):
+        """The 'Warning: running headless...' banner (when the suppression
+        env var isn't honored for any reason) must degrade to plain text,
+        never crash the parser."""
+        ev = self.rt.parse_event('Warning: running headless with --yolo...')
+        assert ev is not None
+        assert ev.type == EventType.ASSISTANT_TEXT
+
+    # ── auth state — 'ok' | 'not_logged_in', never a guess ──────────────────
+
+    def test_auth_state_not_logged_in_with_clean_env(self, monkeypatch, tmp_path):
+        for var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                    'GEMINI_API_KEY'):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        status, method = self.rt._qwen_auth_state()
+        assert status == 'not_logged_in'
+        assert method is None
+
+    def test_auth_state_dashscope_env(self, monkeypatch):
+        monkeypatch.setenv('DASHSCOPE_API_KEY', 'sk-test')
+        status, method = self.rt._qwen_auth_state()
+        assert status == 'ok'
+        assert method == 'env:DASHSCOPE_API_KEY'
+
+    def test_auth_state_falls_back_to_gemini_oauth(self, monkeypatch, tmp_path):
+        """Live-observed on this box: with no qwen-specific credential
+        configured anywhere, `qwen` still answered by silently reusing
+        gemini-cli's own OAuth cache. Must report 'ok' with a distinct
+        method string, never mistaken for real Qwen/DashScope auth."""
+        for var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                    'GEMINI_API_KEY'):
+            monkeypatch.delenv(var, raising=False)
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        gdir = tmp_path / '.gemini'
+        gdir.mkdir()
+        (gdir / 'oauth_creds.json').write_text(
+            json.dumps({'refresh_token': 'rt'}), encoding='utf-8')
+        status, method = self.rt._qwen_auth_state()
+        assert status == 'ok'
+        assert method == 'fallback:gemini-oauth'
+
+    def test_health_check_not_installed(self, monkeypatch):
+        monkeypatch.setattr(self.rt, 'resolve_binary', lambda: None)
+        health = self.rt.health_check()
+        assert health.installed is False
+        assert health.auth_state.status == 'not_installed'
+        assert '@qwen-code/qwen-code' in health.install_hint
+
+    # ── transcript_path — ~/.qwen/projects/<lowercased-encoded>/chats/<id>.jsonl
+
+    def test_transcript_path_lowercases_encoded_dir(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        project_path = str(tmp_path / 'Some_Project' / '.clayrune')
+        Path(project_path).mkdir(parents=True)
+        encoded = agent_runtime.ClaudeRuntime._encode_project_path(project_path)
+        assert encoded is not None
+        chats_dir = (tmp_path / '.qwen' / 'projects'
+                    / encoded.replace('_', '-').replace('.', '-').lower() / 'chats')
+        chats_dir.mkdir(parents=True)
+        (chats_dir / 'sess1.jsonl').write_text('{}', encoding='utf-8')
+        found = self.rt.transcript_path(project_path, 'sess1')
+        assert found is not None
+        assert found.is_file()
+
+    def test_transcript_path_missing_returns_none(self, monkeypatch, tmp_path):
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        assert self.rt.transcript_path(str(tmp_path), 'no-such-session') is None
+
+    def test_capabilities(self):
+        caps = self.rt.capabilities()
+        assert caps.name == 'qwen'
+        assert caps.supports_mode_a is True
+        assert caps.supports_mode_b is False
+        assert caps.supports_session_resume is True
+        assert caps.supports_mcp is False
+        assert caps.oneshot_supported is True
+
+    def test_explain_exit_error_known_libuv_crash(self):
+        """Live-reproduced 2026-09-15 (twice: a fresh dispatch and a --resume
+        respawn) — qwen-code 0.23.4 crashes with a native libuv assertion
+        during its own teardown, AFTER already emitting the correct reply.
+        The hint must say the reply is still valid, not just 'exited with
+        code N' (which would look like the answer above it was garbage)."""
+        tail = ('OK.\nAssertion failed: !(handle->flags & UV_HANDLE_CLOSING), '
+               'file src\\win\\async.c, line 76')
+        hint = self.rt.explain_exit_error(3221226505, tail)
+        assert hint is not None
+        assert 'still valid' in hint
 
 
 # ─────────────────────────────────────────────────────────────────────────────

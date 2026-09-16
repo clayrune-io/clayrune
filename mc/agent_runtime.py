@@ -3770,16 +3770,21 @@ def _format_tool_activity(name, inp):
     provider-qualified prefix (`[codex tool: …]`) bypasses all three. Mirrors
     the fix already applied to GeminiRuntime._read_stream's own tool-use line.
     """
-    if name in ('Read', 'Edit', 'Write'):
+    if name in ('Read', 'Edit', 'Write', 'read_file'):
+        # 'read_file' is qwen's name for Claude's Read — same `file_path`
+        # field, live-verified 2026-09-15 (qwen-code 0.23.4's tool schema is
+        # deliberately Claude-compatible: read_file/glob/run_shell_command all
+        # reuse Claude's own field names).
         fp = inp.get('file_path', '')
         short = Path(fp).name if fp else '?'
         return f'[tool: {name}] {short}'
-    if name in ('Bash', 'shell'):
+    if name in ('Bash', 'shell', 'run_shell_command'):
         # 'shell' is Codex's (and other OpenAI-style Mode-A CLIs') name for
-        # the same call Claude calls 'Bash' — same input shape (`command`).
+        # the same call Claude calls 'Bash'; 'run_shell_command' is qwen's —
+        # both share the same `command` input field.
         cmd = _tool_preview(inp.get('command', '') or inp.get('description', ''), 80)
         return f'[tool: {name}] {cmd}'
-    if name in ('Grep', 'Glob'):
+    if name in ('Grep', 'Glob', 'glob'):
         pat = _tool_preview(inp.get('pattern', ''), 80)
         return f'[tool: {name}] {pat}'
     if name == 'Task':
@@ -4146,6 +4151,595 @@ def _codex_same_path(a: Optional[str], b: Optional[str]) -> bool:
     if sys.platform == 'win32':
         return ra.casefold() == rb.casefold()
     return ra == rb
+
+
+class QwenRuntime(AgentRuntime):
+    """Driver for Alibaba's `qwen` (Qwen Code) CLI — a gemini-cli fork.
+
+    Mode A only, via the shared `_mode_a_dispatch`/`_mode_a_reader` (same
+    machinery CodexRuntime uses) — not a bespoke reader like GeminiRuntime's.
+
+    Live-verified 2026-09-15 against qwen-code 0.23.4 on this box: despite
+    being a gemini-cli fork, its `--output-format stream-json` is
+    CLAUDE-CODE-SHAPED (`system`/`assistant`/`user`/`result` envelopes with
+    `message.content[]` blocks) — NOT gemini's or codex's own event shape.
+    `parse_event` below mirrors `ClaudeRuntime.parse_event`, not
+    `GeminiRuntime`'s or `CodexRuntime`'s.
+
+    `--bare` is load-bearing, not cosmetic: without it, a plain one-shot run
+    from this repo's root silently connected this project's OWN `.mcp.json`
+    (a "browser" MCP server with click/navigate/run_code_unsafe, a
+    "filesystem" MCP server with unrestricted read/write) and `.claude/`
+    skills/subagents catalog — none of which this runtime declares or
+    controls. `--bare` disables that native auto-discovery so a Qwen
+    session's real capability set matches what `capabilities()` declares,
+    the same posture Gemini/Codex take (their own catalogs are injected via
+    system-prompt text, not native discovery).
+
+    Native Qwen OAuth was discontinued 2026-04-15 (bundled docs,
+    qc-helper/docs/configuration/auth.md) — this runtime's auth story is
+    `DASHSCOPE_API_KEY` / `OPENAI_API_KEY` / `ANTHROPIC_API_KEY` /
+    `GEMINI_API_KEY` / `~/.qwen/settings.json`'s `env` block, or (observed
+    live, unprompted) a silent fallback to gemini-cli's own OAuth cache when
+    nothing above is set — see `_qwen_auth_state`.
+    """
+
+    name = 'qwen'
+    display_name = 'Qwen Code'
+    # No fixed catalog: the CLI's own docs (bundled qc-helper auth.md) name
+    # ids like qwen3-coder-plus / qwen3.7-plus / glm-5 / kimi-k2.5, but those
+    # are Alibaba Coding-Plan/Token-Plan subscription entries, not a universal
+    # model list — this box has no DashScope credential to verify any of them
+    # against a live call (the standard the Gemini catalog above holds
+    # itself to). An empty catalog falls back to Custom-only in the model
+    # picker (AgentRuntime.model_choices docstring) rather than inventing ids.
+    MODEL_CHOICES: List[Tuple[str, str]] = []
+
+    _bin_cache: Optional[str] = None
+
+    def resolve_binary(self) -> Optional[Path]:
+        if self._bin_cache is not None:
+            return Path(self._bin_cache) if self._bin_cache else None
+        found = shutil.which('qwen')
+        if not found and sys.platform == 'win32':
+            for c in [
+                Path(os.environ.get('APPDATA', '')) / 'npm' / 'qwen.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / 'AppData' / 'Roaming' / 'npm' / 'qwen.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'qwen.cmd',
+                Path(os.environ.get('USERPROFILE', '')) / '.npm-global' / 'bin' / 'qwen.cmd',
+            ]:
+                try:
+                    if c.exists():
+                        found = str(c)
+                        break
+                except Exception:
+                    pass
+        elif not found:
+            home = Path(os.environ.get('HOME', str(Path.home())))
+            for c in [
+                home / '.local' / 'bin' / 'qwen',
+                home / '.npm-global' / 'bin' / 'qwen',
+                Path('/usr/local/bin/qwen'),
+                Path('/opt/homebrew/bin/qwen'),
+            ]:
+                try:
+                    if c.exists():
+                        found = str(c)
+                        break
+                except Exception:
+                    pass
+        self._bin_cache = found or ''
+        return Path(found) if found else None
+
+    def build_command(self, *, model: str = '', max_turns: int = 0,
+                      streaming: bool = False, perm_mode: str = '',
+                      channels: str = '', remote_control: bool = False,
+                      resume_id: str = '') -> List[str]:
+        """Return the qwen one-shot command.
+
+        Flags verified live against qwen-code 0.23.4 (`qwen --help` plus real
+        dispatches, this box, 2026-09-15):
+          [query]                     -- positional prompt; omitted here, the
+                                         prompt is sent over stdin instead —
+                                         live-verified: a piped stdin prompt
+                                         with no positional and no -p works
+                                         identically to a positional one.
+          --output-format stream-json -- see class docstring: Claude-Code-
+                                         shaped JSONL, not gemini's/codex's.
+          --include-partial-messages  -- adds `stream_event` envelopes for
+                                         live token deltas; parse_event
+                                         ignores them (returns None), exactly
+                                         as ClaudeRuntime's own parser does.
+          --yolo                      -- auto-accept every tool call. This is
+                                         a headless dispatch with no TTY to
+                                         approve from — mirrors GeminiRuntime's
+                                         own `--yolo` for the same reason.
+          --bare                      -- disable native project-config
+                                         auto-discovery. LOAD-BEARING — see
+                                         class docstring.
+          --chat-recording             -- required for --resume to work at
+                                         all (the CLI's own --help text
+                                         states this); re-stated on every
+                                         respawn since flags don't persist
+                                         across processes.
+          --resume <id>                -- continue a prior qwen session by
+                                         its OWN session id (captured off the
+                                         `system`/`init` envelope via the
+                                         shared `_mode_a_reader`'s INIT
+                                         handling — NOT an MC session id).
+                                         Live-verified cross-process
+                                         continuity: a fact stated in turn 1
+                                         was recalled correctly by a fresh
+                                         process after --resume.
+          -m / --model                 -- override model.
+
+        `QWEN_CODE_SUPPRESS_YOLO_WARNING=1` silences a non-JSON banner
+        (\"Warning: running headless with --yolo...\") the CLI otherwise
+        prints to stdout ahead of the JSON stream; set as an env var by
+        dispatch()/write_followup()/oneshot(), not a CLI flag.
+        """
+        bin_path = self.resolve_binary()
+        cmd = [str(bin_path) if bin_path else 'qwen',
+               '--output-format', 'stream-json', '--include-partial-messages',
+               '--yolo', '--bare', '--chat-recording']
+        if resume_id:
+            cmd.extend(['--resume', resume_id])
+        if model:
+            cmd.extend(['--model', model])
+        return cmd
+
+    def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
+        """Parse a line from qwen's `--output-format stream-json`.
+
+        Mirrors `ClaudeRuntime.parse_event` — see the class docstring for why
+        (this CLI's stream is Claude-Code-shaped, live-verified). Differences
+        from Claude's own parser, both live-verified 2026-09-15:
+          - `result` carries `is_error` + a nested `error.message` instead of
+            Claude's `result_code`; a true `is_error` becomes EventType.ERROR
+            (Claude's parser never does this — its errors surface via
+            _scan_auth_error on raw stderr text instead, a path this CLI's
+            structured error object makes unnecessary, same rationale as
+            GeminiRuntime's own 'result'-status-error branch).
+          - `user` (a tool_result echo) returns None: the shared
+            `_mode_a_reader` has no TOOL_RESULT/USER_MESSAGE branch (only
+            GeminiRuntime's OWN bespoke reader does), so surfacing it would
+            fall into the reader's catch-all and dump raw JSON into the chat.
+            Matches Claude's own chat behaviour, which also never echoes a
+            tool_result (see `_format_tool_activity`'s docstring).
+        """
+        line = raw_line.rstrip('\n\r') if raw_line else ''
+        if not line:
+            return None
+
+        try:
+            msg = json.loads(line)
+            if not isinstance(msg, dict):
+                raise ValueError('not a dict')
+        except (json.JSONDecodeError, ValueError):
+            return AgentEvent(
+                type=EventType.ASSISTANT_TEXT, provider='qwen',
+                session_id=None, mc_session_id=mc_session_id,
+                timestamp=_now_iso(), payload={'text': line},
+            )
+
+        msg_type = msg.get('type', '')
+        session_id = msg.get('session_id')
+
+        if msg_type == 'user':
+            return None
+
+        if msg_type == 'assistant':
+            # NOT ClaudeRuntime's shape: that parser's payload={'blocks': [...]}
+            # is for Claude's OWN dedicated stream reader (agent_routes.py),
+            # which understands 'blocks' for text too. QwenRuntime instead
+            # plugs into the SHARED `_mode_a_reader` (same as Codex/Gemini/
+            # OpenCode/...), whose ASSISTANT_TEXT branch reads a flat
+            # `payload['text']` — live-verified 2026-09-15: leaving this as
+            # `{'blocks': [...]}` made `_mode_a_reader` fall back to `line`
+            # (payload has no 'text' key) and dump the raw JSON envelope into
+            # the chat instead of the actual reply. Tool_use still uses
+            # 'blocks', matching what `_mode_a_reader`'s TOOL_USE branch reads
+            # — same split CodexRuntime's own 0.133-schema branch makes.
+            text_parts: List[str] = []
+            tool_blocks: List[Dict[str, Any]] = []
+            for block in msg.get('message', {}).get('content', []):
+                if not isinstance(block, dict):
+                    continue
+                bt = block.get('type', '')
+                if bt == 'text':
+                    text_parts.append(block.get('text', ''))
+                elif bt == 'tool_use':
+                    tool_blocks.append({
+                        'type': 'tool_use',
+                        'name': block.get('name', ''),
+                        'input': block.get('input', {}),
+                        'tool_use_id': block.get('id'),
+                    })
+            if tool_blocks:
+                return AgentEvent(
+                    type=EventType.TOOL_USE, provider='qwen',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload={'blocks': tool_blocks}, raw=msg,
+                )
+            text = ''.join(text_parts)
+            if text:
+                return AgentEvent(
+                    type=EventType.ASSISTANT_TEXT, provider='qwen',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload={'text': text}, raw=msg,
+                )
+            return None
+
+        if msg_type == 'system' and msg.get('subtype') == 'init':
+            return AgentEvent(
+                type=EventType.INIT, provider='qwen',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={
+                    # 'session_id' duplicated into payload (not just the
+                    # AgentEvent's own top-level field) because the shared
+                    # `_mode_a_reader`'s INIT handling reads
+                    # `ev.payload.get('session_id')` to capture
+                    # `provider_session_id` — live-caught bug: omitting this
+                    # left every resume/`transcript_path` lookup with no id
+                    # to work from, matching CodexRuntime's own INIT payload
+                    # (which duplicates its thread_id the same way).
+                    'session_id': session_id,
+                    'model': msg.get('model'),
+                    'cli_version': msg.get('qwen_code_version'),
+                    'cwd': msg.get('cwd'),
+                    'mcp_servers': msg.get('mcp_servers', []),
+                    'tools': msg.get('tools', []),
+                    'agents': msg.get('agents', []),
+                    'slash_commands': msg.get('slash_commands', []),
+                    'permission_mode': msg.get('permission_mode'),
+                },
+                raw=msg,
+            )
+
+        if msg_type == 'result':
+            if msg.get('is_error'):
+                err = msg.get('error') or {}
+                err_text = (err.get('message') or msg.get('result')
+                           or 'Qwen Code reported an error with no message')
+                return AgentEvent(
+                    type=EventType.ERROR, provider='qwen',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload={'text': str(err_text)}, raw=msg,
+                )
+            return AgentEvent(
+                type=EventType.TURN_END, provider='qwen',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={
+                    'usage': msg.get('usage'),
+                    'cost_usd': None,
+                    'total_cost_usd': None,
+                    'num_turns': msg.get('num_turns'),
+                    'rc': None,
+                    'permission_denials': msg.get('permission_denials') or [],
+                },
+                raw=msg,
+            )
+
+        # 'stream_event' (partial-message deltas) and anything unrecognized —
+        # deliberately suppressed. See class/parse_event docstrings.
+        return None
+
+    def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
+        """Locate the `--chat-recording` transcript for a qwen session id.
+
+        Live-verified 2026-09-15: qwen writes
+        `~/.qwen/projects/<encoded-path>/chats/<session_id>.jsonl`, where
+        `<session_id>` is exactly the id captured off this session's own
+        `system`/`init` event (the shared `_mode_a_reader`'s INIT handling
+        sets `session['provider_session_id']` from it) — not an MC session
+        id. The directory encoding matches Claude's own scheme
+        (`_encoded_dir_candidates`: `:`/path separators/`_`/`.` all become
+        `-`) with one addition verified live: qwen lowercases the whole
+        path (`c--users-...`, not Claude's `C--Users-...`).
+        """
+        if not session_id or not project_path:
+            return None
+        home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                or str(Path.home()))
+        qwen_projects = Path(home) / '.qwen' / 'projects'
+        for enc in ClaudeRuntime._encoded_dir_candidates(project_path):
+            candidate = qwen_projects / enc.lower() / 'chats' / f'{session_id}.jsonl'
+            if candidate.is_file():
+                return candidate
+        return None
+
+    def _qwen_auth_state(self) -> Tuple[str, Optional[str]]:
+        """Where qwen actually keeps its credentials.
+
+        Verified 2026-09-15 against the bundled docs (`@qwen-code/qwen-code`
+        0.23.4, `bundled/qc-helper/docs/configuration/auth.md`) — `qwen auth`
+        is removed. Native Qwen OAuth (`qwen-oauth`) was discontinued
+        2026-04-15, so a cached token for it (if any existed) is not treated
+        as "signed in" here.
+
+        One nuance specific to this being a gemini-cli fork, found live on
+        this box (which has no qwen-specific credential configured
+        anywhere): a plain `qwen "hi"` answered anyway, using
+        `gemini-3.5-flash-lite`, by silently falling back to gemini-cli's OWN
+        OAuth cache (`~/.gemini/oauth_creds.json`) because our GeminiRuntime
+        already has a Google account signed in there. Reported 'ok' with a
+        distinct method string so it is never mistaken for real Qwen/
+        DashScope auth.
+
+        Returns (status, method) with status 'ok' | 'not_logged_in'.
+        """
+        for env_var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY',
+                        'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'):
+            if os.environ.get(env_var):
+                return ('ok', f'env:{env_var}')
+        home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                or str(Path.home()))
+        try:
+            settings = Path(home) / '.qwen' / 'settings.json'
+            if settings.is_file():
+                data = json.loads(settings.read_text(encoding='utf-8'))
+                env_block = data.get('env') if isinstance(data, dict) else None
+                if isinstance(env_block, dict) and any(
+                        env_block.get(k) for k in
+                        ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY',
+                         'GEMINI_API_KEY', 'BAILIAN_CODING_PLAN_API_KEY',
+                         'BAILIAN_TOKEN_PLAN_API_KEY')):
+                    return ('ok', 'settings.json env')
+        except Exception as e:
+            print(f"[qwen] reading settings.json failed: {e}", flush=True)
+        try:
+            creds = Path(home) / '.gemini' / 'oauth_creds.json'
+            if creds.is_file():
+                data = json.loads(creds.read_text(encoding='utf-8'))
+                if isinstance(data, dict) and (data.get('refresh_token')
+                                               or data.get('access_token')):
+                    return ('ok', 'fallback:gemini-oauth')
+        except Exception as e:
+            print(f"[qwen] reading gemini oauth fallback failed: {e}", flush=True)
+        return ('not_logged_in', None)
+
+    def health_check(self) -> HealthStatus:
+        p = self.resolve_binary()
+        if not p:
+            return HealthStatus(
+                installed=False, binary_path=None, version=None,
+                auth_state=AuthState(status='not_installed', last_checked=_now_iso()),
+                install_hint='npm install -g @qwen-code/qwen-code',
+            )
+        version = None
+        try:
+            r = subprocess.run([str(p), '--version'], capture_output=True, text=True,
+                               timeout=15, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+            raw = (r.stdout or r.stderr or '').strip()
+            version = raw.splitlines()[0] if raw else None
+        except Exception as e:
+            return HealthStatus(
+                installed=True, binary_path=p, version=None,
+                auth_state=AuthState(status='unknown', last_checked=_now_iso()),
+                diagnostic=str(e), install_hint='',
+            )
+        raw_status, method = self._qwen_auth_state()
+        has_key = raw_status == 'ok'
+        error_text = None
+        if not has_key:
+            error_text = ('Not signed in. Set DASHSCOPE_API_KEY (Alibaba ModelStudio), '
+                         'OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in '
+                         'Provider Settings, or run `qwen` and use /auth interactively '
+                         '— native Qwen OAuth was discontinued 2026-04-15.')
+        return HealthStatus(
+            installed=True, binary_path=p, version=version,
+            auth_state=AuthState(status='ok' if has_key else 'not_logged_in',
+                                 method=method, error_text=error_text,
+                                 last_checked=_now_iso()),
+            install_hint='',
+        )
+
+    def capabilities(self) -> ProviderCapabilities:
+        return ProviderCapabilities(
+            name='qwen',
+            display_name='Qwen Code',
+            supports_mode_a=True,
+            supports_mode_b=False,
+            mode_b_kind='none',
+            default_mode='A',
+            # --resume <session_id>, live-verified cross-process continuity.
+            supports_session_resume=True,
+            # --bare deliberately disables the native project MCP discovery
+            # this CLI otherwise performs (see class docstring) and no
+            # --mcp-config flag is wired here — declaring this True with
+            # nothing behind it would be the same overclaim CodexRuntime's
+            # own supports_plan_mode=False comment warns against.
+            supports_mcp=False,
+            # Catalog injected via system-prompt text, same as Gemini/Codex —
+            # honestly true since qwen has a read_file tool to open it.
+            supports_skills=True,
+            supports_plan_mode=False,
+            # Emulated via the mc:question fence (with_mc_tool_protocol) —
+            # no native ask-the-user tool is present in --bare mode.
+            supports_ask_user_question=True,
+            supports_streaming_text=True,
+            emits_usage=True,
+            emits_rate_limit=False,
+            # Live-verified: `result` never carries cost_usd/total_cost_usd.
+            emits_cost=False,
+            # Live-verified: `result.num_turns` is per-turn (1, then 2 for a
+            # one-tool-call turn) — same semantics as Claude's, so
+            # accumulate_result_turns's per-turn-sum logic applies unchanged.
+            emits_num_turns=True,
+            # read_file is a real tool call, not multimodal image input — but
+            # matches the same honest-true bar GeminiRuntime sets for its own
+            # file-based image reading.
+            image_input=True,
+            context_window=None,
+            # --bare disables native QWEN.md discovery, so context must be
+            # prepended into the prompt text instead, same as GeminiRuntime.
+            context_injection='prepend',
+            context_file_name='QWEN.md',
+            oneshot_supported=True,
+        )
+
+    def dispatch(self, *,
+                 project_path: str,
+                 task: str,
+                 system_prompt: str = '',
+                 resume_id: str = '',
+                 mode: Literal['A', 'B'] = 'A',
+                 model: str = '',
+                 max_turns: Optional[int] = None,
+                 incognito: bool = False,
+                 env_extra: Optional[Dict[str, str]] = None,
+                 callbacks: Optional[Dict[str, Callable]] = None,
+                 housekeeping: bool = False,
+                 mc_session_id: Optional[str] = None,
+                 session_dict: Optional[Dict[str, Any]] = None,
+                 project_id: str = '',
+                 register_process: Optional[Callable] = None,
+                 **_extra) -> SessionHandle:
+        if not self.resolve_binary():
+            raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
+
+        mc_sid = mc_session_id or uuid.uuid4().hex[:12]
+        cmd = self.build_command(model=model)
+        # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
+        # dispatch(): the universal context block already tells the model to
+        # use this fence, but nothing explains its shape without this.
+        system_prompt = self.with_mc_tool_protocol(system_prompt)
+        full_prompt = task
+        if system_prompt and not resume_id:
+            full_prompt = f"{system_prompt}\n\n---\n\n{task}"
+
+        env = dict(env_extra or {})
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+
+        return _mode_a_dispatch(
+            self, cmd, full_prompt, project_path, project_id, task,
+            mc_sid, session_dict, incognito, env, callbacks,
+            register_process, prompt_via_stdin=True,
+            system_prompt=system_prompt,
+        )
+
+    def write_followup(self, handle: SessionHandle, message: str,
+                       attachments: Optional[List[str]] = None) -> None:
+        session = handle.session_dict
+        old_proc = session.get('proc')
+        if old_proc and old_proc.poll() is None:
+            # Disown before kill — see CodexRuntime.write_followup's identical
+            # comment for the exact race this ordering avoids.
+            session['proc'] = None
+            _kill_pid(old_proc.pid)
+        session['_system_prompt'] = self.with_mc_tool_protocol(
+            session.get('_system_prompt') or '')
+
+        # `provider_session_id` is qwen's own session id, captured off this
+        # session's `system`/`init` event by the shared `_mode_a_reader`.
+        # --resume continues that same recorded chat directly; falls back to
+        # the tail-replay respawn only when no id was ever captured (dispatch
+        # errored before its INIT event fired).
+        resume_id = session.get('provider_session_id') or ''
+        if resume_id:
+            full_prompt = message
+        else:
+            full_prompt = _compose_respawn_prompt(session, message)
+        mc_sid = handle.mc_session_id
+        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
+        env = os.environ.copy()
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        proc = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=handle.project_path,
+            text=True, encoding='utf-8', errors='replace',
+            env=env,
+            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+        )
+
+        def _send() -> None:
+            try:
+                if proc.stdin:
+                    proc.stdin.write(full_prompt)
+                    proc.stdin.close()
+            except Exception:
+                pass
+        threading.Thread(target=_send, daemon=True,
+                         name=f'qwen-stdin-{mc_sid[:8]}').start()
+        session['proc'] = proc
+        session['status'] = 'running'
+        session['process_alive'] = True
+        session['last_output_time'] = _time.time()
+        session['last_status_change_time'] = _time.time()
+        threading.Thread(target=_mode_a_reader, args=(proc, handle, self),
+                         daemon=True, name=f'qwen-reader-{mc_sid[:8]}').start()
+
+    def interrupt(self, handle: SessionHandle) -> None:
+        _mode_a_interrupt(handle)
+
+    def stop(self, handle: SessionHandle) -> None:
+        _mode_a_interrupt(handle)
+
+    def oneshot(self, *, prompt: str, system_prompt: str = '',
+                model: str = '', max_turns: int = 1,
+                stdin_text: Optional[str] = None,
+                cwd: Optional[str] = None) -> Optional[OneshotResult]:
+        if not self.resolve_binary():
+            return None
+        full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
+        if stdin_text:
+            full = f"{full}\n\n---\n\n{stdin_text}"
+        cmd = self.build_command(model=model)
+        env = os.environ.copy()
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        try:
+            r = subprocess.run(
+                cmd, input=full,
+                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                cwd=cwd or str(Path.home()),
+                text=True, encoding='utf-8', errors='replace',
+                timeout=180, env=env,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+            )
+        except Exception:
+            return None
+        last_text = ''
+        for raw_line in (r.stdout or '').splitlines():
+            ev = self.parse_event(raw_line)
+            if ev and ev.type == EventType.ASSISTANT_TEXT:
+                last_text = ev.payload.get('text', last_text)
+        return OneshotResult(text=last_text or (r.stdout or '').strip())
+
+    def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
+        s = (log_tail or '').lower()
+        if any(p in s for p in ('not authenticated', 'invalid api key', 'unauthorized',
+                                '401', 'permission denied', 'not found for api version')):
+            return ("Qwen Code isn't authenticated. Set DASHSCOPE_API_KEY, OPENAI_API_KEY, "
+                    "ANTHROPIC_API_KEY, or GEMINI_API_KEY in Settings -> Agent Providers, "
+                    "or run: qwen  (then use /auth interactively)")
+        if any(p in s for p in ('enoent', 'command not found', 'no such file',
+                                'cannot find the path', "is not recognized")):
+            return "Qwen Code CLI not found. Run: npm install -g @qwen-code/qwen-code"
+        if any(p in s for p in ('resource_exhausted', 'quota', 'rate limit',
+                                '429', 'too many requests')):
+            return "Qwen Code rate limit hit. Wait a minute and try again."
+        if 'uv_handle_closing' in s or ('assertion failed' in s and 'async.c' in s):
+            # Live-verified 2026-09-15, reproduced twice (a fresh dispatch and
+            # a --resume respawn): qwen-code 0.23.4 on Windows can crash with
+            # a native libuv assertion during its own process teardown, AFTER
+            # it has already emitted the correct assistant reply — the answer
+            # in the chat above this line is real, only the exit status is
+            # wrong. A third-party CLI bug, not an MC fault; nothing to retry
+            # for, since the reply already landed.
+            return ("Qwen Code crashed during shutdown after replying (known "
+                    "qwen-code 0.23.4 Windows issue, native libuv assertion) — "
+                    "the reply above is still valid.")
+        if rc != 0:
+            real_line = _last_real_error_line(log_tail)
+            if real_line:
+                return f"Qwen Code error: {real_line}"
+            return f"Qwen Code exited with code {rc}. Check auth and model name."
+        return None
 
 
 class CodexRuntime(AgentRuntime):
@@ -6494,6 +7088,7 @@ class KiroRuntime(AgentRuntime):
 
 register_runtime(ClaudeRuntime())
 register_runtime(GeminiRuntime())
+register_runtime(QwenRuntime())
 register_runtime(CodexRuntime())
 register_runtime(OpenCodeRuntime())
 register_runtime(GooseRuntime())
