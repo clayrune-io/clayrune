@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16e] — Serve the Windows installer from GitHub Releases
+
+- The Windows download button on clayrune.io now opens GitHub's stable
+  `releases/latest/download/Clayrune-Installer.exe` asset instead of serving
+  the executable from the website origin. Release v2.3.0 now carries the
+  standalone EXE, with a SHA-256 matching the tracked installer binary.
+
 ## [2026-09-16d] — Safe Windows and macOS uninstall flows
 
 - Windows installs now add **Uninstall Clayrune** to the Start Menu; macOS

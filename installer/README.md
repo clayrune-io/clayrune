@@ -77,7 +77,7 @@ The bootstrap clearly prints the exact `claude --dangerously-skip-permissions` l
 
 | URL | What it serves | Source |
 |---|---|---|
-| `https://clayrune.io/Clayrune-Installer.exe` | the thin Windows launcher (primary) | this repo: `installer/Clayrune-Installer.exe` (built from `installer/win-exe/`) |
+| `https://github.com/clayrune-io/clayrune/releases/latest/download/Clayrune-Installer.exe` | the thin Windows launcher linked from clayrune.io (primary) | this repo: `installer/Clayrune-Installer.exe` (built from `installer/win-exe/`; attach it to every GitHub release) |
 | `https://clayrune.io/install.sh` | the bootstrap (macOS/Linux) | this repo: `installer/install.sh` |
 | `https://clayrune.io/install.ps1` | the bootstrap (Windows) | this repo: `installer/install.ps1` |
 | `https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/uninstall-macos.command` | safe macOS uninstaller | this repo: `installer/uninstall-macos.command` |
