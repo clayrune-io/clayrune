@@ -792,6 +792,13 @@ open `~/Applications/Uninstall Clayrune.command`. The default preserves your
 data and provider state; each uninstaller also offers a separately confirmed
 purge mode. Neither mode removes provider CLIs, `~/.claude`, or project folders.
 
+**Q: Is the Windows installer verified?**
+A: The double-click launcher downloads the installer script from the exact Git
+commit it was built from and checks its pinned SHA-256 before running it. Release
+signing through Microsoft Artifact Signing is prepared but not yet activated;
+the current public download is unsigned. A mismatched or modified bootstrap is
+never executed.
+
 ### Proposing a team
 
 If the user asks which agents a project or a kind of work needs, answer with

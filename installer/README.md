@@ -46,9 +46,9 @@ A Claude-driven installer. The user runs one command; Claude executes the instal
 
 | File | Purpose |
 |---|---|
-| `Clayrune-Installer.exe` | **Primary Windows path.** A thin native console launcher (double-click). Does no install work itself — discloses, then fetches & runs `install.ps1` fresh from GitHub raw (cache-busted) and offers a built-in `claude /login` retry loop. Built from `win-exe/` (see below); commit the rebuilt binary alongside the source. |
+| `Clayrune-Installer.exe` | **Primary Windows path.** A native console launcher (double-click). It downloads `install.ps1` from the exact Git commit used for the build, verifies its pinned SHA-256, runs the verified local file, and offers a built-in provider login retry loop. It never pipes downloaded text into PowerShell. |
 | `win-exe/ClayruneInstaller.cs` | Source for `Clayrune-Installer.exe`. Faithful port of the old `Clayrune-Setup.bat` flow. |
-| `win-exe/build.ps1` | Compiles the exe with the .NET Framework `csc.exe` already on every Windows 10/11 box (no SDK, no signing). Output → `installer/Clayrune-Installer.exe`. |
+| `win-exe/build.ps1` | Compiles the EXE with the .NET Framework `csc.exe` already on every Windows 10/11 box and generates the commit-pinned bootstrap URL/hash. Local output is unsigned; `.github/workflows/build-windows-installer.yml` performs release signing. |
 | `Clayrune-Setup.bat` | Legacy Windows double-click path, superseded by the `.exe`. Kept as a plain-text fallback for users who distrust binaries. |
 | `Clayrune-Setup.command` | macOS double-click path (same role as the `.bat`). |
 | `install.sh` | Bootstrap for macOS / Linux. The user runs `curl -sSL https://clayrune.io/install.sh \| sh`. |
@@ -63,7 +63,7 @@ A Claude-driven installer. The user runs one command; Claude executes the instal
 
 ## Why this design
 
-- **No build pipeline**: zero per-platform installers to compile, sign, and publish. The bootstrap is two ~100-line shell scripts; the install logic is plain Markdown.
+- **Small native wrapper**: Windows gets a reviewable C# launcher around the canonical PowerShell bootstrap. The release workflow signs and timestamps that wrapper; the install logic remains plain text in the repository.
 - **Cross-platform "for free"**: Claude figures out OS, package manager, and Python/Node install paths. We don't write per-distro shell logic.
 - **Self-healing**: when winget hiccups or apt is locked, Claude can diagnose and try a different approach. A scripted installer can't.
 - **No bundling, no licensing review**: we never redistribute Claude CLI, Node, Python, or any other dependency.
@@ -77,7 +77,7 @@ The bootstrap clearly prints the exact `claude --dangerously-skip-permissions` l
 
 | URL | What it serves | Source |
 |---|---|---|
-| `https://github.com/clayrune-io/clayrune/releases/latest/download/Clayrune-Installer.exe` | the thin Windows launcher linked from clayrune.io (primary) | this repo: `installer/Clayrune-Installer.exe` (built from `installer/win-exe/`; attach it to every GitHub release) |
+| `https://github.com/clayrune-io/clayrune/releases/latest/download/Clayrune-Installer.exe` | the verified-bootstrap Windows launcher linked from clayrune.io (primary) | signed workflow artifact from `.github/workflows/build-windows-installer.yml`; attach only the verified signed output to a release |
 | `https://clayrune.io/install.sh` | the bootstrap (macOS/Linux) | this repo: `installer/install.sh` |
 | `https://clayrune.io/install.ps1` | the bootstrap (Windows) | this repo: `installer/install.ps1` |
 | `https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/uninstall-macos.command` | safe macOS uninstaller | this repo: `installer/uninstall-macos.command` |
@@ -93,6 +93,9 @@ any URL.
 
 A new install on a clean VM should:
 
+- [ ] Download without a Microsoft Defender malware detection
+- [ ] Report `Valid` from `Get-AuthenticodeSignature` for a release build
+- [ ] Refuse to execute `install.ps1` when its SHA-256 differs from the build-pinned value
 - [ ] Complete in under 5 minutes with no manual intervention beyond the initial `curl … | sh`
 - [ ] End with the browser open at `http://localhost:5199`
 - [ ] Place a clickable launcher on the Desktop and in the OS app menu

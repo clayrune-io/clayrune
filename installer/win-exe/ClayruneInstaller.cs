@@ -5,29 +5,27 @@
 // with a scarier SmartScreen warning and reads as untrustworthy).
 //
 // It is INTENTIONALLY thin: it does no install work itself. It discloses what
-// will happen, then hands off to the canonical PowerShell bootstrap
-// (installer/install.ps1) fetched fresh from GitHub raw with a cache-bust, so
-// the install logic always lives in ONE place and never goes stale inside a
-// shipped binary.
+// will happen, downloads the canonical PowerShell bootstrap from the exact
+// Git commit used to build this EXE, verifies its SHA-256, and runs that local
+// file. Downloaded text is never piped directly into a shell.
 //
 // Built with the .NET Framework csc.exe that ships on every Windows 10/11 box
-// (see build.ps1) — no build pipeline, no third-party tooling, no code-signing
-// spend. Unsigned: SmartScreen will still show "More info -> Run anyway" once,
-// same as the .bat, but it is now a normal app prompt rather than a
-// downloaded-script prompt.
+// (see build.ps1). Release builds are signed separately through Microsoft
+// Artifact Signing; local builds remain unsigned and are for development only.
 //
-// Override the bootstrap URL for testing with the CLAYRUNE_PS1_URL env var.
+// Override the bootstrap URL and hash for testing with CLAYRUNE_PS1_URL and
+// CLAYRUNE_PS1_SHA256.
 
 using System;
 using System.Diagnostics;
+using System.IO;
+using System.Net;
+using System.Security.Cryptography;
 using System.Text;
 using System.Threading;
 
 internal static class ClayruneInstaller
 {
-    private const string DefaultPs1Url =
-        "https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/install.ps1";
-
     // Exit codes returned by installer/install.ps1. This is a CONTRACT — see
     // the "EXIT CODES" block at the top of that file. Keep them in sync.
     private const int RcOk           = 0;
@@ -41,7 +39,19 @@ internal static class ClayruneInstaller
     private static string Ps1Url()
     {
         var o = Environment.GetEnvironmentVariable("CLAYRUNE_PS1_URL");
-        return string.IsNullOrWhiteSpace(o) ? DefaultPs1Url : o;
+        return string.IsNullOrWhiteSpace(o) ? BootstrapConfig.Url : o;
+    }
+
+    private static string Ps1Sha256()
+    {
+        var customUrl = Environment.GetEnvironmentVariable("CLAYRUNE_PS1_URL");
+        if (string.IsNullOrWhiteSpace(customUrl)) return BootstrapConfig.Sha256;
+
+        var customHash = Environment.GetEnvironmentVariable("CLAYRUNE_PS1_SHA256");
+        if (string.IsNullOrWhiteSpace(customHash))
+            throw new InvalidOperationException(
+                "CLAYRUNE_PS1_SHA256 is required when CLAYRUNE_PS1_URL is overridden.");
+        return customHash;
     }
 
     // One launch = one installer. A clean-VM smoke test (2026-07-23) saw a
@@ -189,26 +199,42 @@ internal static class ClayruneInstaller
         }
     }
 
-    // Hand off to the canonical PowerShell bootstrap, fetched fresh with a
-    // cache-bust query param (GitHub raw is CDN-cached and can serve a stale
-    // copy for minutes after a push — critical when shipping a hotfix while a
-    // broken install.ps1 is still live on a fresh VM).
+    // Download the canonical bootstrap as data, verify the build-pinned hash,
+    // then execute the verified local file. Never pipe downloaded text into a
+    // shell: that removes the integrity boundary and resembles malware.
     private static int RunBootstrap()
     {
-        long cb = DateTimeOffset.Now.ToUnixTimeSeconds();
-        string url = Ps1Url() + (Ps1Url().Contains("?") ? "&" : "?") + "t=" + cb;
-        string ps =
-            "$ProgressPreference='SilentlyContinue'; " +
-            "iwr \"" + url + "\" -useb | iex";
-
-        var psi = new ProcessStartInfo
-        {
-            FileName = "powershell.exe",
-            Arguments = "-ExecutionPolicy Bypass -NoProfile -Command \"" + ps.Replace("\"", "\\\"") + "\"",
-            UseShellExecute = false,
-        };
+        string scriptPath = Path.Combine(
+            Path.GetTempPath(), "Clayrune-install-" + Guid.NewGuid().ToString("N") + ".ps1");
         try
         {
+            ServicePointManager.SecurityProtocol |= SecurityProtocolType.Tls12;
+            using (var client = new WebClient())
+            {
+                client.Headers[HttpRequestHeader.UserAgent] = "Clayrune-Installer";
+                client.DownloadFile(Ps1Url(), scriptPath);
+            }
+
+            string actualHash;
+            using (var stream = File.OpenRead(scriptPath))
+            using (var sha = SHA256.Create())
+                actualHash = BitConverter.ToString(sha.ComputeHash(stream)).Replace("-", "");
+
+            string expectedHash = Ps1Sha256().Replace("-", "").Trim();
+            if (!actualHash.Equals(expectedHash, StringComparison.OrdinalIgnoreCase))
+            {
+                Console.WriteLine();
+                Console.WriteLine("SECURITY ERROR: installer bootstrap hash mismatch.");
+                Console.WriteLine("The downloaded file was not executed.");
+                return RcInstallStep;
+            }
+
+            var psi = new ProcessStartInfo
+            {
+                FileName = "powershell.exe",
+                Arguments = "-NoProfile -ExecutionPolicy RemoteSigned -File \"" + scriptPath + "\"",
+                UseShellExecute = false,
+            };
             using (var p = Process.Start(psi))
             {
                 p.WaitForExit();
@@ -218,8 +244,13 @@ internal static class ClayruneInstaller
         catch (Exception e)
         {
             Console.WriteLine();
-            Console.WriteLine("Could not launch PowerShell: " + e.Message);
+            Console.WriteLine("Could not download or launch the verified installer: " + e.Message);
             return 1;
+        }
+        finally
+        {
+            try { if (File.Exists(scriptPath)) File.Delete(scriptPath); }
+            catch { /* best-effort cleanup of a verified temporary file */ }
         }
     }
 
@@ -262,7 +293,7 @@ internal static class ClayruneInstaller
         {
             FileName = "cmd.exe",
             Arguments = "/c start \"Clayrune - Claude Login\" /WAIT powershell.exe " +
-                        "-NoProfile -ExecutionPolicy Bypass -Command \"" +
+                        "-NoProfile -Command \"" +
                         inner.Replace("\"", "\\\"") + "\"",
             UseShellExecute = false,
         };

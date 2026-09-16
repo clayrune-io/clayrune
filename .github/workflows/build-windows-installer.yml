@@ -1,0 +1,80 @@
+name: Build signed Windows installer
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  build-sign-verify:
+    runs-on: windows-2022
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v5
+
+      - name: Require Artifact Signing configuration
+        shell: pwsh
+        env:
+          SIGNING_ENDPOINT: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          SIGNING_ACCOUNT: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          SIGNING_PROFILE: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          AZURE_CLIENT_ID: ${{ secrets.AZURE_CLIENT_ID }}
+          AZURE_TENANT_ID: ${{ secrets.AZURE_TENANT_ID }}
+          AZURE_SUBSCRIPTION_ID: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+        run: |
+          $required = @(
+            'SIGNING_ENDPOINT', 'SIGNING_ACCOUNT', 'SIGNING_PROFILE',
+            'AZURE_CLIENT_ID', 'AZURE_TENANT_ID', 'AZURE_SUBSCRIPTION_ID'
+          )
+          $missing = $required | Where-Object { [string]::IsNullOrWhiteSpace((Get-Item "Env:$_").Value) }
+          if ($missing) { throw "Missing Artifact Signing configuration: $($missing -join ', ')" }
+
+      - name: Build installer
+        shell: powershell
+        run: .\installer\win-exe\build.ps1
+
+      - name: Sign in to Azure with OIDC
+        uses: azure/login@v3
+        with:
+          client-id: ${{ secrets.AZURE_CLIENT_ID }}
+          tenant-id: ${{ secrets.AZURE_TENANT_ID }}
+          subscription-id: ${{ secrets.AZURE_SUBSCRIPTION_ID }}
+
+      - name: Sign installer with Microsoft Artifact Signing
+        uses: azure/artifact-signing-action@v2
+        with:
+          endpoint: ${{ vars.AZURE_ARTIFACT_SIGNING_ENDPOINT }}
+          signing-account-name: ${{ vars.AZURE_ARTIFACT_SIGNING_ACCOUNT_NAME }}
+          certificate-profile-name: ${{ vars.AZURE_ARTIFACT_SIGNING_CERTIFICATE_PROFILE }}
+          files: ${{ github.workspace }}\installer\Clayrune-Installer.exe
+          file-digest: SHA256
+          timestamp-rfc3161: http://timestamp.acs.microsoft.com
+          timestamp-digest: SHA256
+          description: Clayrune Installer
+          description-url: https://clayrune.io
+
+      - name: Verify signature and package
+        shell: pwsh
+        run: |
+          $exe = 'installer\Clayrune-Installer.exe'
+          $sig = Get-AuthenticodeSignature -LiteralPath $exe
+          if ($sig.Status -ne 'Valid') {
+            throw "Authenticode verification failed: $($sig.Status) $($sig.StatusMessage)"
+          }
+          if (-not $sig.TimeStamperCertificate) {
+            throw 'Installer signature has no RFC 3161 timestamp.'
+          }
+          Compress-Archive -LiteralPath $exe -DestinationPath installer\Clayrune-Windows.zip -CompressionLevel Optimal -Force
+          Get-FileHash $exe,installer\Clayrune-Windows.zip -Algorithm SHA256 | Format-Table
+
+      - name: Upload signed installer bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: Clayrune-Windows-signed
+          path: |
+            installer/Clayrune-Installer.exe
+            installer/Clayrune-Windows.zip
+          if-no-files-found: error
+          retention-days: 14

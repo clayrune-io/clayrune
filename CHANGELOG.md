@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16f] — Harden and prepare signing for the Windows installer
+
+- The double-click launcher no longer executes `iwr | iex` or requests an
+  execution-policy bypass. It downloads `install.ps1` from the exact source
+  commit used for the build, verifies a build-pinned SHA-256, and executes only
+  the verified local file. URL overrides now require an explicit matching hash.
+- A manual, OIDC-authenticated GitHub Actions workflow builds, signs, timestamps,
+  verifies, and packages the installer through Microsoft Artifact Signing. It
+  uploads a review artifact but cannot replace release assets automatically.
+- Regression tests pin the download-integrity and signing contracts. Disposable
+  copies of both the rebuilt EXE and ZIP pass current Microsoft Defender scans;
+  trusted release signing remains gated on the validated Microsoft profile.
+
 ## [2026-09-16e] — Serve the Windows installer from GitHub Releases
 
 - The Windows download button on clayrune.io now opens GitHub's stable

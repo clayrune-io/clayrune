@@ -82,9 +82,11 @@ curl -fsSL https://clayrune.io/install.sh | sh
 ```
 
 That installs your chosen AI provider CLI, clones the repo and opens the dashboard on
-`http://localhost:5199`. If you'd rather double-click something, there's a
-[zip on clayrune.io](https://clayrune.io/download.html) — it's unsigned, so
-Windows will grumble about an "unrecognized app" the first time.
+`http://localhost:5199`. If you'd rather double-click something, use the
+[Windows download on clayrune.io](https://clayrune.io/download.html). The
+launcher verifies the exact installer script hash before executing it. Signed
+artifacts produced after the Microsoft profile is configured will also carry a
+timestamped trusted publisher identity; the current public download is unsigned.
 
 ### Uninstall
 
