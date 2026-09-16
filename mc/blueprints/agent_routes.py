@@ -1607,6 +1607,57 @@ def agent_provider_login_launch(name):
     return jsonify({'ok': True})
 
 
+def _install_command_required_binary(cmd: str) -> str:
+    """The executable a canned install command actually needs on PATH — the
+    first whitespace token before any '#' aside/pipe, e.g. 'npm' out of
+    'npm install -g @openai/codex' or 'curl' out of 'curl -fsSL ... | bash'.
+    Used only to give a fast, specific "X not found" instead of launching a
+    terminal that's doomed to fail the same way install.sh's own preflight
+    checks do."""
+    first = cmd.split('#', 1)[0].strip()
+    parts = first.split()
+    return parts[0] if parts else ''
+
+
+@bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
+def agent_provider_install_launch(name):
+    """Run the SAME install command install.sh/install.ps1 use for this
+    provider's CLI, in a new OS terminal so the user can watch real progress
+    and any prompts it needs. The command is `rt.health_check().install_hint`
+    — one source of truth already shared with the Settings provider card and
+    `_cli_missing_message()`, never invented here.
+
+    Returns {'ok': True} once the terminal is launched (the install's own
+    success/failure shows up IN that terminal, same as login-launch above —
+    this endpoint doesn't wait for it). Returns {'ok': False, 'error', 'command'}
+    when it can't even start: no install_hint for this runtime, the required
+    tool (npm/curl/pip/...) isn't on PATH, or no terminal emulator is
+    available — callers should show `command` as copy-paste text and let the
+    user continue instead of blocking on an install this server can't do.
+    """
+    try:
+        rt = _agent_runtime.get_runtime(name)
+    except KeyError:
+        return jsonify({'error': f'unknown provider {name}'}), 404
+    try:
+        hint = rt.health_check().install_hint or ''
+    except Exception as e:
+        return jsonify({'ok': False, 'error': str(e), 'command': ''}), 200
+    if not hint:
+        return jsonify({'ok': False,
+                        'error': f'no automatic install available for {name}',
+                        'command': ''}), 200
+    required = _install_command_required_binary(hint)
+    if required and not shutil.which(required):
+        return jsonify({'ok': False,
+                        'error': f'{required} not found on PATH',
+                        'command': hint}), 200
+    err = _launch_terminal_for_binary(hint)
+    if err:
+        return jsonify({'ok': False, 'error': err, 'command': hint}), 200
+    return jsonify({'ok': True, 'command': hint})
+
+
 def _auth_probe_cwd() -> str:
     """A scratch directory for `claude -p ok` to run in, so its transcript is
     written somewhere that is not a project. Created on demand; falls back to
@@ -6013,7 +6064,20 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         )
     except Exception as e:
         session['status'] = 'error'
-        session['log_lines'].append(f"[{provider_name} dispatch failed: {e}]")
+        # A missing CLI can never succeed by retrying — trip the circuit
+        # breaker on the FIRST failure instead of leaving pending_recovery_message
+        # unset-but-retriable for Guardian to rediscover on some later follow-up
+        # (GUARDIAN_MAX_RECOVERIES burned three times on a failure no retry
+        # fixes). Log the single-source-of-truth install message, not the raw
+        # exception text, so this reads the same as the FileNotFoundError case
+        # below and the Settings provider card.
+        if isinstance(e, (FileNotFoundError, _agent_runtime.CLINotInstalledError)):
+            session['circuit_breaker_tripped'] = True
+            session['guardian_state'] = 'needs_attention'
+            session['pending_recovery_message'] = None
+            session['log_lines'].append(f"[{_cli_missing_message(provider_name)}]")
+        else:
+            session['log_lines'].append(f"[{provider_name} dispatch failed: {e}]")
         session['process_alive'] = False
         session['last_status_change_time'] = _time.time()
         raise
@@ -6949,7 +7013,7 @@ def agent_dispatch(project_id):
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
-    except FileNotFoundError:
+    except (FileNotFoundError, _agent_runtime.CLINotInstalledError):
         return jsonify({'error': _cli_missing_message(provider_override)}), 500
     except Exception as e:
         return jsonify({'error': f'dispatch failed: {e}'}), 500
@@ -7170,7 +7234,7 @@ def agent_send(project_id):
         except ValueError as e:
             code = 404 if 'not found' in str(e) else 400
             return jsonify({'error': str(e)}), code
-        except FileNotFoundError:
+        except (FileNotFoundError, _agent_runtime.CLINotInstalledError):
             return jsonify({'error': _cli_missing_message(
                 (data.get('provider') or '').strip().lower())}), 500
         except Exception as e:
