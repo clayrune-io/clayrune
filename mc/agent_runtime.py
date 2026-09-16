@@ -4470,10 +4470,16 @@ class QwenRuntime(AgentRuntime):
 
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
-        for env_var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY',
-                        'ANTHROPIC_API_KEY', 'GEMINI_API_KEY'):
+        for env_var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'):
             if os.environ.get(env_var):
                 return ('ok', f'env:{env_var}')
+        # What the CLI's own /auth screen writes. Checked BEFORE GEMINI_API_KEY
+        # so a real configured Qwen credential is never reported as the
+        # Google fallback (which health_check flags as not-really-Qwen).
+        if self._settings_auth_env().get('OPENAI_API_KEY'):
+            return ('ok', 'settings.json security.auth')
+        if os.environ.get('GEMINI_API_KEY'):
+            return ('ok', 'env:GEMINI_API_KEY')
         home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                 or str(Path.home()))
         try:
@@ -4594,6 +4600,50 @@ class QwenRuntime(AgentRuntime):
             oneshot_supported=True,
         )
 
+    def _settings_auth_env(self) -> Dict[str, str]:
+        """OPENAI_* env derived from ~/.qwen/settings.json.
+
+        LOAD-BEARING because of `--bare`: measured 2026-09-16, `--bare`
+        disables the CLI's settings-file loading along with project config,
+        so a user who configured their key the normal way (the CLI's own
+        /auth screen writes `security.auth` / `modelProviders.openai`) gets
+        "No auth type is selected" / "Missing API key" on every dispatch
+        while a plain interactive `qwen` works fine. Env vars are the ONE
+        channel that survives `--bare`, so read what the user configured and
+        pass it through.
+
+        Returns {} when nothing is configured — the CLI's own fallbacks
+        (real env vars, gemini OAuth) then apply unchanged.
+        """
+        home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
+                or str(Path.home()))
+        try:
+            data = json.loads((Path(home) / '.qwen' / 'settings.json')
+                              .read_text(encoding='utf-8'))
+        except Exception:
+            return {}
+        if not isinstance(data, dict):
+            return {}
+        auth = data.get('security', {}).get('auth', {}) if isinstance(
+            data.get('security'), dict) else {}
+        prov = data.get('modelProviders', {}).get('openai', {}) if isinstance(
+            data.get('modelProviders'), dict) else {}
+        if not isinstance(auth, dict):
+            auth = {}
+        if not isinstance(prov, dict):
+            prov = {}
+        out: Dict[str, str] = {}
+        key = auth.get('apiKey') or prov.get('apiKey')
+        base = auth.get('baseUrl') or prov.get('baseUrl')
+        model = prov.get('defaultModel')
+        if key:
+            out['OPENAI_API_KEY'] = str(key)
+        if base:
+            out['OPENAI_BASE_URL'] = str(base)
+        if model:
+            out['OPENAI_MODEL'] = str(model)
+        return out
+
     def dispatch(self, *,
                  project_path: str,
                  task: str,
@@ -4626,6 +4676,11 @@ class QwenRuntime(AgentRuntime):
 
         env = dict(env_extra or {})
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        # --bare drops settings.json; re-supply it as env. See
+        # _settings_auth_env(). Never overrides a real env var already set.
+        for k, v in self._settings_auth_env().items():
+            if not os.environ.get(k):
+                env.setdefault(k, v)
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -4660,6 +4715,8 @@ class QwenRuntime(AgentRuntime):
         cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        for k, v in self._settings_auth_env().items():
+            env.setdefault(k, v)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -4706,6 +4763,8 @@ class QwenRuntime(AgentRuntime):
         cmd = self.build_command(model=model)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        for k, v in self._settings_auth_env().items():
+            env.setdefault(k, v)
         try:
             r = subprocess.run(
                 cmd, input=full,
