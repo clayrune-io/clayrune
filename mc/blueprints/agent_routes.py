@@ -4877,17 +4877,42 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     return session
 
 
-def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
-    """Start a BRAND-NEW session for a dead non-Claude conversation (MC-929).
+# Providers whose dispatch-time `resume_id` is a VERIFIED cold resume — i.e.
+# `RuntimeClass.dispatch()` actually threads `resume_id` into a `--resume`/
+# `exec resume` command when called with no live in-memory session (as
+# opposed to only working from `write_followup`, which needs the session to
+# already be alive in `agent_sessions`). Live-verified 2026-09-16:
+#   codex — CodexRuntime.dispatch() passes resume_id straight into
+#           build_command()'s `exec resume <thread_id>` branch.
+#   qwen  — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
+#           build_command()'s `--resume <id>` branch the same way.
+# NOT in this set: gemini. `GeminiRuntime.capabilities().supports_session_
+# resume` reports True, but that flag describes the LIVE-session followup
+# path only (`write_followup` manually appends `--resume <gemini_sid>` from
+# `session['_gemini_session_id']`, a field that is never persisted to the
+# agent log) — `build_command()` has no `resume_id` parameter at all, so a
+# cold dispatch cannot resume a Gemini thread after a restart. Do not trust
+# `supports_session_resume` for this decision; it is provider-declared and
+# already wrong for Gemini.
+_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen'}
 
-    Unlike `_revive_from_agent_log`, this is not a resume — Mode A providers
-    (Gemini, ...) keep no transcript and the CLI has no `-r` equivalent, so
-    there is nothing to reattach to. It adopts the same MC session_id so the
-    UI tab and agent-log stay addressed to one conversation, but the process
-    starts cold, with no prior turns as context.
-    This exists so the honest trailing line `reconstruct_dead_session` writes
-    for a read-only non-Claude history ("sending a message starts a
-    brand-new session") is actually true, instead of the reply just 404ing.
+
+def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
+    """Continue (or, for a provider with no cold resume, restart) a dead
+    non-Claude conversation (MC-929; cold-resume support added 2026-09-16).
+
+    For a provider in `_COLD_RESUMABLE_PROVIDERS` with a captured
+    `provider_session_id`, this IS a resume — the runtime's own `dispatch()`
+    threads `resume_id` into the provider CLI's native resume flag and the
+    conversation continues with its full prior history intact server-side.
+    Every other case (Gemini, or a codex/qwen row whose `provider_session_id`
+    capture failed) has nothing to reattach to and starts cold, with no prior
+    turns as context — it adopts the same MC session_id so the UI tab and
+    agent-log stay addressed to one conversation, but the process itself has
+    no memory of anything before this message. This is what makes the honest
+    trailing line `reconstruct_dead_session` writes for a non-cold-resumable
+    non-Claude history ("sending a message starts a brand-new session")
+    actually true, instead of the reply just 404ing.
 
     Returns the session_id on success, None if not revivable (no matching log
     entry, entry belongs to the Claude path, unknown provider, or dispatch
@@ -4928,8 +4953,12 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
         _run_id, _sep, _step = _trig.partition(':')
         if _sep and _run_id and _step:
             _revive_notify_workflow = {'run_id': _run_id, 'step': _step}
+    _resume_id = ''
+    if provider in _COLD_RESUMABLE_PROVIDERS:
+        _resume_id = (entry.get('provider_session_id') or '').strip()
     try:
-        _dispatch_agent_internal(project_id, message, incognito=bool(entry.get('incognito')),
+        _dispatch_agent_internal(project_id, message, resume_id=_resume_id,
+                                 incognito=bool(entry.get('incognito')),
                                  reuse_session_id=session_id,
                                  provider_override=provider,
                                  character=character_ref,
@@ -9039,9 +9068,75 @@ def reconstruct_dead_session(project_id, session_id):
         # assigned one) — there is genuinely nothing to render, Claude or
         # otherwise. Same contract as before this fix: no resolvable transcript.
         return jsonify({'error': 'no claude_session_id to resume from'}), 404
+    user_label = state.CONFIG.get('user_name') or 'User'
+    # `_COLD_RESUMABLE_PROVIDERS` (codex, qwen) keep a real on-disk transcript
+    # — a rollout / `--chat-recording` file — that `_revive_non_claude_from_
+    # agent_log` can actually continue via the provider's own resume flag.
+    # Render the FULL exchange from that file, the same way the Claude branch
+    # above renders from its .jsonl, instead of the generic agent-log-summary
+    # fallback below (which only ever had each turn's FINAL output, never
+    # what the user actually typed on turns 2+). Falls through to that
+    # fallback if the transcript can't be found or parsed — a missing file
+    # must not turn into a 404 for a conversation the agent log still proves
+    # happened.
+    psid = (entry.get('provider_session_id') or '').strip()
+    if provider in _COLD_RESUMABLE_PROVIDERS and psid:
+        # A revive that predates the resume_id fix above (or a crash mid-turn)
+        # can leave ONE mc_session_id spanning MULTIPLE provider threads, each
+        # with its own rollout/chat-recording file and none of them individually
+        # holding the whole conversation. Stitch every distinct thread id this
+        # session_id's agent-log entries ever recorded, oldest first (`entries`
+        # is already ts-sorted), so the reconstructed view is the full
+        # conversation, not just whichever thread happened to run last.
+        _seen_psids = []
+        for e in entries:
+            _p = (e.get('provider_session_id') or '').strip()
+            if _p and _p not in _seen_psids:
+                _seen_psids.append(_p)
+        try:
+            runtime = _agent_runtime.get_runtime(provider)
+            turns = []
+            for _p in _seen_psids:
+                tpath = runtime.transcript_path(p.get('project_path', ''), _p)
+                if not tpath:
+                    continue
+                # Only CodexRuntime/QwenRuntime declare extract_chat_turns (the
+                # two members of _COLD_RESUMABLE_PROVIDERS this branch is gated
+                # on) — duck-typed like the list_sessions() call below; pyright
+                # can't see the gate.
+                turns.extend(runtime.extract_chat_turns(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+        except Exception as e:
+            _log(f"[reconstruct] {provider} transcript render failed for {psid[:12]}: {e}")
+            turns = []
+        if turns:
+            lines = []
+            for role, text in turns:
+                if role == 'user':
+                    lines.append(f"\n> {user_label}: {text}\n")
+                else:
+                    lines.append(text)
+            lines.append('[— read-only history; send a message to resume this session —]')
+            return jsonify({
+                'session_id': session_id,
+                'claude_session_id': '',
+                'provider_session_id': psid,
+                'task': entries[0].get('task', ''),
+                'started_at': entries[0].get('started_at', '') or entries[0].get('ts', ''),
+                'log_lines': lines,
+                'read_only': True,
+                'resumable': True,
+                'provider': provider,
+            })
+    # No transcript to reconstruct from (Gemini — MC-929, no transcript store
+    # at all — or a codex/qwen row whose provider_session_id capture failed
+    # or whose file has since been pruned). Mode A respawns a process per
+    # turn, so the agent log has one row per turn for this session_id; each
+    # row's `summary` is that turn's final output — that is genuinely
+    # everything left on disk. BE HONEST: no full transcript and no native
+    # resume here, so say plainly that a reply starts a NEW session rather
+    # than offering a Resume control that would silently do that anyway.
     if not entries[0].get('task') and not any(e.get('summary') for e in entries):
         return jsonify({'error': 'no history to reconstruct'}), 404
-    user_label = state.CONFIG.get('user_name') or 'User'
     lines = []
     first_task = ' '.join(str(entries[0].get('task') or '').split())
     if first_task:
@@ -9559,6 +9654,7 @@ def _recent_codex_conversation_rows(project_id, p, limit):
     from datetime import datetime, timezone
     rows = []
     covered_mc_sids = set()
+    _codex_seen_mc_sids = set()
     for c in codex_sessions:
         thread_id = c['session_id']
         log_entry = log_by_psid.get(thread_id, {})
@@ -9576,6 +9672,39 @@ def _recent_codex_conversation_rows(project_id, p, limit):
             # that crashed before _log_agent_completion wrote its entry.
             status = 'interrupted' if c['turns'] > 0 else 'empty'
             mc_session_id = ''
+        if status == 'empty':
+            # `c['turns']` already went through list_sessions()'s own
+            # strip_injected_preamble/is_nonuser_message filtering — this is
+            # not "boilerplate-only", it is a rollout with ZERO real user
+            # turns, ever. Measured 2026-09-16: 427 of 509 rollouts on this
+            # box are exactly this — a codex process that got spawned and
+            # killed/aborted before any real exchange (bursts of
+            # `turn_aborted` seconds apart, i.e. a caller repeatedly spawning
+            # and killing the real CLI) or an unattended oneshot()/hivemind
+            # Popen that bypasses agent-log entirely (both write a rollout,
+            # neither ever calls `_log_agent_completion`). With no
+            # mc_session_id there is also no agent-log row to
+            # ever attach one to — the row can never resolve to anything but
+            # a dead end labeled "(empty)". Drop it instead of listing it.
+            continue
+        if mc_session_id:
+            # ONE mc_session_id, TWO+ Codex threads: happened whenever a
+            # follow-up to a dead conversation cold-dispatched instead of
+            # resuming (the exact bug `_revive_non_claude_from_agent_log`
+            # fixed 2026-09-16 by passing `resume_id` — but rollouts written
+            # BEFORE that fix still have it, and a crash/kill mid-turn can in
+            # principle still orphan a thread the same way). `mc_session_id`
+            # is Clayrune's own definition of "one conversation" everywhere
+            # else (tabs, pinning, agent-log grouping) — showing two rail
+            # rows for it here would be the one place that disagrees. `c` is
+            # already sorted newest-first (`list_sessions()`), so the FIRST
+            # thread we see per mc_session_id is the current/active one;
+            # `reconstruct_dead_session` stitches every thread sharing this
+            # id into one transcript, so nothing is lost by keeping only this
+            # row — just not listing it a second time under the same id.
+            if mc_session_id in _codex_seen_mc_sids:
+                continue
+            _codex_seen_mc_sids.add(mc_session_id)
         label = ' '.join((c['last_user'] or c['first_user'] or '(empty)').split())
         try:
             ts_iso = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
@@ -9616,21 +9745,23 @@ def _recent_codex_conversation_rows(project_id, p, limit):
             # else. See docs standing position on lifespan-split nesting.
             'spawned_by_session_id': _row_spawned,
             'provider': 'codex',
-            # `_dispatch_via_runtime` now threads `resume_id` through to
-            # `codex exec resume <thread_id>` (parity audit item 3) — the
-            # DISPATCH half of resume is real. Still `resumable: False` here
-            # because nothing on the frontend sends `provider_session_id` as
-            # the resume id yet: `resume_conversation_id` is populated from
-            # `claude_session_id` everywhere in static/js (agent-log.js,
-            # conversation.js, resume-preview.js), which this row leaves ''
-            # on purpose — repurposing it for a Codex thread id would be a
-            # much larger, separate change across every one of those call
-            # sites. Advertising resumable=True here would offer a control
-            # that silently starts a fresh thread instead. Flip once the
-            # frontend rail is wired to send provider_session_id for a
-            # provider!='claude' row.
-            'resumable': False,
-            'resume_mode': 'readonly',
+            # `_dispatch_via_runtime` threads `resume_id` through to `codex
+            # exec resume <thread_id>` — a REAL resume, live-verified
+            # 2026-09-16. The frontend never needs `provider_session_id`
+            # directly: clicking a row with an `mc_session_id` already routes
+            # through `/session/<mc>/reconstruct` (`reconstruct_dead_session`,
+            # which now resolves this same rollout for its full-turn render)
+            # and a follow-up always POSTs `/agent/send` keyed on that SAME
+            # mc_session_id — the server looks up `provider_session_id` from
+            # its OWN agent-log entry there (`_revive_non_claude_from_agent_
+            # log`), never from the client. So resumable here tracks whether
+            # THIS row has an mc_session_id to hang that lookup off of, not
+            # whether the frontend can compose a resume payload — a rollout
+            # with no matching agent-log entry (`mc_session_id == ''`) has no
+            # session_id for `/agent/send` to find, so it stays honestly
+            # readonly regardless of the rollout itself being resumable.
+            'resumable': bool(mc_session_id),
+            'resume_mode': 'live' if mc_session_id else 'readonly',
         })
     return rows, covered_mc_sids
 
@@ -9699,6 +9830,13 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
         _row_spawned = _row_spawned_by(latest, live)
+        # qwen (in `_COLD_RESUMABLE_PROVIDERS`) is cold-resumable exactly like
+        # Codex once we have a captured `provider_session_id` on the latest
+        # turn's log entry — `_revive_non_claude_from_agent_log` uses it the
+        # same way. Everything else (Gemini — MC-929, no transcript store at
+        # all) stays honestly readonly; see reconstruct_dead_session.
+        _psid = (latest.get('provider_session_id') or '').strip()
+        _cold_resumable = provider in _COLD_RESUMABLE_PROVIDERS and bool(_psid)
         rows.append({
             'claude_session_id': '',
             'mc_session_id': sid,
@@ -9722,12 +9860,11 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             'identity': _identity.resolve_identity(_row_character, _row_source),
             'spawned_by_session_id': _row_spawned,
             # Provider + resumability, so the UI never offers a Resume control
-            # that silently starts a fresh session. Mode A has no native `-r`;
-            # the best honest offer is a read-only history (see
-            # reconstruct_dead_session), not a resume.
+            # that silently starts a fresh session unless it actually can.
             'provider': provider,
-            'resumable': False,
-            'resume_mode': 'readonly',
+            'provider_session_id': _psid,
+            'resumable': _cold_resumable,
+            'resume_mode': 'live' if _cold_resumable else 'readonly',
         })
     rows.sort(key=lambda r: r['mtime'], reverse=True)
     return rows[:limit]
