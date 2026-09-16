@@ -71,7 +71,7 @@ trap _clayrune_exit_footer EXIT
 # ambushed by this as an in-app popup on a routine dashboard refresh — the
 # question belongs at install, not as a surprise inside a running app.
 # Settings -> Default provider remains the place to change it later.
-_PROVIDER_CHOICES="claude codex gemini"
+_PROVIDER_CHOICES="claude codex gemini qwen"
 
 _detect_installed_providers() {
   # Space-separated, in prompt order. Not a full auth check — the app's own
@@ -81,6 +81,7 @@ _detect_installed_providers() {
   command -v claude >/dev/null 2>&1 && out="$out claude"
   command -v codex  >/dev/null 2>&1 && out="$out codex"
   command -v gemini >/dev/null 2>&1 && out="$out gemini"
+  command -v qwen   >/dev/null 2>&1 && out="$out qwen"
   printf '%s' "$out" | sed 's/^ //'
 }
 
@@ -121,12 +122,13 @@ if [ -z "$CHOSEN_PROVIDER" ]; then
         claude) label="Claude Code" ;;
         codex)  label="OpenAI Codex" ;;
         gemini) label="Gemini" ;;
+        qwen)   label="Qwen Code" ;;
       esac
       mark=""
       [ "$p" = "$_default_prov" ] && mark=" (detected)"
       printf "  %s%s%s\n" "$label" "$mark" ""
     done
-    printf "Type one of [claude/codex/gemini], or press Enter for %s%s%s: " "$C" "$_default_prov" "$R"
+    printf "Type one of [claude/codex/gemini/qwen], or press Enter for %s%s%s: " "$C" "$_default_prov" "$R"
     _prov_ans=""
     if [ "$_tty_src" = "stdin" ]; then
       read -r _prov_ans || _prov_ans=""
@@ -139,7 +141,7 @@ if [ -z "$CHOSEN_PROVIDER" ]; then
     fi
     case "$_prov_ans" in
       "") CHOSEN_PROVIDER="$_default_prov" ;;
-      claude|codex|gemini) CHOSEN_PROVIDER="$_prov_ans" ;;
+      claude|codex|gemini|qwen) CHOSEN_PROVIDER="$_prov_ans" ;;
       *)
         printf "%sUnrecognized choice %s — using %s.%s\n" "$Y" "$_prov_ans" "$_default_prov" "$R"
         CHOSEN_PROVIDER="$_default_prov"
@@ -384,6 +386,7 @@ if [ "$CHOSEN_PROVIDER" != "claude" ]; then
   case "$CHOSEN_PROVIDER" in
     codex)  _prov_pkg="@openai/codex" ;;
     gemini) _prov_pkg="@google/gemini-cli" ;;
+    qwen)   _prov_pkg="@qwen-code/qwen-code" ;;
   esac
   printf "Checking %s CLI...\n" "$CHOSEN_PROVIDER"
   if command -v "$CHOSEN_PROVIDER" >/dev/null 2>&1; then
