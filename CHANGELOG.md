@@ -6,6 +6,13 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16] — Keep Ask Claydo from taking over app launch
+
+- Saved Ask Claydo conversations now return minimized on a fresh launch, leaving
+  the main dashboard visible. The transcript, builder mode and unsent draft stay
+  available. An explicit page refresh preserves the open/minimized state.
+- Browser regression coverage checks fresh launch and both refresh states.
+
 ## [2026-09-14d] — Provider choice moves to install time; no more in-app popup
 
 - **Ron, 2026-09-14, after refreshing his dashboard and immediately hitting

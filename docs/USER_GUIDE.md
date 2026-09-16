@@ -14,6 +14,10 @@ If you're a Clayrune user opening this in a browser: most of what's here is
 also reachable via the in-app **Ask Claydo** floating button (bottom-right
 of the dashboard).
 
+Ask Claydo keeps your conversation and unsent draft across page loads. On a
+fresh launch it stays minimized so you see the main dashboard; tap Ask Claydo
+to continue. Refreshing the page preserves its current open or minimized view.
+
 ---
 
 ## What is Clayrune

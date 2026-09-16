@@ -218,7 +218,11 @@ async function restoreClaydoSession() {
   _claydoHistory = st.history.slice();
   const input = document.getElementById('claydo-input');
   if (input && st.draft) input.value = st.draft;
-  if (st.minimized && typeof minimizeModal === 'function') minimizeModal('__claydo');
+  // A saved conversation must not take over the dashboard on a new launch.
+  // Only an explicit reload preserves its foreground state; navigation and
+  // browser/session restoration keep the conversation available minimized.
+  const isReload = performance.getEntriesByType('navigation')[0]?.type === 'reload';
+  if ((st.minimized || !isReload) && typeof minimizeModal === 'function') minimizeModal('__claydo');
   // Re-save LAST, and this line is load-bearing. `openClaydo` and
   // `_claydoResetConversation` both clear `_claydoHistory` and the former
   // saves on the way out, so a restore left an EMPTY session in storage — the

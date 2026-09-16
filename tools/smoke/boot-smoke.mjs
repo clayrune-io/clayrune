@@ -516,7 +516,10 @@ async function runClaydoRestoreGuard(browser) {
   const ctx = await browser.newContext({ viewport: { width: 1280, height: 900 } });
   const page = await ctx.newPage();
   await page.addInitScript((st) => {
-    localStorage.setItem('mc_claydo_session', JSON.stringify(st));
+    if (!sessionStorage.getItem('claydo-restore-seeded')) {
+      localStorage.setItem('mc_claydo_session', JSON.stringify(st));
+      sessionStorage.setItem('claydo-restore-seeded', '1');
+    }
   }, SESSION);
   await page.route('**/*', (route) => {
     const path = new URL(route.request().url()).pathname;
@@ -528,10 +531,16 @@ async function runClaydoRestoreGuard(browser) {
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForTimeout(2500);
+  const launchMinimized = await page.locator('[data-modal-id="__claydo"]').evaluate(
+    (win) => win.classList.contains('minimized'));
+  await page.evaluate(() => window.openClaydo());
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
   const out = await page.evaluate(() => {
     const win = document.querySelector('[data-modal-id="__claydo"]');
     return {
       open: !!win,
+      minimized: win?.classList.contains('minimized'),
       msgs: win ? Array.from(win.querySelectorAll('.claydo-msg'))
         .map((e) => e.textContent.trim().slice(0, 40)) : [],
       draft: (document.getElementById('claydo-input') || {}).value || '',
@@ -541,9 +550,17 @@ async function runClaydoRestoreGuard(browser) {
       saved: JSON.parse(localStorage.getItem('mc_claydo_session') || 'null'),
     };
   });
+  await page.evaluate(() => window.minimizeModal('__claydo'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(2500);
+  const reloadMinimized = await page.locator('[data-modal-id="__claydo"]').evaluate(
+    (win) => win.classList.contains('minimized'));
   await ctx.close();
 
   const fails = [];
+  if (!launchMinimized) fails.push('fresh launch covered the dashboard with Claydo');
+  if (out.minimized) fails.push('reload did not preserve foreground Claydo');
+  if (!reloadMinimized) fails.push('reload did not preserve minimized Claydo');
   pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e))
     .forEach((e) => fails.push('uncaught: ' + e));
   if (!out.open) fails.push('Claydo did not come back after a reload');
