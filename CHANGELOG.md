@@ -14,6 +14,10 @@
 - Verified with 14 targeted installer tests. Clean-VM validation remains
   required before releasing a rebuilt Windows installer; existing EXEs pin
   their bootstrap to the commit from which they were built.
+- Published refreshed Windows EXE and ZIP assets on v2.3.0 for clean-laptop
+  retesting, with explicit approval to remain unsigned. Both website download
+  targets serve the rebuilt installer pinned to `f4cfdf7`; download hashes
+  were verified. Full clean-laptop installation validation remains pending.
 
 ## [2026-09-16g] — Make first-run auth and conversation rails provider-neutral
 
