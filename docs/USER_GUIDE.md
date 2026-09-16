@@ -27,6 +27,10 @@ workshop itself uses Claude. If Claude reaches a usage limit, the workshop
 shows the provider's limit/reset message; choosing another engine for the
 saved agent does not change the workshop's quota.
 
+Suggested agent names are checked against global agents and agents in every
+registered project. If a name becomes taken before you save, the form asks you
+to choose a different **Goes by** name; your draft stays open.
+
 ---
 
 ## What is Clayrune

@@ -41,6 +41,7 @@ def client(tmp_path, monkeypatch):
         return {'tchar': proj, 'nopath': pathless}.get(pid)
 
     monkeypatch.setattr(cr, 'load_project', _load)
+    monkeypatch.setattr(cr, 'load_projects', lambda: [proj, pathless])
     monkeypatch.setattr(sr, 'load_project', _load)
 
     server.app.config['TESTING'] = True
@@ -650,6 +651,42 @@ class TestSelfChosenFace:
 # collision falls back to a deterministic pick rather than shipping a blank.
 
 class TestSuggestIdentity:
+
+    def test_name_in_another_project_is_excluded(self, client, monkeypatch, tmp_path):
+        from mc import characters as ch
+        from mc.blueprints import character_routes as cr
+        other = tmp_path / 'other-project'
+        other.mkdir()
+        ch.write_character('project', 'existing', 'Existing agent', 'Role',
+                           project_path=str(other), agent_name='Juniper')
+        monkeypatch.setattr(cr, 'load_projects', lambda: [
+            {'id': 'other', 'project_path': str(other)}])
+        monkeypatch.setattr(cr, '_scribe_call', lambda *a: 'juniper')
+        r = client.post('/api/characters/identity', json={'description': 'new role'})
+        assert r.status_code == 200
+        assert r.get_json()['agent_name'].casefold() != 'juniper'
+        # The save guard also catches a stale suggestion or a manual collision.
+        r = client.post('/api/characters', json=_payload(agent_name='JUNIPER'))
+        assert r.status_code == 400
+        assert 'already taken' in r.get_json()['error']
+        assert not (client.proj_agents / 'code-reviewer.md').exists()
+
+    def test_fallback_pool_exhaustion_does_not_reuse_a_name(self):
+        from mc.blueprints import character_routes as cr
+        taken = cr._FALLBACK_NAMES + [n + ' 2' for n in cr._FALLBACK_NAMES]
+        assert cr._fallback_name(taken).casefold() not in {n.casefold() for n in taken}
+
+    def test_exclusion_does_not_hide_same_slug_in_other_scope(self, client):
+        from mc.blueprints import character_routes as cr
+        client.post('/api/characters', json=_payload(
+            scope='global', agent_name='Juniper'))
+        assert 'Juniper' in cr._taken_agent_names(
+            str(client.proj_agents.parent.parent), 'code-reviewer', 'project')
+
+    def test_overwrite_can_keep_its_own_name(self, client):
+        payload = _payload(agent_name='Juniper')
+        assert client.post('/api/characters', json=payload).status_code == 201
+        assert client.post('/api/characters', json={**payload, 'overwrite': True}).status_code == 201
 
     @pytest.fixture(autouse=True)
     def _figures(self, monkeypatch):

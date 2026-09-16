@@ -27,17 +27,20 @@ bp = Blueprint('characters', __name__)
 
 # ── wired by server.py (see wire()) ──────────────────────────────────────────
 load_project: Callable[[str], Any] = None  # type: ignore[assignment]
+load_projects: Callable[[], list] = lambda: []
 _APP_DIR: Path = None  # type: ignore[assignment]
 
 
-def wire(*, load_project_fn, app_dir=None):
+def wire(*, load_project_fn, app_dir=None, load_projects_fn=None):
     """Late-bind the projects-family accessor (same pattern as 1.3/1.9).
 
     `app_dir` is optional so existing callers (tests) that don't need
     builtin-install keep working without an update.
     """
-    global load_project, _APP_DIR
+    global load_project, load_projects, _APP_DIR
     load_project = load_project_fn
+    if load_projects_fn is not None:
+        load_projects = load_projects_fn
     if app_dir is not None:
         _APP_DIR = app_dir
 
@@ -186,6 +189,12 @@ def create_character_route():
     engine, eng_err = _validated_engine(data)
     if eng_err:
         return eng_err
+
+    chosen_name = _chars.clean_agent_name(data.get('agent_name'))
+    taken = _taken_agent_names(project_path, name if overwrite else None, scope)
+    if chosen_name and chosen_name.casefold() in {n.casefold() for n in taken}:
+        return jsonify({'error': f'The name "{chosen_name}" is already taken by '
+                                 'another agent. Choose a different Goes by name.'}), 400
 
     try:
         rec = _chars.write_character(scope, name, description, body,
@@ -538,7 +547,16 @@ _FALLBACK_NAMES = [
 def _fallback_name(taken):
     taken_cf = {t.casefold() for t in taken}
     pool = [n for n in _FALLBACK_NAMES if n.casefold() not in taken_cf]
-    return random.choice(pool or _FALLBACK_NAMES)
+    if pool:
+        return random.choice(pool)
+    # An exhausted pool must not silently reuse an occupied name.
+    suffix = 2
+    while True:
+        for name in _FALLBACK_NAMES:
+            candidate = f'{name} {suffix}'
+            if candidate.casefold() not in taken_cf:
+                return candidate
+        suffix += 1
 
 
 def _fallback_avatar(figures, taken):
@@ -589,6 +607,8 @@ def suggest_identity_route():
     except Exception as e:
         _log(f"[characters] identity suggestion (name) failed, falling back: {e}")
         agent_name = ''
+    # Generation can take seconds; another hire may have saved meanwhile.
+    taken_names = _taken_agent_names(project_path, None)
     if not agent_name or agent_name.casefold() in {t.casefold() for t in taken_names}:
         agent_name = _fallback_name(taken_names)
 
@@ -696,23 +716,34 @@ _NAME_PROMPT = (
 )
 
 
-def _taken_agent_names(project_path, exclude):
+def _taken_agent_names(project_path, exclude, exclude_scope=None):
     """Names already in use, so a fresh pick does not collide.
 
     Measured 2026-08-22: naming three types independently produced "Marlow"
     and "Marlowe". Each call is blind to the others, so warning about the
     generic AI-name cluster is not enough — the model has to see the actual
-    roster. Both pools are read: a global type shares a chat header with a
-    project one, so a clash across scopes is just as unreadable.
+    roster. Read globals and every registered project, matching the Floor's
+    cross-project bench rather than only the draft's destination project.
     """
     out = []
+    paths = {str(Path(project_path).resolve())} if project_path else set()
     try:
-        for rec in _chars.list_characters(project_path=project_path):
-            if rec.get('name') == exclude:
-                continue
-            n = rec.get(_chars.AGENT_NAME_KEY)
-            if n:
-                out.append(n)
+        for project in load_projects():
+            if project.get('project_path'):
+                paths.add(str(Path(project['project_path']).resolve()))
+        # Globals once, then each registered project's local pool. The Floor
+        # displays them together, so display names share one namespace.
+        for path in [None, *sorted(paths)]:
+            for rec in _chars.list_characters(project_path=path):
+                if path and rec.get('scope') != 'project':
+                    continue
+                current_path = str(Path(project_path).resolve()) if project_path else None
+                if (rec.get('name') == exclude and path == current_path
+                        and (exclude_scope is None or rec.get('scope') == exclude_scope)):
+                    continue
+                n = rec.get(_chars.AGENT_NAME_KEY)
+                if n:
+                    out.append(n.strip())
     except Exception as e:
         _log(f"[characters] could not read the existing roster: {e}")
     return sorted(set(out))
@@ -782,7 +813,7 @@ def name_character_route(scope, name):
         payload = (f"Role: {rec.get('description') or ''}\n\n"
                    f"{rec.get('body') or ''}")[:6000]
         prompt = _NAME_PROMPT
-        taken = _taken_agent_names(project_path, name)
+        taken = _taken_agent_names(project_path, name, scope)
         if taken:
             prompt += (
                 "\n- These names are ALREADY TAKEN by other agents on this "

@@ -6,6 +6,16 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16c] — Avoid names already booked in another project
+
+- New-agent identity suggestions now check global agents and every registered
+  project's agents, matching the Floor's combined roster. Recheck after model
+  generation, and reject an occupied display name at creation/save time.
+- An exhausted fallback-name pool now generates an unused numbered name instead
+  of recycling an occupied one. Existing agents are not renamed.
+- Regression tests cover cross-project and case-insensitive collisions,
+  same-slug scope exclusions, exhausted fallback pools, and self-overwrites.
+
 ## [2026-09-16b] — Choose the agent's engine during creation
 
 - The Floor's character creation form now includes provider, model/version,

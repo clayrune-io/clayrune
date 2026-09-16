@@ -936,7 +936,8 @@ app.register_blueprint(_bp_guide.bp)
 # scope). Logic in mc/characters.py; design docs/PROMPT_BUILDER_DESIGN.md.
 from mc.blueprints import character_routes as _bp_characters  # noqa: E402
 
-_bp_characters.wire(load_project_fn=_bp_projects.load_project, app_dir=_APP_DIR)
+_bp_characters.wire(load_project_fn=_bp_projects.load_project, app_dir=_APP_DIR,
+                    load_projects_fn=_bp_projects.load_projects)
 app.register_blueprint(_bp_characters.bp)
 
 
