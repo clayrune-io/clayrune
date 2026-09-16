@@ -155,6 +155,8 @@ function startHivemindChat(projectId) {
   modalActiveTab[projectId] = 'agent';
   delete activeAgentTab[projectId];
   delete pendingResumeId[projectId];
+  delete pendingResumeProvider[projectId];
+  delete pendingResumeMcSessionId[projectId];
   // Force the dispatch screen (the +New row). Without this, mobile lands on
   // the existing session: with one conversation the auto-select picks it,
   // with many the drill-down list shows — either way the `agent-task-...`

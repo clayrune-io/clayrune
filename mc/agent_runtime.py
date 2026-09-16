@@ -5672,7 +5672,10 @@ class CodexRuntime(AgentRuntime):
             binary_path=p,
             version=version,
             auth_state=AuthState(
-                status='ok' if has_key else 'unknown',
+                # Local Codex auth is deterministic: either an API key or a
+                # ChatGPT OAuth token exists in ~/.codex/auth.json. Reporting
+                # a clean miss as "unknown" hid the first-run login prompt.
+                status='ok' if has_key else 'not_logged_in',
                 method=auth_method,
                 last_checked=_now_iso(),
             ),

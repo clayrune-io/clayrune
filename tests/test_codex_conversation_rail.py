@@ -207,7 +207,9 @@ def test_live_codex_session_status_join(client, tmp_path):
     mc_state.agent_sessions['mcsid-live'] = {
         'project_id': 'proj1', 'session_id': 'mcsid-live',
         'provider_session_id': thread_id, 'status': 'running',
-        'task': 'still going', 'waiting_for_question': True,
+        'provider': 'codex', 'task': 'still going',
+        'log_lines': ['> still going'], 'started_at': '2026-09-07T12:00:00Z',
+        'waiting_for_question': True,
     }
     rows = http.get('/api/project/proj1/conversations').get_json()
     codex_rows = [r for r in rows if r.get('provider') == 'codex']
@@ -215,3 +217,5 @@ def test_live_codex_session_status_join(client, tmp_path):
     assert codex_rows[0]['live'] is True
     assert codex_rows[0]['status'] == 'running'
     assert codex_rows[0]['waiting_for_question'] is True
+    status_rows = http.get('/api/project/proj1/agent/status').get_json()['sessions']
+    assert status_rows[0]['provider_session_id'] == thread_id

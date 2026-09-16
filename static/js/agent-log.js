@@ -24,8 +24,10 @@ function agentLogPanelHTML(p) {
     ? '<div class="agent-log-empty">No completed sessions yet</div>'
     : entries.map(e => {
       const csid = e.claude_session_id || '';
-      const eid = e.session_id || csid;
       const eprov = e.provider || p.provider || 'claude';
+      const providerSessionId = e.provider_session_id || '';
+      const resumeId = eprov === 'claude' ? csid : providerSessionId;
+      const eid = e.session_id || resumeId;
       const ecaps = _getProviderCaps(eprov);
       // Usage stats: gate by provider capability
       const usageStr = (() => {
@@ -42,8 +44,8 @@ function agentLogPanelHTML(p) {
       // Session ID display: provider-neutral label
       const sessionLabel = eprov === 'claude' ? 'claude -r' : `${eprov} session`;
       // Continue button: only show for providers that support session resume
-      const continueBtn = (csid && ecaps.supports_session_resume)
-        ? `<button class="agent-log-continue-btn" onclick="toggleContinueInput('${esc(p.id)}','${esc(eid)}','${esc(csid)}')">Continue</button>`
+      const continueBtn = (resumeId && ecaps.supports_session_resume)
+        ? `<button class="agent-log-continue-btn" onclick="toggleContinueInput('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}')">Continue</button>`
         : '';
       return `
       <div class="agent-log-entry status-${e.status || 'completed'}">
@@ -55,10 +57,10 @@ function agentLogPanelHTML(p) {
         </div>
         <div class="agent-log-summary">${esc(e.summary || '')}</div>
         <div class="agent-log-ts">${esc(e.ts_relative || e.ts || '')} &middot; started ${esc(e.started_relative || e.started_at || '')}${usageStr}${costStr}</div>
-        ${csid ? `<div class="agent-log-session-id">${sessionLabel} <code title="Click to copy">${esc(csid)}</code><span class="copy-sid" onclick="navigator.clipboard.writeText('${esc(csid)}');this.textContent='copied!';setTimeout(()=>this.textContent='copy',1200)" title="Copy session ID">copy</span></div>` : ''}
-        ${(csid && ecaps.supports_session_resume && continueInputOpen[eid]) ? `<div class="agent-log-continue-input open" id="continue-input-${esc(eid)}">
-          <textarea id="continue-msg-${esc(eid)}" rows="2" placeholder="What should the agent continue with?" onkeydown="handleInputEnter(event,()=>dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(csid)}'),'${esc(p.id)}')"></textarea>
-          <button class="btn-send" onclick="dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(csid)}')">Send</button>
+        ${resumeId ? `<div class="agent-log-session-id">${sessionLabel} <code title="Click to copy">${esc(resumeId)}</code><span class="copy-sid" onclick="navigator.clipboard.writeText('${esc(resumeId)}');this.textContent='copied!';setTimeout(()=>this.textContent='copy',1200)" title="Copy session ID">copy</span></div>` : ''}
+        ${(resumeId && ecaps.supports_session_resume && continueInputOpen[eid]) ? `<div class="agent-log-continue-input open" id="continue-input-${esc(eid)}">
+          <textarea id="continue-msg-${esc(eid)}" rows="2" placeholder="What should the agent continue with?" onkeydown="handleInputEnter(event,()=>dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}'),'${esc(p.id)}')"></textarea>
+          <button class="btn-send" onclick="dispatchContinue('${esc(p.id)}','${esc(eid)}','${esc(resumeId)}','${esc(eprov)}')">Send</button>
         </div>` : ''}
       </div>`;
     }).join('');
@@ -170,12 +172,23 @@ async function _loadConversationsInner(projectId) {
 // Optimistically upsert a conversation entry so the picker reflects the user's
 // latest message without waiting for a server round-trip. Called from close /
 // followup; a background loadConversations() reconciles with authoritative data.
-function upsertConversationCache(projectId, claudeSessionId, lastUser, status) {
-  if (!projectId || !claudeSessionId) return;
+function upsertConversationCache(projectId, claudeSessionId, lastUser, status, meta) {
+  meta = meta || {};
+  const mcSessionId = meta.mcSessionId || '';
+  const providerSessionId = meta.providerSessionId || '';
+  const provider = meta.provider || 'claude';
+  if (!projectId || (!claudeSessionId && !mcSessionId && !providerSessionId)) return;
   const list = conversationsCache[projectId] || (conversationsCache[projectId] = []);
   const nowMs = Date.now();
   const label = (lastUser || '').trim();
-  const idx = list.findIndex(c => c.claude_session_id === claudeSessionId);
+  // Provider-neutral identity. MC's session id exists from dispatch response;
+  // Claude's transcript id and Codex/Qwen's provider thread id arrive later.
+  // Match the strongest id available so those later identifiers enrich the
+  // optimistic row instead of creating a duplicate.
+  const idx = list.findIndex(c =>
+    (mcSessionId && c.mc_session_id === mcSessionId) ||
+    (claudeSessionId && c.claude_session_id === claudeSessionId) ||
+    (providerSessionId && c.provider_session_id === providerSessionId));
   if (idx >= 0) {
     const e = list[idx];
     if (label) {
@@ -184,15 +197,24 @@ function upsertConversationCache(projectId, claudeSessionId, lastUser, status) {
       if (!e.first_user) e.first_user = label;
     }
     if (status) e.status = status;
+    if (mcSessionId) e.mc_session_id = mcSessionId;
+    if (claudeSessionId) e.claude_session_id = claudeSessionId;
+    if (providerSessionId) e.provider_session_id = providerSessionId;
+    e.provider = provider || e.provider || 'claude';
+    e.live = meta.live !== undefined ? !!meta.live : e.live;
     e.turns = (e.turns || 0) + (label ? 1 : 0);
-    e.ts_relative = 'just now';
-    e.mtime = nowMs / 1000;
-    list.splice(idx, 1);
-    list.unshift(e);
+    if (meta.touch !== false) {
+      e.ts_relative = 'just now';
+      e.mtime = nowMs / 1000;
+      list.splice(idx, 1);
+      list.unshift(e);
+    }
   } else {
     list.unshift({
-      claude_session_id: claudeSessionId,
-      mc_session_id: '',
+      claude_session_id: claudeSessionId || '',
+      provider_session_id: providerSessionId,
+      mc_session_id: mcSessionId,
+      provider,
       status: status || 'stopped',
       label: label || '(empty conversation)',
       last_user: label,
@@ -202,7 +224,7 @@ function upsertConversationCache(projectId, claudeSessionId, lastUser, status) {
       mtime: nowMs / 1000,
       ts: '',
       ts_relative: 'just now',
-      live: false,
+      live: meta.live !== undefined ? !!meta.live : status === 'running',
     });
   }
 }
@@ -458,7 +480,7 @@ function toggleContinueInput(projectId, entryId, claudeSessionId) {
   }
 }
 
-async function dispatchContinue(projectId, entryId, claudeSessionId) {
+async function dispatchContinue(projectId, entryId, resumeSessionId, provider) {
   const input = document.getElementById(`continue-msg-${entryId}`);
   const task = input.value.trim();
   if (!task) { input.focus(); return; }
@@ -470,7 +492,11 @@ async function dispatchContinue(projectId, entryId, claudeSessionId) {
     const res = await fetch(API_BASE + `/api/project/${projectId}/agent/dispatch`, {
       method: 'POST',
       headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify(_maybeTagMobileClient({ task, resume_conversation_id: claudeSessionId }))
+      body: JSON.stringify(_maybeTagMobileClient({
+        task,
+        resume_conversation_id: resumeSessionId,
+        provider: provider || 'claude',
+      }))
     });
     const data = await res.json();
     if (!data.ok) { alert(data.error || 'Continue failed'); return; }

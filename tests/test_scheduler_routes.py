@@ -348,6 +348,33 @@ def test_runs_bad_params_default(ctx):
     assert body['offset'] == 0  # negative → clamped
 
 
+def test_schedule_resume_identity_is_provider_neutral(ctx):
+    ctx.sr._load_agent_log = lambda pid: [
+        {'trigger_type': 'schedule', 'trigger_id': 's1', 'provider': 'codex',
+         'provider_session_id': 'thread-codex', 'session_id': 'mc-codex'},
+    ]
+    assert ctx.sr._latest_resume_for_schedule('p1', 's1') == ('thread-codex', 'codex')
+
+
+def test_run_now_resumes_with_the_original_provider(ctx, monkeypatch):
+    _seed_schedules(ctx, [{
+        'id': 's1', 'project_id': 'p1', 'task': 'continue report',
+        'continue_session': True, 'enabled': True,
+    }])
+    monkeypatch.setattr(ctx.sr, '_latest_session_id_for_schedule', lambda *a: '')
+    monkeypatch.setattr(ctx.sr, '_latest_claude_sid_for_schedule', lambda *a: 'thread-codex')
+    monkeypatch.setattr(ctx.sr, '_schedule_resume_provider', lambda *a: 'codex')
+    monkeypatch.setattr(ctx.sr, '_newest_run_session_id_for_schedule', lambda *a: 'mc-codex')
+
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+
+    assert resp.status_code == 200
+    call = ctx.dispatch.calls[-1]
+    assert call['resume_id'] == 'thread-codex'
+    assert call['provider_override'] == 'codex'
+    assert call['reuse_session_id'] == 'mc-codex'
+
+
 # ── master kill-switch (`scheduler_paused`) ───────────────────────────────────
 #
 # One switch that stops EVERY scheduled dispatch — schedules and stewards, at

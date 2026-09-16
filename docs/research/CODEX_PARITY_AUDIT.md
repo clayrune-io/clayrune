@@ -14,6 +14,47 @@ one trivial `codex exec --json -s read-only`). Runtime claims below are marked *
 when backed by real command output and **[code]** when derived from reading source only.
 Nothing was installed, modified, or restarted.
 
+## 2026-09-16 implementation follow-up
+
+The September 7 findings below are preserved as the original audit record, but
+several high-impact gaps have since shipped. The shared install/onboarding and
+conversation paths were re-audited across the installers, walkthrough,
+provider/auth registry, composer, live status, conversation cache and rail,
+resume preview/picker, Agent Log, cold revival, and scheduler.
+
+Now provider-neutral:
+
+- First-run auth checks the configured provider only. A Codex-first install
+  reports missing Codex login and does not call or advertise Claude auth.
+- Codex and Qwen persist `provider_session_id`; cold resume and follow-ups use
+  their native resume commands. The live status API exposes the same ID.
+- Fresh conversations enter the rail immediately under `mc_session_id`, so two
+  parallel Codex chats cannot collapse into the shared empty
+  `claude_session_id`. Later thread-ID discovery enriches the same row without
+  duplicating or reordering it.
+- Resume picker/preview, Agent Log Continue, reconstructed chat opening, and
+  scheduled continuation carry `(provider, provider-native ID, MC session ID)`
+  together. A resume cannot silently cross back to Claude.
+- The first-run walkthrough and empty composer use provider-neutral language
+  and the selected provider's display name when no persona is chosen.
+
+Still intentionally provider-specific or incomplete:
+
+- Pin/delete, full-transcript search, and transcript-only reconstruction remain
+  Claude-file operations. Non-Claude history opens through the durable MC log;
+  these controls must stay capability-gated until each runtime implements the
+  corresponding transcript hooks.
+- Documents discovery and Claude Task-subagent discovery remain Claude-native.
+  They should not be presented as cross-provider parity.
+- An npx-only Codex installation can be detected and dispatched through the
+  runtime prefix fallback, but the OS-terminal login launcher still expects a
+  directly resolved CLI binary.
+
+Regression anchors: `tools/smoke/provider-neutral-auth.mjs`,
+`tools/smoke/provider-neutral-rail-cache.mjs`,
+`tests/test_codex_conversation_rail.py`, and scheduler continuation tests in
+`tests/test_scheduler_routes.py`.
+
 ---
 
 ## 0. The headline finding: Codex leaves a rich, readable transcript — and Clayrune looks for it in the wrong place

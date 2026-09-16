@@ -88,17 +88,20 @@ get_manager: Callable[[str], Any] = None  # type: ignore[assignment]
 all_managers: Callable[[], list] = None  # type: ignore[assignment]
 _pid_is_alive: Callable[[int], bool] = None  # type: ignore[assignment]
 _revive_from_agent_log: Callable[..., bool] = None  # type: ignore[assignment]
+_revive_non_claude_from_agent_log: Callable[..., Any] = None  # type: ignore[assignment]
 
 
 def wire(*, schedules_path, load_project_fn, load_projects_fn,
          log_agent_activity_fn, dispatch_agent_internal_fn, load_agent_log_fn,
          enrich_run_entries_fn, get_manager_fn, all_managers_fn,
-         pid_is_alive_fn, revive_from_agent_log_fn, save_project_fn=None):
+         pid_is_alive_fn, revive_from_agent_log_fn,
+         revive_non_claude_from_agent_log_fn, save_project_fn=None):
     """Late-bind cross-family deps. Called once by server.py before
     register_blueprint + _start_scheduler()."""
     global SCHEDULES_PATH, load_project, save_project, load_projects, _log_agent_activity
     global _dispatch_agent_internal, _load_agent_log, _enrich_run_entries
     global get_manager, all_managers, _pid_is_alive, _revive_from_agent_log
+    global _revive_non_claude_from_agent_log
     SCHEDULES_PATH = schedules_path
     load_project = load_project_fn
     save_project = save_project_fn  # type: ignore[assignment]  # optional kwarg (steward cycle stamp)
@@ -111,6 +114,7 @@ def wire(*, schedules_path, load_project_fn, load_projects_fn,
     all_managers = all_managers_fn
     _pid_is_alive = pid_is_alive_fn
     _revive_from_agent_log = revive_from_agent_log_fn
+    _revive_non_claude_from_agent_log = revive_non_claude_from_agent_log_fn
 
 
 def _load_schedules():
@@ -694,10 +698,12 @@ def _scheduler_loop():
                                          f"{task[:60]} -> session {prev_sid}")
                                 else:
                                     # First run, or nothing continuable — fresh dispatch.
-                                    resume_id = ''
+                                    resume_id, resume_provider = '', ''
                                     if cont:
                                         resume_id = _latest_claude_sid_for_schedule(pid, sched_id)
-                                    # Resuming the same Claude convo by cold respawn:
+                                        if resume_id:
+                                            resume_provider = _schedule_resume_provider(pid, sched_id, resume_id)
+                                    # Resuming the same provider conversation by cold respawn:
                                     # reuse the prior run's MC row + mark the turn,
                                     # so continued fires stay one thread / one tab /
                                     # one resolvable transcript instead of orphaning
@@ -712,6 +718,7 @@ def _scheduler_loop():
                                                                   trigger_type='schedule',
                                                                   trigger_id=sched_id,
                                                                   reuse_session_id=reuse_sid,
+                                                                  provider_override=resume_provider,
                                                                   character=sched.get('character') or '')
                                     tag = ' (resumed)' if resume_id else ''
                                     _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
@@ -887,17 +894,39 @@ def _start_scheduler():
     return t
 
 
-def _latest_claude_sid_for_schedule(project_id, schedule_id):
-    """Return the most recent claude_session_id from a previous run of this schedule,
-    or '' if none. Agent log is stored newest-first."""
+def _latest_resume_for_schedule(project_id, schedule_id):
+    """Return ``(provider-native resume id, provider)`` for the latest run."""
     if not project_id or not schedule_id:
-        return ''
+        return '', ''
     log = _load_agent_log(project_id)
     for e in log:
-        if (e.get('trigger_type') == 'schedule'
-                and e.get('trigger_id') == schedule_id
-                and e.get('claude_session_id')):
-            return e.get('claude_session_id', '')
+        if e.get('trigger_type') != 'schedule' or e.get('trigger_id') != schedule_id:
+            continue
+        provider = (e.get('provider') or 'claude').lower()
+        resume_id = (e.get('claude_session_id') if provider == 'claude'
+                     else e.get('provider_session_id')) or ''
+        if resume_id:
+            return resume_id, provider
+    return '', ''
+
+
+def _latest_claude_sid_for_schedule(project_id, schedule_id):
+    """Backward-compatible scalar wrapper for older callers/tests."""
+    return _latest_resume_for_schedule(project_id, schedule_id)[0]
+
+
+def _schedule_resume_provider(project_id, schedule_id, resume_id):
+    """Resolve the owner of a provider-native schedule resume id."""
+    if not resume_id:
+        return ''
+    for e in _load_agent_log(project_id):
+        if e.get('trigger_type') != 'schedule' or e.get('trigger_id') != schedule_id:
+            continue
+        provider = (e.get('provider') or 'claude').lower()
+        candidate = (e.get('claude_session_id') if provider == 'claude'
+                     else e.get('provider_session_id')) or ''
+        if candidate == resume_id:
+            return provider
     return ''
 
 
@@ -933,7 +962,7 @@ def _latest_session_id_for_schedule(project_id, schedule_id):
     for e in log:
         if (e.get('trigger_type') == 'schedule'
                 and e.get('trigger_id') == schedule_id
-                and e.get('claude_session_id')
+                and (e.get('claude_session_id') or e.get('provider_session_id'))
                 and e.get('session_id')):
             return e.get('session_id', '')
     return ''
@@ -1034,6 +1063,9 @@ def _scheduled_continue(p, project_id, session_id, task):
         return None
     try:
         if _revive_from_agent_log(project_id, session_id, task, p):
+            _log_agent_activity(project_id, f"Scheduled run (revived): {task[:100]}")
+            return 'revived'
+        if _revive_non_claude_from_agent_log(project_id, session_id, task, p):
             _log_agent_activity(project_id, f"Scheduled run (revived): {task[:100]}")
             return 'revived'
     except Exception as e:
@@ -1361,9 +1393,11 @@ def schedule_run_now(schedule_id):
                     _save_schedules(schedules)
                     return jsonify({'ok': True, 'session_id': prev_sid,
                                     'continued': outcome})
-    resume_id = ''
+    resume_id, resume_provider = '', ''
     if cont:
         resume_id = _latest_claude_sid_for_schedule(pid, schedule_id)
+        if resume_id:
+            resume_provider = _schedule_resume_provider(pid, schedule_id, resume_id)
     reuse_sid = ''
     dispatch_task = task
     if resume_id:
@@ -1374,12 +1408,13 @@ def schedule_run_now(schedule_id):
                                        trigger_type='schedule',
                                        trigger_id=schedule_id,
                                        reuse_session_id=reuse_sid,
+                                       provider_override=resume_provider,
                                        character=sched.get('character') or '')
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
     except FileNotFoundError:
-        return jsonify({'error': 'Claude CLI not found'}), 500
+        return jsonify({'error': 'Selected provider CLI not found'}), 500
     except Exception as e:
         return jsonify({'error': f'dispatch failed: {e}'}), 500
     sched['last_run'] = now_iso()

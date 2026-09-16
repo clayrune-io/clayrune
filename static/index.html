@@ -643,9 +643,9 @@
   </div>
   <div class="auth-banner hidden" id="auth-banner">
     <span class="ab-icon">&#x1F510;</span>
-    <span class="ab-text" id="auth-banner-text">Claude isn't signed in.</span>
-    <button class="ab-btn ab-btn-primary" id="auth-banner-signin" onclick="claudeAuthenticate()">Authenticate Claude</button>
-    <button class="ab-btn" id="auth-banner-recheck" onclick="claudeAuthRecheck()">Re-check</button>
+    <span class="ab-text" id="auth-banner-text">Your selected provider isn't signed in.</span>
+    <button class="ab-btn ab-btn-primary" id="auth-banner-signin" onclick="authBannerRecheck()">Authenticate provider</button>
+    <button class="ab-btn" id="auth-banner-recheck" onclick="authBannerRecheck()">Re-check</button>
     <button class="ab-dismiss" onclick="dismissAuthBanner()" title="Hide for this session">&times;</button>
   </div>
 
@@ -1013,7 +1013,9 @@ let agentPendingImages = {};   // key (projectId or sessionId) → [{file, objec
 let acOpenSessions = new Set(); // session_id → expanded in console
 let planViewerContent = {};    // session_id → string[] of raw plan text lines
 let planFileTitle = {};        // session_id → extracted first heading from plan file
-let pendingResumeId = {};      // project_id → claude_session_id to resume (null = fresh)
+let pendingResumeId = {};      // project_id → provider-native conversation id (null = fresh)
+let pendingResumeProvider = {}; // project_id → provider owning pendingResumeId
+let pendingResumeMcSessionId = {}; // project_id → MC id used to reconstruct non-Claude preview
 let incognitoToggle = {};      // project_id → bool — when true, next dispatch is incognito (skips MEMORY/RULES/log)
 let _skipAgentOutputSids = new Set();  // sids whose output node refreshModalById is preserving (skip expensive re-render). Split-view = up to 2.
 let agentSSEWatchdogs = {};  // sessionId → timer ID
@@ -1360,7 +1362,12 @@ window.addEventListener('popstate', () => {
     _mcResumeHistoryActive = false;              // resume entry consumed by back
     const rid = Array.from(openModals.keys()).find(k =>
       typeof pendingResumeId !== 'undefined' && pendingResumeId[k]);
-    if (rid) { delete pendingResumeId[rid]; refreshModal(); }
+    if (rid) {
+      delete pendingResumeId[rid];
+      delete pendingResumeProvider[rid];
+      delete pendingResumeMcSessionId[rid];
+      refreshModal();
+    }
     return;
   }
   // Then: drilled-in conversation → conversations list.

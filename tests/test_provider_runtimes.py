@@ -678,6 +678,16 @@ class TestCodexRuntime:
         monkeypatch.setenv('HOME', str(tmp_path))
         assert self.rt._codex_auth_state() == ('not_logged_in', None)
 
+    def test_health_check_surfaces_missing_codex_login(self, monkeypatch):
+        monkeypatch.setattr(self.rt, 'resolve_binary', lambda: Path('/usr/local/bin/codex'))
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=0,
+                stdout='codex-cli 0.153.0', stderr=''))
+        monkeypatch.setattr(self.rt, '_codex_auth_state', lambda: ('not_logged_in', None))
+        assert self.rt.health_check().auth_state.status == 'not_logged_in'
+
     def test_npx_fallback_uses_absolute_path(self, monkeypatch):
         """npx is npx.cmd on Windows; CreateProcess can't launch it by bare name.
 

@@ -6,6 +6,20 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16g] — Make first-run auth and conversation rails provider-neutral
+
+- First launch now checks only the selected provider's authentication state.
+  Choosing Codex prompts for Codex login when needed and never substitutes a
+  missing-Claude warning; the walkthrough and empty composer also name the
+  selected coding agent instead of assuming Claude.
+- Fresh conversations are keyed immediately by their Clayrune session ID, then
+  enriched with the provider's native thread ID. Parallel Codex chats therefore
+  stay distinct, newest-first, and reachable after navigation or status refresh.
+- Resume previews, the resume picker, Agent Log continuation, cold revival, and
+  recurring schedules now preserve the provider-native ID together with its
+  owning provider. Regression coverage exercises Codex-first auth, two parallel
+  Codex chats, provider-correct resume dispatch, and scheduled continuation.
+
 ## [2026-09-16f] — Harden and prepare signing for the Windows installer
 
 - The double-click launcher no longer executes `iwr | iex` or requests an

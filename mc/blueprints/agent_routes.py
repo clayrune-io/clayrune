@@ -8673,6 +8673,10 @@ def agent_status(project_id):
             sessions.append({
                 'session_id': s['session_id'],
                 'claude_session_id': s.get('claude_session_id', ''),
+                # Provider-neutral thread id (Codex/Qwen). The frontend rail
+                # receives the MC session id immediately, then enriches that
+                # same optimistic row with this id once the runtime emits it.
+                'provider_session_id': s.get('provider_session_id', ''),
                 'status': s['status'],
                 'task': s['task'],
                 'log_lines': [l for l in s['log_lines']

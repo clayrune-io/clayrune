@@ -3,8 +3,16 @@ let sseRetryCount = {};       // session_id → number of consecutive reconnect 
 // Shows the selected prior conversation's chat in the dead space below the
 // composer on the +New / dispatch screen. Reuses the transcript endpoint and
 // the shared _transcriptCache (same data the pop-out viewer uses).
-const _convPreviewLoading = new Set();   // csids with an in-flight fetch
-const _convPreviewScrolled = new Set();  // `${projectId}|${csid}` already auto-scrolled to latest
+const _convPreviewLoading = new Set();   // provider-qualified ids with an in-flight fetch
+const _convPreviewScrolled = new Set();  // `${projectId}|${provider}|${id}` already auto-scrolled to latest
+
+function _convPreviewCacheKey(projectId, resumeId) {
+  const provider = pendingResumeProvider[projectId] || 'claude';
+  // Keep Claude's established cache key so the inline and pop-out transcript
+  // viewers still share data. Qualify every other provider to prevent a
+  // provider-native thread id from colliding with a Claude conversation id.
+  return provider === 'claude' ? resumeId : `${provider}:${resumeId}`;
+}
 
 function _convPreviewBodyHTML(data) {
   if (!data) return '<div class="conv-preview-empty">No preview available.</div>';
@@ -34,20 +42,24 @@ function _convPreviewBodyHTML(data) {
 
 // Resolve a human label for a conversation from whatever cache has it.
 function _convPreviewLabel(projectId, csid) {
-  const convo = (conversationsCache[projectId] || []).find(c => c.claude_session_id === csid);
+  const provider = pendingResumeProvider[projectId] || 'claude';
+  const convo = (conversationsCache[projectId] || []).find(c =>
+    provider === 'claude' ? c.claude_session_id === csid : c.provider_session_id === csid);
   if (convo) {
     const l = (convo.label || convo.last_user || convo.first_user || '').trim();
     if (l) return l;
   }
-  const entry = (agentLogCache[projectId] || []).find(e => e.claude_session_id === csid);
+  const entry = (agentLogCache[projectId] || []).find(e =>
+    provider === 'claude' ? e.claude_session_id === csid : e.provider_session_id === csid);
   return entry ? (entry.task || '').trim() : '';
 }
 
 function convPreviewHTML(projectId) {
   const csid = pendingResumeId[projectId] || null;
   if (!csid) return '';  // Fresh session selected → no preview, dead space returns
+  const cacheKey = _convPreviewCacheKey(projectId, csid);
   const label = _convPreviewLabel(projectId, csid);
-  const cached = _transcriptCache[csid];
+  const cached = _transcriptCache[cacheKey];
   const bodyHTML = cached ? _convPreviewBodyHTML(cached) : '<div class="conv-preview-empty">Loading preview…</div>';
   // After paint: fetch if needed, then repaint + scroll to latest.
   setTimeout(() => loadConvPreview(projectId, csid), 0);
@@ -67,21 +79,27 @@ function convPreviewHTML(projectId) {
 
 async function loadConvPreview(projectId, csid) {
   if ((pendingResumeId[projectId] || null) !== csid) return;  // selection moved on
-  if (!_transcriptCache[csid]) {
-    if (_convPreviewLoading.has(csid)) return;  // a fetch is already in flight
-    _convPreviewLoading.add(csid);
+  const provider = pendingResumeProvider[projectId] || 'claude';
+  const cacheKey = _convPreviewCacheKey(projectId, csid);
+  if (!_transcriptCache[cacheKey]) {
+    if (_convPreviewLoading.has(cacheKey)) return;  // a fetch is already in flight
+    _convPreviewLoading.add(cacheKey);
     try {
-      const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(csid)}`);
+      const mcSessionId = pendingResumeMcSessionId[projectId] || '';
+      const url = provider === 'claude'
+        ? `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(csid)}`
+        : `/api/project/${encodeURIComponent(projectId)}/session/${encodeURIComponent(mcSessionId)}/reconstruct`;
+      const res = await fetch(API_BASE + url);
       if (res.ok) {
-        _transcriptCache[csid] = await res.json();
+        _transcriptCache[cacheKey] = await res.json();
       } else {
         const err = await res.json().catch(() => ({}));
-        _transcriptCache[csid] = { __error: err.error || res.statusText || 'not found' };
+        _transcriptCache[cacheKey] = { __error: err.error || res.statusText || 'not found' };
       }
     } catch (e) {
-      _transcriptCache[csid] = { __error: 'load failed' };
+      _transcriptCache[cacheKey] = { __error: 'load failed' };
     } finally {
-      _convPreviewLoading.delete(csid);
+      _convPreviewLoading.delete(cacheKey);
     }
   }
   if ((pendingResumeId[projectId] || null) !== csid) return;  // re-check after await
@@ -91,12 +109,12 @@ async function loadConvPreview(projectId, csid) {
   // (placeholder → loaded, or csid changed). Skipping the no-op repaint keeps
   // the user's scroll position intact across the frequent refreshModal ticks.
   if (body.dataset.painted !== csid) {
-    body.innerHTML = _convPreviewBodyHTML(_transcriptCache[csid]);
+    body.innerHTML = _convPreviewBodyHTML(_transcriptCache[cacheKey]);
     body.dataset.painted = csid;
   }
   // Auto-scroll to the latest exchange once per selection — that's the
   // "where we left off" context you want when resuming.
-  const sk = projectId + '|' + csid;
+  const sk = `${projectId}|${provider}|${csid}`;
   if (!_convPreviewScrolled.has(sk)) {
     body.scrollTop = body.scrollHeight;
     _convPreviewScrolled.add(sk);
@@ -105,7 +123,12 @@ async function loadConvPreview(projectId, csid) {
 
 // "Open ↗" — hand off to the full pop-out transcript viewer.
 function previewOpenFull(projectId, csid) {
-  openTranscriptViewer(projectId, csid, _convPreviewLabel(projectId, csid));
+  const provider = pendingResumeProvider[projectId] || 'claude';
+  if (provider === 'claude') {
+    openTranscriptViewer(projectId, csid, _convPreviewLabel(projectId, csid));
+  } else {
+    openConversation(projectId, '', pendingResumeMcSessionId[projectId] || '', false);
+  }
 }
 
 
@@ -121,13 +144,14 @@ function sessionPickerHTML(projectId) {
     runningSessions.filter(h => h.resumedFrom).map(h => h.resumedFrom)
   );
 
-  // Build unified list keyed by claude_session_id. Convo entries win (richer metadata).
+  // Build a provider-neutral list. Conversation rows win (richer metadata).
   const byId = new Map();
   for (const c of convos) {
-    const csid = c.claude_session_id;
-    if (!csid || runningResumeIds.has(csid)) continue;
-    byId.set(csid, {
-      csid,
+    const provider = c.provider || 'claude';
+    const resumeId = provider === 'claude' ? c.claude_session_id : c.provider_session_id;
+    if (!resumeId || c.resumable === false || runningResumeIds.has(resumeId)) continue;
+    byId.set(`${provider}:${resumeId}`, {
+      csid: resumeId, provider, mcSessionId: c.mc_session_id || '',
       label: (c.label || c.last_user || c.first_user || '').trim() || '(empty conversation)',
       status: c.status || '',
       ts: c.ts_relative || '',
@@ -136,10 +160,13 @@ function sessionPickerHTML(projectId) {
     });
   }
   for (const e of logEntries) {
-    const csid = e.claude_session_id;
-    if (!csid || e.hivemind_ws_id || runningResumeIds.has(csid) || byId.has(csid)) continue;
-    byId.set(csid, {
-      csid,
+    const provider = e.provider || 'claude';
+    const resumeId = provider === 'claude' ? e.claude_session_id : e.provider_session_id;
+    const key = `${provider}:${resumeId}`;
+    if (!resumeId || e.hivemind_ws_id || runningResumeIds.has(resumeId) || byId.has(key)) continue;
+    if (!_getProviderCaps(provider).supports_session_resume) continue;
+    byId.set(key, {
+      csid: resumeId, provider, mcSessionId: e.session_id || '',
       label: (e.task || '').trim() || 'Session',
       status: e.status || '',
       ts: e.ts_relative || e.ts || '',
@@ -161,7 +188,7 @@ function sessionPickerHTML(projectId) {
   // slice below so a pinned older chat is never truncated off the top-12.
   const _proj = (typeof allProjects !== 'undefined' ? allProjects.find(x => x.id === projectId) : null) || {};
   const _pinnedSet = new Set(_proj.pinned_conversations || []);
-  for (const it of available) it.pinned = _pinnedSet.has(it.csid);
+  for (const it of available) it.pinned = it.provider === 'claude' && _pinnedSet.has(it.csid);
   // Stable sort (WebView2/V8): equal keys keep insertion (recency) order, so
   // only the pinned items move up and everything else stays as-was.
   available.sort((a, b) => (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0));
@@ -170,7 +197,8 @@ function sessionPickerHTML(projectId) {
 
   const opts = available.slice(0, 12).map(item => {
     const csid = item.csid;
-    const isSelected = selected === csid;
+    const isSelected = selected === csid
+      && (pendingResumeProvider[projectId] || 'claude') === item.provider;
     const label = item.label.substring(0, 80);
     const statusDot = item.status
       ? `<span class="agent-status-dot ${esc(item.status)}" title="${esc(item.status)}"></span>`
@@ -179,7 +207,7 @@ function sessionPickerHTML(projectId) {
     const meta = [item.ts, item.turns ? `${item.turns} turn${item.turns !== 1 ? 's' : ''}` : '']
       .filter(Boolean).join(' · ');
     return `<div class="session-picker-opt ${isSelected ? 'selected' : ''} ${item.pinned ? 'pinned-conv' : ''}"
-      onclick="selectResumeSession('${esc(projectId)}','${esc(csid)}')"
+      onclick="selectResumeSession('${esc(projectId)}','${esc(csid)}','${esc(item.provider)}','${esc(item.mcSessionId)}')"
       title="${esc(item.label)}">
       <div class="sp-radio"></div>
       <div class="sp-label">
@@ -216,11 +244,16 @@ function closeAgentTab(projectId, sessionId) {
   // immediately. Then reload from server to reconcile (authoritative status / ts).
   const cached = agentStatusCache[sessionId] || {};
   const histEntry = agentHistory.find(h => h.sessionId === sessionId);
-  const csid = cached.claudeSessionId || (histEntry && histEntry.resumedFrom) || '';
-  if (csid) {
-    const lastUser = _lastUserFromBuffer(sessionId) || (histEntry && histEntry.task) || '';
-    upsertConversationCache(projectId, csid, lastUser, 'stopped');
-  }
+  const csid = cached.claudeSessionId || '';
+  const providerSessionId = cached.providerSessionId
+    || ((cached.provider || '') !== 'claude' && histEntry && histEntry.resumedFrom) || '';
+  const lastUser = _lastUserFromBuffer(sessionId) || (histEntry && histEntry.task) || '';
+  upsertConversationCache(projectId, csid, lastUser, 'stopped', {
+    mcSessionId: sessionId,
+    providerSessionId,
+    provider: cached.provider || (histEntry && histEntry.provider) || 'claude',
+    live: false,
+  });
 
   // Kill process + remove session from backend
   fetch(API_BASE + `/api/project/${projectId}/agent/session`, {
@@ -267,7 +300,11 @@ async function dispatchAgent(projectId) {
 
   // Check if we're resuming a prior session
   const resumeId = pendingResumeId[projectId] || null;
+  const resumeProvider = resumeId ? (pendingResumeProvider[projectId] || 'claude') : '';
+  const resumeMcSessionId = resumeId ? (pendingResumeMcSessionId[projectId] || '') : '';
   delete pendingResumeId[projectId];
+  delete pendingResumeProvider[projectId];
+  delete pendingResumeMcSessionId[projectId];
   // Dispatching consumes the armed-resume sub-level; clear its flag so a later
   // back doesn't misfire the resume-deselect handler (the conv level still
   // returns the thread to the list).
@@ -284,22 +321,27 @@ async function dispatchAgent(projectId) {
   const displayTask = task || 'Continue where we left off.';
   const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
   const _projForProv = allProjects.find(x => x.id === projectId);
-  const _chosenProvider = _composerProvider(_projForProv);
+  const _chosenProvider = resumeProvider || _composerProvider(_projForProv);
 
-  // First-run auth gate: don't fire a doomed Claude dispatch when a probe has
-  // CONFIRMED the CLI isn't signed in — surface the sign-in CTA up front instead
-  // of letting the user hit a cryptic mid-run 'unauthenticated' error. Only
-  // blocks on a confirmed-bad claude verdict (never on unknown, never for other
-  // providers), so it can't wedge a legitimate dispatch.
-  if ((_chosenProvider === 'claude' || !_chosenProvider) &&
-      typeof window.claudeAuthKnownBad === 'function' && window.claudeAuthKnownBad()) {
+  // First-run auth gate: don't fire a doomed dispatch for whichever provider
+  // this conversation resolved to. Unknown stays non-blocking; only a local,
+  // confirmed missing credential is gated.
+  if (typeof window.providerAuthKnownBad === 'function' &&
+      window.providerAuthKnownBad(_chosenProvider || 'claude')) {
+    if (resumeId) {
+      pendingResumeId[projectId] = resumeId;
+      pendingResumeProvider[projectId] = resumeProvider;
+      pendingResumeMcSessionId[projectId] = resumeMcSessionId;
+    }
     input.value = task;  // restore the prompt we cleared above
     if (typeof window.refreshAuthStatus === 'function') window.refreshAuthStatus();
     const banner = document.getElementById('auth-banner');
     if (banner) banner.classList.remove('hidden');
+    const _authProv = (_agentProviders || []).find(x => x.name === _chosenProvider);
+    const _authLabel = (_authProv && _authProv.display_name) || _chosenProvider || 'Claude';
     if (typeof showToast === 'function')
-      showToast("Log in to Claude first — click 'Authenticate Claude' in the banner at the top.", 8000);
-    else alert('Log in to Claude to get started — agents can\'t run until you\'re signed in.');
+      showToast(`Log in to ${_authLabel} first — use the authentication banner at the top.`, 8000);
+    else alert(`Log in to ${_authLabel} to get started — agents can't run until you're signed in.`);
     return;
   }
 
@@ -319,7 +361,7 @@ async function dispatchAgent(projectId) {
   // Optimistic-pill provider: prefer what was picked, then the character's own
   // pin, then the resolved default — so the badge doesn't flash the wrong
   // runtime before the first /agent/status round-trip.
-  const _pillProvider = _pickedProvider
+  const _pillProvider = resumeProvider || _pickedProvider
     || (_chosenCharMeta && _chosenCharMeta.engine && _chosenCharMeta.engine.provider)
     || _chosenProvider;
   // Match the server's seeded log_lines format so the SSE/reconcile delivery
@@ -343,7 +385,7 @@ async function dispatchAgent(projectId) {
   // matching the format alone isn't enough — every replay would still push
   // a second copy.
   agentServerLines[tempSessionId] = 1;
-  agentStatusCache[tempSessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
+  agentStatusCache[tempSessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: _pillProvider === 'claude' ? (resumeId || '') : '', providerSessionId: _pillProvider === 'claude' ? '' : (resumeId || ''), incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
   agentHistory.unshift({ projectId, sessionId: tempSessionId, projectName: pName, task: displayTask, status: 'running', startedAt: new Date().toISOString(), resumedFrom: resumeId || null, incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta });
   activeAgentTab[projectId] = tempSessionId;
   delete agentConvNew[projectId];  // dispatched → drill into the new convo
@@ -365,7 +407,8 @@ async function dispatchAgent(projectId) {
   // pinned provider (agent_routes.py: provider_override or character_provider
   // or project or global), so an untouched picker must stay empty here — mirrors
   // _chosenModel below, which already has this shape.
-  if (_pickedProvider) body.provider = _pickedProvider;
+  if (resumeProvider) body.provider = resumeProvider;
+  else if (_pickedProvider) body.provider = _pickedProvider;
   // Per-chat model from the composer's Model picker (fresh chats only; ''
   // means project/global default or the auto-router). Sticky per project.
   const _chosenModel = (!resumeId && typeof getPendingDispatchModel === 'function')
@@ -412,14 +455,20 @@ async function dispatchAgent(projectId) {
     // here previously, so a just-dispatched chat's persona (or its Channel
     // roster identity — ws_005) vanished from the cache the instant the temp
     // ID was promoted, until the next /agent/status poll refilled it.
-    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: resumeId || '', incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
+    agentStatusCache[sessionId] = { status: 'running', task: displayTask, projectId, startedAt: new Date().toISOString(), claudeSessionId: _pillProvider === 'claude' ? (resumeId || '') : '', providerSessionId: _pillProvider === 'claude' ? '' : (resumeId || ''), incognito: incognitoFlag, provider: _pillProvider, character: _chosenCharMeta };
 
-    // Zero-gap: if resuming a known prior conversation, patch its last_user now.
-    // For a fresh session, we don't know the claude_session_id yet; it will be
-    // populated by the next fetchAgentStatus tick and picked up on sendFollowup.
-    if (resumeId && task) {
-      upsertConversationCache(projectId, resumeId, task, 'running');
-    }
+    // Zero-gap rail row for EVERY provider. The MC session id is available
+    // immediately; provider transcript/thread ids arrive on the status poll.
+    // Keying this only on claude_session_id made fresh Codex chats disappear
+    // from the rail as soon as the user navigated away.
+    upsertConversationCache(
+      projectId, _pillProvider === 'claude' ? (resumeId || '') : '',
+      task || displayTask, 'running', {
+        mcSessionId: sessionId,
+        providerSessionId: _pillProvider === 'claude' ? '' : (resumeId || ''),
+        provider: _pillProvider,
+        live: true,
+      });
 
     refreshModal();
     renderAgentConsole();

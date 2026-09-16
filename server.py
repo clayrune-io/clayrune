@@ -1871,6 +1871,7 @@ _bp_sched.wire(
     all_managers_fn=_bp_agent.all_managers,
     pid_is_alive_fn=_bp_agent._pid_is_alive,
     revive_from_agent_log_fn=_bp_agent._revive_from_agent_log,
+    revive_non_claude_from_agent_log_fn=_bp_agent._revive_non_claude_from_agent_log,
 )
 app.register_blueprint(_bp_sched.bp)
 

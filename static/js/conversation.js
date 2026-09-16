@@ -160,15 +160,20 @@ function _composerCharacterPicker(p, resumeId) {
 // placeholder text; NOT a new state, just a read of the same
 // pendingDispatchCharacter / p.default_character the picker/sheet use.
 function _composerActiveCharName(p) {
-  if (!p) return 'Claude';
+  if (!p) return 'Agent';
   const list = characterCache[p.id] || [];
   const cur = pendingDispatchCharacter[p.id] || '';
   const key = cur || p.default_character || '';
-  if (!key) return 'Claude';
+  if (!key) {
+    const provider = _composerProvider(p);
+    const rec = (_agentProviders || []).find(x => x.name === provider);
+    return ((rec && rec.display_name) || provider || 'Agent')
+      .replace(/\s+(CLI|Code)$/i, '');
+  }
   const i = key.indexOf(':');
   const scope = key.slice(0, i), name = key.slice(i + 1);
   const rec = list.find(c => (c.scope || 'global') === scope && c.name === name);
-  return (rec && (rec.agent_name || rec.display_name || rec.name)) || 'Claude';
+  return (rec && (rec.agent_name || rec.display_name || rec.name)) || 'Agent';
 }
 
 // Ron, 2026-09-14 (phone screenshot): the persona picker was a tiny "…Change"
@@ -986,20 +991,25 @@ function agentPanelHTML(p) {
   // +New screen reflects the provider chosen in the composer dropdown.
   const _pcaps = activeSession
     ? _getProviderCaps(activeSession.provider || p.provider || 'claude')
-    : _getProviderCaps(_composerProvider(p));
+    : _getProviderCaps(pendingResumeProvider[p.id] || _composerProvider(p));
   const picker = (noActiveTab && _pcaps.supports_session_resume) ? sessionPickerHTML(p.id) : '';
 
   // Resume indicator (shown when a prior session is selected AND provider supports resume)
   const resumeId = (_pcaps.supports_session_resume && pendingResumeId[p.id]) || null;
   const resumeIndicator = (noActiveTab && resumeId) ? (() => {
+    const resumeProvider = pendingResumeProvider[p.id] || 'claude';
     const convos = conversationsCache[p.id] || [];
-    const convo = convos.find(c => c.claude_session_id === resumeId);
+    const convo = convos.find(c => (resumeProvider === 'claude'
+      ? c.claude_session_id : c.provider_session_id) === resumeId
+      && (c.provider || 'claude') === resumeProvider);
     let label;
     if (convo) {
       label = (convo.label || convo.last_user || convo.first_user || '').substring(0, 60);
     } else {
       const entries = agentLogCache[p.id] || [];
-      const entry = entries.find(e => e.claude_session_id === resumeId);
+      const entry = entries.find(e => (resumeProvider === 'claude'
+        ? e.claude_session_id : e.provider_session_id) === resumeId
+        && (e.provider || 'claude') === resumeProvider);
       label = entry ? (entry.task || '').substring(0, 50) : resumeId.substring(0, 12);
     }
     return `<div class="resume-indicator">Resuming: ${esc(label)} <span class="ri-clear" onclick="selectResumeSession('${esc(p.id)}','')">clear</span></div>`;
@@ -1944,16 +1954,30 @@ function _userInitiatedConvos(projectId, includeHidden) {
   // Merge in agent-log entries whose transcript isn't in conversationsCache —
   // old chats that aged out of /conversations but are still resumable (this is
   // what the old resume picker surfaced; without it they'd be unreachable).
-  const seen = new Set(out.map(c => c.claude_session_id).filter(Boolean));
+  const _durableConvKey = c => {
+    if (c.claude_session_id) return `claude:${c.claude_session_id}`;
+    if (c.mc_session_id || c.session_id) return `mc:${c.mc_session_id || c.session_id}`;
+    if (c.provider_session_id) return `${c.provider || 'provider'}:${c.provider_session_id}`;
+    return '';
+  };
+  const seen = new Set(out.map(_durableConvKey).filter(Boolean));
   for (const e of (agentLogCache[projectId] || [])) {
     const csid = e.claude_session_id || '';
-    if (!csid || seen.has(csid) || e.hivemind_ws_id) continue;
+    const provider = e.provider || 'claude';
+    const psid = e.provider_session_id || '';
+    const mcsid = e.session_id || '';
+    const key = csid ? `claude:${csid}` : (mcsid ? `mc:${mcsid}` : (psid ? `${provider}:${psid}` : ''));
+    if (!key || seen.has(key) || e.hivemind_ws_id) continue;
+    const caps = _getProviderCaps(provider);
     const c = {
-      claude_session_id: csid, mc_session_id: e.session_id || '',
+      claude_session_id: csid, provider_session_id: psid,
+      mc_session_id: mcsid, provider,
       label: e.task || '', last_user: e.task || '', first_user: e.task || '',
       status: e.status || 'completed', turns: e.num_turns || 0,
       ts_relative: e.ts_relative || e.ts || '', trigger_type: e.trigger_type || '',
       source: e.source || '', live: false,
+      resumable: !!(csid || (psid && caps.supports_session_resume)),
+      resume_mode: (csid || (psid && caps.supports_session_resume)) ? 'live' : 'readonly',
       // MC-938: without this, an aged-out persona chat merged in from the agent
       // log (rather than /conversations) would fail the character-carries-a-
       // human-pick override above and be dropped all over again.
@@ -1964,7 +1988,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
     };
     if (!_keep(c)) continue;
     out.push(c);
-    seen.add(csid);
+    seen.add(key);
   }
   return out;
 }
@@ -3584,6 +3608,8 @@ function backToConvList(projectId) {
   delete splitAgentTab[projectId];   // leaving the thread view exits split too
   delete agentConvNew[projectId];
   delete pendingResumeId[projectId];  // deselect any armed resume → back to the Layer-2 list
+  delete pendingResumeProvider[projectId];
+  delete pendingResumeMcSessionId[projectId];
   refreshModal();
 }
 
@@ -3837,6 +3863,8 @@ function newAgentTab(projectId) {
   // starting fresh. null keeps the key present (skips auto-populate) while
   // still meaning "no resume" to dispatchAgent and sessionPickerHTML.
   pendingResumeId[projectId] = null;
+  delete pendingResumeProvider[projectId];
+  delete pendingResumeMcSessionId[projectId];
   refreshModal();
   // #6: desktop-only auto-focus — on mobile this popped the keyboard the moment
   // you entered the +New screen, covering the composer/sheet.
@@ -3864,12 +3892,29 @@ function getDefaultResumeId(projectId) {
   const runningResumeIds = new Set(
     runningSessions.filter(h => h.resumedFrom).map(h => h.resumedFrom)
   );
-  const eligible = e => e.claude_session_id
-    && !runningResumeIds.has(e.claude_session_id)
-    && !e.synthesized
-    && !_UNATTENDED_TRIGGERS.has(e.trigger_type);
+  const resumeIdentity = e => {
+    const provider = e.provider || 'claude';
+    return {
+      provider,
+      id: provider === 'claude' ? e.claude_session_id : e.provider_session_id,
+      mcSessionId: e.session_id || '',
+    };
+  };
+  const eligible = e => {
+    const ident = resumeIdentity(e);
+    return ident.id
+      && _getProviderCaps(ident.provider).supports_session_resume
+      && !runningResumeIds.has(ident.id)
+      && !e.synthesized
+      && !_UNATTENDED_TRIGGERS.has(e.trigger_type);
+  };
   for (const e of entries) {
-    if (eligible(e)) return e.claude_session_id;
+    if (eligible(e)) {
+      const ident = resumeIdentity(e);
+      pendingResumeProvider[projectId] = ident.provider;
+      pendingResumeMcSessionId[projectId] = ident.mcSessionId;
+      return ident.id;
+    }
   }
   // Nothing attended to fall back to (a project whose only history is
   // scheduled runs). Start fresh rather than silently joining a machine
@@ -3877,15 +3922,22 @@ function getDefaultResumeId(projectId) {
   return null;
 }
 
-function selectResumeSession(projectId, claudeSessionId) {
+function selectResumeSession(projectId, resumeSessionId, provider, mcSessionId) {
   const was = pendingResumeId[projectId] || null;
-  pendingResumeId[projectId] = claudeSessionId || null;
+  pendingResumeId[projectId] = resumeSessionId || null;
+  if (resumeSessionId) {
+    pendingResumeProvider[projectId] = provider || 'claude';
+    pendingResumeMcSessionId[projectId] = mcSessionId || '';
+  } else {
+    delete pendingResumeProvider[projectId];
+    delete pendingResumeMcSessionId[projectId];
+  }
   // Back-stack: arming a resume (picker → preview) pushes a sub-level so
   // hardware-back returns to the picker; the UI "clear" unwinds it to stay in
   // sync (Issue B). Mobile only — mcPushResumeHistory no-ops on desktop.
-  if (claudeSessionId && !was) {
+  if (resumeSessionId && !was) {
     if (typeof mcPushResumeHistory === 'function') mcPushResumeHistory();
-  } else if (!claudeSessionId && was) {
+  } else if (!resumeSessionId && was) {
     if (typeof _mcResumeHistoryActive !== 'undefined' && _mcResumeHistoryActive) {
       _mcResumeHistoryActive = false;
       if (typeof _mcUnwindHistory === 'function') _mcUnwindHistory(1);
@@ -4729,7 +4781,12 @@ async function sendFollowup(projectId, sessionId) {
   {
     const cachedForConvo = agentStatusCache[sessionId] || {};
     const csid = cachedForConvo.claudeSessionId || '';
-    if (csid) upsertConversationCache(projectId, csid, message, 'running');
+    upsertConversationCache(projectId, csid, message, 'running', {
+      mcSessionId: sessionId,
+      providerSessionId: cachedForConvo.providerSessionId || '',
+      provider: cachedForConvo.provider || 'claude',
+      live: true,
+    });
   }
 
   // Upload any pasted images and build final message
@@ -5021,7 +5078,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch
@@ -5042,9 +5099,15 @@ async function fetchAgentStatus(projectId) {
       // guards elsewhere would then see a non-empty array and never fetch the
       // real list — leaving the rail showing ONLY this one conversation.
       const _csid = s.claude_session_id || '';
-      if (_csid && !s.hivemind_ws_id && Array.isArray(conversationsCache[projectId])
-          && !conversationsCache[projectId].some(c => c.claude_session_id === _csid)) {
-        upsertConversationCache(projectId, _csid, s.task || '', s.status);
+      const _psid = s.provider_session_id || '';
+      if (!s.hivemind_ws_id && Array.isArray(conversationsCache[projectId])) {
+        upsertConversationCache(projectId, _csid, '', s.status, {
+          mcSessionId: sid,
+          providerSessionId: _psid,
+          provider: s.provider || 'claude',
+          live: ['running', 'idle', 'waiting'].includes(s.status),
+          touch: false,
+        });
       }
       // Question-form reconciliation (parity with _reconcileAgentBuffer). The
       // wholesale cache rebuild above drops pendingQuestions on every poll. If we

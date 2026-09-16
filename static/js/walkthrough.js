@@ -8,7 +8,7 @@ const WT_STEPS = [
   {
     id: 'welcome',
     title: 'Welcome to Clayrune',
-    body: 'Clayrune is your operator console for long-running Claude agents — a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Quick tour: about 10 steps, 2 minutes.',
+    body: 'Clayrune is your operator console for long-running coding agents — a multi-project dashboard where you dispatch, monitor, and coordinate AI work across many parallel streams. Quick tour: about 10 steps, 2 minutes.',
     target: null, pos: 'center',
   },
   {
@@ -165,8 +165,15 @@ const WT_STEPS = [
 
 // Provider-choice step handler. Reuses the generic saveSetting() PUT that
 // Settings -> Default provider already calls — one write path, not two.
-function wtSetDefaultProvider(name) {
-  saveSetting('default_provider', name);
+async function wtSetDefaultProvider(name) {
+  await saveSetting('default_provider', name);
+  // First-run follows the user's choice immediately. Refresh the provider
+  // inventory (its `default`/`in_use` flags predate this click), then run the
+  // same selected-provider auth check used at boot so Codex never produces a
+  // Claude login prompt and an unsigned-in choice gets its own CTA.
+  _agentProviders = null;
+  try { await _ensureAgentProviders(); } catch (e) { /* auth refresh still uses config */ }
+  if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
 }
 
 // Per-provider state label for the provider-choice step — same three states

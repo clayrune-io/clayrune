@@ -1,7 +1,8 @@
 // ── Auth banner — multi-provider ───────────────────────────────────────────
-// Always checks claude (via the legacy /api/claude/auth-status alias). When
-// multi_provider_enabled is on and the default provider differs from claude,
-// also checks that provider and surfaces provider-specific messaging.
+// Checks the user's selected DEFAULT provider. A Codex-first installation must
+// never probe or advertise Claude merely because Claude was the historical
+// fallback. Project/character pins are checked when they are actually used;
+// the global first-run banner is for the provider chosen during installation.
 let _authBannerDismissed = false;
 let _authBannerLastReason = null;
 // First-run auth gate state. `_claudeAuthOk`: null = unverified, true = signed
@@ -10,6 +11,7 @@ let _authBannerLastReason = null;
 // on every 90s poll.
 let _claudeAuthOk = null;
 let _authProbeKicked = false;
+const _providerAuthKnown = {};
 
 // Track the last-known CLAUDE auth verdict so the dispatch path can refuse to
 // fire a doomed run. Only claude states update it (other providers pass through
@@ -22,23 +24,62 @@ function _updateClaudeAuthKnown(state) {
   else _claudeAuthOk = null;
 }
 
+function _updateProviderAuthKnown(provider, state) {
+  if (!provider) return;
+  if (provider === 'claude') _updateClaudeAuthKnown(state);
+  const reason = state && (state.reason || state.status);
+  if (state && state.ok === true) _providerAuthKnown[provider] = true;
+  else if (['not_logged_in', 'invalid_api_key', 'not_installed', 'cli_not_found'].includes(reason)) {
+    _providerAuthKnown[provider] = false;
+  } else {
+    delete _providerAuthKnown[provider];
+  }
+}
+
+async function _selectedProvider() {
+  let list = _agentProviders || [];
+  if (!list.length && typeof _ensureAgentProviders === 'function') {
+    try { list = await _ensureAgentProviders(); } catch (e) { list = []; }
+  }
+  const configured = (_globalConfig && _globalConfig.default_provider) || '';
+  // The in-memory config changes immediately when the walkthrough or Settings
+  // saves a new default; `/api/agent/providers` may still carry the previous
+  // row's `default:true` until its next fetch. The explicit current choice wins.
+  return list.find(p => p.name === configured)
+      || list.find(p => p.default)
+      || list.find(p => p.installed && p.in_use)
+      || list.find(p => p.installed)
+      || { name: configured || 'claude', display_name: configured || 'Claude' };
+}
+
+function _normalizeProviderAuth(provider, data) {
+  const status = (data && (data.status || data.auth_status || data.reason)) || 'unknown';
+  return {
+    ok: !!(data && (data.ok === true || status === 'ok')),
+    reason: status === 'not_installed' ? 'cli_not_found' : status,
+    status,
+    _provider: provider,
+    last_probe_at: data && data.last_probe_at,
+  };
+}
+
 async function refreshAuthStatus() {
   try {
-    // Always check claude (the original + most common provider).
-    const res = await fetchFailFast(API_BASE + '/api/claude/auth-status');
+    const selected = await _selectedProvider();
+    const provider = selected.name || 'claude';
+    const res = await fetchFailFast(API_BASE + `/api/agent/${provider}/auth-status`);
     if (!res.ok) return;
-    const state = await res.json();
-    // Attach provider name so _renderAuthBanner can label it correctly.
-    state._provider = 'claude';
+    const raw = await res.json();
+    const state = _normalizeProviderAuth(provider, raw);
     // First-run gate: the server seeds _claude_auth_state optimistically
     // (ok:true, never probed). If we've never verified (no last_probe_at) and
     // aren't already known-bad, actively probe ONCE so a not-signed-in install
     // surfaces the sign-in CTA up front instead of after a doomed dispatch.
-    if (state.ok !== false && !state.last_probe_at && !_authProbeKicked) {
+    if (provider === 'claude' && state.ok !== false && !state.last_probe_at && !_authProbeKicked) {
       _authProbeKicked = true;
       _claudeAuthProbe();  // async; re-renders on completion
     }
-    _updateClaudeAuthKnown(state);
+    _updateProviderAuthKnown(provider, state);
     _renderAuthBanner(state);
   } catch (e) {
     // Network blip — leave whatever banner state we have.
@@ -54,7 +95,7 @@ async function _claudeAuthProbe() {
     if (!res.ok) return;
     const state = await res.json();
     state._provider = 'claude';
-    _updateClaudeAuthKnown(state);
+    _updateProviderAuthKnown('claude', state);
     _renderAuthBanner(state);
     _renderClaudeAuthStatusLine(state);
   } catch (e) { /* best-effort */ }
@@ -68,11 +109,8 @@ async function refreshProviderAuthStatus(providerName) {
     const data = await res.json();
     // Normalize to the same shape as /api/claude/auth-status
     const auth = data.auth_state || {};
-    const state = {
-      ok: auth.status === 'ok',
-      reason: auth.status !== 'ok' ? auth.status : null,
-      _provider: providerName,
-    };
+    const state = _normalizeProviderAuth(providerName, auth);
+    _updateProviderAuthKnown(providerName, state);
     _renderAuthBanner(state);
   } catch (e) { /* ignore blips */ }
 }
@@ -101,6 +139,7 @@ function _hasLiveClaudeAgent() {
 // always check claude — a cold-boot race should never silently hide a real
 // "you're not signed in" problem.
 function _isProviderInUse(name) {
+  if ((_globalConfig && _globalConfig.default_provider) === name) return true;
   const list = _agentProviders || [];
   if (!list.length) return true;
   const entry = list.find(p => p.name === name);
@@ -198,6 +237,25 @@ async function claudeAuthRecheck() {
     _renderClaudeAuthStatusLine(state);
   } catch (e) {
     // ignore
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = 'Re-check'; }
+  }
+}
+
+async function authBannerRecheck() {
+  const selected = await _selectedProvider();
+  const provider = selected.name || 'claude';
+  if (provider === 'claude') return claudeAuthRecheck();
+  const btn = document.getElementById('auth-banner-recheck');
+  if (btn) { btn.disabled = true; btn.textContent = 'Checking...'; }
+  try {
+    const res = await fetch(API_BASE + `/api/agent/provider/${provider}/auth`);
+    const raw = await res.json();
+    const state = _normalizeProviderAuth(provider, raw);
+    _updateProviderAuthKnown(provider, state);
+    _renderAuthBanner(state);
+  } catch (e) {
+    // Leave the current banner visible on a transient network failure.
   } finally {
     if (btn) { btn.disabled = false; btn.textContent = 'Re-check'; }
   }
@@ -484,9 +542,11 @@ function _renderClaudeAuthStatusLine(state) {
 //    are module-private. ──
 window.refreshAuthStatus = refreshAuthStatus;     // startRefresh 90s poll (shim) + SSE-error + fetchProjects callback
 window.claudeAuthKnownBad = () => _claudeAuthOk === false; // dispatch gate: true only when a probe confirmed not-signed-in
+window.providerAuthKnownBad = (provider) => _providerAuthKnown[provider || 'claude'] === false;
 window.dismissAuthBanner = dismissAuthBanner;     // auth-banner static onclick
 window.claudeAuthenticate = claudeAuthenticate;   // auth-banner static onclick
 window.claudeAuthRecheck = claudeAuthRecheck;     // auth-banner static onclick
+window.authBannerRecheck = authBannerRecheck;     // auth-banner provider-agnostic re-check
 window.settingsClaudeLogin = settingsClaudeLogin; // Provider Settings section onclick
 window.settingsClaudeAuthCheck = settingsClaudeAuthCheck; // Provider Settings section onclick
 window.PROVIDER_AUTH_KEYS = PROVIDER_AUTH_KEYS;   // read by inline _renderProviderSettings
