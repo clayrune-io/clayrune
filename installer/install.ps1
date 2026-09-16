@@ -1009,10 +1009,11 @@ try {
     Write-Host "  (could not write default_provider into config.json: $_)" -ForegroundColor DarkGray
 }
 
-# -- [STEP 3/5] Desktop + Start Menu shortcut ------------------------------
-Write-Host '[STEP 3/5] Creating Desktop + Start Menu shortcut...' -ForegroundColor White
+# -- [STEP 3/5] Desktop + Start Menu shortcuts -----------------------------
+Write-Host '[STEP 3/5] Creating Desktop + Start Menu shortcuts...' -ForegroundColor White
 $startBat  = Join-Path $installDir 'installer\start.bat'
 $hiddenVbs = Join-Path $installDir 'installer\start-hidden.vbs'
+$uninstallPs1 = Join-Path $installDir 'installer\uninstall.ps1'
 # Full path to the Windows Script Host. A bare 'wscript.exe' usually resolves,
 # but a shortcut stored with the absolute System32 path is more reliable.
 $wscriptExe = Join-Path $env:WINDIR 'System32\wscript.exe'
@@ -1049,6 +1050,26 @@ foreach ($lnk in $lnks) {
         # qualified variable (like $env: / $function:) and crash the script
         # with "InvalidVariableReferenceWithDrive".
         Write-Host "  WARN could not create ${lnk}: $_" -ForegroundColor Yellow
+    }
+}
+
+# A separate Start Menu entry gives the installation a discoverable, safe
+# removal path. It never shares Clayrune's working directory, so the
+# uninstaller can delete the checkout after it has stopped the verified server.
+if (Test-Path $uninstallPs1) {
+    try {
+        $uninstallLnk = "$env:APPDATA\Microsoft\Windows\Start Menu\Programs\Uninstall Clayrune.lnk"
+        $powershellExe = Join-Path $env:WINDIR 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        $sc = $wsh.CreateShortcut($uninstallLnk)
+        $sc.TargetPath = $powershellExe
+        $sc.Arguments = "-NoProfile -ExecutionPolicy Bypass -File `"$uninstallPs1`" -InstallDir `"$installDir`""
+        $sc.WorkingDirectory = $env:TEMP
+        if (Test-Path $iconPath) { $sc.IconLocation = $iconPath }
+        $sc.Description = 'Safely uninstall Clayrune'
+        $sc.Save()
+        Write-Host "  Created $uninstallLnk"
+    } catch {
+        Write-Host "  WARN could not create uninstall shortcut: $_" -ForegroundColor Yellow
     }
 }
 Write-Host '[STEP 3/5] OK' -ForegroundColor Green
@@ -1121,5 +1142,6 @@ Write-Host "  Location: $installDir"
 Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
 Write-Host '  Relaunch: double-click the Clayrune shortcut on your Desktop'
 Write-Host '            (also available in your Start Menu).'
+Write-Host '  Uninstall: choose Uninstall Clayrune from your Start Menu.'
 Write-Host '============================================================' -ForegroundColor Green
 [Environment]::Exit(0)

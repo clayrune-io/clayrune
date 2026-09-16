@@ -6,6 +6,24 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16d] — Safe Windows and macOS uninstall flows
+
+- Windows installs now add **Uninstall Clayrune** to the Start Menu; macOS
+  script installs add `~/Applications/Uninstall Clayrune.command`. macOS
+  release archives place the same uninstaller beside the signed `.app`, where
+  it safely recognizes and removes that exact sibling bundle.
+- Default removal deletes the application, launchers, and Clayrune autostart
+  entries while preserving provider CLIs, `~/.claude`, external projects, and
+  a timestamped recovery copy of checkout-backed `config.json` + `data/` under
+  `~/.clayrune/uninstall-archives/`.
+- Explicit `-PurgeData` / `--purge-data` modes additionally remove
+  Clayrune-owned settings, credentials, browser profiles, frozen-app data, and
+  local backups after the user types `PURGE CLAYRUNE DATA`.
+- Process cleanup is ownership-checked: a listener is stopped only when its
+  executable or command line is tied to Clayrune; merely using port 5199 is
+  not enough. Fixture tests execute both Windows modes in isolated homes and
+  pin the cross-platform safety contract.
+
 ## [2026-09-16c] — Avoid names already booked in another project
 
 - New-agent identity suggestions now check global agents and every registered

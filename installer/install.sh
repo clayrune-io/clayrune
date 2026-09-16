@@ -769,6 +769,7 @@ PYEOF
 printf "%s[STEP 3/5]%s Creating launcher...\n" "$B" "$R"
 if [ "$OS" = "macos" ]; then
   START_CMD="$INSTALL_DIR/installer/start.command"
+  UNINSTALL_CMD="$INSTALL_DIR/installer/uninstall-macos.command"
   if [ ! -f "$START_CMD" ]; then
     printf "%s[STEP 3/5] FAIL%s %s not found in checkout\n" "$E" "$R" "$START_CMD"
     exit 2
@@ -778,6 +779,19 @@ if [ "$OS" = "macos" ]; then
   cp "$START_CMD" "$HOME/Applications/Clayrune.command"
   chmod +x "$HOME/Applications/Clayrune.command"
   printf "  Created %s\n" "$HOME/Applications/Clayrune.command"
+  if [ -f "$UNINSTALL_CMD" ]; then
+    # Write a tiny wrapper instead of copying the uninstaller: a copied script
+    # cannot infer a custom CLAYRUNE_HOME from ~/Applications. Single-quote
+    # shell escaping keeps spaces and apostrophes in custom paths safe.
+    _uq=$(printf '%s' "$UNINSTALL_CMD" | sed "s/'/'\\\\''/g")
+    _iq=$(printf '%s' "$INSTALL_DIR" | sed "s/'/'\\\\''/g")
+    {
+      printf '#!/bin/sh\n'
+      printf "exec '%s' --install-dir '%s'\n" "$_uq" "$_iq"
+    } > "$HOME/Applications/Uninstall Clayrune.command"
+    chmod +x "$HOME/Applications/Uninstall Clayrune.command"
+    printf "  Created %s\n" "$HOME/Applications/Uninstall Clayrune.command"
+  fi
 elif [ "$OS" = "linux" ]; then
   START_SH="$INSTALL_DIR/installer/start.sh"
   if [ ! -f "$START_SH" ]; then
@@ -887,6 +901,7 @@ printf "  Location: %s\n" "$INSTALL_DIR"
 printf "  Provider: %s (change any time in Settings)\n" "$CHOSEN_PROVIDER"
 if [ "$OS" = "macos" ]; then
   printf "  Relaunch: open ~/Applications/Clayrune.command\n"
+  printf "  Uninstall: open ~/Applications/Uninstall Clayrune.command\n"
 else
   printf "  Relaunch: launch \"Clayrune\" from your application menu, or run\n"
   printf "            %s\n" "$INSTALL_DIR/installer/start.sh"

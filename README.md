@@ -81,10 +81,22 @@ iwr https://clayrune.io/install.ps1 -useb | iex
 curl -fsSL https://clayrune.io/install.sh | sh
 ```
 
-That installs the Claude CLI, clones the repo and opens the dashboard on
+That installs your chosen AI provider CLI, clones the repo and opens the dashboard on
 `http://localhost:5199`. If you'd rather double-click something, there's a
 [zip on clayrune.io](https://clayrune.io/download.html) — it's unsigned, so
 Windows will grumble about an "unrecognized app" the first time.
+
+### Uninstall
+
+New script-based installs add **Uninstall Clayrune** to the Windows Start Menu
+or `~/Applications/Uninstall Clayrune.command` on macOS. The default removes
+Clayrune while preserving projects, provider login/state, and a recovery copy
+of Clayrune's settings and records. A separately confirmed **purge data** mode
+also removes Clayrune-owned settings, credentials, browser profiles, and local
+backups; it still never removes provider CLIs, `~/.claude`, or project folders.
+
+Standalone commands and the exact preservation rules are on the
+[download page](https://clayrune.io/download.html#uninstall).
 
 <details>
 <summary><b>Running from source</b></summary>

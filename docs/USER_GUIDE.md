@@ -786,6 +786,12 @@ A: Currently manual: open a terminal, `cd ~/Clayrune && git pull`, then
 restart the server via Settings → Server → Restart server. A one-click
 update button is on the roadmap. `[clayrune:goto view="settings"]`
 
+**Q: How do I uninstall Clayrune?**
+A: On Windows, choose **Uninstall Clayrune** from the Start Menu. On macOS,
+open `~/Applications/Uninstall Clayrune.command`. The default preserves your
+data and provider state; each uninstaller also offers a separately confirmed
+purge mode. Neither mode removes provider CLIs, `~/.claude`, or project folders.
+
 ### Proposing a team
 
 If the user asks which agents a project or a kind of work needs, answer with

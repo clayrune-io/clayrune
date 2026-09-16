@@ -53,9 +53,11 @@ A Claude-driven installer. The user runs one command; Claude executes the instal
 | `Clayrune-Setup.command` | macOS double-click path (same role as the `.bat`). |
 | `install.sh` | Bootstrap for macOS / Linux. The user runs `curl -sSL https://clayrune.io/install.sh \| sh`. |
 | `install.ps1` | Bootstrap for Windows. The canonical install logic the `.exe` (and the PowerShell one-liner) hand off to. |
+| `uninstall.ps1` | Safe Windows uninstaller. Default preserves Clayrune data and all provider state; `-PurgeData` removes Clayrune-owned data after a stronger confirmation. Installed as a Start Menu shortcut. |
 | `install-prompt.md` | The actual installer logic, written as a prescriptive prompt for Claude. The bootstrap fetches this and pipes it into `claude --dangerously-skip-permissions`. |
 | `start.sh` | Per-user launcher (Linux). Activates `.venv`, starts `python server.py`, opens the browser. The installer registers this as a `.desktop` file in `~/.local/share/applications/`. |
 | `start.command` | Per-user launcher (macOS). Same role as `start.sh`. The installer copies it to `~/Applications/Clayrune.command`. |
+| `uninstall-macos.command` | Safe macOS uninstaller for source installs and the signed `.app`. Default preserves Clayrune data and all provider state; `--purge-data` is separately confirmed. Installed at `~/Applications/Uninstall Clayrune.command` by the script installer and bundled into the signed app. |
 | `start.bat` | Per-user launcher (Windows). Same role. Run directly for a visible dev console (live logs). The `.lnk` shortcut does **not** target it directly — see `start-hidden.vbs`. |
 | `start-hidden.vbs` | Default Windows entry point. Runs `start.bat` with **no console window** (end users shouldn't see the server log console) and sets `CLAYRUNE_HIDDEN=1` so logs are written to `data\logs\clayrune.log` instead. The installer points the Desktop / Start Menu `.lnk` here (via `wscript.exe`). |
 
@@ -78,6 +80,8 @@ The bootstrap clearly prints the exact `claude --dangerously-skip-permissions` l
 | `https://clayrune.io/Clayrune-Installer.exe` | the thin Windows launcher (primary) | this repo: `installer/Clayrune-Installer.exe` (built from `installer/win-exe/`) |
 | `https://clayrune.io/install.sh` | the bootstrap (macOS/Linux) | this repo: `installer/install.sh` |
 | `https://clayrune.io/install.ps1` | the bootstrap (Windows) | this repo: `installer/install.ps1` |
+| `https://clayrune.io/uninstall-macos.command` | safe macOS uninstaller | this repo: `installer/uninstall-macos.command` |
+| `https://clayrune.io/uninstall.ps1` | safe Windows uninstaller | this repo: `installer/uninstall.ps1` |
 | `https://clayrune.io/install-prompt.md` | the install prompt | this repo: `installer/install-prompt.md` |
 
 For testing before the domain is up, the same files can be served from
@@ -107,3 +111,20 @@ claude "update Clayrune in ~/Clayrune by running git pull, reinstalling Python d
 ```
 
 A future enhancement may add `clayrune.io/update.sh` that scripts this more formally.
+
+## Uninstall safety contract
+
+Both uninstallers have two explicit modes:
+
+- **Default — remove app, preserve data.** Removes Clayrune, its launchers, and
+  Clayrune autostart entries. Checkout-backed `config.json` and `data/` are
+  copied to `~/.clayrune/uninstall-archives/<timestamp>/` first. Frozen-app
+  data and `~/.clayrune` remain in place.
+- **Purge data.** `-PurgeData` (Windows) / `--purge-data` (macOS) additionally
+  removes Clayrune-owned runtime data, credentials, browser profiles, and local
+  backups after the user types `PURGE CLAYRUNE DATA`.
+
+Neither mode removes an AI provider CLI, Node.js, Python, Git, `~/.claude`, or
+any external project directory. A server is stopped only when its executable
+or command line can be tied to Clayrune; occupying port 5199 is not sufficient.
+Both scripts support a dry run.

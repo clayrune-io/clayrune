@@ -60,6 +60,10 @@ datas = [
     # (the FAB + the agent avatar) in the frozen app.
     (R('assets'), 'assets'),
     (R('installer', 'clayrune.png'), 'installer'),
+    # Keep the safe uninstaller available inside the signed app bundle. The
+    # public download page links the same source for users who want a standalone
+    # copy; bundling it also makes every frozen release self-contained.
+    (R('installer', 'uninstall-macos.command'), 'installer'),
     # Injected into every agent's system prompt by _clayrune_api_reference().
     # Unlike SHARED_RULES.md below this is NOT user data — it's the curated,
     # operator-neutral Clayrune API doc. Leave it out and the frozen app's

@@ -144,11 +144,27 @@ GK_INFO="$(spctl -a -t exec -vvv "$APP" 2>&1)"
 grep -q "source=Notarized Developer ID" <<<"$GK_INFO" \
   || die "Gatekeeper assessment did not report 'Notarized Developer ID'."
 
-# ── 5. Zip the STAPLED app for distribution ─────────────────────────────────
+# ── 5. Zip the STAPLED app + safe uninstaller for distribution ──────────────
 # (the zip we submitted is stale — the ticket got stapled into the .app after.)
 say "Zipping notarized app -> $OUT_ZIP"
 rm -f "$OUT_ZIP"
-ditto -c -k --sequesterRsrc --keepParent "$APP" "$OUT_ZIP"
+UNINSTALLER="installer/uninstall-macos.command"
+[ -f "$UNINSTALLER" ] || die "$UNINSTALLER missing."
+PACKAGE_DIR="$(mktemp -d)"
+ditto "$APP" "$PACKAGE_DIR/Clayrune.app"
+cp "$UNINSTALLER" "$PACKAGE_DIR/Uninstall Clayrune.command"
+chmod +x "$PACKAGE_DIR/Uninstall Clayrune.command"
+case "$OUT_ZIP" in
+  /*) OUT_ZIP_TARGET="$OUT_ZIP" ;;
+  *)  OUT_ZIP_TARGET="$(pwd)/$OUT_ZIP" ;;
+esac
+(cd "$PACKAGE_DIR" && ditto -c -k --sequesterRsrc . "$OUT_ZIP_TARGET")
+rm -rf "$PACKAGE_DIR"
+VERIFY_DIR="$(mktemp -d)"
+ditto -x -k "$OUT_ZIP_TARGET" "$VERIFY_DIR"
+[ -d "$VERIFY_DIR/Clayrune.app" ] || die "Packaged archive is missing Clayrune.app."
+[ -x "$VERIFY_DIR/Uninstall Clayrune.command" ] || die "Packaged archive is missing the executable uninstaller."
+rm -rf "$VERIFY_DIR"
 
 # ── 6. Publish the build manifest ────────────────────────────────────────────
 # The frozen app's own update check (system_routes.py _frozen_update_status)

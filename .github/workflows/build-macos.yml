@@ -74,11 +74,18 @@ jobs:
 
       - name: Zip the bundle
         run: |
-          cd dist
           # ditto preserves macOS extended attributes (xattrs) so the
           # zipped .app re-launches cleanly. zip(1) loses them.
-          ditto -c -k --sequesterRsrc --keepParent Clayrune.app Clayrune-macOS-unsigned.zip
-          ls -lh Clayrune-macOS-unsigned.zip
+          mkdir -p dist/package
+          ditto dist/Clayrune.app dist/package/Clayrune.app
+          cp installer/uninstall-macos.command "dist/package/Uninstall Clayrune.command"
+          chmod +x "dist/package/Uninstall Clayrune.command"
+          (cd dist/package && ditto -c -k --sequesterRsrc . ../Clayrune-macOS-unsigned.zip)
+          mkdir -p dist/package-check
+          ditto -x -k dist/Clayrune-macOS-unsigned.zip dist/package-check
+          test -d dist/package-check/Clayrune.app
+          test -x "dist/package-check/Uninstall Clayrune.command"
+          ls -lh dist/Clayrune-macOS-unsigned.zip
 
       - name: Upload as workflow artifact (manual dispatch)
         if: github.event_name == 'workflow_dispatch'

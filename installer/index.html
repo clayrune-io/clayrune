@@ -99,7 +99,7 @@
     <div class="install-block">
       <div class="os">Windows</div>
       <p style="margin:6px 0 12px 0;font-size:14px"><a href="/Clayrune-Installer.exe" download style="display:inline-block;background:var(--accent);color:#fff;padding:10px 18px;border-radius:5px;text-decoration:none;font-weight:600">⬇ Download Clayrune-Installer.exe</a></p>
-      <div class="note">Windows Defender SmartScreen may show an "unrecognized app" warning the first time. Click <strong>More info</strong> → <strong>Run anyway</strong>. It's a thin, unsigned launcher — its full source is on <a href="https://github.com/clayrune-io/clayrune/blob/master/installer/win-exe/ClayruneInstaller.cs">GitHub</a>, and it just runs the auditable <a href="/install-prompt.md">install prompt</a>.</div>
+      <div class="note">Windows Defender SmartScreen may show an "unrecognized app" warning the first time. Click <strong>More info</strong> → <strong>Run anyway</strong>. It's a thin, unsigned launcher — its full source is on <a href="https://github.com/clayrune-io/clayrune/blob/master/installer/win-exe/ClayruneInstaller.cs">GitHub</a>, and it fetches the auditable <a href="/install.ps1">PowerShell installer</a>.</div>
     </div>
 
     <div class="install-block">
@@ -127,22 +127,40 @@
     <h2>What the installer does</h2>
 
     <ul>
-      <li>Installs Claude CLI if missing (npm or Anthropic's installer)</li>
-      <li>Installs Node.js 20 via nvm/winget if you don't have it</li>
+      <li>Asks which AI provider you use and installs that CLI if missing</li>
+      <li>Installs Node.js when the selected provider needs it</li>
       <li>Clones this repo to <code>~/Clayrune</code> (or <code>%USERPROFILE%\Clayrune</code>)</li>
       <li>Sets up the Python venv + dependencies</li>
       <li>Creates a desktop shortcut + Start Menu / Applications entry</li>
       <li>Launches the server and opens <code>http://localhost:5199</code> in your browser</li>
     </ul>
 
-    <p>The full install logic is a Markdown prompt — Claude reads it and executes the steps. <a href="/install-prompt.md">Read the prompt</a> before you run.</p>
+    <p>The install logic is deterministic and open source. Audit <a href="/install.sh">install.sh</a> or <a href="/install.ps1">install.ps1</a> before you run it.</p>
+
+    <h2 id="uninstall">Uninstall safely</h2>
+
+    <p>New installs include <strong>Uninstall Clayrune</strong> in the Windows Start Menu or <code>~/Applications/Uninstall Clayrune.command</code> on macOS. The default preserves your projects, provider login/state, and a recovery copy of Clayrune's settings and records.</p>
+
+    <div class="install-block">
+      <div class="os">Windows (PowerShell)</div>
+      <pre>iwr https://clayrune.io/uninstall.ps1 -OutFile "$env:TEMP\Clayrune-Uninstall.ps1"
+&amp; "$env:TEMP\Clayrune-Uninstall.ps1"</pre>
+      <div class="note">Preview first with <code>-DryRun</code>. To also remove Clayrune-owned settings, credentials, browser profiles, and local backups, use <code>-PurgeData</code>; it requires a stronger typed confirmation.</div>
+    </div>
+
+    <div class="install-block">
+      <div class="os">macOS</div>
+      <pre>curl -fsSL https://clayrune.io/uninstall-macos.command -o /tmp/Clayrune-Uninstall.command
+sh /tmp/Clayrune-Uninstall.command</pre>
+      <div class="note">Preview first with <code>--dry-run</code>. Use <code>--purge-data</code> only if you also want Clayrune-owned data removed. Neither mode removes provider CLIs, <code>~/.claude</code>, or your project folders.</div>
+    </div>
 
     <h2>Source</h2>
 
     <p>Open source on GitHub: <a href="https://github.com/clayrune-io/clayrune">github.com/clayrune-io/clayrune</a>. MIT licensed.</p>
 
     <footer>
-      Built with Claude · Hosted on Cloudflare Pages · <a href="/install-prompt.md">install prompt</a> · <a href="https://github.com/clayrune-io/clayrune">source</a>
+      Built with Claude · Hosted on Cloudflare Pages · <a href="/install.ps1">Windows installer</a> · <a href="/install.sh">macOS/Linux installer</a> · <a href="https://github.com/clayrune-io/clayrune">source</a>
     </footer>
   </div>
 </body>
