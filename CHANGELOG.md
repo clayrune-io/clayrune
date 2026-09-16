@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16k] — Fix Windows dashboard boot blocked by JavaScript MIME types
+
+- Successful built-in JavaScript, CSS, and WASM static responses now use
+  explicit content types, independent of Windows registry file associations.
+  This fixes Chrome rejecting ES modules served as `text/plain`, leaving the
+  dashboard loading and the tour unavailable.
+- Bump the asset cache token so old immutable responses with incorrect MIME
+  headers are fetched again after updating and restarting the server.
+- 14 focused tests pass, including actual Chromium loading of the tour module
+  from a Flask response with a deliberately incorrect host MIME mapping.
+
 ## [2026-09-16j] — Continue recovery when the old install folder is locked
 
 - If Windows blocks renaming the old folder with a sharing/lock violation,

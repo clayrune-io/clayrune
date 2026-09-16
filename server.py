@@ -612,6 +612,17 @@ _IMMUTABLE_EXCLUDE = {'/static/sw.js', '/static/manifest.json', '/static/index.h
 
 @app.after_request
 def add_static_cache_headers(response):
+    # Windows registry associations can label .js as text/plain. ES modules
+    # then fail strict browser MIME checks and the entire dashboard stalls.
+    # Own the types of successful built-in assets; never relabel error pages.
+    if request.endpoint == 'static' and response.status_code in (200, 206, 304):
+        suffix = Path((request.view_args or {}).get('filename', '')).suffix.lower()
+        content_type = {'.js': 'text/javascript; charset=utf-8',
+                        '.mjs': 'text/javascript; charset=utf-8',
+                        '.css': 'text/css; charset=utf-8',
+                        '.wasm': 'application/wasm'}.get(suffix)
+        if content_type:
+            response.headers['Content-Type'] = content_type
     if (request.path.startswith('/static/')
             and request.path not in _IMMUTABLE_EXCLUDE
             and request.args.get('v')
@@ -1990,7 +2001,8 @@ def _asset_version():
             latest = m
     except OSError:
         pass
-    return str(int(latest))
+    # Invalidate immutable responses previously cached with OS-derived MIME.
+    return str(int(latest)) + '-mime1'
 
 
 @app.route('/')

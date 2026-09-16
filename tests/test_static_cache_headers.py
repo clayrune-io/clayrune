@@ -84,3 +84,69 @@ def test_app_contributes_no_date_on_static(client):
     assert r.headers.getlist('Date') == []
     # API responses never had the duplicate — Flask sets no Date on them.
     assert len(client.get('/api/version').headers.getlist('Date')) <= 1
+
+
+@pytest.mark.parametrize('filename,expected', [
+    ('js/walkthrough.js', 'text/javascript'),
+    ('js/composer-extras.js', 'text/javascript'),
+    ('js/project-actions.js', 'text/javascript'),
+    ('css/app.css', 'text/css'),
+])
+def test_static_types_ignore_bad_windows_registry(client, monkeypatch, filename, expected):
+    import mimetypes
+    mimetypes.init()
+    monkeypatch.setitem(mimetypes.types_map, '.js', 'text/plain')
+    monkeypatch.setitem(mimetypes.types_map, '.css', 'application/octet-stream')
+    response = client.get('/static/' + filename + '?v=bad-registry')
+    assert response.status_code == 200
+    assert response.mimetype == expected
+    assert response.headers['Cache-Control'].endswith('immutable')
+    response.close()
+
+
+def test_missing_module_remains_html_error(client):
+    response = client.get('/static/js/does-not-exist.js')
+    assert response.status_code == 404
+    assert response.mimetype == 'text/html'
+
+
+def test_mime_fix_busts_previously_immutable_assets(client):
+    import server
+    assert server._asset_version().endswith('-mime1')
+    assert ('?v=' + server._asset_version()).encode() in client.get('/').data
+
+
+def test_chromium_accepts_actual_tour_response_with_bad_registry(client, monkeypatch):
+    import json
+    import mimetypes
+    import shutil
+    import subprocess
+    node = shutil.which('node')
+    smoke_dir = PROJECT_ROOT / 'tools' / 'smoke'
+    if not node or not (smoke_dir / 'node_modules' / 'playwright').exists():
+        pytest.skip('local Playwright installation required')
+    mimetypes.init()
+    monkeypatch.setitem(mimetypes.types_map, '.js', 'text/plain')
+    response = client.get('/static/js/walkthrough.js')
+    payload = json.dumps({'body': response.get_data(as_text=True),
+                          'contentType': response.headers['Content-Type']})
+    response.close()
+    script = '''
+import {chromium} from 'playwright';
+let input = ''; for await (const chunk of process.stdin) input += chunk;
+const asset = JSON.parse(input);
+const browser = await chromium.launch({headless:true});
+try {
+  const page = await browser.newPage();
+  await page.route('http://mime.test/**', route => {
+    if (route.request().url().endsWith('.js')) return route.fulfill(asset);
+    return route.fulfill({contentType:'text/html', body:'<script type="module" src="/walkthrough.js"></script>'});
+  });
+  await page.goto('http://mime.test/');
+  await page.waitForFunction(() => typeof window.startWalkthrough === 'function', {timeout:5000});
+} finally { await browser.close(); }
+'''
+    result = subprocess.run([node, '--input-type=module', '-e', script],
+                            input=payload, text=True, capture_output=True,
+                            cwd=smoke_dir, timeout=15)
+    assert result.returncode == 0, result.stderr

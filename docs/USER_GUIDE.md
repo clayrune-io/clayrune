@@ -188,6 +188,12 @@ folder instead. The new path is printed and the generated shortcuts point there.
 If a settings/data file cannot be read, recovery stops and names the source;
 it never silently skips user data or terminates other processes.
 
+**Dashboard stuck loading on Windows:** older builds could serve JavaScript
+modules as `text/plain` because of Windows file associations. Chrome reports
+“Failed to load module script” and the tour cannot start. Update Clayrune and
+restart its server; the corrected build sends explicit MIME types and refreshes
+the asset cache. No Windows registry change or provider re-login is needed.
+
 - **Multiple sessions per project**:
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.
     Every dispatch adds a tab; click to switch, `×` to close. Tabs from
