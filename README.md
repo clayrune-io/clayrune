@@ -95,8 +95,9 @@ of Clayrune's settings and records. A separately confirmed **purge data** mode
 also removes Clayrune-owned settings, credentials, browser profiles, and local
 backups; it still never removes provider CLIs, `~/.claude`, or project folders.
 
-Standalone commands and the exact preservation rules are on the
-[download page](https://clayrune.io/download.html#uninstall).
+The standalone scripts are
+[`installer/uninstall.ps1`](installer/uninstall.ps1) and
+[`installer/uninstall-macos.command`](installer/uninstall-macos.command).
 
 <details>
 <summary><b>Running from source</b></summary>

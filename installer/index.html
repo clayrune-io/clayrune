@@ -143,14 +143,14 @@
 
     <div class="install-block">
       <div class="os">Windows (PowerShell)</div>
-      <pre>iwr https://clayrune.io/uninstall.ps1 -OutFile "$env:TEMP\Clayrune-Uninstall.ps1"
+      <pre>iwr https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/uninstall.ps1 -OutFile "$env:TEMP\Clayrune-Uninstall.ps1"
 &amp; "$env:TEMP\Clayrune-Uninstall.ps1"</pre>
       <div class="note">Preview first with <code>-DryRun</code>. To also remove Clayrune-owned settings, credentials, browser profiles, and local backups, use <code>-PurgeData</code>; it requires a stronger typed confirmation.</div>
     </div>
 
     <div class="install-block">
       <div class="os">macOS</div>
-      <pre>curl -fsSL https://clayrune.io/uninstall-macos.command -o /tmp/Clayrune-Uninstall.command
+      <pre>curl -fsSL https://raw.githubusercontent.com/clayrune-io/clayrune/master/installer/uninstall-macos.command -o /tmp/Clayrune-Uninstall.command
 sh /tmp/Clayrune-Uninstall.command</pre>
       <div class="note">Preview first with <code>--dry-run</code>. Use <code>--purge-data</code> only if you also want Clayrune-owned data removed. Neither mode removes provider CLIs, <code>~/.claude</code>, or your project folders.</div>
     </div>
