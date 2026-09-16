@@ -4523,6 +4523,20 @@ class QwenRuntime(AgentRuntime):
         raw_status, method = self._qwen_auth_state()
         has_key = raw_status == 'ok'
         error_text = None
+        if has_key and (method or '') in ('env:GEMINI_API_KEY', 'fallback:gemini-oauth'):
+            # Live-measured 2026-09-15 on this box: with ONLY a Google
+            # credential present, `qwen "..."` answers using
+            # `gemini-3.5-flash-lite` (its own telemetry names the model), and
+            # a real Qwen id (`-m qwen3-coder-plus`) 404s against Google's
+            # v1beta endpoint. So this state is authenticated-but-not-Qwen:
+            # the CLI runs, and silently serves Gemini. Say so here rather
+            # than let the chooser and the Settings card render a bare green
+            # "signed in" — a user who picks Qwen Code in that state gets
+            # Google's model without ever being told.
+            error_text = ('Running on your Google credential, not a Qwen one — '
+                          'this serves Gemini models (observed: gemini-3.5-flash-lite), '
+                          'and Qwen model ids fail. Set DASHSCOPE_API_KEY '
+                          '(Alibaba ModelStudio) to actually run Qwen.')
         if not has_key:
             error_text = ('Not signed in. Set DASHSCOPE_API_KEY (Alibaba ModelStudio), '
                          'OPENAI_API_KEY, ANTHROPIC_API_KEY, or GEMINI_API_KEY in '

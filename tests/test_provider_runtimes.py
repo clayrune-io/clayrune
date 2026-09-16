@@ -14,6 +14,7 @@ Providers not installed on this machine are tested via the not-installed path.
 from __future__ import annotations
 
 import json
+import subprocess
 import sys
 from pathlib import Path
 
@@ -1040,6 +1041,36 @@ class TestQwenRuntime:
         status, method = self.rt._qwen_auth_state()
         assert status == 'ok'
         assert method == 'fallback:gemini-oauth'
+
+    def test_health_check_flags_google_only_credential(self, monkeypatch):
+        """A Google-only credential authenticates the qwen CLI but serves GEMINI.
+
+        Measured 2026-09-15 on this box: with only GEMINI_API_KEY set,
+        `qwen "..."` answered using gemini-3.5-flash-lite (its own telemetry
+        names the model) and `-m qwen3-coder-plus` 404'd against Google's
+        v1beta endpoint. health_check must still report 'ok' — the CLI does
+        run — but MUST carry error_text, or the first-run chooser and the
+        Settings provider card render a plain green "signed in" for a
+        provider that is not running Qwen at all.
+        """
+        monkeypatch.setattr(self.rt, 'resolve_binary',
+                            lambda: Path('/usr/local/bin/qwen'))
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=0, stdout='0.23.4', stderr=''))
+        for method in ('env:GEMINI_API_KEY', 'fallback:gemini-oauth'):
+            monkeypatch.setattr(self.rt, '_qwen_auth_state',
+                                lambda m=method: ('ok', m))
+            health = self.rt.health_check()
+            assert health.auth_state.status == 'ok'
+            assert health.auth_state.error_text,                 f'{method} must not render as bare green'
+            assert 'Gemini' in health.auth_state.error_text
+            assert 'DASHSCOPE_API_KEY' in health.auth_state.error_text
+
+        monkeypatch.setattr(self.rt, '_qwen_auth_state',
+                            lambda: ('ok', 'env:DASHSCOPE_API_KEY'))
+        assert self.rt.health_check().auth_state.error_text is None,             'a real Qwen credential must stay unflagged'
 
     def test_health_check_not_installed(self, monkeypatch):
         monkeypatch.setattr(self.rt, 'resolve_binary', lambda: None)
