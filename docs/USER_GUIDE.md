@@ -182,6 +182,11 @@ prepares a fresh checkout and preserves the original folder beside it as
 user data are copied into the fresh install; all original files remain in the
 backup. The backup path is printed during installation. No manual deletion or
 Git repair is needed for an ordinary incomplete installation folder.
+If Windows prevents renaming the old folder because it is in use, the installer
+leaves it untouched and finishes in the prepared sibling `Clayrune.install-<id>`
+folder instead. The new path is printed and the generated shortcuts point there.
+If a settings/data file cannot be read, recovery stops and names the source;
+it never silently skips user data or terminates other processes.
 
 - **Multiple sessions per project**:
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.

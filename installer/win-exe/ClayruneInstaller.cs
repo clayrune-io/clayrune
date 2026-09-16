@@ -234,6 +234,7 @@ internal static class ClayruneInstaller
                 FileName = "powershell.exe",
                 Arguments = "-NoProfile -ExecutionPolicy RemoteSigned -File \"" + scriptPath + "\"",
                 UseShellExecute = false,
+                WorkingDirectory = Path.GetTempPath(),
             };
             using (var p = Process.Start(psi))
             {

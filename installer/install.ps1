@@ -846,7 +846,7 @@ function Repair-NonGitInstall {
     $savedPreference = $ErrorActionPreference
     try {
         $ErrorActionPreference = 'Continue' # git progress on stderr is not failure
-        & git clone $Repository $stage
+        & git clone $Repository $stage 2>&1 | ForEach-Object { Write-Host $_ }
         $cloneExit = $LASTEXITCODE
     } finally { $ErrorActionPreference = $savedPreference }
     if ($cloneExit -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $stage '.git'))) {
@@ -868,15 +868,36 @@ function Repair-NonGitInstall {
                 $copyTarget = Join-Path $stage $name
                 New-Item -ItemType Directory -Path $copyTarget -Force | Out-Null
                 Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
-                    Copy-Item -LiteralPath $_.FullName -Destination $copyTarget -Recurse -Force -ErrorAction Stop
+                    $copySource = $_.FullName
+                    try {
+                        Copy-Item -LiteralPath $copySource -Destination $copyTarget -Recurse -Force -ErrorAction Stop
+                    } catch { throw "Could not preserve user data from $copySource : $($_.Exception.Message). Original folder unchanged." }
                 }
             } else {
-                Copy-Item -LiteralPath $source -Destination (Join-Path $stage $name) -Force -ErrorAction Stop
+                try {
+                    Copy-Item -LiteralPath $source -Destination (Join-Path $stage $name) -Force -ErrorAction Stop
+                } catch { throw "Could not preserve $source : $($_.Exception.Message). Original folder unchanged." }
             }
         }
     }
     # Both destinations are explicit siblings of the validated target.
-    Move-Item -LiteralPath $target -Destination $backup -ErrorAction Stop
+    try {
+        Move-Item -LiteralPath $target -Destination $backup -ErrorAction Stop
+    } catch {
+        # A running installer or terminal inside the old folder may hold it
+        # open. Do not terminate anything or overwrite locked files. The
+        # prepared checkout already contains the copied user state.
+        $cause = $_.Exception
+        $sharingViolation = $false
+        while ($cause) {
+            if (($cause.HResult -band 0xffff) -in @(32, 33)) { $sharingViolation = $true }
+            $cause = $cause.InnerException
+        }
+        if (-not $sharingViolation) { throw "Could not preserve original folder $target : $($_.Exception.Message)" }
+        Write-Host "  Original folder is in use and remains untouched: $target" -ForegroundColor Yellow
+        Write-Host "  Continuing installation at $stage; shortcuts will use this location." -ForegroundColor Yellow
+        return $stage
+    }
     try {
         Move-Item -LiteralPath $stage -Destination $target -ErrorAction Stop
     } catch {
@@ -884,6 +905,7 @@ function Repair-NonGitInstall {
         throw
     }
     Write-Host "  Recovered automatically. Original files preserved at $backup" -ForegroundColor Green
+    return $target
 }
 
 Write-Host '[STEP 1/5] Cloning repository...' -ForegroundColor White
@@ -927,7 +949,7 @@ if (Test-Path $installDir) {
         }
     } else {
         try {
-            Repair-NonGitInstall -Destination $installDir -Repository $repoUrl
+            $installDir = Repair-NonGitInstall -Destination $installDir -Repository $repoUrl
         } catch {
             Write-Host "[STEP 1/5] FAIL automatic folder recovery: $_" -ForegroundColor Red
             Exit-WithContact 2

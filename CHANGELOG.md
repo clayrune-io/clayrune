@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16j] — Continue recovery when the old install folder is locked
+
+- If Windows blocks renaming the old folder with a sharing/lock violation,
+  finish in the prepared sibling checkout and point the installation's
+  shortcuts there. The original stays untouched; the new path is printed.
+- Bootstrap PowerShell now starts in the temporary directory rather than
+  inheriting a potentially locked installation-directory working directory.
+- Unreadable user-state files still stop recovery, now naming the failed
+  source. No process is killed and no settings are silently discarded.
+- 22 targeted tests pass, including real Windows locked-file recovery and
+  fail-closed handling of locked settings. Clean-laptop end-to-end validation
+  remains pending; refreshed Windows artifacts are unsigned as approved.
+
 ## [2026-09-16i] — Recover existing non-Git Windows install folders
 
 - Step 1 now prepares a fresh checkout when the destination exists without
