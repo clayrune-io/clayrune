@@ -15,25 +15,44 @@ const WT_STEPS = [
     id: 'provider-choice',
     title: 'Which AI do you work with?',
     body: () => {
-      const provs = (_agentProviders || []).filter(p => p.installed);
+      // Every provider Clayrune supports (the SAME /api/agent/providers list
+      // Settings and the composer read), installed ones first — not filtered
+      // to installed-only. A fresh "downloaded Mac .app" install never runs
+      // install.sh/install.ps1's provider prompt, so this step is the only
+      // place that install-time question gets asked; filtering to installed
+      // hid whichever CLI the user actually wanted here (MC fresh-install
+      // report 2026-09-15: a 2-provider list with the 3rd silently missing).
+      const provs = (_agentProviders || []).slice()
+        .sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
       const cur = (_globalConfig && _globalConfig.default_provider) || 'claude';
-      return `Clayrune drives whichever coding agent you already sign in with. Pick your default — you can change this any time in Settings, or per-chat in the composer.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
-        provs.map(p => `
-          <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
-            <input type="radio" name="wt-provider" value="${esc(p.name)}" ${cur === p.name ? 'checked' : ''}
-              onchange="wtSetDefaultProvider('${esc(p.name)}')"
-              style="width:15px;height:15px;accent-color:var(--accent)">
-            <span style="font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
-          </label>`).join('') + `</div>`;
+      return `Clayrune drives whichever coding agent you sign in with. Pick one — you can change this any time in Settings, or per-chat in the composer.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+        provs.map(p => {
+          const state = _wtProviderState(p);
+          const installBtn = p.installed ? '' : `
+            <button type="button" class="btn-add" style="padding:2px 10px;font-size:11px;flex-shrink:0"
+              onclick="event.preventDefault();wtInstallProvider('${esc(p.name)}',this)">Install</button>`;
+          return `
+          <div>
+            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
+              <input type="radio" name="wt-provider" value="${esc(p.name)}" ${cur === p.name ? 'checked' : ''}
+                onchange="wtSetDefaultProvider('${esc(p.name)}')"
+                style="width:15px;height:15px;accent-color:var(--accent)">
+              <span style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
+              <span style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
+              ${installBtn}
+            </label>
+            <div id="wt-install-msg-${esc(p.name)}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
+          </div>`;
+        }).join('') + `</div>`;
     },
     target: null, pos: 'center',
-    // Skip when there's nothing left to ask: only one CLI installed (a
-    // claude-only machine, the common case), OR the installer already wrote
-    // default_provider into config.json before this first launch even
-    // happened (install.sh / install.ps1, 2026-09-14) — asking again here
-    // would be the exact double-prompt this step exists to avoid.
-    skip: () => !!(_globalConfig && _globalConfig.default_provider) ||
-      (_agentProviders || []).filter(p => p.installed).length <= 1,
+    // Skip ONLY when the installer already wrote default_provider into
+    // config.json before this first launch (install.sh / install.ps1,
+    // 2026-09-14) — asking again here would be the exact double-prompt this
+    // step exists to avoid. Does NOT skip on "only one CLI installed" (or
+    // zero) any more: that was exactly the fresh-Mac-.app case where nothing
+    // is installed yet and the user still needs to see the install offer.
+    skip: () => !!(_globalConfig && _globalConfig.default_provider),
   },
   {
     id: 'advanced-picker',
@@ -148,6 +167,60 @@ const WT_STEPS = [
 // Settings -> Default provider already calls — one write path, not two.
 function wtSetDefaultProvider(name) {
   saveSetting('default_provider', name);
+}
+
+// Per-provider state label for the provider-choice step — same three states
+// the Settings provider card already shows (provider-settings.js), so a user
+// who later opens Settings sees consistent language, not a second vocabulary.
+function _wtProviderState(p) {
+  if (!p.installed) return { label: 'not installed', color: 'var(--text-faint)' };
+  if (p.auth_status === 'ok') return { label: 'signed in', color: 'var(--green)' };
+  if (p.auth_status === 'not_logged_in') return { label: 'not signed in', color: 'var(--amber)' };
+  return { label: 'installed', color: 'var(--text-faint)' };
+}
+
+// "Install" button on an uninstalled provider row. Launches the SAME command
+// the installers use (server resolves it from the runtime's own install_hint
+// — see agent_provider_install_launch) in a new OS terminal so the user can
+// watch it run, mirroring the existing "Launch terminal login" pattern
+// (provider-auth.js). Never invents its own command: {ok:false} always
+// carries the exact one to run by hand when the server can't launch it
+// itself (no npm/curl on PATH, no terminal emulator).
+async function wtInstallProvider(name, btnEl) {
+  const msgEl = document.getElementById(`wt-install-msg-${name}`);
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Installing...'; }
+  try {
+    const res = await fetch(API_BASE + `/api/agent/provider/${name}/install-launch`,
+                            { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.';
+      if (btnEl) {
+        btnEl.textContent = 'Refresh';
+        btnEl.disabled = false;
+        btnEl.onclick = (e) => { e.preventDefault(); wtRefreshProviders(); };
+      }
+    } else if (data.command) {
+      if (msgEl) msgEl.textContent = `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`;
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+    } else {
+      if (msgEl) msgEl.textContent = data.error || 'Could not start the install.';
+      if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+    }
+  } catch (e) {
+    if (msgEl) msgEl.textContent = 'Install failed: ' + e;
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Install'; }
+  }
+}
+
+// Re-fetch /api/agent/providers (bypassing the boot-time cache, same pattern
+// as settingsProviderRefresh in provider-auth.js) and re-render the CURRENT
+// walkthrough step so a just-installed CLI's state flips from "not installed"
+// without the user having to close and reopen the tour.
+async function wtRefreshProviders() {
+  _agentProviders = null;
+  try { await _ensureAgentProviders(); } catch (e) { /* leave stale on failure */ }
+  if (wtActive) wtShow(wtStep);
 }
 
 // Build virtual demo elements for the walkthrough
@@ -603,6 +676,8 @@ window.wtBack = wtBack; // interop: wt-card generated onclick (Back)
 window.wtSkip = wtSkip; // interop: wt-card generated onclick (Skip)
 window.wtEnd = wtEnd;   // interop: wt-card generated onclick (Get Started)
 window.wtSetDefaultProvider = wtSetDefaultProvider; // interop: provider-choice step's generated onchange
+window.wtInstallProvider = wtInstallProvider; // interop: provider-choice step's generated Install button onclick
+window.wtRefreshProviders = wtRefreshProviders; // interop: wtInstallProvider's generated Refresh button onclick
 // interop: the "Don't show this again" checkbox writes `wtDontShow=this.checked`
 // from a generated onchange attribute. Inline handlers resolve against the
 // global object and can't see module-scoped `let` bindings — without this

@@ -52,6 +52,7 @@ EXPECTED_ROUTES = {
     '/api/agent/provider/<name>/auth',
     '/api/agent/provider/<name>/env',
     '/api/agent/provider/<name>/login-launch',
+    '/api/agent/provider/<name>/install-launch',
     '/api/claude/auth-probe',
     '/api/claude/auth-status',
     '/api/claude/login-launch',
@@ -706,3 +707,88 @@ def test_providers_in_use_codex_only_install_drops_claude_fallback(client, monke
     # An explicit choice always counts, installed or not.
     monkeypatch.setitem(state.CONFIG, 'default_provider', 'codex')
     assert ar._providers_in_use() == {'codex'}
+
+
+# ── Missing-CLI dispatch fails fast, once, with the install message ──────────
+# Fresh-install report 2026-09-15: a Codex dispatch with no `codex` binary on
+# PATH surfaced a generic 500 ("dispatch failed: codex CLI not installed...")
+# instead of the single-source-of-truth _cli_missing_message() every other
+# missing-CLI path already used (FileNotFoundError from a raw Popen). Root
+# cause: every non-claude runtime's dispatch() pre-flight check raised a bare
+# RuntimeError, which is NOT the FileNotFoundError agent_dispatch()'s except
+# clause special-cased — so it fell into the generic branch, and the session
+# never got marked non-retryable, leaving a follow-up on the same session free
+# to have Guardian burn through GUARDIAN_MAX_RECOVERIES retrying a failure no
+# retry can fix. CLINotInstalledError (mc/agent_runtime.py) closes both gaps:
+# a dedicated, catchable class, always routed through _cli_missing_message(),
+# and always trips the session's circuit breaker on the first failure.
+
+class _StubMissingCLIRuntime:
+    """Stands in for CodexRuntime/GeminiRuntime/etc. when their real binary
+    isn't installed — dispatch() raises exactly what those runtimes raise."""
+    name = 'codex'
+    display_name = 'Codex'
+
+    def build_command(self, **kwargs):
+        return ['codex', 'exec']
+
+    def dispatch(self, **kwargs):
+        from mc import agent_runtime as art
+        raise art.CLINotInstalledError(
+            "codex CLI not installed — run: npm install -g @openai/codex")
+
+    def health_check(self):
+        from mc import agent_runtime as art
+        return art.HealthStatus(
+            installed=False, binary_path=None, version=None,
+            auth_state=art.AuthState(status='unknown', last_checked=''),
+            install_hint='npm install -g @openai/codex')
+
+
+def test_dispatch_via_runtime_missing_cli_trips_circuit_breaker_once(monkeypatch, client):
+    """No retry loop: the session created for the failed dispatch is marked
+    non-retryable on the FIRST attempt — recovery_attempts stays at its
+    initial 0, and _guardian_should_recover refuses ever to fire for it."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    stub = _StubMissingCLIRuntime()
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    try:
+        with pytest.raises(Exception):
+            ar._dispatch_via_runtime(
+                {'id': 'proj-missing-cli', 'project_path': str(Path(__file__).parent)},
+                'do a thing', provider_name='codex', trigger_type='manual')
+        sessions = [s for s in mc_state.agent_sessions.values()
+                    if s.get('project_id') == 'proj-missing-cli']
+        assert len(sessions) == 1
+        session = sessions[0]
+        assert session['status'] == 'error'
+        assert session['circuit_breaker_tripped'] is True
+        assert session['pending_recovery_message'] is None
+        assert session.get('recovery_attempts', 0) == 0  # never even tried once
+        assert ar._guardian_should_recover(session) is False
+        assert any('npm install -g @openai/codex' in line
+                  for line in session['log_lines'])
+    finally:
+        mc_state.agent_sessions.clear()
+
+
+def test_dispatch_route_missing_cli_returns_install_message_not_generic(client, monkeypatch):
+    """The route-level response must be the SAME _cli_missing_message() text
+    Settings and the FileNotFoundError path already use — not the generic
+    'dispatch failed: <raw exception>' branch a bare RuntimeError used to
+    fall into."""
+    from mc.blueprints import agent_routes as ar
+    stub = _StubMissingCLIRuntime()
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: stub)
+    monkeypatch.setattr(ar, 'load_project', lambda pid: {
+        'id': 'proj-missing-cli-2', 'project_path': str(Path(__file__).parent)})
+    resp = client.post('/api/project/proj-missing-cli-2/agent/dispatch',
+                       json={'task': 'do a thing', 'provider': 'codex',
+                             'source': 'ui'})
+    assert resp.status_code == 500
+    body = resp.get_json()
+    assert not body['error'].startswith('dispatch failed:')
+    assert 'Install it with: npm install -g @openai/codex' in body['error']
+    from mc import state as mc_state
+    mc_state.agent_sessions.clear()

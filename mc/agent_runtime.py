@@ -57,6 +57,23 @@ else:
     _STARTUPINFO = None
 
 
+class CLINotInstalledError(RuntimeError):
+    """Raised by a runtime's dispatch()/write_followup() pre-flight check when
+    its CLI binary isn't on this machine at all — as opposed to a transient
+    spawn failure (permissions, a killed process, a flaky pipe).
+
+    A dedicated subclass (rather than a bare RuntimeError, which every one of
+    these pre-checks used to raise) lets callers tell "will never succeed by
+    retrying" apart from "might succeed on retry" without parsing message
+    text. mc/blueprints/agent_routes.py routes this — like the FileNotFoundError
+    a raw subprocess.Popen raises for the same underlying condition — through
+    `_cli_missing_message()` for a consistent, provider-correct error, and
+    trips the session's circuit breaker immediately instead of letting Guardian
+    burn through its retry budget on a failure no retry can fix.
+    """
+    pass
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # Event types and dataclasses
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3067,7 +3084,7 @@ class GeminiRuntime(AgentRuntime):
                  **_extra) -> SessionHandle:
         bin_path = self.resolve_binary()
         if not bin_path:
-            raise RuntimeError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
+            raise CLINotInstalledError("gemini CLI not installed — run: npm install -g @google/gemini-cli")
 
         mcp_sync = _sync_mcp_to_gemini_safe(project_path)
 
@@ -4924,7 +4941,7 @@ class CodexRuntime(AgentRuntime):
                  unattended_sandbox_enabled: bool = True,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
-            raise RuntimeError("codex CLI not installed — run: npm install -g @openai/codex")
+            raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
 
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         # Decided ONCE per launch, from this session's own trigger_type
@@ -5391,7 +5408,7 @@ class OpenCodeRuntime(AgentRuntime):
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
-            raise RuntimeError(
+            raise CLINotInstalledError(
                 "opencode not installed — "
                 "run: curl -fsSL https://opencode.ai/install | bash")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
@@ -5739,7 +5756,7 @@ class GooseRuntime(AgentRuntime):
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
-            raise RuntimeError(
+            raise CLINotInstalledError(
                 "goose not installed — run: "
                 "curl -fsSL https://github.com/aaif-goose/goose/releases/"
                 "download/stable/download_cli.sh | CONFIGURE=false bash")
@@ -6031,7 +6048,7 @@ class AiderRuntime(AgentRuntime):
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
-            raise RuntimeError("aider not installed — run: pip install aider-chat")
+            raise CLINotInstalledError("aider not installed — run: pip install aider-chat")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
         cmd = self.build_command(model=model)
         import tempfile
@@ -6370,7 +6387,7 @@ class KiroRuntime(AgentRuntime):
                  register_process: Optional[Callable] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
-            raise RuntimeError(
+            raise CLINotInstalledError(
                 "kiro-cli not installed — run: "
                 "curl -fsSL https://cli.kiro.dev/install | bash")
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
