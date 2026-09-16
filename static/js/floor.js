@@ -357,7 +357,12 @@ function _floorBench(bench, rooms, quiet) {
     // usually the project's own agent, already hired here (Ron, 2026-09-09).
     // `pid` is '' — a bench card belongs to no project until it is dropped on
     // one; floorFigDown only uses pid for the already-hired-here check.
-    const bDrag = ` onpointerdown="floorFigDown(event,'','${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(b.avatar || '')}')"`;
+    // A project-scoped type still has to name its home project here: the
+    // drag's valid-target check compares every tile against this pid, so ''
+    // marked EVERY tile refused and Delaney/Juniper/Kestrel could not be
+    // dropped anywhere, not even on their own project (Ron, 2026-09-16).
+    const bHome = b.scope === 'project' ? (b.project_id || '') : '';
+    const bDrag = ` onpointerdown="floorFigDown(event,'${esc(bHome)}','${esc(b.scope || 'global')}','${esc(b.name)}','${esc(b.display)}','${esc(b.avatar || '')}')"`;
     return `<div class="fl-bench-card fl-draggable${open ? ' fl-bench-open' : ''}"${tint}${bDrag}>
       <div class="fl-bench-main" onclick="floorTogglePicker('${esc(key)}')">
         <span class="fl-face fl-face-bench">${_floorAvatarHTML(b.avatar, FLOOR_FACE_PX)}${_floorProviderBadge(b.provider)}</span>
