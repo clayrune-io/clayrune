@@ -313,6 +313,23 @@ class TestGuideStream:
         assert r.status_code == 401
         assert client.popen_calls == []
 
+    def test_quota_text_survives_nonzero_exit_without_stderr(self, client):
+        message = "You've hit your weekly limit; resets tomorrow"
+        client.holder['popen'] = lambda cmd, kw: FakeStreamProc(
+            _stream_json(message), rc=1)
+        events = _sse_events(client.post('/api/guide/stream',
+                                        json={'question': 'hi'}).data)
+        assert events[-1] == {'type': 'error', 'message': message}
+
+    @pytest.mark.parametrize('rc', [0, 1])
+    def test_result_error_is_not_ignored(self, client, rc):
+        client.holder['popen'] = lambda cmd, kw: FakeStreamProc(
+            json.dumps({'type': 'result', 'is_error': True,
+                        'errors': ['Authentication required']}) + '\n', rc=rc)
+        events = _sse_events(client.post('/api/guide/stream',
+                                        json={'question': 'hi'}).data)
+        assert events == [{'type': 'error', 'message': 'Authentication required'}]
+
 
 # ── /api/project/<id>/scribe-stats ───────────────────────────────────────────
 

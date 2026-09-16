@@ -388,6 +388,7 @@ def guide_stream():
     def generate():
         proc = None
         full_text_parts = []
+        result_error = ''
         try:
             proc = subprocess.Popen(
                 cmd,
@@ -423,6 +424,15 @@ def guide_stream():
                     obj = json.loads(line)
                 except Exception:
                     continue
+                # CLI failures (quota, auth, invalid model) often live in
+                # stdout's result event, with no stderr at all.
+                if obj.get('type') == 'result' and obj.get('is_error'):
+                    errors = obj.get('errors') or []
+                    if not isinstance(errors, list):
+                        errors = [errors]
+                    result_error = '\n'.join(str(e) for e in errors if e)
+                    result_error = result_error or str(obj.get('result') or '')
+                    result_error = result_error or 'Claude could not complete this request'
                 # claude stream-json emits {type: "assistant", message: {role, content: [...]}}
                 # for assistant turns. Each content block can be {type: "text", text: "..."}.
                 if obj.get('type') == 'assistant':
@@ -435,17 +445,19 @@ def guide_stream():
                                 if t:
                                     full_text_parts.append(t)
                                     yield sse({'type': 'delta', 'text': t})
-                # Other event types (system, result, user echo) are ignored —
-                # we only need the assistant text.
+                # Other events (system, successful result, user echo) do
+                # not carry additional assistant text.
 
             proc.wait(timeout=5)
-            if proc.returncode != 0:
+            if proc.returncode != 0 or result_error:
                 err = ''
                 try:
                     err = (proc.stderr.read() or '').strip()[:500]  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9): stderr=PIPE above
-                except Exception:
-                    pass
-                yield sse({'type': 'error', 'message': err or f'claude exit {proc.returncode}'})
+                except Exception as e:
+                    _log(f'[claydo] reading CLI error output failed: {e}')
+                message = (result_error or err or ''.join(full_text_parts).strip()
+                           or f'claude exit {proc.returncode}')
+                yield sse({'type': 'error', 'message': message[:2000]})
                 return
             full_text = ''.join(full_text_parts).strip()
             yield sse({'type': 'done', 'answer': full_text})

@@ -512,7 +512,11 @@ async function submitClaydo() {
           _claydoMountTeams(botMsg);
           histDiv.scrollTop = histDiv.scrollHeight;
         } else if (payload.type === 'error') {
-          _claydoRenderError(botMsg, payload.message || 'Claydo errored', question);
+          // Older servers discard stdout diagnostics on a nonzero CLI exit.
+          // Keep the quota/auth message already streamed instead of hiding it.
+          const message = /^claude exit \d+$/.test(payload.message || '') && assembled.trim()
+            ? assembled.trim() : (payload.message || 'Claydo errored');
+          _claydoRenderError(botMsg, message, question);
           errored = true;
           return;
         } else if (payload.type === 'done') {
@@ -945,7 +949,14 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
       <select id="claydo-save-scope">
         <option value="global">All my projects (global)</option>
       </select>
-      <label>6. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
+      <label for="claydo-save-provider">6. Provider <span class="claydo-save-hint">(the engine this agent will run on)</span></label>
+      <select id="claydo-save-provider">${_peProviderOptions('')}</select>
+      <label for="claydo-save-model">Model / version</label>
+      <select id="claydo-save-model" disabled><option value="">Project default — choose a provider to pin a model</option></select>
+      <label for="claydo-save-effort">Reasoning effort</label>
+      <select id="claydo-save-effort">${_peEffortOptions('')}</select>
+      <div class="claydo-save-hint">Default follows the project's settings. These choices apply to the saved agent; this workshop uses Claude.</div>
+      <label>7. Voice <span class="claydo-save-hint">(how it sounds — generated from the role, edit freely)</span></label>
       <div class="claydo-save-voice-status" id="claydo-save-voice-status">Writing a voice for this role&hellip;</div>
       <textarea id="claydo-save-voice" class="claydo-save-voice" spellcheck="true" rows="7"
         placeholder="## Voice&#10;&#10;Concrete speech habits go here once generated — or write your own."
@@ -966,6 +977,21 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
   const showErr = (msg) => { errEl.textContent = msg; errEl.style.display = 'block'; };
   panel.querySelector('#claydo-save-cancel').onclick = () => panel.remove();
   panel.addEventListener('mousedown', (e) => { if (e.target === panel) panel.remove(); });
+
+  const providerSel = panel.querySelector('#claydo-save-provider');
+  const modelSel = panel.querySelector('#claydo-save-model');
+  providerSel.onchange = () => {
+    // Never carry a model ID from one provider into another provider's CLI.
+    modelSel.disabled = !providerSel.value;
+    modelSel.innerHTML = providerSel.value ? _peModelOptions('', providerSel.value)
+      : '<option value="">Project default — choose a provider to pin a model</option>';
+  };
+  // Floor can open this before the lazy provider catalog has loaded.
+  if (typeof _ensureAgentProviders === 'function') {
+    Promise.resolve(_ensureAgentProviders()).then(() => {
+      providerSel.innerHTML = _peProviderOptions(providerSel.value);
+    }).catch(() => showErr('Could not load providers. Close and reopen to retry, or save with the project default.'));
+  }
 
   // Populate the "Where" dropdown with every project (value = project id),
   // not just the focused one. Default to the focused project if there is
@@ -1132,6 +1158,9 @@ function _claydoOpenSavePanel(artifact, suggestedName) {
           project_id: isGlobal ? null : whereVal,
           agent_name: agentNameInput.value.trim(),
           avatar: avatarInput.value.trim(),
+          provider: providerSel.value,
+          model: modelSel.value,
+          effort: panel.querySelector('#claydo-save-effort').value,
           overwrite,
         }),
       });

@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16b] — Choose the agent's engine during creation
+
+- The Floor's character creation form now includes provider, model/version,
+  and reasoning-effort selectors before Save. Models come from the same
+  provider catalog as the conversation composer; switching providers clears
+  the prior model, and Default keeps settings inherited.
+- Ask Claydo preserves CLI quota/auth diagnostics instead of replacing them
+  with a generic exit code. Streamed diagnostics remain visible even against
+  an older server. The workshop still uses Claude independently of the hired
+  agent's engine selection.
+- Browser checks cover the selected engine in the creation request and quota
+  error rendering; backend tests cover stdout-only and structured CLI errors.
+
 ## [2026-09-16] — Keep Ask Claydo from taking over app launch
 
 - Saved Ask Claydo conversations now return minimized on a fresh launch, leaving

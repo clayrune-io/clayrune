@@ -18,6 +18,15 @@ Ask Claydo keeps your conversation and unsent draft across page loads. On a
 fresh launch it stays minimized so you see the main dashboard; tap Ask Claydo
 to continue. Refreshing the page preserves its current open or minimized view.
 
+When creating an agent from the Floor's character workshop, the **Save
+character** form lets you choose its **Provider**, **Model / version**, and
+**Reasoning effort** before saving. Leave them on Default to inherit settings,
+or choose a provider to select one of its models. Switching providers clears
+the model selection. These settings control the hired agent; Ask Claydo's
+workshop itself uses Claude. If Claude reaches a usage limit, the workshop
+shows the provider's limit/reset message; choosing another engine for the
+saved agent does not change the workshop's quota.
+
 ---
 
 ## What is Clayrune

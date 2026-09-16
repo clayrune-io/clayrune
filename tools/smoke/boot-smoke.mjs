@@ -616,6 +616,12 @@ async function runIdentityPrefillGuard(browser) {
     const json = (body) => route.fulfill({ status: 200, contentType: 'application/json',
       body: JSON.stringify(body) });
     if (path === '/api/projects') return json(JSON.parse(PROJECTS_JSON));
+    if (path === '/api/agent/providers') return json({providers: [
+      {name: 'claude', display_name: 'Claude Code', installed: true,
+        models: [{id: 'sonnet', label: 'Sonnet'}]},
+      {name: 'codex', display_name: 'Codex', installed: true,
+        models: [{id: 'gpt-6-astra', label: 'GPT-6 Astra'}]},
+    ]});
     if (path === '/api/avatars') return json({
       figures: ['courier', 'scholar', 'lamplighter'], prefix: 'fig:' });
     if (path === '/api/characters/voice') return json({ voice: '## Voice\n\n- Terse.' });
@@ -670,6 +676,18 @@ async function runIdentityPrefillGuard(browser) {
       r.figChips = panel.querySelectorAll('#claydo-save-figs .pe-fig').length;
       r.selectedChip = !!panel.querySelector('#claydo-save-figs .pe-fig.sel');
       r.goEnabledAfterGeneration = !!goBtn && !goBtn.disabled;
+      const provider = panel.querySelector('#claydo-save-provider');
+      const model = panel.querySelector('#claydo-save-model');
+      r.modelDisabledByDefault = model.disabled;
+      provider.value = 'claude';
+      provider.dispatchEvent(new Event('change'));
+      model.value = 'sonnet';
+      provider.value = 'codex';
+      provider.dispatchEvent(new Event('change'));
+      r.modelResetOnProviderChange = model.value === '';
+      r.noClaudeModelsInCodex = !Array.from(model.options).some(o => o.value === 'sonnet');
+      model.value = 'gpt-6-astra';
+      panel.querySelector('#claydo-save-effort').value = 'high';
       goBtn.click();
       await settle(500);
       const errEl = panel.querySelector('#claydo-save-err');
@@ -705,11 +723,15 @@ async function runIdentityPrefillGuard(browser) {
       + 'click could ship a hire with no name and no face nobody saw chosen');
   if (!out.goEnabledAfterGeneration)
     fails.push('Save stayed disabled after both generations settled');
+  if (!out.modelDisabledByDefault || !out.modelResetOnProviderChange || !out.noClaudeModelsInCodex)
+    fails.push('creation engine controls leak a model across providers');
   if (!createCalls.length)
     fails.push('clicking "Save character" never reached POST /api/characters'
       + (out.saveErr ? ' (panel showed: ' + out.saveErr + ')' : ''));
   else {
     const body = createCalls[0];
+    if (body.provider !== 'codex' || body.model !== 'gpt-6-astra' || body.effort !== 'high')
+      fails.push('creation did not preserve the chosen engine: ' + JSON.stringify(body));
     // The actual bar this guard exists to enforce: a newly created agent must
     // have a NON-EMPTY name and a RENDERABLE avatar — not merely that some
     // field was filled in, but that what shipped to the create endpoint is
@@ -732,6 +754,37 @@ async function runIdentityPrefillGuard(browser) {
   console.log('OKAY identity prefill: a new hire\'s save panel suggests a name and a '
     + 'face automatically, Save waits for both, and the created agent ships with '
     + 'a real name and a renderable face.');
+  return true;
+}
+
+async function runClaydoQuotaErrorGuard(browser) {
+  const ctx = await browser.newContext();
+  const page = await ctx.newPage();
+  const message = "You've hit your weekly limit; resets tomorrow";
+  await page.route('**/*', (route) => {
+    const path = new URL(route.request().url()).pathname;
+    if (path === '/api/guide/stream') return route.fulfill({status: 200,
+      contentType: 'text/event-stream', body:
+        `data: ${JSON.stringify({type: 'delta', text: message})}\n\n`
+        + `data: ${JSON.stringify({type: 'error', message: 'claude exit 1'})}\n\n`});
+    if (path === '/api/projects') return route.fulfill({status: 200,
+      contentType: 'application/json', body: PROJECTS_JSON});
+    return fulfillStaticOrAbort(route);
+  });
+  await page.goto(ORIGIN + '/', {waitUntil: 'domcontentloaded'});
+  await page.waitForTimeout(1500);
+  await page.evaluate(async () => {
+    await window.openClaydo();
+    document.getElementById('claydo-input').value = 'Astra model coder';
+    await window.submitClaydo();
+  });
+  const error = await page.locator('.claydo-msg.error').textContent();
+  await ctx.close();
+  if (!error.includes(message) || error.includes('claude exit 1')) {
+    console.error('FAIL claydo: quota diagnostic was hidden: ' + error);
+    return false;
+  }
+  console.log('OKAY claydo: a quota diagnostic survives an older server generic exit error.');
   return true;
 }
 
@@ -2436,6 +2489,7 @@ try {
   results.push(await runDispatchGuard(browser));
   results.push(await runModelPickerGuard(browser));
   results.push(await runClaydoRestoreGuard(browser));
+  results.push(await runClaydoQuotaErrorGuard(browser));
   results.push(await runIdentityPrefillGuard(browser));
   results.push(await runBacklogRefreshGuard(browser));
   results.push(await runBacklogLinksGuard(browser));
