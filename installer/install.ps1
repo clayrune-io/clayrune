@@ -472,20 +472,42 @@ function Invoke-ClaudeNpmInstall {
     return $false
 }
 
-# Returns $true iff Claude CLI is authenticated. Costs a few tokens for users
-# who are; for users who aren't, the CLI prints the "Not logged in" sentinel
-# without calling the API. We grep for that sentinel rather than rely on exit
-# codes (transient errors / rate limits also non-zero).
+# Check local login state, never a model prompt. A broken CLI must not hang
+# installation indefinitely or be mistaken for successful authentication.
 function Test-ClaudeAuth {
+    $authJob = $null
     try {
-        $out = (& claude -p "ok" --max-turns 1 2>&1 | Out-String)
-    } catch {
-        $out = "$_"
+        $authJob = Start-Job -ScriptBlock {
+            $ErrorActionPreference = 'Continue'
+            # Prefer native/npm cmd entrypoints: a vanilla PowerShell policy
+            # can block npm's claude.ps1 shim before the CLI even starts.
+            $cli = Get-Command claude.exe, claude.cmd -ErrorAction SilentlyContinue | Select-Object -First 1
+            if (-not $cli) { throw 'Claude executable or cmd entrypoint not found.' }
+            $out = (& $cli.Source auth status 2>$null | Out-String)
+            [pscustomobject]@{ Output = $out; ExitCode = $LASTEXITCODE }
+        }
+        if (-not (Wait-Job -Job $authJob -Timeout 20)) {
+            throw 'Claude authentication status timed out after 20 seconds.'
+        }
+        $result = Receive-Job -Job $authJob -ErrorAction Stop
+        if (-not $result) { throw 'Claude authentication status returned no result.' }
+        $status = $result.Output | ConvertFrom-Json -ErrorAction Stop
+        if ($status.loggedIn -isnot [bool]) {
+            throw 'Claude authentication status did not return a loggedIn boolean. Update the Claude CLI and retry.'
+        }
+        if ($result.ExitCode -notin @(0, 1)) {
+            throw 'Claude authentication status exited unexpectedly.'
+        }
+        if ($status.loggedIn -and $result.ExitCode -ne 0) {
+            throw 'Claude authentication status failed despite reporting a login.'
+        }
+        return $status.loggedIn
+    } finally {
+        if ($authJob) {
+            Stop-Job -Job $authJob -ErrorAction SilentlyContinue
+            Remove-Job -Job $authJob -Force -ErrorAction SilentlyContinue
+        }
     }
-    if ($out -match '(?i)not logged in|please run /login') {
-        return $false
-    }
-    return $true
 }
 
 Write-Host '======================================' -ForegroundColor Cyan
@@ -720,7 +742,14 @@ if (-not (Get-BoolResult (Setup-ClaudeRuntimeShell))) {
 # -- Step 1.5: Verify Claude CLI is authenticated ---------------------------
 
 Write-Host 'Checking Claude CLI authentication...'
-if (-not (Test-ClaudeAuth)) {
+try {
+    $claudeAuthenticated = Test-ClaudeAuth
+} catch {
+    Write-Host "Could not check Claude authentication: $_" -ForegroundColor Yellow
+    Write-Host 'Run claude auth status in Command Prompt to diagnose, then retry the installer.'
+    Exit-WithContact 1
+}
+if (-not $claudeAuthenticated) {
     Write-Host ''
     Write-Host 'Claude CLI is installed but not authenticated.' -ForegroundColor Yellow
     Write-Host ''

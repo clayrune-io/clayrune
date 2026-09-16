@@ -6,6 +6,15 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16h] — Bound the Windows installer authentication check
+
+- Replace the unbounded Claude model prompt used to check login with
+  `claude auth status`, capped at 20 seconds. Timeout, invalid output, and CLI
+  failures now stop with a diagnostic instead of hanging or claiming success.
+- Verified with 14 targeted installer tests. Clean-VM validation remains
+  required before releasing a rebuilt Windows installer; existing EXEs pin
+  their bootstrap to the commit from which they were built.
+
 ## [2026-09-16g] — Make first-run auth and conversation rails provider-neutral
 
 - First launch now checks only the selected provider's authentication state.

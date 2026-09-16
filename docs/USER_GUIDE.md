@@ -169,6 +169,13 @@ The **Model** menu follows the selected provider: Codex offers its current Sol,
 Terra, Luna, and supported prior-generation models, while **Custom** accepts a
 newer model ID that Clayrune has not catalogued yet.
 
+**Windows installation login check:** the installer checks Claude's local
+authentication status without sending a model prompt. If the check takes more
+than 20 seconds or returns invalid output, installation stops with a diagnostic.
+Run `claude auth status` in Command Prompt to inspect login state, or
+`claude auth login` to sign in. An older downloaded installer may still contain
+the previous check; restarting the Clayrune server does not update that installer.
+
 - **Multiple sessions per project**:
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.
     Every dispatch adds a tab; click to switch, `×` to close. Tabs from

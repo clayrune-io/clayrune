@@ -131,3 +131,12 @@ Neither mode removes an AI provider CLI, Node.js, Python, Git, `~/.claude`, or
 any external project directory. A server is stopped only when its executable
 or command line can be tied to Clayrune; occupying port 5199 is not sufficient.
 Both scripts support a dry run.
+# Authentication preflight regression (2026-09-16)
+
+Windows `install.ps1` uses `claude auth status`, not a model prompt, with a
+20-second timeout and fail-closed JSON parsing. Tests:
+`python -m pytest tests/test_installer_auth_probe.py tests/test_windows_installer_security.py tests/test_installer_qwen_provider.py`.
+Re-test on a clean Windows VM before release. The EXE pins the bootstrap URL
+and SHA-256 at build time: pushing a script fix does not repair already
+downloaded EXEs; build and distribute a new installer through the existing
+signed release workflow.
