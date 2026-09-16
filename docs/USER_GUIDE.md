@@ -176,6 +176,13 @@ Run `claude auth status` in Command Prompt to inspect login state, or
 `claude auth login` to sign in. An older downloaded installer may still contain
 the previous check; restarting the Clayrune server does not update that installer.
 
+**Existing installation folder without Git:** the Windows installer automatically
+prepares a fresh checkout and preserves the original folder beside it as
+`Clayrune.backup-<unique-id>` (using your chosen folder name). Known settings and
+user data are copied into the fresh install; all original files remain in the
+backup. The backup path is printed during installation. No manual deletion or
+Git repair is needed for an ordinary incomplete installation folder.
+
 - **Multiple sessions per project**:
   - **Desktop** — a horizontal tab strip across the top of the Agent panel.
     Every dispatch adds a tab; click to switch, `×` to close. Tabs from

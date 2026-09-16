@@ -826,6 +826,66 @@ Write-Host ''
 # data\settings.json, data\logs\, .venv\ - so it all survives untouched.
 # NEVER add `git clean` here: that WOULD delete it.
 $env:GIT_TERMINAL_PROMPT = '0'   # fail fast instead of popping a credential dialog
+function Repair-NonGitInstall {
+    param([string]$Destination, [string]$Repository)
+    # Clone first: network failure must leave the original folder untouched.
+    $target = [IO.Path]::GetFullPath($Destination).TrimEnd('\', '/')
+    $parent = Split-Path -Parent $target
+    if (-not $parent -or $target -eq [IO.Path]::GetPathRoot($target).TrimEnd('\', '/') -or
+        $target -eq [IO.Path]::GetFullPath($env:USERPROFILE).TrimEnd('\', '/')) {
+        throw 'Refusing to relocate a drive root or user profile as an install directory.'
+    }
+    $original = Get-Item -LiteralPath $target -Force -ErrorAction Stop
+    if (-not $original.PSIsContainer -or ($original.Attributes -band [IO.FileAttributes]::ReparsePoint)) {
+        throw 'Install destination must be a normal directory, not a file or junction.'
+    }
+    $suffix = [guid]::NewGuid().ToString('N')
+    $stage = Join-Path $parent ((Split-Path -Leaf $target) + '.install-' + $suffix)
+    $backup = Join-Path $parent ((Split-Path -Leaf $target) + '.backup-' + $suffix)
+    Write-Host "  Existing non-Git folder detected. Preparing a fresh checkout; backup: $backup"
+    $savedPreference = $ErrorActionPreference
+    try {
+        $ErrorActionPreference = 'Continue' # git progress on stderr is not failure
+        & git clone $Repository $stage
+        $cloneExit = $LASTEXITCODE
+    } finally { $ErrorActionPreference = $savedPreference }
+    if ($cloneExit -ne 0 -or -not (Test-Path -LiteralPath (Join-Path $stage '.git'))) {
+        throw "Fresh clone failed. Original folder unchanged; partial download retained at $stage"
+    }
+    # Preserve the entire original as a sibling backup. Carry the known user
+    # state into the fresh install, not old application code or broken venvs.
+    foreach ($name in @('data', 'config.json', '.env', '.claude', '.agents')) {
+        $source = Join-Path $target $name
+        if (Test-Path -LiteralPath $source) {
+            $items = @(Get-Item -LiteralPath $source -Force)
+            if ($items[0].PSIsContainer) {
+                $items += @(Get-ChildItem -LiteralPath $source -Recurse -Force -ErrorAction Stop)
+            }
+            if ($items | Where-Object { $_.Attributes -band [IO.FileAttributes]::ReparsePoint }) {
+                throw "Cannot safely copy linked user state at $source. Original folder unchanged."
+            }
+            if ($items[0].PSIsContainer) {
+                $copyTarget = Join-Path $stage $name
+                New-Item -ItemType Directory -Path $copyTarget -Force | Out-Null
+                Get-ChildItem -LiteralPath $source -Force | ForEach-Object {
+                    Copy-Item -LiteralPath $_.FullName -Destination $copyTarget -Recurse -Force -ErrorAction Stop
+                }
+            } else {
+                Copy-Item -LiteralPath $source -Destination (Join-Path $stage $name) -Force -ErrorAction Stop
+            }
+        }
+    }
+    # Both destinations are explicit siblings of the validated target.
+    Move-Item -LiteralPath $target -Destination $backup -ErrorAction Stop
+    try {
+        Move-Item -LiteralPath $stage -Destination $target -ErrorAction Stop
+    } catch {
+        Move-Item -LiteralPath $backup -Destination $target -ErrorAction Stop
+        throw
+    }
+    Write-Host "  Recovered automatically. Original files preserved at $backup" -ForegroundColor Green
+}
+
 Write-Host '[STEP 1/5] Cloning repository...' -ForegroundColor White
 if (Test-Path $installDir) {
     if (Test-Path (Join-Path $installDir '.git')) {
@@ -866,9 +926,12 @@ if (Test-Path $installDir) {
             }
         }
     } else {
-        Write-Host "[STEP 1/5] FAIL $installDir exists but is not a git checkout." -ForegroundColor Red
-        Write-Host '          Remove it or set CLAYRUNE_HOME to a different path, then re-run.' -ForegroundColor Red
-        Exit-WithContact 2
+        try {
+            Repair-NonGitInstall -Destination $installDir -Repository $repoUrl
+        } catch {
+            Write-Host "[STEP 1/5] FAIL automatic folder recovery: $_" -ForegroundColor Red
+            Exit-WithContact 2
+        }
     }
 } else {
     & git clone $repoUrl $installDir

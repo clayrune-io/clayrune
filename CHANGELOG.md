@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16i] — Recover existing non-Git Windows install folders
+
+- Step 1 now prepares a fresh checkout when the destination exists without
+  `.git`. It keeps the entire original in a uniquely named sibling backup and
+  carries `data`, `config.json`, `.env`, `.claude`, and `.agents` into the new
+  checkout. Old application code and virtual environments are not reused.
+- Clone failures leave the original untouched; failed directory swaps restore
+  it. Drive roots, user-profile roots, junction destinations, and linked user
+  state are rejected rather than moved or overwritten.
+- 19 targeted installer tests pass, including empty/partial folders, user-data
+  preservation, clone failure, and swap rollback. Full clean-laptop retest is
+  still required; Windows artifacts remain unsigned by explicit approval.
+
 ## [2026-09-16h] — Bound the Windows installer authentication check
 
 - Replace the unbounded Claude model prompt used to check login with
