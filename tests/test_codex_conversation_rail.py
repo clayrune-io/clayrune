@@ -139,8 +139,13 @@ def test_codex_conversation_appears_sourced_from_the_real_rollout(client, tmp_pa
     assert row['turns'] == 2, row               # 2 user turns in the rollout
     assert row['first_user'] == 'diagnose the failing build'
     assert row['last_user'] == 'fix it'         # rollout text, not the log summary
-    assert row['resumable'] is False            # honest until resume is wired (out of scope here)
-    assert row['resume_mode'] == 'readonly'
+    # 2026-09-16: resume is wired end-to-end (CodexRuntime.dispatch() already
+    # threaded resume_id into `exec resume <thread_id>`; the gap was only that
+    # `_revive_non_claude_from_agent_log` never passed it through). A row with
+    # a real mc_session_id can resolve provider_session_id from the agent log
+    # server-side at follow-up time, so it is honestly resumable now.
+    assert row['resumable'] is True
+    assert row['resume_mode'] == 'live'
     assert row['status'] == 'completed'
 
 

@@ -4450,6 +4450,60 @@ class QwenRuntime(AgentRuntime):
                 return candidate
         return None
 
+    def extract_chat_turns(self, path: Path) -> List[Tuple[str, str]]:
+        """Rebuild the real user/assistant exchange from a `--chat-recording`
+        file, for chat display (dead-session reconstruction sibling to
+        `CodexRuntime.extract_chat_turns`, same return contract).
+
+        Live-verified record shape (this box, 2026-09-16): every record
+        carries a `provenance` field distinguishing what actually happened
+        from framework noise — `real_user` marks a turn the user (or the
+        persona-injection wrapper) actually sent, `assistant_output` marks
+        the model's own reply; everything else (`system`, `tool_result`,
+        `attribution_snapshot`, `ui_telemetry`, ...) is qwen's own internal
+        bookkeeping and is skipped outright — no heuristic needed, unlike
+        Codex's flat response_item stream. `message.parts[].text` holds the
+        text; a part with no `text` key (a function call/result part) is
+        skipped. The FIRST `real_user` turn of every MC-dispatched session is
+        still 100% injected preamble (the persona block `_build_agent_context`
+        prepends), not something the user typed — `strip_injected_preamble`
+        + `is_nonuser_message` (the same pair `_transcript_buffer_lines` uses
+        for Claude) drop it the same way.
+
+        Returns [] on any read/parse failure or an empty file.
+        """
+        turns: List[Tuple[str, str]] = []
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(rec, dict):
+                        continue
+                    provenance = rec.get('provenance')
+                    if provenance not in ('real_user', 'assistant_output'):
+                        continue
+                    parts = (rec.get('message') or {}).get('parts') or []
+                    texts = [p.get('text', '') for p in parts
+                            if isinstance(p, dict) and p.get('text')]
+                    text = '\n'.join(t.strip() for t in texts if t).strip()
+                    if not text:
+                        continue
+                    role = 'user' if provenance == 'real_user' else 'assistant'
+                    if role == 'user':
+                        text = strip_injected_preamble(text)
+                        if not text or is_nonuser_message(text):
+                            continue
+                    turns.append((role, text))
+        except Exception:
+            return []
+        return turns
+
     def _qwen_auth_state(self) -> Tuple[str, Optional[str]]:
         """Where qwen actually keeps its credentials.
 
@@ -4665,7 +4719,16 @@ class QwenRuntime(AgentRuntime):
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
 
         mc_sid = mc_session_id or uuid.uuid4().hex[:12]
-        cmd = self.build_command(model=model)
+        # `resume_id` here is qwen's OWN session id (see build_command's own
+        # doc), passed by a caller reviving a dead conversation after a
+        # restart (agent_routes.py's `_revive_non_claude_from_agent_log`) —
+        # NOT the live-session followup path (write_followup, below), which
+        # has its own resume_id already wired. This branch used to drop the
+        # kwarg on the floor (`build_command(model=model)`, no resume_id),
+        # so `CodexRuntime`-parity resume worked for Codex but a cold Qwen
+        # revive always silently started a brand-new thread with no history,
+        # despite `build_command` already knowing how to build `--resume`.
+        cmd = self.build_command(model=model, resume_id=resume_id)
         # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
         # dispatch(): the universal context block already tells the model to
         # use this fence, but nothing explains its shape without this.
@@ -5486,6 +5549,66 @@ class CodexRuntime(AgentRuntime):
         except Exception:
             return None
         return '\n'.join(out)
+
+    def extract_chat_turns(self, path: Path) -> List[Tuple[str, str]]:
+        """Rebuild the real user/assistant exchange from a rollout, for chat
+        display — a dead-session-reconstruction sibling to
+        `render_transcript_for_scribe` above (which renders for the Scribe's
+        own compact recall format, tags every line ACTION/RESULT/THINKING,
+        and keeps tool noise). This one returns exactly what a human typed
+        and exactly what the agent said back, nothing else, matching what
+        `_transcript_buffer_lines` renders for a Claude transcript — same
+        filtering `list_sessions()` already applies to user turns
+        (`strip_injected_preamble` + `is_nonuser_message` drop the injected
+        <recommended_plugins>/AGENTS.md/persona-injection preambles that
+        Codex folds into user-role messages, and `_strip_codex_system_prefix`
+        drops MC's own system-prompt prefix `dispatch()` prepends to turn 1),
+        applied here to the FULL text rather than `list_sessions()`'s
+        300-char label. Developer-role messages (Codex's own plugin/hook
+        preambles) are dropped outright, same as `render_transcript_for_scribe`.
+
+        Returns [] on any read/parse failure or if the rollout holds no real
+        exchange, so callers can fall back to whatever they already have.
+        """
+        turns: List[Tuple[str, str]] = []
+        try:
+            with open(path, encoding='utf-8', errors='replace') as fh:
+                for raw in fh:
+                    raw = raw.strip()
+                    if not raw:
+                        continue
+                    try:
+                        rec = json.loads(raw)
+                    except Exception:
+                        continue
+                    if not isinstance(rec, dict) or rec.get('type') != 'response_item':
+                        continue
+                    payload = rec.get('payload')
+                    if not isinstance(payload, dict) or payload.get('type') != 'message':
+                        continue
+                    role = payload.get('role', '')
+                    if role not in ('user', 'assistant'):
+                        continue
+                    content = payload.get('content')
+                    texts = []
+                    if isinstance(content, list):
+                        for b in content:
+                            if isinstance(b, dict) and b.get('text'):
+                                texts.append(str(b['text']))
+                    text = '\n'.join(t.strip() for t in texts if t).strip()
+                    if not text:
+                        continue
+                    if role == 'user':
+                        text = strip_injected_preamble(text)
+                        if not text or is_nonuser_message(text):
+                            continue
+                        text = _strip_codex_system_prefix(text)
+                        if not text:
+                            continue
+                    turns.append((role, text))
+        except Exception:
+            return []
+        return turns
 
     def _codex_auth_state(self) -> Tuple[str, Optional[str]]:
         """Where codex actually keeps its credentials.
