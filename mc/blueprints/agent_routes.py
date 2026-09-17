@@ -5461,7 +5461,7 @@ def _process_inbox(row):
         if parent is None:
             return _revive_parent_for_delegation(
                 row['project_id'], row['parent_session_id'], payload['message'],
-                {})
+                (load_project(row['project_id']) if callable(load_project) else None) or {})
         if parent.get('project_id') != row['project_id'] or parent.get('incognito'):
             raise DeliveryBlocked('parent identity/privacy state changed; explicit recovery required')
         if parent.get('status') == 'running':

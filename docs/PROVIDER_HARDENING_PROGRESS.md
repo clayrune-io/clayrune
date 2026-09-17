@@ -369,6 +369,11 @@ This is feature-branch-only: live restart/provider validation, recovery-state UI
 delivery-record retention/privacy policy and task-result acceptance are not
 certified by the offline test result. No production restart or merge occurred.
 
+Follow-up subsystem evidence: real HTTP sender/blueprint receiver with a
+disposable subprocess survives restart and records exactly one fake handoff
+across a second restart. Combined selection **164 passed**. This closes the
+subsystem HTTP harness step, not full-server startup or live-provider proof.
+
 ### Broader provider-neutral work
 
 1. Provider-specific saved model/effort preferences and durable setup/readiness.

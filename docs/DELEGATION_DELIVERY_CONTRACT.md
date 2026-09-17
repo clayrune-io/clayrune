@@ -17,7 +17,17 @@ with a fake runtime, verifies one launch after reopen, and covers both a named
 requested model and explicit native-default selection. Claude recovery uses the
 real revival helper with a fake process. No live provider is exercised.
 
-Remaining activation gates: real-server restart/delivery verification, provider
+Real loopback-HTTP subsystem restart evidence is now available in
+`tests/test_delegation_restart.py`: the actual sender and blueprint receiver
+reopen temporary SQLite after a subprocess restart, reach delivered/submitted,
+and retain exactly one fake parent handoff across another restart. Fault
+injection covers lost receipt responses, busy/ambiguous work and project-scoped
+status/retry rejection. Registration is opt-in for operator runs; ordinary tests
+do not contact a local Clayrune instance. Combined selection: 164 tests passed.
+This harness bypasses full server startup and fakes the parent handoff; it does
+not prove live native-provider execution or full server lifecycle recovery.
+
+Remaining activation gates: full-server restart/delivery verification, provider
 submission reconciliation beyond retained uncertainty, and user-visible handling
 of blocked/recovery states. The API surfaces these states, but this increment
 does not add a Floor badge or certify automatic task acceptance. Storage

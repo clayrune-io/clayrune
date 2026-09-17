@@ -8,6 +8,11 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add real-loopback HTTP subprocess restart tests using the production sender
+  and receiver; verify persisted delivery and one fake parent handoff across
+  restart. Combined selected suite: 164 passing; full startup/native providers
+  remain outside this harness. Fix cold-parent project propagation at handoff.
+
 - Replace the best-effort completion sender with persisted per-turn sources,
   outbox/inbox receipts, fenced claims and bounded retries.
 - Guard parent handoff and preserve saved conversation/model/effort and callback
