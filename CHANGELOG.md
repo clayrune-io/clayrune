@@ -8,6 +8,13 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add an opt-in provider-neutral capture ingress bridge and Mode-A raw-record/
+  EOF callbacks before lossy UI parsing. Retain failed evidence batches for
+  explicit retry, refuse decoder advancement while pending, and keep draining
+  transport after capture failure with explicit incomplete status. Independent
+  capture tests: 61 passing; worker runtime regressions: 326 passing. No live
+  capture activation or durable source-cursor recovery is claimed.
+
 - Add project-scoped logical delivery payload accounting to the read-only
   recovery view. UTF-8 byte/row aggregates distinguish completion sources,
   outbox and inbox; the 1 GiB default is a WARN-ONLY Settings advisory (`0`

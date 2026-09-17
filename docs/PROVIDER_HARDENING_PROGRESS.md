@@ -376,6 +376,19 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Canonical capture ingress increment: `mc/capture_ingress.py` composes an existing
+decoder, lifecycle token and ConversationStore without vendor-specific storage.
+An explicit Mode-A raw-record/EOF callback runs before UI formatting. Failed
+atomic batches are copied and retained for retry; new decoding is refused while
+pending. Capture failure does not stop stdout draining and is marked incomplete.
+The Codex fixture integration exercises reader -> decoder -> bridge -> SQLite.
+Parent: 61 capture tests passed; worker: 326 runtime regressions passed.
+
+This seam is NOT enabled by a production composition root. Native/MC identities
+in provenance are observations, not authenticated authority. Lifecycle token,
+requested-engine snapshot and privacy generation govern evidence writes. Durable
+raw-source cursor recovery remains open; UI/history/Scribe consumers are unchanged.
+
 Storage policy gate resolved as WARN ONLY: project-scoped logical payload byte/
 row aggregates and adjustable Settings advisory (1 GiB default, 0 disables the
 warning) are implemented. No dispatch blocking, result rejection, deletion or

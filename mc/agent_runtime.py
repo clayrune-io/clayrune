@@ -3811,9 +3811,19 @@ def _format_tool_activity(name, inp):
 
 def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                    runtime: 'AgentRuntime') -> None:
-    """Generic stdout reader for Mode-A providers. Uses runtime.parse_event()."""
+    """Read Mode-A stdout, with an optional pre-format raw-record callback.
+
+    ``callbacks['on_raw_record']`` is an explicit composition seam for a
+    provider's full-fidelity decoder. It runs before ``parse_event`` and UI
+    formatting; absent that callback, behavior is unchanged. A callback
+    failure is observable and prevents this reader from reporting success.
+    """
     session = handle.session_dict
     cbs = handle.meta.get('callbacks', {})
+    raw_record = cbs.get('on_raw_record')
+    raw_eof = cbs.get('on_raw_eof')
+    raw_sequence = 0
+    capture_failed = False
 
     # MC Tool Protocol (mc:question / mc:todo — see with_mc_tool_protocol):
     # every Mode-A provider's system prompt tells it to use this fence
@@ -3845,6 +3855,19 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             line = raw_line.rstrip('\n\r')
             if not line:
                 continue
+            if raw_record and not capture_failed:
+                # Capture is deliberately isolated from transport draining:
+                # a failed durable write must not leave the provider blocked on
+                # a full stdout pipe. Later records are drained but are not
+                # represented as complete capture.
+                try:
+                    raw_record(line, raw_sequence, handle.mc_session_id, session)
+                except Exception as e:
+                    capture_failed = True
+                    session['_capture_error'] = str(e)
+                    session['capture_status'] = 'incomplete'
+                    session['log_lines'].append(f'[capture error: {e}]')
+                raw_sequence += 1
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -3943,6 +3966,16 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
+        if raw_eof:
+            try:
+                raw_eof(raw_sequence, rc, handle.mc_session_id, session)
+            except Exception as e:
+                capture_failed = True
+                session['_capture_error'] = str(e)
+                session['capture_status'] = 'incomplete'
+                session.setdefault('log_lines', []).append(f'[capture EOF error: {e}]')
+        if capture_failed:
+            session['capture_status'] = 'incomplete'
         # MC Tool Protocol: scan this turn's complete text for mc: blocks
         # (e.g. an emulated AskUserQuestion) and apply them before deciding
         # status — a question holds the turn in 'idle' awaiting the user's
@@ -3970,7 +4003,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 f'[mc-tool scan error: {e}]')
         if session.get('proc') is proc:
             if session.get('status') == 'running':
-                if mc_res['paused']:
+                if session.get('_capture_error'):
+                    session['status'] = 'error'
+                elif mc_res['paused']:
                     session['status'] = 'idle'
                 else:
                     session['status'] = 'completed' if rc == 0 else 'error'
