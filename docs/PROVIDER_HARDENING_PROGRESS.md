@@ -376,6 +376,12 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Isolated startup gate: real server boot/wire, automatic delivery-loop recovery,
+SQLite/HTTP and real dispatch with fake provider execution now pass 3 independent
+registered tests. Worker combined selection: 204 passed. Startup side-effect
+producers remain deliberately stubbed, and live-provider certification and
+storage budgets remain open. No production activation is implied.
+
 Delivery lifecycle gate closed offline: explicit retained loop ownership,
 interruptible stop, bounded join/timeout reporting, serialized start/stop/rewire,
 shutdown admission fencing and post-stop completion persistence. Worker combined

@@ -8,6 +8,13 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add isolated real-server startup/restart tests with automatic delivery-loop
+  recovery, lost-receipt deduplication, generation-3 cold revival through the
+  real dispatch path and shutdown admission fencing. External producers and
+  provider execution are faked; child paths/network/process launches are
+  constrained before boot. Independent registered run: 3 passing; worker
+  combined selection: 204 passing. This is not live-provider certification.
+
 - Own the delivery loop with an interruptible stop event and retained thread;
   serialize start/stop/rewire, retain ownership on join timeout, fence waiting
   parent handoffs during shutdown, and preserve final completion writes. Add

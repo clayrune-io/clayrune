@@ -39,7 +39,17 @@ tests passed. The fixture loads the real modules/CSS, not the complete dashboard
 The worker separately reported full dashboard smoke passing. The browser test
 is retained in the standard smoke suite with opt-in process registration.
 
-Remaining activation gates: full-server restart/delivery verification, provider
+Real-server startup wiring is now tested in disposable subprocesses using
+`server.boot`, actual dispatch, automatic delivery loop, SQLite and Flask HTTP.
+Unrelated startup producers are stubbed and provider execution is fake. Bound
+paths are checked before boot; the child permits only its own HTTP destination
+and blocks process launches. Three tests pass in the independent registered
+run; worker combined selection is 204 passing. Recovery, lost receipt, exact
+generation-3 identity and shutdown fencing are covered. Ordinary runs skip the
+process integration unless registration is explicitly configured. This is an
+isolated startup test, not an unmodified live installation or provider test.
+
+Remaining activation gates: live-provider validation, provider
 submission reconciliation beyond retained uncertainty, storage retention budgets
 and task-result acceptance. No Floor badge or automatic recovery is claimed.
 Logical deletion is implemented below; physical WAL sanitization is not.
