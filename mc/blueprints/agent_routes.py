@@ -7979,7 +7979,11 @@ def delegation_status(project_id):
 
 @bp.route('/api/project/<project_id>/agent/delegation/status-list')
 def delegation_status_list(project_id):
-    """Read-only recovery view; payloads and task text are intentionally omitted."""
+    """Read-only recovery and logical-payload advisory view.
+
+    Status is not a processing acknowledgement, and usage is telemetry only:
+    neither result delivery nor parent dispatch is gated by this read path.
+    """
     if _delivery_store is None:
         return jsonify({'error': 'delegation delivery unavailable'}), 503
     try:
@@ -7987,8 +7991,33 @@ def delegation_status_list(project_id):
         offset = int(request.args.get('offset', 0))
         if limit < 1 or limit > 100 or offset < 0:
             raise ValueError
-        return jsonify(_delivery_store.list_recovery_status(
-            project_id, limit=limit, offset=offset))
+        result = _delivery_store.list_recovery_status(
+            project_id, limit=limit, offset=offset)
+        try:
+            usage = _delivery_store.payload_usage(project_id)
+            raw_threshold = state.CONFIG.get('delegation_payload_warning_bytes',
+                                             1024 ** 3)
+            if isinstance(raw_threshold, bool):
+                raise ValueError('invalid advisory threshold')
+            threshold = int(raw_threshold)
+            if threshold < 0:
+                raise ValueError('invalid advisory threshold')
+            usage.update({
+                'status': 'ok',
+                'warning_bytes': threshold,
+                # 0 disables warning only. Equality is intentionally warned.
+                'warning': bool(threshold and usage['payload_bytes'] >= threshold),
+            })
+        except Exception as exc:
+            _log(f'[delegation-status] usage read failed: {type(exc).__name__}',
+                 flush=True)
+            usage = {
+                'status': 'unknown',
+                'reason_code': 'usage_unavailable',
+                'reason': 'Payload usage is unavailable; warning state is unknown.',
+            }
+        result['usage'] = usage
+        return jsonify(result)
     except (TypeError, ValueError):
         return jsonify({'error': 'limit must be 1..100 and offset must be non-negative'}), 400
 

@@ -376,6 +376,14 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Storage policy gate resolved as WARN ONLY: project-scoped logical payload byte/
+row aggregates and adjustable Settings advisory (1 GiB default, 0 disables the
+warning) are implemented. No dispatch blocking, result rejection, deletion or
+truncation is introduced. Usage remains intentionally uncapped; actual disk-full
+can still fail writes. This supersedes earlier open storage-budget gate notes.
+Worker: 208 tests, no skips. Parent: 43 focused Python tests plus registered
+browser checks for warning/unknown/disabled and layout. Not production activated.
+
 Isolated startup gate: real server boot/wire, automatic delivery-loop recovery,
 SQLite/HTTP and real dispatch with fake provider execution now pass 3 independent
 registered tests. Worker combined selection: 204 passed. Startup side-effect

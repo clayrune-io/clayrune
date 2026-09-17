@@ -37,7 +37,8 @@ def test_status_list_is_project_scoped_paginated_and_payload_free(tmp_path, monk
                for item in body['items'])
     assert all(key not in json.dumps(body) for key in
                ('DO NOT LEAK', 'SECRET-CREDENTIAL', 'private task', 'message',
-                'payload', 'summary'))
+                'summary'))
+    assert all('payload' not in item for item in body['items'])
 
     second = client.get('/api/project/project-a/agent/delegation/status-list?limit=2&offset=2')
     assert second.get_json()['total'] == 3

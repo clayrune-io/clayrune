@@ -50,7 +50,7 @@ process integration unless registration is explicitly configured. This is an
 isolated startup test, not an unmodified live installation or provider test.
 
 Remaining activation gates: live-provider validation, provider
-submission reconciliation beyond retained uncertainty, storage retention budgets
+submission reconciliation beyond retained uncertainty
 and task-result acceptance. No Floor badge or automatic recovery is claimed.
 Logical deletion is implemented below; physical WAL sanitization is not.
 Unsupported native revival fails closed.
@@ -162,3 +162,24 @@ Offline tests must exercise integrated production seams, not only a store:
 
 Activation additionally needs a controlled end-to-end test through the running
 server. Offline green does not imply that an un-restarted server is fixed.
+
+## Logical payload usage advisory (WARN ONLY)
+
+The recovery status endpoint also reports project-scoped logical delivery
+payload usage for `completion_sources`, `outbox`, and `inbox`. Counts use the
+exact UTF-8 bytes of each SQLite payload via aggregate SQL and identify each
+table separately. Agent logs, native transcripts, SQLite file size, and WAL
+amplification are excluded; this is not total disk usage.
+
+`delegation_payload_warning_bytes` is an adjustable Settings value, defaulting
+to 1 GiB per project. A value of `0` disables the warning only. Equality with
+the threshold warns. The advisory never gates dispatch or completion, never
+truncates/deletes/auto-rejects results, and does not change retention or
+reservation behavior. A read failure is returned as explicit unknown state,
+never as zero.
+
+The selected policy is warn-only, not admission backpressure. Logical retained
+usage remains uncapped; actual disk-full and I/O failure are not prevented by
+an advisory. Worker combined evidence: 208 tests, no skips. Independent checks:
+43 storage/status/Settings tests and registered real-module browser validation
+for warning, unknown and disabled states. No production activation is implied.

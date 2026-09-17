@@ -8,6 +8,13 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add project-scoped logical delivery payload accounting to the read-only
+  recovery view. UTF-8 byte/row aggregates distinguish completion sources,
+  outbox and inbox; the 1 GiB default is a WARN-ONLY Settings advisory (`0`
+  disables it). It never gates dispatch/completion or changes retention, and
+  read failures are explicit unknown. Agent logs/native transcripts and
+  install-wide DB/WAL size are excluded.
+
 - Add isolated real-server startup/restart tests with automatic delivery-loop
   recovery, lost-receipt deduplication, generation-3 cold revival through the
   real dispatch path and shutdown admission fencing. External producers and

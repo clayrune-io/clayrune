@@ -132,6 +132,9 @@ def _load_config():
         # overridden per-project via the arbitrary-key update_project path.
         'upload_quota_bytes': 0,
         'upload_max_file_bytes': 0,
+        # WARN-ONLY per-project logical delivery payload usage. 0 disables
+        # the advisory; it is never a dispatch/completion limit.
+        'delegation_payload_warning_bytes': 1024 ** 3,
         'log_level': 'info',  # P2-3: debug|info|warn|error gate for _log()
         # Scheduler master kill-switch. True = no schedule and no steward
         # dispatches, at any hour; only agents the user starts by hand run.

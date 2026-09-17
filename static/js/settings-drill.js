@@ -691,6 +691,10 @@ async function _renderSettings() {
         <div><div class="settings-label">Port</div><div class="settings-hint">Requires restart to take effect</div></div>
         ${numInput('port', cfg.port)}
       </div>
+      <div class="settings-row">
+        <div><div class="settings-label">Delegation payload warning</div><div class="settings-hint">Advisory logical delivery payload bytes per project. Default 1 GiB; 0 disables the warning. Never blocks dispatch or completion.</div></div>
+        ${numInput('delegation_payload_warning_bytes', cfg.delegation_payload_warning_bytes ?? 1073741824)}
+      </div>
       <div class="settings-row" style="align-items:flex-start;flex-direction:column;gap:6px">
         <div><div class="settings-label">Backup Destination</div><div class="settings-hint">Where backups are written. Blank uses ~/.clayrune/backups. Can't be inside the repo or data/projects/.</div></div>
         <div style="display:flex;width:100%;gap:6px;align-items:center">

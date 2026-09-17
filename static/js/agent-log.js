@@ -11,6 +11,16 @@ const agentLogShown = {};   // projectId → rows currently rendered
 const deliveryStatusCache = {}; // projectId → {items,total,limit,offset,error}
 const deliveryStatusRequests = {}; // projectId → monotonically increasing read token
 const DELIVERY_STATUS_PAGE = 25;
+function formatDeliveryBytes(value) {
+  const bytes = Number(value);
+  if (!Number.isFinite(bytes) || bytes < 0) return 'unknown';
+  if (bytes < 1024) return `${bytes} B`;
+  const units = ['KiB', 'MiB', 'GiB', 'TiB'];
+  let n = bytes;
+  let unit = 'B';
+  for (const next of units) { if (n < 1024) break; n /= 1024; unit = next; }
+  return `${n >= 10 || Number.isInteger(n) ? Math.round(n) : n.toFixed(1)} ${unit}`;
+}
 function refreshDeliveryStatusProject(projectId) {
   if (typeof refreshModalById === 'function') refreshModalById(projectId);
   else if (modalActiveTab[projectId] === 'agent-log') refreshModal();
@@ -38,9 +48,19 @@ function renderDeliveryStatusHTML(p) {
     ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${Math.max(0, data.offset - data.limit)})">‹ Previous</button>` : '';
   const next = data.offset + data.limit < data.total
     ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${data.offset + data.limit})">Next ›</button>` : '';
+  const usage = data.usage;
+  const usageHTML = !usage || usage.status === 'unknown'
+    ? `<div class="delivery-status-usage delivery-status-usage-unknown">Logical delivery payload usage is unavailable; warning state is unknown.</div>`
+    : `<div class="delivery-status-usage${usage.warning ? ' delivery-status-usage-warning' : ''}">
+        ${usage.warning ? 'Advisory warning: ' : ''}Logical delivery payload usage is ${esc(formatDeliveryBytes(usage.payload_bytes))}
+        across ${esc(usage.row_count)} row${usage.row_count === 1 ? '' : 's'}.
+        ${usage.warning_bytes ? `Warning threshold: ${esc(formatDeliveryBytes(usage.warning_bytes))}.` : 'Advisory warning disabled.'}
+        This is delivery-payload accounting only; it does not include agent logs or native transcripts and never blocks dispatch or completion.
+      </div>`;
   return `<div class="card-section delivery-status-section">
     <div class="section-title">Delivery recovery <span class="section-hint">${data.total} item${data.total === 1 ? '' : 's'}</span></div>
     <div class="agent-log-summary">Submitted means the parent handoff was accepted, not that the task result was verified. Uncertain items are not retried automatically.</div>
+    ${usageHTML}
     ${rows}<div class="runs-pagination">${previous}${next}</div>
   </div>`;
 }

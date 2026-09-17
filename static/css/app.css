@@ -4894,6 +4894,15 @@
   }
   .agent-log-summary::-webkit-scrollbar { width: 4px; }
   .agent-log-summary::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  .delivery-status-usage {
+    margin: 8px 0; padding: 9px 11px; border-left: 3px solid var(--border2);
+    background: var(--surface2); color: var(--text-dim); font-size: 12px;
+    line-height: 1.45; overflow-wrap: anywhere;
+  }
+  .delivery-status-usage-warning {
+    border-left-color: var(--amber); color: var(--amber-text, var(--text));
+  }
+  .delivery-status-usage-unknown { border-left-color: var(--red); }
   .agent-log-ts {
     font-size: 11px; color: var(--text-faint); margin-top: 4px;
     font-family: 'JetBrains Mono', monospace;

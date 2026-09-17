@@ -492,6 +492,44 @@ class DeliveryStore:
                              (event_id, project_id)).fetchone()
             return dict(row) if row else None
 
+    def payload_usage(self, project_id: str) -> dict[str, Any]:
+        """Aggregate logical delivery payload usage for one project.
+
+        ``payload`` is stored as SQLite TEXT.  Casting it to BLOB before
+        LENGTH counts the encoded UTF-8 bytes without materialising payload
+        rows in Python.  This deliberately excludes agent-log/native
+        transcripts and any install-wide SQLite/WAL size.
+        """
+        if not project_id:
+            raise ValueError('project identity required')
+        with self._db() as db:
+            rows = db.execute(
+                """SELECT 'completion_sources' AS table_name, COUNT(*) AS row_count,
+                          COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS payload_bytes
+                     FROM completion_sources WHERE project_id=?
+                   UNION ALL
+                   SELECT 'outbox' AS table_name, COUNT(*) AS row_count,
+                          COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS payload_bytes
+                     FROM outbox WHERE project_id=?
+                   UNION ALL
+                   SELECT 'inbox' AS table_name, COUNT(*) AS row_count,
+                          COALESCE(SUM(LENGTH(CAST(payload AS BLOB))), 0) AS payload_bytes
+                     FROM inbox WHERE project_id=?""",
+                (project_id, project_id, project_id),
+            ).fetchall()
+        tables = {
+            row['table_name']: {
+                'row_count': int(row['row_count']),
+                'payload_bytes': int(row['payload_bytes']),
+            }
+            for row in rows
+        }
+        return {
+            'tables': tables,
+            'row_count': sum(item['row_count'] for item in tables.values()),
+            'payload_bytes': sum(item['payload_bytes'] for item in tables.values()),
+        }
+
     def list_recovery_status(self, project_id: str, *, limit: int = 50,
                              offset: int = 0) -> dict[str, Any]:
         """List recoverable delivery state without exposing completion payloads."""

@@ -123,7 +123,7 @@ Click any tile to open it. Tab strip across the middle:
 |---|---|
 | **Agent** | Dispatch input + active agent session(s) — tab strip on desktop, drill-down list on mobile when there's >1 conversation |
 | **Backlog** | This project's task list (per-item priority, status, GitHub sync) |
-| **Agent Log** | Completed sessions (click any to view transcript or continue), plus the read-only **Delivery recovery** status list. Submitted means the parent handoff was accepted—not that the result was verified; uncertain items are not retried automatically. |
+| **Agent Log** | Completed sessions (click any to view transcript or continue), plus the read-only **Delivery recovery** status list. Submitted means the parent handoff was accepted—not that the result was verified; uncertain items are not retried automatically. The list also shows a project-scoped logical delivery-payload usage advisory; it never blocks dispatch or completion. |
 | **Plans** | Plan files written by `ExitPlanMode` |
 | **Activity** | This project's chronological event log |
 

@@ -146,6 +146,9 @@ _CONFIG_EDITABLE_KEYS = {
     'keep_awake_enabled', 'keep_awake_poll_s',
     'idle_eviction_enabled', 'idle_eviction_minutes',
     'projects_base', 'shared_rules_path', 'port', 'log_level',
+    # Delivery payload accounting is advisory only: 0 disables the warning,
+    # and this setting never gates dispatch or completion.
+    'delegation_payload_warning_bytes',
     'mobile_brief_replies_enabled', 'brief_replies_always_enabled',
     'auto_model_enabled', 'auto_model_classifier_model',
     'auto_model_classifier_timeout_secs',
@@ -265,6 +268,16 @@ def update_config():
                                  'the user to change it from the Settings UI'}
                        ), 403
     data = request.get_json() or {}
+    if 'delegation_payload_warning_bytes' in data:
+        value = data['delegation_payload_warning_bytes']
+        if isinstance(value, bool):
+            return jsonify({'error': 'delegation_payload_warning_bytes must be a non-negative integer'}), 400
+        try:
+            if int(value) != value or int(value) < 0:
+                raise ValueError
+            data['delegation_payload_warning_bytes'] = int(value)
+        except (TypeError, ValueError, OverflowError):
+            return jsonify({'error': 'delegation_payload_warning_bytes must be a non-negative integer'}), 400
     # Validated here, not just where it's drawn (same reasoning as
     # agent_avatar below): a bad backup_dest_dir persisted to config.json
     # would silently redirect every future backup into the repo or

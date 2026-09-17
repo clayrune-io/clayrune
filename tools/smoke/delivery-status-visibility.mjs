@@ -34,7 +34,7 @@ let activeProjectId = 'p';
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function _getProviderCaps(){return {emits_usage:false,emits_num_turns:false,emits_cost:false,supports_session_resume:false}}
 function _providerBadge(){return ''} function getDefaultResumeId(){return ''}
-function refreshModal(){const p=activeProjectId==='error'?{id:'error',project_path:'/tmp/error'}:{id:activeProjectId,project_path:'/tmp/p'}; document.querySelector('#app').innerHTML=window.agentLogPanelHTML(p)}
+function refreshModal(){const p={id:activeProjectId,project_path:'/tmp/'+activeProjectId}; document.querySelector('#app').innerHTML=window.agentLogPanelHTML(p)}
 function refreshModalById(id){if(id===activeProjectId) refreshModal()}
 window.refreshModal=refreshModal; window.refreshModalById=refreshModalById; window.API_BASE='';
 </script><script type="module" src="/static/js/agent-log.js"></script><script type="module" src="/static/js/agent-console.js"></script>`;
@@ -59,7 +59,12 @@ server = http.createServer((req, res) => {
     if (path.includes('/error/')) { res.writeHead(503); return res.end('{}'); }
     const url = new URL(`http://stub${req.url}`);
     const offset = Number(url.searchParams.get('offset') || 0);
-    const send = () => { res.writeHead(200, {'content-type': 'application/json'}); res.end(JSON.stringify({items: rows.slice(offset, offset + 25), total: 26, limit: 25, offset})); };
+    const usage = path.includes('/unknown/')
+      ? {status: 'unknown', reason_code: 'usage_unavailable', reason: 'Payload usage is unavailable; warning state is unknown.'}
+      : path.includes('/disabled/')
+        ? {status: 'ok', payload_bytes: 4, row_count: 1, warning_bytes: 0, warning: false}
+        : {status: 'ok', payload_bytes: 1073741824, row_count: 3, warning_bytes: 1073741824, warning: true};
+    const send = () => { res.writeHead(200, {'content-type': 'application/json'}); res.end(JSON.stringify({items: rows.slice(offset, offset + 25), total: 26, limit: 25, offset, usage})); };
     return offset === 0 ? setTimeout(send, 80) : send();
   }
   res.writeHead(404); res.end();
@@ -80,12 +85,19 @@ page.on('pageerror', error => pageErrors.push(String(error)));
   await page.waitForSelector('.delivery-status-section', {timeout: 5000});
   const firstText = await page.locator('.delivery-status-section').innerText();
   if (!firstText.toLowerCase().includes('26 items')) throw new Error(`first page did not render: ${firstText.slice(0, 200)}`);
+  if (!firstText.toLowerCase().includes('advisory warning') || !firstText.includes('never blocks dispatch')) throw new Error('WARN-ONLY usage advisory did not render');
   const firstPage = await page.locator('.delivery-status-pending,.delivery-status-blocked').count();
   if (firstPage !== 25) throw new Error(`expected 25 first-page rows, got ${firstPage}`);
   await page.getByRole('button', {name: 'Next ›'}).click();
   await page.waitForFunction(() => document.querySelectorAll('.delivery-status-pending,.delivery-status-blocked').length === 1, null, {timeout: 5000});
   await page.evaluate(() => { activeProjectId = 'error'; modalActiveTab.error = 'agent-log'; refreshModal(); window.switchModalTab('error', 'agent-log'); });
   await page.waitForFunction(() => document.querySelector('#app')?.innerText.includes('Delivery status could not be read.'), null, {timeout: 5000});
+  await page.evaluate(() => { activeProjectId = 'unknown'; modalActiveTab.unknown = 'agent-log'; refreshModal(); window.switchModalTab('unknown', 'agent-log'); });
+  await page.waitForFunction(() => document.querySelector('#app')?.innerText.includes('warning state is unknown'), null, {timeout: 5000});
+  const unknownUsage = (await page.locator('#app').innerText()).includes('warning state is unknown');
+  await page.evaluate(() => { activeProjectId = 'disabled'; modalActiveTab.disabled = 'agent-log'; refreshModal(); window.switchModalTab('disabled', 'agent-log'); });
+  await page.waitForFunction(() => document.querySelector('#app')?.innerText.includes('Advisory warning disabled.'), null, {timeout: 5000});
+  const disabledWarning = (await page.locator('#app').innerText()).includes('Advisory warning disabled.');
   await page.evaluate(() => { activeProjectId = 'p'; modalActiveTab.p = 'agent-log'; refreshModal(); window.loadDeliveryStatus('p', 0); window.loadDeliveryStatus('p', 25); });
   await page.waitForFunction(() => { const text = document.querySelector('#app')?.innerText.toLowerCase() || ''; return text.includes('e-25') && !text.includes('e-0'); }, null, {timeout: 5000});
   await page.evaluate(() => { window.loadDeliveryStatus('p', 0); activeProjectId = 'error'; modalActiveTab.error = 'agent-log'; refreshModal(); window.switchModalTab('error', 'agent-log'); });
@@ -108,7 +120,7 @@ page.on('pageerror', error => pageErrors.push(String(error)));
     if (layout.scrollWidth > layout.clientWidth + 1 || !layout.buttonsWithinViewport) throw new Error(`${viewport.name} recovery layout overflows or clips pagination: ${JSON.stringify(layout)}`);
     viewports.push({name: viewport.name, width: Math.round(box.width), height: Math.round(box.height), ...layout});
   }
-  console.log(JSON.stringify({ok: true, firstPage, secondPage: 1, errorState: true, handler: await page.evaluate(() => typeof window.loadDeliveryStatus), viewports, registrations}));
+  console.log(JSON.stringify({ok: true, firstPage, secondPage: 1, errorState: true, unknownUsage, disabledWarning, handler: await page.evaluate(() => typeof window.loadDeliveryStatus), viewports, registrations}));
 } finally {
   if (browser) await browser.close();
   if (browserServer) await browserServer.close();
