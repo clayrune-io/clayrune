@@ -168,6 +168,7 @@ _delivery_stop_event: Optional[threading.Event] = None
 _delivery_shutdown_requested = threading.Event()
 _delivery_stop_in_progress = False
 _delegation_app: Optional[Flask] = None
+_runtime_lifecycle_service = None
 
 
 def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
@@ -180,7 +181,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          recent_claude_transcripts_fn, session_too_large_fn,
          long_session_advisory_fn, resume_is_fragile_fn,
          encode_project_path_fn, extract_transcript_telemetry_fn,
-         proc_identity_fn, persist_pid_ledger_fn):
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None):
     """Late-bind cross-family deps. Called once by server.py after the
     memory/scribe/condense machinery (which stays there) is defined."""
     global DATA_DIR, UPLOADS_DIR, _APP_DIR, PORT, SHARED_RULES_PATH
@@ -196,6 +197,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     global _delivery_store, _delivery_path, _delivery_started
     global _delivery_thread, _delivery_stop_event, _delegation_app
     global _delivery_stop_in_progress
+    global _runtime_lifecycle_service
     with _delivery_lifecycle_lock:
         if _delivery_thread is not None and _delivery_thread.is_alive():
             raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
@@ -242,6 +244,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     _delivery_stop_in_progress = False
     _delivery_shutdown_requested.clear()
     _delegation_app = Flask('mc-delegation-delivery')
+    _runtime_lifecycle_service = runtime_lifecycle_service
     # Moved module-level side effect (see the tombstone in the provider-env
     # section below): hydrate persisted provider env vars into os.environ now
     # that PROVIDER_ENV_PATH is bound. Runs during server.py module exec,
@@ -259,7 +262,7 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          recent_claude_transcripts_fn, session_too_large_fn,
          long_session_advisory_fn, resume_is_fragile_fn,
          encode_project_path_fn, extract_transcript_telemetry_fn,
-         proc_identity_fn, persist_pid_ledger_fn):
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None):
     """Atomically bind agent dependencies and delivery ownership state.
 
     The implementation retains its keyword-only binding surface in
@@ -294,7 +297,8 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
             encode_project_path_fn=encode_project_path_fn,
             extract_transcript_telemetry_fn=extract_transcript_telemetry_fn,
             proc_identity_fn=proc_identity_fn,
-            persist_pid_ledger_fn=persist_pid_ledger_fn)
+            persist_pid_ledger_fn=persist_pid_ledger_fn,
+            runtime_lifecycle_service=runtime_lifecycle_service)
 
 # ── Claude CLI binary resolution ────────────────────────────────────────────
 # Delegates to ClaudeRuntime.resolve_binary_str() — single source of truth.
@@ -6592,6 +6596,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             mc_session_id=session_id, provider=provider_name, model=model,
             effort=session.get('requested_effort'), resume_id=resume_id,
             task=task, incognito=incognito,
+            dispatch_id=uuid.uuid4().hex,
             provenance={'trigger_type': trigger_type, 'trigger_id': trigger_id,
                         'source': source or ''})
         try:
@@ -7200,7 +7205,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          resume_id=resume_id,
                                          source=source,
                                          notify_session=notify_session,
-                                         notify_workflow=notify_workflow)
+                                         notify_workflow=notify_workflow,
+                                         lifecycle_bridge_factory=(
+                                             _runtime_lifecycle_service.bridge_factory
+                                             if _runtime_lifecycle_service is not None else None))
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise

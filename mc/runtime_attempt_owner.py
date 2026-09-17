@@ -40,10 +40,12 @@ class DispatchFacts:
     resume_id: str
     task: str
     incognito: bool
+    dispatch_id: str
     provenance: Mapping[str, Any] = field(default_factory=dict)
 
     def __post_init__(self) -> None:
-        for name in ('project_id', 'project_path', 'mc_session_id', 'provider'):
+        for name in ('project_id', 'project_path', 'mc_session_id', 'provider',
+                     'dispatch_id'):
             value = getattr(self, name)
             if type(value) is not str or not value or any(ord(c) < 32 for c in value):
                 raise ValueError(f'{name} must be a non-empty string')
@@ -92,7 +94,7 @@ class AuthorizedRuntimeLifecycleBridge:
             engine={'provider': facts.provider, 'model': facts.model,
                     'effort': facts.effort, 'resume_id': facts.resume_id,
                     'settings': dict(facts.provenance)},
-            user_message={'text': facts.task}, request_id=f'{facts.mc_session_id}:request',
+            user_message={'text': facts.task}, request_id=f'{facts.dispatch_id}:request',
             provenance=dict(facts.provenance), launch_facts=self.launch_facts,
             incognito=facts.incognito)
         if self.prepared is None and not facts.incognito:

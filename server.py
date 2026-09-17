@@ -1569,6 +1569,14 @@ except Exception as _distiller_reg_err:
 # the path/Popen consts that stay in server.py. The reaper-family writers
 # (_proc_identity/_persist_pid_ledger) now live in mc/process_ledger.py (mop-up);
 # the two slots below source them from there (process_ledger.*, imported above).
+from mc.runtime_lifecycle_service import RuntimeLifecycleService
+_runtime_lifecycle_service = RuntimeLifecycleService(
+    db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
+    enabled=False,
+    owner_id=f'server:{os.getpid()}',
+    authorize=lambda facts: None,
+    source_format=lambda facts: '',
+)
 _bp_agent.wire(
     data_dir=DATA_DIR,
     uploads_dir=UPLOADS_DIR,
@@ -1601,6 +1609,7 @@ _bp_agent.wire(
     extract_transcript_telemetry_fn=memory._extract_transcript_telemetry,
     proc_identity_fn=process_ledger._proc_identity,
     persist_pid_ledger_fn=process_ledger._persist_pid_ledger,
+    runtime_lifecycle_service=_runtime_lifecycle_service,
 )
 app.register_blueprint(_bp_agent.bp)
 # Inbound shims — stayer call sites keep their bare names: the reaper
@@ -2100,6 +2109,7 @@ atexit.register(_cleanup_persistent_agents)
 # state while process cleanup has begun. stop_delegation_delivery performs a
 # bounded join; a timed-out in-flight handoff remains owned and fenced.
 atexit.register(_stop_delegation_delivery_at_shutdown)
+atexit.register(_runtime_lifecycle_service.stop)
 atexit.register(_cleanup_terminals)
 atexit.register(_cleanup_browsers)
 atexit.register(_scheduler_stop.set)

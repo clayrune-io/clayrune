@@ -21,6 +21,12 @@
   exact resume/model/effort intent for restart reconstruction, and refuses to
   infer terminal success before native binding or from ambiguous exit evidence.
 
+- Compose one startup-owned, default-disabled runtime lifecycle service at the
+  server-to-agent blueprint boundary. Its database is a sibling of
+  `data/projects`, disabled mode performs no I/O, per-dispatch identities keep
+  repeated/resumed turns distinct, native source format and launch authority
+  must be explicitly injected, and shutdown closes new lifecycle admission.
+
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
   replay and revocation fences. Reject unsupported decoders before durable

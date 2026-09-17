@@ -65,16 +65,16 @@ def test_dispatch_without_bridge_uses_global_callbacks(env):
 
 
 def test_dispatch_facts_are_exact_and_recursive_immutable():
-    facts = DispatchFacts('p', 'C:/work', 'mc1', 'codex', '', '', 'resume', 'task', False,
+    facts = DispatchFacts('p', 'C:/work', 'mc1', 'codex', '', '', 'resume', 'task', False, 'turn1',
                            {'nested': {'model': ''}})
     assert facts.model == '' and facts.effort == '' and facts.resume_id == 'resume'
     assert isinstance(facts.provenance, MappingProxyType)
     with pytest.raises(TypeError):
         facts.provenance['nested']['model'] = 'x'
     with pytest.raises(ValueError):
-        DispatchFacts('', 'x', 'mc', 'codex', 'm', None, '', 't', False)
+        DispatchFacts('', 'x', 'mc', 'codex', 'm', None, '', 't', False, 'turn1')
     with pytest.raises(ValueError):
-        DispatchFacts('p', 'x', 'mc', 'codex', 'm', None, '', 't', 1)
+        DispatchFacts('p', 'x', 'mc', 'codex', 'm', None, '', 't', 1, 'turn1')
 
 
 def test_bridge_order_and_exact_facts(env):
