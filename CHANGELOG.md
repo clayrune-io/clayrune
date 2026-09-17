@@ -19,6 +19,12 @@
   durable, replay is restart/idempotence fenced, and assistant text alone never
   implies completion. The decoder remains offline and is not production-wired.
 
+- Add an explicit, default-unwired Codex rollout adapter requiring an authorized
+  lifecycle token, exact engine/privacy provenance, matching native metadata,
+  project path, CLI profile, source identity and incarnation. Metadata validation
+  and replay now share one open binary descriptor, preventing path replacement
+  between authorization and capture while retaining partial-tail recovery.
+
 - Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
   migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
   fixture controller rebuilds decoder state from verified source prefixes;

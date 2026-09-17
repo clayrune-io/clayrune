@@ -451,6 +451,12 @@ custom raw input, opaque output, native call identity, explicit task completion,
 mid-tool restart and sealed-source refusal are covered offline. It is not wired
 to the production rollout locator, UI, Scribe, or provider activation.
 
+Codex rollout adapter increment: an explicit owner-supplied boundary validates
+the lifecycle token, full requested engine, privacy generation, native IDs,
+project cwd, numeric 0.153.x profile, source identity and incarnation before
+binding. Authorization and replay use one caller-owned descriptor. The adapter
+is still uncalled by production and neither certifies nor activates native capture.
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and

@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import hashlib
 from pathlib import Path
-from typing import Callable, TypeVar
+from typing import BinaryIO, Callable, TypeVar
 
 from mc.capture_ingress import CaptureDecoder
 from mc.conversation_store import ConversationStore, SourceCursor
@@ -22,7 +22,8 @@ def replay_file_prefix(*, path: Path | None, store: ConversationStore | None,
                        format_version: str, source_id: str, incarnation: str,
                        decoder_factory: Callable[[], DecoderT],
                        incognito: bool = False, seal: bool = False,
-                       exit_status: int | None = None) -> SourceCursor | None:
+                       exit_status: int | None = None,
+                       source: BinaryIO | None = None) -> SourceCursor | None:
     """Rebuild decoder state and commit the next complete source spans.
 
     The caller supplies a fixture/native source whose format is already bound
@@ -37,10 +38,36 @@ def replay_file_prefix(*, path: Path | None, store: ConversationStore | None,
         return None
     if type(seal) is not bool:
         raise ValueError('seal must be boolean')
-    if path is None or store is None:
-        raise ValueError('path and store are required for non-incognito replay')
-    if not path.is_file():
-        raise SourceRecoveryError('durable source is missing')
+    if store is None or (path is None) == (source is None):
+        raise ValueError('exactly one path or binary source and a store are required')
+    if source is None:
+        assert path is not None
+        if not path.is_file():
+            raise SourceRecoveryError('durable source is missing')
+        with path.open('rb') as opened:
+            return _replay_stream(source=opened, store=store, token=token,
+                provider=provider, format_version=format_version, source_id=source_id,
+                incarnation=incarnation, decoder_factory=decoder_factory, seal=seal,
+                exit_status=exit_status)
+    return _replay_stream(source=source, store=store, token=token, provider=provider,
+        format_version=format_version, source_id=source_id, incarnation=incarnation,
+        decoder_factory=decoder_factory, seal=seal, exit_status=exit_status)
+
+
+def _replay_stream(*, source: BinaryIO, store: ConversationStore, token: AttemptToken,
+                   provider: str, format_version: str, source_id: str,
+                   incarnation: str, decoder_factory: Callable[[], DecoderT],
+                   seal: bool, exit_status: int | None) -> SourceCursor | None:
+    """Replay a caller-owned, seekable binary stream without closing it."""
+    try:
+        if not source.seekable():
+            raise SourceRecoveryError('replay source must be seekable')
+        source.seek(0)
+        if not isinstance(source.readline(), bytes):
+            raise SourceRecoveryError('replay source must be binary')
+        source.seek(0)
+    except (AttributeError, OSError, TypeError) as exc:
+        raise SourceRecoveryError('replay source must be seekable binary') from exc
     decoder = decoder_factory()
     # Validate the explicitly selected format before mutating durable source
     # metadata. Unsupported profiles must fail closed without even a binding
@@ -49,35 +76,36 @@ def replay_file_prefix(*, path: Path | None, store: ConversationStore | None,
         format_version=format_version, source_id=source_id, incarnation=incarnation)
     count = 0
     saw_partial = False
-    with path.open('rb') as source:
-        for raw in iter(source.readline, b''):
-            if not raw.endswith(b'\n'):
-                saw_partial = True
-                break
+    for raw in iter(source.readline, b''):
+        if not isinstance(raw, bytes):
+            raise SourceRecoveryError('replay source must be binary')
+        if not raw.endswith(b'\n'):
+            saw_partial = True
+            break
+        raw = raw[:-1]
+        if raw.endswith(b'\r'):
             raw = raw[:-1]
-            if raw.endswith(b'\r'):
-                raw = raw[:-1]
-            frame = raw.decode('utf-8', errors='strict')
-            sequence = count
-            count += 1
-            digest = hashlib.sha256(frame.encode('utf-8')).hexdigest()
-            prior = store.read_capture_span(token, source_sequence=sequence)
-            if sequence <= cursor.cursor_sequence:
-                if prior is None or prior[0] != digest or prior[1] != frame or not prior[2]:
-                    raise SourceRecoveryError('committed source prefix changed or is incomplete')
-                decoder.feed(source_reference=f'{source_id}/{incarnation}/{sequence}',
-                             sequence=sequence, frame_json=frame)
-                continue
-            if sequence != cursor.cursor_sequence + 1:
-                raise SourceRecoveryError('source cursor cannot skip a span')
-            store.stage_capture_span(token, source_sequence=sequence,
-                                     frame_json=frame, frame_digest=digest)
-            events = decoder.feed(source_reference=f'{source_id}/{incarnation}/{sequence}',
-                                  sequence=sequence, frame_json=frame)
-            cursor = store.commit_capture_span(token, source_sequence=sequence,
-                                               frame_digest=digest,
-                                               events=[(f'{e.source_reference}:{e.event_index}', e.kind, e.payload)
-                                                       for e in events])
+        frame = raw.decode('utf-8', errors='strict')
+        sequence = count
+        count += 1
+        digest = hashlib.sha256(frame.encode('utf-8')).hexdigest()
+        prior = store.read_capture_span(token, source_sequence=sequence)
+        if sequence <= cursor.cursor_sequence:
+            if prior is None or prior[0] != digest or prior[1] != frame or not prior[2]:
+                raise SourceRecoveryError('committed source prefix changed or is incomplete')
+            decoder.feed(source_reference=f'{source_id}/{incarnation}/{sequence}',
+                         sequence=sequence, frame_json=frame)
+            continue
+        if sequence != cursor.cursor_sequence + 1:
+            raise SourceRecoveryError('source cursor cannot skip a span')
+        store.stage_capture_span(token, source_sequence=sequence,
+                                 frame_json=frame, frame_digest=digest)
+        events = decoder.feed(source_reference=f'{source_id}/{incarnation}/{sequence}',
+                              sequence=sequence, frame_json=frame)
+        cursor = store.commit_capture_span(token, source_sequence=sequence,
+                                           frame_digest=digest,
+                                           events=[(f'{e.source_reference}:{e.event_index}', e.kind, e.payload)
+                                                   for e in events])
     if saw_partial:
         raise SourceRecoveryError('source has an incomplete trailing frame')
     if cursor.cursor_sequence >= count:
