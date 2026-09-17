@@ -80,6 +80,7 @@ def env(tmp_path, monkeypatch):
     import server  # noqa: F401  (registers the blueprint)
     from mc import state as mc_state
     from mc.blueprints import agent_routes as ar
+    from mc.delegation_delivery import DeliveryStore
     from mc.blueprints import local_auth as la
 
     monkeypatch.setattr(la, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
@@ -87,6 +88,7 @@ def env(tmp_path, monkeypatch):
     project_path.mkdir()
     project = {'id': 'p1', 'project_path': str(project_path), 'provider': 'claude'}
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_pid_is_alive', lambda pid: True)

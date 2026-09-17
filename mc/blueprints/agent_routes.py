@@ -65,7 +65,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, Optional
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Flask, Response, jsonify, request
 
 from mc import media as _media
 from mc import obs, state
@@ -99,6 +99,10 @@ import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
+from mc.delegation_delivery import (DeliveryStore, callback_payload,
+                                    DeliveryBlocked, DeliveryDeferred,
+                                    DeliveryUncertain, drain_once,
+                                    event_id_for_turn)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -152,6 +156,10 @@ _extract_transcript_telemetry: Callable[..., dict] = None  # type: ignore[assign
 # PID-ledger internals — the reaper family stays in server.py:
 _proc_identity: Callable[..., tuple] = None  # type: ignore[assignment]
 _persist_pid_ledger: Callable[[], None] = None  # type: ignore[assignment]
+_delivery_store: Optional[DeliveryStore] = None
+_delivery_path: Optional[Path] = None
+_delivery_started = False
+_delegation_app: Optional[Flask] = None
 
 
 def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
@@ -208,6 +216,13 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     _extract_transcript_telemetry = extract_transcript_telemetry_fn
     _proc_identity = proc_identity_fn
     _persist_pid_ledger = persist_pid_ledger_fn
+    global _delivery_store, _delivery_path, _delivery_started, _delegation_app
+    # Sibling of data/projects: project JSON loading must never see delivery
+    # state. SQLite WAL also survives sender/receiver process restarts.
+    _delivery_path = Path(data_dir).parent / 'delegation_delivery.sqlite3'
+    _delivery_store = None
+    _delivery_started = False
+    _delegation_app = Flask('mc-delegation-delivery')
     # Moved module-level side effect (see the tombstone in the provider-env
     # section below): hydrate persisted provider env vars into os.environ now
     # that PROVIDER_ENV_PATH is bound. Runs during server.py module exec,
@@ -4644,6 +4659,13 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         return None
     revive_model = _continuation_model(entry, p)
     revive_effort = _continuation_effort(entry)
+    revive_parent = (entry.get('spawned_by_session_id') or '').strip()
+    if revive_parent:
+        if _delivery_store is None:
+            raise RuntimeError('durable delegation store unavailable for revive')
+        revive_turn = _delivery_store.allocate_turn(session_id)
+    else:
+        revive_turn = int(entry.get('delegation_turn', 1))
 
     # Carry the completion callback across the revive. A revive builds a
     # brand-new session dict from scratch (below), so without this a session
@@ -4818,6 +4840,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             # straight off this dict.
             'incognito': _revive_incognito,
             'source': _revive_source,
+            'trigger_type': entry.get('trigger_type', 'manual'),
+            'trigger_id': entry.get('trigger_id', ''),
             'provider': entry.get('provider') or 'claude',
             'model': revive_model,
             'agent_model': revive_model,
@@ -4828,6 +4852,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             # this function — carries the completion callback across the
             # revive instead of silently dropping it.
             '_notify_session': _revive_notify_session,
+            '_delegation_turn': revive_turn,
             '_notify_workflow': _revive_notify_workflow,
         }
         with mgr.lock:
@@ -4901,6 +4926,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'character': _revive_character,   # same reason as Mode B above
         'incognito': _revive_incognito,
         'source': _revive_source,
+        'trigger_type': entry.get('trigger_type', 'manual'),
+        'trigger_id': entry.get('trigger_id', ''),
         'provider': entry.get('provider') or 'claude',
         'model': revive_model,
         'agent_model': revive_model,
@@ -4908,6 +4935,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'requested_effort': revive_effort,
         'model_auto_requested': bool(entry.get('model_auto_requested')),
         '_notify_session': _revive_notify_session,   # see top-of-function comment
+        '_delegation_turn': revive_turn,
         '_notify_workflow': _revive_notify_workflow,
     }
     with mgr.lock:
@@ -5015,6 +5043,79 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     return session_id
 
 
+def _revive_parent_for_delegation(project_id, session_id, message, p):
+    """Revive a missing parent only from exact saved native identity.
+
+    Claude uses the existing transcript-aware revival primitive; Codex/Qwen use
+    their provider runtime's native resume path. Neither branch fresh-dispatches.
+    """
+    try:
+        entries = [e for e in _load_agent_log(project_id)
+                   if e.get('session_id') == session_id]
+    except Exception as exc:
+        raise DeliveryBlocked(f'parent durable identity unavailable: {exc}')
+    if not entries:
+        raise DeliveryBlocked('parent has no durable identity record')
+    entry = sorted(entries, key=lambda e: e.get('ts', ''))[-1]
+    status = (entry.get('status') or '').lower()
+    if status in ('interrupted', 'error', 'stopped', 'running', 'in_progress'):
+        raise DeliveryUncertain(f'parent durable outcome is ambiguous: {status}')
+    if status not in ('completed', 'idle'):
+        raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
+    if entry.get('incognito'):
+        raise DeliveryBlocked('private parent cannot receive delegated completion')
+    provider = (entry.get('provider') or 'claude').strip().lower()
+    native_id = (entry.get('claude_session_id') or '').strip() if provider == 'claude' else (entry.get('provider_session_id') or '').strip()
+    if provider == 'claude':
+        if not native_id:
+            raise DeliveryBlocked('Claude parent has no saved native session identity')
+    elif provider not in _COLD_RESUMABLE_PROVIDERS or not native_id:
+        raise DeliveryBlocked('parent has no supported native resume identity')
+    # Requested identity wins; observed telemetry is diagnostic only. An
+    # explicitly present empty agent_model means native default and must remain
+    # empty rather than selecting telemetry or the current project default.
+    if 'agent_model' in entry:
+        model = entry.get('agent_model') or ''
+    else:
+        model = _requested_model_snapshot(entry)
+    model = model.strip()
+    if not model and 'agent_model' not in entry:
+        raise DeliveryBlocked('parent model identity is missing')
+    quota_block = _model_quota_blocked(provider, model)
+    if quota_block:
+        raise DeliveryBlocked(quota_block)
+    ch = entry.get('character') or {}
+    scope = (ch.get('scope') or 'global').strip().lower()
+    name = (ch.get('name') or '').strip()
+    character = f'{scope}:{name}' if scope in ('global', 'project') and name else ''
+    try:
+        if provider == 'claude':
+            revived = _revive_from_agent_log(project_id, session_id, message, p)
+            if not revived:
+                raise DeliveryBlocked('Claude parent could not be safely revived')
+        else:
+            _dispatch_agent_internal(project_id, message, resume_id=native_id,
+                                     incognito=False,
+                                     reuse_session_id=session_id,
+                                     provider_override=provider,
+                                     effort_override=_continuation_effort(entry),
+                                 model_override=model, character=character,
+                                 preserve_model=True,
+                                     source=entry.get('source') or '',
+                                     trigger_type=entry.get('trigger_type') or 'manual',
+                                     trigger_id=entry.get('trigger_id') or '',
+                                     notify_session=entry.get('spawned_by_session_id') or '',
+                                     notify_workflow=({'run_id': entry['trigger_id'].split(':', 1)[0],
+                                                       'step': entry['trigger_id'].split(':', 1)[1]}
+                                                      if entry.get('trigger_type') == 'workflow'
+                                                      and ':' in (entry.get('trigger_id') or '') else None))
+    except Exception as exc:
+        raise DeliveryUncertain(f'parent revival outcome unknown: {exc}')
+    return {'revived': True, 'parent_session_id': session_id,
+            'provider': provider, 'model': model,
+            'effort': _continuation_effort(entry), 'native_id': native_id}
+
+
 def _accumulate_session_usage(session, turn_usage):
     """Merge a single turn's usage dict into the running session total.
 
@@ -5082,7 +5183,7 @@ def _note_claude_sid(session, sid):
     except Exception as ex:
         _log(f"[csid-backfill] {pid}: {ex}")
 
-def _log_agent_dispatch_pending(session, *, identity_only=False):
+def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -5117,6 +5218,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False):
         'model_auto_requested': bool(session.get('model_auto_requested')),
         'summary': '',
         'session_id': sid,
+        'delegation_turn': int(session.get('_delegation_turn', 1)),
         'claude_session_id': session.get('claude_session_id') or '',
         'provider_session_id': session.get('provider_session_id') or '',
         'started_at': session.get('started_at', ''),
@@ -5167,6 +5269,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False):
         _update_agent_log(project_id, upsert)
     except Exception as e:
         _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
+        if strict:
+            raise
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -5182,6 +5286,17 @@ def _last_reply_text(session):
             continue
         return t
     return ''
+
+
+def _allocate_delegation_turn(session):
+    """Reserve a child turn durably before any provider execution."""
+    if session.get('incognito') or not (session.get('_notify_session') or '').strip():
+        return int(session.get('_delegation_turn', 1))
+    if _delivery_store is None:
+        raise RuntimeError('durable delegation store unavailable')
+    turn = _delivery_store.allocate_turn(session.get('session_id', ''))
+    session['_delegation_turn'] = turn
+    return turn
 
 
 def _maybe_notify_spawner(session, summary):
@@ -5223,8 +5338,10 @@ def _maybe_notify_spawner(session, summary):
     wf_wait = session.get('_notify_workflow') or None
     has_workflow = bool(wf_wait) and bool(wf_wait.get('run_id'))
     if has_spawner and not session.get('_notify_session_sent'):
-        session['_notify_session_sent'] = True
-        _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary)
+        # The durable enqueue is the latch. Do not mark sent before it commits:
+        # a crash in that window used to lose the only notification forever.
+        if _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary) is not False:
+            session['_notify_session_sent'] = True
     if has_workflow and not session.get('_notify_workflow_sent'):
         session['_notify_workflow_sent'] = True
         _notify_workflow_step(wf_wait, session, summary)
@@ -5246,6 +5363,10 @@ def _rearm_notify_for_new_turn(session):
     permanent.
     """
     session.pop('_notify_session_sent', None)
+    _allocate_delegation_turn(session)
+    # Turn identity must be durable before provider execution begins; a cold
+    # revive can then reconstruct the same child/session turn without collision.
+    _log_agent_dispatch_pending(session, strict=True)
 
 
 def _notify_workflow_step(wf_wait, session, summary):
@@ -5280,41 +5401,136 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
     Thread + localhost HTTP on purpose -- see the call site in
     _log_agent_completion for why we do not call the handler inline.
     """
-    def _send():
+    event_id = event_id_for_turn(
+        child.get('session_id', ''), child.get('_delegation_turn', 1))
+    payload = callback_payload(child, summary, event_id)
+    if _delivery_store is not None:
         try:
-            import urllib.request
-            # `character` is a DICT on a live session (name/scope/engine/
-            # avatar), not a string -- printing it raw dumped the whole record
-            # into the spawner's chat where a name belonged. Observed
-            # 2026-09-09 on the first real callback.
-            _char = child.get('character')
-            if isinstance(_char, dict):
-                who = (_char.get('agent_name') or _char.get('display_name')
-                       or _char.get('name') or 'agent')
-            else:
-                who = _char or child.get('provider') or 'agent'
-            status = child.get('status', 'unknown')
-            body = json.dumps({
-                'message': (
-                    f"[dispatched agent finished] {who} "
-                    f"(session {child.get('session_id', '')[:12]}) ended with "
-                    f"status={status}.\n\n"
-                    f"Task: {child.get('task', '')[:400]}\n\n"
-                    f"Its final message:\n{(summary or '')[:1500]}\n\n"
-                    "This is the callback you asked for at dispatch. Continue "
-                    "the work it was part of -- do not re-dispatch it."
-                ),
-                'session_id': notify_sid,
-            }).encode()
-            req = urllib.request.Request(
-                f'http://127.0.0.1:{PORT}/api/project/{project_id}/agent/send',
-                data=body, headers={'Content-Type': 'application/json'})
-            urllib.request.urlopen(req, timeout=30).read()
-            _log(f"[notify-spawner] delivered {child.get('session_id','')[:12]} -> {notify_sid[:12]}")
-        except Exception as e:
-            _log(f"[notify-spawner] delivery to {notify_sid[:12]} failed: {e}")
+            # Exact completion source is committed independently first, so a
+            # disk/SQLite fault during enqueue cannot be masked by the next
+            # turn overwriting the agent-log projection.
+            _delivery_store.record_completion_source(
+                event_id, project_id, notify_sid, payload)
+            return _delivery_store.enqueue(event_id, project_id, notify_sid, payload)
+        except Exception as exc:
+            # Completion logging must still commit its source-of-record row;
+            # startup recovery can rebuild this outbox event from that row.
+            _log(f'[delegation-delivery] enqueue failed for {event_id}: {exc}')
+            return False
 
-    threading.Thread(target=_send, daemon=True).start()
+    _log('[delegation-delivery] store not initialized; completion remains '
+         'eligible for retry at the next completion boundary')
+    return False
+
+
+def _deliver_outbox(row):
+    """Transport only: receiver acceptance, not parent processing."""
+    import urllib.request
+    raw = json.loads(row['payload'])
+    payload = raw['payload']
+    body = json.dumps({'event_id': row['event_id'],
+                       'parent_session_id': row['parent_session_id'],
+                       'payload': payload}).encode('utf-8')
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/api/project/{row['project_id']}/agent/delegation/inbox",
+        data=body, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f'receiver returned HTTP {response.status}')
+
+
+def _process_inbox(row):
+    """Ask the ordinary send route to process an accepted receipt.
+
+    Failure leaves the inbox pending. It can therefore be quota-blocked or
+    parent-unavailable without causing a child relaunch or losing its result.
+    """
+    import urllib.request
+    raw = json.loads(row['payload'])
+    payload = raw['payload']
+    token = row.get('fence_token') or ''
+    if not _delivery_store or not token or not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+        raise DeliveryUncertain('inbox claim expired or was fenced before action')
+    # Revalidate before and after waiting for the manager lock. The second
+    # fenced check closes the expired-lease/stale-sender window.
+    manager = get_manager(row['project_id'])
+    with manager.lock:
+        if not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+            raise DeliveryUncertain('inbox claim expired while waiting for parent lock')
+        parent = agent_sessions.get(row['parent_session_id'])
+        if parent is None:
+            return _revive_parent_for_delegation(
+                row['project_id'], row['parent_session_id'], payload['message'],
+                {})
+        if parent.get('project_id') != row['project_id'] or parent.get('incognito'):
+            raise DeliveryBlocked('parent identity/privacy state changed; explicit recovery required')
+        if parent.get('status') == 'running':
+            raise DeliveryDeferred('parent is busy; completion remains pending')
+        if parent.get('status') not in ('idle', 'completed'):
+            raise DeliveryBlocked(f"parent status {parent.get('status', 'unknown')} cannot accept a delegated completion")
+        # Preserve the parent's existing provider/model/effort by addressing its
+        # live session. Never call the fresh-dispatch branch and never substitute a
+        # provider when the parent is unavailable.
+        quota_block = _model_quota_blocked(
+            parent.get('provider', 'claude'),
+            parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or '')
+        if quota_block:
+            raise DeliveryBlocked(quota_block)
+        if _delegation_app is None:
+            raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
+        with _delegation_app.test_request_context(
+                json={'message': payload['message'],
+                      'session_id': row['parent_session_id']}):
+            try:
+                response = _delegation_app.make_response(
+                    agent_followup(row['project_id']))
+            except Exception as exc:
+                # The provider call may have happened before the exception was
+                # observed; it is never safe to replay this action implicitly.
+                raise DeliveryUncertain(f'guarded parent submission outcome unknown: {exc}')
+            status_code = getattr(response, 'status_code', 200)
+            if status_code >= 500:
+                raise DeliveryUncertain(f'guarded parent submission returned HTTP {status_code}')
+            if status_code >= 400:
+                raise DeliveryBlocked(f'guarded parent submission rejected HTTP {status_code}')
+            body = response.get_json(silent=True) or {}
+            if body.get('session_id') != row['parent_session_id']:
+                raise DeliveryUncertain('parent submission switched session identity')
+            if body.get('queued'):
+                raise DeliveryUncertain('parent submission entered an in-memory queue')
+            return {'http_status': status_code, 'parent_session_id': row['parent_session_id'],
+                    'provider': parent.get('provider', 'claude'),
+                    'model': parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or ''}
+
+
+def start_delegation_delivery(interval_s: float = 5.0):
+    """Start restart reconciliation and bounded retry loop once per server."""
+    global _delivery_started
+    global _delivery_store
+    if _delivery_started or _delivery_path is None:
+        return
+    _delivery_store = DeliveryStore(_delivery_path)
+    _delivery_store.reconcile()
+    # The agent log is the completion source of record if the process crashed
+    # after completion but before the SQLite enqueue committed.
+    for log_file in Path(DATA_DIR).glob('*_agent_log.json'):
+        try:
+            project_id = log_file.name[:-len('_agent_log.json')]
+            rows = json.loads(log_file.read_text(encoding='utf-8'))
+            if isinstance(rows, list):
+                _delivery_store.recover_outbox(rows, project_id)
+        except Exception as exc:
+            _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
+    _delivery_started = True
+    def _loop():
+        while True:
+            try:
+                drain_once(_delivery_store, send_outbox=_deliver_outbox,
+                           process_inbox=_process_inbox)
+            except Exception as exc:
+                _log(f'[delegation-delivery] drain failed: {exc}')
+            _time.sleep(max(1.0, interval_s))
+    threading.Thread(target=_loop, name='delegation-delivery', daemon=True).start()
 
 
 def _log_agent_completion(session):
@@ -5459,6 +5675,16 @@ def _log_agent_completion_body(session):
         # rollout that transcript_path() can now locate has no id to locate it
         # BY once the in-memory session is gone (docs/research/CODEX_PARITY_AUDIT.md §0).
         'provider_session_id': session.get('provider_session_id', ''),
+        'delegation_turn': int(session.get('_delegation_turn', 1)),
+        # Exact, untruncated recovery source. Legacy `summary` remains the UI
+        # preview; recovery refuses rows without this field.
+        'delegation_completion': (
+            callback_payload(session, summary, event_id_for_turn(
+                session.get('session_id', ''), int(session.get('_delegation_turn', 1))))
+            if (session.get('_notify_session') or '').strip()
+            and (session.get('_notify_session') or '').strip() != session.get('session_id', '')
+            else None
+        ),
         'started_at': session.get('started_at', ''),
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),
@@ -6099,6 +6325,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # Completion callbacks -- see the docstring. Same keys as the
             # claude session dicts in _dispatch_agent_internal.
             '_notify_session': notify_session,
+            '_delegation_turn': 1,
             '_notify_workflow': notify_workflow,
         }
         if session['requested_effort']:
@@ -6114,7 +6341,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
 
-    _log_agent_dispatch_pending(session)
+    _allocate_delegation_turn(session)
+    _log_agent_dispatch_pending(session, strict=bool((session.get('_notify_session') or '').strip()))
 
     # Build system_prompt blob (MEMORY/AGENT_RULES). `incognito=True` is
     # passed THROUGH to _build_agent_context, not used to skip the call
@@ -6403,6 +6631,8 @@ def _continuation_model(session, project=None):
     """
     if session.get('model_auto_requested'):
         return _resolve_dispatch_model(project, '')[0]
+    if 'agent_model' in session:
+        return session.get('pinned_model') or session.get('agent_model') or ''
     return session.get('pinned_model') or _requested_model_snapshot(session)
 
 
@@ -6570,7 +6800,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
                              model_override='', strict_character=False, effort_override=None,
-                             notify_session='', notify_workflow=None):
+                             notify_session='', notify_workflow=None,
+                             preserve_model=False):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -6670,7 +6901,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # without changing the project's saved default for other conversations.
     p = dict(p, provider=provider_name)
     _resume_auto_requested = False
-    if resume_id and not model_override:
+    if resume_id and not model_override and not preserve_model:
         _resume_settings = _prior_conversation_settings(project_id, resume_id, provider_name)
         _resume_auto_requested = bool(_resume_settings.get('model_auto_requested'))
         if _resume_auto_requested and provider_name == 'claude':
@@ -6906,6 +7137,28 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             raise ValueError(f"conversation {resume_id[:12]} is already running "
                              f"in another session")
 
+        # Durable identity must exist before the provider process starts.
+        _delegation_turn_reserved = (
+            _delivery_store.allocate_turn(session_id)
+            if (notify_session and not incognito) else 1)
+
+        # The dispatch record is durable before Popen. If Popen or the reader
+        # setup fails, reconciliation can see an in-progress launch and retain
+        # the unknown outcome instead of leaving an untracked child process.
+        if notify_session and not incognito:
+            _log_agent_dispatch_pending({
+                'project_id': project_id, 'session_id': session_id,
+                'task': task, 'provider': provider_name,
+                'model': routed_model, 'agent_model': routed_model,
+                'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
+                'incognito': False, 'source': source or '',
+                'trigger_type': trigger_type, 'trigger_id': trigger_id,
+                'character': character_meta,
+                '_notify_session': notify_session,
+                '_delegation_turn': _delegation_turn_reserved,
+            }, strict=True)
+
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
             if resume_id:
@@ -6966,6 +7219,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # session id here lets _log_agent_completion deliver the
                 # result into that chat.
                 '_notify_session': notify_session,
+                '_delegation_turn': _delegation_turn_reserved,
                 # Workflow step callback (MC-871 Phase 1) -- see notify_session
                 # above for the sibling mechanism this generalises.
                 '_notify_workflow': notify_workflow,
@@ -7081,6 +7335,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
                 '_notify_session': notify_session,  # MC-946, see Mode B note
+                '_delegation_turn': _delegation_turn_reserved,
                 '_notify_workflow': notify_workflow,  # MC-871 Phase 1, see Mode B note
                 'mode': 'A',
                 'last_output_time': _time.time(),
@@ -7489,6 +7744,62 @@ def agent_send(project_id):
     except Exception:
         pass
     return resp
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/inbox', methods=['POST'])
+def delegation_inbox(project_id):
+    """Durably accept a child completion before parent processing.
+
+    HTTP 202 means only that the immutable event is on disk. A parent that is
+    busy, missing, stopped, or quota-blocked leaves the inbox pending for the
+    reconciler; no child is ever relaunched from this path.
+    """
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    data = request.get_json(silent=True) or {}
+    event_id = (data.get('event_id') or '').strip()
+    parent_sid = (data.get('parent_session_id') or '').strip()
+    payload = data.get('payload')
+    if not event_id or not parent_sid or not isinstance(payload, dict):
+        return jsonify({'error': 'event_id, parent_session_id and payload required'}), 400
+    try:
+        created = _delivery_store.accept(event_id, project_id, parent_sid, payload)
+    except (TypeError, ValueError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'ok': True, 'accepted': created, 'event_id': event_id}), 202
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/status')
+def delegation_status(project_id):
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    event_id = (request.args.get('event_id') or '').strip()
+    if not event_id:
+        return jsonify({'error': 'event_id required'}), 400
+    rows = {name: _delivery_store.status(name, event_id, project_id)
+            for name in ('outbox', 'inbox')}
+    if not any(rows.values()):
+        return jsonify({'error': 'event not found'}), 404
+    return jsonify({'event_id': event_id, **rows})
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/retry', methods=['POST'])
+def delegation_retry(project_id):
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    data = request.get_json(silent=True) or {}
+    event_id = (data.get('event_id') or '').strip()
+    table = (data.get('table') or 'inbox').strip()
+    if not event_id or table not in ('outbox', 'inbox'):
+        return jsonify({'error': 'event_id and table (outbox|inbox) required'}), 400
+    if _delivery_store.status(table, event_id, project_id) is None:
+        return jsonify({'error': 'event not found'}), 404
+    try:
+        _delivery_store.retry(table, event_id, project_id,
+                              reviewed=bool(data.get('reviewed_resolution')))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    return jsonify({'ok': True, 'event_id': event_id, 'table': table})
 
 
 @bp.route('/api/project/<project_id>/agent/stream')

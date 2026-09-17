@@ -357,6 +357,20 @@ cancellation and clean Windows/Linux/macOS validation are release gates.
 
 ## Remaining work
 
+### Delegation delivery increment
+
+Added durable completion sources/outbox/inbox, fenced retries, project-scoped
+status/recovery APIs and guarded saved-parent revival. Selected regression
+verification: **161 passed** including actual-dispatch fake-Codex integration
+and real Claude revival with a fake process. See
+`DELEGATION_DELIVERY_CONTRACT.md` for tested scope and remaining gates.
+
+This is feature-branch-only: live restart/provider validation, recovery-state UI,
+delivery-record retention/privacy policy and task-result acceptance are not
+certified by the offline test result. No production restart or merge occurred.
+
+### Broader provider-neutral work
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and

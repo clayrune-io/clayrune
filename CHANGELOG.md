@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17d] — Durable delegation delivery (feature branch)
+
+- Replace the best-effort completion sender with persisted per-turn sources,
+  outbox/inbox receipts, fenced claims and bounded retries.
+- Guard parent handoff and preserve saved conversation/model/effort and callback
+  lineage during supported cold revival; retain ambiguous outcomes for review.
+- Add project-scoped delivery status and explicit reviewed-retry endpoints.
+- Validate with 161 selected offline regressions, including SQLite-to-Flask-to-
+  fake-Codex recovery and real Claude revival with a fake process. Live restart
+  and provider validation remain release gates; no production activation.
+
 ## [2026-09-17c] — Native capture adapters and strict memory reads (feature branch)
 
 - Decode fixture-supported Codex/Claude/Qwen records before lossy UI formatting;

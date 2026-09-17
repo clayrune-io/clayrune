@@ -202,7 +202,7 @@ def test_ordinary_session_has_no_spawner_field_set(monkeypatch, tmp_path):
     assert log[0]['spawned_by_session_id'] == ''
 
 
-def test_callback_names_the_agent_not_its_record(monkeypatch):
+def test_callback_names_the_agent_not_its_record(monkeypatch, tmp_path):
     """A live session's `character` is a dict, not a string.
 
     The first real callback (2026-09-09) opened with the entire character
@@ -210,25 +210,8 @@ def test_callback_names_the_agent_not_its_record(monkeypatch):
     """
     captured = {}
 
-    class _FakeThread:
-        def __init__(self, target=None, **kw):
-            self._t = target
-
-        def start(self):
-            self._t()
-
-    class _Resp:
-        def read(self):
-            return b''
-
-    def _fake_urlopen(req, timeout=None):
-        captured['body'] = req.data.decode()
-        return _Resp()
-
-    import urllib.request as u
-    # The sender runs on a thread; run it inline so the assertion is not a race.
-    monkeypatch.setattr(ar.threading, 'Thread', _FakeThread)
-    monkeypatch.setattr(u, 'urlopen', _fake_urlopen)
+    from mc.delegation_delivery import DeliveryStore
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
 
     ar._notify_agent_spawner('p', 'parent', {
         'session_id': 'child',
@@ -236,5 +219,7 @@ def test_callback_names_the_agent_not_its_record(monkeypatch):
                       'engine': {'model': 'claude-sonnet-5'}},
         'status': 'completed', 'task': 't',
     }, '4')
-    assert 'Tobin' in captured.get('body', '')
-    assert 'claude-sonnet-5' not in captured.get('body', '')
+    row = ar._delivery_store.status('outbox', 'child:turn:1', 'p')
+    assert row is not None
+    assert 'Tobin' in row['payload']
+    assert 'claude-sonnet-5' not in row['payload']

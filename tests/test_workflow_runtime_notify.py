@@ -35,10 +35,12 @@ def env(tmp_path, monkeypatch):
     from mc import state as mc_state
     from mc import workflows as wf
     from mc.blueprints import agent_routes as ar
+    from mc.delegation_delivery import DeliveryStore
 
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
 
     # The project's default provider is the fake non-claude runtime -- the
     # incident resolved codex from the character's engine pin, which lands on

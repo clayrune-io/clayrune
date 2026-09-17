@@ -2967,6 +2967,10 @@ def boot(check_port=True):
     # they don't show as forever-running in the Agent Log / Runs panels.
     # Cheap, synchronous; runs before backfill so the two helpers don't race.
     _boot_phase('reconcile pending agent_log', _reconcile_pending_agent_log_entries)
+    # Durable child-completion outbox/inbox reconciliation. Starts after the
+    # agent-log sweep and never launches a child; stale work is only retried as
+    # delivery/parent processing with bounded leases.
+    _boot_phase('delegation delivery', _bp_agent.start_delegation_delivery)
     # Workflow run restart adoption (MC-871 spec §Q5, fail-closed): a run whose
     # current step was 'running' when the server went down is checked against
     # the agent_log just reconciled above; confirmed-complete children advance
