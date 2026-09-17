@@ -6,6 +6,24 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16l] — Preserve conversation engines and reject provider fallback
+
+- Centralize provider/model resolution for dispatch and Hivemind workers.
+  Unknown providers and explicit foreign model pairs stop before launch;
+  custom IDs and native Claude aliases remain supported. Existing unconfigured
+  installations retain the legacy default until the onboarding migration.
+- Deliver skill context using the conversation's effective provider without
+  changing the project's saved default.
+- Persist manual conversation records, native IDs and explicit model choices
+  for restart recovery. Resume uses the recorded provider/model, and different
+  versions of the same model family no longer count as an unchanged model.
+- This is the first hardening increment, not complete provider safety parity.
+  Safe Scribe/Claydo execution, deterministic in-app setup and full clean-machine
+  validation remain tracked in `docs/PROVIDER_HARDENING_PROGRESS.md`.
+- 564 offline regression tests pass; the new resolver passes Pyright. Log
+  transactions preserve parallel writes and late initialization cannot erase
+  a completed conversation's summary or usage.
+
 ## [2026-09-16k] — Fix Windows dashboard boot blocked by JavaScript MIME types
 
 - Successful built-in JavaScript, CSS, and WASM static responses now use

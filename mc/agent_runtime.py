@@ -915,11 +915,10 @@ def default_runtime_name() -> str:
 
 
 def runtime_for_project(project: Dict[str, Any]) -> AgentRuntime:
-    name = (project or {}).get('provider') or default_runtime_name()
-    if name not in _RUNTIMES:
-        # Unknown provider on a project record — fall back silently to claude.
-        name = default_runtime_name()
-    return _RUNTIMES[name]
+    from mc import engine_selection, state
+    name, _ = engine_selection.resolve_provider(
+        state.CONFIG, project, legacy_default='claude')
+    return get_runtime(name)
 
 
 def claude_installed() -> bool:
@@ -3905,9 +3904,13 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                             "outside its project folder, that needs an "
                             "allowance for this job, not a retry.")
             elif ev.type == EventType.INIT:
-                session.setdefault('provider_session_id',
-                                   ev.payload.get('session_id') or
-                                   ev.payload.get('thread_id'))
+                native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
+                if native_id:
+                    session['provider_session_id'] = native_id
+                native_model = ev.payload.get('model')
+                if isinstance(native_model, str) and native_model:
+                    session['model'] = native_model
+                    session['agent_model'] = native_model
                 _cb('on_init', ev)
             elif ev.type == EventType.TURN_END:
                 # Capture the token counters the turn reports. Without this a

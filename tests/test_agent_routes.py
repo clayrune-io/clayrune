@@ -364,13 +364,13 @@ def test_model_clear_unpins(client):
     assert mc_state.agent_sessions['mdl-2']['pinned_model'] == ''
 
 
-def test_model_pin_same_tier_not_pending(client):
-    # Pinning the tier already running is a no-op switch (no respawn needed).
+def test_model_pin_same_tier_different_version_is_pending(client):
+    # A tier alias and a pinned version are not the same explicit choice.
     _seed_model_session('mdl-3', model='opus')
     r = client.post('/api/project/mdl-proj/agent/mdl-3/model',
                     json={'model': 'claude-opus-4-8'})
     assert r.status_code == 200
-    assert r.get_json()['pending'] is False
+    assert r.get_json()['pending'] is True
 
 
 def test_model_pin_rejects_bad_id(client):
@@ -625,6 +625,11 @@ def test_dispatch_route_keeps_manual_trigger_type_for_explicit_ui_client(client,
 # logic itself is covered by tests/test_codex_unattended_sandbox.py).
 
 class _StubCodexRuntime:
+    name = 'codex'
+
+    def model_supported(self, model):
+        return False
+
     def __init__(self):
         self.dispatch_kwargs = None
 
@@ -728,6 +733,9 @@ class _StubMissingCLIRuntime:
     isn't installed — dispatch() raises exactly what those runtimes raise."""
     name = 'codex'
     display_name = 'Codex'
+
+    def model_supported(self, model):
+        return False
 
     def build_command(self, **kwargs):
         return ['codex', 'exec']

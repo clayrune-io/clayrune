@@ -937,25 +937,27 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     project_id = p.get('id', '')
     pp = p.get('project_path', '')
     worker_context = _hm_build_worker_context(hivemind_id, ws_id)
-    model = (ws.get('model', '') or
-             manifest.get('config', {}).get('worker_model', '') or
-             state.CONFIG.get('agent_model', ''))
+    from mc import engine_selection
+    engine = engine_selection.resolve_engine(
+        state.CONFIG, p, legacy_default='claude',
+        model_override=(ws.get('model') or
+                        manifest.get('config', {}).get('worker_model') or None))
+    model = engine.model
     task = (
         f"You are a Hivemind worker for workstream: {ws.get('title', ws_id)}.\n"
         f"Brief: {ws.get('description', '')}\n\n"
         f"Begin your analysis. Follow the two-phase protocol described in your system prompt."
     )
     session_id = f'hm_{uuid.uuid4().hex[:8]}'
-    provider_name = (p.get('provider') or state.CONFIG.get('default_provider') or 'claude').lower()
+    provider_name = engine.provider
 
     if provider_name != 'claude':
         # Non-claude: route through the runtime. Worker context prepended to
         # task since non-claude runtimes use context_injection='prepend'.
         try:
             rt = _agent_runtime.get_runtime(provider_name)
-        except KeyError:
-            _log(f"[hm-spawn] unknown provider {provider_name!r}, falling back to claude")
-            rt = None
+        except KeyError as exc:
+            raise ValueError(f"Unknown provider '{provider_name}'; no fallback attempted") from exc
 
         if rt is not None:
             task_with_ctx = f"{worker_context}\n\n---\n\n{task}"

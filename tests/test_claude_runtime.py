@@ -124,10 +124,10 @@ def test_runtime_for_project_defaults_to_claude():
     assert rt.name == 'claude'
 
 
-def test_runtime_for_project_unknown_falls_back():
+def test_runtime_for_project_unknown_does_not_fall_back():
     from mc import agent_runtime
-    rt = agent_runtime.runtime_for_project({'provider': 'nonexistent_provider_xyz'})
-    assert rt.name == 'claude'
+    with pytest.raises(ValueError, match='No fallback'):
+        agent_runtime.runtime_for_project({'provider': 'nonexistent_provider_xyz'})
 
 
 # ── resolve_binary() ── proves equivalence with _resolve_claude() ─────────────

@@ -169,6 +169,20 @@ The **Model** menu follows the selected provider: Codex offers its current Sol,
 Terra, Luna, and supported prior-generation models, while **Custom** accepts a
 newer model ID that Clayrune has not catalogued yet.
 
+**Conversation continuity:** changing the project/global default does not change
+a conversation's recorded provider or model on resume. A native conversation
+cannot be resumed through a different provider; start a new chat to switch
+vendors. The in-chat Claude model switch saves explicit choices, including
+clearing a pin, for server-restart recovery. Different versions within the same
+model family count as a model change. When an older/native conversation has no
+recorded model, Clayrune leaves selection to native resume rather than inventing
+one from today's project settings.
+
+Unknown providers and known mismatched provider/model pairs are rejected rather
+than silently retried through Claude. This also applies to Hivemind worker
+selection; the Hivemind coordinator and several background services still have
+Claude dependencies while provider-neutral hardening is in progress.
+
 **Windows installation login check:** the installer checks Claude's local
 authentication status without sending a model prompt. If the check takes more
 than 20 seconds or returns invalid output, installation stops with a diagnostic.

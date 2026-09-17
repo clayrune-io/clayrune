@@ -79,6 +79,13 @@ class FakeManager:
 
 class FakeRuntime:
     """agent_runtime stand-in for the non-claude routing branch."""
+    name = 'fakeprov'
+
+    def model_supported(self, model):
+        return True
+
+    def model_choices(self):
+        return []
     def __init__(self):
         self.dispatch_calls = []
 
@@ -163,6 +170,8 @@ def client(tmp_path, monkeypatch):
 
     # Fake provider registry for the non-claude branch.
     fake_rt = FakeRuntime()
+    from mc import agent_runtime
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'fakeprov', fake_rt)
 
     def _get_runtime(name):
         if name == 'fakeprov':
@@ -417,7 +426,7 @@ class TestSpawn:
     def test_claude_path_spawns_recorder_proc(self, client):
         hm_id = _create(client)['hivemind']['id']
         r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
-        assert r.status_code == 200
+        assert r.status_code == 200, r.get_json()
         sid = r.get_json()['session_id']
         assert sid.startswith('hm_')
 
@@ -469,6 +478,26 @@ class TestSpawn:
         assert '---' in kw['task']
         s = client.state.agent_sessions[sid]
         assert s['provider'] == 'fakeprov' and s['trigger_type'] == 'hivemind_worker'
+
+    def test_unknown_provider_never_spawns_claude(self, client):
+        client.projects['thm']['provider'] = 'missing-provider'
+        hm_id = _create(client)['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
+        assert r.status_code == 500
+        assert 'No fallback' in r.get_json()['error']
+        assert client.popen_calls == []
+        assert client.fake_rt.dispatch_calls == []
+        assert client.mgr.guardian_calls == 0
+
+    def test_foreign_explicit_model_never_spawns_worker(self, client):
+        client.projects['thm']['provider'] = 'codex'
+        hm_id = _create(client, worker_model='claude-opus-5')['hivemind']['id']
+        r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
+        assert r.status_code == 500
+        assert 'matching provider/model' in r.get_json()['error']
+        assert client.popen_calls == []
+        assert client.fake_rt.dispatch_calls == []
+        assert client.mgr.guardian_calls == 0
 
     def test_spawn_404s_and_400(self, client):
         hm_id = _create(client)['hivemind']['id']

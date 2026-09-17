@@ -311,12 +311,14 @@ def test_replaced_process_does_not_log_a_row(env):
     """Parity with the claude readers' `_session_owned_by` gate: a turn whose
     process was swapped out mid-flight is not logged by the dead reader."""
     sid, handle = _dispatch(env)
+    pending = _log_rows(env)
+    assert len(pending) == 1 and pending[0]['status'] == 'in_progress'
     dead = _FakeProc(['stale'], rc=0)
     # A newer process already owns the session.
     env['sessions'][sid]['proc'] = _FakeProc([], rc=0)
     agent_runtime_mod._mode_a_reader(dead, handle, env['runtime'])
 
-    assert _log_rows(env) == []
+    assert _log_rows(env) == pending  # stale reader must not complete/update it
 
 
 # ── the claude path must not be double-logged ────────────────────────────────
