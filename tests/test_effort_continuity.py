@@ -106,7 +106,7 @@ def test_non_claude_intent_is_visible_but_not_forwarded_as_supported(ar, monkeyp
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
     monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
     monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: 'requested-model')
-    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
     sid = ar._dispatch_via_runtime(_project(tmp_path), 'hello', provider_name='codex',
                                    effort_override='high')

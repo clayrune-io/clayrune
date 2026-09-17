@@ -8,6 +8,13 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add a default-inert, provider-neutral runtime lifecycle bridge around the
+  existing runtime dispatch boundary. Immutable dispatch facts preserve exact
+  provider/model/effort/resume intent; injected owners can fence launch and
+  observe native init/exit without replacing or mutating global callbacks.
+  Factory, launch, transcript-resolution, and callback failures fail closed or
+  remain observable without retrying a provider launch.
+
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
   replay and revocation fences. Reject unsupported decoders before durable

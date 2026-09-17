@@ -181,7 +181,7 @@ def test_runtime_dispatch_passes_resume_model_without_reselection(ar, monkeypatc
     monkeypatch.setattr(ar, 'get_manager', lambda _: manager)
     monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: 'new-default')
     monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **kw: '')
-    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a: None)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
     ar._dispatch_via_runtime(PROJECT, 'go', provider_name='codex',
                              resume_id=resume, model_override=override)

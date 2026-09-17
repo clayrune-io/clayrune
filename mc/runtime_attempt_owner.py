@@ -6,15 +6,64 @@ into session dictionaries, but must never use that projection for decisions.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 import json
+from pathlib import Path
 from types import MappingProxyType
-from typing import Any, Callable, Mapping
+from typing import Any, Callable, Mapping, Protocol, Optional
 from uuid import uuid4
 
 from mc import execution_lifecycle as lifecycle
 from mc.conversation_store import ConversationStore, ConversationUnavailable
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        if any(type(k) is not str for k in value):
+            raise ValueError('mapping keys must be strings')
+        return MappingProxyType({k: _freeze(v) for k, v in value.items()})
+    if isinstance(value, (list, tuple)):
+        return tuple(_freeze(v) for v in value)
+    return value
+
+
+@dataclass(frozen=True)
+class DispatchFacts:
+    """Immutable, caller-supplied facts at the generic runtime boundary."""
+    project_id: str
+    project_path: str
+    mc_session_id: str
+    provider: str
+    model: str
+    effort: Optional[str]
+    resume_id: str
+    task: str
+    incognito: bool
+    provenance: Mapping[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        for name in ('project_id', 'project_path', 'mc_session_id', 'provider'):
+            value = getattr(self, name)
+            if type(value) is not str or not value or any(ord(c) < 32 for c in value):
+                raise ValueError(f'{name} must be a non-empty string')
+        if type(self.model) is not str or type(self.resume_id) is not str or type(self.task) is not str:
+            raise ValueError('model, resume_id, and task must be strings')
+        if self.effort is not None and type(self.effort) is not str:
+            raise ValueError('effort must be a string or None')
+        if type(self.incognito) is not bool:
+            raise ValueError('incognito must be boolean')
+        if not isinstance(self.provenance, Mapping) or any(type(k) is not str for k in self.provenance):
+            raise ValueError('provenance keys must be strings')
+        object.__setattr__(self, 'provenance', _freeze(dict(self.provenance)))
+
+
+class RuntimeLifecycleBridge(Protocol):
+    """Optional authority seam; implementations own persistence and fences."""
+    def prepare(self, facts: DispatchFacts) -> None: ...
+    def launch(self, spawn: Callable[[], Any]) -> Any: ...
+    def on_init(self, event: Any, session: dict) -> None: ...
+    def on_exit(self, event: Any, session: dict, native_source: Optional[Path]) -> None: ...
 
 
 @dataclass(frozen=True)

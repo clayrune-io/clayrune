@@ -76,6 +76,10 @@ EXPECTED_ROUTES = {
     '/api/project/<project_id>/agent/status',
     '/api/project/<project_id>/agent/stop',
     '/api/project/<project_id>/agent/stream',
+    '/api/project/<project_id>/agent/delegation/inbox',
+    '/api/project/<project_id>/agent/delegation/retry',
+    '/api/project/<project_id>/agent/delegation/status',
+    '/api/project/<project_id>/agent/delegation/status-list',
     '/api/project/<project_id>/conversations',
     # Conversation redesign (2026-07-11): full-transcript fetch for the resume
     # preview, transcript repair, and cross-project chat search.

@@ -50,6 +50,7 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 from mc import engine_selection
+from mc.runtime_attempt_owner import DispatchFacts
 import hashlib
 import json
 import math
@@ -6419,7 +6420,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           display_task=None, character_meta=None,
                           character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
-                          notify_session='', notify_workflow=None):
+                          notify_session='', notify_workflow=None,
+                          lifecycle_bridge_factory=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     `notify_session` / `notify_workflow` (MC-946 / MC-871): the completion
@@ -6583,8 +6585,57 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         _log(f"[dispatch] provider={provider_name} model={model!r} "
              f"(cmd unavailable: {e})")
 
-    try:
-        handle = runtime.dispatch(
+    bridge = None  # optional injected lifecycle bridge
+    callbacks = _RUNTIME_CALLBACKS
+    if lifecycle_bridge_factory is not None:
+        facts = DispatchFacts(project_id=project_id, project_path=pp,
+            mc_session_id=session_id, provider=provider_name, model=model,
+            effort=session.get('requested_effort'), resume_id=resume_id,
+            task=task, incognito=incognito,
+            provenance={'trigger_type': trigger_type, 'trigger_id': trigger_id,
+                        'source': source or ''})
+        try:
+            bridge = lifecycle_bridge_factory(facts)
+            if bridge is not None:
+                bridge.prepare(facts)
+        except Exception as e:
+            session['status'] = 'error'
+            session['process_alive'] = False
+            session.setdefault('_lifecycle_errors', []).append(str(e))
+            session['log_lines'].append(f'[{provider_name} dispatch failed: {e}]')
+            session['last_status_change_time'] = _time.time()
+            _persist_runtime_start_failure(session)
+            raise
+        if bridge is not None:
+            callbacks = dict(_RUNTIME_CALLBACKS)
+            prior_init = callbacks.get('on_init')
+            prior_exit = callbacks.get('on_process_exit')
+            def _bridge_init(event, bridged_session):
+                if prior_init:
+                    try:
+                        prior_init(event, bridged_session)
+                    except Exception as exc:
+                        bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                try:
+                    bridge.on_init(event, bridged_session)
+                except Exception as exc:
+                    bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+            def _bridge_exit(event, bridged_session):
+                if prior_exit:
+                    try:
+                        prior_exit(event, bridged_session)
+                    except Exception as exc:
+                        bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                try:
+                    native_id = bridged_session.get('provider_session_id')
+                    native_source = runtime.transcript_path(pp, native_id) if native_id else None
+                    bridge.on_exit(event, bridged_session, native_source)
+                except Exception as exc:
+                    bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+            callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
+
+    def _spawn_runtime():
+        return runtime.dispatch(
             project_path=pp,
             task=task,
             system_prompt=system_prompt,
@@ -6599,7 +6650,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # MC-930: the runtime owns its reader thread, so completion has to
             # be handed to it as a hook or no agent-log row is ever written for
             # this session. See _runtime_log_completion.
-            callbacks=_RUNTIME_CALLBACKS,
+            callbacks=callbacks,
             # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4: only CodexRuntime.dispatch
             # declares/consumes this kwarg (every other runtime's dispatch()
             # has a **_extra catchall, so it's a no-op for them). CONFIG is
@@ -6609,6 +6660,12 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
         )
+
+    try:
+        handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
+        if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
+                                   or not hasattr(handle, 'mc_session_id')):
+            raise TypeError('lifecycle bridge launch must return SessionHandle')
     except Exception as e:
         session['status'] = 'error'
         # A missing CLI can never succeed by retrying — trip the circuit
