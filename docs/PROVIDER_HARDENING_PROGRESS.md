@@ -439,6 +439,12 @@ offline-tested. Worker combined selection: **180 passed**; parent independent
 privacy/delivery selection: **31 passed**. No live activation. Physical SQLite/WAL
 sanitization, retention budgets and recovery-state UI are not covered by this gate.
 
+Capture conformance increment: shared replay/store tests assert exact Codex
+exec and Claude/Qwen-shaped fixture payloads, full requested engine settings,
+durable source binding, restart replay and owner/privacy refusal. Unsupported
+decoder construction precedes durable binding. Native rollout and Qwen recording
+certification remain open: stdout and durable files are distinct source formats.
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and

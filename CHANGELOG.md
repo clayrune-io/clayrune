@@ -8,6 +8,11 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Verify shared replay/store fixture conformance for Codex exec JSONL and
+  Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
+  replay and revocation fences. Reject unsupported decoders before durable
+  binding. Offline evidence only; no native rollout certification or activation.
+
 - Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
   migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
   fixture controller rebuilds decoder state from verified source prefixes;

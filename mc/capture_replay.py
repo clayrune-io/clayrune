@@ -41,9 +41,12 @@ def replay_file_prefix(*, path: Path | None, store: ConversationStore | None,
         raise ValueError('path and store are required for non-incognito replay')
     if not path.is_file():
         raise SourceRecoveryError('durable source is missing')
+    decoder = decoder_factory()
+    # Validate the explicitly selected format before mutating durable source
+    # metadata. Unsupported profiles must fail closed without even a binding
+    # that could be mistaken for accepted evidence.
     cursor = store.bind_capture_source(token, provider=provider,
         format_version=format_version, source_id=source_id, incarnation=incarnation)
-    decoder = decoder_factory()
     count = 0
     saw_partial = False
     with path.open('rb') as source:
