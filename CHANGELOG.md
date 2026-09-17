@@ -25,6 +25,12 @@
   and replay now share one open binary descriptor, preventing path replacement
   between authorization and capture while retaining partial-tail recovery.
 
+- Add the store-backed runtime-attempt owner foundation and schema-v4 launch
+  facts. Attempt claim plus launch facts, and lifecycle native binding plus
+  transcript/source binding, are atomic. Explicit backed-up schema-3 migration
+  validates table/column/PK/index/FK shapes and rolls back cleanly on injected
+  backup or table-creation failure. Production route wiring remains disabled.
+
 - Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
   migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
   fixture controller rebuilds decoder state from verified source prefixes;

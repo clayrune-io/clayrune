@@ -181,7 +181,7 @@ def test_duplicate_evidence_idempotency_and_conflict(store):
 def make_schema1(store):
     store.begin_attempt('p','legacy',user_message={'text':'legacy content'},engine=ENGINE,event_id='legacy-start')
     with sqlite3.connect(store.db_path) as db:
-        for table in ('capture_spans','capture_sources','lifecycle_event_meta','lifecycle_engine_changes','lifecycle_attempts','lifecycle_requests','lifecycle_conversations'):
+        for table in ('runtime_launch_facts','capture_spans','capture_sources','lifecycle_event_meta','lifecycle_engine_changes','lifecycle_attempts','lifecycle_requests','lifecycle_conversations'):
             db.execute(f'DROP TABLE {table}')
         db.execute('PRAGMA user_version=1')
 

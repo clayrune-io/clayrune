@@ -153,13 +153,14 @@ def test_schema2_migration_uses_backup_and_keeps_backup_unchanged(tmp_path):
     with store._connection(write=True) as db:
         db.execute('DROP TABLE capture_spans')
         db.execute('DROP TABLE capture_sources')
+        db.execute('DROP TABLE runtime_launch_facts')
         db.execute('PRAGMA user_version=2')
     backup = tmp_path / 'schema2-backup.sqlite'
     store.migrate_schema2(backup_path=backup)
     with __import__('sqlite3').connect(backup) as db:
         assert db.execute('PRAGMA user_version').fetchone()[0] == 2
     with __import__('sqlite3').connect(store.db_path) as db:
-        assert db.execute('PRAGMA user_version').fetchone()[0] == 3
+            assert db.execute('PRAGMA user_version').fetchone()[0] == 4
 
 
 def test_schema2_legacy_guard_and_protocol_metadata_are_preserved(tmp_path):
@@ -172,6 +173,7 @@ def test_schema2_legacy_guard_and_protocol_metadata_are_preserved(tmp_path):
     with sqlite3.connect(store.db_path) as db:
         db.execute('DROP TABLE capture_spans')
         db.execute('DROP TABLE capture_sources')
+        db.execute('DROP TABLE runtime_launch_facts')
         db.execute('PRAGMA user_version=2')
     events = store.read_events('p', 'c')
     assert events[-1].protocol_version == 1
@@ -187,6 +189,7 @@ def test_schema2_migration_rejects_unexpected_shape_without_backup_mutation(tmp_
     with sqlite3.connect(store.db_path) as db:
         db.execute('DROP TABLE capture_spans')
         db.execute('DROP TABLE capture_sources')
+        db.execute('DROP TABLE runtime_launch_facts')
         db.execute('ALTER TABLE requests ADD COLUMN unexpected TEXT')
         db.execute('PRAGMA user_version=2')
     before = store.db_path.read_bytes()

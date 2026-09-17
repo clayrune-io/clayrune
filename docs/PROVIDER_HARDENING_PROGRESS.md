@@ -457,6 +457,14 @@ project cwd, numeric 0.153.x profile, source identity and incarnation before
 binding. Authorization and replay use one caller-owned descriptor. The adapter
 is still uncalled by production and neither certifies nor activates native capture.
 
+Runtime ownership foundation: `ConversationStore` schema v4 now holds immutable
+per-attempt launch facts and one-time native transcript/source facts. Claim plus
+facts and native lifecycle plus source binding are transactionally paired;
+uncertain launches cannot be blindly retried. The backed-up v3 migration has a
+14-test shape/fault/rollback matrix. `RuntimeAttemptOwner` is route-independent,
+so `_dispatch_via_runtime` still uses its legacy session authority until the next
+default-off integration gate.
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and

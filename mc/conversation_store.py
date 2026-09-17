@@ -16,18 +16,19 @@ import json
 import hashlib
 from pathlib import Path
 import sqlite3
+from types import MappingProxyType
 from typing import Any, Iterator, Callable
 from uuid import uuid4
 
 from mc.conversation_contract import validate_content
 from mc import execution_lifecycle as lifecycle
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 APPLICATION_ID = 1129464654
 _LEGACY_TABLES = {'conversations', 'events', 'requests'}
 _LIFECYCLE_TABLES = {'lifecycle_conversations', 'lifecycle_requests', 'lifecycle_attempts',
                      'lifecycle_engine_changes', 'lifecycle_event_meta',
-                     'capture_sources', 'capture_spans'}
+                     'capture_sources', 'capture_spans', 'runtime_launch_facts'}
 
 
 class ConversationStoreError(RuntimeError):
@@ -156,6 +157,22 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _immutable(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _immutable(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return tuple(_immutable(child) for child in value)
+    return value
+
+
+def _fact_text(value: Any, label: str, *, path: bool = False) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > (4096 if path else 512):
+        raise ValueError(f'{label} must be a nonempty string')
+    if any(ord(c) < 32 for c in value):
+        raise ValueError(f'{label} cannot contain control characters')
+    return value
+
+
 class ConversationStore:
     def __init__(self, db_path: Path):
         self.db_path = Path(db_path).absolute()
@@ -175,8 +192,9 @@ class ConversationStore:
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif app != APPLICATION_ID or not (
                 (version == 1 and tables == _LEGACY_TABLES)
-                or (version == 2 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans'}))
-                or (version == 3 and tables == _LEGACY_TABLES | _LIFECYCLE_TABLES)):
+                or (version == 2 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts'}))
+                or (version == 3 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts'}))
+                or (version == 4 and tables == _LEGACY_TABLES | _LIFECYCLE_TABLES)):
             raise SchemaError(f'Unsupported conversation schema: version={version}, application={app}')
 
     @staticmethod
@@ -191,6 +209,90 @@ class ConversationStore:
     def _create_capture_schema(db: sqlite3.Connection) -> None:
         db.execute('CREATE TABLE capture_sources (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, privacy_generation INTEGER NOT NULL, owner_epoch INTEGER NOT NULL, provider TEXT NOT NULL, format_version TEXT NOT NULL, source_id TEXT NOT NULL, incarnation TEXT NOT NULL, cursor_sequence INTEGER NOT NULL DEFAULT -1, cursor_digest TEXT NOT NULL DEFAULT "", sealed INTEGER NOT NULL DEFAULT 0, eof_sequence INTEGER, eof_digest TEXT, eof_exit_status INTEGER, eof_event_id TEXT, PRIMARY KEY(project_id,conversation_id,attempt_id), UNIQUE(project_id,conversation_id,source_id,incarnation))')
         db.execute('CREATE TABLE capture_spans (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, source_sequence INTEGER NOT NULL, source_id TEXT NOT NULL, incarnation TEXT NOT NULL, frame_digest TEXT NOT NULL, frame_json TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0, event_ids_json TEXT NOT NULL DEFAULT "[]", PRIMARY KEY(project_id,conversation_id,attempt_id,source_sequence))')
+        ConversationStore._create_runtime_launch_facts(db)
+
+    @staticmethod
+    def _create_runtime_launch_facts(db: sqlite3.Connection) -> None:
+        db.execute('CREATE TABLE runtime_launch_facts (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, provider TEXT NOT NULL, project_path TEXT NOT NULL, mc_session_id TEXT NOT NULL, requested_engine_json TEXT NOT NULL, incognito INTEGER NOT NULL CHECK(incognito=0), source_id TEXT NOT NULL, source_incarnation TEXT NOT NULL, format_version TEXT NOT NULL, native_session_id TEXT, transcript_path TEXT, PRIMARY KEY(project_id,conversation_id,attempt_id), FOREIGN KEY(project_id,conversation_id,attempt_id) REFERENCES lifecycle_attempts(project_id,conversation_id,attempt_id))')
+
+    def _backup_consistent(self, backup_path: Path) -> None:
+        backup_path = Path(backup_path).absolute()
+        backup_path.parent.mkdir(parents=True, exist_ok=True)
+        with backup_path.open('xb'):
+            pass
+        destination = None
+        backup_reader = None
+        try:
+            destination = sqlite3.connect(backup_path)
+            backup_reader = sqlite3.connect(self.db_path.as_uri()+'?mode=ro', uri=True)
+            self._copy_backup(backup_reader, destination)
+        except BaseException:
+            if backup_reader is not None:
+                backup_reader.close()
+            if destination is not None:
+                destination.close()
+            try:
+                backup_path.unlink()
+            except OSError:
+                pass
+            raise
+        finally:
+            if backup_reader is not None:
+                backup_reader.close()
+            if destination is not None:
+                destination.close()
+
+    @staticmethod
+    def _copy_backup(reader: sqlite3.Connection, destination: sqlite3.Connection) -> None:
+        reader.backup(destination)
+
+    @staticmethod
+    def _validate_schema3_shape(db: sqlite3.Connection) -> None:
+        expected_tables = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts'})
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if tables != expected_tables:
+            raise SchemaError('Unexpected schema 3 table shape')
+        expected = {
+            'conversations': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('active_attempt','TEXT',0,0,None),('deleted','INTEGER',1,0,'0'),('created_at','TEXT',1,0,None)],
+            'events': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('sequence','INTEGER',1,3,None),('event_id','TEXT',1,0,None),('attempt_id','TEXT',1,0,None),('kind','TEXT',1,0,None),('timestamp','TEXT',1,0,None),('payload_json','TEXT',1,0,None)],
+            'requests': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('request_id','TEXT',1,3,None),('input_json','TEXT',1,0,None)],
+            'lifecycle_conversations': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('revision','INTEGER',1,0,None),('requested_engine_key','TEXT',1,0,None),('settings_revision','INTEGER',1,0,None),('owner_id','TEXT',1,0,None),('owner_epoch','INTEGER',1,0,None),('privacy_generation','INTEGER',1,0,None),('deleted','INTEGER',1,0,None),('active_attempt','TEXT',0,0,None),('high_water','INTEGER',1,0,None),('covered_through','INTEGER',1,0,None),('coverage_revision','INTEGER',1,0,None),('coverage_complete','INTEGER',1,0,None)],
+            'lifecycle_requests': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('request_id','TEXT',1,3,None),('content_key','TEXT',1,0,None),('origin','TEXT',1,0,None),('engine_key','TEXT',1,0,None),('settings_revision','INTEGER',1,0,None),('user_message_json','TEXT',1,0,None),('provenance_json','TEXT',1,0,None),('ordinal','INTEGER',1,0,None)],
+            'lifecycle_attempts': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('attempt_id','TEXT',1,3,None),('request_id','TEXT',1,0,None),('owner_epoch','INTEGER',1,0,None),('privacy_generation','INTEGER',1,0,None),('engine_key','TEXT',1,0,None),('settings_revision','INTEGER',1,0,None),('status','TEXT',1,0,None),('revision','INTEGER',1,0,None),('native_handle','TEXT',0,0,None),('ordinal','INTEGER',1,0,None)],
+            'lifecycle_engine_changes': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('settings_revision','INTEGER',1,3,None),('requested_engine_key','TEXT',1,0,None),('consent_reference','TEXT',1,0,None)],
+            'lifecycle_event_meta': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('sequence','INTEGER',1,3,None),('protocol_version','INTEGER',1,0,None),('disposition','TEXT',1,0,None)],
+            'capture_sources': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('attempt_id','TEXT',1,3,None),('privacy_generation','INTEGER',1,0,None),('owner_epoch','INTEGER',1,0,None),('provider','TEXT',1,0,None),('format_version','TEXT',1,0,None),('source_id','TEXT',1,0,None),('incarnation','TEXT',1,0,None),('cursor_sequence','INTEGER',1,0,'-1'),('cursor_digest','TEXT',1,0,'""'),('sealed','INTEGER',1,0,'0'),('eof_sequence','INTEGER',0,0,None),('eof_digest','TEXT',0,0,None),('eof_exit_status','INTEGER',0,0,None),('eof_event_id','TEXT',0,0,None)],
+            'capture_spans': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('attempt_id','TEXT',1,3,None),('source_sequence','INTEGER',1,4,None),('source_id','TEXT',1,0,None),('incarnation','TEXT',1,0,None),('frame_digest','TEXT',1,0,None),('frame_json','TEXT',1,0,None),('committed','INTEGER',1,0,'0'),('event_ids_json','TEXT',1,0,'"[]"')],
+        }
+        for table, spec in expected.items():
+            rows = db.execute(f'PRAGMA table_info({table})').fetchall()
+            if [(r['name'],r['type'].upper(),r['notnull'],r['pk'],r['dflt_value']) for r in rows] != spec:
+                raise SchemaError('Unexpected schema 3 column/type/PK shape')
+        indexes = {r['name']: r for r in db.execute('PRAGMA index_list(events)').fetchall()}
+        if not any(r['unique'] and [x['name'] for x in db.execute(f'PRAGMA index_info("{name}")')] == ['project_id','conversation_id','event_id'] for name,r in indexes.items()):
+            raise SchemaError('Missing events unique identity index')
+        for table, expected_fk in {
+            'lifecycle_conversations': [('conversations', ('project_id','conversation_id'), ('project_id','conversation_id'))],
+            'lifecycle_requests': [('lifecycle_conversations', ('project_id','conversation_id'), ('project_id','conversation_id'))],
+            'lifecycle_attempts': [('lifecycle_requests', ('project_id','conversation_id','request_id'), ('project_id','conversation_id','request_id'))],
+            'lifecycle_engine_changes': [('lifecycle_conversations', ('project_id','conversation_id'), ('project_id','conversation_id'))], 'lifecycle_event_meta': [('events', ('project_id','conversation_id','sequence'), ('project_id','conversation_id','sequence'))],
+        }.items():
+            actual = db.execute(f'PRAGMA foreign_key_list({table})').fetchall()
+            grouped = {}
+            for row in actual:
+                grouped.setdefault(row['id'], []).append((row['table'], row['from'], row['to']))
+            normalized = [(rows[0][0], tuple(x[1] for x in rows), tuple(x[2] for x in rows)) for rows in grouped.values()]
+            if set(normalized) != set(expected_fk):
+                raise SchemaError(f'Unexpected lifecycle foreign-key shape: {normalized!r} != {expected_fk!r}')
+        for table, pk in {'capture_sources': ['project_id','conversation_id','attempt_id'], 'capture_spans': ['project_id','conversation_id','attempt_id','source_sequence']}.items():
+            info = db.execute(f'PRAGMA index_list({table})').fetchall()
+            if not any(r['unique'] and [x['name'] for x in db.execute(f'PRAGMA index_info("{r["name"]}")')] == pk for r in info):
+                raise SchemaError('Unexpected capture primary-key shape')
+        source_indexes = db.execute('PRAGMA index_list(capture_sources)').fetchall()
+        if not any(r['unique'] and [x['name'] for x in db.execute(f'PRAGMA index_info("{r["name"]}")')] == ['project_id','conversation_id','source_id','incarnation'] for r in source_indexes):
+            raise SchemaError('Missing capture source identity uniqueness')
+        if db.execute('PRAGMA foreign_key_list(capture_sources)').fetchall() or db.execute('PRAGMA foreign_key_list(capture_spans)').fetchall():
+            raise SchemaError('Unexpected v3 capture foreign key')
 
     def migrate_schema1(self, *, backup_path: Path) -> None:
         """Explicit offline migration. Caller quiesces writers; never overwrite backup.
@@ -258,7 +360,7 @@ class ConversationStore:
             if source is None or source.execute('PRAGMA user_version').fetchone()[0] != 2:
                 raise SchemaError('Explicit migration requires schema 2')
             tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans'})
+            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts'})
             if tables != expected:
                 raise SchemaError('Unexpected schema 2 table shape')
             expected_columns = {
@@ -285,6 +387,19 @@ class ConversationStore:
                 backup_reader.close()
                 destination.close()
             self._create_capture_schema(source)
+            source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+
+    def migrate_schema3(self, *, backup_path: Path) -> None:
+        """Explicitly add runtime launch facts to an exact schema-3 database."""
+        backup_path = Path(backup_path).absolute()
+        if backup_path == self.db_path or backup_path.exists():
+            raise ValueError('Backup must be a new distinct path')
+        with self._connection(write=True) as source:
+            if source is None or source.execute('PRAGMA user_version').fetchone()[0] != 3:
+                raise SchemaError('Explicit migration requires schema 3')
+            self._validate_schema3_shape(source)
+            self._backup_consistent(backup_path)
+            self._create_runtime_launch_facts(source)
             source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
 
     @staticmethod
@@ -608,6 +723,30 @@ class ConversationStore:
         _id(request_id); _id(attempt_id)
         return self._lifecycle_apply(owner.project_id,owner.conversation_id,event_id=event_id,kind='lifecycle.attempt_claimed',payload={'request_id':request_id,'attempt_id':attempt_id},reduce=lambda s:lifecycle.claim_attempt(s,owner,request_id,attempt_id,expected_revision=expected_revision))
 
+    def claim_attempt_with_launch_facts(self, owner: lifecycle.OwnerToken, *, request_id: str,
+                                        attempt_id: str, expected_revision: int, event_id: str,
+                                        facts: dict) -> tuple[lifecycle.ConversationState, lifecycle.AttemptToken]:
+        """Atomically claim launch intent and insert its immutable launch facts."""
+        prepared = self._validate_launch_facts(facts)
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            before = self._load_lifecycle(db, owner.project_id, owner.conversation_id)
+            reduced = lifecycle.claim_attempt(before, owner, request_id, attempt_id,
+                                               expected_revision=expected_revision)
+            state, token = reduced
+            state = replace(state, high_water=before.high_water + 1)
+            self._save_lifecycle(db, before, state)
+            self._lifecycle_event(db, state, event_id, 'lifecycle.attempt_claimed',
+                                  {'request_id': request_id, 'attempt_id': attempt_id},
+                                  attempt_id=attempt_id)
+            values = (owner.project_id, owner.conversation_id, attempt_id,
+                      prepared['provider'], prepared['project_path'], prepared['mc_session_id'],
+                      prepared['requested_engine_json'], 0, prepared['source_id'],
+                      prepared['source_incarnation'], prepared['format_version'], None, None)
+            db.execute('INSERT INTO runtime_launch_facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', values)
+            return state, token
+
     def transition_attempt(self, token: lifecycle.AttemptToken, status: lifecycle.AttemptStatus, *,
                            expected_attempt_revision: int, event_id: str) -> lifecycle.ConversationState:
         return self._lifecycle_apply(token.project_id,token.conversation_id,event_id=event_id,kind='lifecycle.attempt_transitioned',payload={'attempt_id':token.attempt_id,'status':status.value,'attempt_revision':expected_attempt_revision+1},reduce=lambda s:lifecycle.transition_attempt(s,token,status,expected_attempt_revision=expected_attempt_revision))[0]
@@ -687,6 +826,130 @@ class ConversationStore:
                            expected_attempt_revision: int, event_id: str) -> lifecycle.ConversationState:
         _id(handle)
         return self._lifecycle_apply(token.project_id,token.conversation_id,event_id=event_id,kind='lifecycle.native_bound',payload={'attempt_id':token.attempt_id,'native_handle':handle},reduce=lambda s:lifecycle.bind_native_handle(s,token,handle,expected_attempt_revision=expected_attempt_revision))[0]
+
+    def bind_native_with_runtime_source(self, token: lifecycle.AttemptToken, *,
+                                        native_session_id: str, transcript_path: str | None,
+                                        expected_attempt_revision: int, event_id: str) -> tuple[lifecycle.ConversationState, dict]:
+        """Atomically bind lifecycle native identity and its runtime source facts."""
+        _id(native_session_id); _id(event_id)
+        if transcript_path is not None:
+            _fact_text(transcript_path, 'transcript_path', path=True)
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            before = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if before.deleted or token.privacy_generation != before.privacy_generation:
+                raise StaleAttempt('Native binding authority is stale')
+            attempt = next((a for a in before.attempts if a.attempt_id == token.attempt_id), None)
+            row = db.execute('SELECT * FROM runtime_launch_facts WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id,token.conversation_id,token.attempt_id)).fetchone()
+            if attempt is None or row is None or token.owner_epoch != attempt.owner_epoch:
+                raise StaleAttempt('Native binding owner is stale or facts are missing')
+            engine = json.loads(attempt.engine_key)
+            if row['provider'] != engine.get('provider') or row['requested_engine_json'] != attempt.engine_key:
+                raise EventConflict('Runtime facts provider or engine mismatch')
+            if attempt.status not in {lifecycle.AttemptStatus.SPAWNING, lifecycle.AttemptStatus.RUNNING}:
+                raise lifecycle.LifecycleConflict('Native binding requires an active attempt')
+            if attempt.native_handle == native_session_id and row['native_session_id'] == native_session_id and row['transcript_path'] == transcript_path:
+                return before, _immutable(dict(row))
+            if attempt.native_handle is not None and attempt.native_handle != native_session_id:
+                raise EventConflict('Native handle cannot change within an attempt')
+            if row['native_session_id'] is not None and (row['native_session_id'] != native_session_id or row['transcript_path'] != transcript_path):
+                raise EventConflict('Native source cannot be rebound')
+            if db.execute('SELECT 1 FROM events WHERE project_id=? AND conversation_id=? AND event_id=?', (token.project_id,token.conversation_id,event_id)).fetchone():
+                raise EventConflict('Native binding event identity already exists')
+            state = lifecycle.bind_native_handle(before, token, native_session_id,
+                expected_attempt_revision=expected_attempt_revision)
+            state = replace(state, high_water=before.high_water + 1)
+            self._save_lifecycle(db, before, state)
+            self._lifecycle_event(db, state, event_id, 'lifecycle.native_bound',
+                                  {'attempt_id': token.attempt_id, 'native_handle': native_session_id},
+                                  attempt_id=token.attempt_id)
+            db.execute('UPDATE runtime_launch_facts SET native_session_id=?,transcript_path=? WHERE project_id=? AND conversation_id=? AND attempt_id=?', (native_session_id, transcript_path, token.project_id,token.conversation_id,token.attempt_id))
+            updated = db.execute('SELECT * FROM runtime_launch_facts WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id,token.conversation_id,token.attempt_id)).fetchone()
+            return state, _immutable(dict(updated))
+
+    def save_runtime_launch_facts(self, token: lifecycle.AttemptToken, facts: dict) -> dict:
+        """Persist immutable pre-launch facts for one authoritative attempt."""
+        clean = self._validate_launch_facts(facts)
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            attempt = next((a for a in state.attempts if a.attempt_id == token.attempt_id), None)
+            if attempt is None or attempt.status != lifecycle.AttemptStatus.LAUNCH_INTENT:
+                raise StaleAttempt('Launch facts require current launch intent')
+            if token.owner_epoch != attempt.owner_epoch or token.privacy_generation != state.privacy_generation or state.deleted:
+                raise StaleAttempt('Launch facts authority is stale')
+            try:
+                attempt_engine = json.loads(attempt.engine_key)
+            except (TypeError, ValueError) as exc:
+                raise EventConflict('Attempt engine is malformed') from exc
+            if clean['requested_engine_json'] != attempt.engine_key or clean['provider'] != attempt_engine.get('provider'):
+                raise EventConflict('Launch facts engine differs from attempt')
+            row = db.execute('SELECT * FROM runtime_launch_facts WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id,token.conversation_id,token.attempt_id)).fetchone()
+            values = (token.project_id, token.conversation_id, token.attempt_id, clean['provider'], clean['project_path'], clean['mc_session_id'], clean['requested_engine_json'], 0, clean['source_id'], clean['source_incarnation'], clean['format_version'], clean.get('native_session_id'), clean.get('transcript_path'))
+            if row:
+                if tuple(row) != values:
+                    raise EventConflict('Launch facts cannot be rewritten')
+                return _immutable(clean)
+            db.execute('INSERT INTO runtime_launch_facts VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)', values)
+            return _immutable(clean)
+
+    @staticmethod
+    def _validate_launch_facts(facts: dict) -> dict:
+        required = {'provider','project_path','mc_session_id','requested_engine_json',
+                    'incognito','source_id','source_incarnation','format_version'}
+        if not isinstance(facts, dict) or set(facts) != required:
+            raise ValueError('complete launch facts are required')
+        if facts.get('incognito') is not False:
+            raise ValueError('persisted launch facts must be non-incognito')
+        for key in ('provider','mc_session_id','source_id','source_incarnation','format_version'):
+            _fact_text(facts[key], key)
+        _fact_text(facts['project_path'], 'project_path', path=True)
+        _fact_text(facts['requested_engine_json'], 'requested_engine_json', path=True)
+        return json.loads(_json({key: facts[key] for key in required}))
+
+    def bind_runtime_native_source(self, token: lifecycle.AttemptToken, *, native_session_id: str, transcript_path: str | None = None) -> dict:
+        _id(native_session_id)
+        if transcript_path is not None:
+            _id(transcript_path)
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if state.deleted or token.privacy_generation != state.privacy_generation:
+                raise StaleAttempt('Native source authority is stale')
+            attempt = next((a for a in state.attempts if a.attempt_id == token.attempt_id), None)
+            row = db.execute('SELECT * FROM runtime_launch_facts WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id,token.conversation_id,token.attempt_id)).fetchone()
+            if attempt is None or row is None or token.owner_epoch != attempt.owner_epoch or attempt.native_handle != native_session_id:
+                raise StaleAttempt('Native source must follow matching lifecycle bind')
+            if attempt.status not in {lifecycle.AttemptStatus.SPAWNING, lifecycle.AttemptStatus.RUNNING}:
+                raise StaleAttempt('Native source requires an active attempt')
+            attempt_engine = json.loads(attempt.engine_key)
+            if row['provider'] != attempt_engine.get('provider') or row['requested_engine_json'] != attempt.engine_key:
+                raise EventConflict('Launch facts provider or engine mismatch')
+            if row['native_session_id'] is not None and (row['native_session_id'] != native_session_id or row['transcript_path'] != transcript_path):
+                raise EventConflict('Native source cannot be rebound')
+            db.execute('UPDATE runtime_launch_facts SET native_session_id=?,transcript_path=? WHERE project_id=? AND conversation_id=? AND attempt_id=?', (native_session_id, transcript_path, token.project_id,token.conversation_id,token.attempt_id))
+            return _immutable(dict(row) | {'native_session_id': native_session_id, 'transcript_path': transcript_path})
+
+    def read_runtime_launch_facts(self, project_id: str, conversation_id: str, attempt_id: str, *, include_deleted: bool = False) -> dict:
+        _id(project_id); _id(conversation_id); _id(attempt_id)
+        if type(include_deleted) is not bool:
+            raise ValueError('include_deleted must be boolean')
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, project_id, conversation_id)
+            if state.deleted and not include_deleted:
+                raise ConversationUnavailable('Conversation missing or deleted')
+            row = db.execute('SELECT * FROM runtime_launch_facts WHERE project_id=? AND conversation_id=? AND attempt_id=?', (project_id,conversation_id,attempt_id)).fetchone()
+            if row is None:
+                raise ConversationUnavailable('Launch facts missing')
+            attempt = next((a for a in state.attempts if a.attempt_id == attempt_id), None)
+            if attempt is None or row['requested_engine_json'] != attempt.engine_key:
+                raise EventConflict('Launch facts do not match lifecycle attempt')
+            return _immutable(dict(row))
 
     def reconcile_attempt(self, owner: lifecycle.OwnerToken, attempt_id: str, status: lifecycle.AttemptStatus, *,
                           expected_attempt_revision: int, resolution: str, event_id: str) -> lifecycle.ConversationState:
