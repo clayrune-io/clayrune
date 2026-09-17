@@ -376,6 +376,22 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Durable fixture recovery increment: canonical schema 3 adds source bindings,
+staged spans and atomic evidence/cursor commits. Existing schema 1/2 databases
+require explicit backed-up migration; ordinary reads/writes never upgrade them.
+Current owner/privacy checks fence authoritative cursors, duplicate batches
+validate exact identities/content, and sealed sources reject later appends.
+The neutral replay controller verifies committed prefixes to rebuild decoder
+state, rejects partial tails/changed sources, and bypasses I/O for incognito.
+Requested-engine snapshots are recursively immutable canonical JSON.
+
+Parent independent recovery/ingress/lifecycle suite: 44 passed. Worker canonical
+suite: 248 passed; changed modules pyright clean. Replay streams frames but does
+not impose a hard per-line byte cap. EOF is an observation, not a coverage
+attestation. Revocation prevents access/replay, not physical SQLite/WAL erasure.
+Native source discovery/certification and production composition remain open.
+This supersedes earlier statements that fixture source-cursor recovery is absent.
+
 Canonical capture ingress increment: `mc/capture_ingress.py` composes an existing
 decoder, lifecycle token and ConversationStore without vendor-specific storage.
 An explicit Mode-A raw-record/EOF callback runs before UI formatting. Failed

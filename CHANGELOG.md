@@ -8,6 +8,13 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
+  migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
+  fixture controller rebuilds decoder state from verified source prefixes;
+  partial tails and changed sources fail explicitly. Sealed EOF forbids further
+  appends without claiming complete coverage. Independent focused tests: 44;
+  worker canonical regression: 248. No live source activation or operator migration.
+
 - Add an opt-in provider-neutral capture ingress bridge and Mode-A raw-record/
   EOF callbacks before lossy UI parsing. Retain failed evidence batches for
   explicit retry, refuse decoder advancement while pending, and keep draining

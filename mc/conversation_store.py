@@ -22,11 +22,12 @@ from uuid import uuid4
 from mc.conversation_contract import validate_content
 from mc import execution_lifecycle as lifecycle
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 APPLICATION_ID = 1129464654
 _LEGACY_TABLES = {'conversations', 'events', 'requests'}
 _LIFECYCLE_TABLES = {'lifecycle_conversations', 'lifecycle_requests', 'lifecycle_attempts',
-                     'lifecycle_engine_changes', 'lifecycle_event_meta'}
+                     'lifecycle_engine_changes', 'lifecycle_event_meta',
+                     'capture_sources', 'capture_spans'}
 
 
 class ConversationStoreError(RuntimeError):
@@ -107,6 +108,26 @@ class HistoryChunk:
         return self.next_offset == self.total_bytes
 
 
+@dataclass(frozen=True)
+class SourceCursor:
+    project_id: str
+    conversation_id: str
+    attempt_id: str
+    provider: str
+    format_version: str
+    source_id: str
+    incarnation: str
+    cursor_sequence: int
+    cursor_digest: str
+    privacy_generation: int
+    owner_epoch: int
+    sealed: bool = False
+    eof_sequence: int | None = None
+    eof_digest: str | None = None
+    eof_exit_status: int | None = None
+    eof_event_id: str | None = None
+
+
 def _id(value: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 512:
         raise ValueError('IDs must be nonempty strings of at most 512 characters')
@@ -150,10 +171,12 @@ class ConversationStore:
             db.execute('CREATE TABLE requests (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, request_id TEXT NOT NULL, input_json TEXT NOT NULL, PRIMARY KEY(project_id, conversation_id, request_id), FOREIGN KEY(project_id, conversation_id) REFERENCES conversations(project_id, conversation_id))')
             db.execute(f'PRAGMA application_id={APPLICATION_ID}')
             ConversationStore._create_lifecycle_schema(db)
+            ConversationStore._create_capture_schema(db)
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif app != APPLICATION_ID or not (
                 (version == 1 and tables == _LEGACY_TABLES)
-                or (version == SCHEMA_VERSION and tables == _LEGACY_TABLES | _LIFECYCLE_TABLES)):
+                or (version == 2 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans'}))
+                or (version == 3 and tables == _LEGACY_TABLES | _LIFECYCLE_TABLES)):
             raise SchemaError(f'Unsupported conversation schema: version={version}, application={app}')
 
     @staticmethod
@@ -163,6 +186,11 @@ class ConversationStore:
         db.execute('CREATE TABLE lifecycle_attempts (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, request_id TEXT NOT NULL, owner_epoch INTEGER NOT NULL, privacy_generation INTEGER NOT NULL, engine_key TEXT NOT NULL, settings_revision INTEGER NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, native_handle TEXT, ordinal INTEGER NOT NULL, PRIMARY KEY(project_id,conversation_id,attempt_id), FOREIGN KEY(project_id,conversation_id,request_id) REFERENCES lifecycle_requests(project_id,conversation_id,request_id))')
         db.execute('CREATE TABLE lifecycle_engine_changes (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, settings_revision INTEGER NOT NULL, requested_engine_key TEXT NOT NULL, consent_reference TEXT NOT NULL, PRIMARY KEY(project_id,conversation_id,settings_revision), FOREIGN KEY(project_id,conversation_id) REFERENCES lifecycle_conversations(project_id,conversation_id))')
         db.execute('CREATE TABLE lifecycle_event_meta (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, sequence INTEGER NOT NULL, protocol_version INTEGER NOT NULL, disposition TEXT NOT NULL, PRIMARY KEY(project_id,conversation_id,sequence), FOREIGN KEY(project_id,conversation_id,sequence) REFERENCES events(project_id,conversation_id,sequence))')
+
+    @staticmethod
+    def _create_capture_schema(db: sqlite3.Connection) -> None:
+        db.execute('CREATE TABLE capture_sources (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, privacy_generation INTEGER NOT NULL, owner_epoch INTEGER NOT NULL, provider TEXT NOT NULL, format_version TEXT NOT NULL, source_id TEXT NOT NULL, incarnation TEXT NOT NULL, cursor_sequence INTEGER NOT NULL DEFAULT -1, cursor_digest TEXT NOT NULL DEFAULT "", sealed INTEGER NOT NULL DEFAULT 0, eof_sequence INTEGER, eof_digest TEXT, eof_exit_status INTEGER, eof_event_id TEXT, PRIMARY KEY(project_id,conversation_id,attempt_id), UNIQUE(project_id,conversation_id,source_id,incarnation))')
+        db.execute('CREATE TABLE capture_spans (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, source_sequence INTEGER NOT NULL, source_id TEXT NOT NULL, incarnation TEXT NOT NULL, frame_digest TEXT NOT NULL, frame_json TEXT NOT NULL, committed INTEGER NOT NULL DEFAULT 0, event_ids_json TEXT NOT NULL DEFAULT "[]", PRIMARY KEY(project_id,conversation_id,attempt_id,source_sequence))')
 
     def migrate_schema1(self, *, backup_path: Path) -> None:
         """Explicit offline migration. Caller quiesces writers; never overwrite backup.
@@ -209,6 +237,7 @@ class ConversationStore:
                 backup_reader.close()
                 destination.close()
             self._create_lifecycle_schema(source)
+            self._create_capture_schema(source)
             source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
 
     @staticmethod
@@ -216,9 +245,51 @@ class ConversationStore:
         if db.execute('PRAGMA user_version').fetchone()[0] != SCHEMA_VERSION:
             raise SchemaError('Explicit backed-up schema 1 migration required')
 
+    def migrate_schema2(self, *, backup_path: Path) -> None:
+        """Explicitly add capture tables to an existing schema-2 database.
+
+        No normal read/write path upgrades a database implicitly. The backup is
+        created before the new tables are installed and is never overwritten.
+        """
+        backup_path = Path(backup_path).absolute()
+        if backup_path == self.db_path or backup_path.exists():
+            raise ValueError('Backup must be a new distinct path')
+        with self._connection(write=True) as source:
+            if source is None or source.execute('PRAGMA user_version').fetchone()[0] != 2:
+                raise SchemaError('Explicit migration requires schema 2')
+            tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans'})
+            if tables != expected:
+                raise SchemaError('Unexpected schema 2 table shape')
+            expected_columns = {
+                'conversations': ['project_id','conversation_id','active_attempt','deleted','created_at'],
+                'events': ['project_id','conversation_id','sequence','event_id','attempt_id','kind','timestamp','payload_json'],
+                'requests': ['project_id','conversation_id','request_id','input_json'],
+                'lifecycle_conversations': ['project_id','conversation_id','revision','requested_engine_key','settings_revision','owner_id','owner_epoch','privacy_generation','deleted','active_attempt','high_water','covered_through','coverage_revision','coverage_complete'],
+                'lifecycle_requests': ['project_id','conversation_id','request_id','content_key','origin','engine_key','settings_revision','user_message_json','provenance_json','ordinal'],
+                'lifecycle_attempts': ['project_id','conversation_id','attempt_id','request_id','owner_epoch','privacy_generation','engine_key','settings_revision','status','revision','native_handle','ordinal'],
+                'lifecycle_engine_changes': ['project_id','conversation_id','settings_revision','requested_engine_key','consent_reference'],
+                'lifecycle_event_meta': ['project_id','conversation_id','sequence','protocol_version','disposition'],
+            }
+            if any([r['name'] for r in source.execute(f'PRAGMA table_info({table})')] != columns
+                   for table, columns in expected_columns.items()):
+                raise SchemaError('Unexpected schema 2 column shape')
+            backup_path.parent.mkdir(parents=True, exist_ok=True)
+            with backup_path.open('xb'):
+                pass
+            destination = sqlite3.connect(backup_path)
+            backup_reader = sqlite3.connect(self.db_path.as_uri()+'?mode=ro', uri=True)
+            try:
+                backup_reader.backup(destination)
+            finally:
+                backup_reader.close()
+                destination.close()
+            self._create_capture_schema(source)
+            source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+
     @staticmethod
     def _legacy_only(db: sqlite3.Connection, project: str, conversation: str) -> None:
-        if db.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION:
+        if db.execute('PRAGMA user_version').fetchone()[0] >= 2:
             if db.execute('SELECT 1 FROM lifecycle_conversations WHERE project_id=? AND conversation_id=?', (project, conversation)).fetchone():
                 raise lifecycle.LifecycleConflict('Legacy writes cannot bypass lifecycle management')
 
@@ -350,7 +421,7 @@ class ConversationStore:
                 self._conversation(db, project_id, conversation_id, include_deleted)
             except ConversationUnavailable:
                 return []
-            if db.execute('PRAGMA user_version').fetchone()[0] == SCHEMA_VERSION:
+            if db.execute('PRAGMA user_version').fetchone()[0] >= 2:
                 query = 'SELECT e.*,COALESCE(m.protocol_version,0) AS protocol_version,COALESCE(m.disposition,\'legacy\') AS disposition FROM events e LEFT JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) WHERE project_id=? AND conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?'
             else:
                 query = 'SELECT * FROM events WHERE project_id=? AND conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?'
@@ -658,25 +729,196 @@ class ConversationStore:
             validate_protocol_event(kind,payload,version=1)
             encoded = _json(payload)
             prepared.append((event_id,kind,json.loads(encoded),encoded))
-        result = []
         with self._connection(write=True) as db:
             if db is None:
                 raise ConversationUnavailable('Conversation missing')
-            state = self._load_lifecycle(db,token.project_id,token.conversation_id)
-            lifecycle.evidence_disposition(state,token)
-            for event_id,kind,payload,encoded in prepared:
-                previous = db.execute('SELECT e.*,m.disposition,m.protocol_version FROM events e JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) WHERE project_id=? AND conversation_id=? AND event_id=?',(token.project_id,token.conversation_id,event_id)).fetchone()
-                if previous:
-                    if previous['attempt_id'] != token.attempt_id or previous['kind'] != kind or previous['payload_json'] != encoded:
-                        raise EventConflict('Evidence identity has different content')
-                    result.append((self._event(previous),lifecycle.EvidenceDisposition(previous['disposition'])))
-                    continue
-                before = state
-                state,disposition = lifecycle.record_evidence(before,token,sequence=before.high_water+1)
-                self._save_lifecycle(db,before,state)
-                event = self._lifecycle_event(db,state,event_id,kind,payload,attempt_id=token.attempt_id,disposition=disposition.value)
-                result.append((event,disposition))
+            return self._append_evidence_batch_db(db, token, prepared)
+
+    def _append_evidence_batch_db(self, db: sqlite3.Connection,
+                                  token: lifecycle.AttemptToken,
+                                  prepared: list[tuple[str,str,dict,str]]) -> list[tuple[ConversationEvent,lifecycle.EvidenceDisposition]]:
+        result = []
+        state = self._load_lifecycle(db,token.project_id,token.conversation_id)
+        lifecycle.evidence_disposition(state,token)
+        for event_id,kind,payload,encoded in prepared:
+            previous = db.execute('SELECT e.*,m.disposition,m.protocol_version FROM events e JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) WHERE project_id=? AND conversation_id=? AND event_id=?',(token.project_id,token.conversation_id,event_id)).fetchone()
+            if previous:
+                if previous['attempt_id'] != token.attempt_id or previous['kind'] != kind or previous['payload_json'] != encoded:
+                    raise EventConflict('Evidence identity has different content')
+                result.append((self._event(previous),lifecycle.EvidenceDisposition(previous['disposition'])))
+                continue
+            before = state
+            state,disposition = lifecycle.record_evidence(before,token,sequence=before.high_water+1)
+            self._save_lifecycle(db,before,state)
+            event = self._lifecycle_event(db,state,event_id,kind,payload,attempt_id=token.attempt_id,disposition=disposition.value)
+            result.append((event,disposition))
         return result
+
+    @staticmethod
+    def _source_cursor(row: sqlite3.Row) -> SourceCursor:
+        return SourceCursor(row['project_id'], row['conversation_id'], row['attempt_id'],
+            row['provider'], row['format_version'], row['source_id'], row['incarnation'],
+            row['cursor_sequence'], row['cursor_digest'], row['privacy_generation'], row['owner_epoch'],
+            bool(row['sealed']), row['eof_sequence'], row['eof_digest'], row['eof_exit_status'], row['eof_event_id'])
+
+    def bind_capture_source(self, token: lifecycle.AttemptToken, *, provider: str,
+                            format_version: str, source_id: str, incarnation: str) -> SourceCursor:
+        """Bind one immutable native source incarnation to an attempt."""
+        for value in (provider, format_version, source_id, incarnation):
+            _id(value)
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may bind a source cursor')
+            row = db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone()
+            values = (token.project_id, token.conversation_id, token.attempt_id, token.privacy_generation,
+                      token.owner_epoch, provider, format_version, source_id, incarnation)
+            if row is not None:
+                if tuple(row[k] for k in ('project_id','conversation_id','attempt_id','privacy_generation','owner_epoch','provider','format_version','source_id','incarnation')) != values:
+                    raise EventConflict('Capture source binding conflicts with existing incarnation')
+                return self._source_cursor(row)
+            conflict = db.execute('SELECT 1 FROM capture_sources WHERE project_id=? AND conversation_id=? AND source_id=? AND incarnation=?', (token.project_id, token.conversation_id, source_id, incarnation)).fetchone()
+            if conflict:
+                raise EventConflict('Capture source incarnation already belongs to another attempt')
+            db.execute('INSERT INTO capture_sources(project_id,conversation_id,attempt_id,privacy_generation,owner_epoch,provider,format_version,source_id,incarnation) VALUES(?,?,?,?,?,?,?,?,?)', values)
+            return self._source_cursor(db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone())
+
+    def read_capture_cursor(self, token: lifecycle.AttemptToken) -> SourceCursor:
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may read a source cursor')
+            row = db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone()
+            if row is None:
+                raise ConversationUnavailable('Capture source is not bound')
+            return self._source_cursor(row)
+
+    def stage_capture_span(self, token: lifecycle.AttemptToken, *, source_sequence: int,
+                           frame_json: str, frame_digest: str | None = None) -> None:
+        if type(source_sequence) is not int or source_sequence < 0 or not isinstance(frame_json, str):
+            raise ValueError('Invalid source span')
+        actual_digest = hashlib.sha256(frame_json.encode('utf-8')).hexdigest()
+        if frame_digest is not None and frame_digest != actual_digest:
+            raise EventConflict('Source span digest does not match frame bytes')
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may stage a source span')
+            source = db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone()
+            if source is None:
+                raise ConversationUnavailable('Capture source is not bound')
+            if source['sealed']:
+                raise EventConflict('Capture source is sealed; new source spans are forbidden')
+            if source_sequence != source['cursor_sequence'] + 1:
+                raise EventConflict('Source span is not the next uncommitted sequence')
+            old = db.execute('SELECT * FROM capture_spans WHERE project_id=? AND conversation_id=? AND attempt_id=? AND source_sequence=?', (token.project_id, token.conversation_id, token.attempt_id, source_sequence)).fetchone()
+            if old is not None and (old['frame_digest'] != actual_digest or old['frame_json'] != frame_json):
+                raise EventConflict('Staged source span conflicts')
+            if old is None:
+                db.execute('INSERT INTO capture_spans VALUES(?,?,?,?,?,?,?,?,?,?)', (token.project_id, token.conversation_id, token.attempt_id, source_sequence, source['source_id'], source['incarnation'], actual_digest, frame_json, 0, '[]'))
+
+    def read_capture_span(self, token: lifecycle.AttemptToken, *, source_sequence: int) -> tuple[str, str, bool] | None:
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may advance a source cursor')
+            row = db.execute('SELECT frame_digest,frame_json,committed FROM capture_spans WHERE project_id=? AND conversation_id=? AND attempt_id=? AND source_sequence=?', (token.project_id, token.conversation_id, token.attempt_id, source_sequence)).fetchone()
+            return None if row is None else (row['frame_digest'], row['frame_json'], bool(row['committed']))
+
+    def commit_capture_span(self, token: lifecycle.AttemptToken, *, source_sequence: int,
+                            frame_digest: str, events: list[tuple[str,str,dict]]) -> SourceCursor:
+        if type(source_sequence) is not int or source_sequence < 0:
+            raise ValueError('Invalid source span')
+        _id(frame_digest)
+        prepared = []
+        identities = set()
+        from mc.conversation_contract import validate_protocol_event
+        for event_id, kind, payload in events:
+            _id(event_id)
+            if event_id in identities:
+                raise EventConflict('Repeated event identity within source span')
+            identities.add(event_id)
+            validate_protocol_event(kind, payload, version=1)
+            encoded = _json(payload)
+            prepared.append((event_id, kind, json.loads(encoded), encoded))
+        event_ids_json = _json([item[0] for item in prepared])
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may advance a source cursor')
+            source = db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone()
+            if source is None:
+                raise ConversationUnavailable('Capture source is not bound')
+            if source_sequence <= source['cursor_sequence']:
+                span = db.execute('SELECT * FROM capture_spans WHERE project_id=? AND conversation_id=? AND attempt_id=? AND source_sequence=?', (token.project_id, token.conversation_id, token.attempt_id, source_sequence)).fetchone()
+                if span is not None and span['committed'] and span['frame_digest'] == frame_digest:
+                    if span['event_ids_json'] != event_ids_json:
+                        raise EventConflict('Replay normalized batch identity conflicts')
+                    for event_id, kind, _payload, encoded in prepared:
+                        previous = db.execute('SELECT kind,payload_json FROM events WHERE project_id=? AND conversation_id=? AND event_id=?', (token.project_id, token.conversation_id, event_id)).fetchone()
+                        if previous is None or previous['kind'] != kind or previous['payload_json'] != encoded:
+                            raise EventConflict('Replay normalized batch conflicts')
+                    return self._source_cursor(source)
+                raise EventConflict('Committed source span conflicts')
+            if source['sealed']:
+                raise EventConflict('Capture source is sealed; advancing commit is forbidden')
+            if source_sequence != source['cursor_sequence'] + 1:
+                raise EventConflict('Source cursor cannot skip a span')
+            staged = db.execute('SELECT * FROM capture_spans WHERE project_id=? AND conversation_id=? AND attempt_id=? AND source_sequence=?', (token.project_id, token.conversation_id, token.attempt_id, source_sequence)).fetchone()
+            if staged is None or staged['frame_digest'] != frame_digest:
+                raise ConversationUnavailable('Exact source span is not staged')
+            if events:
+                self._append_evidence_batch_db(db, token, prepared)
+            db.execute('UPDATE capture_sources SET cursor_sequence=?,cursor_digest=? WHERE project_id=? AND conversation_id=? AND attempt_id=? AND cursor_sequence=?', (source_sequence, frame_digest, token.project_id, token.conversation_id, token.attempt_id, source['cursor_sequence']))
+            if db.execute('SELECT changes()').fetchone()[0] != 1:
+                raise StaleAttempt('Capture source claim changed')
+            db.execute('UPDATE capture_spans SET committed=1,event_ids_json=? WHERE project_id=? AND conversation_id=? AND attempt_id=? AND source_sequence=?', (event_ids_json, token.project_id, token.conversation_id, token.attempt_id, source_sequence))
+            return self._source_cursor(db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone())
+
+    def seal_capture_source(self, token: lifecycle.AttemptToken, *, eof_sequence: int,
+                            exit_status: int | None, event_id: str) -> SourceCursor:
+        """Record source EOF as evidence; never attest complete coverage."""
+        _id(event_id)
+        if type(eof_sequence) is not int or eof_sequence < 0:
+            raise ValueError('Invalid EOF sequence')
+        if exit_status is not None and type(exit_status) is not int:
+            raise ValueError('exit_status must be an integer or None')
+        eof_digest = hashlib.sha256(f'eof:{eof_sequence}:{exit_status}'.encode()).hexdigest()
+        payload = {'name': 'capture.transport_eof', 'value': {
+            'source_sequence': eof_sequence, 'exit_status': exit_status,
+            'coverage_claim': False}}
+        with self._connection(write=True) as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            state = self._load_lifecycle(db, token.project_id, token.conversation_id)
+            if lifecycle.evidence_disposition(state, token) != lifecycle.EvidenceDisposition.AUTHORITATIVE:
+                raise StaleAttempt('Only the current owner may seal a source')
+            source = db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone()
+            if source is None:
+                raise ConversationUnavailable('Capture source is not bound')
+            if source['sealed']:
+                if source['eof_sequence'] != eof_sequence or source['eof_digest'] != eof_digest:
+                    raise EventConflict('Conflicting source EOF sequence or digest')
+                if source['eof_event_id'] != event_id:
+                    raise EventConflict('Conflicting source EOF event identity')
+                return self._source_cursor(source)
+            if eof_sequence != source['cursor_sequence'] + 1:
+                raise EventConflict('EOF must follow the committed source cursor')
+            self._append_evidence_batch_db(db, token, [(event_id, 'provider_observation', payload, _json(payload))])
+            db.execute('UPDATE capture_sources SET sealed=1,eof_sequence=?,eof_digest=?,eof_exit_status=?,eof_event_id=? WHERE project_id=? AND conversation_id=? AND attempt_id=? AND sealed=0', (eof_sequence, eof_digest, exit_status, event_id, token.project_id, token.conversation_id, token.attempt_id))
+            if db.execute('SELECT changes()').fetchone()[0] != 1:
+                raise StaleAttempt('Source seal changed')
+            return self._source_cursor(db.execute('SELECT * FROM capture_sources WHERE project_id=? AND conversation_id=? AND attempt_id=?', (token.project_id, token.conversation_id, token.attempt_id)).fetchone())
 
     def record_coverage(self, owner: lifecycle.OwnerToken, *, high_water: int, complete: bool,
                         source_reference: str, expected_revision: int, event_id: str) -> lifecycle.ConversationState:

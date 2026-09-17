@@ -7,7 +7,7 @@ replacement for a native transcript and is never enabled implicitly.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from copy import deepcopy
 import json
 from types import MappingProxyType
@@ -15,6 +15,22 @@ from typing import Any, Mapping, Protocol
 
 from mc.conversation_store import ConversationStore
 from mc.execution_lifecycle import AttemptToken
+
+
+def _freeze(value: Any) -> Any:
+    if isinstance(value, dict):
+        return MappingProxyType({key: _freeze(child) for key, child in value.items()})
+    if isinstance(value, list):
+        return tuple(_freeze(child) for child in value)
+    return value
+
+
+def _plain(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {key: _plain(child) for key, child in value.items()}
+    if isinstance(value, tuple):
+        return [_plain(child) for child in value]
+    return value
 
 
 class CaptureDecoder(Protocol):
@@ -34,6 +50,7 @@ class CaptureProvenance:
     mc_session_id: str
     requested_engine: Mapping[str, Any]
     privacy_generation: int
+    requested_engine_json: str = field(init=False)
 
     def __post_init__(self) -> None:
         for name in ('provider', 'native_session_id', 'mc_session_id'):
@@ -44,8 +61,11 @@ class CaptureProvenance:
             raise ValueError('privacy_generation must be a nonnegative integer')
         if not isinstance(self.requested_engine, Mapping):
             raise ValueError('requested_engine must be an object')
-        object.__setattr__(self, 'requested_engine',
-                           MappingProxyType(deepcopy(dict(self.requested_engine))))
+        frozen = _freeze(deepcopy(dict(self.requested_engine)))
+        object.__setattr__(self, 'requested_engine', frozen)
+        object.__setattr__(self, 'requested_engine_json', json.dumps(
+            _plain(frozen), ensure_ascii=False, sort_keys=True,
+            separators=(',', ':'), allow_nan=False))
 
 
 class CaptureIngress:
@@ -80,10 +100,7 @@ class CaptureIngress:
     def _authorize(self) -> None:
         state = self.store.lifecycle_state(self.token.project_id,
                                            self.token.conversation_id)
-        requested = json.dumps(dict(self.provenance.requested_engine),
-                               ensure_ascii=False, sort_keys=True,
-                               separators=(',', ':'), allow_nan=False)
-        if state.requested_engine_key != requested:
+        if state.requested_engine_key != self.provenance.requested_engine_json:
             raise ValueError('requested-engine snapshot does not match lifecycle')
         attempt = next((a for a in state.attempts
                         if a.attempt_id == self.token.attempt_id), None)

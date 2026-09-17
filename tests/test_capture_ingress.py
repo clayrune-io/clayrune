@@ -150,6 +150,25 @@ def test_incognito_bypasses_before_decoder_or_store_use():
                                  token=Explodes(), provenance=Explodes()) is None
 
 
+def test_requested_engine_snapshot_is_canonical_and_deeply_immutable(claimed):
+    store, token, _ = claimed
+    engine = {'provider': 'codex', 'nested': {'effort': ['high']}}
+    store2 = ConversationStore(store.db_path.parent / 'nested.sqlite')
+    store2.create_lifecycle_conversation('project', 'conversation', engine=engine, event_id='create')
+    state = store2.accept_request('project', 'conversation', request_id='request',
+        user_message={'text': 'x'}, engine=engine, provenance={'origin': 'interactive'},
+        expected_revision=0, event_id='accept')
+    state, owner = store2.claim_owner('project', 'conversation', owner_id='o',
+                                      expected_revision=state.revision, event_id='owner')
+    _, token2 = store2.claim_attempt(owner, request_id='request', attempt_id='a',
+                                     expected_revision=state.revision, event_id='claim')
+    provenance = CaptureProvenance('codex', 'native', 'mc', engine, token2.privacy_generation)
+    engine['nested']['effort'][0] = 'wrong'
+    with pytest.raises(TypeError):
+        provenance.requested_engine['nested']['effort'][0] = 'wrong'
+    assert provenance.requested_engine_json == '{"nested":{"effort":["high"]},"provider":"codex"}'
+
+
 def test_mode_a_reader_calls_raw_callback_before_lossy_parse_and_fails_loudly():
     class Proc:
         def __init__(self, lines):
