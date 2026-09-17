@@ -5,7 +5,7 @@ from unittest.mock import patch
 import pytest
 
 from mc.delegation_delivery import (DeliveryBlocked, DeliveryDeferred,
-                                    DeliveryStore, drain_once,
+                                    DeliveryStore, callback_payload, drain_once,
                                     event_id_for_turn)
 
 
@@ -252,6 +252,12 @@ def test_sqlite_flask_bridge_cold_codex_revival_launches_once(monkeypatch, tmp_p
     monkeypatch.setattr(ar, 'agent_sessions', {})
 
     store = DeliveryStore(tmp_path / 'delivery.db')
+    # Exercise a recreated project so a hard-coded first-generation value
+    # cannot satisfy the invocation-time safety check.
+    store.project_generation('p')
+    store.revoke_project('p')
+    store.recreate_project('p')
+    expected_generation = store.project_generation('p')
     monkeypatch.setattr(ar, '_delivery_store', store)
     monkeypatch.setattr(ar, 'DATA_DIR', tmp_path)
     project = {'id': 'p', 'project_path': str(tmp_path),
@@ -278,6 +284,7 @@ def test_sqlite_flask_bridge_cold_codex_revival_launches_once(monkeypatch, tmp_p
             return ['fake-codex', '--model', kwargs.get('model', ''),
                     '--resume', kwargs.get('resume_id', '')]
         def dispatch(self, **kwargs):
+            assert kwargs['session_dict']['_delivery_generation'] == expected_generation
             launches.append({k: kwargs[k] for k in
                              ('model', 'resume_id', 'mc_session_id', 'session_dict')})
             kwargs['session_dict']['provider_session_id'] = kwargs['resume_id']
@@ -294,6 +301,7 @@ def test_sqlite_flask_bridge_cold_codex_revival_launches_once(monkeypatch, tmp_p
         'trigger_id': 'run-7:step-2', 'incognito': False, 'ts': '2'
     }]), encoding='utf-8')
     child = dict(payload(), event_id='child:cold:1', message='deliver this')
+    child['delivery_generation'] = expected_generation
     store.enqueue('child:cold:1', 'p', parent_sid, child)
     app = Flask('bridge')
     app.register_blueprint(ar.bp)
@@ -320,11 +328,18 @@ def test_sqlite_flask_bridge_cold_codex_revival_launches_once(monkeypatch, tmp_p
     assert launches[0]['session_dict']['trigger_type'] == 'workflow'
     assert launches[0]['session_dict']['trigger_id'] == 'run-7:step-2'
     assert launches[0]['session_dict']['source'] == 'agent'
+    assert launches[0]['session_dict']['_delivery_generation'] == expected_generation
+    completion = callback_payload(launches[0]['session_dict'], 'full completion', 'source-after')
+    store.record_completion_source('source-after', 'p', 'grandparent', completion)
     reopened = DeliveryStore(tmp_path / 'delivery.db')
+    assert reopened.recover_sources() == 1
     assert reopened.status('outbox', 'child:cold:1', 'p')['state'] == 'delivered'
     assert reopened.status('inbox', 'child:cold:1', 'p')['state'] == 'submitted'
-    assert drain_once(reopened, send_outbox=bridge, process_inbox=ar._process_inbox) == 0
+    assert drain_once(reopened, send_outbox=bridge, process_inbox=ar._process_inbox) == 1
     assert len(launches) == 1
+    reopened.revoke_project('p')
+    reopened.recreate_project('p')
+    assert reopened.enqueue('old-unseen', 'p', 'grandparent', completion) is False
 
 
 def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch, tmp_path):

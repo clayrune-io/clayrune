@@ -356,7 +356,8 @@ class TestScribeCallEquivalence:
 
                 def _other():
                     r = subprocess.run([sys.executable, '-c', 'print("foreign")'],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True,
+                                       stdin=subprocess.DEVNULL)
                     foreign['out'] = (r.stdout or '').strip()
                     done.set()
 

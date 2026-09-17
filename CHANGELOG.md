@@ -8,6 +8,12 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Revoke delivery records on project/conversation deletion; preserve tab resume
+  and reject stale-generation results after project recreation. Report partial
+  deletion failures explicitly. Logical payload purge does not promise physical
+  WAL sanitization. Combined selected regressions: 180 passing; independent
+  privacy/delivery check: 31 passing. Still isolated, not production-activated.
+
 - Add real-loopback HTTP subprocess restart tests using the production sender
   and receiver; verify persisted delivery and one fake parent handoff across
   restart. Combined selected suite: 164 passing; full startup/native providers

@@ -44,6 +44,7 @@ from typing import Any, Callable
 from flask import Blueprint, abort, jsonify, request, send_file
 
 from mc import state
+from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
@@ -544,7 +545,27 @@ def update_project(project_id):
         log.insert(0, {'ts': existing['last_updated'], 'msg': data['log_msg']})
         existing['activity_log'] = log[:20]
 
-    save_project(project_id, existing)
+    if is_new:
+        # Reopening is committed only after all project validation and the
+        # project record save succeed. Hold the delete/recreate guard across
+        # both mutations; historical event tombstones survive.
+        with get_manager(project_id).lock:
+            # Re-read under the shared guard: a concurrent creator may have
+            # committed while this request was validating. Only the first
+            # creator performs the generation transition.
+            if filepath.exists():
+                is_new = False
+                existing = json.loads(filepath.read_text(encoding='utf-8'))
+                existing.setdefault('backlog', [])
+                for k, v in data.items():
+                    if k not in ('log_msg', 'backlog'):
+                        existing[k] = v
+                existing['last_updated'] = now_iso()
+            save_project(project_id, existing)
+            if is_new:
+                DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').recreate_project(project_id)
+    else:
+        save_project(project_id, existing)
 
     # Install the steward reversibility fence's PreToolUse hook on every NEW
     # project with a real path (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT
@@ -704,6 +725,11 @@ def delete_project(project_id):
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
         return jsonify({'error': 'not found'}), 404
+
+    # Revoke before deletion side effects, under the same manager guard used by
+    # the parent handoff. Delayed senders then fail closed.
+    with get_manager(project_id).lock:
+        DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').revoke_project(project_id)
 
     # Clean up attachment files
     p = load_project(project_id)

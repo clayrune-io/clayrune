@@ -376,6 +376,13 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Delivery privacy increment: project/session/event revocation and logical payload
+purge, pre-execution project-generation binding, same-ID recreation isolation,
+alias-aware conversation deletion and explicit partial-failure responses are
+offline-tested. Worker combined selection: **180 passed**; parent independent
+privacy/delivery selection: **31 passed**. No live activation. Physical SQLite/WAL
+sanitization, retention budgets and recovery-state UI are not covered by this gate.
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and

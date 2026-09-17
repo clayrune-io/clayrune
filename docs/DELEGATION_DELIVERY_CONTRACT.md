@@ -41,6 +41,28 @@ removed. This is a test-launch condition, not a delivery-code workaround.
 
 ## Ownership and semantics
 
+### Delivery-record deletion boundary
+
+Project and conversation deletion revoke matching delivery identities and purge
+outbox, inbox and completion-source payload rows. Native conversation aliases
+are mapped to MC session identities; closing a tab does not revoke a conversation.
+Rejected conversation deletion leaves delivery state unchanged; a transcript
+rename failure after revocation returns an explicit partial outcome.
+
+Project generations are bound before delegated execution and carried through
+completion/source recovery. Recreating a deleted project cannot accept an unseen
+completion from its old generation. Creation validates and saves before reopening
+delivery under the manager guard, with a concurrent-creation recheck.
+
+This is logical SQLite deletion, not physical WAL/disk sanitization. Existing
+transcript, agent-log and memory retention semantics are unchanged. Retention
+budgets, broader lifecycle cutover and operator recovery UI remain separate gates.
+
+Privacy increment evidence: worker combined selection **180 passed**; independent
+parent privacy/delivery selection **31 passed**. The failure tests use the actual
+derived database path and temporary workspaces. Fake runtime invocation asserts
+the recreated generation before launch; reopen/source recovery retains it.
+
 A delegated task is a visible Clayrune session with immutable parent/project
 identity and explicit requested provider/model. Completion of a child turn is
 not acceptance of its work. Preserve three distinct facts:

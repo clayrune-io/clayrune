@@ -97,6 +97,16 @@ class DeliveryStore:
             CREATE TABLE IF NOT EXISTS turn_allocations (
               child_session_id TEXT PRIMARY KEY, next_turn INTEGER NOT NULL
             );
+            CREATE TABLE IF NOT EXISTS revocations (
+              identity TEXT PRIMARY KEY, project_id TEXT NOT NULL,
+              session_id TEXT NOT NULL DEFAULT '', event_id TEXT NOT NULL DEFAULT '',
+              scope TEXT NOT NULL, created_at REAL NOT NULL
+            );
+            CREATE INDEX IF NOT EXISTS revocations_project ON revocations(project_id);
+            CREATE INDEX IF NOT EXISTS revocations_session ON revocations(project_id,session_id);
+            CREATE TABLE IF NOT EXISTS project_generations (
+              project_id TEXT PRIMARY KEY, generation INTEGER NOT NULL
+            );
             """)
             # Upgrade databases created by the first draft without destructive
             # rewrites. SQLite has no ADD COLUMN IF NOT EXISTS.
@@ -115,10 +125,139 @@ class DeliveryStore:
     def _payload(project_id: str, parent_session_id: str,
                  payload: dict[str, Any]) -> str:
         # Canonical JSON is immutable and makes duplicate delivery byte-stable.
-        return json.dumps({'project_id': project_id,
-                           'parent_session_id': parent_session_id,
-                           'payload': payload}, ensure_ascii=False,
-                          sort_keys=True, separators=(',', ':'))
+        envelope = {'project_id': project_id,
+                    'parent_session_id': parent_session_id,
+                    'payload': payload}
+        if 'delivery_generation' in payload:
+            envelope['delivery_generation'] = payload['delivery_generation']
+        return json.dumps(envelope, ensure_ascii=False,
+                           sort_keys=True, separators=(',', ':'))
+
+    @staticmethod
+    def _child_from_payload(encoded: str) -> str:
+        try:
+            value = json.loads(encoded).get('payload', {})
+            return str(value.get('child_session_id') or '') if isinstance(value, dict) else ''
+        except (TypeError, ValueError, AttributeError):
+            return ''
+
+    @staticmethod
+    def _revoked(db: sqlite3.Connection, project_id: str, parent_session_id: str,
+                 event_id: str = '', encoded: str = '') -> bool:
+        generation = db.execute('SELECT generation FROM project_generations WHERE project_id=?',
+                                (project_id,)).fetchone()
+        current_generation = int(generation['generation']) if generation else 1
+        try:
+            requested_generation = json.loads(encoded).get('delivery_generation')
+        except (TypeError, ValueError, AttributeError):
+            requested_generation = None
+        if current_generation > 1 and requested_generation != current_generation:
+            return True
+        if requested_generation is not None and requested_generation != current_generation:
+            return True
+        if db.execute('SELECT 1 FROM revocations WHERE identity=?',
+                      (f'project:{project_id}',)).fetchone():
+            return True
+        child = DeliveryStore._child_from_payload(encoded)
+        for sid in (parent_session_id, child):
+            if sid and db.execute('SELECT 1 FROM revocations WHERE identity=?',
+                                  (f'session:{project_id}:{sid}',)).fetchone():
+                return True
+        return bool(event_id and db.execute('SELECT 1 FROM revocations WHERE identity=?',
+                                            (f'event:{project_id}:{event_id}',)).fetchone())
+
+    def _revoke(self, project_id: str, *, session_id: str = '', event_id: str = '') -> None:
+        """Purge delivery payloads and retain only a minimal replay tombstone."""
+        if not project_id:
+            raise ValueError('project identity required')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            now = self.clock()
+            if not session_id and not event_id:
+                current = db.execute('SELECT generation FROM project_generations WHERE project_id=?',
+                                     (project_id,)).fetchone()
+                next_generation = (int(current['generation']) + 1) if current else 2
+                db.execute('INSERT INTO project_generations(project_id,generation) VALUES(?,?) '
+                           'ON CONFLICT(project_id) DO UPDATE SET generation=excluded.generation',
+                           (project_id, next_generation))
+            if session_id:
+                identity, scope = f'session:{project_id}:{session_id}', 'session'
+            elif event_id:
+                identity, scope = f'event:{project_id}:{event_id}', 'event'
+            else:
+                identity, scope = f'project:{project_id}', 'project'
+            db.execute('INSERT OR IGNORE INTO revocations(identity,project_id,session_id,event_id,scope,created_at) VALUES(?,?,?,?,?,?)',
+                       (identity, project_id, session_id, event_id, scope, now))
+            for table in ('outbox', 'inbox', 'completion_sources'):
+                rows = db.execute(f'SELECT event_id,parent_session_id,payload FROM {table} WHERE project_id=?',
+                                  (project_id,)).fetchall()
+                for row in rows:
+                    if event_id:
+                        matches = row['event_id'] == event_id
+                    elif session_id:
+                        matches = (row['parent_session_id'] == session_id or
+                                   self._child_from_payload(row['payload']) == session_id)
+                    else:
+                        matches = True
+                    if matches:
+                        db.execute(f'DELETE FROM {table} WHERE event_id=? AND project_id=?',
+                                   (row['event_id'], project_id))
+                        db.execute('INSERT OR IGNORE INTO revocations(identity,project_id,session_id,event_id,scope,created_at) VALUES(?,?,?,?,?,?)',
+                                   (f'event:{project_id}:{row["event_id"]}', project_id, session_id, row['event_id'], 'event', now))
+            if not session_id and not event_id:
+                for table in ('outbox', 'inbox', 'completion_sources'):
+                    db.execute(f'DELETE FROM {table} WHERE project_id=?', (project_id,))
+            db.execute('COMMIT')
+
+    def revoke_session(self, project_id: str, session_id: str) -> None:
+        if not session_id:
+            raise ValueError('session identity required')
+        self._revoke(project_id, session_id=session_id)
+
+    def revoke_event(self, project_id: str, event_id: str) -> None:
+        if not event_id:
+            raise ValueError('event identity required')
+        self._revoke(project_id, event_id=event_id)
+
+    def revoke_project(self, project_id: str) -> None:
+        self._revoke(project_id)
+
+    def project_is_revoked(self, project_id: str) -> bool:
+        if not project_id:
+            raise ValueError('project identity required')
+        with self._db() as db:
+            return db.execute('SELECT 1 FROM revocations WHERE identity=?',
+                              (f'project:{project_id}',)).fetchone() is not None
+
+    def recreate_project(self, project_id: str) -> None:
+        """Explicitly open a deleted id; historical event tombstones survive."""
+        if not project_id:
+            raise ValueError('project identity required')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            current = db.execute('SELECT generation FROM project_generations WHERE project_id=?',
+                                 (project_id,)).fetchone()
+            next_generation = (int(current['generation']) + 1) if current else 1
+            db.execute('INSERT INTO project_generations(project_id,generation) VALUES(?,?) '
+                       'ON CONFLICT(project_id) DO UPDATE SET generation=excluded.generation',
+                       (project_id, next_generation))
+            db.execute("DELETE FROM revocations WHERE identity=? AND scope='project'",
+                       (f'project:{project_id}',))
+            db.execute('COMMIT')
+
+    def project_generation(self, project_id: str) -> int:
+        if not project_id:
+            raise ValueError('project identity required')
+        with self._db() as db:
+            db.execute('BEGIN IMMEDIATE')
+            row = db.execute('SELECT generation FROM project_generations WHERE project_id=?',
+                             (project_id,)).fetchone()
+            generation = int(row['generation']) if row else 1
+            if row is None:
+                db.execute('INSERT INTO project_generations(project_id,generation) VALUES(?,?)',
+                           (project_id, generation))
+            db.execute('COMMIT')
+            return generation
 
     def enqueue(self, event_id: str, project_id: str, parent_session_id: str,
                 payload: dict[str, Any]) -> bool:
@@ -128,6 +267,9 @@ class DeliveryStore:
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             encoded = self._payload(project_id, parent_session_id, payload)
+            if self._revoked(db, project_id, parent_session_id, event_id, encoded):
+                db.execute('ROLLBACK')
+                return False
             old = db.execute("SELECT project_id,parent_session_id,payload FROM outbox WHERE event_id=?",
                              (event_id,)).fetchone()
             if old is not None:
@@ -152,6 +294,9 @@ class DeliveryStore:
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             encoded = self._payload(project_id, parent_session_id, payload)
+            if self._revoked(db, project_id, parent_session_id, event_id, encoded):
+                db.execute('ROLLBACK')
+                raise DeliveryBlocked('delivery identity has been revoked')
             trusted = db.execute("SELECT project_id,parent_session_id,payload FROM outbox WHERE event_id=?",
                                 (event_id,)).fetchone()
             if trusted is None or (trusted['project_id'], trusted['parent_session_id'], trusted['payload']) != (project_id, parent_session_id, encoded):
@@ -292,6 +437,9 @@ class DeliveryStore:
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             encoded = self._payload(project_id, parent_session_id, payload)
+            if self._revoked(db, project_id, parent_session_id, event_id, encoded):
+                db.execute('ROLLBACK')
+                return
             old = db.execute('SELECT project_id,parent_session_id,payload FROM completion_sources WHERE event_id=?', (event_id,)).fetchone()
             if old is not None and (old['project_id'], old['parent_session_id'], old['payload']) != (project_id, parent_session_id, encoded):
                 db.execute('ROLLBACK')
@@ -305,6 +453,10 @@ class DeliveryStore:
         with self._db() as db:
             rows = db.execute('SELECT * FROM completion_sources ORDER BY created_at').fetchall()
         for row in rows:
+            with self._db() as db:
+                if self._revoked(db, row['project_id'], row['parent_session_id'],
+                                 row['event_id'], row['payload']):
+                    continue
             raw = json.loads(row['payload'])
             if self.enqueue(row['event_id'], row['project_id'], row['parent_session_id'], raw['payload']):
                 recovered += 1
@@ -371,7 +523,7 @@ def callback_payload(child: dict[str, Any], summary: str, event_id: str) -> dict
         who = character.get('agent_name') or character.get('display_name') or character.get('name') or 'agent'
     else:
         who = character or child.get('provider') or 'agent'
-    return {'event_id': event_id, 'child_session_id': child.get('session_id', ''),
+    result = {'event_id': event_id, 'child_session_id': child.get('session_id', ''),
             'who': who, 'status': child.get('status', 'unknown'),
             'task': child.get('task', ''), 'summary': summary or '',
             'provider': child.get('provider', 'claude'),
@@ -380,6 +532,9 @@ def callback_payload(child: dict[str, Any], summary: str, event_id: str) -> dict
                         f"ended with status={child.get('status', 'unknown')}.\n\nTask: {child.get('task', '')}\n\n"
                         f"Its final message:\n{summary or ''}\n\nThis is the callback you asked for at dispatch. Continue "
                         "the work it was part of -- do not re-dispatch it.")}
+    if '_delivery_generation' in child:
+        result['delivery_generation'] = child['_delivery_generation']
+    return result
 
 
 def drain_once(store: DeliveryStore, *, send_outbox: Callable[[dict[str, Any]], None],

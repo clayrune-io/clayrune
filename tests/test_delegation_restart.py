@@ -119,7 +119,7 @@ def harness(tmp_path):
     def start():
         child = subprocess.Popen([sys.executable, '-c', HARNESS, str(db), str(port)],
                                  cwd=str(ROOT), env=env, stdout=subprocess.DEVNULL,
-                                 stderr=subprocess.DEVNULL)
+                                 stderr=subprocess.DEVNULL, stdin=subprocess.DEVNULL)
         pids.append(child.pid)
         children.append(child)
         return child

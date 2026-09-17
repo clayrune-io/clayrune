@@ -4663,8 +4663,10 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     if revive_parent:
         if _delivery_store is None:
             raise RuntimeError('durable delegation store unavailable for revive')
+        revive_generation = _delivery_store.project_generation(project_id)
         revive_turn = _delivery_store.allocate_turn(session_id)
     else:
+        revive_generation = 1
         revive_turn = int(entry.get('delegation_turn', 1))
 
     # Carry the completion callback across the revive. A revive builds a
@@ -4853,6 +4855,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             # revive instead of silently dropping it.
             '_notify_session': _revive_notify_session,
             '_delegation_turn': revive_turn,
+            '_delivery_generation': revive_generation,
             '_notify_workflow': _revive_notify_workflow,
         }
         with mgr.lock:
@@ -4936,6 +4939,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'model_auto_requested': bool(entry.get('model_auto_requested')),
         '_notify_session': _revive_notify_session,   # see top-of-function comment
         '_delegation_turn': revive_turn,
+        '_delivery_generation': revive_generation,
         '_notify_workflow': _revive_notify_workflow,
     }
     with mgr.lock:
@@ -5219,6 +5223,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         'summary': '',
         'session_id': sid,
         'delegation_turn': int(session.get('_delegation_turn', 1)),
+        'delivery_generation': int(session.get('_delivery_generation', 1)),
         'claude_session_id': session.get('claude_session_id') or '',
         'provider_session_id': session.get('provider_session_id') or '',
         'started_at': session.get('started_at', ''),
@@ -5294,6 +5299,8 @@ def _allocate_delegation_turn(session):
         return int(session.get('_delegation_turn', 1))
     if _delivery_store is None:
         raise RuntimeError('durable delegation store unavailable')
+    session['_delivery_generation'] = _delivery_store.project_generation(
+        session.get('project_id', ''))
     turn = _delivery_store.allocate_turn(session.get('session_id', ''))
     session['_delegation_turn'] = turn
     return turn
@@ -5440,7 +5447,7 @@ def _deliver_outbox(row):
 
 
 def _process_inbox(row):
-    """Ask the ordinary send route to process an accepted receipt.
+    """Process an accepted receipt through the guarded parent handoff.
 
     Failure leaves the inbox pending. It can therefore be quota-blocked or
     parent-unavailable without causing a child relaunch or losing its result.
@@ -5676,6 +5683,7 @@ def _log_agent_completion_body(session):
         # BY once the in-memory session is gone (docs/research/CODEX_PARITY_AUDIT.md §0).
         'provider_session_id': session.get('provider_session_id', ''),
         'delegation_turn': int(session.get('_delegation_turn', 1)),
+        'delivery_generation': int(session.get('_delivery_generation', 1)),
         # Exact, untruncated recovery source. Legacy `summary` remains the UI
         # preview; recovery refuses rows without this field.
         'delegation_completion': (
@@ -7138,6 +7146,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              f"in another session")
 
         # Durable identity must exist before the provider process starts.
+        _delivery_generation_reserved = (
+            _delivery_store.project_generation(project_id)
+            if (notify_session and not incognito) else 1)
         _delegation_turn_reserved = (
             _delivery_store.allocate_turn(session_id)
             if (notify_session and not incognito) else 1)
@@ -7157,6 +7168,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'character': character_meta,
                 '_notify_session': notify_session,
                 '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
             }, strict=True)
 
         if use_streaming:
@@ -7220,6 +7232,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # result into that chat.
                 '_notify_session': notify_session,
                 '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
                 # Workflow step callback (MC-871 Phase 1) -- see notify_session
                 # above for the sibling mechanism this generalises.
                 '_notify_workflow': notify_workflow,
@@ -7764,6 +7777,8 @@ def delegation_inbox(project_id):
         return jsonify({'error': 'event_id, parent_session_id and payload required'}), 400
     try:
         created = _delivery_store.accept(event_id, project_id, parent_sid, payload)
+    except DeliveryBlocked as exc:
+        return jsonify({'error': str(exc)}), 410
     except (TypeError, ValueError) as exc:
         return jsonify({'error': str(exc)}), 400
     return jsonify({'ok': True, 'accepted': created, 'event_id': event_id}), 202
@@ -9780,24 +9795,41 @@ def delete_conversation(project_id, claude_session_id):
     the agent_log or already-written memory. Refuses a currently-live session
     (409) so we never yank a transcript out from under a running process.
     """
-    p = load_project(project_id)
-    if not p:
-        return jsonify({'error': 'project not found'}), 404
-    for s in agent_sessions.values():
-        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_session_id:
-            return jsonify({'error': 'conversation is live — stop it first'}), 409
-    f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
-    if not f:
-        return jsonify({'error': 'transcript not found'}), 404
-    try:
-        src = Path(f)
-        dst = src.parent / (src.name + '.deleted')
-        if dst.exists():
-            dst.unlink()
-        src.rename(dst)
-    except Exception as e:
-        _log(f"[delete-conversation] failed for {claude_session_id}: {e}", flush=True)
-        return jsonify({'error': 'delete failed'}), 500
+    with get_manager(project_id).lock:
+        p = load_project(project_id)
+        if not p:
+            return jsonify({'error': 'project not found'}), 404
+        for live_session in agent_sessions.values():
+            if (live_session.get('project_id') == project_id and
+                    live_session.get('claude_session_id') == claude_session_id):
+                return jsonify({'error': 'conversation is live'}), 409
+        f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
+        if not f:
+            return jsonify({'error': 'transcript not found'}), 404
+        # The route receives native Claude identity; delivery uses MC identity.
+        # Revoke every matching alias before the transcript rename.
+        aliases = {claude_session_id}
+        for session in agent_sessions.values():
+            if session.get('project_id') == project_id and (session.get('claude_session_id') == claude_session_id or session.get('session_id') == claude_session_id):
+                aliases.update(filter(None, (session.get('session_id'), session.get('claude_session_id'))))
+        for entry in _load_agent_log(project_id):
+            if entry.get('claude_session_id') == claude_session_id or entry.get('session_id') == claude_session_id:
+                aliases.update(filter(None, (entry.get('session_id'), entry.get('claude_session_id'))))
+        if _delivery_store is not None:
+            for alias in aliases:
+                _delivery_store.revoke_session(project_id, alias)
+        try:
+            src = Path(f)
+            dst = src.parent / (src.name + '.deleted')
+            if dst.exists():
+                dst.unlink()
+            src.rename(dst)
+        except Exception as e:
+            _log(f"[delete-conversation] failed for {claude_session_id}: {e}", flush=True)
+            return jsonify({'error': 'delete failed after delivery revocation',
+                            'partial': True,
+                            'delivery_revoked': True,
+                            'recovery': 'retry conversation deletion; delivery will remain blocked'}), 500
     _log(f"[delete-conversation] {project_id} / {claude_session_id} → {dst.name}", flush=True)
     return jsonify({'ok': True, 'claude_session_id': claude_session_id})
 
