@@ -13,6 +13,12 @@
   replay and revocation fences. Reject unsupported decoders before durable
   binding. Offline evidence only; no native rollout certification or activation.
 
+- Add a separate, bounded Codex rollout-envelope decoder for repository-backed
+  `session_meta`, `response_item`, and terminal-event shapes. Unsupported records
+  become explicit capture gaps, raw custom-tool inputs and opaque outputs remain
+  durable, replay is restart/idempotence fenced, and assistant text alone never
+  implies completion. The decoder remains offline and is not production-wired.
+
 - Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
   migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
   fixture controller rebuilds decoder state from verified source prefixes;

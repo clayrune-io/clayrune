@@ -445,6 +445,12 @@ durable source binding, restart replay and owner/privacy refusal. Unsupported
 decoder construction precedes durable binding. Native rollout and Qwen recording
 certification remain open: stdout and durable files are distinct source formats.
 
+Codex rollout fixture increment: a decoder distinct from exec stdout now handles
+only repository-evidenced rollout envelopes. Unknown shapes produce durable gaps;
+custom raw input, opaque output, native call identity, explicit task completion,
+mid-tool restart and sealed-source refusal are covered offline. It is not wired
+to the production rollout locator, UI, Scribe, or provider activation.
+
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.
 3. Per-provider unattended enforcement, isolated tool/config delivery, search and
