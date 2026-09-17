@@ -3362,7 +3362,8 @@ def _checkpoint_worker(snap):
                     # resume opened a new .jsonl → restart offset, KEEP
                     # the running summary as the reduce base (no loss).
                     _scribe_stat(pid, 'checkpoint_offset_reset')
-        except Exception:
+        except Exception as e:
+            _log(f'[scribe] checkpoint watermark read failed: {e}')
             prev_off, prev_summary = 0, ''
         delta, new_off = _scribe_render_delta(tf, prev_off)
         if not delta.strip() or new_off == prev_off:
@@ -3373,8 +3374,12 @@ def _checkpoint_worker(snap):
                'transcript_path': tf, 'byte_offset': new_off,
                'slice_hash': _sha8(delta)}
         if reason != 'extracted':
-            # Thin/refused/error delta — advance the offset (that span had
-            # nothing material) but write NO entry and keep prev summary.
+            # Only explicit content-policy dispositions acknowledge coverage.
+            # Operational/unknown failures leave this source span pending.
+            if reason != 'parse_empty':
+                _scribe_stat(pid, f'checkpoint_pending:{reason}')
+                return
+            # Deterministically thin delta: no entry; retain prior summary.
             rec['running_summary'] = prev_summary
             if _commit_managed_entry(p, wm_upsert=rec):
                 _dispatch_condense(p)
@@ -3385,9 +3390,14 @@ def _checkpoint_worker(snap):
                 merged = _scribe_call(
                     model, _SCRIBE_CHECKPOINT_REDUCE,
                     f"PREVIOUS:\n{prev_summary}\n\nNEW:\n{dsum}")
-                merged = (merged or '').strip().replace('\n', ' ').strip() or dsum
-            except Exception:
-                merged = dsum
+                merged = (merged or '').strip().replace('\n', ' ').strip()
+                if not merged or any(mk in merged.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
+                    _scribe_stat(pid, 'checkpoint_pending:reduce_incomplete')
+                    return
+            except Exception as e:
+                _log(f'[scribe] checkpoint reduce failed: {e}')
+                _scribe_stat(pid, 'checkpoint_pending:model_error')
+                return
         else:
             merged = dsum
         merged = merged[:300]
@@ -3409,8 +3419,8 @@ def _checkpoint_worker(snap):
             if _extract_continuity(p, delta, model,
                                    owner=snap.get('owner')) is not None:
                 _scribe_stat(pid, 'continuity_updated')
-    except Exception:
-        pass
+    except Exception as e:
+        _log(f'[scribe] checkpoint failed: {e}')
     finally:
         sema.release()
         with _checkpoint_guard:
@@ -3926,6 +3936,8 @@ def _scribe_split_why(raw):
 def _scribe_summarize_text(text, model, want_why=False):
     """Core: rendered-transcript text → (one_line_summary, 'extracted') or
     (None, reason). Thin-transcript guard + single/map-reduce + refusal guard.
+    Map coverage is all-or-nothing: any failed/empty/refused chunk returns
+    model_error (the existing caller-compatible reason), never partial success.
     No I/O, no locks — shared by _scribe_extract (whole transcript, completion
     path) and the Step-6 checkpoint worker (delta). Never raises.
 
@@ -3961,10 +3973,17 @@ def _scribe_summarize_text(text, model, want_why=False):
             partials = []
             for i, ch in enumerate(chunks):
                 try:
-                    partials.append(_scribe_call(model, _SCRIBE_MAP_PROMPT, ch))
+                    partial = (_scribe_call(model, _SCRIBE_MAP_PROMPT, ch) or '').strip()
+                    if not partial or any(mk in partial.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
+                        _log(f"[scribe] model_error: incomplete map coverage at chunk "
+                             f"{i + 1}/{len(chunks)} (model={model})")
+                        return None, 'model_error'
+                    partials.append(partial)
                 except Exception as e:
                     _log(f"[scribe] map chunk {i + 1}/{len(chunks)} failed "
                          f"(model={model}, {len(ch)}c): {e}")
+                    # A surviving subset is not a summary of the full span.
+                    return None, 'model_error'
             if not partials:
                 _log(f"[scribe] model_error: all {len(chunks)} map chunks failed "
                      f"(model={model})")

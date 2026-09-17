@@ -6,6 +6,19 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17] — Provider-hardening review corrections (feature branch)
+
+- Separate observed model telemetry from requested continuation settings;
+  preserve explicit native defaults and saved Claude effort across respawns.
+  Other provider dispatches retain effort intent with a visible unsupported notice.
+- Keep failed/refused checkpoint spans pending and reject incomplete map/reduce
+  coverage instead of acknowledging missing knowledge.
+- Record failed Hivemind outcomes honestly; preserve live worker ownership on
+  bookkeeping failures and prevent repeated unsupported/uncertain launches.
+- Refine the offline execution contract after independent review. These changes
+  are not live journal activation or a claim of full provider parity; migration,
+  safety certification and clean-environment validation remain required.
+
 ## [2026-09-16m] — Establish provider-neutral conversation storage contracts
 
 - Add a transactional conversation journal with project isolation, ordered

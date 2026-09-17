@@ -3909,8 +3909,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['provider_session_id'] = native_id
                 native_model = ev.payload.get('model')
                 if isinstance(native_model, str) and native_model:
-                    session['model'] = native_model
-                    session['agent_model'] = native_model
+                    # Observation is not user consent. In particular Qwen's
+                    # resolved INIT model must not become the next respawn's
+                    # requested --model or override an explicit native default.
+                    session['observed_model'] = native_model
                 _cb('on_init', ev)
             elif ev.type == EventType.TURN_END:
                 # Capture the token counters the turn reports. Without this a

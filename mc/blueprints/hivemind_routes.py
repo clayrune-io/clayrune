@@ -420,6 +420,14 @@ def _hm_resolve_dependencies(workstreams):
     return ready
 
 
+def _hm_terminal_outcome(workstreams):
+    """Terminal is not synonymous with successful; never synthesize failures."""
+    if not workstreams or any(ws.get('status') not in ('completed', 'failed')
+                              for ws in workstreams):
+        return None
+    return 'completed' if all(ws.get('status') == 'completed' for ws in workstreams) else 'failed'
+
+
 def _hm_list_all():
     """List all hiveminds."""
     result = []
@@ -1329,6 +1337,33 @@ def _hm_auto_spawn_workers(hivemind_id):
     workstreams = _hm_list_workstreams(hivemind_id)
     max_concurrent = manifest.get('config', {}).get('max_concurrent_workers', 3)
 
+    # A successful spawn can precede a failed disk write. Reconcile live
+    # in-memory ownership BEFORE selecting pending work, or the next tick
+    # could blindly launch a second worker for the same workstream.
+    for ws in workstreams:
+        if ws.get('status') not in ('pending', 'blocked', 'active'):
+            continue
+        live = [(sid, session) for sid, session in list(agent_sessions.items())
+                if session.get('hivemind_id') == hivemind_id
+                and session.get('hivemind_ws_id') == ws['id']
+                and (session.get('status') == 'running' or session.get('process_alive'))]
+        if not live:
+            continue
+        if len(live) != 1:
+            _log(f"[hivemind] Multiple live workers for {ws['id']}; refusing new spawns")
+            return  # uncertain capacity/ownership; never choose one arbitrarily
+        sid, _session = live[0]
+        if ws.get('status') == 'active' and ws.get('current_agent_session_id') == sid:
+            continue
+        ws['status'] = 'active'
+        ws['current_agent_session_id'] = sid
+        ws.pop('failure_reason', None)
+        try:
+            _hm_save_workstream(hivemind_id, ws['id'], ws)
+        except Exception as e:
+            _log(f"[hivemind] Could not persist live worker ownership for {ws['id']}: {e}")
+            return  # no additional launches while ownership cannot be persisted
+
     # Count currently active workers
     active_count = sum(1 for ws in workstreams if ws.get('status') == 'active')
     if active_count >= max_concurrent:
@@ -1358,19 +1393,42 @@ def _hm_auto_spawn_workers(hivemind_id):
 
         try:
             session_id = _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id)
-            ws['status'] = 'active'
-            ws['current_agent_session_id'] = session_id
-            ws['sessions_used'] = ws.get('sessions_used', 0) + 1
+        except Exception as e:
+            _log(f"[hivemind] Failed to auto-spawn worker for {ws_id}: {e}")
+            # Validation failure proves no worker was launched. Other errors
+            # can happen after process creation: block for reconciliation,
+            # never assume a second spawn is safe or claim execution stopped.
+            from mc.engine_selection import EngineSelectionError
+            invalid_engine = isinstance(e, EngineSelectionError)
+            ws['status'] = 'failed' if invalid_engine else 'blocked'
+            ws['failure_reason'] = 'unsupported_engine' if invalid_engine else 'launch_uncertain'
             _hm_save_workstream(hivemind_id, ws_id, ws)
             _hm_push_sse(hivemind_id, {
-                'type': 'hivemind_worker_spawned',
-                'hivemind_id': hivemind_id,
-                'ws_id': ws_id,
-                'session_id': session_id,
+                'type': 'hivemind_workstream', 'hivemind_id': hivemind_id,
+                'ws_id': ws_id, 'status': ws['status'],
+                'reason': ws['failure_reason'],
+            })
+            continue
+
+        # A returned session is live ownership, even when bookkeeping fails.
+        # Never turn cosmetic/write failures into a worker failure outcome.
+        ws['status'] = 'active'
+        ws['current_agent_session_id'] = session_id
+        ws['sessions_used'] = ws.get('sessions_used', 0) + 1
+        ws.pop('failure_reason', None)
+        try:
+            _hm_save_workstream(hivemind_id, ws_id, ws)
+        except Exception as e:
+            _log(f"[hivemind] Worker {session_id} started but ownership save failed: {e}")
+            return
+        try:
+            _hm_push_sse(hivemind_id, {
+                'type': 'hivemind_worker_spawned', 'hivemind_id': hivemind_id,
+                'ws_id': ws_id, 'session_id': session_id,
             })
             _log_agent_activity(project_id, f"Hivemind auto-spawned worker for {ws.get('title', ws_id)}")
         except Exception as e:
-            _log(f"[hivemind] Failed to auto-spawn worker for {ws_id}: {e}")
+            _log(f"[hivemind] Worker {session_id} started; notification failed: {e}")
 
 
 # ── Hivemind API: Message Bus ────────────────────────────────────────────────
@@ -1738,10 +1796,25 @@ def _hivemind_orchestrator_loop():
                 # Re-read workstreams after potential updates
                 workstreams = _hm_list_workstreams(hivemind_id)
 
+                # Failed dependencies cannot ever satisfy a success prerequisite.
+                # Propagate transitively so descendants do not hang indefinitely.
+                failed_ids = {ws['id'] for ws in workstreams if ws.get('status') == 'failed'}
+                changed = True
+                while changed:
+                    changed = False
+                    for ws in workstreams:
+                        if (ws.get('status') in ('pending', 'blocked')
+                                and any(dep in failed_ids for dep in ws.get('dependencies', []))):
+                            ws['status'] = 'failed'
+                            ws['failure_reason'] = 'dependency_failed'
+                            failed_ids.add(ws['id'])
+                            _hm_save_workstream(hivemind_id, ws['id'], ws)
+                            changed = True
+
                 # Check for blocked workstreams that are now unblocked
                 completed_ids = {ws['id'] for ws in workstreams if ws.get('status') == 'completed'}
                 for ws in workstreams:
-                    if ws.get('status') == 'blocked':
+                    if ws.get('status') == 'blocked' and not ws.get('failure_reason'):
                         deps = ws.get('dependencies', [])
                         if all(dep in completed_ids for dep in deps):
                             ws['status'] = 'pending'
@@ -1758,18 +1831,19 @@ def _hivemind_orchestrator_loop():
 
                 # Check if all workstreams are completed
                 workstreams = _hm_list_workstreams(hivemind_id)
-                all_completed = all(ws.get('status') in ('completed', 'failed') for ws in workstreams)
-                if all_completed and workstreams:
-                    manifest['status'] = 'completed'
+                outcome = _hm_terminal_outcome(workstreams)
+                if outcome:
+                    manifest['status'] = outcome
                     manifest['updated_at'] = now_iso()
                     _hm_save_manifest(hivemind_id, manifest)
                     _hm_push_sse(hivemind_id, {
                         'type': 'hivemind_status',
                         'hivemind_id': hivemind_id,
-                        'status': 'completed',
+                        'status': outcome,
                     })
                     # Trigger final synthesis
-                    _hm_dispatch_orchestrator(hivemind_id, 'synthesize')
+                    if outcome == 'completed':
+                        _hm_dispatch_orchestrator(hivemind_id, 'synthesize')
 
         except Exception as e:
             _log(f"[hivemind-orchestrator] Error: {e}")

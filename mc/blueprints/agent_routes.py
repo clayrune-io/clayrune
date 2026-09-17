@@ -578,9 +578,9 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     model = model_override if model_override is not None else (
         (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
     )
-    effort = (effort_override
-              or (project or {}).get('agent_effort', '')
-              or state.CONFIG.get('agent_effort', ''))
+    effort = (effort_override if effort_override is not None else
+              ((project or {}).get('agent_effort', '')
+               or state.CONFIG.get('agent_effort', '')))
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=state.CONFIG.get('agent_max_turns', 0),
@@ -4247,7 +4247,9 @@ def _auto_recover_failed_resume(session):
     try:
         if mode == 'B':
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True),
+            cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
+                   model_override=_continuation_model(session, p),
+                   effort_override=_continuation_effort(session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -4285,7 +4287,9 @@ def _auto_recover_failed_resume(session):
         else:
             # Mode A
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p),
+            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p,
+                   model_override=_continuation_model(session, p),
+                   effort_override=_continuation_effort(session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4639,6 +4643,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     if not claude_sid:
         return None
     revive_model = _continuation_model(entry, p)
+    revive_effort = _continuation_effort(entry)
 
     # Carry the completion callback across the revive. A revive builds a
     # brand-new session dict from scratch (below), so without this a session
@@ -4747,7 +4752,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
 
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
-               *_build_claude_flags(p, streaming=True, model_override=revive_model)]
+               *_build_claude_flags(p, streaming=True, model_override=revive_model,
+                                    effort_override=revive_effort)]
         _sp_path = None
         if context:
             _sp_args, _sp_path = _sysprompt_file_args(context)
@@ -4816,6 +4822,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             'model': revive_model,
             'agent_model': revive_model,
             'pinned_model': revive_model,
+            'requested_effort': revive_effort,
             'model_auto_requested': bool(entry.get('model_auto_requested')),
             # See the comment above `_revive_notify_session` at the top of
             # this function — carries the completion callback across the
@@ -4846,7 +4853,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # Mode A
     _sp_args, _sp_path = _sysprompt_file_args(context)
     cmd = [_resolve_claude(), *resume_flags, '-p', revival_msg,
-           *_build_claude_flags(p, model_override=revive_model), *_sp_args]
+           *_build_claude_flags(p, model_override=revive_model,
+                                effort_override=revive_effort), *_sp_args]
     try:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4897,6 +4905,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'model': revive_model,
         'agent_model': revive_model,
         'pinned_model': revive_model,
+        'requested_effort': revive_effort,
         'model_auto_requested': bool(entry.get('model_auto_requested')),
         '_notify_session': _revive_notify_session,   # see top-of-function comment
         '_notify_workflow': _revive_notify_workflow,
@@ -4993,9 +5002,9 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
                                  incognito=bool(entry.get('incognito')),
                                  reuse_session_id=session_id,
                                  provider_override=provider,
+                                 effort_override=_continuation_effort(entry),
                                  model_override=(entry.get('pinned_model')
-                                                 or entry.get('agent_model')
-                                                 or entry.get('model') or ''),
+                                                 or _requested_model_snapshot(entry)),
                                  character=character_ref,
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
@@ -5100,8 +5109,11 @@ def _log_agent_dispatch_pending(session, *, identity_only=False):
         'task': session.get('task', ''),
         'status': 'in_progress',
         'provider': session.get('provider') or 'claude',
-        'agent_model': session.get('model') or session.get('agent_model') or '',
+        'agent_model': _requested_model_snapshot(session),
         'pinned_model': session.get('pinned_model') or '',
+        'requested_effort': _continuation_effort(session),
+        'observed_model': session.get('observed_model') or '',
+        'effort_support': session.get('effort_support', 'supported' if (session.get('provider') or 'claude') == 'claude' else 'unsupported'),
         'model_auto_requested': bool(session.get('model_auto_requested')),
         'summary': '',
         'session_id': sid,
@@ -5476,9 +5488,12 @@ def _log_agent_completion_body(session):
         # (used by the reconciler to distinguish first-boot baseline).
         'scribed': False,
         # Token telemetry from transcript (indicative; populated going forward).
-        'model': session.get('model') or session.get('agent_model') or _telemetry.get('model', ''),
-        'agent_model': session.get('model') or session.get('agent_model') or _telemetry.get('model', ''),
+        'model': _requested_model_snapshot(session),
+        'agent_model': _requested_model_snapshot(session),
         'pinned_model': session.get('pinned_model') or '',
+        'requested_effort': _continuation_effort(session),
+        'observed_model': session.get('observed_model') or _telemetry.get('model', ''),
+        'effort_support': session.get('effort_support', 'supported' if (session.get('provider') or 'claude') == 'claude' else 'unsupported'),
         'model_auto_requested': bool(session.get('model_auto_requested')),
         'input_tokens': _telemetry.get('input_tokens', 0),
         'output_tokens': _telemetry.get('output_tokens', 0),
@@ -5619,7 +5634,8 @@ def _runtime_note_init(_event, session):
         for row in rows:
             if row.get('session_id') == session.get('session_id'):
                 row['provider_session_id'] = session.get('provider_session_id') or ''
-                row['agent_model'] = session.get('model') or session.get('agent_model') or ''
+                row['observed_model'] = session.get('observed_model') or ''
+                row['agent_model'] = _requested_model_snapshot(session)
                 return
     _update_agent_log(session['project_id'], backfill)
 
@@ -5669,7 +5685,8 @@ def _auto_dispatch_followup(session, message):
     # pinned conversation would drop back to the project/global model).
     _pin = _continuation_model(session, p)
     cmd = [_resolve_claude(), *resume_flags, '-p', message,
-           *_build_claude_flags(p, model_override=_pin), *_sp_args]
+           *_build_claude_flags(p, model_override=_pin,
+                                effort_override=_continuation_effort(session)), *_sp_args]
     if _pin:
         session['model'] = _pin
         session['model_source'] = 'manual'
@@ -5987,7 +6004,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
-                          character_body='', model_override='',
+                          character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
                           notify_session='', notify_workflow=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
@@ -6064,6 +6081,11 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'trigger_id': trigger_id,
             'provider': provider_name,
             'agent_model': model,
+            'requested_effort': _requested_effort(
+                p, character_meta, override=effort_override,
+                prior=(_prior_conversation_settings(project_id, resume_id, provider_name)
+                       if resume_id else None)),
+            'effort_support': 'unsupported',  # intent only; runtime effort is not wired here
             'pinned_model': model_override or '',
             'character': character_meta,
             '_resume_id': resume_id,
@@ -6079,6 +6101,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             '_notify_session': notify_session,
             '_notify_workflow': notify_workflow,
         }
+        if session['requested_effort']:
+            session['log_lines'].append(
+                f"[Requested effort '{session['requested_effort']}' is preserved, "
+                f"but effort control is not supported by this {provider_name} dispatch path.]")
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
             # never blank even if this turn's INIT event doesn't fire (e.g.
@@ -6346,6 +6372,29 @@ def _character_engine(character_meta, key):
     return v.strip() if isinstance(v, str) else ''
 
 
+def _requested_model_snapshot(session):
+    """Field presence preserves an intentional native-default request ('')."""
+    if 'model' in session:
+        return session['model'] or ''
+    return session.get('agent_model') or ''
+
+
+def _continuation_effort(session):
+    """An absent legacy snapshot means native default, never today's settings."""
+    return session.get('requested_effort', '') or ''
+
+
+def _requested_effort(project, character=None, override=None, prior=None):
+    """None means omitted; an explicit empty override selects native default."""
+    if override is not None:
+        return override
+    if prior is not None:
+        return _continuation_effort(prior)
+    return (_character_engine(character, 'effort')
+            or (project or {}).get('agent_effort', '')
+            or state.CONFIG.get('agent_effort', '') or '')
+
+
 def _continuation_model(session, project=None):
     """Keep a conversation's model unless its user explicitly chose defaults.
 
@@ -6354,8 +6403,7 @@ def _continuation_model(session, project=None):
     """
     if session.get('model_auto_requested'):
         return _resolve_dispatch_model(project, '')[0]
-    return (session.get('pinned_model') or session.get('model')
-            or session.get('agent_model') or '')
+    return session.get('pinned_model') or _requested_model_snapshot(session)
 
 
 def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
@@ -6392,8 +6440,8 @@ def _prior_conversation_settings(project_id, resume_id, provider=''):
         native_id = (row.get('claude_session_id') if owner == 'claude'
                      else row.get('provider_session_id'))
         if native_id == resume_id:
-            if (row.get('model_auto_requested') or row.get('pinned_model')
-                    or row.get('model') or row.get('agent_model')):
+            if ('requested_effort' in row or row.get('model_auto_requested') or row.get('pinned_model')
+                    or 'model' in row or 'agent_model' in row):
                 return row
     return {}
 
@@ -6402,7 +6450,7 @@ def _prior_conversation_model(project_id, resume_id, provider=''):
     row = _prior_conversation_settings(project_id, resume_id, provider)
     if row.get('model_auto_requested'):
         return ''
-    return row.get('pinned_model') or row.get('model') or row.get('agent_model') or ''
+    return row.get('pinned_model') or _requested_model_snapshot(row)
 
 
 def _model_provider_mismatch(provider_name, model):
@@ -6521,7 +6569,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
-                             model_override='', strict_character=False,
+                             model_override='', strict_character=False, effort_override=None,
                              notify_session='', notify_workflow=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
@@ -6667,6 +6715,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          character_meta=character_meta,
                                          character_body=character_body,
                                          model_override=model_override,
+                                         effort_override=effort_override,
                                          resume_id=resume_id,
                                          source=source,
                                          notify_session=notify_session,
@@ -6762,7 +6811,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # itself, which is the user speaking about this one turn. (`_char_model`
     # itself, and its merge into `model_override`, happen earlier — before the
     # non-claude provider branch above, which returns before reaching here.)
-    _char_effort = _character_engine(character_meta, 'effort') or None
+    _char_effort = _requested_effort(
+        p, character_meta, override=effort_override, prior=(_prior_conversation_settings(
+            project_id, resume_id, provider_name) if resume_id else None))
     _char_agent_name = (character_meta or {}).get('agent_name') or ''
     _char_skills = (character_meta or {}).get('skills') or []
     if resume_id and not model_override:
@@ -6770,7 +6821,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # native resume restore it, rather than choosing today's defaults.
         routed_model, routed_source = '', 'resume'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
-                                         model_override='')
+                                         model_override='', effort_override=_char_effort)
         context = _build_agent_context(
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
@@ -6937,7 +6988,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
-                'agent_model': p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+                'agent_model': routed_model,
                 # Auto-router attribution — `model` is what actually got
                 # passed via --model (after override); `model_source` is
                 # 'manual' / 'auto' / 'fallback'. Frontend pill reads these.
@@ -6948,6 +6999,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # BYPASSES the auto-router for its whole life — until the user
                 # changes or clears it. Empty = follow project/global/auto.
                 'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
                 'model_auto_requested': _resume_auto_requested,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
@@ -7047,7 +7099,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
-                'agent_model': p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+                'agent_model': routed_model,
                 'model': routed_model,
                 'model_source': routed_source,
                 # Per-chat model PIN. An explicit choice (+New picker or the
@@ -7055,6 +7107,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # BYPASSES the auto-router for its whole life — until the user
                 # changes or clears it. Empty = follow project/global/auto.
                 'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
                 'model_auto_requested': _resume_auto_requested,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
@@ -7102,6 +7155,11 @@ def agent_dispatch(project_id):
     # An explicit model wins, including on resume. Omission restores the
     # conversation model rather than reapplying project defaults.
     model_override = (data.get('model') or '').strip()
+    effort_override = data.get('effort') if 'effort' in data else None
+    if effort_override is not None and (
+            not isinstance(effort_override, str)
+            or (effort_override and not _re_auth.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort_override))):
+        return jsonify({'error': 'invalid effort'}), 400
     # Per-chat character/persona ("scope:name", e.g. "project:code-reviewer").
     # Only meaningful on a FRESH chat — a resume keeps the original spawn's
     # persona (claude -r can't change the system prompt), so ignore it there.
@@ -7142,6 +7200,7 @@ def agent_dispatch(project_id):
                                               source=source,
                                               trigger_type=trigger_type,
                                               model_override=model_override,
+                                              effort_override=effort_override,
                                               # A fresh, explicit ask this turn
                                               # (character is '' on a resume,
                                               # above) — the one call site
@@ -7214,8 +7273,9 @@ def agent_set_model(project_id, session_id):
                 row.update({
                     'claude_session_id': session.get('claude_session_id') or row.get('claude_session_id', ''),
                     'model': session.get('model') or '',
-                    'agent_model': session.get('agent_model') or session.get('model') or '',
+                    'agent_model': _requested_model_snapshot(session),
                     'pinned_model': model,
+                    'requested_effort': _continuation_effort(session),
                     'model_auto_requested': not bool(model),
                     'character': session.get('character'),
                     'source': session.get('source', ''),
@@ -7798,7 +7858,8 @@ def agent_followup(project_id):
                 # to the project/global default on the next crash-respawn).
                 _pin = _continuation_model(existing, p)
                 cmd = [_resolve_claude(), *resume_flags,
-                       *_build_claude_flags(p, streaming=True, model_override=_pin)]
+                       *_build_claude_flags(p, streaming=True, model_override=_pin,
+                                            effort_override=_continuation_effort(existing))]
                 if _pin:
                     existing['model'] = _pin
                     existing['model_source'] = 'manual'
@@ -7850,7 +7911,8 @@ def agent_followup(project_id):
                     _sticky_pin = _continuation_model(existing, p)
                     _sticky_cmd = [_resolve_claude(), *_sticky_resume,
                                    *_build_claude_flags(p, streaming=True,
-                                                        model_override=_sticky_pin)]
+                                                        model_override=_sticky_pin,
+                                                        effort_override=_continuation_effort(existing))]
                     if _sticky_pin:
                         existing['model'] = _sticky_pin
                         existing['model_source'] = 'manual'
@@ -8003,7 +8065,8 @@ def agent_followup(project_id):
             resume_flags = ['-r', claude_sid] if claude_sid else []
             _sp_path = None
             cmd = [_resolve_claude(), *resume_flags,
-                   *_build_claude_flags(p, streaming=True, model_override=new_model)]
+                   *_build_claude_flags(p, streaming=True, model_override=new_model,
+                                        effort_override=_continuation_effort(mrs['existing']))]
             if resume_flags:
                 _sp_args, _sp_path = _respawn_sysprompt_args(mrs['existing'], p, message)
             else:
@@ -8177,7 +8240,8 @@ def agent_followup(project_id):
             # Honor a per-chat model pin (Mode A rebuilds the command each turn).
             _pin = _continuation_model(existing, p)
             cmd = [_resolve_claude(), *resume_flags, '-p', claude_followup_msg,
-                   *_build_claude_flags(p, model_override=_pin)]
+                   *_build_claude_flags(p, model_override=_pin,
+                                        effort_override=_continuation_effort(existing))]
             if _pin:
                 existing['model'] = _pin
                 existing['model_source'] = 'manual'
@@ -8439,7 +8503,9 @@ def agent_interrupt(project_id):
 
             if is_mode_b:
                 cmd = [_resolve_claude(), *resume_flags,
-                       *_build_claude_flags(p, streaming=True)]
+                       *_build_claude_flags(p, streaming=True,
+                                            model_override=_continuation_model(session, p),
+                                            effort_override=_continuation_effort(session))]
                 if resume_flags:
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
                     cmd.extend(_sp_args)
@@ -8486,13 +8552,16 @@ def agent_interrupt(project_id):
                 if resume_flags:
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
                     cmd = [_resolve_claude(), *resume_flags, '-p', claude_respawn_msg,
-                           *_build_claude_flags(p), *_sp_args]
+                           *_build_claude_flags(p, model_override=_continuation_model(session, p),
+                                                effort_override=_continuation_effort(session)), *_sp_args]
                 else:
                     if not context:
                         context = _fresh_context_for(p, session, message or '')
                     session['_system_prompt'] = context
                     _sp_args, _sp_path = _sysprompt_file_args(context)
-                    cmd = [_resolve_claude(), '-p', claude_respawn_msg, *_build_claude_flags(p),
+                    cmd = [_resolve_claude(), '-p', claude_respawn_msg, *_build_claude_flags(p,
+                           model_override=_continuation_model(session, p),
+                           effort_override=_continuation_effort(session)),
                            *_sp_args]
 
                 proc = subprocess.Popen(
@@ -8874,6 +8943,9 @@ def agent_status(project_id):
                 # Per-chat model pin (empty = follow default/auto). Drives the
                 # header pill's "pinned" state + the in-chat model switcher.
                 'pinned_model': s.get('pinned_model', ''),
+                'requested_effort': _continuation_effort(s),
+                'observed_model': s.get('observed_model') or '',
+                'effort_support': s.get('effort_support', 'supported' if (s.get('provider') or 'claude') == 'claude' else 'unsupported'),
                 # Per-chat persona {name,scope,display_name} or None → header pill.
                 'character': s.get('character'),
                 # Who the Channel roster (static/js/conversation.js) groups this

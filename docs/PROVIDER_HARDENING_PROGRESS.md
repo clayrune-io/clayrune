@@ -7,6 +7,37 @@ with deterministic in-app provider setup, and equivalent safety outcomes across
 supported providers. The inventory is in
 `research/PROVIDER_DEFAULT_CLASH_AUDIT_2026-09-16.md`.
 
+## Feature-branch continuation after independent review
+
+Development is isolated on `feat/provider-neutral-execution`. The changes in
+this section are not merged to the release branch and do not change the running
+installation. Detailed remaining contracts: `PROVIDER_EXECUTION_CONTRACT.md`.
+
+- F1: generic INIT stores observed model separately; Qwen observation never
+  replaces requested continuation settings. Persistence preserves explicit empty
+  model requests rather than filling them with transcript telemetry.
+- F7: requested effort is snapshotted, persisted and restored through Claude
+  hot/cold continuation. Explicit empty differs from omission. Non-Claude intent
+  is retained with an unsupported-control notice; no unsupported flags are sent.
+- F2: operational failures and model refusals leave checkpoint source spans
+  pending. Only deterministic thin-content skips acknowledge without a summary.
+  Failed cumulative reduction preserves prior knowledge; failed/empty/refused
+  map chunks reject the complete span instead of accepting a surviving subset.
+- F3, partial: all-failed/mixed-failed terminal workstreams produce failed run
+  status, never successful synthesis. Unsupported-engine spawn failures persist;
+  other launch exceptions block as uncertain. Post-spawn notification/persistence
+  failures do not relabel a live worker failed, and live session metadata is
+  reconciled before launching another worker. Failed prerequisites propagate.
+  Durable launch intent, concurrent spawn serialization, account-scoped quota,
+  restart reconciliation and domain deliverable acceptance remain open.
+
+No production server, provider call, clean-install certification, database
+migration or live journal activation has been performed in this worktree.
+
+Regression checkpoint: 715 selected offline tests pass after the review fixes,
+including real temporary memory-watermark writes and simulated Hivemind spawn,
+notification and persistence failures. This does not certify real CLI isolation.
+
 ## Architecture direction — replace coupling, not just individual failures
 
 The completion target is a provider-neutral execution boundary, not a count of
