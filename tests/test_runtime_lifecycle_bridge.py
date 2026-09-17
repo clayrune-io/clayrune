@@ -1,6 +1,6 @@
 """Focused tests for the injected, provider-neutral runtime bridge seam."""
 from pathlib import Path
-from types import MappingProxyType
+from types import MappingProxyType, SimpleNamespace
 
 import pytest
 
@@ -125,7 +125,8 @@ def test_callbacks_are_independent_and_resolve_transcript_at_exit(env):
     try:
         sid = ar._dispatch_via_runtime({'id': 'p', 'project_path': str(tmp)}, 'task', provider_name='codex', lifecycle_bridge_factory=lambda f: B())
         s = sessions[sid]; s['provider_session_id'] = 'native'
-        runtime.callbacks['on_init'](None, s); runtime.callbacks['on_process_exit'](None, s)
+        runtime.callbacks['on_init'](SimpleNamespace(payload={'session_id': 'native'}), s)
+        runtime.callbacks['on_process_exit'](None, s)
         assert seen == ['prior-init', 'bridge-init', 'prior-exit', ('bridge-exit', tmp / 'rollout.jsonl')]
     finally:
         ar._RUNTIME_CALLBACKS['on_init'], ar._RUNTIME_CALLBACKS['on_process_exit'] = old_init, old_exit
@@ -181,7 +182,7 @@ def test_resolver_failure_is_visible_and_does_not_escape(env):
         def on_exit(self, e, s, source): seen.append(source)
     sid = ar._dispatch_via_runtime({'id': 'p', 'project_path': str(tmp)}, 'task', provider_name='codex', lifecycle_bridge_factory=lambda f: B())
     s = sessions[sid]; s['provider_session_id'] = 'native'
-    runtime.callbacks['on_process_exit'](None, s)
+    runtime.callbacks['on_init'](SimpleNamespace(payload={'session_id': 'native'}), s)
     assert seen == [] and s['_lifecycle_errors']
 
 
@@ -233,7 +234,8 @@ def test_bridge_callback_failures_are_isolated_and_globals_unchanged(env):
         session = sessions[sid]
         session['provider_session_id'] = 'native'
         injected_callbacks = runtime.callbacks
-        injected_callbacks['on_init'](None, session)
+        injected_callbacks['on_init'](
+            SimpleNamespace(payload={'session_id': 'native'}), session)
         injected_callbacks['on_process_exit'](None, session)
         assert seen == ['prior-init', 'prior-exit']
         assert session['_lifecycle_errors'] == ['bridge-init', 'bridge-exit']

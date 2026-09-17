@@ -15,6 +15,12 @@
   Factory, launch, transcript-resolution, and callback failures fail closed or
   remain observable without retrying a provider launch.
 
+- Add the injected store-backed bridge composition object. It atomically owns
+  launch intent, rechecks caller-supplied authorization at the guarded spawn
+  boundary, binds native identity and transcript source together, preserves
+  exact resume/model/effort intent for restart reconstruction, and refuses to
+  infer terminal success before native binding or from ambiguous exit evidence.
+
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
   replay and revocation fences. Reject unsupported decoders before durable

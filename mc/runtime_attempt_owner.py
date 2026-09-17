@@ -66,6 +66,97 @@ class RuntimeLifecycleBridge(Protocol):
     def on_exit(self, event: Any, session: dict, native_source: Optional[Path]) -> None: ...
 
 
+class AuthorizedRuntimeLifecycleBridge:
+    """Composition object joining runtime callbacks to one injected owner.
+
+    The caller supplies both the owner and the pre-authorized launch facts.
+    This class owns no store, path, configuration, or provider defaults.
+    """
+    def __init__(self, *, owner: 'RuntimeAttemptOwner', facts: DispatchFacts,
+                 launch_facts: dict, authorize: Callable[[], None]) -> None:
+        if not callable(authorize):
+            raise ValueError('fresh launch authorization callback is required')
+        self.owner = owner
+        self.facts = facts
+        self.launch_facts = launch_facts
+        self.authorize = authorize
+        self.prepared: PreparedAttempt | None = None
+        self._attempt_revision: int | None = None
+        self._bound = False
+        self._finished = False
+
+    def prepare(self, facts: DispatchFacts) -> None:
+        if facts != self.facts:
+            raise ValueError('dispatch facts changed before preparation')
+        self.prepared = self.owner.prepare(
+            engine={'provider': facts.provider, 'model': facts.model,
+                    'effort': facts.effort, 'resume_id': facts.resume_id,
+                    'settings': dict(facts.provenance)},
+            user_message={'text': facts.task}, request_id=f'{facts.mc_session_id}:request',
+            provenance=dict(facts.provenance), launch_facts=self.launch_facts,
+            incognito=facts.incognito)
+        if self.prepared is None and not facts.incognito:
+            raise RuntimeError('lifecycle preparation returned no attempt')
+
+    def launch(self, spawn: Callable[[], Any]) -> Any:
+        if self.prepared is None:
+            if self.facts.incognito:
+                return spawn()
+            raise RuntimeError('launch before lifecycle preparation')
+        launched: list[Any] = []
+
+        def _owned_spawn() -> str:
+            handle = spawn()
+            launched.append(handle)
+            process_reference = getattr(handle, 'mc_session_id', None)
+            if not isinstance(process_reference, str) or not process_reference:
+                raise TypeError('runtime launch must return an identified session handle')
+            return process_reference
+
+        state = self.owner.launch(self.prepared, authorize=self.authorize,
+                                  spawn=_owned_spawn)
+        attempt = next(a for a in state.attempts
+                       if a.attempt_id == self.prepared.attempt.attempt_id)
+        self._attempt_revision = attempt.revision
+        return launched[0]
+
+    def on_init(self, event: Any, session: dict) -> None:
+        if self.prepared is None or self.facts.incognito:
+            return
+        payload = getattr(event, 'payload', {}) or {}
+        native = payload.get('session_id') or payload.get('thread_id')
+        if not isinstance(native, str) or not native:
+            raise RuntimeError('native identity missing from init')
+        if self._attempt_revision is None:
+            raise RuntimeError('native init arrived before launch ownership committed')
+        native_source = session.get('_lifecycle_native_source')
+        if not isinstance(native_source, Path):
+            raise RuntimeError('authoritative native source missing from init')
+        state, _facts = self.owner.bind_native(
+            self.prepared, native, transcript_path=str(native_source),
+            expected_attempt_revision=self._attempt_revision,
+            event_id=f'{self.prepared.attempt.attempt_id}:native')
+        attempt = next(a for a in state.attempts
+                       if a.attempt_id == self.prepared.attempt.attempt_id)
+        self._attempt_revision = attempt.revision
+        self._bound = True
+
+    def on_exit(self, event: Any, session: dict, native_source: Optional[Path]) -> None:
+        if self.prepared is None or self.facts.incognito or self._finished:
+            return
+        if not self._bound or self._attempt_revision is None:
+            raise RuntimeError('terminal result arrived before native binding')
+        payload = getattr(event, 'payload', {}) or {}
+        rc = payload.get('rc')
+        if type(rc) is not int:
+            raise RuntimeError('terminal result is ambiguous')
+        status = lifecycle.AttemptStatus.COMPLETED if rc == 0 else lifecycle.AttemptStatus.FAILED
+        self.owner.finish(self.prepared, status,
+                          expected_attempt_revision=self._attempt_revision,
+                          event_id=f'{self.prepared.attempt.attempt_id}:finish:{rc}')
+        self._finished = True
+
+
 @dataclass(frozen=True)
 class PreparedAttempt:
     owner: lifecycle.OwnerToken

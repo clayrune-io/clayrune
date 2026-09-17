@@ -6617,6 +6617,12 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                     except Exception as exc:
                         bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
                 try:
+                    payload = getattr(event, 'payload', {}) or {}
+                    native_id = payload.get('session_id') or payload.get('thread_id')
+                    if not isinstance(native_id, str) or not native_id:
+                        raise RuntimeError('native identity missing from init')
+                    bridged_session['_lifecycle_native_source'] = runtime.transcript_path(
+                        pp, native_id)
                     bridge.on_init(event, bridged_session)
                 except Exception as exc:
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
