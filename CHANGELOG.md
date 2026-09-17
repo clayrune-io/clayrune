@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17b] — Transactional execution and conversation boundary (feature branch)
+
+- Add schema-2 lifecycle ownership, queued requests, immutable engine snapshots,
+  versioned events and explicit backed-up legacy migration.
+- Guard process-creation boundaries with a durable consumed-launch marker;
+  ambiguous creation or persistence failures require reconciliation, not retry.
+- Preserve partial and late conversation evidence, attempt-scoped tool results
+  and provenance in history and structured Scribe projections.
+- Add fail-closed identity/profile-bound authorization contracts. These are
+  offline-tested foundations, not live adapter certification or consumer cutover.
+
 ## [2026-09-17] — Provider-hardening review corrections (feature branch)
 
 - Separate observed model telemetry from requested continuation settings;

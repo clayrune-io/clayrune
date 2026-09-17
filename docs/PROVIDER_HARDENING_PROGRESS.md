@@ -38,6 +38,28 @@ Regression checkpoint: 715 selected offline tests pass after the review fixes,
 including real temporary memory-watermark writes and simulated Hivemind spawn,
 notification and persistence failures. This does not certify real CLI isolation.
 
+### Transactional boundary increment (offline)
+
+- Schema 2 stores immutable accepted input/provenance/engine alongside owner
+  epochs, attempts, settings revisions and versioned events in one transaction.
+  Explicit schema-1 migration creates a consistent backup; legacy mutation APIs
+  cannot bypass lifecycle-managed conversations.
+- A consumed `spawning` marker and guarded creation step prevent a retry after
+  an ambiguous post-spawn write failure. Tests cover concurrent launch callers,
+  takeover timing and state/event/commit failures with fake process creators.
+- Protocol-1 projections retain partial output, late evidence, scoped tool IDs,
+  queued original inputs and attempt outcomes. Real SQLite-to-projection tests
+  check history and structured Scribe provenance; no live Scribe writer changed.
+- Exact identity/profile-bound, expiring authorization records fail closed for
+  missing readiness/capabilities and account-scoped blockers. No real adapter
+  receives certification merely by passing these contract tests.
+
+Still open: enforcing transports and time bounds, byte-bounded capture/storage,
+native format decoders and source reconciliation, cross-store deletion/publication
+fencing, all consumer migrations, setup, capability certification and clean-VM
+proof. Existing UI event parsers intentionally discard data and cannot be reused
+as the full-fidelity canonical capture source.
+
 ## Architecture direction — replace coupling, not just individual failures
 
 The completion target is a provider-neutral execution boundary, not a count of

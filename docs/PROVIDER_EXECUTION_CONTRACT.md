@@ -2,8 +2,9 @@
 
 Status: offline implementation, not a live activation declaration. This refines
 `PROVIDER_HARDENING_PROGRESS.md` after independent review. The current dormant
-SQLite schema is version 1; the lifecycle below must be transactionally wired
-before capture activation. Pure transition tests alone do not provide durability.
+SQLite schema is version 2 on the feature branch, with explicit schema-1
+migration. Lifecycle reductions and evidence now commit transactionally; live
+capture, trusted transports and consumer cutover remain unactivated.
 
 ## Identity and authority
 
@@ -27,7 +28,8 @@ before capture activation. Pure transition tests alone do not provide durability
 
 | State | Allowed next states |
 |---|---|
-| launch_intent | running, failed_before_launch, uncertain |
+| launch_intent | spawning (guarded launch), running (legacy primitive), failed_before_launch, uncertain |
+| spawning | running, failed_before_launch, uncertain |
 | running | cancel_requested, completed, failed, blocked, uncertain |
 | cancel_requested | cancelled, completed, failed, uncertain |
 | uncertain | explicit reconciled running or terminal outcome |
@@ -37,6 +39,21 @@ Transitions require expected revisions and current owner authority. Native-handl
 binding is immutable/idempotent per attempt. Cancellation request is not a
 cancellation acknowledgment. Normal process completion is not domain acceptance
 of a Hivemind deliverable. No exactly-once guarantee is made for external effects.
+
+The guarded launch path consumes `launch_intent` into durable `spawning` before
+calling a trusted process creator. The second write transaction revalidates
+authority and holds takeover/deletion until creation returns and `running` is
+committed. An unknown creation failure records `uncertain`; an event/commit
+failure leaves the durable `spawning` marker. Either requires reconciliation,
+not another launch. The process reference is distinct from a native thread ID.
+Legacy direct transition APIs remain offline lifecycle primitives, not process
+launch authorization. Production callers must use the enforcing service.
+
+The creation/authorization callbacks must be bounded and cannot recursively write
+the store or wait for reader persistence. Early output requires transport-owned
+buffering. Callback time limits and external configuration/account revocation
+are not enforced by a SQLite lock; the database-wide guard is not yet a certified
+production transport. Tests use fake process creation, not real CLIs.
 
 ## Evidence versus authoritative state
 
@@ -89,9 +106,44 @@ Rollback must retain access to canonical-only history; reverting the reader to a
 native file alone would lose that data. Schema-1 migration is explicit/offline,
 backed up and transactional. Preserve original events/sequences, label unknown
 provenance/coverage, set old execution uncertain, and inherit no valid owner.
-Unknown schemas fail without modification. Migration is not yet implemented.
+Unknown schemas fail without modification. Schema-1 migration now holds a writer
+lock while creating a consistent, exclusively named backup and applying the
+transactional schema change. Legacy conversations remain legacy-only; migration
+does not falsely reinterpret old records as managed execution. No production
+database has been migrated.
 
 ## Resource and validation gates
+
+### Offline authorization boundary
+
+`execution_policy.py` represents immutable requested provider/model/effort/account
+and environment identity, with distinct interactive, unattended and tool-free
+transform profiles. Capability claims are supported, unsupported or unverified;
+missing, expired, wrong-profile or wrong-environment evidence fails closed.
+Explicit empty model/effort means native default; omitted values remain unresolved.
+Authentication and quota blockers are scoped to provider/account. A stated quota
+reset time does not clear a blocker or authorize a provider/account switch.
+
+This module does not certify an installed CLI. A trusted certification runner and
+an enforcing transport still need to bind executable identity, configuration,
+account and operation profile immediately before launch and input delivery.
+An in-memory permit is not a sandbox and does not survive revocation checks by
+itself. Caller-authored capability records must never become production evidence.
+
+### Versioned content boundary
+
+`conversation_contract.validate_protocol_event` defines protocol 1 independently
+of the database schema. Incoming message blocks carry stable IDs and explicit
+partial/final status; deltas carry a nonnegative index. Tool results explicitly
+state whether they represent an error. Unknown fields/kinds/versions are rejected;
+an adapter must emit an explicit `capture_gap` when it cannot map native content.
+Store-owned `lifecycle.*` events cannot be appended through this evidence API.
+Legacy schema-1 validation remains unchanged for backward-compatible readers.
+
+Capture gaps must retain approved source references for later recovery. Rejecting
+an unknown event is not proof of full capture; adapters must stop acknowledgment
+at the gap. Raw diagnostics containing credentials or private environment state
+are not an acceptable fallback archive.
 
 Count-limited pages are insufficient for arbitrary large tool output. Define
 byte-bounded transport with chunk/blob-backed source retention, batching/durable
