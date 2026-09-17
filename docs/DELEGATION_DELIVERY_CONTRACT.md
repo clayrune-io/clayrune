@@ -27,12 +27,23 @@ do not contact a local Clayrune instance. Combined selection: 164 tests passed.
 This harness bypasses full server startup and fakes the parent handoff; it does
 not prove live native-provider execution or full server lifecycle recovery.
 
+Agent Log now provides a read-only Delivery recovery view for pending, blocked,
+uncertain and recovery-required records. Its project-scoped listing omits payloads
+and raw exception text, has bounded pagination and deterministic ordering, and
+renders read failures with a manual refresh. Submission means parent handoff
+accepted, not task verification. No automatic uncertain retry is provided.
+
+Independent registered-browser fixture validation passed pagination, error state,
+stale responses and styled desktop/mobile overflow checks; 34 focused Python
+tests passed. The fixture loads the real modules/CSS, not the complete dashboard.
+The worker separately reported full dashboard smoke passing. The browser test
+is retained in the standard smoke suite with opt-in process registration.
+
 Remaining activation gates: full-server restart/delivery verification, provider
-submission reconciliation beyond retained uncertainty, and user-visible handling
-of blocked/recovery states. The API surfaces these states, but this increment
-does not add a Floor badge or certify automatic task acceptance. Storage
-retention and privacy deletion of the new delivery records need explicit policy
-before general release. Unsupported native revival fails closed.
+submission reconciliation beyond retained uncertainty, storage retention budgets
+and task-result acceptance. No Floor badge or automatic recovery is claimed.
+Logical deletion is implemented below; physical WAL sanitization is not.
+Unsupported native revival fails closed.
 
 Windows verification note: a host runner with an invalid inherited stdin handle
 can fail the existing cross-thread subprocess test with WinError 50/6. The same

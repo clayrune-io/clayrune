@@ -492,6 +492,57 @@ class DeliveryStore:
                              (event_id, project_id)).fetchone()
             return dict(row) if row else None
 
+    def list_recovery_status(self, project_id: str, *, limit: int = 50,
+                             offset: int = 0) -> dict[str, Any]:
+        """List recoverable delivery state without exposing completion payloads."""
+        if not project_id:
+            raise ValueError('project identity required')
+        limit = max(1, min(int(limit), 100))
+        offset = max(0, int(offset))
+        states = ('pending', 'blocked', 'uncertain', 'recovery_required')
+        placeholders = ','.join('?' for _ in states)
+        with self._db() as db:
+            params = [project_id, *states, project_id, *states]
+            total = db.execute(
+                f"SELECT COUNT(*) FROM (SELECT event_id FROM outbox "
+                f"WHERE project_id=? AND state IN ({placeholders}) UNION ALL "
+                f"SELECT event_id FROM inbox WHERE project_id=? AND state IN ({placeholders}))",
+                params).fetchone()[0]
+            rows = db.execute(
+                f"SELECT 'outbox' AS table_name,event_id,parent_session_id,state,attempts,"
+                f"next_attempt,last_error,recovery_required,created_at FROM outbox "
+                f"WHERE project_id=? AND state IN ({placeholders}) UNION ALL "
+                f"SELECT 'inbox' AS table_name,event_id,parent_session_id,state,attempts,"
+                f"next_attempt,last_error,recovery_required,created_at FROM inbox "
+                f"WHERE project_id=? AND state IN ({placeholders}) "
+                "ORDER BY created_at DESC, table_name ASC, event_id DESC LIMIT ? OFFSET ?",
+                [*params, limit, offset]).fetchall()
+        def safe_reason(state: str, raw: str) -> tuple[str, str]:
+            if state == 'uncertain':
+                return 'submission_outcome_unknown', 'Submission outcome is unknown; review required.'
+            if state == 'blocked':
+                return 'parent_unavailable', 'Parent is unavailable or busy.'
+            if state == 'recovery_required':
+                return 'recovery_required', 'Retry limit reached; explicit recovery is required.'
+            if raw:
+                return 'delivery_failed', 'Delivery attempt failed; explicit recovery may be required.'
+            return 'awaiting_delivery', 'Awaiting delivery.'
+        return {
+            'items': [{
+                'table': row['table_name'],
+                'event_id': row['event_id'],
+                'parent_session_id': row['parent_session_id'],
+                'state': row['state'],
+                'attempts': int(row['attempts']),
+                'next_attempt': row['next_attempt'],
+                'reason_code': safe_reason(row['state'], row['last_error'])[0],
+                'reason': safe_reason(row['state'], row['last_error'])[1],
+                'recovery_required': bool(row['recovery_required']),
+                'created_at': row['created_at'],
+            } for row in rows],
+            'total': int(total), 'limit': limit, 'offset': offset,
+        }
+
     def recover_outbox(self, entries: list[dict[str, Any]], project_id: str) -> int:
         """Rebuild missing notifications from the durable agent log source."""
         recovered = 0

@@ -8,6 +8,12 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Add a read-only Delivery recovery view in Agent Log with bounded, project-
+  scoped pagination, safe status reasons, visible read errors and stale-response
+  fencing. No automatic uncertain retries. Registered real-module browser tests
+  cover pagination and styled desktop/mobile overflow; 34 focused Python tests
+  pass. Full dashboard smoke passed separately; production remains unchanged.
+
 - Revoke delivery records on project/conversation deletion; preserve tab resume
   and reject stale-generation results after project recreation. Report partial
   deletion failures explicitly. Logical payload purge does not promise physical

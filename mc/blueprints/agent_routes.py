@@ -7798,6 +7798,22 @@ def delegation_status(project_id):
     return jsonify({'event_id': event_id, **rows})
 
 
+@bp.route('/api/project/<project_id>/agent/delegation/status-list')
+def delegation_status_list(project_id):
+    """Read-only recovery view; payloads and task text are intentionally omitted."""
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    try:
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        if limit < 1 or limit > 100 or offset < 0:
+            raise ValueError
+        return jsonify(_delivery_store.list_recovery_status(
+            project_id, limit=limit, offset=offset))
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit must be 1..100 and offset must be non-negative'}), 400
+
+
 @bp.route('/api/project/<project_id>/agent/delegation/retry', methods=['POST'])
 def delegation_retry(project_id):
     if _delivery_store is None:

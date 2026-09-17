@@ -8,10 +8,60 @@ let continueInputOpen = {};  // entryId → true (tracks which continue input is
 // instead, and build a row's composer only when that row's composer is open.
 const AGENT_LOG_PAGE = 25;
 const agentLogShown = {};   // projectId → rows currently rendered
+const deliveryStatusCache = {}; // projectId → {items,total,limit,offset,error}
+const deliveryStatusRequests = {}; // projectId → monotonically increasing read token
+const DELIVERY_STATUS_PAGE = 25;
+function refreshDeliveryStatusProject(projectId) {
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else if (modalActiveTab[projectId] === 'agent-log') refreshModal();
+}
 function showMoreAgentLog(projectId) {
   agentLogShown[projectId] = (agentLogShown[projectId] || AGENT_LOG_PAGE) + AGENT_LOG_PAGE;
   if (typeof refreshModalById === 'function') refreshModalById(projectId);
   else refreshModal();
+}
+
+function renderDeliveryStatusHTML(p) {
+  const data = deliveryStatusCache[p.id];
+  if (!data) return '<div class="agent-log-empty">Loading delivery status…</div>';
+  if (data.error) return `<div class="agent-log-empty">${esc(data.error)}
+    <button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}')">Refresh read</button></div>`;
+  const items = data.items || [];
+  const rows = items.length ? items.map(item => `
+    <div class="agent-log-entry delivery-status-${esc(item.state || 'pending')}">
+      <div class="agent-log-task"><span class="agent-status-dot ${esc(item.state || 'pending')}"></span>
+        ${esc(item.state || '')} · ${esc(item.table || '')} · <code>${esc(item.event_id || '')}</code></div>
+      <div class="agent-log-ts">parent ${esc(item.parent_session_id || 'unknown')} · ${esc(item.attempts)} attempt${item.attempts === 1 ? '' : 's'}</div>
+      ${item.reason ? `<div class="agent-log-summary">${esc(item.reason)}</div>` : ''}
+    </div>`).join('') : '<div class="agent-log-empty">No pending recovery items.</div>';
+  const previous = data.offset > 0
+    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${Math.max(0, data.offset - data.limit)})">‹ Previous</button>` : '';
+  const next = data.offset + data.limit < data.total
+    ? `<button class="agent-log-more" onclick="loadDeliveryStatus('${esc(p.id)}',${data.offset + data.limit})">Next ›</button>` : '';
+  return `<div class="card-section delivery-status-section">
+    <div class="section-title">Delivery recovery <span class="section-hint">${data.total} item${data.total === 1 ? '' : 's'}</span></div>
+    <div class="agent-log-summary">Submitted means the parent handoff was accepted, not that the task result was verified. Uncertain items are not retried automatically.</div>
+    ${rows}<div class="runs-pagination">${previous}${next}</div>
+  </div>`;
+}
+
+async function loadDeliveryStatus(projectId, offset = 0) {
+  const requestToken = (deliveryStatusRequests[projectId] || 0) + 1;
+  deliveryStatusRequests[projectId] = requestToken;
+  try {
+    const res = await fetch(API_BASE + `/api/project/${projectId}/agent/delegation/status-list?limit=${DELIVERY_STATUS_PAGE}&offset=${offset}`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const fresh = await res.json();
+    if (deliveryStatusRequests[projectId] !== requestToken) return;
+    deliveryStatusCache[projectId] = fresh;
+    refreshDeliveryStatusProject(projectId);
+  } catch (e) {
+    if (deliveryStatusRequests[projectId] !== requestToken) return;
+    deliveryStatusCache[projectId] = {items: [], total: 0, limit: DELIVERY_STATUS_PAGE,
+      offset: 0, error: 'Delivery status could not be read.'};
+    refreshDeliveryStatusProject(projectId);
+    console.warn(`[Clayrune] delegation status refetch failed for ${projectId}:`, e);
+  }
 }
 
 function agentLogPanelHTML(p) {
@@ -73,6 +123,7 @@ function agentLogPanelHTML(p) {
     : '';
 
   return `<div class="card-section">
+    ${renderDeliveryStatusHTML(p)}
     <div class="section-title">Completed Sessions</div>
     ${entriesHTML}
     ${moreBtn}
@@ -91,6 +142,7 @@ async function toggleAgentLog(projectId) {
 
   if (!isOpen) {
     await loadAgentLog(projectId);  // always re-fetch on open for fresh data
+    await loadDeliveryStatus(projectId);
   }
 }
 
@@ -601,6 +653,8 @@ function triggerAgentAttach(key) {
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
 window.agentLogPanelHTML = agentLogPanelHTML;
 window.loadAgentLog = loadAgentLog;
+window.loadDeliveryStatus = loadDeliveryStatus;
+window.toggleAgentLog = toggleAgentLog;
 window.loadConversations = loadConversations;
 window.upsertConversationCache = upsertConversationCache;
 window._lastUserFromBuffer = _lastUserFromBuffer;

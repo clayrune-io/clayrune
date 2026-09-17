@@ -376,6 +376,13 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Recovery visibility increment: Agent Log now lists pending/blocked/uncertain/
+recovery-required deliveries without payloads or raw errors. Read-only pagination,
+manual read refresh and request fencing are implemented. Parent independently
+verified registered real-module browser tests and 34 focused Python tests;
+worker reported the full dashboard smoke passing separately. No production
+activation, retry-action UI, or automatic task acceptance is claimed.
+
 Delivery privacy increment: project/session/event revocation and logical payload
 purge, pre-execution project-generation binding, same-ID recreation isolation,
 alias-aware conversation deletion and explicit partial-failure responses are
