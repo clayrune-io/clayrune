@@ -52,6 +52,7 @@ import concurrent.futures
 from mc import engine_selection
 import hashlib
 import json
+import math
 import os
 import re
 import shutil
@@ -159,10 +160,16 @@ _persist_pid_ledger: Callable[[], None] = None  # type: ignore[assignment]
 _delivery_store: Optional[DeliveryStore] = None
 _delivery_path: Optional[Path] = None
 _delivery_started = False
+_delivery_lifecycle_lock = threading.RLock()
+_delivery_iteration_lock = threading.Lock()
+_delivery_thread: Optional[threading.Thread] = None
+_delivery_stop_event: Optional[threading.Event] = None
+_delivery_shutdown_requested = threading.Event()
+_delivery_stop_in_progress = False
 _delegation_app: Optional[Flask] = None
 
 
-def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
+def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          provider_env_path, claude_home, popen_flags, startupinfo,
          load_project_fn, save_project_fn, load_projects_fn,
          get_memory_path_fn, get_archive_path_fn, memory_search_fn,
@@ -185,6 +192,14 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     global _recent_claude_transcripts, _session_too_large
     global _long_session_advisory, _resume_is_fragile, _encode_project_path
     global _extract_transcript_telemetry, _proc_identity, _persist_pid_ledger
+    global _delivery_store, _delivery_path, _delivery_started
+    global _delivery_thread, _delivery_stop_event, _delegation_app
+    global _delivery_stop_in_progress
+    with _delivery_lifecycle_lock:
+        if _delivery_thread is not None and _delivery_thread.is_alive():
+            raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
+        if _delivery_stop_in_progress:
+            raise RuntimeError('cannot rewire agent routes while delivery stop is in progress')
     DATA_DIR = data_dir
     UPLOADS_DIR = uploads_dir
     _APP_DIR = app_dir
@@ -216,18 +231,69 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     _extract_transcript_telemetry = extract_transcript_telemetry_fn
     _proc_identity = proc_identity_fn
     _persist_pid_ledger = persist_pid_ledger_fn
-    global _delivery_store, _delivery_path, _delivery_started, _delegation_app
     # Sibling of data/projects: project JSON loading must never see delivery
     # state. SQLite WAL also survives sender/receiver process restarts.
     _delivery_path = Path(data_dir).parent / 'delegation_delivery.sqlite3'
     _delivery_store = None
     _delivery_started = False
+    _delivery_thread = None
+    _delivery_stop_event = None
+    _delivery_stop_in_progress = False
+    _delivery_shutdown_requested.clear()
     _delegation_app = Flask('mc-delegation-delivery')
     # Moved module-level side effect (see the tombstone in the provider-env
     # section below): hydrate persisted provider env vars into os.environ now
     # that PROVIDER_ENV_PATH is bound. Runs during server.py module exec,
     # before app.run() and before any agent spawn — timing-equivalent.
     _hydrate_provider_env_into_os()
+
+
+def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
+         provider_env_path, claude_home, popen_flags, startupinfo,
+         load_project_fn, save_project_fn, load_projects_fn,
+         get_memory_path_fn, get_archive_path_fn, memory_search_fn,
+         maybe_checkpoint_fn, write_session_memory_fn, dispatch_condense_fn,
+         should_condense_fn, get_condense_status_fn, scribe_call_fn,
+         find_transcript_file_fn, parse_transcript_messages_fn,
+         recent_claude_transcripts_fn, session_too_large_fn,
+         long_session_advisory_fn, resume_is_fragile_fn,
+         encode_project_path_fn, extract_transcript_telemetry_fn,
+         proc_identity_fn, persist_pid_ledger_fn):
+    """Atomically bind agent dependencies and delivery ownership state.
+
+    The implementation retains its keyword-only binding surface in
+    ``_wire_unlocked``; this wrapper holds the lifecycle lock across the live
+    check and every mutation, so start/stop cannot observe a half-rewired run.
+    """
+    with _delivery_lifecycle_lock:
+        if _delivery_thread is not None and _delivery_thread.is_alive():
+            raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
+        return _wire_unlocked(
+            data_dir=data_dir, uploads_dir=uploads_dir, app_dir=app_dir,
+            port=port, shared_rules_path=shared_rules_path,
+            provider_env_path=provider_env_path, claude_home=claude_home,
+            popen_flags=popen_flags, startupinfo=startupinfo,
+            load_project_fn=load_project_fn, save_project_fn=save_project_fn,
+            load_projects_fn=load_projects_fn,
+            get_memory_path_fn=get_memory_path_fn,
+            get_archive_path_fn=get_archive_path_fn,
+            memory_search_fn=memory_search_fn,
+            maybe_checkpoint_fn=maybe_checkpoint_fn,
+            write_session_memory_fn=write_session_memory_fn,
+            dispatch_condense_fn=dispatch_condense_fn,
+            should_condense_fn=should_condense_fn,
+            get_condense_status_fn=get_condense_status_fn,
+            scribe_call_fn=scribe_call_fn,
+            find_transcript_file_fn=find_transcript_file_fn,
+            parse_transcript_messages_fn=parse_transcript_messages_fn,
+            recent_claude_transcripts_fn=recent_claude_transcripts_fn,
+            session_too_large_fn=session_too_large_fn,
+            long_session_advisory_fn=long_session_advisory_fn,
+            resume_is_fragile_fn=resume_is_fragile_fn,
+            encode_project_path_fn=encode_project_path_fn,
+            extract_transcript_telemetry_fn=extract_transcript_telemetry_fn,
+            proc_identity_fn=proc_identity_fn,
+            persist_pid_ledger_fn=persist_pid_ledger_fn)
 
 # ── Claude CLI binary resolution ────────────────────────────────────────────
 # Delegates to ClaudeRuntime.resolve_binary_str() — single source of truth.
@@ -5464,6 +5530,13 @@ def _process_inbox(row):
     with manager.lock:
         if not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
             raise DeliveryUncertain('inbox claim expired while waiting for parent lock')
+        # Shutdown admission is separate from loop ownership. A timed-out
+        # stop may leave this caller waiting on the manager lock; once the
+        # process crosses cleanup admission, it must not begin a new parent
+        # handoff after that lock is released. A handoff already past this
+        # point remains an honest in-flight outcome.
+        if _delivery_shutdown_requested.is_set():
+            raise DeliveryDeferred('delivery shutdown admission is closed')
         parent = agent_sessions.get(row['parent_session_id'])
         if parent is None:
             return _revive_parent_for_delegation(
@@ -5511,33 +5584,139 @@ def _process_inbox(row):
 
 
 def start_delegation_delivery(interval_s: float = 5.0):
-    """Start restart reconciliation and bounded retry loop once per server."""
-    global _delivery_started
-    global _delivery_store
-    if _delivery_started or _delivery_path is None:
-        return
-    _delivery_store = DeliveryStore(_delivery_path)
-    _delivery_store.reconcile()
-    # The agent log is the completion source of record if the process crashed
-    # after completion but before the SQLite enqueue committed.
-    for log_file in Path(DATA_DIR).glob('*_agent_log.json'):
+    """Start one owned, interruptible delivery loop.
+
+    Initialization and thread ownership are committed as one lifecycle state.
+    A failed init or thread start leaves the service retryable; a concurrent
+    caller cannot create a second loop while the retained thread is alive.
+    """
+    global _delivery_started, _delivery_store, _delivery_thread
+    global _delivery_stop_event, _delivery_stop_in_progress
+    try:
+        interval = float(interval_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('delivery interval must be finite and positive') from exc
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError('delivery interval must be finite and positive')
+    with _delivery_lifecycle_lock:
+        if _delivery_stop_in_progress:
+            if _delivery_thread is not None and _delivery_thread.is_alive():
+                return _delivery_thread
+            return None
+        if _delivery_path is None:
+            return None
+        if _delivery_thread is not None:
+            if _delivery_thread.is_alive():
+                return _delivery_thread
+            _delivery_thread = None
+            _delivery_stop_event = None
+            _delivery_started = False
         try:
-            project_id = log_file.name[:-len('_agent_log.json')]
-            rows = json.loads(log_file.read_text(encoding='utf-8'))
-            if isinstance(rows, list):
-                _delivery_store.recover_outbox(rows, project_id)
-        except Exception as exc:
-            _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
-    _delivery_started = True
-    def _loop():
-        while True:
+            store = DeliveryStore(_delivery_path)
+            store.reconcile()
+            # The agent log is the completion source of record if the process
+            # crashed after completion but before the SQLite enqueue committed.
+            for log_file in Path(DATA_DIR).glob('*_agent_log.json'):
+                try:
+                    project_id = log_file.name[:-len('_agent_log.json')]
+                    rows = json.loads(log_file.read_text(encoding='utf-8'))
+                    if isinstance(rows, list):
+                        store.recover_outbox(rows, project_id)
+                except Exception as exc:
+                    _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
+            stop_event = threading.Event()
+
+            def _loop(local_store=store, local_stop=stop_event):
+                while True:
+                    # The iteration gate closes the stop-before-new-drain race:
+                    # stop() sets the Event without taking this gate; a loop
+                    # that has not entered the gate sees the request before
+                    # admitting another drain. A drain already admitted is
+                    # allowed to finish and remains fenced/observable.
+                    with _delivery_iteration_lock:
+                        if local_stop.is_set():
+                            break
+                        try:
+                            drain_once(local_store, send_outbox=_deliver_outbox,
+                                       process_inbox=_process_inbox)
+                        except Exception as exc:
+                            _log(f'[delegation-delivery] drain failed: {exc}')
+                    if local_stop.wait(max(0.0, float(interval_s))):
+                        break
+
+            thread = threading.Thread(target=_loop, name='delegation-delivery', daemon=True)
+            # Retain ownership before start; if start raises, clear it below.
+            _delivery_store = store
+            _delivery_stop_event = stop_event
+            _delivery_thread = thread
+            _delivery_started = True
             try:
-                drain_once(_delivery_store, send_outbox=_deliver_outbox,
-                           process_inbox=_process_inbox)
-            except Exception as exc:
-                _log(f'[delegation-delivery] drain failed: {exc}')
-            _time.sleep(max(1.0, interval_s))
-    threading.Thread(target=_loop, name='delegation-delivery', daemon=True).start()
+                _delivery_shutdown_requested.clear()
+                thread.start()
+            except Exception:
+                _delivery_shutdown_requested.set()
+                _delivery_store = None
+                _delivery_stop_event = None
+                _delivery_thread = None
+                _delivery_started = False
+                raise
+            return thread
+        except Exception:
+            # No partially initialized owner may block a later safe retry.
+            _delivery_started = False
+            if _delivery_thread is None or not _delivery_thread.is_alive():
+                _delivery_store = None
+                _delivery_stop_event = None
+                _delivery_thread = None
+            raise
+
+
+def stop_delegation_delivery(timeout_s: float = 5.0) -> dict[str, object]:
+    """Request delivery stop and boundedly join its retained thread.
+
+    The Event is set before joining. No lifecycle lock is held during join, so
+    an in-flight drain can finish without deadlocking stop. A timeout retains
+    ownership and reports the live thread; callers must not start a replacement
+    loop until a later stop observes termination.
+    """
+    global _delivery_thread, _delivery_stop_event, _delivery_store
+    global _delivery_started
+    global _delivery_stop_in_progress
+    try:
+        timeout = float(timeout_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('stop timeout must be finite and nonnegative') from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError('stop timeout must be finite and nonnegative')
+    with _delivery_lifecycle_lock:
+        thread = _delivery_thread
+        stop_event = _delivery_stop_event
+        if thread is None or stop_event is None:
+            _delivery_shutdown_requested.set()
+            _delivery_stop_in_progress = False
+        else:
+            _delivery_stop_in_progress = True
+        # Linearization point: snapshot the owner and close both admission
+        # channels while still holding the same lock start/wire mutate under.
+        _delivery_shutdown_requested.set()
+        if stop_event is not None:
+            stop_event.set()
+    if thread is None or stop_event is None:
+        return {'requested': False, 'joined': True, 'alive': False, 'timed_out': False}
+    if thread is threading.current_thread():
+        return {'requested': True, 'joined': False, 'alive': True,
+                'timed_out': True, 'self_join': True}
+    thread.join(timeout)
+    alive = thread.is_alive()
+    if not alive:
+        with _delivery_lifecycle_lock:
+            if _delivery_thread is thread:
+                _delivery_thread = None
+                _delivery_stop_event = None
+                _delivery_started = False
+                _delivery_stop_in_progress = False
+    return {'requested': True, 'joined': not alive, 'alive': alive,
+            'timed_out': alive, 'self_join': False}
 
 
 def _log_agent_completion(session):

@@ -52,6 +52,21 @@ removed. This is a test-launch condition, not a delivery-code workaround.
 
 ## Ownership and semantics
 
+### Delivery-loop lifecycle
+
+Start, stop admission and dependency rewiring serialize under a lifecycle lock.
+The loop retains its thread and stop event; waits are interruptible and joins
+are bounded outside the lock. A timed-out join retains ownership and does not
+authorize a duplicate loop. Stop closes parent handoff admission after the
+manager-lock wait; work already admitted remains an in-flight outcome, not a
+canceled action. The durable store remains available for final completion writes.
+
+The shutdown hook runs before persistent-agent cleanup and logs a join timeout.
+Worker validation: 18 lifecycle tests, 201 combined regressions. Independent
+parent validation: 33 lifecycle/delivery tests. Type checking remains at the
+reported pre-existing baseline of 9 errors and 1 warning, not globally clean.
+This proves the isolated lifecycle contract, not full-server startup isolation.
+
 ### Delivery-record deletion boundary
 
 Project and conversation deletion revoke matching delivery identities and purge

@@ -376,6 +376,12 @@ subsystem HTTP harness step, not full-server startup or live-provider proof.
 
 ### Broader provider-neutral work
 
+Delivery lifecycle gate closed offline: explicit retained loop ownership,
+interruptible stop, bounded join/timeout reporting, serialized start/stop/rewire,
+shutdown admission fencing and post-stop completion persistence. Worker combined
+selection: 201 passed; independent lifecycle/delivery selection: 33 passed.
+Full startup side-effect isolation and retention budgets remain open.
+
 Recovery visibility increment: Agent Log now lists pending/blocked/uncertain/
 recovery-required deliveries without payloads or raw errors. Read-only pagination,
 manual read refresh and request fencing are implemented. Parent independently

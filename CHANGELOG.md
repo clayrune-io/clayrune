@@ -8,6 +8,12 @@
 
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
+- Own the delivery loop with an interruptible stop event and retained thread;
+  serialize start/stop/rewire, retain ownership on join timeout, fence waiting
+  parent handoffs during shutdown, and preserve final completion writes. Add
+  shutdown timeout logging and 18 lifecycle regressions. Combined worker
+  selection: 201 passing; independent lifecycle/delivery check: 33 passing.
+
 - Add a read-only Delivery recovery view in Agent Log with bounded, project-
   scoped pagination, safe status reasons, visible read errors and stale-response
   fencing. No automatic uncertain retries. Registered real-module browser tests

@@ -2083,7 +2083,20 @@ def _cleanup_browsers():
         except Exception:
             pass
 
+def _stop_delegation_delivery_at_shutdown():
+    result = _bp_agent.stop_delegation_delivery()
+    if result.get('timed_out'):
+        _log('[delegation-delivery] shutdown join timed out; in-flight '
+             'handoff remains owned and fenced', flush=True)
+    return result
+
+
 atexit.register(_cleanup_persistent_agents)
+# Register after persistent-agent cleanup so atexit's LIFO order stops the
+# delivery loop first. This prevents a late parent callback from entering agent
+# state while process cleanup has begun. stop_delegation_delivery performs a
+# bounded join; a timed-out in-flight handoff remains owned and fenced.
+atexit.register(_stop_delegation_delivery_at_shutdown)
 atexit.register(_cleanup_terminals)
 atexit.register(_cleanup_browsers)
 atexit.register(_scheduler_stop.set)
