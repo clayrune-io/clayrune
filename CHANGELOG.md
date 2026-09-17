@@ -6,6 +6,16 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17c] — Native capture adapters and strict memory reads (feature branch)
+
+- Decode fixture-supported Codex/Claude/Qwen records before lossy UI formatting;
+  preserve exact content and mark unknown/unfinished capture explicitly.
+- Commit multi-event capture batches atomically and expose bounded captured-
+  history payload chunks without requiring complete memory-source coverage.
+- Prevent managed writers from overwriting an unreadable session log as empty.
+- Validate the offline increment with 1,015 selected tests. Live transport,
+  consumer cutover and receipt-aware memory publication remain unactivated.
+
 ## [2026-09-17b] — Transactional execution and conversation boundary (feature branch)
 
 - Add schema-2 lifecycle ownership, queued requests, immutable engine snapshots,

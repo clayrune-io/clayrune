@@ -76,6 +76,37 @@ class ConversationEvent:
         return json.loads(self.payload_json)
 
 
+@dataclass(frozen=True)
+class HistorySnapshot:
+    """Captured history boundary, not an attestation of derivation completeness."""
+    project_id: str
+    conversation_id: str
+    privacy_generation: int
+    high_water: int
+
+
+@dataclass(frozen=True)
+class HistoryChunk:
+    sequence: int
+    event_id: str
+    attempt_id: str
+    kind: str
+    timestamp: str
+    protocol_version: int
+    disposition: str
+    offset: int
+    total_bytes: int
+    data: bytes
+
+    @property
+    def next_offset(self) -> int:
+        return self.offset + len(self.data)
+
+    @property
+    def complete(self) -> bool:
+        return self.next_offset == self.total_bytes
+
+
 def _id(value: str) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > 512:
         raise ValueError('IDs must be nonempty strings of at most 512 characters')
@@ -423,6 +454,7 @@ class ConversationStore:
         if not isinstance(engine, dict):
             raise ValueError('engine must be an object')
         key = _json(engine)
+        engine = json.loads(key)
         with self._connection(write=True, create=True) as db:
             assert db is not None
             self._require_lifecycle_schema(db)
@@ -488,10 +520,10 @@ class ConversationStore:
         validate_content('user_message',user_message)
         if not isinstance(engine,dict) or not isinstance(provenance,dict):
             raise ValueError('engine and provenance must be JSON objects')
-        origin = provenance.get('origin','unknown')
-        payload = dict(request_id=request_id,user_message=user_message,engine=engine,provenance=provenance)
+        payload = json.loads(_json(dict(request_id=request_id,user_message=user_message,engine=engine,provenance=provenance)))
+        origin = payload['provenance'].get('origin','unknown')
         def reduce(state):
-            request = lifecycle.Request(request_id,hashlib.sha256(_json(payload).encode('utf-8')).hexdigest(),origin,_json(engine),state.settings_revision)
+            request = lifecycle.Request(request_id,hashlib.sha256(_json(payload).encode('utf-8')).hexdigest(),origin,_json(payload['engine']),state.settings_revision)
             return lifecycle.accept_request(state,request,expected_revision=expected_revision)
         return self._lifecycle_apply(project_id,conversation_id,event_id=event_id,kind='lifecycle.request_accepted',payload=payload,reduce=reduce,request_content=payload)[0]
 
@@ -593,6 +625,7 @@ class ConversationStore:
                       consent_reference: str, expected_revision: int, event_id: str) -> lifecycle.ConversationState:
         if not isinstance(engine,dict):
             raise ValueError('engine must be an object')
+        engine = json.loads(_json(engine))
         return self._lifecycle_apply(project_id,conversation_id,event_id=event_id,kind='lifecycle.engine_changed',payload={'engine':engine,'consent_reference':consent_reference},reduce=lambda s:lifecycle.change_engine(s,_json(engine),consent_reference=consent_reference,expected_revision=expected_revision))[0]
 
     def set_lifecycle_deleted(self, project_id: str, conversation_id: str, deleted: bool, *,
@@ -601,26 +634,49 @@ class ConversationStore:
 
     def append_evidence(self, token: lifecycle.AttemptToken, *, event_id: str, kind: str,
                         payload: dict) -> tuple[ConversationEvent,lifecycle.EvidenceDisposition]:
+        return self.append_evidence_batch(token,[(event_id,kind,payload)])[0]
+
+    def append_evidence_batch(self, token: lifecycle.AttemptToken,
+                              events: list[tuple[str,str,dict]]) -> list[tuple[ConversationEvent,lifecycle.EvidenceDisposition]]:
+        """Commit all normalized evidence from a source frame, or none.
+
+        Keep the immutable decoded batch until this method commits. Decoder
+        in-memory replay suppression is not a durable source acknowledgment.
+        Stable event IDs must include source identity and frame event index.
+        This API does not persist or certify native-source coverage by itself.
+        """
         from mc.conversation_contract import validate_protocol_event
-        if kind.startswith('lifecycle.'):
-            raise ValueError('Control events require lifecycle operations')
-        validate_protocol_event(kind,payload,version=1)
-        encoded = _json(payload)
-        _id(event_id)
+        if not isinstance(events,list) or not events:
+            raise ValueError('A nonempty evidence batch is required')
+        prepared = []
+        identities = set()
+        for event_id,kind,payload in events:
+            _id(event_id)
+            if event_id in identities:
+                raise EventConflict('Repeated event identity within batch')
+            identities.add(event_id)
+            validate_protocol_event(kind,payload,version=1)
+            encoded = _json(payload)
+            prepared.append((event_id,kind,json.loads(encoded),encoded))
+        result = []
         with self._connection(write=True) as db:
             if db is None:
                 raise ConversationUnavailable('Conversation missing')
-            before = self._load_lifecycle(db,token.project_id,token.conversation_id)
-            disposition = lifecycle.evidence_disposition(before,token)
-            previous = db.execute('SELECT e.*,m.disposition,m.protocol_version FROM events e JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) WHERE project_id=? AND conversation_id=? AND event_id=?',(token.project_id,token.conversation_id,event_id)).fetchone()
-            if previous:
-                if previous['attempt_id'] != token.attempt_id or previous['kind'] != kind or previous['payload_json'] != encoded:
-                    raise EventConflict('Evidence identity has different content')
-                return self._event(previous),lifecycle.EvidenceDisposition(previous['disposition'])
-            state,disposition = lifecycle.record_evidence(before,token,sequence=before.high_water+1)
-            self._save_lifecycle(db,before,state)
-            event = self._lifecycle_event(db,state,event_id,kind,payload,attempt_id=token.attempt_id,disposition=disposition.value)
-            return event,disposition
+            state = self._load_lifecycle(db,token.project_id,token.conversation_id)
+            lifecycle.evidence_disposition(state,token)
+            for event_id,kind,payload,encoded in prepared:
+                previous = db.execute('SELECT e.*,m.disposition,m.protocol_version FROM events e JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) WHERE project_id=? AND conversation_id=? AND event_id=?',(token.project_id,token.conversation_id,event_id)).fetchone()
+                if previous:
+                    if previous['attempt_id'] != token.attempt_id or previous['kind'] != kind or previous['payload_json'] != encoded:
+                        raise EventConflict('Evidence identity has different content')
+                    result.append((self._event(previous),lifecycle.EvidenceDisposition(previous['disposition'])))
+                    continue
+                before = state
+                state,disposition = lifecycle.record_evidence(before,token,sequence=before.high_water+1)
+                self._save_lifecycle(db,before,state)
+                event = self._lifecycle_event(db,state,event_id,kind,payload,attempt_id=token.attempt_id,disposition=disposition.value)
+                result.append((event,disposition))
+        return result
 
     def record_coverage(self, owner: lifecycle.OwnerToken, *, high_water: int, complete: bool,
                         source_reference: str, expected_revision: int, event_id: str) -> lifecycle.ConversationState:
@@ -632,6 +688,56 @@ class ConversationStore:
 
     def snapshot(self, project_id: str, conversation_id: str, *, after: int = 0) -> lifecycle.SnapshotToken:
         return lifecycle.snapshot(self.lifecycle_state(project_id,conversation_id),after=after)
+
+    def history_snapshot(self, project_id: str, conversation_id: str) -> HistorySnapshot:
+        """Fix a full-history boundary even when captured source has known gaps."""
+        _id(project_id); _id(conversation_id)
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            self._conversation(db,project_id,conversation_id)
+            state = self._load_lifecycle(db,project_id,conversation_id)
+            return HistorySnapshot(project_id,conversation_id,state.privacy_generation,state.high_water)
+
+    def read_history_chunk(self, snapshot: HistorySnapshot, sequence: int, *,
+                           offset: int = 0, max_bytes: int = 65536) -> HistoryChunk:
+        """Read bounded UTF-8 JSON bytes without loading a giant tool result.
+
+        Reassemble bytes before decoding JSON (a boundary may split UTF-8).
+        Every call validates privacy and a fixed sequence boundary in the same
+        read transaction. Metadata is separate; ``max_bytes`` bounds payload
+        bytes, not total HTTP framing. No text is shortened or dropped.
+        This is not a storage quota, native-source coverage or erasure policy.
+        """
+        if not isinstance(snapshot, HistorySnapshot):
+            raise ValueError('History snapshot required')
+        if (type(snapshot.high_water) is not int or snapshot.high_water < 0
+                or type(sequence) is not int or not 1 <= sequence <= snapshot.high_water
+                or type(offset) is not int or offset < 0
+                or type(max_bytes) is not int or not 1 <= max_bytes <= 1048576):
+            raise ValueError('Invalid chunk bounds')
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            self._conversation(db,snapshot.project_id,snapshot.conversation_id)
+            state = self._load_lifecycle(db,snapshot.project_id,snapshot.conversation_id)
+            if (type(snapshot.privacy_generation) is not int
+                    or type(snapshot.high_water) is not int
+                    or snapshot.privacy_generation != state.privacy_generation
+                    or not 0 <= snapshot.high_water <= state.high_water):
+                raise lifecycle.LifecycleConflict('History snapshot revoked')
+            row = db.execute('SELECT e.sequence,e.event_id,e.attempt_id,e.kind,e.timestamp,'
+                'm.protocol_version,m.disposition,length(CAST(e.payload_json AS BLOB)) AS total_bytes,'
+                'substr(CAST(e.payload_json AS BLOB),?,?) AS chunk FROM events e '
+                'JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) '
+                'WHERE project_id=? AND conversation_id=? AND sequence=?',
+                (offset+1,max_bytes,snapshot.project_id,snapshot.conversation_id,sequence)).fetchone()
+            if row is None:
+                raise ConversationUnavailable('History event missing')
+            if offset >= row['total_bytes']:
+                raise ValueError('Chunk offset is past the event payload')
+            return HistoryChunk(row['sequence'],row['event_id'],row['attempt_id'],row['kind'],
+                row['timestamp'],row['protocol_version'],row['disposition'],offset,row['total_bytes'],bytes(row['chunk']))
 
     def read_snapshot(self, token: lifecycle.SnapshotToken, *, after: int | None = None,
                        limit: int = 100) -> list[ConversationEvent]:

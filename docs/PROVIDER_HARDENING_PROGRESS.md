@@ -60,6 +60,49 @@ fencing, all consumer migrations, setup, capability certification and clean-VM
 proof. Existing UI event parsers intentionally discard data and cannot be reused
 as the full-fidelity canonical capture source.
 
+### Native capture and publication-read safety increment (offline)
+
+- Codex exec fixture families 0.133/0.151 and repository Claude/Qwen record
+  fixtures now have pure decoders before UI formatting. Exact mixed text/tool
+  content, native IDs, exposed thinking and source identity are retained where
+  the fixture format supplies them. Unsupported shapes and missing identities
+  become explicit capture gaps, never fabricated native identities or success.
+- EOF records transport status separately from native completion. Unfinished
+  streams and missing native terminal results remain incomplete even after a
+  successful process exit. Replay bookkeeping is in memory, not a durable source
+  checkpoint; transports must retain decoded batches until persistence commits.
+- Multi-event source records commit atomically as evidence batches; stable IDs
+  make a retained batch retry idempotent. Fault tests reject partial inserts and
+  conflicting replays. Actual decoder-to-SQLite-to-projection tests cover three
+  providers without launching their CLIs.
+- Full captured-history snapshots support bounded payload-byte chunks even for
+  gapped sources. Large Unicode tool results round-trip without truncation;
+  delete/restore revokes old snapshots. These are store APIs, not live UI/export
+  endpoints, source-coverage claims or storage-quota enforcement.
+- Managed commits, split migration and structured condense now abort on an
+  unreadable existing SESSION_LOG.md instead of replacing it as empty. Read-only
+  display helpers remain best-effort but log failures. Optional topics-hook
+  typing now reflects its existing nullable contract.
+
+Validation checkpoint: **1,015 selected offline tests passed**, with one optional
+PySocks dependency warning; changed/new modules pass Pyright. No real provider
+capability, installer behavior or production cutover was tested by this run.
+
+Still missing from native capture: complete Gemini/other-provider decoders,
+Codex rollout and MCP/web/file-change formats, Qwen native recording import,
+typed partial/unknown-status tool results, durable source reconciliation,
+transport backpressure and all live reader wiring.
+
+Memory publication remains blocked on a receipt-aware writer transaction:
+terminal retries and overflow can duplicate entries, and the current three-file
+archive/MEMORY.md/SESSION_LOG.md write sequence is not crash-atomic. Existing
+watermarks can be GC'd and cannot serve as permanent publication receipts.
+Canonical deletion/coverage checks must guard a strict idempotent materializer,
+not the outer model-calling Scribe wrapper. Lock order must be canonical writer
+transaction then memory leaf lock, never the reverse. Model calls and follow-up
+dispatch stay outside both locks. No claim of power-loss durability follows
+from the current per-file atomic replacement helper.
+
 ## Architecture direction — replace coupling, not just individual failures
 
 The completion target is a provider-neutral execution boundary, not a count of

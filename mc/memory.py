@@ -80,7 +80,7 @@ _read_agent_stream: Callable[..., Any] = None  # type: ignore[assignment]
 _hide_windows_delayed: Callable[[int], Any] = None  # type: ignore[assignment]
 # Session-end topics-digest refresh. Wired by server.py (never imported here —
 # mc.memory must not import a blueprint). None = feature absent, hook no-ops.
-_topics_refresh_hook: Callable[[str], Any] = None  # type: ignore[assignment]
+_topics_refresh_hook: Callable[[str], Any] | None = None
 
 
 def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
@@ -2389,15 +2389,19 @@ def _session_log_ring():
         return 20
 
 
-def _session_log_read(project):
+def _session_log_read(project, *, strict=False):
     """(entries, wm_markers) from SESSION_LOG.md — pure read, no migration.
-    Empty lists if the file does not exist yet."""
+    Empty lists if the file does not exist yet. Writers require strict=True:
+    an unreadable existing log must never become an empty replacement."""
     path = _get_session_log_path(project)
     if not path.exists():
         return [], []
     try:
         text = path.read_text(encoding='utf-8')
-    except Exception:
+    except Exception as e:
+        _log(f"[memory] session log read failed: {e}")
+        if strict:
+            raise
         return [], []
     _curated, entries, wm = _mem_split_full(text)
     return entries, wm
@@ -2464,7 +2468,7 @@ def migrate_session_log_split(project):
         before_bytes = len(existing.encode('utf-8'))
         before_lines = len(existing.splitlines())
         curated, legacy_entries, legacy_wm = _mem_split_full(_mem_migrate(existing))
-        log_entries, log_wm = _session_log_read(project)
+        log_entries, log_wm = _session_log_read(project, strict=True)
         merged_entries = legacy_entries + log_entries
         merged_wm = _wm_merge(log_wm, legacy_wm)
         existing_log_sids = {(_wm_parse(ln) or {}).get('session_id') for ln in log_wm}
@@ -2956,7 +2960,8 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
         still carries inline, §10.4) and SESSION_LOG.md, each atomically.
     No scribe call and no condense dispatch inside the lock (the slow/process
     parts stay out). Returns whether condense should fire; caller dispatches it
-    OUTSIDE the lock. Never raises. SPEC §3.A.MID committee blocker #3.
+    OUTSIDE the lock. File failures propagate; callers must not acknowledge
+    failed writes. SPEC §3.A.MID committee blocker #3.
 
     `supersede_sid` fixes the checkpoint pile-up. Step-6 checkpointing folds
     each transcript delta into a CUMULATIVE `running_summary`, so every
@@ -2985,7 +2990,7 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
         # function was going to make anyway, is what makes the migration
         # re-runnable-to-a-no-op rather than needing a separate pass first.
         curated, legacy_entries, legacy_wm = _mem_split_full(_mem_migrate(existing))
-        log_entries, log_wm = _session_log_read(p)
+        log_entries, log_wm = _session_log_read(p, strict=True)
         mem_entries = legacy_entries + log_entries
         wm_markers = _wm_merge(log_wm, legacy_wm)
         if supersede_sid is not None:
@@ -4298,7 +4303,7 @@ def _condense_apply(project, payload):
         existing = (mem_path.read_text(encoding='utf-8')
                     if mem_path.exists() else '')
         curated, legacy_entries, wm = _mem_split_full(_mem_migrate(existing))
-        log_entries, log_wm = _session_log_read(project)
+        log_entries, log_wm = _session_log_read(project, strict=True)
         entries = legacy_entries + log_entries
         wm = _wm_merge(log_wm, wm)
         cur_lines = curated.splitlines()

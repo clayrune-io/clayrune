@@ -151,6 +151,15 @@ flush boundaries, backpressure and a visible persistence-failure state before
 activation. No silent best-effort write fallback. Benchmark actual disk/latency;
 do not assume WAL or a large unit-test count proves the operational contract.
 
+The store now provides separate captured-history snapshots and byte-bounded
+payload chunk reads. These do not require the complete-coverage attestation used
+by derivation snapshots: a user can inspect gapped history without authorizing
+Scribe to summarize it as complete. Each chunk read checks privacy generation
+and the fixed event boundary transactionally. Reassemble UTF-8 bytes before JSON
+decoding; text, including large tool output, is never shortened. Payload byte
+bounds exclude framing and do not establish storage quotas, SQLite working-set
+limits, buffered-stream backpressure or a wired HTTP/export endpoint.
+
 Required fault cases include concurrent acceptance/claims, stale retry, crash
 before/after spawn, live old-owner receipts, terminal/output races, cancellation,
 delete/restore during summarization, snapshot/export during writes, missing
