@@ -7,6 +7,112 @@ with deterministic in-app provider setup, and equivalent safety outcomes across
 supported providers. The inventory is in
 `research/PROVIDER_DEFAULT_CLASH_AUDIT_2026-09-16.md`.
 
+## Architecture direction — replace coupling, not just individual failures
+
+The completion target is a provider-neutral execution boundary, not a count of
+patched call sites. Increment 1 remains a useful defect fix, not proof that this
+boundary exists. The passive CLI wrapper in `MULTI_PROVIDER_DESIGN.md` is prior
+art; its vendor-event passthrough, deferred helper migrations, implicit Claude
+defaults and absent safety gating are not the target architecture.
+
+### Ownership boundary
+
+`Features -> Clayrune execution service -> provider adapters -> CLI processes`
+
+This is a responsibility boundary inside the existing application, not a new
+network service or a second runtime framework. Evolve the existing runtime and
+resolver behind it, migrating consumers rather than retaining two permanent
+execution paths.
+
+| Owner | Responsibilities | Must not know/do |
+|---|---|---|
+| Features: chat, Claydo, Hivemind, Scribe, workflows | Domain requests, explicit user choices, required operation capabilities, domain completion criteria | CLI flags, vendor transcript formats, subprocess launching for inference, hidden provider defaults |
+| Clayrune execution service | Resolve/freeze engine and policy; validate readiness/capabilities; durable lifecycle and normalized events; cancellation, quota and recovery policy; process ownership | Guess missing provider evidence, weaken requested safety, silently switch engines |
+| Provider adapter | Binary/version/auth/install protocol; command construction; transport; native resume handles; event/error normalization; actual safety enforcement | Write project memory, choose domain success, own feature retry policy or mutate unrelated conversations |
+| Clayrune stores | Conversations/events/checkpoints, project memory/provenance, task progress and policy records | Depend on one vendor's private transcript layout to retain Clayrune-owned state |
+
+Raw vendor payloads stay inside adapters or explicitly scoped diagnostic
+storage. Features consume versioned typed events, not `event.raw` with a
+provider-name branch. Native transcript import is an adapter concern and
+feeds the same normalized store; it is not the primary persistence contract.
+Only available data is retained: do not invent hidden reasoning, missing
+usage or model identities that the provider never exposes.
+
+### Required contracts
+
+1. **Execution request:** project/conversation/run IDs, unique request/attempt
+   IDs, resolved provider/model/effort/account reference, context snapshot,
+   declared attachments/tools, security profile, limits and deadline. Credentials
+   are adapter-managed references, never copied into domain events or logs.
+   Persist requested versus observed engine separately; unknown remains unknown.
+   Defaults seed new work, never overwrite a continuing run's frozen choice.
+2. **Separate operation profiles:** interactive toolful work, constrained
+   unattended work and strictly tool-free text transformation. The last must
+   not be implemented by an ordinary auto-approved agent prompt. Capabilities
+   distinguish supported, unsupported and unverified for the tested CLI version,
+   platform and configuration. Enforce requirements before passing sensitive
+   context or starting a model; adapters cannot silently downgrade them.
+3. **Normalized outcomes:** ordered events for start/output/tool activity/usage,
+   checkpoint/turn completion, blocked-auth, blocked-quota, cancellation and
+   terminal failure. A process exit is not domain-task success. Unsupported
+   evidence is explicit. Bound streams and propagate errors/cancellation without
+   confusing infrastructure failure with a successful answer.
+4. **Durable lifecycle:** Clayrune owns conversation ID, attempt sequence,
+   frozen engine, native resume handle, progress and recovery state. Reject
+   stale-attempt events, serialize mutations and recover after restart. Keep
+   explicit incognito/retention rules. Memory summaries reference their source
+   conversation/checkpoint; retrieval is shared and vendor-independent.
+5. **Quota/retry policy:** normalize account/provider scope and reset time when
+   actually known. Pause affected work durably rather than burning generic
+   retries. Unknown reset time requires an explicit retry/readiness decision,
+   not a guessed countdown. Hivemind displays blocked/partial/failed accurately;
+   one failed worker does not become global success. Independent work proceeds
+   only under the run's documented policy. Cross-provider handover requires
+   explicit consent and a labelled context transfer, never native-ID reuse.
+6. **Side-effect safety:** interrupted work may already have executed tools.
+   Never promise exactly-once external effects from process retries. Use
+   idempotency keys where the destination supports them; otherwise retain
+   uncertain outcomes and reconcile before replaying destructive/outward actions.
+
+### Proof required before declaring decoupling complete
+
+- **Architecture tests:** CI rejects inference subprocess launches, raw vendor
+  event parsing and direct adapter imports in feature modules. Inventory existing
+  exceptions with owners and removal gates; the allowlist only shrinks, cannot
+  grow silently. No permanent Claude bypass behind the new facade.
+- **Shared adapter conformance suite:** the same lifecycle, identity, streaming,
+  error, cancellation and safety-profile contract tests run for every adapter.
+  Recorded real protocol fixtures complement fakes. Provider capability claims
+  include version/platform evidence and fail closed when compatibility is unknown.
+- **Fault injection:** quota exhaustion at every phase, auth expiry, unknown
+  model, missing binary, malformed output, huge stderr, lost connection, stale
+  callbacks, concurrent chats, process/server crash and upgrade during recovery.
+  Check preserved state and truthful UI, not just HTTP status or process exit.
+- **Adversarial isolation tests:** canary tools, MCP servers, hooks, plugins,
+  inherited configuration and hostile inputs cannot breach each profile's
+  promised boundary. Test absence of side effects, not just presence of flags.
+- **End-to-end feature matrix:** clean single-provider installations, without
+  Claude present, run setup -> chat -> parallel chats -> restart -> continuation
+  -> Scribe -> another agent's retrieval and Hivemind -> quota pause -> recovery.
+  Include Claude and all other advertised supported providers on their supported
+  platforms. Unsupported operations are labelled, not counted as working parity.
+- **Extensibility test:** a new test adapter can serve existing features without
+  changing those features. Adding a real adapter requires its implementation,
+  registration/catalog metadata and conformance evidence, not edits to Scribe,
+  chat or Hivemind.
+
+### Revised delivery sequence
+
+First settle and test these contracts and the capability/compatibility matrix.
+Then migrate complete vertical paths (including Claude) behind the service,
+with their state store, UI errors and failure tests. Each slice removes its old
+bypass before it counts as migrated. Prove a non-Claude chat-to-memory vertical
+slice, then orchestration/quota recovery, then remaining consumers and unified
+setup. Installer work may proceed independently only against the same readiness
+contract. Incremental commits remain appropriate; partial migration is never
+reported as full robustness. Final acceptance requires the matrix above, not
+only a large passing unit-test count.
+
 ## Increment 1 — engine selection and conversation persistence
 
 - `mc/engine_selection.py` centralizes non-executing provider/model resolution.
