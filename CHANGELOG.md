@@ -6,6 +6,22 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-16m] — Establish provider-neutral conversation storage contracts
+
+- Add a transactional conversation journal with project isolation, ordered
+  untruncated events, idempotency and stale-attempt protection. Separate accepted
+  requests from execution retries so retries do not duplicate user messages.
+- Validate normalized content and provide independent full-history and Scribe
+  views. Scribe elision never changes stored content; tool results keep call IDs.
+- Cover incognito no-write, recoverable deletion, restore, concurrent writers,
+  reopen, rollback and incompatible schema rejection using real temporary SQLite
+  databases. No production data is migrated or created by installing this code.
+- Foundation only: runtime capture, history routes and Scribe are not yet wired
+  to the journal. Activation gates and remaining integrations are documented in
+  `docs/PROVIDER_HARDENING_PROGRESS.md`; this is not a claim of full provider parity.
+- 609 offline tests pass, including 45 new contract/storage/projection tests;
+  all three new modules pass Pyright. Delayed retries cannot take over newer work.
+
 ## [2026-09-16l] — Preserve conversation engines and reject provider fallback
 
 - Centralize provider/model resolution for dispatch and Hivemind workers.

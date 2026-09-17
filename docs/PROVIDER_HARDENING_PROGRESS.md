@@ -113,6 +113,71 @@ contract. Incremental commits remain appropriate; partial migration is never
 reported as full robustness. Final acceptance requires the matrix above, not
 only a large passing unit-test count.
 
+## Increment 2 — canonical conversation storage contracts
+
+**Foundation implemented; not activated for live conversations.** The database
+is created only when an explicit caller begins a persistent attempt. No server
+startup, runtime reader, history route or Scribe call uses this store yet. This
+increment therefore makes no change to current capture completeness, UI, model
+execution, retention, or provider safety.
+
+- `mc/conversation_store.py` supplies a SQLite transactional store with an
+  explicit caller-owned state path, outside the project-record directory.
+  Project/conversation IDs scope every operation. Ordered immutable events have
+  stable IDs and sequence cursors; a repeated ID with different content fails.
+- Beginning an attempt atomically records the original user message and
+  requested engine. Accepted request identity is separate from process-attempt
+  identity: retrying a request cannot invent another user message or change its
+  input/engine. Retries require an atomic comparison against the current
+  same-request token; a delayed retry cannot supersede a newer user request.
+  Only the current attempt token may append: superseded processes
+  cannot modify the conversation. Tokens are concurrency guards, not an
+  authorization boundary; route-level project authorization remains required.
+- Full text, JSON tool bodies and attachment references are retained without
+  summary truncation. This is not yet attachment-blob storage, an encrypted
+  secret vault, or a native transcript importer. Inputs must already satisfy
+  capture/privacy policy; arbitrary environment/config dumps are not allowed.
+- Incognito begin performs no filesystem access. Deletion is a recoverable
+  tombstone, not physical erasure; reads hide it and both old writers and new
+  attempts are refused until explicit restore. Restore does not revive old
+  process tokens. Physical erasure/backup retention requires a separate policy.
+- `mc/conversation_views.py` provides paginated full-event reads and a separate
+  Scribe projection with explicit elision markers for oversized tool details.
+  Summary formatting never alters the source events. Requested engine metadata
+  is not presented as user text. Tool results retain call IDs/error attribution;
+  unknown lifecycle events remain in history. `mc/conversation_contract.py`
+  validates known content shapes before append and again when projecting, so
+  malformed messages fail visibly instead of silently disappearing.
+- Schema/application identity are checked on every connection; unsupported
+  versions fail rather than rewriting state. Write transactions and rollback
+  are tested against real temporary SQLite files, not only mocks.
+
+Validation: 45 storage/projection/architecture tests plus 564 existing runtime,
+engine, history, Hivemind and continuation regressions pass (609 total). All three
+new modules pass Pyright with zero errors. Independent review identified and
+closed request/retry duplication, malformed-content loss and delayed-retry
+takeover risks. No real-provider run or production capture validation is claimed.
+
+### Activation gate: migrate a whole conversation path
+
+Current live buffers are insufficient as the canonical input: Claude Mode B
+trims to 1,500 entries, completion rows cap summaries at 2,000 characters, and
+tool-line formatting drops results. Capture must happen before display shaping.
+
+| Migration surface | Required integration |
+|---|---|
+| User ingress | Capture original accepted dispatch/follow-up/queue messages, not provider echoes containing injected system context; distinguish requests from retry attempts |
+| Four readers | Claude Mode A and B in `agent_routes`, generic Mode A and Gemini in `agent_runtime`: normalize and durably append before rendering; retain stale-process guards |
+| Stream semantics | Specify deltas versus finalized messages and stable tool-call IDs; reconcile provider-exposed data missing from stdout without duplicating events |
+| History | Canonical-first lookup before capped agent-log lookup; full history, rail listing, revival, search and export use the same project-scoped source |
+| Memory | Terminal Scribe AND live checkpointing; migrate native-byte offsets to canonical sequence watermarks without weakening existing atomic memory writers |
+| Privacy/lifecycle | Incognito capture/import exclusions, deletion and restoration, retention, project backup/export and attachment ownership |
+| Legacy import | Adapter-only parsing; explicit completeness/provenance and import checkpoints; never let a partial new journal replace a richer existing transcript |
+
+The next vertical slice is incomplete until these consumers are wired and tested
+together. No provider capability is certified by the storage tests. Full captured
+conversation history remains distinct from inaccessible private vendor reasoning.
+
 ## Increment 1 — engine selection and conversation persistence
 
 - `mc/engine_selection.py` centralizes non-executing provider/model resolution.
