@@ -1018,12 +1018,31 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     pp = p.get('project_path', '')
     worker_context = _hm_build_worker_context(hivemind_id, ws_id)
     from mc import engine_selection
+    _cfg = manifest.get('config', {}) or {}
+    _manifest_worker_provider = (_cfg.get('worker_provider') or '').strip().lower()
+    _ws_provider = (ws.get('provider') or '').strip().lower()
+    # The manifest's `worker_model` default (e.g. 'sonnet') was computed ONCE
+    # at hivemind-create time FOR THE MANIFEST-LEVEL worker_provider (which
+    # may itself be an inherited default, e.g. the project's own provider --
+    # see hivemind_create). A workstream that names its OWN, DIFFERENT
+    # provider must not inherit that string: it belongs to another vendor's
+    # model catalog entirely (2026-09-18, W5 live test -- found this blocking
+    # EVERY mixed-vendor workstream that didn't also set its own `model`,
+    # with a confusing "Model 'sonnet' belongs to provider 'aider'" refusal
+    # from `engine_selection.model_provider_mismatch`'s cross-catalog search).
+    # Only inherit the manifest's model default when this workstream is
+    # actually using the manifest's own default provider (or has none of its
+    # own) -- otherwise fall through to `model_override=None`, which resolves
+    # the DESTINATION provider's own native default via the safe inherit path
+    # in `engine_selection.resolve_model`.
+    _model_fallback = (
+        _cfg.get('worker_model') or ''
+        if not _ws_provider or _ws_provider == _manifest_worker_provider
+        else '')
     engine = engine_selection.resolve_engine(
         state.CONFIG, p, legacy_default='claude',
-        provider_override=(ws.get('provider') or
-                           manifest.get('config', {}).get('worker_provider') or ''),
-        model_override=(ws.get('model') or
-                        manifest.get('config', {}).get('worker_model') or None))
+        provider_override=(ws.get('provider') or _manifest_worker_provider or ''),
+        model_override=(ws.get('model') or _model_fallback or None))
     model = engine.model
     effort = (ws.get('effort') or
               manifest.get('config', {}).get('worker_effort') or '')

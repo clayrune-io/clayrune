@@ -66,7 +66,7 @@ import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from flask import Blueprint, Flask, Response, jsonify, request
 
@@ -7090,6 +7090,70 @@ def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
     return next(iter(owners), '')
 
 
+_HANDOFF_MAX_CHARS = 8000
+
+
+def _build_handoff_context(project_path, owning_provider, native_id):
+    """Rebuild an owning provider's real turns for injection into a NEW
+    conversation on a different vendor (W5, 2026-09-18 — explicit,
+    opt-in cross-provider handoff; NOT a native resume).
+
+    Reads the owning provider's OWN transcript file via its existing
+    per-adapter reader (`ClaudeRuntime.parse_transcript_file` or the
+    `extract_chat_turns` sibling on Codex/Qwen) -- the same readers that
+    already back same-vendor reconstruction/read-floor. Returns
+    (context_text, meta) where meta reports what was actually included, so
+    the caller can be honest about it rather than silently proceeding with
+    less than it looks like (SUBSTITUTION IS A LIE).
+
+    Raises ValueError if the owning provider has no transcript to read (this
+    is a genuine, not a fixable-here, gap for a provider whose adapter has no
+    native transcript store at all -- e.g. Gemini, `GeminiRuntime.transcript_path`
+    returns None unconditionally today).
+    """
+    runtime = _agent_runtime.get_runtime(owning_provider)
+    tpath = runtime.transcript_path(project_path, native_id)
+    if not tpath or not Path(tpath).is_file():
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': no transcript is "
+            f"available for this conversation (this vendor may have no "
+            f"native transcript store at all)")
+    if owning_provider == 'claude':
+        raw = runtime.parse_transcript_file(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+        turns = [(m['role'], m['text']) for m in raw
+                 if m.get('role') in ('user', 'assistant') and m.get('text')]
+    else:
+        extract = getattr(runtime, 'extract_chat_turns', None)
+        if not callable(extract):
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': its adapter has "
+                f"no extract_chat_turns reader yet")
+        turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    if not turns:
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': the transcript "
+            f"parsed to zero real turns")
+    total = len(turns)
+    kept = []
+    kept_chars = 0
+    for role, text in reversed(turns):
+        line = f"{'User' if role == 'user' else 'Assistant'}: {text}"
+        if kept_chars + len(line) > _HANDOFF_MAX_CHARS and kept:
+            break
+        kept.append(line)
+        kept_chars += len(line)
+    kept.reverse()
+    omitted = total - len(kept)
+    header = f"=== Prior conversation, started on {owning_provider}, handed off here ==="
+    if omitted:
+        header += f"\n[{omitted} earlier turn(s) omitted for length]"
+    body = '\n\n'.join(kept)
+    footer = "=== End of prior conversation. Continue from here, using the above as real context. ==="
+    context = f"{header}\n\n{body}\n\n{footer}"
+    return context, {'owning_provider': owning_provider, 'total_turns': total,
+                     'included_turns': len(kept), 'omitted_turns': omitted}
+
+
 def _prior_conversation_settings(project_id, resume_id, provider=''):
     """Recover latest engine settings, keeping explicit clears authoritative."""
     rows = sorted([s for s in list(agent_sessions.values())
@@ -7236,6 +7300,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              notify_session='', notify_workflow=None,
                              preserve_model=False, project_generation=None,
                              system_prompt_suffix='', housekeeping=False,
+                             cross_provider_handoff=False,
                              runtime_callbacks=None, session_metadata=None,
                              session_dict_override=None,
                              max_turns_override=None):
@@ -7296,9 +7361,36 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     if not pp or not Path(pp).is_dir():
         raise ValueError('project_path not set or invalid')
 
+    _handoff_meta = None
     if resume_id:
-        provider_override = _prior_conversation_provider(
-            project_id, resume_id, provider_override)
+        # Opt-in only (W5, 2026-09-18): every existing caller (UI resume, the
+        # scheduler, hivemind, workflow steps) leaves cross_provider_handoff
+        # False and gets EXACTLY the prior hard-refusal behaviour below,
+        # unchanged. Only an explicit ask that names both a resume id and a
+        # different provider, WITH this flag, gets a real handoff instead of
+        # the ValueError -- never a silent one; the difference is always the
+        # caller's own explicit request, and the result is a brand-new
+        # conversation (resume_id cleared) whose task carries clearly-labelled
+        # prior-conversation content, never a native cross-vendor resume.
+        _owning_provider = _prior_conversation_provider(project_id, resume_id, '')
+        if (cross_provider_handoff and provider_override
+                and _owning_provider
+                and _owning_provider.lower() != provider_override.strip().lower()):
+            _handoff_text, _handoff_meta = _build_handoff_context(
+                pp, _owning_provider, resume_id)
+            # Disclose the handoff in the USER-VISIBLE bubble too, not just the
+            # actual model input -- a human watching the UI must see that this
+            # turn carries injected prior-conversation content, not just the
+            # short text they typed (never silently substitute).
+            if display_task is None:
+                display_task = task
+            display_task = f"[Continued from {_owning_provider}] {display_task}"
+            task = f"{_handoff_text}\n\n{task}"
+            _handoff_meta['from_native_id'] = resume_id
+            resume_id = ''
+        else:
+            provider_override = _prior_conversation_provider(
+                project_id, resume_id, provider_override)
 
     # Resolve the per-chat character (persona) now, at spawn — the only point
     # a system prompt can be set. Immutable for this chat's lifetime; switching
@@ -7909,10 +8001,19 @@ def agent_dispatch(project_id):
             not isinstance(effort_override, str)
             or (effort_override and not _re_auth.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort_override))):
         return jsonify({'error': 'invalid effort'}), 400
+    # W5, 2026-09-18: an explicit, opt-in cross-provider handoff mints a
+    # BRAND-NEW conversation on the destination vendor (see
+    # `_build_handoff_context`/the `resume_id` branch in
+    # `_dispatch_agent_internal`) -- it is not a native resume, so it is a
+    # fresh persona pick like any other new chat, not "ignore it, this is a
+    # resume". `cross_provider_handoff` with no matching provider mismatch is
+    # a harmless no-op (falls through to the ordinary resume path below).
+    cross_provider_handoff = bool(data.get('cross_provider_handoff'))
     # Per-chat character/persona ("scope:name", e.g. "project:code-reviewer").
     # Only meaningful on a FRESH chat — a resume keeps the original spawn's
     # persona (claude -r can't change the system prompt), so ignore it there.
-    character = (data.get('character') or '').strip() if not resume_id else ''
+    character = ((data.get('character') or '').strip()
+                 if (not resume_id or cross_provider_handoff) else '')
     # Mobile brief replies: augmented version goes to the agent. The frontend's
     # local echo already shows the original task as the user's chat bubble.
     claude_task = _apply_mobile_brief(task, data)
@@ -7961,7 +8062,8 @@ def agent_dispatch(project_id):
                                               # at write time and must stay
                                               # best-effort; they don't set this.
                                               strict_character=True,
-                                              notify_session=notify_session)
+                                              notify_session=notify_session,
+                                              cross_provider_handoff=cross_provider_handoff)
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
