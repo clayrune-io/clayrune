@@ -629,6 +629,11 @@ class TestCodexRuntime:
         assert caps.emits_cost is False
         assert caps.context_injection == 'file'
         assert caps.context_file_name == 'AGENTS.md'
+        # W4/MC-947 (2026-09-18), offline proof (Codex out of allowance):
+        # dispatch() calls with_mc_tool_protocol() and runs through the
+        # SAME shared _mode_a_reader turn-end mc:question scan Qwen uses
+        # (live-verified there) — no Codex-specific divergence in that path.
+        assert caps.supports_ask_user_question is True
 
     def test_health_check_not_installed(self, monkeypatch):
         """When neither binary nor npx is found, installed=False.

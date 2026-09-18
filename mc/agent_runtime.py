@@ -6754,7 +6754,19 @@ class CodexRuntime(AgentRuntime):
             # UI (static/js/conversation.js) that could never receive data.
             # Parity audit §2 "Plan detection / approval".
             supports_plan_mode=False,
-            supports_ask_user_question=False,
+            # W4/MC-947 (2026-09-18), OFFLINE proof (Codex out of allowance
+            # until Sep 24 — no prompt sent): `dispatch()` below calls
+            # `with_mc_tool_protocol(system_prompt)` (same call Qwen's own
+            # dispatch() makes) and, like Qwen, runs through the SHARED
+            # `_mode_a_reader` — the exact same `turn_text_parts` accumulate
+            # / `apply_mc_tool_blocks` turn-end scan every Mode-A provider
+            # gets, with no Codex-specific branch anywhere in that path.
+            # Live-verified for Qwen (identical mechanism): a real
+            # ```mc:question``` fence paused the turn (status -> idle,
+            # `pending_questions` populated), and a follow-up answer resumed
+            # the same session and completed correctly. Flip to True on code
+            # parity; re-verify live once Codex has allowance again.
+            supports_ask_user_question=True,
             supports_streaming_text=True,
             emits_usage=True,
             emits_rate_limit=False,
