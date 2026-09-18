@@ -281,7 +281,7 @@ def _install_claude_cli_windows(status_callback=None):
         _status('Installing Node.js via winget...')
         try:
             r = _run_silent([
-                'winget', 'install', 'OpenJS.NodeJS.LTS',
+                'winget', 'install', 'OpenJS.NodeJS.LTS', '--source', 'winget',
                 '--accept-package-agreements', '--accept-source-agreements',
             ], timeout=300)
             if r.returncode != 0:
@@ -368,7 +368,7 @@ def _install_dotnet_desktop_runtime():
     """Try to install .NET Desktop Runtime via winget. Returns (success, message)."""
     try:
         r = _run_silent([
-            'winget', 'install', 'Microsoft.DotNet.DesktopRuntime.8',
+            'winget', 'install', 'Microsoft.DotNet.DesktopRuntime.8', '--source', 'winget',
             '--accept-package-agreements', '--accept-source-agreements',
         ], timeout=300)
         if r.returncode == 0:

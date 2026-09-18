@@ -218,7 +218,7 @@ function Setup-Node {
     # initialised yet) and it fails by EXIT CODE, not by throwing.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Node.js LTS via winget...'
-        $rc = Invoke-Native winget install --id OpenJS.NodeJS.LTS -e --silent `
+        $rc = Invoke-Native winget install --id OpenJS.NodeJS.LTS -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
@@ -334,7 +334,7 @@ function Setup-ClaudeRuntimeShell {
     # Attempt 1: winget. Fails by exit code, not by throwing - so check it.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Git for Windows via winget (also gives Claude its bash runtime)...'
-        $rc = Invoke-Native winget install --id Git.Git -e --silent `
+        $rc = Invoke-Native winget install --id Git.Git -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
@@ -1008,7 +1008,7 @@ $pythonExe = Find-Python311
 if (-not $pythonExe) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host '  Python 3.11+ not found. Installing via winget...' -ForegroundColor Yellow
-        $rc = Invoke-Native winget install --id Python.Python.3.12 -e --silent `
+        $rc = Invoke-Native winget install --id Python.Python.3.12 -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow

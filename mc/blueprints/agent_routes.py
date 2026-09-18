@@ -1774,7 +1774,7 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
             # winget updates the machine after this shell starts. Explicitly add
             # the stable Node/npm locations before invoking npm; inheriting the
             # old PATH was the original fresh-PC failure.
-            node = ('winget install --id OpenJS.NodeJS.LTS -e --silent '
+            node = ('winget install --id OpenJS.NodeJS.LTS -e --silent --source winget '
                     '--accept-source-agreements --accept-package-agreements '
                     '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%"')
         else:

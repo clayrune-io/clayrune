@@ -203,7 +203,7 @@ def test_install_launch_onboards_missing_node_before_provider(monkeypatch, clien
     assert body['ok'] is True
     assert body['prerequisite'] == 'npm'
     assert calls == [
-        'winget install --id OpenJS.NodeJS.LTS -e --silent '
+        'winget install --id OpenJS.NodeJS.LTS -e --silent --source winget '
         '--accept-source-agreements --accept-package-agreements '
         '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
         '&& npm install -g @openai/codex'
