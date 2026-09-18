@@ -66,7 +66,16 @@ const WT_STEPS = [
     // step exists to avoid. Does NOT skip on "only one CLI installed" (or
     // zero) any more: that was exactly the fresh-Mac-.app case where nothing
     // is installed yet and the user still needs to see the install offer.
-    skip: () => !wtProviderChoiceVisited && !!(_globalConfig && _globalConfig.default_provider),
+    // A saved default alone is not enough: this step's own save writes it too,
+    // so after a reload a user who picked but never installed was skipped past
+    // the only install offer (clean-VM run, 2026-09-18). Skip only when that
+    // default is actually installed and signed in.
+    skip: () => {
+      if (wtProviderChoiceVisited) return false;
+      const d = _globalConfig && _globalConfig.default_provider;
+      const p = d && (_agentProviders || []).find(x => x.name === d);
+      return !!(p && p.installed && p.auth_status === 'ok');
+    },
   },
   {
     id: 'advanced-picker',
