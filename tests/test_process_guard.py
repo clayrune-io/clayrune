@@ -27,3 +27,15 @@ def test_hook_uses_exit_two_and_ignores_non_shell_tools(capsys):
     assert 'image-name termination' in capsys.readouterr().err
     assert hook_main({'tool_name': 'Read', 'tool_input': {'command': 'pkill notepad'}}) == 0
 
+
+def test_hook_covers_gemini_and_qwen_shell_tool_name(capsys):
+    # Gemini CLI's BeforeTool and Qwen Code's own native shell tool both name
+    # it 'run_shell_command' (Claude/Qwen's PreToolUse names it 'Bash' /
+    # 'PowerShell' instead) — this is the SAME entry point vendor hook
+    # installers point Gemini's and Qwen's own hook config at (W2), so it
+    # must recognize both namings.
+    payload = {'tool_name': 'run_shell_command',
+               'tool_input': {'command': 'taskkill /IM notepad.exe'}}
+    assert hook_main(payload) == 2
+    assert 'image-name termination' in capsys.readouterr().err
+
