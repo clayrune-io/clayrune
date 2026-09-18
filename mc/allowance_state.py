@@ -281,6 +281,9 @@ def detect_from_claude_rate_limit_event(msg: dict) -> Optional[dict]:
     }
 
 
+_CODEX_USAGE_LIMIT_TEXT = "You've hit your usage limit"
+
+
 def detect_from_codex_message(msg: dict) -> Optional[dict]:
     """Codex's `usage_limit_exceeded`. Real, live-captured (2026-09-18,
     ~/.codex/sessions/2026/09/17/rollout-2026-09-17T22-19-23-01a0b2f4-*.jsonl,
@@ -307,10 +310,19 @@ def detect_from_codex_message(msg: dict) -> Optional[dict]:
         error = payload.get('error')
     if error is None and msg.get('type') in ('error', 'turn.failed'):
         error = msg.get('error')
+        # `codex exec --json` stream shape, live-captured 2026-09-18 from a real
+        # launch while out of allowance (Dave, config-parse check):
+        #   {"type":"error","message":"You've hit your usage limit. ... try again at Sep 24th, 2026 7:58 AM."}
+        #   {"type":"turn.failed","error":{"message":"You've hit your usage limit. ..."}}
+        # Neither carries codex_error_info, and `error` carries the message at
+        # the top level, so the rollout-only check below missed the live path.
+        if error is None and isinstance(msg.get('message'), str):
+            error = {'message': msg['message']}
     if not isinstance(error, dict):
         return None
     if error.get('codex_error_info') != 'usage_limit_exceeded':
-        return None
+        if _CODEX_USAGE_LIMIT_TEXT not in (error.get('message') or ''):
+            return None
     message = error.get('message') or ''
     reset_dt = _parse_codex_reset_text(message)
     reset_match = _CODEX_RESET_RE.search(message)

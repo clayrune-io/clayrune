@@ -192,3 +192,17 @@ def test_detect_qwen_quota_error_text():
 
 def test_detect_unknown_provider_returns_none():
     assert al.detect('opencode', {'type': 'error'}) is None
+
+
+def test_codex_exec_stream_usage_limit_is_detected():
+    """Live-captured 2026-09-18 from `codex exec --json` while out of allowance.
+    The stream carries no codex_error_info (only the rollout file does)."""
+    import mc.allowance_state as a
+    t = ("You've hit your usage limit. Visit https://chatgpt.com/codex/settings/usage "
+         "to purchase more credits or try again at Sep 24th, 2026 7:58 AM.")
+    for msg in ({"type": "error", "message": t},
+                {"type": "turn.failed", "error": {"message": t}}):
+        got = a.detect_from_codex_message(msg)
+        assert got and got['limit_kind'] == 'usage_limit'
+        assert got['resets_at_display'].startswith('Sep 24th, 2026')
+    assert a.detect_from_codex_message({"type": "error", "message": "stream disconnected"}) is None
