@@ -238,11 +238,22 @@ def _encode_project_path(project_path):
 
 
 def _session_transcript_path(project_path, claude_session_id):
-    """Return the .jsonl transcript path for a Claude session (no existence check).
-    Delegates to ClaudeRuntime._build_transcript_path() — path construction lives
-    in the runtime so non-claude providers automatically return None.
+    """Return the .jsonl transcript path for a Claude session, or None if it
+    can't be found. Delegates to ClaudeRuntime.transcript_path() — the
+    variant- and worktree-aware lookup (see _encoded_dir_candidates()) — so
+    non-claude providers automatically return None and callers here don't
+    miss sessions that live under a `_`/`.`-flattened or worktree-isolated
+    transcript directory.
+
+    NOTE: unlike the name suggests, this DOES check existence (transcript_path()
+    only returns a Path that's actually on disk). _build_transcript_path()
+    (path construction only, no lookup) was tried here first and silently
+    broke auto-fresh on any install whose project path contains `_` or `.`
+    (e.g. `_claude`, or the `.clayrune/agents/<sid>` worktree dirs) — the
+    primary-only encoding never matched what the CLI actually wrote, so this
+    always returned None and auto-fresh never fired. Fixed 2026-09-18.
     """
-    return _agent_runtime.get_runtime('claude')._build_transcript_path(  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
+    return _agent_runtime.get_runtime('claude').transcript_path(  # pyright: ignore[reportAttributeAccessIssue]  # moved-verbatim typing debt (mop)
         project_path, claude_session_id)
 
 

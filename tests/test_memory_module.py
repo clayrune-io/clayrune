@@ -433,3 +433,46 @@ def test_scribe_call_folds_seam_timeout_into_runtime_error(tmp_data_dir, monkeyp
     monkeypatch.setattr(m._agent_runtime, "run_text_transform", transform)
     with pytest.raises(RuntimeError, match="timeout after 180s"):
         m._scribe_call("haiku", "summarize", "body text")
+
+
+# ── _session_too_large: must find dot/worktree-flattened transcripts ─────────
+# Regression: _session_transcript_path() used to delegate to
+# ClaudeRuntime._build_transcript_path(), which only builds the PRIMARY
+# encoded variant (no existence check). The CLI itself also flattens `_`
+# and `.` to `-` (see agent_runtime._encoded_dir_candidates), and worktree
+# sessions live under <project>/.clayrune/agents/<sid> — a dot-bearing path
+# on every isolated agent. So on any install whose project path contains
+# `_` or `.` (this one: "...\_claude\..."), the primary-only lookup always
+# missed and auto-fresh silently never fired. Fixed by delegating to
+# ClaudeRuntime.transcript_path() instead, which checks every encoded
+# variant plus the worktree glob.
+
+def test_session_too_large_finds_dot_flattened_worktree_transcript(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 100  # bytes — small so a short fixture body trips it
+
+    # Real shape: a per-agent worktree under a dot-prefixed directory, exactly
+    # what per-agent worktree isolation (b264200a) actually runs sessions from.
+    worktree = str(tmp_data_dir / 'proj' / '.clayrune' / 'agents' / '0f7687efce3f')
+    session_id = '41ee10c4-7594-4e17-b92b-6308102c1750'
+
+    encoded = rt._encode_project_path(worktree)
+    assert encoded and '.' in encoded, 'expected the dot to survive the base encoding'
+
+    # Create ONLY the dot-flattened dir — what the CLI actually writes on disk.
+    cli_dir = fake_home / encoded.replace('.', '-')
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+    jsonl_file.write_text('{"type":"user"}' * 20)  # > 100 bytes
+    assert jsonl_file.stat().st_size > m._SESSION_SIZE_LIMIT
+
+    assert not (fake_home / encoded).exists(), 'base-encoded (unflattened) dir must NOT exist'
+
+    too_large, size = m._session_too_large(worktree, session_id)
+    assert too_large is True
+    assert size == jsonl_file.stat().st_size

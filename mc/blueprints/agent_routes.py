@@ -5573,8 +5573,28 @@ def _maybe_notify_spawner(session, summary):
     by at most one of the two, never both, but both are checked here so
     adding the workflow path cannot double-fire the existing spawner
     notification or vice versa.
+
+    DUPLICATE-NOTIFY FIX (found 2026-09-18, sessions 7a01a27211ea /
+    e0eb419b1686): both stream readers call `_log_agent_completion`
+    UNCONDITIONALLY in their `finally` exit-cleanup — including when the
+    process was intentionally killed right after an AskUserQuestion tool
+    call (`waiting_for_question=True`, status forced to 'idle' so the
+    guardian doesn't race in; see the AskUserQuestion branch above this
+    function). That kill is a PAUSE, not a finish: the child is waiting for
+    its answer and will resume via `-r` once one arrives. Before this guard,
+    every such pause fired a real, durably-enqueued "[dispatched agent
+    finished]" notification (a genuinely fresh `_delegation_turn`, so the SQL
+    dedup in mc/delegation_delivery.py — correctly idempotent per event_id —
+    had nothing to catch), and a child that asked 2-3 questions before truly
+    finishing told its spawner it was "done" 2-3 times over. The agent-log
+    completion ROW still gets written for a question-pause (tagged 'idle' —
+    see test_mc_question_pauses_the_turn_and_populates_pending_questions);
+    only the spawner/workflow WAKE is suppressed here, so a client watching
+    the conversation rail is unaffected.
     """
     if session.get('incognito'):
+        return
+    if session.get('waiting_for_question'):
         return
     notify_sid = (session.get('_notify_session') or '').strip()
     has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
@@ -8973,6 +8993,27 @@ def agent_followup(project_id):
                     existing['process_alive'] = False
                     existing['log_lines'].append(
                         f'[Process {proc.pid} found dead on followup — will respawn]')
+            # A LIVE process's follow-up used to go straight to stdin (below),
+            # so the size check only ever ran on respawn paths (dead process,
+            # dispatch, revive) — a long-running Mode B chat could sail past
+            # _SESSION_SIZE_LIMIT and never auto-fresh. Flip it "dead" here so
+            # it falls into the existing dead-process auto-fresh handoff just
+            # below: closes stdin, kills the old process, drops -r, and starts
+            # fresh automatically, no prompt (Ron, 2026-09-18).
+            if existing.get('process_alive'):
+                _live_sid = existing.get('claude_session_id')
+                if _live_sid:
+                    _live_too_large, _live_size = _session_too_large(pp, _live_sid)
+                    if _live_too_large:
+                        _live_size_mb = _live_size / (1024 * 1024)
+                        _log(f"[followup] Live session {_live_sid} is {_live_size_mb:.1f} MB — "
+                             f"ending process and starting fresh")
+                        _log_agent_activity(project_id,
+                                            f"Auto-fresh: session too large ({_live_size_mb:.0f} MB)")
+                        existing['log_lines'].append(
+                            f'[Session transcript too large ({_live_size_mb:.0f} MB) — '
+                            f'ending session and starting fresh]')
+                        existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
                 claude_sid = existing.get('claude_session_id')
