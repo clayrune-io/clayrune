@@ -6,6 +6,14 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17i] — Add dormant recoverable memory publication kernel
+
+- Add durable publication intents and receipts for multi-file memory updates,
+  with explicit forward/abort recovery, hash-guarded idempotency, staged image
+  verification, bounded storage, and fail-closed manifest validation.
+- Keep the kernel unwired until canonical cursor acknowledgment, every legacy
+  writer, archive identity, and cross-process locking pass their activation gates.
+
 ## [2026-09-17h] — Preserve Gemini fixture evidence without guessing
 
 - Add a pure offline Gemini stream decoder for repository-observed event shapes.
