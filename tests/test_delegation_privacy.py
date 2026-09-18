@@ -334,6 +334,10 @@ def test_real_conversation_delete_revokes_native_and_mc_aliases(tmp_path, monkey
     monkeypatch.setattr(ar, 'get_manager', lambda _pid: type('M', (), {'lock': __import__('threading').RLock()})())
     monkeypatch.setattr(ar, '_load_agent_log', lambda _pid: [
         {'session_id': mc_id, 'claude_session_id': native_id}])
+    lifecycle_calls = []
+    monkeypatch.setattr(ar, '_runtime_lifecycle_service', type('Lifecycle', (), {
+        'revoke_conversations': lambda _self, pid, aliases:
+            lifecycle_calls.append((pid, set(aliases))) or tuple(sorted(aliases))})())
     app = Flask('conversation-delete')
     app.register_blueprint(ar.bp)
     response = app.test_client().delete(f'/api/project/{project_id}/conversation/{native_id}')
@@ -344,6 +348,7 @@ def test_real_conversation_delete_revokes_native_and_mc_aliases(tmp_path, monkey
     assert reopened.enqueue('e1', project_id, 'parent', p) is False
     assert reopened.enqueue('native-replay', project_id, native_id,
                             _payload('other')) is False
+    assert lifecycle_calls == [(project_id, {mc_id, native_id})]
 
 
 def test_conversation_rename_failure_reports_partial_and_keeps_delivery_revoked(tmp_path, monkeypatch):
@@ -360,6 +365,8 @@ def test_conversation_rename_failure_reports_partial_and_keeps_delivery_revoked(
     monkeypatch.setattr(ar, 'get_manager', lambda _pid: type('M', (), {'lock': __import__('threading').RLock()})())
     monkeypatch.setattr(ar, '_load_agent_log', lambda _pid: [
         {'session_id': 'mc-failure', 'claude_session_id': native_id}])
+    monkeypatch.setattr(ar, '_runtime_lifecycle_service', type('Lifecycle', (), {
+        'revoke_conversations': lambda _self, _pid, _aliases: ('mc-failure',)})())
     def fail_rename(self, _dst):
         raise OSError('simulated rename failure')
     monkeypatch.setattr(__import__('pathlib').Path, 'rename', fail_rename)
@@ -369,6 +376,7 @@ def test_conversation_rename_failure_reports_partial_and_keeps_delivery_revoked(
     assert result.status_code == 500
     assert result.get_json()['partial'] is True
     assert result.get_json()['delivery_revoked'] is True
+    assert result.get_json()['lifecycle_revoked'] is True
     reopened = DeliveryStore(tmp_path / 'delegation.sqlite3')
     assert reopened.status('outbox', 'e1', project_id) is None
     assert reopened.project_is_revoked(project_id) is False

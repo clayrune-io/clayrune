@@ -659,6 +659,18 @@ class ConversationStore:
                 raise ConversationUnavailable('Conversation missing')
             return self._load_lifecycle(db,project_id,conversation_id)
 
+    def list_lifecycle_conversations(self, project_id: str) -> tuple[str, ...]:
+        """Return the durable lifecycle identities owned by one project."""
+        _id(project_id)
+        with self._connection() as db:
+            if db is None:
+                return ()
+            self._require_lifecycle_schema(db)
+            rows = db.execute(
+                'SELECT conversation_id FROM lifecycle_conversations '
+                'WHERE project_id=? ORDER BY conversation_id', (project_id,)).fetchall()
+            return tuple(row['conversation_id'] for row in rows)
+
     def _lifecycle_apply(self, project: str, conversation: str, *, event_id: str,
                          kind: str, payload: dict,
                          reduce: Callable[[lifecycle.ConversationState], Any],

@@ -4,8 +4,9 @@ from __future__ import annotations
 from pathlib import Path
 from threading import RLock
 from typing import Callable
+from uuid import uuid4
 
-from mc.conversation_store import ConversationStore
+from mc.conversation_store import ConversationStore, ConversationUnavailable
 from mc.runtime_attempt_owner import (
     AuthorizedRuntimeLifecycleBridge, DispatchFacts, RuntimeAttemptOwner,
 )
@@ -73,6 +74,50 @@ class RuntimeLifecycleService:
                 'source_incarnation': facts.dispatch_id,
                 'format_version': format_version,
             })
+
+    def _existing_store(self) -> ConversationStore | None:
+        """Open the configured store only when lifecycle persistence exists."""
+        with self._lock:
+            if not self.enabled or not self.db_path.exists():
+                return None
+            if self._store is None:
+                self._store = ConversationStore(self.db_path)
+            return self._store
+
+    def revoke_conversations(self, project_id: str,
+                             conversation_ids: set[str]) -> tuple[str, ...]:
+        """Durably privacy-fence existing aliases without creating new state."""
+        if not isinstance(project_id, str) or not project_id.strip():
+            raise ValueError('project_id is required')
+        if not isinstance(conversation_ids, set) or not all(
+                isinstance(value, str) and value.strip() for value in conversation_ids):
+            raise ValueError('conversation_ids must be a set of nonempty strings')
+        store = self._existing_store()
+        if store is None:
+            return ()
+        revoked = []
+        with self._lock:
+            for conversation_id in sorted(conversation_ids):
+                try:
+                    state = store.lifecycle_state(project_id, conversation_id)
+                except ConversationUnavailable:
+                    continue
+                if not state.deleted:
+                    state = store.set_lifecycle_deleted(
+                        project_id, conversation_id, True,
+                        expected_revision=state.revision,
+                        event_id=f'privacy-delete:{uuid4().hex}')
+                if state.deleted:
+                    revoked.append(conversation_id)
+        return tuple(revoked)
+
+    def revoke_project(self, project_id: str) -> tuple[str, ...]:
+        """Durably privacy-fence every known lifecycle conversation in a project."""
+        store = self._existing_store()
+        if store is None:
+            return ()
+        return self.revoke_conversations(
+            project_id, set(store.list_lifecycle_conversations(project_id)))
 
     def stop(self) -> None:
         with self._lock:

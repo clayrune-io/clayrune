@@ -27,6 +27,12 @@
   repeated/resumed turns distinct, native source format and launch authority
   must be explicitly injected, and shutdown closes new lifecycle admission.
 
+- Route accepted project and conversation deletion through that same lifecycle
+  authority before filesystem cleanup. Native and Clayrune aliases are
+  privacy-fenced together, known project conversations are revoked without
+  creating state, and a prepared late launch cannot reach spawn afterward.
+  Same-project-ID recreation generations remain an activation gate.
+
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
   replay and revocation fences. Reject unsupported decoders before durable

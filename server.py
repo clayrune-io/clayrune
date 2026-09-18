@@ -857,6 +857,15 @@ _condense_apply = memory._condense_apply
 _run_structured_condense = memory._run_structured_condense
 _dispatch_condense = memory._dispatch_condense
 
+from mc.runtime_lifecycle_service import RuntimeLifecycleService
+_runtime_lifecycle_service = RuntimeLifecycleService(
+    db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
+    enabled=False,
+    owner_id=f'server:{os.getpid()}',
+    authorize=lambda facts: None,
+    source_format=lambda facts: '',
+)
+
 _bp_projects.wire(
     data_dir=DATA_DIR,
     data_root=_DATA_ROOT,
@@ -870,6 +879,7 @@ _bp_projects.wire(
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
     app_dir=_APP_DIR,
+    runtime_lifecycle_service=_runtime_lifecycle_service,
 )
 app.register_blueprint(_bp_projects.bp)
 # Inbound shims — dispatch/scheduler/scribe/condense and the github/project
@@ -1569,14 +1579,6 @@ except Exception as _distiller_reg_err:
 # the path/Popen consts that stay in server.py. The reaper-family writers
 # (_proc_identity/_persist_pid_ledger) now live in mc/process_ledger.py (mop-up);
 # the two slots below source them from there (process_ledger.*, imported above).
-from mc.runtime_lifecycle_service import RuntimeLifecycleService
-_runtime_lifecycle_service = RuntimeLifecycleService(
-    db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
-    enabled=False,
-    owner_id=f'server:{os.getpid()}',
-    authorize=lambda facts: None,
-    source_format=lambda facts: '',
-)
 _bp_agent.wire(
     data_dir=DATA_DIR,
     uploads_dir=UPLOADS_DIR,

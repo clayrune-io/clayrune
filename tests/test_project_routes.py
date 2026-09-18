@@ -508,6 +508,10 @@ def test_delete_project_full_cleanup(client):
         'project_id': 'tproj', 'status': 'running', 'proc': proc}
     client.state.terminal_sessions['t1'] = {
         'project_id': 'tproj', 'status': 'running'}
+    revoked = []
+    from mc.blueprints import project_routes as pr
+    pr._runtime_lifecycle_service = types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id))
 
     r = client.delete('/api/project/tproj')
     assert r.status_code == 200
@@ -518,10 +522,16 @@ def test_delete_project_full_cleanup(client):
     assert 's1' not in client.state.agent_sessions
     assert 't1' not in client.state.terminal_sessions
     assert client.killed_terms == [{'project_id': 'tproj', 'status': 'running'}]
+    assert revoked == ['tproj']
 
 
 def test_delete_project_404(client):
+    from mc.blueprints import project_routes as pr
+    revoked = []
+    pr._runtime_lifecycle_service = types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id))
     assert client.delete('/api/project/nope').status_code == 404
+    assert revoked == []
 
 
 # ── backlog CRUD ─────────────────────────────────────────────────────────────

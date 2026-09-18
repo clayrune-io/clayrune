@@ -83,12 +83,13 @@ get_manager: Callable[[str], Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[[int], None] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
+_runtime_lifecycle_service: Any = None
 
 
 def wire(*, data_dir, data_root, uploads_dir, projects_base,
          shared_rules_path, get_memory_path_fn, resolve_claude_fn,
          get_manager_fn, unregister_process_fn, popen_flags, startupinfo,
-         app_dir=None):
+         app_dir=None, runtime_lifecycle_service=None):
     """Late-bind the path constants (they stay in server.py — many families
     still read them there) and the cross-family fns: _get_memory_path is
     shared with the Scribe/condense machinery, _resolve_claude + the Popen
@@ -99,7 +100,7 @@ def wire(*, data_dir, data_root, uploads_dir, projects_base,
     _refuse_project_path_in_install_dir always has a usable value."""
     global DATA_DIR, _DATA_ROOT, UPLOADS_DIR, PROJECTS_BASE, SHARED_RULES_PATH
     global _get_memory_path, _resolve_claude, get_manager, _unregister_process
-    global _POPEN_FLAGS, _STARTUPINFO, _APP_DIR
+    global _POPEN_FLAGS, _STARTUPINFO, _APP_DIR, _runtime_lifecycle_service
     DATA_DIR = data_dir
     _DATA_ROOT = data_root
     UPLOADS_DIR = uploads_dir
@@ -112,6 +113,7 @@ def wire(*, data_dir, data_root, uploads_dir, projects_base,
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
+    _runtime_lifecycle_service = runtime_lifecycle_service
 
 
 # ── Project-record store (load/save/list + attachment decoration) ────────────
@@ -730,6 +732,8 @@ def delete_project(project_id):
     # the parent handoff. Delayed senders then fail closed.
     with get_manager(project_id).lock:
         DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').revoke_project(project_id)
+        if _runtime_lifecycle_service is not None:
+            _runtime_lifecycle_service.revoke_project(project_id)
 
     # Clean up attachment files
     p = load_project(project_id)

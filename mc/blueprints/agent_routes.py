@@ -10113,6 +10113,10 @@ def delete_conversation(project_id, claude_session_id):
         if _delivery_store is not None:
             for alias in aliases:
                 _delivery_store.revoke_session(project_id, alias)
+        lifecycle_revoked = ()
+        if _runtime_lifecycle_service is not None:
+            lifecycle_revoked = _runtime_lifecycle_service.revoke_conversations(
+                project_id, aliases)
         try:
             src = Path(f)
             dst = src.parent / (src.name + '.deleted')
@@ -10124,6 +10128,7 @@ def delete_conversation(project_id, claude_session_id):
             return jsonify({'error': 'delete failed after delivery revocation',
                             'partial': True,
                             'delivery_revoked': True,
+                            'lifecycle_revoked': bool(lifecycle_revoked),
                             'recovery': 'retry conversation deletion; delivery will remain blocked'}), 500
     _log(f"[delete-conversation] {project_id} / {claude_session_id} → {dst.name}", flush=True)
     return jsonify({'ok': True, 'claude_session_id': claude_session_id})

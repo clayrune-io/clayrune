@@ -3,6 +3,7 @@ from pathlib import Path
 
 import pytest
 
+from mc import execution_lifecycle as lifecycle
 from mc.runtime_attempt_owner import DispatchFacts
 from mc.runtime_lifecycle_service import RuntimeLifecycleService
 from tests.test_runtime_lifecycle_bridge import env  # noqa: F401
@@ -73,3 +74,69 @@ def test_service_rejects_relative_path(tmp_path):
             db_path=Path('relative.sqlite'), enabled=False, owner_id='boot',
             authorize=lambda facts: None,
             source_format=lambda facts: 'codex-rollout-jsonl-0.153')
+
+
+def test_revoke_conversations_fences_existing_aliases_without_creating_missing(tmp_path):
+    db = (tmp_path / 'state.sqlite').resolve()
+    service = RuntimeLifecycleService(
+        db_path=db, enabled=True, owner_id='boot', authorize=lambda facts: None,
+        source_format=lambda facts: 'codex-rollout-jsonl-0.153')
+    first_facts = _facts(tmp_path, session='mc1')
+    second_facts = _facts(tmp_path, session='mc2', dispatch='turn2')
+    first = service.bridge_factory(first_facts)
+    second = service.bridge_factory(second_facts)
+    first.prepare(first_facts)
+    second.prepare(second_facts)
+
+    assert service.revoke_conversations('p', {'missing', 'mc1'}) == ('mc1',)
+    assert first.owner.store.lifecycle_state('p', 'mc1').deleted is True
+    assert first.owner.store.lifecycle_state('p', 'mc2').deleted is False
+    assert service.revoke_conversations('p', {'mc1'}) == ('mc1',)
+
+
+def test_revoke_project_fences_all_known_project_conversations_only(tmp_path):
+    db = (tmp_path / 'state.sqlite').resolve()
+    service = RuntimeLifecycleService(
+        db_path=db, enabled=True, owner_id='boot', authorize=lambda facts: None,
+        source_format=lambda facts: 'codex-rollout-jsonl-0.153')
+    one_facts = _facts(tmp_path, session='mc1')
+    two_facts = _facts(tmp_path, session='mc2', dispatch='turn2')
+    one = service.bridge_factory(one_facts)
+    two = service.bridge_factory(two_facts)
+    other_facts = DispatchFacts(
+        project_id='other', project_path=str(tmp_path), mc_session_id='mc3',
+        provider='codex', model='', effort='', resume_id='', task='task',
+        incognito=False, dispatch_id='turn3', provenance={})
+    other = service.bridge_factory(other_facts)
+    one.prepare(one_facts); two.prepare(two_facts); other.prepare(other_facts)
+
+    assert service.revoke_project('p') == ('mc1', 'mc2')
+    assert one.owner.store.lifecycle_state('p', 'mc1').deleted is True
+    assert one.owner.store.lifecycle_state('p', 'mc2').deleted is True
+    assert one.owner.store.lifecycle_state('other', 'mc3').deleted is False
+
+
+def test_disabled_revocation_remains_inert(tmp_path):
+    db = (tmp_path / 'state.sqlite').resolve()
+    service = RuntimeLifecycleService(
+        db_path=db, enabled=False, owner_id='boot', authorize=lambda facts: None,
+        source_format=lambda facts: 'codex-rollout-jsonl-0.153')
+    assert service.revoke_conversations('p', {'mc1'}) == ()
+    assert service.revoke_project('p') == ()
+    assert not db.exists()
+
+
+def test_revocation_blocks_a_prepared_late_launch_before_spawn(tmp_path):
+    db = (tmp_path / 'state.sqlite').resolve()
+    service = RuntimeLifecycleService(
+        db_path=db, enabled=True, owner_id='boot', authorize=lambda facts: None,
+        source_format=lambda facts: 'codex-rollout-jsonl-0.153')
+    facts = _facts(tmp_path, session='mc1')
+    bridge = service.bridge_factory(facts)
+    bridge.prepare(facts)
+    service.revoke_conversations('p', {'mc1'})
+    spawned = []
+
+    with pytest.raises(lifecycle.LifecycleConflict, match='unavailable'):
+        bridge.launch(lambda: spawned.append(True))
+    assert spawned == []
