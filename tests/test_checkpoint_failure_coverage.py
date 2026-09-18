@@ -24,7 +24,7 @@ def env(tmp_path, monkeypatch):
         'session_id': 'session', 'transcript_path': 'fake-transcript',
         'byte_offset': 12, 'running_summary': 'Previous knowledge'})
     snap = dict(pid=project['id'], sid='session', csid='native', task='task', tf='fake-transcript')
-    monkeypatch.setattr(mem, '_scribe_render_delta', lambda path, offset: ('ACTION: new work', 123))
+    monkeypatch.setattr(mem, '_scribe_render_delta', lambda path, offset, provider='claude': ('ACTION: new work', 123))
     return mem, project, snap, stats
 
 
@@ -69,7 +69,7 @@ def test_reduce_failure_cannot_drop_previous_knowledge(env, monkeypatch, result)
 def test_retry_reprocesses_failed_span_then_commits(env, monkeypatch):
     mem, project, snap, stats = env
     offsets = []
-    monkeypatch.setattr(mem, '_scribe_render_delta', lambda path, offset: (offsets.append(offset) or 'ACTION: work', 123))
+    monkeypatch.setattr(mem, '_scribe_render_delta', lambda path, offset, provider='claude': (offsets.append(offset) or 'ACTION: work', 123))
     outcomes = iter([(None, 'model_error'), ('New knowledge', 'extracted')])
     monkeypatch.setattr(mem, '_scribe_summarize_text', lambda *a: next(outcomes))
     monkeypatch.setattr(mem, '_scribe_call', lambda *a: 'Previous and new knowledge')
