@@ -468,6 +468,7 @@ async function dispatchAgent(projectId) {
         providerSessionId: _pillProvider === 'claude' ? '' : (resumeId || ''),
         provider: _pillProvider,
         live: true,
+        character: _chosenCharMeta,
       });
 
     refreshModal();
