@@ -13,7 +13,7 @@ from mc.conversation_store import ConversationStore, EventConflict, StaleAttempt
 from mc import execution_lifecycle as lifecycle
 
 
-FORMAT = next(iter(SUPPORTED_FORMATS))
+FORMAT = 'codex-rollout-jsonl-0.153'   # the _setup fixture is a 0.153.4 rollout
 
 
 def _setup(tmp_path):
@@ -189,3 +189,61 @@ def test_stream_replay_does_not_close_caller_and_matches_path(tmp_path):
         return [(event.kind, event.payload_json) for event in store.read_events('project', 'conversation')
                 if not event.kind.startswith('lifecycle.')]
     assert evidence(store_a) == evidence(store_b)
+
+
+# ── installed codex-cli 0.154.0 (Astra r1): offline fixture, no Codex launch ──
+# tests/fixtures/codex_rollout_0154.jsonl is sanitized from the key shapes of
+# 245 real 0.154.0 rollouts on the dev box (2026-09-17 survey). Every shape
+# shared with 0.153 has identical payload keys; 0.154 adds response_item
+# `agent_message` and an `inter_agent_communication_metadata` record
+# (sub-agent traffic), which decode as explicit capture gaps.
+
+FORMAT_0154 = 'codex-rollout-jsonl-0.154'
+
+
+def _fixture_0154(tmp_path, project_path):
+    from pathlib import Path
+    text = (Path(__file__).parent / 'fixtures' / 'codex_rollout_0154.jsonl').read_text(encoding='utf-8')
+    path = tmp_path / 'rollout-0154.jsonl'
+    # json.dumps escapes a Windows path for embedding inside the JSON text.
+    path.write_text(text.replace('__PROJECT__', json.dumps(str(project_path))[1:-1]),
+                    encoding='utf-8')
+    return path
+
+
+def test_installed_codex_0154_rollout_is_accepted_and_decoded(tmp_path):
+    store, token, _, project_path, _, _, engine = _setup(tmp_path)
+    native_id = '01a0a44d-0000-7e10-be46-000000000154'
+    path = _fixture_0154(tmp_path, project_path)
+    provenance = CaptureProvenance(provider='codex', native_session_id=native_id,
+        mc_session_id='mc-session', requested_engine=engine,
+        privacy_generation=token.privacy_generation)
+    replay_authorized_codex_rollout(path=path, store=store, token=token,
+        provenance=provenance, project_path=str(project_path), native_session_id=native_id,
+        source_id='rollout-0154', incarnation='one', format_version=FORMAT_0154)
+    events = store.read_events('project', 'conversation')
+    kinds = [e.kind for e in events if not e.kind.startswith('lifecycle.')]
+    assert kinds.count('assistant_message') == 1
+    texts = [json.loads(e.payload_json).get('text') for e in events if e.kind == 'assistant_message']
+    assert texts == ['The notes file says: notes']
+    gaps = [json.loads(e.payload_json)['reason'] for e in events if e.kind == 'capture_gap']
+    assert 'unsupported_response_item' in gaps       # agent_message: explicit, not silent
+    assert 'unsupported_rollout_record' in gaps      # inter_agent_communication_metadata
+
+
+def test_0154_rollout_under_the_0153_format_is_refused(tmp_path):
+    store, token, provenance, project_path, native_id, path, _ = _setup(tmp_path)
+    path.write_text(path.read_text(encoding='utf-8').replace('0.153.4', '0.154.0'), encoding='utf-8')
+    with pytest.raises(CodexRolloutAdapterError, match='CLI version'):
+        _replay(store, token, provenance, project_path, native_id, path)
+
+
+def test_unsurveyed_codex_version_is_still_refused(tmp_path):
+    store, token, provenance, project_path, native_id, path, _ = _setup(tmp_path)
+    path.write_text(path.read_text(encoding='utf-8').replace('0.153.4', '0.155.0'), encoding='utf-8')
+    for fmt in (FORMAT, FORMAT_0154):
+        with pytest.raises(CodexRolloutAdapterError, match='CLI version'):
+            replay_authorized_codex_rollout(path=path, store=store, token=token,
+                provenance=provenance, project_path=str(project_path),
+                native_session_id=native_id, source_id='s', incarnation='i',
+                format_version=fmt)

@@ -15,7 +15,13 @@ from typing import Any
 from mc.conversation_contract import validate_protocol_event
 
 
-SUPPORTED_FORMATS = frozenset({'codex-rollout-jsonl-0.153'})
+# One format per surveyed CLI minor. 0.154 was checked offline against 245
+# real rollouts (2026-09-17): every record shape shared with 0.153 carries
+# identical payload keys; 0.154 adds response_item `agent_message` and an
+# `inter_agent_communication_metadata` record (sub-agent traffic), which this
+# decoder reports as explicit capture gaps. A new minor is refused until it
+# gets the same survey.
+SUPPORTED_FORMATS = frozenset({'codex-rollout-jsonl-0.153', 'codex-rollout-jsonl-0.154'})
 
 
 class RolloutSourceConflict(ValueError):

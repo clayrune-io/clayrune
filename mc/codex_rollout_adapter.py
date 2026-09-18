@@ -29,7 +29,15 @@ def _same_path(left: str, right: str) -> bool:
         return left.casefold() == right.casefold()
 
 
-def _rollout_meta(stream: BinaryIO) -> tuple[str, str]:
+def _format_for_cli_version(cli_version: object) -> str | None:
+    """The rollout format a CLI version writes, or None if unsurveyed."""
+    if not isinstance(cli_version, str):
+        return None
+    match = re.fullmatch(r'0\.(15[34])\.[0-9]+', cli_version)
+    return f'codex-rollout-jsonl-0.{match.group(1)}' if match else None
+
+
+def _rollout_meta(stream: BinaryIO, format_version: str) -> tuple[str, str]:
     try:
         stream.seek(0)
         line = stream.readline()
@@ -53,9 +61,9 @@ def _rollout_meta(stream: BinaryIO) -> tuple[str, str]:
             or not isinstance(session_id, str) or not session_id.strip() \
             or native_id != session_id:
         raise CodexRolloutAdapterError('Codex rollout native session identities conflict or are missing')
-    cli_version = payload.get('cli_version')
-    if not isinstance(cli_version, str) or re.fullmatch(r'0\.153\.[0-9]+', cli_version) is None:
-        raise CodexRolloutAdapterError('Codex rollout CLI version is unsupported or missing')
+    if _format_for_cli_version(payload.get('cli_version')) != format_version:
+        raise CodexRolloutAdapterError(
+            'Codex rollout CLI version is unsupported, missing, or not the requested format')
     if not isinstance(cwd, str) or not cwd.strip():
         raise CodexRolloutAdapterError('Codex rollout session identity or cwd is missing')
     return native_id, cwd
@@ -99,7 +107,7 @@ def replay_authorized_codex_rollout(*, path: Path | None, store: ConversationSto
             if not stream.seekable():
                 raise CodexRolloutAdapterError('Codex rollout source must be seekable')
             os.fstat(stream.fileno())  # pin validation and replay to one open descriptor
-            observed_id, observed_cwd = _rollout_meta(stream)
+            observed_id, observed_cwd = _rollout_meta(stream, format_version)
             if observed_id != native_session_id:
                 raise CodexRolloutAdapterError('Codex rollout native session identity mismatch')
             if not _same_path(observed_cwd, project_path):
