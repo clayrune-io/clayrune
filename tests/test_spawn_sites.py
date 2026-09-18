@@ -265,10 +265,15 @@ class TestScribeCallEquivalence:
         rt = _fresh_claude()
         calls, _ = self._capture_run_calls(rt, 'haiku', 'Summarize.', 'content')
         cmd = calls[0]['cmd']
-        assert '--allowedTools' in cmd
-        assert cmd[cmd.index('--allowedTools') + 1] == ''       # zero tools
+        # `--tools ''` empties the tool SET; `--allowedTools ''` did not
+        # (measured 2026-09-17: 34 tools still loaded). Hooks, plugins and
+        # skills are off via --setting-sources '' + --disable-slash-commands.
+        assert '--allowedTools' not in cmd
+        assert cmd[cmd.index('--tools') + 1] == ''              # zero tools
         assert '--strict-mcp-config' in cmd
         assert cmd[cmd.index('--mcp-config') + 1] == '{"mcpServers":{}}'
+        assert cmd[cmd.index('--setting-sources') + 1] == ''
+        assert '--disable-slash-commands' in cmd
 
     def test_oneshot_fences_the_transcript_as_data(self):
         """Recency wins in a long context: without a trailing restatement the

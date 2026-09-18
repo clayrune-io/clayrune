@@ -13,12 +13,35 @@ class _Result:
         self.text = text
 
 
+def _certified_evidence(provider, model, effort):
+    """Fresh TOOL_FREE_TRANSFORM evidence for an in-memory runtime. The seam
+    refuses any adapter that cannot produce this (Fenn #1)."""
+    from datetime import datetime, timedelta, timezone
+    from mc.execution_policy import (
+        Capability, CapabilityClaim, Certification, ExecutionIdentity, Profile,
+        Readiness, RequestedEngine, Support)
+    now = datetime.now(timezone.utc)
+    identity = ExecutionIdentity(RequestedEngine(provider, model, effort, 'test'),
+                                 'fake-cli', 'test', 'a' * 64)
+    readiness = Readiness(identity, Support.SUPPORTED, Support.SUPPORTED,
+                          now - timedelta(seconds=1), now + timedelta(minutes=1))
+    certification = Certification(
+        identity, Profile.TOOL_FREE_TRANSFORM,
+        tuple(CapabilityClaim(c, Support.SUPPORTED) for c in Capability),
+        'test-evidence', 'test', now - timedelta(seconds=1), now + timedelta(minutes=1))
+    return identity, readiness, certification
+
+
 class _Runtime:
     name = 'test-provider'
+    tool_free_transform_enforced = True
 
     def __init__(self, text='answer'):
         self.text = text
         self.calls = []
+
+    def transform_evidence(self, *, model='', effort=''):
+        return _certified_evidence(self.name, model, effort)
 
     def model_supported(self, model):
         return True
@@ -117,12 +140,14 @@ def test_claude_stream_runtime_preserves_deltas_and_requested_settings(monkeypat
     assert json.loads(proc.stdin.data)['message']['content'].startswith('guide')
 
 
-def test_claude_runtime_does_not_duplicate_cwd_brief(tmp_path):
+def test_claude_runtime_sends_cwd_brief_because_isolation_skips_autoload(tmp_path):
+    """--setting-sources '' stops Claude auto-loading the cwd CLAUDE.md
+    (measured 2026-09-17), so a brief that matches it must still be sent."""
     from mc import agent_runtime
 
     (tmp_path / 'CLAUDE.md').write_text('guide brief', encoding='utf-8')
     assert agent_runtime.ClaudeRuntime._merge_oneshot_instruction(
-        'question', 'guide brief', str(tmp_path)) == 'question'
+        'question', 'guide brief', str(tmp_path)) == 'guide brief\n\nquestion'
     assert agent_runtime.ClaudeRuntime._merge_oneshot_instruction(
         'question', 'different brief', str(tmp_path)) == \
         'different brief\n\nquestion'

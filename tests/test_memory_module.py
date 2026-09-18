@@ -409,12 +409,27 @@ def test_scribe_call_proceeds_when_claude_available(tmp_data_dir, monkeypatch):
     m = _mem(tmp_data_dir)
     monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: True)
 
-    class _FakeResult:
-        text = "a summary"
+    calls = []
 
-    class _FakeRuntime:
-        def oneshot(self, **kwargs):
-            return _FakeResult()
+    def transform(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return "a summary"
 
-    monkeypatch.setattr(m._agent_runtime, "get_runtime", lambda name: _FakeRuntime())
+    # _scribe_call goes through the authorized transform seam, never a raw
+    # runtime.oneshot() (Fenn #1: zero bypass sites).
+    monkeypatch.setattr(m._agent_runtime, "run_text_transform", transform)
     assert m._scribe_call("haiku", "summarize", "body text") == "a summary"
+    assert calls[0][0] == "claude"
+    assert calls[0][1]["stdin_text"] == "body text"
+
+
+def test_scribe_call_folds_seam_timeout_into_runtime_error(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: True)
+
+    def transform(provider, **kwargs):
+        raise TimeoutError("timeout after 180s")
+
+    monkeypatch.setattr(m._agent_runtime, "run_text_transform", transform)
+    with pytest.raises(RuntimeError, match="timeout after 180s"):
+        m._scribe_call("haiku", "summarize", "body text")

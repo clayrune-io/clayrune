@@ -700,6 +700,9 @@ def generate_project_summary(project_id):
         data = json.loads(content)
     except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as e:
         return jsonify({'error': f'could not parse model output: {e}'}), 500
+    except TimeoutError as e:
+        # Master answered a timed-out model call with 504; keep that contract.
+        return jsonify({'error': f'model call timed out: {e}'}), 504
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

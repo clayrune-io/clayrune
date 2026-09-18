@@ -43,9 +43,12 @@ from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional,
 # nothing from mc/, so this is a one-way, cycle-free dependency (mirrors the
 # existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
+import hashlib
+from datetime import timedelta
 from mc.execution_policy import (
-    Blocker, Certification, ExecutionIdentity, Profile, Readiness,
-    authorize_execution,
+    Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
+    Profile, Readiness, RequestedEngine, Support, authorize_execution,
+    required_capabilities,
 )
 
 
@@ -935,15 +938,37 @@ def get_runtime(name: str) -> AgentRuntime:
     return _RUNTIMES[name]
 
 
+def _argv_contains(argv: List[str], run: Tuple[str, ...]) -> bool:
+    """True if `run` appears in `argv` as one contiguous, in-order slice."""
+    n = len(run)
+    return n > 0 and any(tuple(argv[i:i + n]) == run
+                         for i in range(len(argv) - n + 1))
+
+
 def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
+                              model: str, effort: str,
                               identity: Optional[ExecutionIdentity],
                               readiness: Optional[Readiness],
                               certification: Optional[Certification],
                               blockers: tuple[Blocker, ...]) -> None:
-    """Authorize before either oneshot or streaming transform input delivery."""
+    """Authorize before either oneshot or streaming transform input delivery.
+
+    Every transform goes through execution_policy.authorize_execution with the
+    TOOL_FREE_TRANSFORM profile. A caller may supply its own evidence; when it
+    supplies none, the adapter's own `transform_evidence()` produces it. An
+    adapter without that method cannot prove it is tool-free, so it refuses.
+    """
     if not getattr(runtime, 'tool_free_transform_enforced', False):
         raise RuntimeError(
             f"Provider '{provider}' cannot enforce tool-free transforms; refusing input")
+    if identity is None and readiness is None and certification is None:
+        make = getattr(runtime, 'transform_evidence', None)
+        if not callable(make):
+            raise RuntimeError(
+                f"Provider '{provider}' cannot prove a tool-free transform; refusing input")
+        identity, readiness, certification = cast(
+            Tuple[ExecutionIdentity, Readiness, Certification],
+            make(model=model or "", effort=effort or ""))
     if identity is None or readiness is None or certification is None:
         raise RuntimeError(
             f"Provider '{provider}' text transform lacks fresh tool-free authorization")
@@ -965,7 +990,8 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
                        identity: Optional[ExecutionIdentity] = None,
                        readiness: Optional[Readiness] = None,
                        certification: Optional[Certification] = None,
-                       blockers: tuple[Blocker, ...] = ()) -> str:
+                       blockers: tuple[Blocker, ...] = (),
+                       timeout: Optional[int] = None) -> str:
     """Run a provider-selected, non-interactive text transform.
 
     Feature routes should not know a provider's executable or command-line
@@ -981,9 +1007,9 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
     is useful for their particular artifact.
     """
     runtime = get_runtime((provider or '').strip().lower())
-    _authorize_text_transform(runtime, provider, identity=identity,
-                              readiness=readiness, certification=certification,
-                              blockers=blockers)
+    _authorize_text_transform(runtime, provider, model=model, effort=effort,
+                              identity=identity, readiness=readiness,
+                              certification=certification, blockers=blockers)
     fn = getattr(runtime, 'oneshot', None)
     if not callable(fn):
         raise RuntimeError(f"Provider '{provider}' does not support text transforms")
@@ -1005,6 +1031,8 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
         accepts_kwargs = False
     if effort and ('effort' in params or accepts_kwargs):
         kwargs['effort'] = effort
+    if timeout is not None and ('timeout' in params or accepts_kwargs):
+        kwargs['timeout'] = timeout
 
     result = fn(**kwargs)
     if result is None:
@@ -1032,9 +1060,9 @@ def stream_text_transform(provider: str, *, prompt: str,
     runtime without native streaming uses the base one-delta fallback.
     """
     runtime = get_runtime((provider or '').strip().lower())
-    _authorize_text_transform(runtime, provider, identity=identity,
-                              readiness=readiness, certification=certification,
-                              blockers=blockers)
+    _authorize_text_transform(runtime, provider, model=model, effort=effort,
+                              identity=identity, readiness=readiness,
+                              certification=certification, blockers=blockers)
     fn = getattr(runtime, 'stream_text', None)
     if not callable(fn):
         raise RuntimeError(f"Provider '{provider}' does not support text streaming")
@@ -2292,19 +2320,95 @@ class ClaudeRuntime(AgentRuntime):
 
     # ── Oneshot — lifted from _scribe_call() in server.py ────────────────────
 
+    # The tool-free transform boundary, shared by oneshot() and stream_text().
+    # Verified live 2026-09-17 (claude 2.1.274) by reading the stream-json
+    # init event: tools=[], plugins=[], skills=[], and no hook_started events,
+    # with OAuth sign-in still working. The flags it replaced
+    # (`--allowedTools ''` + strict empty MCP) still loaded 34 tools, 4
+    # plugins and 72 skills and ran the user's SessionStart hooks.
+    # `--settings '{"disableAllHooks":true}'` was also measured and still
+    # loaded all 4 plugins, hence `--setting-sources ''`. Side effect: the
+    # user's settings.json (env, model) and the cwd CLAUDE.md are not loaded,
+    # so callers must pass everything the model needs explicitly.
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '--tools', '',
+        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+        '--setting-sources', '',
+        '--disable-slash-commands',
+    )
+    TRANSFORM_EVIDENCE_ID = 'claude-2.1.274-init-event-probe-2026-09-17'
+
     @staticmethod
     def _merge_oneshot_instruction(prompt: str, system_prompt: str,
                                    cwd: Optional[str]) -> str:
-        """Avoid duplicating a brief Claude already auto-loads from cwd."""
-        if system_prompt and cwd:
-            try:
-                loaded = (Path(cwd) / 'CLAUDE.md').read_text(encoding='utf-8')
-                if loaded == system_prompt:
-                    return prompt
-            except OSError:
-                pass
+        """Prepend the brief. The isolated transform does NOT auto-load the cwd
+        CLAUDE.md (measured 2026-09-17), so a brief matching it must still be
+        sent -- skipping it silently dropped Claydo's project context."""
         return ((system_prompt + '\n\n' + prompt).strip()
                 if system_prompt else prompt)
+
+    def _oneshot_argv(self, *, model: str = '', max_turns: int = 1,
+                      effort: str = '') -> List[str]:
+        cmd = [
+            self.resolve_binary_str(), '-p',
+            '--model', model or 'claude-haiku-4-5-20251001',
+            '--max-turns', str(max(1, int(max_turns))),
+            *self.TRANSFORM_ISOLATION,
+        ]
+        if effort:
+            cmd.extend(['--effort', str(effort)])
+        return cmd
+
+    def _stream_argv(self, *, model: str = '', max_turns: int = 1,
+                     effort: str = '') -> List[str]:
+        cmd = [
+            self.resolve_binary_str(), '--max-turns', str(max(1, int(max_turns))),
+            '--print', '--verbose', '--input-format', 'stream-json',
+            '--output-format', 'stream-json',
+            *self.TRANSFORM_ISOLATION,
+        ]
+        if model:
+            cmd.extend(['--model', model])
+        if effort:
+            cmd.extend(['--effort', str(effort)])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM).
+
+        Readiness reads the cached install/auth state (no spawn), with the same
+        "auth not known-bad" rule claude_oneshot_available() always used. The
+        certification is a self-check: every capability is SUPPORTED only if
+        BOTH argv builders actually carry TRANSFORM_ISOLATION -- the flag set
+        whose effect was measured live (TRANSFORM_EVIDENCE_ID). Drop a flag and
+        every transform refuses instead of running with tools.
+        """
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('claude', model or '', effort or '', 'default'),
+            'claude-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if claude_installed() else Support.UNSUPPORTED
+        try:
+            auth_ok = (self.auth_status() or {}).get('ok') is not False
+        except Exception as e:
+            print(f'[runtime:claude] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True  # an auth-check failure is not evidence claude is unusable
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        isolated = all(_argv_contains(argv, self.TRANSFORM_ISOLATION) for argv in (
+            self._oneshot_argv(model=model, effort=effort),
+            self._stream_argv(model=model, effort=effort)))
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM) | {Capability.EFFORT_SELECTION}
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
 
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
@@ -2331,10 +2435,12 @@ class ClaudeRuntime(AgentRuntime):
         prose (rc=0 but no JSON). Removing the tools removes both the hazard and
         the failure mode — a validated 4/4 parse rate, up from 1/4.
 
-        So the sandbox below is load-bearing, not hygiene:
-          • `--allowedTools ''`  — no tools at all
-          • `--strict-mcp-config --mcp-config {}` — no MCP fleet (also stops
-            loading every server into every cheap call)
+        So the sandbox below is load-bearing, not hygiene (TRANSFORM_ISOLATION):
+          • `--tools ''` — an empty tool set. `--allowedTools ''` was NOT
+            that: measured 2026-09-17, it left 34 tools in the model's set
+          • `--strict-mcp-config --mcp-config {}` — no MCP fleet
+          • `--setting-sources ''` + `--disable-slash-commands` — no user
+            hooks, plugins or skills
           • NO `--dangerously-skip-permissions` — nothing to permit anyway
         Do not "restore" these flags to make some future caller work; if a
         caller needs tools, it is not a oneshot and belongs on the agent path.
@@ -2365,15 +2471,7 @@ class ClaudeRuntime(AgentRuntime):
         else:
             stdin_payload = instruction
 
-        cmd = [
-            self.resolve_binary_str(), '-p',
-            '--model', model or 'claude-haiku-4-5-20251001',
-            '--max-turns', str(max(1, int(max_turns))),
-            '--allowedTools', '',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-        ]
-        if effort:
-            cmd.extend(['--effort', str(effort)])
+        cmd = self._oneshot_argv(model=model, max_turns=max_turns, effort=effort)
         self.last_error = ''
         try:
             r = subprocess.run(
@@ -2413,16 +2511,7 @@ class ClaudeRuntime(AgentRuntime):
         instruction = self._merge_oneshot_instruction(prompt, system_prompt, cwd)
         if stdin_text:
             instruction = f'{instruction}\n\n{stdin_text}'
-        cmd = [
-            self.resolve_binary_str(), '--max-turns', str(max(1, int(max_turns))),
-            '--print', '--verbose', '--input-format', 'stream-json',
-            '--output-format', 'stream-json', '--tools', '',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-        ]
-        if model:
-            cmd.extend(['--model', model])
-        if effort:
-            cmd.extend(['--effort', str(effort)])
+        cmd = self._stream_argv(model=model, max_turns=max_turns, effort=effort)
         stdin_payload = json.dumps({
             'type': 'user',
             'message': {'role': 'user', 'content': instruction},

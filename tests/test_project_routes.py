@@ -471,8 +471,26 @@ def test_existing_project_path_change_to_install_dir_still_refused(client, monke
 
 # ── generate_summary ─────────────────────────────────────────────────────────
 
-def test_generate_summary_happy(client):
+def _stub_transform(monkeypatch, result):
+    """generate_summary runs through the provider-neutral transform seam; a
+    test double there guarantees no real CLI is spawned."""
+    from mc.blueprints import project_routes as pr
+    calls = []
+
+    def transform(provider, **kw):
+        calls.append((provider, kw))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(pr._agent_runtime, 'run_text_transform', transform)
+    return calls
+
+
+def test_generate_summary_happy(client, monkeypatch):
     _seed(client)
+    calls = _stub_transform(monkeypatch, json.dumps(
+        {'emoji': '⚙', 'summary': 'A test summary.'}))
     r = client.post('/api/project/tproj/generate_summary', json={})
     assert r.status_code == 200
     body = r.get_json()
@@ -480,17 +498,17 @@ def test_generate_summary_happy(client):
     assert body['summary'] == 'A test summary.'
     rec = json.loads((client.data_dir / 'tproj.json').read_text(encoding='utf-8'))
     assert rec['summary'] == 'A test summary.'
-    cmd, kw = client.run_calls[0]
-    assert cmd[0] == 'claude-stub' and '--output-format' in cmd
+    assert calls and calls[0][0] == 'claude'
+    assert client.run_calls == []          # no feature-owned subprocess
 
 
-def test_generate_summary_claude_missing_and_timeout(client):
+def test_generate_summary_claude_missing_and_timeout(client, monkeypatch):
+    from mc import agent_runtime
     _seed(client)
-    client.holder['run'] = lambda cmd, kw: FileNotFoundError('no claude')
+    _stub_transform(monkeypatch, agent_runtime.CLINotInstalledError('no claude'))
     assert client.post('/api/project/tproj/generate_summary',
                        json={}).status_code == 500
-    client.holder['run'] = lambda cmd, kw: real_subprocess.TimeoutExpired(
-        cmd='claude-stub', timeout=30)
+    _stub_transform(monkeypatch, TimeoutError('timeout after 30s'))
     assert client.post('/api/project/tproj/generate_summary',
                        json={}).status_code == 504
 

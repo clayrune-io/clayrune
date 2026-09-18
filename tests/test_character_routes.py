@@ -19,6 +19,24 @@ if str(PROJECT_ROOT) not in sys.path:
 LAN = {'REMOTE_ADDR': '192.168.1.50'}
 
 
+@pytest.fixture(autouse=True)
+def _model_calls_use_the_test_double(monkeypatch):
+    """Character generation runs through agent_runtime.run_text_transform.
+    These tests set `cr._scribe_call` as their model double; route the seam
+    to it so no test can reach a real CLI (before this, a test that set the
+    old double got a live Claude answer instead)."""
+    from mc.blueprints import character_routes as cr
+    monkeypatch.setattr(cr, '_scribe_call', None, raising=False)
+
+    def transform(provider, *, prompt, model='', stdin_text=None, **kw):
+        fn = getattr(cr, '_scribe_call', None)
+        if fn is None:
+            raise AssertionError('model call without a test double')
+        return fn(model, prompt, stdin_text or '')
+
+    monkeypatch.setattr(cr._agent_runtime, 'run_text_transform', transform)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     import server

@@ -3967,21 +3967,24 @@ def _scribe_call(model, instruction, body):
              "summarization call (Scribe/condense/Distiller degrade on a "
              "non-Claude install)", flush=True)
         raise RuntimeError("scribe claude call skipped: claude unavailable")
-    rt = _agent_runtime.get_runtime('claude')
-    result = rt.oneshot(
-        prompt=instruction,
-        model=model,
-        stdin_text=body,
-        cwd=str(Path.home()),
-    )
-    if result is None:
-        # oneshot() records WHY on the runtime (rc + stderr tail / timeout /
-        # spawn failure). Carrying it into the exception is what turns an
-        # anonymous counter bump into a diagnosable failure — 78 extraction
+    # Through the transform seam, so the TOOL_FREE_TRANSFORM profile is
+    # authorized (execution_policy.authorize_execution) on every Scribe,
+    # condense and Distiller call -- not just on the feature routes.
+    try:
+        return _agent_runtime.run_text_transform(
+            'claude',
+            prompt=instruction,
+            model=model,
+            stdin_text=body,
+            cwd=str(Path.home()),
+        )
+    except (RuntimeError, TimeoutError) as e:
+        # The seam carries the runtime's WHY (rc + stderr tail / timeout /
+        # spawn failure / refusal). Keeping it in the exception is what turns
+        # an anonymous counter bump into a diagnosable failure — 78 extraction
         # errors sat unexplained for six weeks behind a generic RuntimeError.
-        why = getattr(rt, 'last_error', '') or 'non-zero exit or timeout'
-        raise RuntimeError(f"scribe claude call failed ({why})")
-    return result.text
+        # TimeoutError is folded in: callers only catch RuntimeError here.
+        raise RuntimeError(f"scribe claude call failed ({e})") from e
 
 
 def _extract_transcript_telemetry(path):

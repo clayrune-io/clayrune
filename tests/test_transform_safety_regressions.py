@@ -182,3 +182,82 @@ def test_transform_seam_accepts_explicit_fresh_policy_evidence(monkeypatch):
     assert agent_runtime.run_text_transform(
         runtime.name, prompt='transform', identity=identity,
         readiness=readiness, certification=certification) == 'safe answer'
+
+
+# ── Fenn #1: the seam authorizes every transform in production ───────────────
+
+def _claude_with_fake_run(monkeypatch, stdout='SUMMARY'):
+    from mc import agent_runtime
+
+    class Done:
+        returncode = 0
+        stderr = ''
+
+    Done.stdout = stdout
+    runs = []
+    monkeypatch.setattr(agent_runtime.subprocess, 'run',
+                        lambda cmd, **kw: runs.append(cmd) or Done())
+    monkeypatch.setattr(agent_runtime, 'claude_installed', lambda: True)
+    runtime = agent_runtime.ClaudeRuntime()
+    monkeypatch.setattr(runtime, 'resolve_binary_str', lambda: 'claude-fake')
+    monkeypatch.setattr(runtime, 'auth_status', lambda: {'ok': True})
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'claude', runtime)
+    return agent_runtime, runtime, runs
+
+
+def test_claude_transform_is_authorized_through_execution_policy(monkeypatch):
+    """No caller passes evidence: the adapter supplies it and
+    authorize_execution runs with the TOOL_FREE_TRANSFORM profile. Before
+    this, the seam refused every production caller (Claydo, character and
+    profile generation) because none of them could pass evidence."""
+    agent_runtime, _runtime, runs = _claude_with_fake_run(monkeypatch)
+    seen = []
+    real = agent_runtime.authorize_execution
+
+    def spy(identity, profile, **kw):
+        seen.append(profile)
+        return real(identity, profile, **kw)
+
+    monkeypatch.setattr(agent_runtime, 'authorize_execution', spy)
+    assert agent_runtime.run_text_transform(
+        'claude', prompt='summarize', stdin_text='transcript') == 'SUMMARY'
+    assert seen == [agent_runtime.Profile.TOOL_FREE_TRANSFORM]
+    cmd = runs[0]
+    assert cmd[cmd.index('--tools') + 1] == ''
+    assert cmd[cmd.index('--setting-sources') + 1] == ''
+
+
+def test_claude_transform_refuses_when_isolation_flag_is_missing(monkeypatch):
+    agent_runtime, runtime, runs = _claude_with_fake_run(monkeypatch)
+    real_argv = runtime._oneshot_argv
+
+    def leaky(**kw):
+        cmd = real_argv(**kw)
+        i = cmd.index('--setting-sources')
+        return cmd[:i] + cmd[i + 2:]          # hooks/plugins back on
+
+    monkeypatch.setattr(runtime, '_oneshot_argv', leaky)
+    with pytest.raises(RuntimeError, match='unauthorized'):
+        agent_runtime.run_text_transform('claude', prompt='summarize')
+    assert runs == []                          # refused before any spawn
+
+
+def test_claude_transform_refuses_when_not_installed(monkeypatch):
+    agent_runtime, _runtime, runs = _claude_with_fake_run(monkeypatch)
+    monkeypatch.setattr(agent_runtime, 'claude_installed', lambda: False)
+    with pytest.raises(RuntimeError, match='unauthorized'):
+        agent_runtime.run_text_transform('claude', prompt='summarize')
+    assert runs == []
+
+
+@pytest.mark.parametrize('name', ['codex', 'gemini', 'qwen'])
+def test_uncertified_vendor_transform_refuses_before_spawn(monkeypatch, name):
+    """Interactive profiles stay unsandboxed by Ron's decision; transforms
+    do not. An adapter that cannot prove tool-freedom refuses."""
+    from mc import agent_runtime
+    runs = []
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', lambda *a, **k: runs.append(a))
+    monkeypatch.setattr(agent_runtime.subprocess, 'Popen', lambda *a, **k: runs.append(a))
+    with pytest.raises(RuntimeError, match='cannot enforce tool-free'):
+        agent_runtime.run_text_transform(name, prompt='untrusted transcript')
+    assert runs == []
