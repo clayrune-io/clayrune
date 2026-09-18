@@ -8844,6 +8844,27 @@ def agent_followup(project_id):
                     existing['process_alive'] = False
                     existing['log_lines'].append(
                         f'[Process {proc.pid} found dead on followup — will respawn]')
+            # A LIVE process's follow-up used to go straight to stdin (below),
+            # so the size check only ever ran on respawn paths (dead process,
+            # dispatch, revive) — a long-running Mode B chat could sail past
+            # _SESSION_SIZE_LIMIT and never auto-fresh. Flip it "dead" here so
+            # it falls into the existing dead-process auto-fresh handoff just
+            # below: closes stdin, kills the old process, drops -r, and starts
+            # fresh automatically, no prompt (Ron, 2026-09-18).
+            if existing.get('process_alive'):
+                _live_sid = existing.get('claude_session_id')
+                if _live_sid:
+                    _live_too_large, _live_size = _session_too_large(pp, _live_sid)
+                    if _live_too_large:
+                        _live_size_mb = _live_size / (1024 * 1024)
+                        _log(f"[followup] Live session {_live_sid} is {_live_size_mb:.1f} MB — "
+                             f"ending process and starting fresh")
+                        _log_agent_activity(project_id,
+                                            f"Auto-fresh: session too large ({_live_size_mb:.0f} MB)")
+                        existing['log_lines'].append(
+                            f'[Session transcript too large ({_live_size_mb:.0f} MB) — '
+                            f'ending session and starting fresh]')
+                        existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
                 claude_sid = existing.get('claude_session_id')
