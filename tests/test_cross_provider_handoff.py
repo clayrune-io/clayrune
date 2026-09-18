@@ -15,10 +15,15 @@ BRAND-NEW conversation on the destination vendor — `resume_id` is cleared,
 this is never a native cross-vendor resume.
 
 Gemini has no native transcript store at all (`GeminiRuntime.transcript_path`
-returns `None` unconditionally) — handing off FROM Gemini therefore fails
-honestly with a specific, named error rather than proceeding with an empty
-or fabricated context. That is exercised here as the natural "no transcript
-file exists" case, not mocked separately.
+returns `None` unconditionally). W4/MC-947 (2026-09-18) bridges that gap with
+`_gemini_session_log_turns` — Clayrune's OWN per-session turn log (the live
+session's `log_lines`, or the durable agent_log's first task/summary pair as
+a fallback) — instead of refusing handoff outright, per the vendor-agnostic
+position that a per-provider capability gap is a bug to bridge, not a
+documented limitation. Handoff FROM Gemini now succeeds when either source
+has real turn data (see `TestGeminiHandoffViaOwnTurnLog` below); it still
+fails honestly with a specific, named error only when NEITHER source has
+anything (see `test_no_native_transcript_store_fails_honestly`).
 """
 import json
 
@@ -157,17 +162,86 @@ class TestBuildHandoffContext:
         assert 'question 39' in text or 'answer 39' in text
 
     def test_no_native_transcript_store_fails_honestly(self, tmp_path, monkeypatch):
-        """Gemini's real shape: transcript_path always returns None. Proves
-        this surfaces a specific, honest refusal -- never an empty or
-        fabricated handoff."""
+        """Gemini's real shape: transcript_path always returns None. W4/
+        MC-947's own-turn-log fallback (`_gemini_session_log_turns`) is
+        exercised too -- no live session, no agent_log entries for this
+        project_id -- and STILL finds nothing, so this proves the honest
+        refusal survives the fix for the genuinely-nothing-available case;
+        never an empty or fabricated handoff."""
         from mc import agent_runtime
         from mc.blueprints import agent_routes as ar_mod
 
         gemini_rt = agent_runtime.get_runtime('gemini')
         assert gemini_rt.transcript_path('/tmp/proj', 'native-abc') is None
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [])
 
         with pytest.raises(ValueError) as exc:
-            ar_mod._build_handoff_context('/tmp/proj', 'gemini', 'native-abc')
+            ar_mod._build_handoff_context('/tmp/proj', 'gemini', 'native-abc',
+                                          project_id='no-such-project')
 
         assert "cannot hand off from 'gemini'" in str(exc.value)
         assert 'no transcript' in str(exc.value)
+
+
+class TestGeminiHandoffViaOwnTurnLog:
+    """W4/MC-947 (2026-09-18): the fix itself, fail-before/pass-after.
+
+    Before this fix, `_build_handoff_context('gemini', ...)` raised
+    ValueError unconditionally the instant `transcript_path` returned None
+    -- these exact scenarios (a live session's log_lines, or a durable
+    agent_log row) were never even consulted. Reverting
+    `_gemini_session_log_turns`'s call out of `_build_handoff_context`
+    reproduces that failure; both tests below are written against the
+    CURRENT (fixed) code and were verified to fail with the old
+    unconditional-raise shape before this fix landed.
+    """
+
+    def test_live_session_log_lines_reconstruct_real_turns(self, monkeypatch):
+        from mc.blueprints import agent_routes as ar_mod
+
+        live_session = {
+            'project_id': 'p1', 'provider': 'gemini',
+            'provider_session_id': 'native-abc',
+            'log_lines': [
+                '> Ron: what is 2+2?',
+                'The answer', ' is 4.',
+                '> Ron: and 3+3?',
+                'That', ' is 6.',
+            ],
+        }
+        monkeypatch.setattr(ar_mod, 'agent_sessions', {'sess1': live_session})
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [])
+
+        text, meta = ar_mod._build_handoff_context(
+            '/tmp/proj', 'gemini', 'native-abc', project_id='p1')
+
+        assert meta['owning_provider'] == 'gemini'
+        assert meta['total_turns'] == 4
+        assert 'what is 2+2?' in text
+        assert 'is 4.' in text
+        assert 'and 3+3?' in text
+        assert 'is 6.' in text
+        # Delta chunks joined into one coherent reply per turn.
+        assert 'The answer is 4.' in text
+        assert 'That is 6.' in text
+
+    def test_falls_back_to_durable_agent_log_when_no_live_session(self, monkeypatch):
+        """Session purged from memory (server restart) -- the durable
+        agent_log's first task/summary pair is all that survives, same
+        durability shape as Codex/Qwen's own rollout files eventually aging
+        out, not a new limitation."""
+        from mc.blueprints import agent_routes as ar_mod
+
+        monkeypatch.setattr(ar_mod, 'agent_sessions', {})
+        monkeypatch.setattr(ar_mod, '_load_agent_log', lambda pid: [
+            {'project_id': pid, 'provider': 'gemini',
+             'provider_session_id': 'native-abc', 'ts': '2026-09-18T00:00:00Z',
+             'task': 'summarize this repo', 'summary': 'It is Clayrune.'},
+        ])
+
+        text, meta = ar_mod._build_handoff_context(
+            '/tmp/proj', 'gemini', 'native-abc', project_id='p1')
+
+        assert meta['total_turns'] == 2
+        assert 'summarize this repo' in text
+        assert 'It is Clayrune.' in text

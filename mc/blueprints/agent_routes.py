@@ -7133,7 +7133,88 @@ def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
 _HANDOFF_MAX_CHARS = 8000
 
 
-def _build_handoff_context(project_path, owning_provider, native_id):
+def _gemini_session_log_turns(project_id, native_id):
+    """Turn reader for Gemini handoff (W4/MC-947).
+
+    `GeminiRuntime.transcript_path()` correctly returns None — Gemini has no
+    native on-disk transcript store, unlike Claude's `.jsonl` or Codex/Qwen's
+    rollout files — so `_build_handoff_context` used to raise ValueError
+    outright for every Gemini-owned conversation. Under the vendor-agnostic
+    position (a per-provider capability gap is a bug to bridge, not a
+    documented limitation) that is fixed here with CLAYRUNE'S OWN per-session
+    turn log instead of a native file:
+
+    1. Prefer the LIVE in-memory session's `log_lines` (present for any
+       conversation that hasn't been purged) — reuses the exact seed-line
+       convention (`"> {user}: {message}"`, `_SEED_LINE_RE`) already used to
+       find turn boundaries elsewhere (`_collect_trailing_reply_text`). Each
+       seed line starts a new user turn; everything collected before the
+       next seed/bracket line is that turn's assistant reply.
+    2. Fall back to the durable agent_log's first row (`task`/`summary`) when
+       no live session is found. `task` is set once at dispatch and never
+       updated by a follow-up, so this ONLY reconstructs the conversation's
+       opening turn, not a full multi-turn history — the same durability
+       shape as Codex/Qwen's own rollout files eventually aging out, not a
+       new limitation.
+
+    Returns `[]`, never partial garbage, when nothing usable is found — the
+    caller must treat that identically to "no transcript" (SUBSTITUTION IS A
+    LIE): a shorter-than-expected handoff must be disclosed, not silently
+    substituted for the real thing.
+    """
+    live = next((s for s in agent_sessions.values()
+                if s.get('project_id') == project_id
+                and (s.get('provider') or '').lower() == 'gemini'
+                and s.get('provider_session_id') == native_id), None)
+    if live and live.get('log_lines'):
+        turns: List[Tuple[str, str]] = []
+        current_role = None
+        current_parts: List[str] = []
+
+        def _flush():
+            if current_role and current_parts:
+                text = ''.join(current_parts).strip()
+                if text:
+                    turns.append((current_role, text))
+
+        for line in live['log_lines']:
+            stripped = (line or '').strip()
+            if not stripped or stripped.startswith('['):
+                continue
+            m = _agent_runtime._SEED_LINE_RE.match(stripped)
+            if m:
+                # Flush whatever assistant text was accumulating, then the
+                # user turn is complete in this one line — never spans
+                # multiple log_lines entries the way a delta-chunked
+                # assistant reply does.
+                _flush()
+                turns.append(('user', stripped[m.end():]))
+                current_role = None
+                current_parts = []
+                continue
+            if current_role is None:
+                current_role = 'assistant'
+                current_parts = []
+            current_parts.append(line)
+        _flush()
+        if turns:
+            return turns
+    entries = [e for e in _load_agent_log(project_id)
+              if (e.get('provider') or '').lower() == 'gemini'
+              and e.get('provider_session_id') == native_id]
+    if not entries:
+        return []
+    entries.sort(key=lambda e: e.get('ts', ''))
+    first = entries[0]
+    turns = []
+    if first.get('task'):
+        turns.append(('user', first['task']))
+    if first.get('summary'):
+        turns.append(('assistant', first['summary']))
+    return turns
+
+
+def _build_handoff_context(project_path, owning_provider, native_id, project_id=''):
     """Rebuild an owning provider's real turns for injection into a NEW
     conversation on a different vendor (W5, 2026-09-18 — explicit,
     opt-in cross-provider handoff; NOT a native resume).
@@ -7146,19 +7227,27 @@ def _build_handoff_context(project_path, owning_provider, native_id):
     the caller can be honest about it rather than silently proceeding with
     less than it looks like (SUBSTITUTION IS A LIE).
 
-    Raises ValueError if the owning provider has no transcript to read (this
-    is a genuine, not a fixable-here, gap for a provider whose adapter has no
-    native transcript store at all -- e.g. Gemini, `GeminiRuntime.transcript_path`
-    returns None unconditionally today).
+    Gemini has no native transcript store at all (`GeminiRuntime.
+    transcript_path` returns None unconditionally) — W4/MC-947 bridges that
+    with `_gemini_session_log_turns` (Clayrune's own per-session turn log)
+    instead of refusing handoff outright. Raises ValueError only when even
+    that reader finds nothing.
     """
     runtime = _agent_runtime.get_runtime(owning_provider)
     tpath = runtime.transcript_path(project_path, native_id)
-    if not tpath or not Path(tpath).is_file():
+    if (not tpath or not Path(tpath).is_file()) and owning_provider == 'gemini':
+        turns = _gemini_session_log_turns(project_id, native_id)
+        if not turns:
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': no transcript is "
+                f"available for this conversation (this vendor may have no "
+                f"native transcript store at all)")
+    elif not tpath or not Path(tpath).is_file():
         raise ValueError(
             f"cannot hand off from '{owning_provider}': no transcript is "
             f"available for this conversation (this vendor may have no "
             f"native transcript store at all)")
-    if owning_provider == 'claude':
+    elif owning_provider == 'claude':
         raw = runtime.parse_transcript_file(tpath)  # pyright: ignore[reportAttributeAccessIssue]
         turns = [(m['role'], m['text']) for m in raw
                  if m.get('role') in ('user', 'assistant') and m.get('text')]
@@ -7417,7 +7506,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 and _owning_provider
                 and _owning_provider.lower() != provider_override.strip().lower()):
             _handoff_text, _handoff_meta = _build_handoff_context(
-                pp, _owning_provider, resume_id)
+                pp, _owning_provider, resume_id, project_id=project_id)
             # Disclose the handoff in the USER-VISIBLE bubble too, not just the
             # actual model input -- a human watching the UI must see that this
             # turn carries injected prior-conversation content, not just the
