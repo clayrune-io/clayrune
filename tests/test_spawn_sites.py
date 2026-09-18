@@ -494,7 +494,10 @@ class TestGeminiRuntimeSmoke:
         session_dict = {
             'session_id': 'fu_001', 'status': 'idle', 'log_lines': [],
             'project_id': 'test_proj',
-            '_gemini_session_id': 'sess-uuid-abc123',
+            # Generic `provider_session_id` (W4, MC-947) — not the old
+            # gemini-private `_gemini_session_id` key, which nothing durable
+            # ever read (see GeminiRuntime._read_stream's INIT branch).
+            'provider_session_id': 'sess-uuid-abc123',
             '_system_prompt': 'HEAVY STASHED CONTEXT ' * 500,
         }
         handle = ar.SessionHandle(

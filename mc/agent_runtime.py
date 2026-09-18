@@ -664,6 +664,51 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
     return None
 
 
+def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
+    """Reconstruct the final turn's full reply from `log_lines`.
+
+    Claude's block-based reader pushes ONE array element per complete
+    message/content-block (agent_routes.py's claude stream reader,
+    `_visible` appended whole), so the single last non-bracket line already
+    IS the entire reply. Every Mode-A provider instead pushes one element
+    PER STREAMED DELTA CHUNK — `GeminiRuntime._read_stream` appends each
+    `_txt` fragment separately (joined with `''` only in its own local
+    `turn_text_parts`, never back into `log_lines`), and the shared
+    `_mode_a_reader` (Codex/OpenCode/Goose/Aider/Kiro/Qwen) does the same.
+    Taking only the single last line therefore returns just the FINAL delta
+    and silently drops every earlier fragment of that reply.
+
+    Measured live 2026-09-18: a Gemini turn that replied exactly
+    "LIVE2-OK-gemini" streamed as two delta chunks and was persisted as
+    summary "-OK-gemini" — the entire leading chunk lost, not just its first
+    character.
+
+    Walks backward past trailing bracket/seed-line noise, then collects
+    every CONSECUTIVE real-content line and joins them in stream order
+    (mirroring the `''` join `_read_stream` uses for its own local buffer) —
+    a no-op for Claude's one-line-per-message shape, a full reconstruction
+    for delta-chunked providers.
+    """
+    collected: List[str] = []
+    for line in reversed(lines or []):
+        if not line or line.startswith('\n---'):
+            if collected:
+                break
+            continue
+        stripped = line.strip()
+        if stripped.startswith('['):
+            if collected:
+                break
+            continue
+        if _SEED_LINE_RE.match(stripped):
+            if collected:
+                break
+            continue
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AgentRuntime ABC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3131,7 +3176,9 @@ class GeminiRuntime(AgentRuntime):
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
-                      channels: str = '', remote_control: bool = False) -> List[str]:
+                      channels: str = '', remote_control: bool = False,
+                      resume_id: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
                '--output-format', 'stream-json', '--yolo',
@@ -3147,6 +3194,31 @@ class GeminiRuntime(AgentRuntime):
                # registered, so trusting them for this one process is not a
                # new grant of anything the user didn't already choose.
                '--skip-trust']
+        # --resume <id> continues gemini's OWN session by the id captured off
+        # its `init` envelope (`_read_stream`'s INIT branch, stashed onto
+        # `session['provider_session_id']`) — the same flag `write_followup`
+        # already appends for the LIVE in-memory path. Threading it through
+        # `build_command` itself (W4, MC-947) is what makes a COLD dispatch
+        # after a server restart able to resume too — previously
+        # `_COLD_RESUMABLE_PROVIDERS` excluded gemini specifically because
+        # this method had no resume_id parameter at all.
+        if resume_id:
+            cmd.extend(['--resume', resume_id])
+        # W4/MC-947 (2026-09-18), live-verified: `read_file`'s own
+        # `isWithinRoot` workspace check refuses a path outside the CLI's
+        # cwd/workspace root — reproduced live, a pasted-image attachment
+        # under Clayrune's `data/uploads/` (a DIFFERENT directory tree than
+        # any project whose root isn't an ancestor of it) made `read_file`
+        # error every time, and the agent then burned turns on
+        # `run_shell_command` trying to inspect the binary file itself
+        # instead of ever seeing the image. `--include-directories <dir>`
+        # is the CLI's own documented fix (`gemini --help`) — moving the
+        # SAME file one level inside the workspace root and re-running with
+        # this flag pointed at its real parent directory fixed it: the
+        # image loaded and the model correctly described its contents.
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -3174,12 +3246,17 @@ class GeminiRuntime(AgentRuntime):
         session_id = msg.get('session_id')
 
         # init envelope — emitted once at stream start; carries no agent
-        # output. Surfaced as INIT so the reader can consume it silently.
+        # output beyond its own session id and the resolved model (live-
+        # captured 2026-09-18: `{"type":"init",...,"model":"gemini-flash-
+        # lite-latest"}`). Surfaced as INIT so the reader can consume it
+        # silently and backfill `provider_session_id`/`observed_model` (W4,
+        # MC-947) the same way `_mode_a_reader`'s own INIT branch does for
+        # every other Mode-A provider.
         if mtype == 'init':
             return AgentEvent(
                 type=EventType.INIT, provider='gemini',
                 session_id=session_id, mc_session_id=mc_session_id,
-                timestamp=_now_iso(), payload={}, raw=msg,
+                timestamp=_now_iso(), payload={'model': msg.get('model')}, raw=msg,
             )
 
         # 'message' events carry a `role`. Gemini echoes the input prompt
@@ -3380,7 +3457,11 @@ class GeminiRuntime(AgentRuntime):
             # apply_mc_tool_blocks. Honestly true: Gemini can ask the user.
             supports_ask_user_question=True,
             supports_streaming_text=True,
-            emits_usage=False,
+            # W4/MC-947 (2026-09-18): `_read_stream`'s TURN_END branch now
+            # stores the `result` event's `stats` object onto
+            # `session['usage']` — see that branch's comment. Genuinely True
+            # now, not an overclaim.
+            emits_usage=True,
             emits_rate_limit=False,
             emits_cost=False,
             emits_num_turns=False,
@@ -3667,6 +3748,7 @@ class GeminiRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -3682,15 +3764,28 @@ class GeminiRuntime(AgentRuntime):
         slim_prompt = self.with_mc_tool_protocol(
             self._slim_system_prompt(system_prompt))
         task_text = self.with_attachment_hint(task)
-        # Label the boundary explicitly. Everything above is reference setup;
-        # the part below is the ONLY thing to act on. Without this a weaker
-        # model treats the whole context blob as a briefing and invents work.
-        full_prompt = (f"{slim_prompt}\n\n"
-                       f"=== THE USER'S MESSAGE — respond to THIS, and only "
-                       f"this; everything above is reference setup ===\n\n"
-                       f"{task_text}")
+        if resume_id:
+            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
+            # session id, supplied by a caller reviving a dead conversation
+            # after a restart (`_revive_non_claude_from_agent_log`), now that
+            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
+            # full prior turn server-side (mirrors `write_followup`'s own
+            # resumed branch) — re-pasting the whole system prompt here would
+            # both waste tokens and duplicate context the resumed session
+            # already has.
+            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+        else:
+            # Label the boundary explicitly. Everything above is reference
+            # setup; the part below is the ONLY thing to act on. Without this
+            # a weaker model treats the whole context blob as a briefing and
+            # invents work.
+            full_prompt = (f"{slim_prompt}\n\n"
+                           f"=== THE USER'S MESSAGE — respond to THIS, and only "
+                           f"this; everything above is reference setup ===\n\n"
+                           f"{task_text}")
 
-        cmd = self.build_command(model=model)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 extra_include_dirs=extra_include_dirs)
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
@@ -3729,6 +3824,10 @@ class GeminiRuntime(AgentRuntime):
             'incognito': bool(incognito),
             '_dispatch_time': _time.time(),
             '_system_prompt': slim_prompt or '',
+            # Stashed so write_followup's per-turn respawn (Mode A has no
+            # persistent process) keeps the same widened workspace root —
+            # W4/MC-947, mirrors `_mcp_config_json` on QwenRuntime.
+            '_extra_include_dirs': list(extra_include_dirs or []),
         })
         _log_mcp_sync_result(session_dict['log_lines'], mcp_sync)
 
@@ -3898,6 +3997,25 @@ class GeminiRuntime(AgentRuntime):
                         f"[tool: {nm} result{(' — ' + st) if st else ''}]")
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
+                    # W4/MC-947 (2026-09-18): the payload always carried real
+                    # token counts (parse_event's TURN_END branch reads
+                    # `msg.get('stats')`, live-confirmed shape
+                    # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
+                    # ...}`) but nothing stored it — `emits_usage=False` was
+                    # an honest description of THIS bug, not of the CLI.
+                    # Mirrors `_mode_a_reader`'s own TURN_END branch (same
+                    # straight-overwrite-per-turn convention every other
+                    # Mode-A provider uses; Gemini respawns a process per
+                    # turn same as they do). `cost_usd`/`num_turns` stay
+                    # unset — parse_event hard-codes them None because the
+                    # CLI genuinely never emits either (emits_cost/
+                    # emits_num_turns are correctly False, unaffected).
+                    _usage = ev.payload.get('usage')
+                    if isinstance(_usage, dict):
+                        session['usage'] = _usage
+                        _ctx = normalize_context_tokens(_usage)
+                        if _ctx is not None:
+                            session['context_tokens'] = _ctx
                     _allowance_state.clear_exhaustion('gemini')
                     _cb('on_turn_end', ev)
                 elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
@@ -3923,8 +4041,24 @@ class GeminiRuntime(AgentRuntime):
                     # which grabs whatever gemini session is newest in the
                     # project dir and, after prior runs, is a stale unrelated
                     # conversation that gets continued by mistake.
+                    #
+                    # Stashed under the GENERIC `provider_session_id` key (W4,
+                    # MC-947) — not a gemini-private `_gemini_session_id` —
+                    # because that is the field `_runtime_note_init`
+                    # (agent_routes.py) backfills onto the durable agent_log
+                    # row, and the one `_revive_non_claude_from_agent_log`
+                    # reads back on a cold dispatch after a server restart.
+                    # The private key never reached either: a finished Gemini
+                    # chat's own session id lived ONLY in the volatile
+                    # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
+                    # had to exclude gemini outright (see its own comment,
+                    # now updated) — there was nothing durable to resume BY.
                     if ev.session_id:
-                        session['_gemini_session_id'] = ev.session_id
+                        session['provider_session_id'] = ev.session_id
+                    native_model = ev.payload.get('model')
+                    if isinstance(native_model, str) and native_model:
+                        session['observed_model'] = native_model
+                    _cb('on_init', ev)
                 # USER_MESSAGE (the prompt echo) and unrecognized envelopes
                 # (ev is None) are consumed silently — no agent output.
         except Exception as e:
@@ -4017,19 +4151,29 @@ class GeminiRuntime(AgentRuntime):
         # path re-pasted every turn (the token burn — Gemini has no prompt
         # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
         # loses the ability to ask questions deep into a conversation.
-        gemini_sid = session.get('_gemini_session_id')
+        # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
+        # key — so the same id this dispatch/revive path writes and reads
+        # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
+        # is also what a LIVE followup resumes by; two separate fields for
+        # "gemini's own session id" was how a cold revive after a restart
+        # ended up with nothing to resume.
+        gemini_sid = session.get('provider_session_id')
         # Mode A respawns the CLI per turn, so --model has to be re-stated or
-        # the chat silently falls back to the CLI default from turn 2.
+        # the chat silently falls back to the CLI default from turn 2. Same
+        # story for the widened workspace root (W4/MC-947) — re-read the
+        # stash `dispatch()` left so an attachment on turn 2+ still resolves.
         _model = self.session_model(handle)
+        _include_dirs = session.get('_extra_include_dirs') or []
         if gemini_sid:
-            cmd = self.build_command(model=_model) + ['--resume', gemini_sid]
+            cmd = self.build_command(model=_model, resume_id=gemini_sid,
+                                     extra_include_dirs=_include_dirs)
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
-            cmd = self.build_command(model=_model)
+            cmd = self.build_command(model=_model, extra_include_dirs=_include_dirs)
             session['_system_prompt'] = self.with_mc_tool_protocol(
                 self._slim_system_prompt(session.get('_system_prompt') or ''))
             full_prompt = _compose_respawn_prompt(
@@ -4264,6 +4408,40 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
     return handle
+
+
+def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort, vendor-agnostic size of what ONE turn re-read/held as
+    context — the signal `context_rollover_tokens` (docs/CONTEXT_ECONOMY_SPEC.md
+    §1/§2) triggers on. The ONE place per-turn usage dicts get reconciled into
+    a single number, so no call site needs its own per-vendor knowledge.
+
+    Claude's own formula (input_tokens + cache_read_input_tokens +
+    cache_creation_input_tokens) is tried first — cache fields are simply
+    absent (treated as 0) on providers with no prompt cache, so this also
+    correctly resolves to plain `input_tokens` for Gemini's
+    `{total_tokens, input_tokens, output_tokens}` shape (agent_runtime.py:4017,
+    "Gemini has no prompt cache") without a vendor branch. Falls back to
+    `total_tokens`/`prompt_tokens` only when that sum is 0 (fields absent
+    entirely, e.g. Qwen/Codex — shapes unverified as of 2026-09-18, see
+    CONTEXT_ECONOMY_SPEC.md §4 "Unverified this pass").
+
+    Returns None (never 0) when nothing usable is found — 'unknown stays
+    unknown' (VENDOR_AGNOSTIC_PROGRAM.md §4) so the caller falls back to the
+    byte-based backstop instead of a fabricated zero that would never trigger.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    total = (int(usage.get('input_tokens') or 0)
+             + int(usage.get('cache_read_input_tokens') or 0)
+             + int(usage.get('cache_creation_input_tokens') or 0))
+    if total > 0:
+        return total
+    for key in ('total_tokens', 'prompt_tokens'):
+        v = usage.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
 
 
 def accumulate_result_cost(session, msg, proc_cost):
@@ -4547,6 +4725,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
+                    _ctx = normalize_context_tokens(_usage)
+                    if _ctx is not None:
+                        session['context_tokens'] = _ctx
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
                 _allowance_state.clear_exhaustion(runtime.name)
@@ -4945,7 +5126,8 @@ class QwenRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '') -> List[str]:
+                      resume_id: str = '', mcp_config_json: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         """Return the qwen one-shot command.
 
         Flags verified live against qwen-code 0.23.4 (`qwen --help` plus real
@@ -4965,14 +5147,42 @@ class QwenRuntime(AgentRuntime):
                                          a headless dispatch with no TTY to
                                          approve from — mirrors GeminiRuntime's
                                          own `--yolo` for the same reason.
-          --allowed-mcp-server-names  -- set to a sentinel matching no real
-                                         server, closing the native
-                                         project-`.mcp.json` MCP leak
-                                         `--bare` used to close, WITHOUT
-                                         `--bare`'s side effect of also
-                                         disabling hooks. LOAD-BEARING —
-                                         see class docstring (2026-09-18,
-                                         W2).
+          --allowed-mcp-server-names  -- DEFAULT (no `mcp_config_json`): a
+                                         sentinel matching no real server,
+                                         closing the native project-
+                                         `.mcp.json` MCP leak `--bare` used
+                                         to close, WITHOUT `--bare`'s side
+                                         effect of also disabling hooks.
+                                         LOAD-BEARING — see class docstring
+                                         (2026-09-18, W2).
+          --mcp-config <json>          -- W4/MC-947 (2026-09-18): when the
+                                         caller supplies Clayrune's own
+                                         resolved per-project MCP set (the
+                                         SAME `_resolve_project_mcp_config`
+                                         JSON Claude's `--strict-mcp-config
+                                         --mcp-config` gets — see
+                                         `_build_claude_flags`), declare
+                                         those servers explicitly instead of
+                                         denying everything. Qwen has no
+                                         `--strict-mcp-config` flag (unlike
+                                         Claude), so `--mcp-config` alone
+                                         would MERGE with whatever native
+                                         discovery finds (this repo's own
+                                         `.mcp.json`, the user's real
+                                         `~/.qwen/settings.json`) — closing
+                                         that leak is `--allowed-mcp-server-
+                                         names` doing double duty here: set
+                                         to EXACTLY the declared servers'
+                                         names (not the deny-all sentinel),
+                                         it allowlists them through while
+                                         `matchesAnyServerPattern` (see class
+                                         docstring) drops everything else
+                                         `assembleMcpServers()` finds,
+                                         natively-discovered or not. An
+                                         explicitly EMPTY server set
+                                         (`{"mcpServers": {}}`) is the
+                                         existing deny-all behavior, just
+                                         reached the same way.
           --chat-recording             -- required for --resume to work at
                                          all (the CLI's own --help text
                                          states this); re-stated on every
@@ -4997,10 +5207,29 @@ class QwenRuntime(AgentRuntime):
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'qwen',
                '--output-format', 'stream-json', '--include-partial-messages',
-               '--yolo', '--allowed-mcp-server-names', _QWEN_MCP_DENY_SENTINEL,
-               '--chat-recording']
+               '--yolo', '--chat-recording']
+        allowed_names: List[str] = []
+        if mcp_config_json and mcp_config_json.strip():
+            try:
+                declared = json.loads(mcp_config_json).get('mcpServers') or {}
+                allowed_names = sorted(declared.keys())
+            except Exception:
+                # Malformed JSON must fail closed (deny-all), never fall
+                # through to native discovery — same contract as an empty
+                # declared set.
+                allowed_names = []
+            cmd.extend(['--mcp-config', mcp_config_json])
+        cmd.extend(['--allowed-mcp-server-names']
+                   + (allowed_names or [_QWEN_MCP_DENY_SENTINEL]))
         if resume_id:
             cmd.extend(['--resume', resume_id])
+        # W4/MC-947 — same `--include-directories` fix as Gemini's own
+        # build_command (qwen-code is a gemini-cli fork and shares the same
+        # `isWithinRoot` workspace-boundary check on its `read_file` tool;
+        # see Gemini's docstring for the live repro).
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -5351,13 +5580,16 @@ class QwenRuntime(AgentRuntime):
             default_mode='A',
             # --resume <session_id>, live-verified cross-process continuity.
             supports_session_resume=True,
-            # `--allowed-mcp-server-names __clayrune_none__` (see
-            # build_command's docstring, 2026-09-18) deliberately closes the
-            # native project MCP discovery this CLI otherwise performs, and
-            # no --mcp-config flag is wired here — declaring this True with
-            # nothing behind it would be the same overclaim CodexRuntime's
-            # own supports_plan_mode=False comment warns against.
-            supports_mcp=False,
+            # W4/MC-947 (2026-09-18): `dispatch()`/`build_command()` now
+            # accept `mcp_config_json` (the SAME per-project resolved set
+            # `_build_claude_flags` gives Claude) and pass it through
+            # `--mcp-config`, with `--allowed-mcp-server-names` doing double
+            # duty as the leak-closing allowlist (see build_command's
+            # docstring) instead of the old deny-everything sentinel. No
+            # caller wired = the sentinel path = the same deny-all behavior
+            # this flag used to describe honestly as False; now genuinely
+            # True end to end.
+            supports_mcp=True,
             # Catalog injected via system-prompt text, same as Gemini/Codex —
             # honestly true since qwen has a read_file tool to open it.
             supports_skills=True,
@@ -5374,9 +5606,29 @@ class QwenRuntime(AgentRuntime):
             # one-tool-call turn) — same semantics as Claude's, so
             # accumulate_result_turns's per-turn-sum logic applies unchanged.
             emits_num_turns=True,
-            # read_file is a real tool call, not multimodal image input — but
-            # matches the same honest-true bar GeminiRuntime sets for its own
-            # file-based image reading.
+            # W4/MC-947 (2026-09-18), LIVE FINDING, NOT fully fixed — kept
+            # True on mechanism parity with Gemini (the read_file path, its
+            # workspace-boundary fix, and its own --include-directories
+            # widening all apply identically here), but live-verified this
+            # is an OVERCLAIM for the actual default model in use
+            # (qwen3-coder-plus, a code model with no vision). Two distinct
+            # findings, both reproduced:
+            #  1. Without being told to actually verify, the model FABRICATED
+            #     a plausible-looking description ("white text on a black
+            #     background... TEST IMAGE PROBE") that matched the FILENAME,
+            #     not the real image (drawn content: "PURPLE ELEPHANT" in
+            #     purple on white) — no read_file tool call even appears in
+            #     the turn's log_lines. Same fabricate-under-uncertainty
+            #     pattern flagged separately from W5's dispatcher testing.
+            #  2. Explicitly instructed to call read_file and not guess, it
+            #     DID call the tool and then honestly reported: "this model
+            #     doesn't support image input, and the read_file tool cannot
+            #     process this type of file."
+            # Gemini (gemini-flash-lite-latest), same mechanism, same test
+            # image, correctly read and described it both times. Whoever
+            # verifies a Qwen vision-capable model id should re-test and only
+            # then treat this flag as genuinely proven, not just mechanism-
+            # parity-true.
             image_input=True,
             context_window=None,
             # Prepended into the prompt text, same as GeminiRuntime — native
@@ -5457,6 +5709,8 @@ class QwenRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
@@ -5471,7 +5725,9 @@ class QwenRuntime(AgentRuntime):
         # so `CodexRuntime`-parity resume worked for Codex but a cold Qwen
         # revive always silently started a brand-new thread with no history,
         # despite `build_command` already knowing how to build `--resume`.
-        cmd = self.build_command(model=model, resume_id=resume_id)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 mcp_config_json=mcp_config_json,
+                                 extra_include_dirs=extra_include_dirs)
         # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
         # dispatch(): the universal context block already tells the model to
         # use this fence, but nothing explains its shape without this.
@@ -5489,12 +5745,21 @@ class QwenRuntime(AgentRuntime):
             env[k] = v
         _inject_guardrail_env('qwen', env)
 
-        return _mode_a_dispatch(
+        handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env, callbacks,
             register_process, prompt_via_stdin=True,
             system_prompt=system_prompt,
         )
+        # Stashed so write_followup's per-turn respawn (Mode A has no
+        # persistent process) re-declares the SAME MCP set rather than
+        # silently reverting to deny-all on turn 2 — mirrors how
+        # `_system_prompt` is stashed for the same reason.
+        handle.session_dict['_mcp_config_json'] = mcp_config_json
+        # W4/MC-947 — same per-turn-respawn stash as _mcp_config_json above,
+        # for the widened workspace root (see build_command's docstring).
+        handle.session_dict['_extra_include_dirs'] = list(extra_include_dirs or [])
+        return handle
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
@@ -5519,7 +5784,9 @@ class QwenRuntime(AgentRuntime):
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
-        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
+        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id,
+                                 mcp_config_json=session.get('_mcp_config_json') or '',
+                                 extra_include_dirs=session.get('_extra_include_dirs') or [])
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         # A configured value WINS over the inherited process env — see
@@ -6607,7 +6874,19 @@ class CodexRuntime(AgentRuntime):
             # UI (static/js/conversation.js) that could never receive data.
             # Parity audit §2 "Plan detection / approval".
             supports_plan_mode=False,
-            supports_ask_user_question=False,
+            # W4/MC-947 (2026-09-18), OFFLINE proof (Codex out of allowance
+            # until Sep 24 — no prompt sent): `dispatch()` below calls
+            # `with_mc_tool_protocol(system_prompt)` (same call Qwen's own
+            # dispatch() makes) and, like Qwen, runs through the SHARED
+            # `_mode_a_reader` — the exact same `turn_text_parts` accumulate
+            # / `apply_mc_tool_blocks` turn-end scan every Mode-A provider
+            # gets, with no Codex-specific branch anywhere in that path.
+            # Live-verified for Qwen (identical mechanism): a real
+            # ```mc:question``` fence paused the turn (status -> idle,
+            # `pending_questions` populated), and a follow-up answer resumed
+            # the same session and completed correctly. Flip to True on code
+            # parity; re-verify live once Codex has allowance again.
+            supports_ask_user_question=True,
             supports_streaming_text=True,
             emits_usage=True,
             emits_rate_limit=False,

@@ -66,7 +66,7 @@ import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from flask import Blueprint, Flask, Response, jsonify, request
 
@@ -3939,6 +3939,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4201,6 +4202,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4914,7 +4916,13 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         _log(f"[revive] {project_id}: could not recover the persona for "
              f"{claude_sid[:12]}: {e}")
 
-    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    # No live in-memory session survives a revive (that's the whole point of
+    # this path — the process/server restarted), so there's no per-turn
+    # context_tokens to read: the token trigger naturally sits out here and
+    # the byte-based backstop alone decides, same as before this trigger
+    # existed (docs/CONTEXT_ECONOMY_SPEC.md §2, "byte-based trigger ...
+    # independent of cost").
+    _af_reason, _af_detail = _auto_fresh_trigger(pp, claude_sid)
     resume_flags = []
     context = None
     revival_msg = message
@@ -4925,17 +4933,18 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # MC-925 "unnamed worker" framing and could claim the default agent_name.
     _revive_incognito = bool(entry.get('incognito'))
     _revive_source = entry.get('source') or ''
-    if too_large:
-        size_mb = size_bytes / (1024 * 1024)
+    if _af_reason:
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
                                        session_id=session_id,
                                        character_skills=_revive_char_skills,
                                        source=_revive_source)
-        revival_msg = (f"[Resuming a previous conversation that grew too large to "
-                       f"resume directly ({size_mb:.0f} MB). Start fresh but continue "
-                       f"the user's request below.]\n\n{message}")
+        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+            pp, 'claude', claude_sid, project_id, session_id,
+            reason=_af_reason, detail=_af_detail)
+        _log_agent_activity(project_id, _activity_line)
+        revival_msg = f"{_handoff_text}\n\n{message}"
     else:
         resume_flags = ['-r', claude_sid]
     if context is None:
@@ -4961,7 +4970,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # (about the agent's pre-restart reply) doesn't land on a one-sided chat.
     # Skipped when the transcript was too large to resume directly (we started
     # fresh, so there's no coherent -r history to show anyway).
-    history_lines = [] if too_large else _revive_history_lines(pp, claude_sid, user_label)
+    history_lines = [] if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
     seed_lines = history_lines + [revive_note, f"\n> {user_label}: {message}\n"]
 
     if use_streaming:
@@ -5147,35 +5156,48 @@ def _revive_from_agent_log(project_id, session_id, message, p):
 # `exec resume` command when called with no live in-memory session (as
 # opposed to only working from `write_followup`, which needs the session to
 # already be alive in `agent_sessions`). Live-verified 2026-09-16:
-#   codex — CodexRuntime.dispatch() passes resume_id straight into
-#           build_command()'s `exec resume <thread_id>` branch.
-#   qwen  — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
-#           build_command()'s `--resume <id>` branch the same way.
-# NOT in this set: gemini. `GeminiRuntime.capabilities().supports_session_
-# resume` reports True, but that flag describes the LIVE-session followup
-# path only (`write_followup` manually appends `--resume <gemini_sid>` from
-# `session['_gemini_session_id']`, a field that is never persisted to the
-# agent log) — `build_command()` has no `resume_id` parameter at all, so a
-# cold dispatch cannot resume a Gemini thread after a restart. Do not trust
-# `supports_session_resume` for this decision; it is provider-declared and
-# already wrong for Gemini.
-_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen'}
+#   codex  — CodexRuntime.dispatch() passes resume_id straight into
+#            build_command()'s `exec resume <thread_id>` branch.
+#   qwen   — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
+#            build_command()'s `--resume <id>` branch the same way.
+#   gemini — added W4/MC-947 (2026-09-18). Previously excluded for two
+#            compounding reasons, both fixed: (1) `GeminiRuntime._read_stream`
+#            stashed its captured session id onto a private
+#            `session['_gemini_session_id']` field that nothing ever
+#            persisted to the agent log, so `provider_session_id` was always
+#            empty for a revived row; (2) `build_command()` had no
+#            `resume_id` parameter at all, so even a caller holding the id
+#            had no way to pass it through a COLD `dispatch()`. Both now
+#            match the codex/qwen shape: the id lands on the generic
+#            `provider_session_id` key (`_runtime_note_init` backfills it
+#            durably), and `build_command(resume_id=...)` appends
+#            `--resume <id>`. Gemini still has NO on-disk transcript file
+#            (`transcript_path()` returns None) — a revived row cannot be
+#            rendered with full prior-turn text the way codex/qwen rollouts
+#            can (see `reconstruct_dead_session`'s `_COLD_RESUMABLE_PROVIDERS`
+#            branch, which degrades gracefully when `transcript_path` is
+#            None) — but the resumed PROCESS itself genuinely continues the
+#            same conversation server-side, which is the property this set
+#            gates.
+_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
 def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     """Continue (or, for a provider with no cold resume, restart) a dead
-    non-Claude conversation (MC-929; cold-resume support added 2026-09-16).
+    non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
+    extended to gemini W4/MC-947 2026-09-18).
 
-    For a provider in `_COLD_RESUMABLE_PROVIDERS` with a captured
-    `provider_session_id`, this IS a resume — the runtime's own `dispatch()`
-    threads `resume_id` into the provider CLI's native resume flag and the
-    conversation continues with its full prior history intact server-side.
-    Every other case (Gemini, or a codex/qwen row whose `provider_session_id`
-    capture failed) has nothing to reattach to and starts cold, with no prior
-    turns as context — it adopts the same MC session_id so the UI tab and
-    agent-log stay addressed to one conversation, but the process itself has
-    no memory of anything before this message. This is what makes the honest
-    trailing line `reconstruct_dead_session` writes for a non-cold-resumable
+    For a provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, gemini) with a
+    captured `provider_session_id`, this IS a resume — the runtime's own
+    `dispatch()` threads `resume_id` into the provider CLI's native resume
+    flag and the conversation continues with its full prior history intact
+    server-side. Every other case (a row whose `provider_session_id` capture
+    failed, predates this fix, or belongs to a provider outside that set) has
+    nothing to reattach to and starts cold, with no prior turns as context —
+    it adopts the same MC session_id so the UI tab and agent-log stay
+    addressed to one conversation, but the process itself has no memory of
+    anything before this message. This is what makes the honest trailing
+    line `reconstruct_dead_session` writes for a non-cold-resumable
     non-Claude history ("sending a message starts a brand-new session")
     actually true, instead of the reply just 404ing.
 
@@ -5334,6 +5356,9 @@ def _accumulate_session_usage(session, turn_usage):
     carries only THAT turn's token counts, not a cumulative total. Overwriting
     session['usage'] discards all prior turns; instead we sum the numeric
     fields so the final value reflects the whole session.
+
+    `session['context_tokens']` is NOT set here: `result.usage` sums every
+    model call in the turn. See `_note_call_context_tokens`.
     """
     _INT_FIELDS = ('input_tokens', 'output_tokens',
                    'cache_read_input_tokens', 'cache_creation_input_tokens')
@@ -5346,6 +5371,22 @@ def _accumulate_session_usage(session, turn_usage):
         if k not in _INT_FIELDS:
             merged[k] = v
     session['usage'] = merged
+
+
+def _note_call_context_tokens(session, message):
+    """Record `session['context_tokens']` from ONE model call's usage.
+
+    Claude's `result.usage` is the SUM over every model call in the turn, not
+    the context size: measured 2026-09-18 with a 2-Read turn, the calls held
+    30.2k and 32.4k of context but `result` reported 62.5k (cache_read 17640 +
+    30165 = 47805). A tool-heavy turn would read as several times its real
+    size and roll far too early, so the Claude readers take the LAST
+    assistant message's usage instead. Streamed assistant events repeat the
+    same usage per content block, so overwriting is idempotent.
+    """
+    _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
+    if _ctx is not None:
+        session['context_tokens'] = _ctx
 
 
 def _note_claude_sid(session, sid):
@@ -5492,13 +5533,28 @@ def _last_reply_text(session):
     summary: skip MC status lines in [brackets] and the dispatcher's own
     "> user: task" seed, or the callback would hand the spawner back the very
     task it just sent (MC-935 hit exactly that on the agent_log summary).
+
+    Reconstructs every trailing real-content line (not just the last one) so
+    a delta-chunked Mode-A reply (Gemini/Qwen/Codex/...) is not truncated to
+    its FINAL streamed fragment (MC-947) — the same fix as
+    `_agent_runtime._collect_trailing_reply_text`, deliberately NOT a call to
+    that shared helper: `_log_agent_completion` calls this from its own
+    `finally` block as the safety-net wake when `_log_agent_completion_body`
+    (which DOES use the shared helper, and `_SEED_LINE_RE`) raised on the way
+    there — sharing the dependency would let one fault in `_SEED_LINE_RE`'s
+    matcher take down both the primary scan AND its own backstop
+    (test_a_raise_before_the_wake_still_wakes_the_workflow pins this).
     """
+    collected = []
     for line in reversed(session.get('log_lines') or []):
         t = (line or '').strip()
         if not t or t.startswith('[') or t.startswith('> '):
+            if collected:
+                break
             continue
-        return t
-    return ''
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
 
 
 def _allocate_delegation_turn(session):
@@ -5545,8 +5601,28 @@ def _maybe_notify_spawner(session, summary):
     by at most one of the two, never both, but both are checked here so
     adding the workflow path cannot double-fire the existing spawner
     notification or vice versa.
+
+    DUPLICATE-NOTIFY FIX (found 2026-09-18, sessions 7a01a27211ea /
+    e0eb419b1686): both stream readers call `_log_agent_completion`
+    UNCONDITIONALLY in their `finally` exit-cleanup — including when the
+    process was intentionally killed right after an AskUserQuestion tool
+    call (`waiting_for_question=True`, status forced to 'idle' so the
+    guardian doesn't race in; see the AskUserQuestion branch above this
+    function). That kill is a PAUSE, not a finish: the child is waiting for
+    its answer and will resume via `-r` once one arrives. Before this guard,
+    every such pause fired a real, durably-enqueued "[dispatched agent
+    finished]" notification (a genuinely fresh `_delegation_turn`, so the SQL
+    dedup in mc/delegation_delivery.py — correctly idempotent per event_id —
+    had nothing to catch), and a child that asked 2-3 questions before truly
+    finishing told its spawner it was "done" 2-3 times over. The agent-log
+    completion ROW still gets written for a question-pause (tagged 'idle' —
+    see test_mc_question_pauses_the_turn_and_populates_pending_questions);
+    only the spawner/workflow WAKE is suppressed here, so a client watching
+    the conversation rail is unaffected.
     """
     if session.get('incognito'):
+        return
+    if session.get('waiting_for_question'):
         return
     notify_sid = (session.get('_notify_session') or '').strip()
     has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
@@ -5928,18 +6004,11 @@ def _log_agent_completion_body(session):
     # as "no execution data" — a silent failure that made it into durable
     # memory looking like an ordinary completion).
     lines = session.get('log_lines', [])
-    # Find the last substantial text (skip tool/status markers and the seed).
-    summary = ''
-    for line in reversed(lines):
-        if not line or line.startswith('\n---'):
-            continue
-        stripped = line.strip()
-        if stripped.startswith('['):
-            continue
-        if _agent_runtime._SEED_LINE_RE.match(stripped):
-            continue
-        summary = line
-        break
+    # Find the last substantial text (skip tool/status markers and the seed),
+    # reconstructing the FULL reply across every trailing delta chunk a
+    # Mode-A provider (Gemini/Qwen/Codex/...) logged as separate array
+    # entries — see `_collect_trailing_reply_text` (MC-947).
+    summary = _agent_runtime._collect_trailing_reply_text(lines)
     if not summary:
         # No real assistant text survived the turn. Say so explicitly rather
         # than substituting the last thing in log_lines — for exactly this
@@ -6848,6 +6917,25 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # W4/MC-947: Clayrune's own per-project MCP trim (same resolver
+            # Claude's `_build_claude_flags` uses), passed through so a
+            # runtime that opts in (currently only QwenRuntime.dispatch())
+            # can declare EXACTLY this set instead of a blanket deny-all or
+            # native ~/.qwen/settings.json discovery. Every other runtime's
+            # dispatch() has a **_extra catchall, so this is a no-op for
+            # them — same shape as unattended_sandbox_enabled above.
+            mcp_config_json=_resolve_project_mcp_config(p) or '',
+            # W4/MC-947: pasted/uploaded attachments live under
+            # UPLOADS_DIR (`data/uploads/`), a DIFFERENT directory tree
+            # than most projects' own roots. Gemini/Qwen's `read_file`
+            # tool refuses a path outside its workspace root
+            # (`isWithinRoot`, live-reproduced) — widening the workspace
+            # to include UPLOADS_DIR is what makes a pasted image actually
+            # reach the model instead of erroring. Only GeminiRuntime/
+            # QwenRuntime.dispatch() declare this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op for them.
+            extra_include_dirs=(
+                [str(UPLOADS_DIR)] if UPLOADS_DIR else []),
         )
 
     try:
@@ -7090,6 +7178,272 @@ def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
     return next(iter(owners), '')
 
 
+_HANDOFF_MAX_CHARS = 8000
+
+
+def _gemini_session_log_turns(project_id, native_id):
+    """Turn reader for Gemini handoff (W4/MC-947).
+
+    `GeminiRuntime.transcript_path()` correctly returns None — Gemini has no
+    native on-disk transcript store, unlike Claude's `.jsonl` or Codex/Qwen's
+    rollout files — so `_build_handoff_context` used to raise ValueError
+    outright for every Gemini-owned conversation. Under the vendor-agnostic
+    position (a per-provider capability gap is a bug to bridge, not a
+    documented limitation) that is fixed here with CLAYRUNE'S OWN per-session
+    turn log instead of a native file:
+
+    1. Prefer the LIVE in-memory session's `log_lines` (present for any
+       conversation that hasn't been purged) — reuses the exact seed-line
+       convention (`"> {user}: {message}"`, `_SEED_LINE_RE`) already used to
+       find turn boundaries elsewhere (`_collect_trailing_reply_text`). Each
+       seed line starts a new user turn; everything collected before the
+       next seed/bracket line is that turn's assistant reply.
+    2. Fall back to the durable agent_log's first row (`task`/`summary`) when
+       no live session is found. `task` is set once at dispatch and never
+       updated by a follow-up, so this ONLY reconstructs the conversation's
+       opening turn, not a full multi-turn history — the same durability
+       shape as Codex/Qwen's own rollout files eventually aging out, not a
+       new limitation.
+
+    Returns `[]`, never partial garbage, when nothing usable is found — the
+    caller must treat that identically to "no transcript" (SUBSTITUTION IS A
+    LIE): a shorter-than-expected handoff must be disclosed, not silently
+    substituted for the real thing.
+    """
+    live = next((s for s in agent_sessions.values()
+                if s.get('project_id') == project_id
+                and (s.get('provider') or '').lower() == 'gemini'
+                and s.get('provider_session_id') == native_id), None)
+    if live and live.get('log_lines'):
+        turns: List[Tuple[str, str]] = []
+        current_role = None
+        current_parts: List[str] = []
+
+        def _flush():
+            if current_role and current_parts:
+                text = ''.join(current_parts).strip()
+                if text:
+                    turns.append((current_role, text))
+
+        for line in live['log_lines']:
+            stripped = (line or '').strip()
+            if not stripped or stripped.startswith('['):
+                continue
+            m = _agent_runtime._SEED_LINE_RE.match(stripped)
+            if m:
+                # Flush whatever assistant text was accumulating, then the
+                # user turn is complete in this one line — never spans
+                # multiple log_lines entries the way a delta-chunked
+                # assistant reply does.
+                _flush()
+                turns.append(('user', stripped[m.end():]))
+                current_role = None
+                current_parts = []
+                continue
+            if current_role is None:
+                current_role = 'assistant'
+                current_parts = []
+            current_parts.append(line)
+        _flush()
+        if turns:
+            return turns
+    entries = [e for e in _load_agent_log(project_id)
+              if (e.get('provider') or '').lower() == 'gemini'
+              and e.get('provider_session_id') == native_id]
+    if not entries:
+        return []
+    entries.sort(key=lambda e: e.get('ts', ''))
+    first = entries[0]
+    turns = []
+    if first.get('task'):
+        turns.append(('user', first['task']))
+    if first.get('summary'):
+        turns.append(('assistant', first['summary']))
+    return turns
+
+
+def _build_handoff_context(project_path, owning_provider, native_id, project_id=''):
+    """Rebuild an owning provider's real turns for injection into a NEW
+    conversation on a different vendor (W5, 2026-09-18 — explicit,
+    opt-in cross-provider handoff; NOT a native resume).
+
+    Reads the owning provider's OWN transcript file via its existing
+    per-adapter reader (`ClaudeRuntime.parse_transcript_file` or the
+    `extract_chat_turns` sibling on Codex/Qwen) -- the same readers that
+    already back same-vendor reconstruction/read-floor. Returns
+    (context_text, meta) where meta reports what was actually included, so
+    the caller can be honest about it rather than silently proceeding with
+    less than it looks like (SUBSTITUTION IS A LIE).
+
+    Gemini has no native transcript store at all (`GeminiRuntime.
+    transcript_path` returns None unconditionally) — W4/MC-947 bridges that
+    with `_gemini_session_log_turns` (Clayrune's own per-session turn log)
+    instead of refusing handoff outright. Raises ValueError only when even
+    that reader finds nothing.
+    """
+    runtime = _agent_runtime.get_runtime(owning_provider)
+    tpath = runtime.transcript_path(project_path, native_id)
+    if (not tpath or not Path(tpath).is_file()) and owning_provider == 'gemini':
+        turns = _gemini_session_log_turns(project_id, native_id)
+        if not turns:
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': no transcript is "
+                f"available for this conversation (this vendor may have no "
+                f"native transcript store at all)")
+    elif not tpath or not Path(tpath).is_file():
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': no transcript is "
+            f"available for this conversation (this vendor may have no "
+            f"native transcript store at all)")
+    elif owning_provider == 'claude':
+        raw = runtime.parse_transcript_file(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+        turns = [(m['role'], m['text']) for m in raw
+                 if m.get('role') in ('user', 'assistant') and m.get('text')]
+    else:
+        extract = getattr(runtime, 'extract_chat_turns', None)
+        if not callable(extract):
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': its adapter has "
+                f"no extract_chat_turns reader yet")
+        turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    if not turns:
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': the transcript "
+            f"parsed to zero real turns")
+    total = len(turns)
+    kept = []
+    kept_chars = 0
+    for role, text in reversed(turns):
+        line = f"{'User' if role == 'user' else 'Assistant'}: {text}"
+        if kept_chars + len(line) > _HANDOFF_MAX_CHARS and kept:
+            break
+        kept.append(line)
+        kept_chars += len(line)
+    kept.reverse()
+    omitted = total - len(kept)
+    header = f"=== Prior conversation, started on {owning_provider}, handed off here ==="
+    if omitted:
+        header += f"\n[{omitted} earlier turn(s) omitted for length]"
+    body = '\n\n'.join(kept)
+    footer = "=== End of prior conversation. Continue from here, using the above as real context. ==="
+    context = f"{header}\n\n{body}\n\n{footer}"
+    return context, {'owning_provider': owning_provider, 'total_turns': total,
+                     'included_turns': len(kept), 'omitted_turns': omitted}
+
+
+def _live_context_tokens(project_id, claude_sid):
+    """The last per-turn `context_tokens` recorded for a still-live in-memory
+    session owning `claude_sid`, or None — mirrors the `agent_sessions` scan
+    `_prior_conversation_provider` already does. Used by auto-fresh call
+    sites (dispatch, revive) that only hold a durable claude_session_id, not
+    the live session dict itself, so the token trigger can still see it when
+    a live entry happens to exist.
+    """
+    if not claude_sid:
+        return None
+    for s in agent_sessions.values():
+        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
+            return s.get('context_tokens')
+    return None
+
+
+def _context_tokens_over_threshold(context_tokens):
+    """Token-based auto-fresh trigger (`context_rollover_tokens`, default
+    200000, 0 disables) — the live counterpart to `_session_too_large`'s
+    byte-based backstop. Either trigger may fire a rollover independently
+    (docs/CONTEXT_ECONOMY_SPEC.md §2). `context_tokens` is a live session's
+    last per-turn normalized figure (mc.agent_runtime.normalize_context_tokens,
+    set by `_accumulate_session_usage`/the Mode-A readers) — None when no
+    usage has been recorded yet (a revived/never-live session), which never
+    trips this trigger, matching "unknown stays unknown".
+    """
+    thr = int(state.CONFIG.get('context_rollover_tokens', 200000) or 0)
+    if thr <= 0:
+        return False
+    return isinstance(context_tokens, (int, float)) and context_tokens >= thr
+
+
+def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
+    """Unified auto-fresh decision: ORs the token-based policy trigger with
+    the byte-based `_session_too_large` backstop (docs/CONTEXT_ECONOMY_SPEC.md
+    §2 — "both triggers must be vendor-generic ... independent"). Token check
+    runs first since it's free (no disk I/O) where a live session already
+    has the figure.
+
+    Returns (reason, detail): reason is 'tokens' | 'bytes' | None; detail is
+    the context-tokens int when reason=='tokens', else the transcript
+    size_bytes int (0 when no rollover is warranted).
+    """
+    if _context_tokens_over_threshold(context_tokens):
+        return 'tokens', int(context_tokens)
+    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    if too_large:
+        return 'bytes', size_bytes
+    return None, 0
+
+
+def _in_flight_children(project_id, session_id):
+    """Live sessions dispatched BY `session_id` (`_notify_session` points
+    back at it) that haven't finished yet — folded into the auto-fresh
+    handoff (§3) so a rollover doesn't silently orphan a child that will
+    later report back to this session_id. Safe across a roll because the MC
+    session_id is never replaced by auto-fresh — the session dict is mutated
+    in place (new `claude_session_id`, `proc`, etc.), so a child's
+    `_notify_session` still resolves after the fresh process starts.
+    """
+    out = []
+    for s in agent_sessions.values():
+        if s.get('project_id') != project_id:
+            continue
+        if (s.get('_notify_session') or '').strip() != session_id:
+            continue
+        if s.get('status') in ('done', 'error'):
+            continue
+        out.append({'session_id': s.get('session_id', ''),
+                    'task': (s.get('task') or '')[:200],
+                    'status': s.get('status', 'unknown')})
+    return out
+
+
+def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
+                        *, reason, detail):
+    """Build the real rollover handoff (§3) that replaces the old one-sentence
+    'Continuing from a previous conversation ... too large to resume' prefix,
+    plus the log/activity lines auto-fresh call sites append.
+
+    Prefers `_build_handoff_context` (the owning provider's real turns,
+    W5). Falls back to a labeled one-liner — never a silently shorter
+    substitute (SUBSTITUTION IS A LIE) — when that raises (no transcript for
+    this provider/id, e.g. a `claude_sid` whose file was never flushed).
+
+    Returns (handoff_text, log_line, activity_line).
+    """
+    try:
+        handoff_text, _meta = _build_handoff_context(
+            pp, provider, claude_sid, project_id=project_id)
+    except ValueError as e:
+        handoff_text = (
+            f"[Continuing from a previous conversation (session {claude_sid}) "
+            f"that rolled to a fresh session. Real handoff unavailable: {e}. "
+            f"Start fresh but continue the user's request below.]")
+    children = _in_flight_children(project_id, session_id)
+    if children:
+        lines = '\n'.join(f"- {c['session_id']} ({c['status']}): {c['task']}"
+                          for c in children)
+        handoff_text += (
+            f"\n\n=== Still waiting on {len(children)} dispatched session(s) "
+            f"— do not re-dispatch these, they will notify back when done ===\n"
+            f"{lines}")
+    if reason == 'tokens':
+        log_line = f'[Session context is {detail // 1000}k tokens — starting fresh]'
+        activity_line = f"Auto-fresh: context {detail // 1000}k tokens"
+    else:
+        size_mb = detail / (1024 * 1024)
+        log_line = f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]'
+        activity_line = f"Auto-fresh: previous session too large ({size_mb:.0f} MB)"
+    return handoff_text, log_line, activity_line
+
+
 def _prior_conversation_settings(project_id, resume_id, provider=''):
     """Recover latest engine settings, keeping explicit clears authoritative."""
     rows = sorted([s for s in list(agent_sessions.values())
@@ -7236,6 +7590,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              notify_session='', notify_workflow=None,
                              preserve_model=False, project_generation=None,
                              system_prompt_suffix='', housekeeping=False,
+                             cross_provider_handoff=False,
                              runtime_callbacks=None, session_metadata=None,
                              session_dict_override=None,
                              max_turns_override=None):
@@ -7296,9 +7651,36 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     if not pp or not Path(pp).is_dir():
         raise ValueError('project_path not set or invalid')
 
+    _handoff_meta = None
     if resume_id:
-        provider_override = _prior_conversation_provider(
-            project_id, resume_id, provider_override)
+        # Opt-in only (W5, 2026-09-18): every existing caller (UI resume, the
+        # scheduler, hivemind, workflow steps) leaves cross_provider_handoff
+        # False and gets EXACTLY the prior hard-refusal behaviour below,
+        # unchanged. Only an explicit ask that names both a resume id and a
+        # different provider, WITH this flag, gets a real handoff instead of
+        # the ValueError -- never a silent one; the difference is always the
+        # caller's own explicit request, and the result is a brand-new
+        # conversation (resume_id cleared) whose task carries clearly-labelled
+        # prior-conversation content, never a native cross-vendor resume.
+        _owning_provider = _prior_conversation_provider(project_id, resume_id, '')
+        if (cross_provider_handoff and provider_override
+                and _owning_provider
+                and _owning_provider.lower() != provider_override.strip().lower()):
+            _handoff_text, _handoff_meta = _build_handoff_context(
+                pp, _owning_provider, resume_id, project_id=project_id)
+            # Disclose the handoff in the USER-VISIBLE bubble too, not just the
+            # actual model input -- a human watching the UI must see that this
+            # turn carries injected prior-conversation content, not just the
+            # short text they typed (never silently substitute).
+            if display_task is None:
+                display_task = task
+            display_task = f"[Continued from {_owning_provider}] {display_task}"
+            task = f"{_handoff_text}\n\n{task}"
+            _handoff_meta['from_native_id'] = resume_id
+            resume_id = ''
+        else:
+            provider_override = _prior_conversation_provider(
+                project_id, resume_id, provider_override)
 
     # Resolve the per-chat character (persona) now, at spawn — the only point
     # a system prompt can be set. Immutable for this chat's lifetime; switching
@@ -7413,18 +7795,24 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
-    # Check session transcript size — auto-start fresh if too large
+    # Check session transcript size / context weight — auto-start fresh if
+    # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
     original_resume = resume_id
+    _af_log_line = ''
     if resume_id:
-        too_large, size_bytes = _session_too_large(pp, resume_id)
-        if too_large:
-            size_mb = size_bytes / (1024 * 1024)
-            _log(f"[dispatch] Session {resume_id} transcript is {size_mb:.1f} MB — starting fresh")
-            _log_agent_activity(project_id,
-                                f"Auto-fresh: previous session too large ({size_mb:.0f} MB)")
-            # Prepend context about the previous session
-            task = (f"[Continuing from a previous conversation (session {resume_id}) that grew too large "
-                    f"to resume ({size_mb:.0f} MB). Start fresh but continue the user's request below.]\n\n{task}")
+        _af_reason, _af_detail = _auto_fresh_trigger(
+            pp, resume_id, _live_context_tokens(project_id, resume_id))
+        if _af_reason:
+            _log(f"[dispatch] Session {resume_id} rolling to fresh ({_af_reason}={_af_detail})")
+            # This dispatch call is spawning a NEW MC session, so `reuse_session_id`
+            # (when the caller supplied one) is the only stable id an in-flight
+            # child could already be pointed at -- the fresh session_id this call
+            # will generate below doesn't exist yet at this point in the function.
+            _handoff_text, _af_log_line, _activity_line = _auto_fresh_handoff(
+                pp, 'claude', resume_id, project_id, reuse_session_id or '',
+                reason=_af_reason, detail=_af_detail)
+            _log_agent_activity(project_id, _activity_line)
+            task = f"{_handoff_text}\n\n{task}"
             resume_id = ''
 
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
@@ -7879,10 +8267,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             if notice:
                 session['log_lines'].append(notice)
 
-        # Notify user if session was auto-started fresh due to transcript size
-        if original_resume and not resume_id:
-            session['log_lines'].append(
-                f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+        # Notify user if session was auto-started fresh (§2 — byte or token trigger)
+        if original_resume and not resume_id and _af_log_line:
+            session['log_lines'].append(_af_log_line)
 
     resume_label = f" (resuming {resume_id})" if resume_id else ""
     try:
@@ -7909,10 +8296,19 @@ def agent_dispatch(project_id):
             not isinstance(effort_override, str)
             or (effort_override and not _re_auth.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort_override))):
         return jsonify({'error': 'invalid effort'}), 400
+    # W5, 2026-09-18: an explicit, opt-in cross-provider handoff mints a
+    # BRAND-NEW conversation on the destination vendor (see
+    # `_build_handoff_context`/the `resume_id` branch in
+    # `_dispatch_agent_internal`) -- it is not a native resume, so it is a
+    # fresh persona pick like any other new chat, not "ignore it, this is a
+    # resume". `cross_provider_handoff` with no matching provider mismatch is
+    # a harmless no-op (falls through to the ordinary resume path below).
+    cross_provider_handoff = bool(data.get('cross_provider_handoff'))
     # Per-chat character/persona ("scope:name", e.g. "project:code-reviewer").
     # Only meaningful on a FRESH chat — a resume keeps the original spawn's
     # persona (claude -r can't change the system prompt), so ignore it there.
-    character = (data.get('character') or '').strip() if not resume_id else ''
+    character = ((data.get('character') or '').strip()
+                 if (not resume_id or cross_provider_handoff) else '')
     # Mobile brief replies: augmented version goes to the agent. The frontend's
     # local echo already shows the original task as the user's chat bubble.
     claude_task = _apply_mobile_brief(task, data)
@@ -7961,7 +8357,8 @@ def agent_dispatch(project_id):
                                               # at write time and must stay
                                               # best-effort; they don't set this.
                                               strict_character=True,
-                                              notify_session=notify_session)
+                                              notify_session=notify_session,
+                                              cross_provider_handoff=cross_provider_handoff)
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -8742,6 +9139,30 @@ def agent_followup(project_id):
                     existing['process_alive'] = False
                     existing['log_lines'].append(
                         f'[Process {proc.pid} found dead on followup — will respawn]')
+            # A LIVE process's follow-up used to go straight to stdin (below),
+            # so the size check only ever ran on respawn paths (dead process,
+            # dispatch, revive) — a long-running Mode B chat could sail past
+            # _SESSION_SIZE_LIMIT and never auto-fresh. Flip it "dead" here so
+            # it falls into the existing dead-process auto-fresh handoff just
+            # below: closes stdin, kills the old process, drops -r, and starts
+            # fresh automatically, no prompt (Ron, 2026-09-18). Also the first
+            # place the token trigger can fire (docs/CONTEXT_ECONOMY_SPEC.md
+            # §2) — `existing['context_tokens']` is this session's own last
+            # per-turn figure, always available here since the process is live.
+            if existing.get('process_alive'):
+                _live_sid = existing.get('claude_session_id')
+                if _live_sid:
+                    _live_reason, _live_detail = _auto_fresh_trigger(
+                        pp, _live_sid, existing.get('context_tokens'))
+                    if _live_reason:
+                        _log(f"[followup] Live session {_live_sid} rolling to fresh "
+                             f"({_live_reason}={_live_detail}) — ending process")
+                        _, _live_log_line, _live_activity_line = _auto_fresh_handoff(
+                            pp, 'claude', _live_sid, project_id, session_id,
+                            reason=_live_reason, detail=_live_detail)
+                        _log_agent_activity(project_id, _live_activity_line)
+                        existing['log_lines'].append(_live_log_line)
+                        existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
                 claude_sid = existing.get('claude_session_id')
@@ -8776,17 +9197,18 @@ def agent_followup(project_id):
                 else:
                     # Normal session, OR a resume that already produced output
                     # (healthy — it just died later). Resume with -r to keep context.
-                    too_large, size_bytes = _session_too_large(pp, claude_sid)
-                    if too_large:
-                        size_mb = size_bytes / (1024 * 1024)
-                        _log(f"[followup] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                        _log_agent_activity(project_id,
-                                            f"Auto-fresh: session too large ({size_mb:.0f} MB)")
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                    _af_reason, _af_detail = _auto_fresh_trigger(
+                        pp, claude_sid, existing.get('context_tokens'))
+                    if _af_reason:
+                        _log(f"[followup] Session {claude_sid} rolling to fresh "
+                             f"({_af_reason}={_af_detail})")
+                        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                            pp, 'claude', claude_sid, project_id, session_id,
+                            reason=_af_reason, detail=_af_detail)
+                        _log_agent_activity(project_id, _activity_line)
+                        existing['log_lines'].append(_log_line)
                         context = _fresh_context_for(p, existing, message or '')
-                        message = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                        message = f"{_handoff_text}\n\n{message}"
                     else:
                         resume_flags = ['-r', claude_sid]
                         _log(f"[followup] {project_id}: respawning Mode B with -r {claude_sid[:12]}")
@@ -9145,18 +9567,19 @@ def agent_followup(project_id):
         try:
             followup_msg = message
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    _log(f"[followup-A] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                    _log_agent_activity(project_id,
-                                        f"Auto-fresh: session too large ({size_mb:.0f} MB)")
+                _af_reason, _af_detail = _auto_fresh_trigger(
+                    pp, claude_sid, existing.get('context_tokens'))
+                if _af_reason:
+                    _log(f"[followup-A] Session {claude_sid} rolling to fresh "
+                         f"({_af_reason}={_af_detail})")
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                        existing['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, existing, message or '')
-                    followup_msg = (f"[Continuing from a previous conversation that grew too large "
-                                    f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                    followup_msg = f"{_handoff_text}\n\n{message}"
                     resume_flags = []
                 else:
                     resume_flags = ['-r', claude_sid]
@@ -9416,14 +9839,16 @@ def agent_interrupt(project_id):
             context = None
             respawn_msg = message
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    session['log_lines'].append(
-                        f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                _af_reason, _af_detail = _auto_fresh_trigger(
+                    pp, claude_sid, session.get('context_tokens'))
+                if _af_reason:
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
+                    session['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, session, message or '')
-                    respawn_msg = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                    respawn_msg = f"{_handoff_text}\n\n{message}"
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
@@ -11059,11 +11484,14 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
         _row_spawned = _row_spawned_by(latest, live)
-        # qwen (in `_COLD_RESUMABLE_PROVIDERS`) is cold-resumable exactly like
-        # Codex once we have a captured `provider_session_id` on the latest
-        # turn's log entry — `_revive_non_claude_from_agent_log` uses it the
-        # same way. Everything else (Gemini — MC-929, no transcript store at
-        # all) stays honestly readonly; see reconstruct_dead_session.
+        # Every provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, and
+        # gemini since W4/MC-947) is cold-resumable once we have a captured
+        # `provider_session_id` on the latest turn's log entry —
+        # `_revive_non_claude_from_agent_log` uses it the same way for all
+        # three. Gemini still renders read-only in `reconstruct_dead_session`
+        # (MC-929, no on-disk transcript store to replay prior turns FROM),
+        # but the live process a Resume click spawns genuinely continues the
+        # same conversation server-side.
         _psid = (latest.get('provider_session_id') or '').strip()
         _cold_resumable = provider in _COLD_RESUMABLE_PROVIDERS and bool(_psid)
         rows.append({

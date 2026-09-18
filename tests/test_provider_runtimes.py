@@ -116,6 +116,28 @@ class TestGeminiRuntime:
         assert '--output-format' in cmd
         assert 'stream-json' in cmd
 
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it) — an agent that could not
+        see a pasted image then burned turns on `run_shell_command` trying
+        to inspect the binary file directly instead. `--include-directories`
+        is the CLI's own documented fix; live re-test with the SAME image
+        one level outside the dispatch cwd, plus this flag pointed at its
+        real parent directory, made `read_file` succeed and the model
+        correctly describe the image ("PURPLE ELEPHANT" in purple, matching
+        the actual drawn content, not a guess)."""
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
+
     def test_parse_event_empty(self):
         assert self.rt.parse_event('') is None
         assert self.rt.parse_event('\n') is None
@@ -629,6 +651,11 @@ class TestCodexRuntime:
         assert caps.emits_cost is False
         assert caps.context_injection == 'file'
         assert caps.context_file_name == 'AGENTS.md'
+        # W4/MC-947 (2026-09-18), offline proof (Codex out of allowance):
+        # dispatch() calls with_mc_tool_protocol() and runs through the
+        # SAME shared _mode_a_reader turn-end mc:question scan Qwen uses
+        # (live-verified there) — no Codex-specific divergence in that path.
+        assert caps.supports_ask_user_question is True
 
     def test_health_check_not_installed(self, monkeypatch):
         """When neither binary nor npx is found, installed=False.
@@ -958,6 +985,75 @@ class TestQwenRuntime:
         # at all (the CLI's own --help text) — flags don't persist.
         assert '--chat-recording' in cmd
 
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it). `--include-directories`
+        widens the workspace; live re-test with the SAME image one level
+        outside the dispatch cwd, plus this flag pointed at its parent, made
+        `read_file` succeed and the model correctly describe the image."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
+
+    def test_build_command_with_explicit_mcp_config_allowlists_exactly_it(self):
+        """W4/MC-947, live-verified 2026-09-18 against real qwen-code 0.23.4
+        in this repo (a real .mcp.json declaring filesystem+browser): with
+        `--mcp-config` declaring only "filesystem" and `--allowed-mcp-server-
+        names filesystem`, the live session's `system`/`init` envelope
+        showed `mcp_servers: [{"name":"filesystem","status":"connected"}]`
+        and `mcp__filesystem__*` tools present — "browser" (real, in this
+        repo's own `.mcp.json`, but NOT in the declared set) never loaded.
+        Qwen has no --strict-mcp-config; --allowed-mcp-server-names is what
+        keeps native discovery from leaking anything not explicitly named."""
+        self.rt._bin_cache = 'qwen'
+        mcp_json = json.dumps({'mcpServers': {'filesystem': {'command': 'npx', 'args': []}}})
+        cmd = self.rt.build_command(mcp_config_json=mcp_json)
+        assert '--mcp-config' in cmd
+        idx = cmd.index('--mcp-config')
+        assert cmd[idx + 1] == mcp_json
+        assert '--allowed-mcp-server-names' in cmd
+        aidx = cmd.index('--allowed-mcp-server-names')
+        # Exactly one name — nothing else leaking through from elsewhere.
+        assert cmd[aidx + 1:] == ['filesystem']
+
+    def test_build_command_with_multiple_declared_servers(self):
+        self.rt._bin_cache = 'qwen'
+        mcp_json = json.dumps({'mcpServers': {
+            'zeta': {'command': 'x'}, 'alpha': {'command': 'y'}}})
+        cmd = self.rt.build_command(mcp_config_json=mcp_json)
+        aidx = cmd.index('--allowed-mcp-server-names')
+        # Sorted for determinism, not dict insertion order.
+        assert cmd[aidx + 1:aidx + 3] == ['alpha', 'zeta']
+
+    def test_build_command_with_empty_declared_set_falls_back_to_deny_all(self):
+        """An explicitly empty {"mcpServers": {}} (a project that opted in
+        but selected nothing) must still reach the deny-all sentinel, not an
+        empty --allowed-mcp-server-names (which could mean "no restriction"
+        to the CLI rather than "restrict to nothing")."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(mcp_config_json=json.dumps({'mcpServers': {}}))
+        assert '--mcp-config' in cmd
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
+
+    def test_build_command_with_malformed_mcp_json_fails_closed(self):
+        """Malformed input must never fall through to native discovery —
+        same deny-all contract as no config at all."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(mcp_config_json='not valid json{{{')
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
+
     def test_no_fixed_model_catalog(self):
         """Can't verify Alibaba Coding/Token-Plan model ids against a live
         call on this box (no DashScope credential) — empty catalog falls back
@@ -971,13 +1067,18 @@ class TestQwenRuntime:
 
         def _fake_mode_a_dispatch(*args, **kwargs):
             captured['kwargs'] = kwargs
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json` onto `handle.session_dict` after this call
+            # returns (W4/MC-947), so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id='sid', provider='qwen', mode='A',
+                project_path='/p', project_id='', session_dict={})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         self.rt._bin_cache = 'qwen'
         result = self.rt.dispatch(project_path='/p', task='do X',
                                   system_prompt='MEMORY STUFF', session_dict={})
-        assert result == 'HANDLE'
+        assert result.mc_session_id == 'sid'
         stashed = captured['kwargs']['system_prompt']
         assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in stashed
         assert 'MEMORY STUFF' in stashed
@@ -988,7 +1089,9 @@ class TestQwenRuntime:
         def _fake(runtime, cmd, full_prompt, project_path, project_id, task,
                  mc_sid, session_dict, incognito, env_extra, *rest, **kw):
             captured['env_extra'] = env_extra
-            return 'HANDLE'
+            return agent_runtime.SessionHandle(
+                mc_session_id='sid', provider='qwen', mode='A',
+                project_path='/p', project_id='', session_dict={})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake)
         self.rt._bin_cache = 'qwen'
@@ -1222,7 +1325,11 @@ class TestQwenRuntime:
         assert caps.supports_mode_a is True
         assert caps.supports_mode_b is False
         assert caps.supports_session_resume is True
-        assert caps.supports_mcp is False
+        # W4/MC-947 (2026-09-18): dispatch()/build_command() now accept
+        # mcp_config_json and declare exactly that set via --mcp-config +
+        # --allowed-mcp-server-names — genuinely True, not the old
+        # deny-everything-only behavior. See TestQwenMcpConfigInjection.
+        assert caps.supports_mcp is True
         assert caps.oneshot_supported is True
 
     def test_explain_exit_error_known_libuv_crash(self):

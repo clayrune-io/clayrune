@@ -77,3 +77,41 @@ def test_second_boot_is_idempotent(tmp_path):
 
     after = {p: p.read_text(encoding='utf-8') for p in written}
     assert before == after
+
+
+def test_no_override_scopes_to_mc_data_dir_when_set(tmp_path, monkeypatch):
+    """Regression, found 2026-09-18: a second server.py running with its own
+    MC_DATA_DIR (the isolation knob tests/conftest.py's `tmp_data_dir`
+    fixture actually sets, and what a manually spun-up second instance uses)
+    used to regenerate the REAL ~/.clayrune/hooks/*.json on boot — the call
+    site passes NO override (see test_production_call_site_passes_no_home_override
+    above), so the function fell back to the real home every time regardless
+    of which data dir this instance owned. Once, that pointed a LIVE server's
+    guard at a temp dir that was later deleted, which would have blocked
+    every agent's shell command.
+
+    `Path.home()` is monkeypatched to a throwaway dir (never the operator's
+    real home) so this test is safe to run against either the buggy or fixed
+    code: pre-fix, the write lands under the FAKE home instead of the scoped
+    MC_DATA_DIR; post-fix it lands under the scoped dir. Neither case can
+    touch this machine's actual ~/.clayrune.
+    """
+    import server
+    from mc import guardrail_hooks as gh
+
+    fake_home = tmp_path / 'fake_home'
+    monkeypatch.setattr(gh.Path, 'home', staticmethod(lambda: fake_home))
+
+    scoped_data_dir = tmp_path / 'mc_data'
+    monkeypatch.setenv('MC_DATA_DIR', str(scoped_data_dir))
+    monkeypatch.setattr(server, '_DATA_ROOT', scoped_data_dir)
+
+    server._install_guardrail_hooks_on_boot()  # bare call — exactly what boot() does
+
+    fake_home_hooks = fake_home / '.clayrune' / 'hooks'
+    scoped_hooks = scoped_data_dir / '.clayrune' / 'hooks'
+
+    assert not fake_home_hooks.exists(), (
+        'must not fall back to the (fake) home dir while MC_DATA_DIR is set')
+    written = list(scoped_hooks.rglob('*.json')) if scoped_hooks.is_dir() else []
+    assert written, 'expected the hooks to be generated under the scoped MC_DATA_DIR instead'

@@ -182,6 +182,13 @@ def _load_config():
         'keep_awake_poll_s': 20,
         'long_session_advisory_enabled': False,  # soft "restart long Mode-B session" nudge
         'long_session_advisory_turns': 25,      # num_turns threshold for that nudge
+        # Token-based auto-fresh (docs/CONTEXT_ECONOMY_SPEC.md §2) — a live
+        # session's last-recorded per-turn context_tokens (mc.agent_runtime.
+        # normalize_context_tokens) crossing this rolls it to a fresh session
+        # automatically, no prompt (Ron, 2026-09-18). 0 disables. The existing
+        # 5 MB _SESSION_SIZE_LIMIT byte check stays as an independent backstop
+        # -- either trigger can fire a rollover.
+        'context_rollover_tokens': 200000,
         # Idle-session eviction — reclaim a warm Mode B fleet (claude.exe + its
         # MCP servers) after long inactivity; the next message transparently
         # respawns it with `-r <csid>` (full context preserved). Default OFF;
@@ -3116,7 +3123,24 @@ def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> No
     vendor's generation failure (e.g. a malformed real ~/.codex/hooks.json
     for the codex merge) must not block boot; `generate_for_boot` already
     isolates that per vendor, this is a second layer for the loader itself.
+
+    INSTANCE ISOLATION (added 2026-09-18): when `clayrune_home` is left at
+    its default (None) AND `MC_DATA_DIR` is set, this resolves to
+    `<MC_DATA_DIR>/.clayrune` instead of the real `~/.clayrune`. A second
+    server.py pointed at its own MC_DATA_DIR (exactly what
+    tests/conftest.py's `tmp_data_dir` fixture does, and what a manually
+    spun-up second instance does) used to regenerate the REAL
+    `~/.clayrune/hooks/{claude,gemini,qwen}-settings.json` on every boot —
+    once, that clobbered the LIVE server's guard with a path pointed at a
+    temp dir that was later deleted, which would have blocked every agent's
+    shell command. The one production call site (`boot()`, see
+    tests/test_guardrail_hooks_boot.py) still passes no override at all —
+    resolving that default here, rather than at the call site, keeps that
+    site a bare-name call (never silently redirectable) while still scoping
+    a test/second instance to its own data dir.
     """
+    if clayrune_home is None and os.environ.get('MC_DATA_DIR'):
+        clayrune_home = _DATA_ROOT / '.clayrune'
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
