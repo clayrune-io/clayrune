@@ -798,6 +798,35 @@ def test_parse_event_rate_limit():
     assert p.get('is_using_overage') is False
 
 
+def test_parse_event_rate_limit_rejected_status_is_allowance_exhausted():
+    """VENDOR_AGNOSTIC_PROGRAM.md §4: a rejected/exceeded status is a normalized
+    ALLOWANCE_EXHAUSTED event, not the ordinary RATE_LIMIT shape above — a
+    dispatch-time refusal needs to tell the two apart. `resetsAt` here is a
+    real field-shape (unix epoch seconds), matching this box's own live
+    data/system_status.json capture (2026-09-18T06:26); the 'rejected' status
+    itself is Anthropic's documented value, not a live-captured exhausted
+    sample — see mc/allowance_state.py's docstring for that distinction.
+    """
+    from mc.agent_runtime import ClaudeRuntime, EventType
+    rt = ClaudeRuntime()
+    line = json.dumps({
+        'type': 'rate_limit_event',
+        'rate_limit_info': {
+            'status': 'rejected',
+            'resetsAt': 1789714800,
+            'rateLimitType': 'five_hour',
+            'overageStatus': 'rejected',
+            'isUsingOverage': False,
+        }
+    })
+    ev = rt.parse_event(line)
+    assert ev is not None
+    assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+    assert ev.payload['limit_kind'] == 'five_hour'
+    assert ev.payload['verified'] is False
+    assert ev.payload['resets_at'].startswith('2026-09-18')
+
+
 def test_parse_event_user_message():
     from mc.agent_runtime import ClaudeRuntime, EventType
     rt = ClaudeRuntime()

@@ -31,6 +31,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Dict, Optional
 
+from mc.atomic_json import write_json_atomic
 from mc.core import _log
 
 # Wired by server.py at startup, same pattern as
@@ -78,7 +79,7 @@ def _save() -> None:
         if not STATE_PATH:
             return
         STATE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        STATE_PATH.write_text(json.dumps(_STATE, indent=2), encoding='utf-8')
+        write_json_atomic(STATE_PATH, _STATE, indent=2)
     except Exception as e:
         _log(f"[allowance] failed to persist state: {e}")
 

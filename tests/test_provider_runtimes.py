@@ -149,13 +149,19 @@ class TestGeminiRuntime:
 
     def test_parse_event_result_error_surfaces_message(self):
         # MC-931: a `result` event with status=="error" carries the CLI's
-        # real reason (quota, auth, ...) in error.message. Before this fix
+        # real reason (quota, auth, ...) in error.message. Before that fix
         # it matched the generic 'result' branch and returned TURN_END with
         # only usage/cost — the error text was read by nothing and reached
         # neither the transcript nor explain_exit_error's tail scan, so a
         # real API error (e.g. "You have exhausted your daily quota on this
         # model.") was silently dropped and the user saw a generic
         # "exited with code 1" instead.
+        #
+        # VENDOR_AGNOSTIC_PROGRAM.md §4 (this real MC-931 text is quota, not
+        # a generic error): the event now classifies as ALLOWANCE_EXHAUSTED,
+        # one step further than MC-931's own fix — a dispatch call site can
+        # tell "out of allowance" apart from "auth/network failure" the same
+        # way for every vendor.
         line = json.dumps({
             'type': 'result', 'status': 'error',
             'error': {'type': 'Error',
@@ -164,8 +170,9 @@ class TestGeminiRuntime:
         })
         ev = self.rt.parse_event(line)
         assert ev is not None
-        assert ev.type == EventType.ERROR
-        assert 'exhausted your daily quota' in ev.payload['text']
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['verified'] is False
+        assert 'exhausted your daily quota' in ev.payload['raw_ref']
 
     def test_capabilities_mcp(self):
         assert self.rt.capabilities().supports_mcp is True
@@ -201,6 +208,18 @@ class TestGeminiRuntime:
         hint = self.rt.explain_exit_error(41, "")
         assert hint is not None
         assert "Common causes" in hint
+
+    def test_parse_event_non_quota_error_stays_generic_error(self):
+        """Contrast case for test_parse_event_result_error_surfaces_message
+        above: only quota-shaped text reclassifies as ALLOWANCE_EXHAUSTED."""
+        from mc.agent_runtime import EventType
+        line = json.dumps({
+            'type': 'result', 'status': 'error',
+            'error': {'message': 'network unreachable'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ERROR
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -830,6 +849,62 @@ class TestCodexRuntime:
         assert msg.get('type') == 'thread.started', f'Expected thread.started, got: {msg}'
         assert 'thread_id' in msg, f'Expected thread_id in: {msg}'
 
+    # ── Allowance exhaustion (VENDOR_AGNOSTIC_PROGRAM.md §4) ────────────────
+    # CODEX_REAL_USAGE_LIMIT_EVENT is the REAL line captured 2026-09-18 from
+    # ~/.codex/sessions/2026/09/17/rollout-2026-09-17T22-19-23-01a0b2f4-*.jsonl
+    # (ordinal 82) — not an invented fixture.
+
+    CODEX_REAL_USAGE_LIMIT_EVENT = (
+        '{"timestamp":"2026-09-18T05:21:28.415Z","ordinal":82,"type":"event_msg",'
+        '"payload":{"type":"task_complete","turn_id":"01a0b2f4-81a1-7202-87ed-'
+        '35b5637c0e4c","last_agent_message":null,"error":{"message":"You\'ve hit '
+        'your usage limit. Visit https://chatgpt.com/codex/settings/usage to '
+        'purchase more credits or try again at Sep 24th, 2026 7:58 AM.",'
+        '"codex_error_info":"usage_limit_exceeded"},"started_at":1789708763,'
+        '"completed_at":1789708888,"duration_ms":124861,'
+        '"time_to_first_token_ms":5276}}'
+    )
+
+    def test_parse_event_real_captured_usage_limit_is_allowance_exhausted(self):
+        from mc.agent_runtime import EventType
+        ev = self.rt.parse_event(self.CODEX_REAL_USAGE_LIMIT_EVENT)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['limit_kind'] == 'usage_limit'
+        assert ev.payload['verified'] is True
+        assert ev.payload['resets_at_display'] == 'Sep 24th, 2026 7:58 AM'
+
+    def test_parse_event_usage_limit_dotted_error_shape_also_recognized(self):
+        """`codex exec --json`'s translated error/turn.failed shape, in case a
+        session-level failure is ever surfaced that way instead of as the
+        rollout's native event_msg/task_complete (unconfirmed either way
+        without spending Codex allowance — both shapes are handled)."""
+        from mc.agent_runtime import EventType
+        line = json.dumps({
+            'type': 'error',
+            'error': {'message': "try again at Sep 24th, 2026 7:58 AM.",
+                      'codex_error_info': 'usage_limit_exceeded'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+
+    def test_explain_exit_error_usage_limit_not_misread_as_auth_error(self):
+        """Regression: this exact text was live-misclassified 2026-09-18
+        05:21:29 in data/logs/clayrune.log as "Codex isn't authenticated" —
+        one second after the real usage_limit_exceeded event above — because
+        the real message contains "chatgpt" (in the settings URL) and the
+        auth-hint check used to run before the quota check. The structured
+        parse_event branch above now intercepts this before it ever reaches
+        free text, but explain_exit_error is fixed too as the fallback net."""
+        tail = ("[codex error] You've hit your usage limit. Visit "
+                "https://chatgpt.com/codex/settings/usage to purchase more "
+                "credits or try again at Sep 24th, 2026 7:58 AM.")
+        hint = self.rt.explain_exit_error(1, tail)
+        assert hint is not None
+        assert "isn't authenticated" not in hint
+        assert "allowance" in hint.lower()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # QwenRuntime — qwen-code CLI, a gemini-cli fork whose --output-format
@@ -1007,6 +1082,20 @@ class TestQwenRuntime:
         assert ev is not None
         assert ev.type == EventType.ERROR
         assert 'not found' in ev.payload['text']
+
+    def test_parse_event_quota_error_is_allowance_exhausted(self):
+        """VENDOR_AGNOSTIC_PROGRAM.md §4 — no real captured Qwen exhaustion
+        sample exists on this box; this is the same text-heuristic
+        agent_routes.py's own quota-log scraper already uses, explicitly
+        unverified (mc.allowance_state._generic_text_exhaustion)."""
+        line = json.dumps({
+            'type': 'result', 'is_error': True,
+            'error': {'message': '429 Resource has been exhausted (rate limit)'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['verified'] is False
 
     def test_parse_event_non_json_fallback(self):
         """The 'Warning: running headless...' banner (when the suppression
