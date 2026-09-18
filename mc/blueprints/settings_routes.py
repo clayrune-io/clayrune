@@ -140,6 +140,7 @@ _CONFIG_EDITABLE_KEYS = {
     # end — no respawn needed.
     'artifact_coverage_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
+    'context_rollover_tokens',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle
     # rendered OFF and silently failed to save (found 2026-07-16).

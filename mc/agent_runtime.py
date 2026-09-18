@@ -4013,6 +4013,9 @@ class GeminiRuntime(AgentRuntime):
                     _usage = ev.payload.get('usage')
                     if isinstance(_usage, dict):
                         session['usage'] = _usage
+                        _ctx = normalize_context_tokens(_usage)
+                        if _ctx is not None:
+                            session['context_tokens'] = _ctx
                     _allowance_state.clear_exhaustion('gemini')
                     _cb('on_turn_end', ev)
                 elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
@@ -4407,6 +4410,40 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     return handle
 
 
+def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort, vendor-agnostic size of what ONE turn re-read/held as
+    context — the signal `context_rollover_tokens` (docs/CONTEXT_ECONOMY_SPEC.md
+    §1/§2) triggers on. The ONE place per-turn usage dicts get reconciled into
+    a single number, so no call site needs its own per-vendor knowledge.
+
+    Claude's own formula (input_tokens + cache_read_input_tokens +
+    cache_creation_input_tokens) is tried first — cache fields are simply
+    absent (treated as 0) on providers with no prompt cache, so this also
+    correctly resolves to plain `input_tokens` for Gemini's
+    `{total_tokens, input_tokens, output_tokens}` shape (agent_runtime.py:4017,
+    "Gemini has no prompt cache") without a vendor branch. Falls back to
+    `total_tokens`/`prompt_tokens` only when that sum is 0 (fields absent
+    entirely, e.g. Qwen/Codex — shapes unverified as of 2026-09-18, see
+    CONTEXT_ECONOMY_SPEC.md §4 "Unverified this pass").
+
+    Returns None (never 0) when nothing usable is found — 'unknown stays
+    unknown' (VENDOR_AGNOSTIC_PROGRAM.md §4) so the caller falls back to the
+    byte-based backstop instead of a fabricated zero that would never trigger.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    total = (int(usage.get('input_tokens') or 0)
+             + int(usage.get('cache_read_input_tokens') or 0)
+             + int(usage.get('cache_creation_input_tokens') or 0))
+    if total > 0:
+        return total
+    for key in ('total_tokens', 'prompt_tokens'):
+        v = usage.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
 def accumulate_result_cost(session, msg, proc_cost):
     """Add one turn's spend, from a `result`-style dict, to session['cost_usd'].
 
@@ -4688,6 +4725,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
+                    _ctx = normalize_context_tokens(_usage)
+                    if _ctx is not None:
+                        session['context_tokens'] = _ctx
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
                 _allowance_state.clear_exhaustion(runtime.name)

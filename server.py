@@ -182,6 +182,13 @@ def _load_config():
         'keep_awake_poll_s': 20,
         'long_session_advisory_enabled': False,  # soft "restart long Mode-B session" nudge
         'long_session_advisory_turns': 25,      # num_turns threshold for that nudge
+        # Token-based auto-fresh (docs/CONTEXT_ECONOMY_SPEC.md §2) — a live
+        # session's last-recorded per-turn context_tokens (mc.agent_runtime.
+        # normalize_context_tokens) crossing this rolls it to a fresh session
+        # automatically, no prompt (Ron, 2026-09-18). 0 disables. The existing
+        # 5 MB _SESSION_SIZE_LIMIT byte check stays as an independent backstop
+        # -- either trigger can fire a rollover.
+        'context_rollover_tokens': 200000,
         # Idle-session eviction — reclaim a warm Mode B fleet (claude.exe + its
         # MCP servers) after long inactivity; the next message transparently
         # respawns it with `-r <csid>` (full context preserved). Default OFF;
