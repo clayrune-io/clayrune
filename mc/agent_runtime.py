@@ -5492,11 +5492,21 @@ class QwenRuntime(AgentRuntime):
     # Run aborted: tool-call budget of 0 exceeded; observed 1` (exit 55)
     # rather than executing it. A normal transform prompt with no reason to
     # call a tool completed cleanly with `stats.tools.totalCalls: 0` and the
-    # real answer text. `--bare` (already load-bearing for dispatch, see
-    # class docstring) plus an explicit empty `--mcp-config` keep this box's
-    # real `.mcp.json`/`.claude` catalog and MCP servers from loading at all;
-    # `-e none` drops extensions; `--core-tools ''` stays as best-effort
-    # surface reduction even though it isn't the enforcement boundary.
+    # real answer text.
+    #
+    # `--bare` here is DELIBERATELY DIFFERENT from build_command()'s dispatch
+    # path: W2 [Astra r1] dropped `--bare` from dispatch because it also
+    # zeroes hooks/userHooks (`disableAllHooks`), which broke guardrail
+    # parity for a session that legitimately calls tools. A tool-free
+    # transform has no legitimate tool call to guard -- `--max-tool-calls 0`
+    # is the enforcement boundary regardless of what hooks would have done --
+    # so `--bare` staying on here is a strictly SAFER posture for this
+    # profile, not a stale carry-over: it also closes the native QWEN.md/
+    # skill/subagent catalog channel W2's docstring flags as still open on
+    # the dispatch path. Explicit empty `--mcp-config` is defense-in-depth
+    # alongside it; `-e none` drops extensions; `--core-tools ''` stays as
+    # best-effort surface reduction even though it isn't the enforcement
+    # boundary.
     TRANSFORM_EVIDENCE_ID = 'qwen-0.23.4-max-tool-calls-probe-2026-09-18'
     TRANSFORM_ISOLATION: Tuple[str, ...] = (
         '--bare', '--mcp-config', '{"mcpServers":{}}',
