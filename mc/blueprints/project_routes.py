@@ -43,6 +43,8 @@ from typing import Any, Callable
 
 from flask import Blueprint, abort, jsonify, request, send_file
 
+import mc.agent_runtime as _agent_runtime
+from mc import engine_selection
 from mc import state
 from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
@@ -669,7 +671,47 @@ def generate_project_summary(project_id):
         'Example: {"emoji":"\u26bd","summary":"Tracks soccer match results and ranks teams across league tables."}'
     )
 
-    model = state.CONFIG.get('condense_model', '') or 'haiku'
+    # Profile generation follows the project's selected provider.  Keep the
+    # historical Claude envelope path below, while non-Claude providers use
+    # the runtime text-transform seam and never receive a Claude model ID.
+    resolved = engine_selection.resolve_engine(
+        state.CONFIG, p,
+        provider_override=body.get('provider') or '',
+        model_override=body.get('model') if 'model' in body else None,
+        legacy_default='claude',
+    )
+    if resolved.provider != 'claude':
+        try:
+            raw = _agent_runtime.run_text_transform(
+                resolved.provider, prompt=prompt, model=resolved.model,
+                effort=str(body.get('effort') or '').strip(),
+                cwd=p.get('project_path') or str(Path.home()),
+            ).strip()
+            if raw.startswith('```'):
+                lines = raw.splitlines()
+                if lines and lines[0].startswith('```'):
+                    lines = lines[1:]
+                if lines and lines[-1].strip() == '```':
+                    lines = lines[:-1]
+                raw = '\n'.join(lines).strip()
+            data = json.loads(raw)
+        except (json.JSONDecodeError, TypeError, ValueError) as e:
+            return jsonify({'error': f'could not parse model output: {e}'}), 500
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        emoji = (data.get('emoji') or '').strip()
+        summary = (data.get('summary') or '').strip()
+        if emoji and (overwrite_emoji or not p.get('emoji')):
+            p['emoji'] = emoji
+        if summary:
+            p['summary'] = summary
+        p['last_updated'] = now_iso()
+        save_project(project_id, p)
+        return jsonify({'ok': True, 'emoji': p.get('emoji', ''),
+                        'summary': p.get('summary', '')})
+
+    model = (resolved.model if 'model' in body
+             else (state.CONFIG.get('condense_model', '') or resolved.model))
     cmd = [_resolve_claude(), '-p', prompt, '--model', model, '--output-format', 'json',
            '--dangerously-skip-permissions']
 

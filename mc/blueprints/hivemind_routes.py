@@ -46,7 +46,7 @@ from flask import Blueprint, Response, jsonify, request
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
-from mc import obs, state
+from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
 from mc.core import _log, now_iso, time_ago
 from mc.state import (
@@ -505,6 +505,10 @@ def hivemind_create():
     hivemind_id = 'hm_' + str(uuid.uuid4())[:8]
     _hm_ensure_dirs(hivemind_id)
 
+    inherited_provider = (p.get('provider') or
+                          state.CONFIG.get('default_provider') or 'claude')
+    orch_provider = data.get('orchestrator_provider') or inherited_provider
+    worker_provider = data.get('worker_provider') or inherited_provider
     manifest = {
         'id': hivemind_id,
         'project_id': project_id,
@@ -519,8 +523,17 @@ def hivemind_create():
             'auto_synthesize': data.get('auto_synthesize', True),
             'synthesize_interval_turns': data.get('synthesize_interval_turns', 10),
             'require_user_approval_for_decisions': data.get('require_user_approval', False),
-            'orchestrator_model': data.get('orchestrator_model', 'sonnet'),
-            'worker_model': data.get('worker_model', 'sonnet'),
+            # Claude's historical tier aliases remain the default only for a
+            # Claude project.  Other providers inherit their native model;
+            # carrying "sonnet" across would be a foreign-model mismatch.
+            'orchestrator_provider': data.get('orchestrator_provider', ''),
+            'orchestrator_model': data.get(
+                'orchestrator_model', 'sonnet' if orch_provider == 'claude' else ''),
+            'orchestrator_effort': data.get('orchestrator_effort', ''),
+            'worker_provider': data.get('worker_provider', ''),
+            'worker_model': data.get(
+                'worker_model', 'sonnet' if worker_provider == 'claude' else ''),
+            'worker_effort': data.get('worker_effort', ''),
             'max_retries_per_workstream': data.get('max_retries', 2),
         },
     }
@@ -550,7 +563,9 @@ def hivemind_create():
                 'status': 'pending',
                 'dependencies': ws_in.get('dependencies') or [],
                 'priority': ws_in.get('priority', 5),
+                'provider': ws_in.get('provider', ''),
                 'model': ws_in.get('model', ''),
+                'effort': ws_in.get('effort', ''),
                 'created_at': now_iso(),
                 'completed_at': None,
                 'findings_count': 0,
@@ -727,7 +742,9 @@ def hivemind_workstream_create(hivemind_id):
         'status': 'pending',
         'dependencies': data.get('dependencies', []),
         'priority': data.get('priority', 5),
+        'provider': data.get('provider', ''),
         'model': data.get('model', ''),
+        'effort': data.get('effort', ''),
         'created_at': now_iso(),
         'completed_at': None,
         'findings_count': 0,
@@ -757,7 +774,8 @@ def hivemind_workstream_update(hivemind_id, ws_id):
     if not ws:
         return jsonify({'error': 'workstream not found'}), 404
     data = request.get_json() or {}
-    for key in ('title', 'description', 'dependencies', 'priority', 'model', 'status'):
+    for key in ('title', 'description', 'dependencies', 'priority',
+                'provider', 'model', 'effort', 'status'):
         if key in data:
             ws[key] = data[key]
     if data.get('status') == 'completed' and not ws.get('completed_at'):
@@ -948,9 +966,13 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     from mc import engine_selection
     engine = engine_selection.resolve_engine(
         state.CONFIG, p, legacy_default='claude',
+        provider_override=(ws.get('provider') or
+                           manifest.get('config', {}).get('worker_provider') or ''),
         model_override=(ws.get('model') or
                         manifest.get('config', {}).get('worker_model') or None))
     model = engine.model
+    effort = (ws.get('effort') or
+              manifest.get('config', {}).get('worker_effort') or '')
     task = (
         f"You are a Hivemind worker for workstream: {ws.get('title', ws_id)}.\n"
         f"Brief: {ws.get('description', '')}\n\n"
@@ -958,6 +980,8 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     )
     session_id = f'hm_{uuid.uuid4().hex[:8]}'
     provider_name = engine.provider
+    max_turns = (manifest.get('config', {}).get('worker_max_turns', 0) or
+                 state.CONFIG.get('agent_max_turns', 0))
 
     if provider_name != 'claude':
         # Non-claude: route through the runtime. Worker context prepended to
@@ -983,6 +1007,9 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
                 'trigger_type': 'hivemind_worker',
                 'trigger_id': ws_id,
                 'provider': provider_name,
+                'model': model,
+                'effort': effort,
+                'requested_effort': effort,
                 'process_alive': True,
                 'last_output_time': _time.time(),
                 'last_status_change_time': _time.time(),
@@ -1004,6 +1031,8 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
                 system_prompt='',
                 mode='A',
                 model=model,
+                effort=effort,
+                max_turns=(int(max_turns) if max_turns and int(max_turns) > 0 else None),
                 mc_session_id=session_id,
                 session_dict=pre_session,
                 project_id=project_id,
@@ -1012,8 +1041,6 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
             return session_id
 
     # Claude path (byte-identical) — _resolve_claude() delegates to ClaudeRuntime.
-    max_turns = (manifest.get('config', {}).get('worker_max_turns', 0) or
-                 state.CONFIG.get('agent_max_turns', 0))
     _sp_args, _sp_path = _sysprompt_file_args(worker_context)
     cmd = [_resolve_claude(), '-p', task, '--print', '--verbose',
            '--output-format', 'stream-json',
@@ -1021,6 +1048,8 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
            *_sp_args]
     if model:
         cmd.extend(['--model', model])
+    if effort:
+        cmd.extend(['--effort', str(effort)])
     if max_turns and int(max_turns) > 0:
         cmd.extend(['--max-turns', str(int(max_turns))])
 
@@ -1055,6 +1084,10 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         'hivemind_ws_id': ws_id,
         'trigger_type': 'hivemind_worker',
         'trigger_id': ws_id,
+        'provider': provider_name,
+        'model': model,
+        'effort': effort,
+        'requested_effort': effort,
     }
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
@@ -1256,12 +1289,85 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
         f"{task_prompt}"
     )
 
-    model = manifest.get('config', {}).get('orchestrator_model', '') or 'sonnet'
-    cmd = [_resolve_claude(), '-p', prompt, '--model', model, '--max-turns', '5',
-           '--print', '--verbose', '--output-format', 'stream-json',
-           '--dangerously-skip-permissions']
+    config = manifest.get('config', {}) or {}
+    engine = engine_selection.resolve_engine(
+        state.CONFIG, p,
+        provider_override=config.get('orchestrator_provider') or '',
+        model_override=(config.get('orchestrator_model')
+                        if 'orchestrator_model' in config else None),
+        legacy_default='claude',
+    )
+    model = engine.model
+    effort = str(config.get('orchestrator_effort') or '').strip()
 
     session_id = f'hm_orch_{uuid.uuid4().hex[:8]}'
+
+    def _orchestrator_done():
+        _hm_push_sse(hivemind_id, {
+            'type': 'hivemind_message',
+            'hivemind_id': hivemind_id,
+            'message': {
+                'id': 'msg_' + str(uuid.uuid4())[:8],
+                'timestamp': now_iso(),
+                'from': 'orchestrator',
+                'to': 'all',
+                'type': 'status_update',
+                'content': f'Orchestrator {task_type} completed',
+            },
+        })
+
+    if engine.provider != 'claude':
+        def _run_runtime():
+            try:
+                rt = _agent_runtime.get_runtime(engine.provider)
+                pre_session = {
+                    'status': 'running', 'task': f'Hivemind orchestrator: {task_type}',
+                    'log_lines': [], 'started_at': now_iso(),
+                    'session_id': session_id, 'project_id': project_id, 'mode': 'A',
+                    'housekeeping': True, 'hivemind_id': hivemind_id,
+                    'hivemind_role': 'orchestrator',
+                    'trigger_type': 'hivemind_orchestrator', 'trigger_id': hivemind_id,
+                    'provider': engine.provider, 'model': model, 'effort': effort,
+                    'requested_effort': effort,
+                    'process_alive': True, 'last_output_time': _time.time(),
+                    'last_status_change_time': _time.time(), '_dispatch_time': _time.time(),
+                }
+                mgr = get_manager(project_id)
+                mgr.ensure_guardian()
+                with mgr.lock:
+                    agent_sessions[session_id] = pre_session
+                    mgr.session_ids.add(session_id)
+
+                def _on_exit(*_args, **_kwargs):
+                    _orchestrator_done()
+                    with _hivemind_orch_lock:
+                        _hivemind_orchestrating.discard(hivemind_id)
+
+                rt.dispatch(
+                    project_path=pp, task=prompt, system_prompt='', mode='A',
+                    model=model, effort=effort, mc_session_id=session_id,
+                    max_turns=5,
+                    session_dict=pre_session, project_id=project_id,
+                    housekeeping=True,
+                    trigger_type='hivemind_orchestrator',
+                    register_process=_register_process,
+                    callbacks={'on_process_exit': _on_exit},
+                )
+            except Exception as e:
+                _log(f"[hivemind-orchestrator-runtime] error: {e}")
+                with _hivemind_orch_lock:
+                    _hivemind_orchestrating.discard(hivemind_id)
+
+        threading.Thread(target=_run_runtime, daemon=True).start()
+        return session_id
+
+    cmd = [_resolve_claude(), '-p', prompt, '--max-turns', '5',
+           '--print', '--verbose', '--output-format', 'stream-json',
+           '--dangerously-skip-permissions']
+    if model:
+        cmd.extend(['--model', model])
+    if effort:
+        cmd.extend(['--effort', effort])
 
     def _run():
         try:
@@ -1295,6 +1401,10 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
                 'hivemind_role': 'orchestrator',
                 'trigger_type': 'hivemind_orchestrator',
                 'trigger_id': hivemind_id,
+                'provider': engine.provider,
+                'model': model,
+                'effort': effort,
+                'requested_effort': effort,
             }
             mgr = get_manager(project_id)
             mgr.ensure_guardian()
@@ -1305,18 +1415,7 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
             _read_agent_stream(proc, session)
 
             # After orchestrator finishes, push SSE update
-            _hm_push_sse(hivemind_id, {
-                'type': 'hivemind_message',
-                'hivemind_id': hivemind_id,
-                'message': {
-                    'id': 'msg_' + str(uuid.uuid4())[:8],
-                    'timestamp': now_iso(),
-                    'from': 'orchestrator',
-                    'to': 'all',
-                    'type': 'status_update',
-                    'content': f'Orchestrator {task_type} completed',
-                },
-            })
+            _orchestrator_done()
 
         except Exception as e:
             _log(f"[hivemind-orchestrator-cli] error: {e}")

@@ -35,7 +35,9 @@ from typing import Any, Callable
 from flask import Blueprint, Response, jsonify, request
 
 import mc.skills as _skills
+import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars_mod
+from mc import engine_selection
 from mc import memory_fts as _mem_fts
 from mc import state
 from mc.core import now_iso, _log
@@ -51,6 +53,35 @@ _resolve_claude: Callable[[], str] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
 _SERVER_DIR: Path = None  # type: ignore[assignment]
+
+
+def _guide_engine(data, project_id=None):
+    """Resolve the guide/workshop engine without embedding Claude tiers."""
+    project = load_project(project_id) if project_id else None
+    model_override = data.get('model') if 'model' in data else None
+    resolved = engine_selection.resolve_engine(
+        state.CONFIG, project,
+        provider_override=data.get('provider') or '',
+        model_override=model_override,
+        legacy_default='claude',
+    )
+    return resolved, str(data.get('effort') or '').strip()
+
+
+def _guide_runtime_answer(resolved, effort, prompt, cwd):
+    context_path = Path(cwd) / 'CLAUDE.md'
+    try:
+        system_prompt = context_path.read_text(encoding='utf-8') if context_path.exists() else ''
+    except OSError:
+        system_prompt = ''
+    return _agent_runtime.run_text_transform(
+        resolved.provider,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        model=resolved.model,
+        effort=effort,
+        cwd=cwd,
+    )
 
 
 def wire(*, load_project_fn, save_project_fn, data_dir, memory_search_fn,
@@ -359,6 +390,8 @@ def guide_stream():
     if len(full_question) > cap:
         full_question = full_question[-cap:]
 
+    resolved, effort = _guide_engine(data, project_id)
+
     # Send the question via stdin (JSONL stream-json input) instead of via
     # `-p <full_question>`. On Windows, claude.cmd is invoked through cmd.exe
     # which has an 8191-char command-line limit (much smaller than
@@ -377,6 +410,10 @@ def guide_stream():
            '--input-format', 'stream-json',
            '--output-format', 'stream-json',
            *_CLAYDO_NO_TOOLS_FLAGS]
+    if resolved.model:
+        cmd.extend(['--model', resolved.model])
+    if effort:
+        cmd.extend(['--effort', effort])
     stdin_msg = json.dumps({
         'type': 'user',
         'message': {'role': 'user', 'content': full_question},
@@ -384,6 +421,24 @@ def guide_stream():
 
     def sse(payload):
         return f'data: {json.dumps(payload)}\n\n'
+
+    if resolved.provider != 'claude':
+        # Non-Claude runtimes expose a safe oneshot boundary rather than a
+        # provider-specific stream-json parser. Emit one delta plus the same
+        # terminal event so the existing Claydo UI remains unchanged.
+        def generate_runtime():
+            try:
+                answer = _guide_runtime_answer(resolved, effort, full_question, cwd).strip()
+                if answer:
+                    yield sse({'type': 'delta', 'text': answer})
+                yield sse({'type': 'done', 'answer': answer})
+            except Exception as e:
+                yield sse({'type': 'error', 'message': str(e)[:2000]})
+
+        return Response(generate_runtime(), mimetype='text/event-stream', headers={
+            'Cache-Control': 'no-cache',
+            'X-Accel-Buffering': 'no',
+        })
 
     def generate():
         proc = None
@@ -535,6 +590,14 @@ def guide_ask():
     if len(full_question) > 8000:
         full_question = full_question[-8000:]
 
+    resolved, effort = _guide_engine(data, data.get('project_id'))
+    if resolved.provider != 'claude':
+        try:
+            answer = _guide_runtime_answer(resolved, effort, full_question, cwd)
+        except Exception as e:
+            return jsonify({'error': str(e)}), 500
+        return jsonify({'answer': answer.strip()})
+
     # See /api/guide/stream — Windows' cmd.exe wrapper around claude.cmd is
     # capped at 8191 chars, so an 8 KB question pushed via -p triggers
     # "command line too long". Send it through stdin (stream-json) instead.
@@ -545,6 +608,10 @@ def guide_ask():
            '--input-format', 'stream-json',
            '--output-format', 'stream-json',
            *_CLAYDO_NO_TOOLS_FLAGS]
+    if resolved.model:
+        cmd.extend(['--model', resolved.model])
+    if effort:
+        cmd.extend(['--effort', effort])
     stdin_msg = json.dumps({
         'type': 'user',
         'message': {'role': 'user', 'content': full_question},

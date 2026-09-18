@@ -19,6 +19,7 @@ See docs/MULTI_PROVIDER_DESIGN.md for the full architectural design.
 from __future__ import annotations
 
 import json
+import inspect
 import os
 import re
 import shutil
@@ -884,6 +885,56 @@ def get_runtime(name: str) -> AgentRuntime:
     if name not in _RUNTIMES:
         raise KeyError(f"unknown runtime: {name!r}")
     return _RUNTIMES[name]
+
+
+def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
+                       model: str = '', effort: str = '',
+                       stdin_text: Optional[str] = None,
+                       cwd: Optional[str] = None,
+                       max_turns: int = 1) -> str:
+    """Run a provider-selected, non-interactive text transform.
+
+    Feature routes should not know a provider's executable or command-line
+    flags.  This small adapter is the common seam for Claydo/profile helpers,
+    summaries, and other short generated artifacts.  ``effort`` is forwarded
+    when the selected runtime advertises it in its oneshot signature (or via
+    ``**kwargs``); runtimes that do not support an effort control retain their
+    native behavior rather than silently selecting a Claude tier.
+
+    A failed/unsupported call is raised as a normal ``RuntimeError`` so the
+    route can return its existing provider-neutral error response.  Returning
+    an empty successful answer is allowed: callers decide whether that output
+    is useful for their particular artifact.
+    """
+    runtime = get_runtime((provider or '').strip().lower())
+    fn = getattr(runtime, 'oneshot', None)
+    if not callable(fn):
+        raise RuntimeError(f"Provider '{provider}' does not support text transforms")
+
+    kwargs: Dict[str, Any] = {
+        'prompt': prompt,
+        'system_prompt': system_prompt,
+        'model': model,
+        'max_turns': max_turns,
+        'stdin_text': stdin_text,
+        'cwd': cwd,
+    }
+    try:
+        params = inspect.signature(fn).parameters
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                             for p in params.values())
+    except (TypeError, ValueError):
+        params = {}
+        accepts_kwargs = False
+    if effort and ('effort' in params or accepts_kwargs):
+        kwargs['effort'] = effort
+
+    result = fn(**kwargs)
+    if result is None:
+        detail = str(getattr(runtime, 'last_error', '') or '').strip()
+        suffix = f': {detail}' if detail else ''
+        raise RuntimeError(f"Provider '{provider}' text transform failed{suffix}")
+    return str(getattr(result, 'text', '') or '')
 
 
 def available_runtimes() -> List[AgentRuntime]:
@@ -2133,7 +2184,7 @@ class ClaudeRuntime(AgentRuntime):
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
-                cwd: Optional[str] = None,
+                cwd: Optional[str] = None, effort: str = '',
                 timeout: int = 180) -> Optional[OneshotResult]:
         """Non-interactive claude -p call for Scribe / condense / Distiller.
 
@@ -2196,6 +2247,8 @@ class ClaudeRuntime(AgentRuntime):
             '--allowedTools', '',
             '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
         ]
+        if effort:
+            cmd.extend(['--effort', str(effort)])
         self.last_error = ''
         try:
             r = subprocess.run(

@@ -17,6 +17,7 @@ from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars
+from mc import engine_selection
 from mc import state
 from mc.core import _log, now_iso
 from mc.memory import _scribe_call
@@ -43,6 +44,37 @@ def wire(*, load_project_fn, app_dir=None, load_projects_fn=None):
         load_projects = load_projects_fn
     if app_dir is not None:
         _APP_DIR = app_dir
+
+
+def _character_model_call(engine, project, prompt, payload):
+    """Generate a character artifact with its selected engine.
+
+    Claude remains on the existing Scribe choke point (and its established
+    toolless safety guarantees).  Explicit non-Claude selections use the
+    runtime text-transform seam instead of sending a foreign model ID to a
+    Claude subprocess.  An omitted model means the selected provider's native
+    default; no Claude tier is manufactured here.
+    """
+    raw = engine if isinstance(engine, dict) else {}
+    model_override = raw.get('model') if 'model' in raw else None
+    resolved = engine_selection.resolve_engine(
+        state.CONFIG, project,
+        provider_override=raw.get('provider') or '',
+        model_override=model_override,
+        character=None,
+        legacy_default='claude',
+    )
+    effort = str(raw.get('effort') or '').strip()
+    if resolved.provider == 'claude' and not effort:
+        return _scribe_call(resolved.model, prompt, payload)
+    return _agent_runtime.run_text_transform(
+        resolved.provider,
+        prompt=prompt,
+        model=resolved.model,
+        effort=effort,
+        stdin_text=payload,
+        cwd=str(Path.home()),
+    )
 
 
 def _install_builtin_characters():
@@ -504,10 +536,11 @@ def generate_voice_route():
 
     engine_raw = data.get('engine')
     engine = engine_raw if isinstance(engine_raw, dict) else {}
-    model = (engine.get('model') or '').strip() or state.CONFIG.get('agent_model') or 'sonnet'
+    project_id = str(data.get('project_id') or '').strip()
+    project = load_project(project_id) if project_id else None
     payload = (f"Role: {description}\n\n{body}")[:6000]
     try:
-        raw = _scribe_call(model, _VOICE_PROMPT, payload)
+        raw = _character_model_call(engine, project, _VOICE_PROMPT, payload)
     except Exception as e:
         _log(f"[characters] voice generation failed: {e}")
         return jsonify({'error': f'could not reach the model to write a voice: {e}'}), 502
@@ -590,7 +623,8 @@ def suggest_identity_route():
 
     engine_raw = data.get('engine')
     engine = engine_raw if isinstance(engine_raw, dict) else {}
-    model = (engine.get('model') or '').strip() or state.CONFIG.get('agent_model') or 'sonnet'
+    project_id = str(data.get('project_id') or '').strip()
+    project = load_project(project_id) if project_id else None
     payload = (f"Role: {description}\n\n{body}")[:6000]
 
     taken_names = _taken_agent_names(project_path, None)
@@ -602,7 +636,7 @@ def suggest_identity_route():
             "them, and do not pick anything that differs from one by only a "
             "letter or two — the roster has to be readable at a glance.")
     try:
-        raw_name = _scribe_call(model, name_prompt, payload)
+        raw_name = _character_model_call(engine, project, name_prompt, payload)
         agent_name = _chars.clean_agent_name(raw_name)
     except Exception as e:
         _log(f"[characters] identity suggestion (name) failed, falling back: {e}")
@@ -621,7 +655,7 @@ def suggest_identity_route():
             face_prompt += ("\n\nAlready worn by other agents on this machine "
                             "— do NOT reuse any of these: " + ", ".join(taken_figs))
         try:
-            raw_face = _scribe_call(model, face_prompt, payload)
+            raw_face = _character_model_call(engine, project, face_prompt, payload)
             avatar = _resolve_face(raw_face, figures)
         except Exception as e:
             _log(f"[characters] identity suggestion (face) failed, falling back: {e}")
@@ -808,8 +842,7 @@ def name_character_route(scope, name):
         # Ask the type itself. Run it on the model the type is PINNED to when
         # it has one: a name is a voice decision, and the engine that will do
         # the talking should be the one that picks.
-        model = ((rec.get('engine') or {}).get('model')
-                 or state.CONFIG.get('agent_model') or 'sonnet')
+        project = load_project(project_id) if project_id else None
         payload = (f"Role: {rec.get('description') or ''}\n\n"
                    f"{rec.get('body') or ''}")[:6000]
         prompt = _NAME_PROMPT
@@ -821,7 +854,7 @@ def name_character_route(scope, name):
                 "and do not pick anything that differs from one by only a "
                 "letter or two — the roster has to be readable at a glance.")
         try:
-            raw = _scribe_call(model, prompt, payload)
+            raw = _character_model_call(rec.get('engine') or {}, project, prompt, payload)
         except Exception as e:
             _log(f"[characters] self-naming failed for {scope}:{name}: {e}")
             return jsonify({'error': f'could not reach the model to pick a name: {e}'}), 502
@@ -942,8 +975,7 @@ def avatar_character_route(scope, name):
                                      'choose from'}), 400
         # Same engine rule as self-naming: the model that will do the talking
         # is the one that should pick how it looks.
-        model = ((rec.get('engine') or {}).get('model')
-                 or state.CONFIG.get('agent_model') or 'sonnet')
+        project = load_project(project_id) if project_id else None
         payload = (f"Role: {rec.get('description') or ''}\n\n"
                    f"{rec.get('body') or ''}")[:6000]
         prompt = _FACE_PROMPT + "\n\nFigures available: " + ", ".join(figures)
@@ -952,7 +984,7 @@ def avatar_character_route(scope, name):
             prompt += ("\n\nAlready worn by other agents on this machine — do "
                        "NOT reuse any of these: " + ", ".join(taken))
         try:
-            raw = _scribe_call(model, prompt, payload)
+            raw = _character_model_call(rec.get('engine') or {}, project, prompt, payload)
         except Exception as e:
             _log(f"[characters] self-facing failed for {scope}:{name}: {e}")
             return jsonify({'error': f'could not reach the model to pick a '
