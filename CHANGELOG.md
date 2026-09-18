@@ -6,6 +6,27 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17l] — Stabilize the provider-neutral branch (W0)
+
+- Every text transform (Claydo, character and profile generation, Scribe,
+  condense, Distiller, mail laundering) is authorized as a tool-free transform
+  before it runs. Claude's transform calls now load no tools, plugins, skills or
+  hooks; the previous flags still loaded 34 tools. Codex, Gemini and Qwen
+  transforms refuse until their isolation is certified, so a non-Claude
+  session's memory summary reports a model error instead of running unsandboxed.
+- A failed or quota-exhausted transform raises a typed failure and is never
+  saved as content.
+- Follow-ups to a live chat whose model did not change were silently dropped on
+  this branch; they are written again.
+- Claude answers that follow a thinking block are no longer lost in Claydo.
+- Rollouts from codex-cli 0.154 import (offline fixture). The unused canonical
+  capture/cutover/publication modules were taken out of the merge and kept on
+  `archive/provider-neutral-canonical-dormant`; entries 17c/17e/17h/17i below
+  describe code that is not in this release.
+- Test and tooling hygiene: a leaked test wiring, a leaked restart marker that
+  hung agent-run suites, a line-number-pinned architecture guard, and smokes
+  that targeted the live server on :5199.
+
 ## [2026-09-17k] — Preserve native callbacks before launch commits
 
 - Buffer lifecycle INIT and exit observations arriving during runtime dispatch,
