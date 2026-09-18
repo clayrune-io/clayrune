@@ -10,6 +10,8 @@ from dataclasses import dataclass, field
 from copy import deepcopy
 import json
 from pathlib import Path
+from threading import RLock
+from types import SimpleNamespace
 from types import MappingProxyType
 from typing import Any, Callable, Mapping, Protocol, Optional
 from uuid import uuid4
@@ -86,6 +88,9 @@ class AuthorizedRuntimeLifecycleBridge:
         self._attempt_revision: int | None = None
         self._bound = False
         self._finished = False
+        self._callback_lock = RLock()
+        self._launch_pending = False
+        self._pending_callbacks: list[tuple[str, Any, dict, Optional[Path]]] = []
 
     def prepare(self, facts: DispatchFacts) -> None:
         if facts != self.facts:
@@ -115,14 +120,44 @@ class AuthorizedRuntimeLifecycleBridge:
                 raise TypeError('runtime launch must return an identified session handle')
             return process_reference
 
-        state = self.owner.launch(self.prepared, authorize=self.authorize,
-                                  spawn=_owned_spawn)
-        attempt = next(a for a in state.attempts
-                       if a.attempt_id == self.prepared.attempt.attempt_id)
-        self._attempt_revision = attempt.revision
+        with self._callback_lock:
+            self._launch_pending = True
+        try:
+            state = self.owner.launch(self.prepared, authorize=self.authorize,
+                                      spawn=_owned_spawn)
+        except BaseException:
+            with self._callback_lock:
+                self._launch_pending = False
+                self._pending_callbacks.clear()
+            raise
+        with self._callback_lock:
+            attempt = next(a for a in state.attempts
+                           if a.attempt_id == self.prepared.attempt.attempt_id)
+            self._attempt_revision = attempt.revision
+            self._launch_pending = False
+            pending, self._pending_callbacks = self._pending_callbacks, []
+            for kind, event, session, source in pending:
+                try:
+                    if kind == 'init':
+                        self._apply_init(event, {'_lifecycle_native_source': source})
+                    else:
+                        self._apply_exit(event, session, source)
+                except Exception as exc:
+                    # Match route callback isolation; never turn an already
+                    # launched process into a reported spawn failure.
+                    session.setdefault('_lifecycle_errors', []).append(str(exc))
         return launched[0]
 
     def on_init(self, event: Any, session: dict) -> None:
+        with self._callback_lock:
+            if self._launch_pending:
+                self._pending_callbacks.append(('init', SimpleNamespace(
+                    payload=deepcopy(getattr(event, 'payload', {}))), session,
+                    session.get('_lifecycle_native_source')))
+                return
+            self._apply_init(event, session)
+
+    def _apply_init(self, event: Any, session: dict) -> None:
         if self.prepared is None or self.facts.incognito:
             return
         payload = getattr(event, 'payload', {}) or {}
@@ -144,6 +179,14 @@ class AuthorizedRuntimeLifecycleBridge:
         self._bound = True
 
     def on_exit(self, event: Any, session: dict, native_source: Optional[Path]) -> None:
+        with self._callback_lock:
+            if self._launch_pending:
+                self._pending_callbacks.append(('exit', SimpleNamespace(
+                    payload=deepcopy(getattr(event, 'payload', {}))), session, native_source))
+                return
+            self._apply_exit(event, session, native_source)
+
+    def _apply_exit(self, event: Any, session: dict, native_source: Optional[Path]) -> None:
         if self.prepared is None or self.facts.incognito or self._finished:
             return
         if not self._bound or self._attempt_revision is None:

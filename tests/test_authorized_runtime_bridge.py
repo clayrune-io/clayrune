@@ -97,6 +97,41 @@ def test_route_store_bridge_spawn_failure_is_uncertain_and_not_retried(env):
     assert state.attempts[0].status is AttemptStatus.UNCERTAIN
 
 
+@pytest.mark.parametrize('threaded', [False, True])
+def test_callbacks_during_dispatch_wait_for_launch_commit(env, threaded):
+    """Mode A starts its reader before dispatch returns its handle."""
+    from threading import Thread
+    ar, runtime, sessions, tmp = env
+    bridges = []
+    store_path, factory = _factory(tmp, bridges)
+    dispatch = runtime.dispatch
+
+    def early_dispatch(**kwargs):
+        handle = dispatch(**kwargs)
+        def emit():
+            runtime.callbacks['on_init'](
+                SimpleNamespace(payload={'session_id': 'early-native'}), kwargs['session_dict'])
+            runtime.callbacks['on_process_exit'](
+                SimpleNamespace(payload={'rc': 0}), kwargs['session_dict'])
+        if threaded:
+            reader = Thread(target=emit)
+            reader.start()
+            reader.join(timeout=2)
+            assert not reader.is_alive(), 'callback must not wait on launch transaction'
+        else:
+            emit()
+        return handle
+
+    runtime.dispatch = early_dispatch
+    sid = ar._dispatch_via_runtime(
+        {'id': 'p', 'project_path': str(tmp)}, 'task', provider_name='codex',
+        lifecycle_bridge_factory=factory)
+    state = ConversationStore(store_path).lifecycle_state('p', sid)
+    assert state.attempts[0].status is AttemptStatus.COMPLETED
+    assert state.attempts[0].native_handle == 'early-native'
+    assert not sessions[sid].get('_lifecycle_errors')
+
+
 def test_terminal_without_native_binding_remains_running_and_visible(env):
     ar, runtime, sessions, tmp = env
     bridges = []

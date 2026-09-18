@@ -6,6 +6,15 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17k] — Preserve native callbacks before launch commits
+
+- Buffer lifecycle INIT and exit observations arriving during runtime dispatch,
+  then apply them in order after durable launch ownership commits. Callback
+  readers do not wait for the launch transaction; failed launches remain uncertain.
+- Reproduce the original lost-native-binding failure with synchronous and
+  reader-thread callbacks against temporary SQLite. Lifecycle activation remains
+  gated separately; this change does not enable the dormant service.
+
 ## [2026-09-17j] — Move Claydo and Scribe transforms behind runtimes
 
 - Give provider runtimes a common short-text streaming boundary so Claydo keeps
