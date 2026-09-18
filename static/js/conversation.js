@@ -1992,6 +1992,10 @@ function _userInitiatedConvos(projectId, includeHidden) {
       // log (rather than /conversations) would fail the character-carries-a-
       // human-pick override above and be dropped all over again.
       character: e.character || null,
+      // Same reasoning as `character` above (MC-938) — the fallback path in
+      // _convCharKey resolves off `identity` when `character` is unset, so
+      // dropping it here re-creates the same aged-out-persona loss.
+      identity: e.identity || null,
       // MC-946: same reasoning — an aged-out WORKER needs this to survive the
       // AGENT_SOURCES drop above, same as a persona needs `character`.
       spawned_by_session_id: e.spawned_by_session_id || '',
@@ -4829,6 +4833,8 @@ async function sendFollowup(projectId, sessionId) {
       providerSessionId: cachedForConvo.providerSessionId || '',
       provider: cachedForConvo.provider || 'claude',
       live: true,
+      character: cachedForConvo.character || null,
+      identity: cachedForConvo.identity || null,
     });
   }
 
@@ -5156,6 +5162,8 @@ async function fetchAgentStatus(projectId) {
           provider: s.provider || 'claude',
           live: ['running', 'idle', 'waiting'].includes(s.status),
           touch: false,
+          character: s.character || null,
+          identity: s.identity || null,
         });
       }
       // Question-form reconciliation (parity with _reconcileAgentBuffer). The

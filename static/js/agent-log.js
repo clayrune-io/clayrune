@@ -249,6 +249,8 @@ function upsertConversationCache(projectId, claudeSessionId, lastUser, status, m
   const mcSessionId = meta.mcSessionId || '';
   const providerSessionId = meta.providerSessionId || '';
   const provider = meta.provider || 'claude';
+  const character = meta.character || null;
+  const identity = meta.identity || null;
   if (!projectId || (!claudeSessionId && !mcSessionId && !providerSessionId)) return;
   const list = conversationsCache[projectId] || (conversationsCache[projectId] = []);
   const nowMs = Date.now();
@@ -273,6 +275,13 @@ function upsertConversationCache(projectId, claudeSessionId, lastUser, status, m
     if (claudeSessionId) e.claude_session_id = claudeSessionId;
     if (providerSessionId) e.provider_session_id = providerSessionId;
     e.provider = provider || e.provider || 'claude';
+    // Fill persona if the row is still missing one — never overwrite a
+    // present value with empty, so a later characterless poll can't clobber
+    // an identity that already resolved (the Channel-rail bug: a fresh
+    // placeholder row starts with neither, so it fell out of _channelRoster
+    // until a hard refresh re-fetched the server's attributed row).
+    if (!e.character && character) e.character = character;
+    if (!e.identity && identity) e.identity = identity;
     e.live = meta.live !== undefined ? !!meta.live : e.live;
     e.turns = (e.turns || 0) + (label ? 1 : 0);
     if (meta.touch !== false) {
@@ -297,6 +306,8 @@ function upsertConversationCache(projectId, claudeSessionId, lastUser, status, m
       ts: '',
       ts_relative: 'just now',
       live: meta.live !== undefined ? !!meta.live : status === 'running',
+      character,
+      identity,
     });
   }
 }
