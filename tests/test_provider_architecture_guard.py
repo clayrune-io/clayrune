@@ -61,14 +61,7 @@ _NON_INFERENCE_MODULES = frozenset({
 # blueprints+memory+distiller list and called a concrete runtime unnoticed.
 _RUNTIME_LAYER_MODULES = frozenset({
     "agent_runtime.py",
-    "capture_ingress.py",
-    "capture_replay.py",
-    "claude_qwen_capture.py",
-    "codex_capture.py",
-    "codex_rollout_adapter.py",
-    "codex_rollout_capture.py",
     "execution_policy.py",
-    "gemini_capture.py",
 })
 _CONCRETE_RUNTIME_NAMES = frozenset({
     "AgentRuntime", "ClaudeRuntime", "CodexRuntime", "GeminiRuntime",

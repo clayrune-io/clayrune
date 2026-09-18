@@ -1,5 +1,10 @@
 # Canonical conversation read/cutover seam
 
+> **Status (W0, 2026-09-17): implementation NOT on the merge branch.** It had no
+> production caller, so it was removed from what merges (plan §9 DoD #4). The
+> code and its tests are preserved at branch `archive/provider-neutral-canonical-dormant`
+> (restore with `git revert` of the W0 removal commit) for the workstream that wires it.
+
 Status: implemented offline and default-off; consumer seams are wired for
 dependency injection, but startup does not compose or enable the policy.
 

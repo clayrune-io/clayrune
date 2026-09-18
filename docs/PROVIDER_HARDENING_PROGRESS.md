@@ -7,6 +7,51 @@ with deterministic in-app provider setup, and equivalent safety outcomes across
 supported providers. The inventory is in
 `research/PROVIDER_DEFAULT_CLASH_AUDIT_2026-09-16.md`.
 
+## W0 stabilization (Bram, 2026-09-17) — plan: `docs/VENDOR_AGNOSTIC_PROGRAM.md`
+
+Taken over from Vector's unreviewed checkpoint `c14c2fd`. Baseline in a fresh
+process: branch 49 failed / 3835 passed; master 5 failed / 3271 passed.
+
+- **Transforms (Fenn #1).** Every text transform — Claydo, character and
+  profile generation, Scribe/condense/Distiller (`_scribe_call`) and mail
+  laundering — runs through `run_text_transform`, which calls
+  `authorize_execution(TOOL_FREE_TRANSFORM)`. Claude supplies its own evidence
+  (`ClaudeRuntime.transform_evidence`); Codex, Gemini and Qwen cannot prove
+  tool-freedom yet and refuse before spawning. Claude's isolation flags were
+  measured live: the old `--allowedTools ''` still loaded 34 tools, 4 plugins,
+  72 skills and ran SessionStart hooks; `TRANSFORM_ISOLATION` loads 0/0/0 with
+  no hooks. Side effect: the isolated CLI no longer auto-loads cwd CLAUDE.md,
+  so the brief is always sent. **Consequence to know:** a non-Claude session's
+  Scribe/condense summary now fails as `model_error` (master summarized it
+  through Claude). Certifying the other vendors' transform flags is W1.
+- **Claude [thinking, text] (Fenn #2).** First-block classification restored
+  (TOOL_USE consumers depend on it); `stream_text` reads text from every
+  assistant-message event.
+- **Delegation ack (Fenn #3).** c14c2fd dropped the stdin write on the
+  same-tier follow-up branch (every live Mode-B session with a model set), so
+  follow-ups were silently lost; restored, with behavioral tests.
+- **Typed failures (Fenn #4).** `TransformFailure(provider, kind, detail)` /
+  `TransformTimeout`; `detail` is the raw adapter reason for the allowance
+  layer (W3).
+- **Guard.** Allowlist keyed by function+count (line numbers had all drifted);
+  scans every `mc/*.py`; catches `rt = get_runtime('claude'); rt.oneshot()`.
+- **Dormant modules removed from the merge** (no production caller, DoD #4):
+  `codex_rollout_adapter`, `codex_rollout_capture`, `capture_ingress`,
+  `capture_replay`, `codex_capture`, `gemini_capture`, `claude_qwen_capture`,
+  `memory_publication`, `conversation_cutover`, `conversation_projection`, plus
+  their tests. Preserved at `archive/provider-neutral-canonical-dormant`
+  (includes the codex-cli 0.154 importer fix, 3e6c9ec). The None-guarded
+  injection seams (`agent_routes._conversation_cutover`,
+  `memory._canonical_scribe_reader`) stay so re-wiring is additive.
+- **Kept, with production callers:** `execution_policy` (transform seam),
+  `delegation_delivery` (agent/project routes), `runtime_attempt_owner`,
+  `runtime_lifecycle_service`, `conversation_store`, `execution_lifecycle`
+  (constructed in server.py, `enabled=False`, consulted by agent routes).
+- **Test hygiene.** `test_delegation_lifecycle` leaked a real `ar.wire()` into
+  16 later tests; the server leaked `MC_RESTART_FROM_PID` to every child,
+  which hung agent-run suites.
+- **Not W0:** installer / onboarding / Node prerequisites (Fenn #5) moved to W6.
+
 ## Feature-branch continuation after independent review
 
 Resume checkpoint: Hivemind creation binds the current project generation, and

@@ -1,5 +1,10 @@
 # Recoverable canonical memory publication
 
+> **Status (W0, 2026-09-17): implementation NOT on the merge branch.** It had no
+> production caller, so it was removed from what merges (plan §9 DoD #4). The
+> code and its tests are preserved at branch `archive/provider-neutral-canonical-dormant`
+> (restore with `git revert` of the W0 removal commit) for the workstream that wires it.
+
 Status: dormant publication kernel implemented; no memory writer is wired or
 activated. Companion to
 `PROVIDER_EXECUTION_CONTRACT.md` and `MEMORY_DESIGN_V2_SPEC.md`.
