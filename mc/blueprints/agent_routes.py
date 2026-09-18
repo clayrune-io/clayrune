@@ -6869,6 +6869,14 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # W4/MC-947: Clayrune's own per-project MCP trim (same resolver
+            # Claude's `_build_claude_flags` uses), passed through so a
+            # runtime that opts in (currently only QwenRuntime.dispatch())
+            # can declare EXACTLY this set instead of a blanket deny-all or
+            # native ~/.qwen/settings.json discovery. Every other runtime's
+            # dispatch() has a **_extra catchall, so this is a no-op for
+            # them — same shape as unattended_sandbox_enabled above.
+            mcp_config_json=_resolve_project_mcp_config(p) or '',
         )
 
     try:

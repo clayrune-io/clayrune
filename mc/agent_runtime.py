@@ -5040,7 +5040,7 @@ class QwenRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '') -> List[str]:
+                      resume_id: str = '', mcp_config_json: str = '') -> List[str]:
         """Return the qwen one-shot command.
 
         Flags verified live against qwen-code 0.23.4 (`qwen --help` plus real
@@ -5060,14 +5060,42 @@ class QwenRuntime(AgentRuntime):
                                          a headless dispatch with no TTY to
                                          approve from — mirrors GeminiRuntime's
                                          own `--yolo` for the same reason.
-          --allowed-mcp-server-names  -- set to a sentinel matching no real
-                                         server, closing the native
-                                         project-`.mcp.json` MCP leak
-                                         `--bare` used to close, WITHOUT
-                                         `--bare`'s side effect of also
-                                         disabling hooks. LOAD-BEARING —
-                                         see class docstring (2026-09-18,
-                                         W2).
+          --allowed-mcp-server-names  -- DEFAULT (no `mcp_config_json`): a
+                                         sentinel matching no real server,
+                                         closing the native project-
+                                         `.mcp.json` MCP leak `--bare` used
+                                         to close, WITHOUT `--bare`'s side
+                                         effect of also disabling hooks.
+                                         LOAD-BEARING — see class docstring
+                                         (2026-09-18, W2).
+          --mcp-config <json>          -- W4/MC-947 (2026-09-18): when the
+                                         caller supplies Clayrune's own
+                                         resolved per-project MCP set (the
+                                         SAME `_resolve_project_mcp_config`
+                                         JSON Claude's `--strict-mcp-config
+                                         --mcp-config` gets — see
+                                         `_build_claude_flags`), declare
+                                         those servers explicitly instead of
+                                         denying everything. Qwen has no
+                                         `--strict-mcp-config` flag (unlike
+                                         Claude), so `--mcp-config` alone
+                                         would MERGE with whatever native
+                                         discovery finds (this repo's own
+                                         `.mcp.json`, the user's real
+                                         `~/.qwen/settings.json`) — closing
+                                         that leak is `--allowed-mcp-server-
+                                         names` doing double duty here: set
+                                         to EXACTLY the declared servers'
+                                         names (not the deny-all sentinel),
+                                         it allowlists them through while
+                                         `matchesAnyServerPattern` (see class
+                                         docstring) drops everything else
+                                         `assembleMcpServers()` finds,
+                                         natively-discovered or not. An
+                                         explicitly EMPTY server set
+                                         (`{"mcpServers": {}}`) is the
+                                         existing deny-all behavior, just
+                                         reached the same way.
           --chat-recording             -- required for --resume to work at
                                          all (the CLI's own --help text
                                          states this); re-stated on every
@@ -5092,8 +5120,20 @@ class QwenRuntime(AgentRuntime):
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'qwen',
                '--output-format', 'stream-json', '--include-partial-messages',
-               '--yolo', '--allowed-mcp-server-names', _QWEN_MCP_DENY_SENTINEL,
-               '--chat-recording']
+               '--yolo', '--chat-recording']
+        allowed_names: List[str] = []
+        if mcp_config_json and mcp_config_json.strip():
+            try:
+                declared = json.loads(mcp_config_json).get('mcpServers') or {}
+                allowed_names = sorted(declared.keys())
+            except Exception:
+                # Malformed JSON must fail closed (deny-all), never fall
+                # through to native discovery — same contract as an empty
+                # declared set.
+                allowed_names = []
+            cmd.extend(['--mcp-config', mcp_config_json])
+        cmd.extend(['--allowed-mcp-server-names']
+                   + (allowed_names or [_QWEN_MCP_DENY_SENTINEL]))
         if resume_id:
             cmd.extend(['--resume', resume_id])
         if model:
@@ -5446,13 +5486,16 @@ class QwenRuntime(AgentRuntime):
             default_mode='A',
             # --resume <session_id>, live-verified cross-process continuity.
             supports_session_resume=True,
-            # `--allowed-mcp-server-names __clayrune_none__` (see
-            # build_command's docstring, 2026-09-18) deliberately closes the
-            # native project MCP discovery this CLI otherwise performs, and
-            # no --mcp-config flag is wired here — declaring this True with
-            # nothing behind it would be the same overclaim CodexRuntime's
-            # own supports_plan_mode=False comment warns against.
-            supports_mcp=False,
+            # W4/MC-947 (2026-09-18): `dispatch()`/`build_command()` now
+            # accept `mcp_config_json` (the SAME per-project resolved set
+            # `_build_claude_flags` gives Claude) and pass it through
+            # `--mcp-config`, with `--allowed-mcp-server-names` doing double
+            # duty as the leak-closing allowlist (see build_command's
+            # docstring) instead of the old deny-everything sentinel. No
+            # caller wired = the sentinel path = the same deny-all behavior
+            # this flag used to describe honestly as False; now genuinely
+            # True end to end.
+            supports_mcp=True,
             # Catalog injected via system-prompt text, same as Gemini/Codex —
             # honestly true since qwen has a read_file tool to open it.
             supports_skills=True,
@@ -5552,6 +5595,7 @@ class QwenRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
@@ -5566,7 +5610,8 @@ class QwenRuntime(AgentRuntime):
         # so `CodexRuntime`-parity resume worked for Codex but a cold Qwen
         # revive always silently started a brand-new thread with no history,
         # despite `build_command` already knowing how to build `--resume`.
-        cmd = self.build_command(model=model, resume_id=resume_id)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 mcp_config_json=mcp_config_json)
         # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
         # dispatch(): the universal context block already tells the model to
         # use this fence, but nothing explains its shape without this.
@@ -5584,12 +5629,18 @@ class QwenRuntime(AgentRuntime):
             env[k] = v
         _inject_guardrail_env('qwen', env)
 
-        return _mode_a_dispatch(
+        handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env, callbacks,
             register_process, prompt_via_stdin=True,
             system_prompt=system_prompt,
         )
+        # Stashed so write_followup's per-turn respawn (Mode A has no
+        # persistent process) re-declares the SAME MCP set rather than
+        # silently reverting to deny-all on turn 2 — mirrors how
+        # `_system_prompt` is stashed for the same reason.
+        handle.session_dict['_mcp_config_json'] = mcp_config_json
+        return handle
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
@@ -5614,7 +5665,8 @@ class QwenRuntime(AgentRuntime):
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
-        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
+        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id,
+                                 mcp_config_json=session.get('_mcp_config_json') or '')
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         # A configured value WINS over the inherited process env — see
