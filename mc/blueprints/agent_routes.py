@@ -3939,6 +3939,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4201,6 +4202,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -5355,13 +5357,8 @@ def _accumulate_session_usage(session, turn_usage):
     session['usage'] discards all prior turns; instead we sum the numeric
     fields so the final value reflects the whole session.
 
-    Also records `session['context_tokens']` — unlike `session['usage']` this
-    is deliberately NOT cumulative: it's THIS turn's normalized context size
-    (mc.agent_runtime.normalize_context_tokens), the signal
-    `context_rollover_tokens` triggers on (docs/CONTEXT_ECONOMY_SPEC.md §1/§2).
-    A session re-sends its whole context every turn, so the per-turn figure —
-    not a running sum across turns — is what approximates "how big is this
-    conversation right now".
+    `session['context_tokens']` is NOT set here: `result.usage` sums every
+    model call in the turn. See `_note_call_context_tokens`.
     """
     _INT_FIELDS = ('input_tokens', 'output_tokens',
                    'cache_read_input_tokens', 'cache_creation_input_tokens')
@@ -5374,7 +5371,20 @@ def _accumulate_session_usage(session, turn_usage):
         if k not in _INT_FIELDS:
             merged[k] = v
     session['usage'] = merged
-    _ctx = _agent_runtime.normalize_context_tokens(turn_usage)
+
+
+def _note_call_context_tokens(session, message):
+    """Record `session['context_tokens']` from ONE model call's usage.
+
+    Claude's `result.usage` is the SUM over every model call in the turn, not
+    the context size: measured 2026-09-18 with a 2-Read turn, the calls held
+    30.2k and 32.4k of context but `result` reported 62.5k (cache_read 17640 +
+    30165 = 47805). A tool-heavy turn would read as several times its real
+    size and roll far too early, so the Claude readers take the LAST
+    assistant message's usage instead. Streamed assistant events repeat the
+    same usage per content block, so overwriting is idempotent.
+    """
+    _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
     if _ctx is not None:
         session['context_tokens'] = _ctx
 
