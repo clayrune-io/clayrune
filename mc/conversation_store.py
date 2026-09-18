@@ -28,7 +28,9 @@ APPLICATION_ID = 1129464654
 _LEGACY_TABLES = {'conversations', 'events', 'requests'}
 _LIFECYCLE_TABLES = {'lifecycle_conversations', 'lifecycle_requests', 'lifecycle_attempts',
                      'lifecycle_engine_changes', 'lifecycle_event_meta',
-                     'capture_sources', 'capture_spans', 'runtime_launch_facts'}
+                     'capture_sources', 'capture_spans', 'runtime_launch_facts',
+                     'lifecycle_projects'}
+_PROJECT_TABLE = 'lifecycle_projects'
 
 
 class ConversationStoreError(RuntimeError):
@@ -191,10 +193,19 @@ class ConversationStore:
             ConversationStore._create_capture_schema(db)
             db.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
         elif app != APPLICATION_ID or not (
-                (version == 1 and tables == _LEGACY_TABLES)
-                or (version == 2 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts'}))
-                or (version == 3 and tables == _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts'}))
-                or (version == 4 and tables == _LEGACY_TABLES | _LIFECYCLE_TABLES)):
+                (version == 1 and tables in (_LEGACY_TABLES, _LEGACY_TABLES | {_PROJECT_TABLE}))
+                or (version == 2 and tables in (
+                    _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts', _PROJECT_TABLE}),
+                    _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts'}),
+                ))
+                or (version == 3 and tables in (
+                    _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts', _PROJECT_TABLE}),
+                    _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts'}),
+                ))
+                or (version == 4 and tables in (
+                    _LEGACY_TABLES | (_LIFECYCLE_TABLES - {_PROJECT_TABLE}),
+                    _LEGACY_TABLES | _LIFECYCLE_TABLES,
+                ))):
             raise SchemaError(f'Unsupported conversation schema: version={version}, application={app}')
 
     @staticmethod
@@ -204,6 +215,41 @@ class ConversationStore:
         db.execute('CREATE TABLE lifecycle_attempts (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, attempt_id TEXT NOT NULL, request_id TEXT NOT NULL, owner_epoch INTEGER NOT NULL, privacy_generation INTEGER NOT NULL, engine_key TEXT NOT NULL, settings_revision INTEGER NOT NULL, status TEXT NOT NULL, revision INTEGER NOT NULL, native_handle TEXT, ordinal INTEGER NOT NULL, PRIMARY KEY(project_id,conversation_id,attempt_id), FOREIGN KEY(project_id,conversation_id,request_id) REFERENCES lifecycle_requests(project_id,conversation_id,request_id))')
         db.execute('CREATE TABLE lifecycle_engine_changes (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, settings_revision INTEGER NOT NULL, requested_engine_key TEXT NOT NULL, consent_reference TEXT NOT NULL, PRIMARY KEY(project_id,conversation_id,settings_revision), FOREIGN KEY(project_id,conversation_id) REFERENCES lifecycle_conversations(project_id,conversation_id))')
         db.execute('CREATE TABLE lifecycle_event_meta (project_id TEXT NOT NULL, conversation_id TEXT NOT NULL, sequence INTEGER NOT NULL, protocol_version INTEGER NOT NULL, disposition TEXT NOT NULL, PRIMARY KEY(project_id,conversation_id,sequence), FOREIGN KEY(project_id,conversation_id,sequence) REFERENCES events(project_id,conversation_id,sequence))')
+
+    @staticmethod
+    def _create_project_schema(db: sqlite3.Connection) -> None:
+        db.execute('CREATE TABLE IF NOT EXISTS lifecycle_projects (project_id TEXT NOT NULL PRIMARY KEY, generation INTEGER NOT NULL, deleted INTEGER NOT NULL DEFAULT 0)')
+
+    @staticmethod
+    def _validate_project_schema(db: sqlite3.Connection) -> None:
+        tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+        if _PROJECT_TABLE not in tables:
+            raise SchemaError('Explicit project-generation migration required')
+        rows = db.execute('PRAGMA table_info(lifecycle_projects)').fetchall()
+        expected = [('project_id', 'TEXT', 1, 1, None),
+                    ('generation', 'INTEGER', 1, 0, None),
+                    ('deleted', 'INTEGER', 1, 0, '0')]
+        actual = [(r['name'], r['type'].upper(), r['notnull'], r['pk'], r['dflt_value']) for r in rows]
+        if actual != expected:
+            raise SchemaError('Unexpected lifecycle project-generation shape')
+        if db.execute('SELECT 1 FROM lifecycle_projects WHERE generation < 1 OR deleted NOT IN (0,1)').fetchone():
+            raise SchemaError('Invalid lifecycle project-generation value')
+
+    def ensure_project_generation_schema(self) -> None:
+        """Install project fencing only for a brand-new store.
+
+        Existing v4 databases are never altered implicitly; they must use
+        ``migrate_schema4`` with a caller-owned backup first.
+        """
+        if not self.db_path.exists():
+            with self._connection(write=True, create=True) as db:
+                assert db is not None
+                self._create_project_schema(db)
+            return
+        with self._connection() as db:
+            if db is None:
+                return
+            self._validate_project_schema(db)
 
     @staticmethod
     def _create_capture_schema(db: sqlite3.Connection) -> None:
@@ -248,9 +294,10 @@ class ConversationStore:
 
     @staticmethod
     def _validate_schema3_shape(db: sqlite3.Connection) -> None:
-        expected_tables = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts'})
+        expected_tables = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'runtime_launch_facts', _PROJECT_TABLE})
+        expected_tables_with_project = expected_tables | {_PROJECT_TABLE}
         tables = {r[0] for r in db.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-        if tables != expected_tables:
+        if tables not in (expected_tables, expected_tables_with_project):
             raise SchemaError('Unexpected schema 3 table shape')
         expected = {
             'conversations': [('project_id','TEXT',1,1,None),('conversation_id','TEXT',1,2,None),('active_attempt','TEXT',0,0,None),('deleted','INTEGER',1,0,'0'),('created_at','TEXT',1,0,None)],
@@ -293,6 +340,8 @@ class ConversationStore:
             raise SchemaError('Missing capture source identity uniqueness')
         if db.execute('PRAGMA foreign_key_list(capture_sources)').fetchall() or db.execute('PRAGMA foreign_key_list(capture_spans)').fetchall():
             raise SchemaError('Unexpected v3 capture foreign key')
+        if _PROJECT_TABLE in tables:
+            ConversationStore._validate_project_schema(db)
 
     def migrate_schema1(self, *, backup_path: Path) -> None:
         """Explicit offline migration. Caller quiesces writers; never overwrite backup.
@@ -340,6 +389,7 @@ class ConversationStore:
                 destination.close()
             self._create_lifecycle_schema(source)
             self._create_capture_schema(source)
+            self._create_project_schema(source)
             source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
 
     @staticmethod
@@ -360,8 +410,8 @@ class ConversationStore:
             if source is None or source.execute('PRAGMA user_version').fetchone()[0] != 2:
                 raise SchemaError('Explicit migration requires schema 2')
             tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
-            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts'})
-            if tables != expected:
+            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {'capture_sources', 'capture_spans', 'runtime_launch_facts', _PROJECT_TABLE})
+            if tables not in (expected, expected | {_PROJECT_TABLE}):
                 raise SchemaError('Unexpected schema 2 table shape')
             expected_columns = {
                 'conversations': ['project_id','conversation_id','active_attempt','deleted','created_at'],
@@ -387,6 +437,7 @@ class ConversationStore:
                 backup_reader.close()
                 destination.close()
             self._create_capture_schema(source)
+            self._create_project_schema(source)
             source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
 
     def migrate_schema3(self, *, backup_path: Path) -> None:
@@ -400,7 +451,35 @@ class ConversationStore:
             self._validate_schema3_shape(source)
             self._backup_consistent(backup_path)
             self._create_runtime_launch_facts(source)
+            self._create_project_schema(source)
             source.execute(f'PRAGMA user_version={SCHEMA_VERSION}')
+
+    def migrate_schema4(self, *, backup_path: Path) -> None:
+        """Explicitly add project-generation fencing to an old v4 database.
+
+        The schema version remains 4 for compatibility with the existing
+        lifecycle store.  This extension is still opt-in: opening an old v4
+        database never creates the table implicitly, and the backup is made
+        before any source mutation.
+        """
+        backup_path = Path(backup_path).absolute()
+        if backup_path == self.db_path or backup_path.exists():
+            raise ValueError('Backup must be a new distinct path')
+        with self._connection(write=True) as source:
+            if source is None or source.execute('PRAGMA user_version').fetchone()[0] != 4:
+                raise SchemaError('Explicit migration requires schema 4')
+            tables = {r[0] for r in source.execute("SELECT name FROM sqlite_master WHERE type='table'")}
+            expected = _LEGACY_TABLES | (_LIFECYCLE_TABLES - {_PROJECT_TABLE})
+            if tables != expected:
+                if _PROJECT_TABLE in tables:
+                    raise SchemaError('Project-generation schema is already installed')
+                raise SchemaError('Unexpected schema 4 table shape')
+            self._backup_consistent(backup_path)
+            self._create_project_schema(source)
+
+    # Descriptive alias for callers that do not think in schema-version terms.
+    def migrate_project_generation(self, *, backup_path: Path) -> None:
+        self.migrate_schema4(backup_path=backup_path)
 
     @staticmethod
     def _legacy_only(db: sqlite3.Connection, project: str, conversation: str) -> None:
@@ -641,9 +720,18 @@ class ConversationStore:
             raise ValueError('engine must be an object')
         key = _json(engine)
         engine = json.loads(key)
+        fresh_store = not self.db_path.exists()
         with self._connection(write=True, create=True) as db:
             assert db is not None
             self._require_lifecycle_schema(db)
+            if fresh_store:
+                self._create_project_schema(db)
+            self._validate_project_schema(db)
+            project = db.execute('SELECT generation,deleted FROM lifecycle_projects WHERE project_id=?', (project_id,)).fetchone()
+            if project is None:
+                db.execute('INSERT INTO lifecycle_projects(project_id,generation,deleted) VALUES(?,?,0)', (project_id, 1))
+            elif project['deleted']:
+                raise ConversationUnavailable('Project missing or deleted')
             if db.execute('SELECT 1 FROM conversations WHERE project_id=? AND conversation_id=?', (project_id,conversation_id)).fetchone():
                 raise lifecycle.LifecycleConflict('Conversation already exists; no implicit legacy conversion')
             db.execute('INSERT INTO conversations(project_id,conversation_id,created_at) VALUES(?,?,?)', (project_id,conversation_id,_now()))
@@ -670,6 +758,94 @@ class ConversationStore:
                 'SELECT conversation_id FROM lifecycle_conversations '
                 'WHERE project_id=? ORDER BY conversation_id', (project_id,)).fetchall()
             return tuple(row['conversation_id'] for row in rows)
+
+    def project_generation(self, project_id: str, *, include_deleted: bool = True) -> int:
+        """Read the durable generation for a project identity.
+
+        Unknown projects report generation 1 without creating state.  A
+        deleted project is still readable so callers can compare a stale
+        callback's generation without reopening the project.
+        """
+        _id(project_id)
+        if type(include_deleted) is not bool:
+            raise ValueError('include_deleted must be boolean')
+        with self._connection() as db:
+            if db is None:
+                return 1
+            self._validate_project_schema(db)
+            row = db.execute('SELECT generation,deleted FROM lifecycle_projects WHERE project_id=?', (project_id,)).fetchone()
+            if row is None:
+                return 1
+            if row['deleted'] and not include_deleted:
+                raise ConversationUnavailable('Project missing or deleted')
+            return int(row['generation'])
+
+    def assert_project_generation(self, project_id: str, generation: int) -> None:
+        """Reject stale or deleted project authority before any launch."""
+        if type(generation) is not int or generation < 1:
+            raise ValueError('project generation must be a positive integer')
+        _id(project_id)
+        with self._connection() as db:
+            if db is None:
+                if generation != 1:
+                    raise ConversationUnavailable('Project generation is stale')
+                return
+            self._validate_project_schema(db)
+            row = db.execute('SELECT generation,deleted FROM lifecycle_projects WHERE project_id=?', (project_id,)).fetchone()
+            current = 1 if row is None else int(row['generation'])
+            if row is not None and (row['deleted'] or current != generation):
+                raise ConversationUnavailable('Project generation is stale or deleted')
+
+    def revoke_project(self, project_id: str, *, event_prefix: str = 'privacy-project') -> tuple[str, ...]:
+        """Atomically tombstone a project and advance its generation.
+
+        Existing conversations are marked deleted through the same lifecycle
+        reducer used by conversation deletion.  The project row also fences
+        callbacks whose conversation was never observed by this store.
+        """
+        _id(project_id); _id(event_prefix)
+        with self._connection(write=True, create=True) as db:
+            assert db is not None
+            self._require_lifecycle_schema(db)
+            self._validate_project_schema(db)
+            project = db.execute('SELECT generation,deleted FROM lifecycle_projects WHERE project_id=?', (project_id,)).fetchone()
+            current_generation = int(project['generation']) if project is not None else 1
+            next_generation = current_generation + 1
+            if project is None:
+                db.execute('INSERT INTO lifecycle_projects(project_id,generation,deleted) VALUES(?,?,1)', (project_id, next_generation))
+            else:
+                db.execute('UPDATE lifecycle_projects SET generation=?,deleted=1 WHERE project_id=?', (next_generation, project_id))
+            rows = db.execute('SELECT conversation_id FROM lifecycle_conversations WHERE project_id=? AND deleted=0 ORDER BY conversation_id', (project_id,)).fetchall()
+            revoked = []
+            for row in rows:
+                conversation_id = row['conversation_id']
+                before = self._load_lifecycle(db, project_id, conversation_id)
+                state = lifecycle.set_deleted(before, True, expected_revision=before.revision)
+                state = replace(state, high_water=before.high_water + 1)
+                self._save_lifecycle(db, before, state)
+                self._lifecycle_event(
+                    db, state,
+                    f'{event_prefix}:{project_id}:{next_generation}:{conversation_id}',
+                    'lifecycle.privacy_changed', {'deleted': True, 'project_generation': next_generation})
+                revoked.append(conversation_id)
+            return tuple(revoked)
+
+    def recreate_project(self, project_id: str) -> int:
+        """Explicitly reopen a deleted identity with a fresh generation."""
+        _id(project_id)
+        with self._connection(write=True, create=True) as db:
+            assert db is not None
+            self._require_lifecycle_schema(db)
+            self._validate_project_schema(db)
+            row = db.execute('SELECT generation,deleted FROM lifecycle_projects WHERE project_id=?', (project_id,)).fetchone()
+            if row is None:
+                db.execute('INSERT INTO lifecycle_projects(project_id,generation,deleted) VALUES(?,?,0)', (project_id, 1))
+                return 1
+            if not row['deleted']:
+                raise lifecycle.LifecycleConflict('Project is already active')
+            generation = int(row['generation']) + 1
+            db.execute('UPDATE lifecycle_projects SET generation=?,deleted=0 WHERE project_id=?', (generation, project_id))
+            return generation
 
     def _lifecycle_apply(self, project: str, conversation: str, *, event_id: str,
                          kind: str, payload: dict,

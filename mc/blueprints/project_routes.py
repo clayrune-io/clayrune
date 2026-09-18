@@ -566,6 +566,8 @@ def update_project(project_id):
             save_project(project_id, existing)
             if is_new:
                 DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').recreate_project(project_id)
+                if _runtime_lifecycle_service is not None:
+                    _runtime_lifecycle_service.recreate_project(project_id)
     else:
         save_project(project_id, existing)
 

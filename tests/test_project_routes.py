@@ -269,13 +269,18 @@ def test_projects_list_live_agent_priority(client):
 
 # ── POST /api/project/<id> ───────────────────────────────────────────────────
 
-def test_create_project_auto_workspace(client):
+def test_create_project_auto_workspace(client, monkeypatch):
+    from mc.blueprints import project_routes as pr
+    recreated = []
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        recreate_project=lambda project_id: recreated.append(project_id)))
     r = client.post('/api/project/newproj', json={'name': 'New'})
     assert r.status_code == 200
     rec = json.loads((client.data_dir / 'newproj.json').read_text(encoding='utf-8'))
     assert rec['name'] == 'New'
     ws = Path(rec['project_path'])
     assert ws.is_dir() and ws.name == 'newproj'
+    assert recreated == ['newproj']
 
 
 def test_create_project_auto_installs_fence_hook(client):
@@ -497,7 +502,7 @@ def test_generate_summary_unknown_project_404(client):
 
 # ── DELETE /api/project/<id> ─────────────────────────────────────────────────
 
-def test_delete_project_full_cleanup(client):
+def test_delete_project_full_cleanup(client, monkeypatch):
     att = client.uploads / 'tproj_it1_aa.png'
     att.write_bytes(b'png')
     _seed(client, backlog=[{'id': 'it1', 'text': 't', 'attachments': [
@@ -510,8 +515,8 @@ def test_delete_project_full_cleanup(client):
         'project_id': 'tproj', 'status': 'running'}
     revoked = []
     from mc.blueprints import project_routes as pr
-    pr._runtime_lifecycle_service = types.SimpleNamespace(
-        revoke_project=lambda project_id: revoked.append(project_id))
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id)))
 
     r = client.delete('/api/project/tproj')
     assert r.status_code == 200
@@ -525,11 +530,11 @@ def test_delete_project_full_cleanup(client):
     assert revoked == ['tproj']
 
 
-def test_delete_project_404(client):
+def test_delete_project_404(client, monkeypatch):
     from mc.blueprints import project_routes as pr
     revoked = []
-    pr._runtime_lifecycle_service = types.SimpleNamespace(
-        revoke_project=lambda project_id: revoked.append(project_id))
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id)))
     assert client.delete('/api/project/nope').status_code == 404
     assert revoked == []
 

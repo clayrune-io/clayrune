@@ -29,9 +29,10 @@
 
 - Route accepted project and conversation deletion through that same lifecycle
   authority before filesystem cleanup. Native and Clayrune aliases are
-  privacy-fenced together, known project conversations are revoked without
-  creating state, and a prepared late launch cannot reach spawn afterward.
-  Same-project-ID recreation generations remain an activation gate.
+  privacy-fenced together, project tombstones also cover unseen callbacks, and
+  a prepared late launch cannot reach spawn afterward. Explicit project
+  recreation advances a durable generation so old authority cannot attach to
+  the replacement project.
 
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,

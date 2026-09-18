@@ -35,7 +35,7 @@ class RuntimeLifecycleService:
         self._shutdown = False
         self._store: ConversationStore | None = None
 
-    def bridge_factory(self, facts: DispatchFacts):
+    def bridge_factory(self, facts: DispatchFacts, *, project_generation: int | None = None):
         with self._lock:
             if not self.enabled:
                 return None
@@ -47,6 +47,13 @@ class RuntimeLifecycleService:
                 self.db_path.parent.mkdir(parents=True, exist_ok=True)
                 self._store = ConversationStore(self.db_path)
             store = self._store
+        store.ensure_project_generation_schema()
+        # A deleted project is not reopened by a late callback.  Callers that
+        # carry the generation observed at dispatch must also match the
+        # current generation; new callers may omit it for first-open projects.
+        store.project_generation(facts.project_id, include_deleted=False)
+        if project_generation is not None:
+            store.assert_project_generation(facts.project_id, project_generation)
         engine = {
             'provider': facts.provider, 'model': facts.model,
             'effort': facts.effort, 'resume_id': facts.resume_id,
@@ -84,6 +91,25 @@ class RuntimeLifecycleService:
                 self._store = ConversationStore(self.db_path)
             return self._store
 
+    def _mutation_store(self) -> ConversationStore | None:
+        """Return the store for explicit project lifecycle mutations.
+
+        A project deletion may arrive before this service has seen a
+        conversation.  Enabled revocation therefore creates the canonical
+        store so that an unseen callback is fenced durably; disabled services
+        remain completely inert.
+        """
+        with self._lock:
+            if not self.enabled:
+                return None
+            if self._shutdown:
+                raise RuntimeError('runtime lifecycle shutdown admission is closed')
+            if self._store is None:
+                self.db_path.parent.mkdir(parents=True, exist_ok=True)
+                self._store = ConversationStore(self.db_path)
+            self._store.ensure_project_generation_schema()
+            return self._store
+
     def revoke_conversations(self, project_id: str,
                              conversation_ids: set[str]) -> tuple[str, ...]:
         """Durably privacy-fence existing aliases without creating new state."""
@@ -113,11 +139,26 @@ class RuntimeLifecycleService:
 
     def revoke_project(self, project_id: str) -> tuple[str, ...]:
         """Durably privacy-fence every known lifecycle conversation in a project."""
-        store = self._existing_store()
+        store = self._mutation_store()
         if store is None:
             return ()
-        return self.revoke_conversations(
-            project_id, set(store.list_lifecycle_conversations(project_id)))
+        with self._lock:
+            return store.revoke_project(project_id)
+
+    def project_generation(self, project_id: str, *, include_deleted: bool = True) -> int:
+        """Return the canonical generation without opening a disabled store."""
+        store = self._existing_store()
+        if store is None:
+            return 1
+        return store.project_generation(project_id, include_deleted=include_deleted)
+
+    def recreate_project(self, project_id: str) -> int:
+        """Explicitly reopen a deleted project identity at a new generation."""
+        store = self._mutation_store()
+        if store is None:
+            return 1
+        with self._lock:
+            return store.recreate_project(project_id)
 
     def stop(self) -> None:
         with self._lock:
