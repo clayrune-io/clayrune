@@ -20,7 +20,6 @@ from mc import characters as _chars
 from mc import engine_selection
 from mc import state
 from mc.core import _log, now_iso
-from mc.memory import _scribe_call
 from mc.blueprints.skills_routes import _resolve_project_path_or_400
 from mc.blueprints.workflow_routes import _is_agent_caller
 
@@ -49,11 +48,9 @@ def wire(*, load_project_fn, app_dir=None, load_projects_fn=None):
 def _character_model_call(engine, project, prompt, payload):
     """Generate a character artifact with its selected engine.
 
-    Claude remains on the existing Scribe choke point (and its established
-    toolless safety guarantees).  Explicit non-Claude selections use the
-    runtime text-transform seam instead of sending a foreign model ID to a
-    Claude subprocess.  An omitted model means the selected provider's native
-    default; no Claude tier is manufactured here.
+    Every provider, including Claude, uses the same toolless runtime transform
+    seam. An omitted model means the selected provider's native default; no
+    foreign tier or feature-owned CLI command is manufactured here.
     """
     raw = engine if isinstance(engine, dict) else {}
     model_override = raw.get('model') if 'model' in raw else None
@@ -65,8 +62,6 @@ def _character_model_call(engine, project, prompt, payload):
         legacy_default='claude',
     )
     effort = str(raw.get('effort') or '').strip()
-    if resolved.provider == 'claude' and not effort:
-        return _scribe_call(resolved.model, prompt, payload)
     return _agent_runtime.run_text_transform(
         resolved.provider,
         prompt=prompt,

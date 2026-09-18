@@ -18,6 +18,9 @@
 
 - Add a provider-selected text-transform seam and use it for Claydo, project
   summaries, character identity/voice/avatar helpers, and Hivemind orchestration.
+- Route Claude through that same seam for project summaries and character
+  artifacts, removing the last feature-owned Claude subprocess/Scribe branches
+  from those two consumers.
 - Preserve explicit provider/model/effort through Hivemind manifests and worker
   sessions; Claude tier defaults are never injected into non-Claude providers.
 

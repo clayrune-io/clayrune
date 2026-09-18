@@ -644,7 +644,7 @@ def set_conversation_pin(project_id):
 
 @bp.route('/api/project/<project_id>/generate_summary', methods=['POST'])
 def generate_project_summary(project_id):
-    """Use Claude to pick an emoji and write a one-line summary for the project."""
+    """Use the selected provider to generate an emoji and one-line summary."""
     p = load_project(project_id)
     if not p:
         return jsonify({'error': 'project not found'}), 404
@@ -671,69 +671,24 @@ def generate_project_summary(project_id):
         'Example: {"emoji":"\u26bd","summary":"Tracks soccer match results and ranks teams across league tables."}'
     )
 
-    # Profile generation follows the project's selected provider.  Keep the
-    # historical Claude envelope path below, while non-Claude providers use
-    # the runtime text-transform seam and never receive a Claude model ID.
+    # Profile generation follows the project's selected provider through one
+    # toolless transform seam. Feature code never builds a provider CLI command.
     resolved = engine_selection.resolve_engine(
         state.CONFIG, p,
         provider_override=body.get('provider') or '',
         model_override=body.get('model') if 'model' in body else None,
         legacy_default='claude',
     )
-    if resolved.provider != 'claude':
-        try:
-            raw = _agent_runtime.run_text_transform(
-                resolved.provider, prompt=prompt, model=resolved.model,
-                effort=str(body.get('effort') or '').strip(),
-                cwd=p.get('project_path') or str(Path.home()),
-            ).strip()
-            if raw.startswith('```'):
-                lines = raw.splitlines()
-                if lines and lines[0].startswith('```'):
-                    lines = lines[1:]
-                if lines and lines[-1].strip() == '```':
-                    lines = lines[:-1]
-                raw = '\n'.join(lines).strip()
-            data = json.loads(raw)
-        except (json.JSONDecodeError, TypeError, ValueError) as e:
-            return jsonify({'error': f'could not parse model output: {e}'}), 500
-        except Exception as e:
-            return jsonify({'error': str(e)}), 500
-        emoji = (data.get('emoji') or '').strip()
-        summary = (data.get('summary') or '').strip()
-        if emoji and (overwrite_emoji or not p.get('emoji')):
-            p['emoji'] = emoji
-        if summary:
-            p['summary'] = summary
-        p['last_updated'] = now_iso()
-        save_project(project_id, p)
-        return jsonify({'ok': True, 'emoji': p.get('emoji', ''),
-                        'summary': p.get('summary', '')})
-
-    model = (resolved.model if 'model' in body
-             else (state.CONFIG.get('condense_model', '') or resolved.model))
-    cmd = [_resolve_claude(), '-p', prompt, '--model', model, '--output-format', 'json',
-           '--dangerously-skip-permissions']
-
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
-        )
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'generation timed out after 30s'}), 504
-    except FileNotFoundError:
-        return jsonify({'error': 'claude CLI not found'}), 500
-
-    if result.returncode != 0:
-        return jsonify({'error': f'claude exited {result.returncode}: {(result.stderr or result.stdout)[:200]}'}), 500
-
-    # Parse Claude CLI's JSON envelope -> model's JSON content
-    try:
-        envelope = json.loads(result.stdout)
-        content = (envelope.get('result') or '').strip()
+        model = (resolved.model if 'model' in body else (
+            (state.CONFIG.get('condense_model', '') or resolved.model)
+            if resolved.provider == 'claude'
+            else resolved.model))
+        content = _agent_runtime.run_text_transform(
+            resolved.provider, prompt=prompt, model=model,
+            effort=str(body.get('effort') or '').strip(),
+            cwd=p.get('project_path') or str(Path.home()),
+        ).strip()
         # Strip optional ```json fences if the model added them despite instructions
         if content.startswith('```'):
             lines = content.splitlines()
@@ -743,11 +698,10 @@ def generate_project_summary(project_id):
                 lines = lines[:-1]
             content = '\n'.join(lines).strip()
         data = json.loads(content)
-    except (json.JSONDecodeError, KeyError, AttributeError) as e:
-        return jsonify({
-            'error': f'could not parse model output: {e}',
-            'raw': (result.stdout or '')[:500],
-        }), 500
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as e:
+        return jsonify({'error': f'could not parse model output: {e}'}), 500
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
     emoji = (data.get('emoji') or '').strip()
     summary = (data.get('summary') or '').strip()
