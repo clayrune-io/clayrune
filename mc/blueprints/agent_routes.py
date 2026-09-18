@@ -2628,6 +2628,11 @@ def _track_stop_hook_boundary(session, msg) -> None:
             session.pop('_sh_last_msg', None)
             return
         if mt == 'user':
+            if _agent_runtime.is_stop_hook_feedback(msg):
+                # The reader itself marks this boundary from the streamed
+                # feedback turn; no transcript check needed for the resend.
+                session.pop('_sh_last_msg', None)
+                return
             content = (msg.get('message') or {}).get('content')
             if isinstance(content, list) and any(
                     isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
