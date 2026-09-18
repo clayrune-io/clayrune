@@ -80,7 +80,8 @@ async function readProviderChoiceStep(page) {
     if (!overlay) return null;
     const title = (overlay.querySelector('.wt-title') || {}).textContent || '';
     const rows = Array.from(overlay.querySelectorAll('.wt-body label')).map((label) => {
-      const name = (label.querySelector('input[type=radio]') || {}).value || '';
+      // Multi-select since 2026-09-18 (checkbox per vendor); was one radio.
+      const name = (label.querySelector('input[name=wt-provider]') || {}).value || '';
       const spans = Array.from(label.querySelectorAll('span'));
       return {
         name,
@@ -89,7 +90,9 @@ async function readProviderChoiceStep(page) {
         hasInstallBtn: !!label.querySelector('button'),
       };
     });
-    return { title, rows };
+    const installSelected = Array.from(overlay.querySelectorAll('button'))
+      .some(b => /install selected/i.test(b.textContent || ''));
+    return { title, rows, installSelected };
   });
 }
 
@@ -145,19 +148,19 @@ try {
     if (!byName.gemini) fail('gemini (not installed) is MISSING from the chooser — the exact reported bug');
     else ok('gemini appears in the chooser even though it is not installed');
 
-    if (byName.gemini && !/not installed/i.test(byName.gemini.stateText))
+    if (!byName.gemini || !/not installed/i.test(byName.gemini.stateText))
       fail(`gemini's state text should say "not installed", got: "${byName.gemini && byName.gemini.stateText}"`);
     else ok('gemini is labeled "not installed"');
 
-    if (byName.gemini && !byName.gemini.hasInstallBtn)
-      fail('gemini row has no Install button');
-    else ok('gemini row offers an Install button');
+    if (!step.installSelected)
+      fail('the chooser offers no "Install selected" action for not-installed vendors');
+    else ok('the chooser offers an "Install selected" action');
 
-    if (byName.codex && !/not signed in/i.test(byName.codex.stateText))
+    if (!byName.codex || !/not signed in/i.test(byName.codex.stateText))
       fail(`codex (installed, not_logged_in) should read "not signed in", got: "${byName.codex && byName.codex.stateText}"`);
     else ok('codex (installed, not signed in) is labeled correctly');
 
-    if (byName.claude && !/signed in/i.test(byName.claude.stateText))
+    if (!byName.claude || !/signed in/i.test(byName.claude.stateText))
       fail(`claude (installed, ok) should read "signed in", got: "${byName.claude && byName.claude.stateText}"`);
     else ok('claude (installed, signed in) is labeled correctly');
 
@@ -170,12 +173,14 @@ try {
       fail(`not-installed provider should sort last, got order: ${order.join(', ')}`);
     else ok(`installed providers sort first: ${order.join(', ')}`);
 
-    // Click gemini's Install button and confirm it hits the real endpoint.
+    // Select gemini, click "Install selected", and confirm it hits the real
+    // endpoint for gemini only (claude/codex are already installed).
     await page.evaluate(() => {
       const overlay = document.getElementById('wt-overlay');
-      const rows = Array.from(overlay.querySelectorAll('.wt-body label'));
-      const geminiRow = rows.find(r => (r.querySelector('input[type=radio]') || {}).value === 'gemini');
-      const btn = geminiRow && geminiRow.querySelector('button');
+      const box = overlay.querySelector('input[name=wt-provider][value=gemini]');
+      if (box && !box.checked) box.click();
+      const btn = Array.from(overlay.querySelectorAll('button'))
+        .find(b => /install selected/i.test(b.textContent || ''));
       if (btn) btn.click();
     });
     await page.waitForTimeout(300);
