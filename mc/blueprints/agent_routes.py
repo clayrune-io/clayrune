@@ -7281,6 +7281,44 @@ def agent_send(project_id):
     if not message:
         return jsonify({'error': 'message required'}), 400
 
+    native_id = (data.get('provider_session_id') or '').strip()
+    if native_id:
+        # A native-history tab has no MC run id yet. Never let a failed
+        # identity lookup fall through to a fresh conversation/provider.
+        if data.get('provider') != 'codex' or not re.fullmatch(
+                r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', native_id):
+            return jsonify({'error': 'invalid native conversation identity'}), 400
+        runtime = _agent_runtime.get_runtime('codex')
+        tpath = runtime.transcript_path(pp, native_id)
+        if not tpath:
+            return jsonify({'error': 'original conversation not found'}), 404
+        cwd, recorded_id = _agent_runtime._codex_read_meta(tpath)
+        if recorded_id != native_id or not _agent_runtime._codex_same_path(cwd, pp):
+            return jsonify({'error': 'original conversation not found'}), 404
+        with get_manager(project_id).lock:
+            owner = next((sid for sid, s in agent_sessions.items()
+                          if s.get('project_id') == project_id
+                          and s.get('provider') == 'codex'
+                          and s.get('provider_session_id') == native_id), None)
+            if owner:
+                data['session_id'] = session_id = owner
+            else:
+                try:
+                    turns = runtime.extract_chat_turns(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+                    sid = _dispatch_agent_internal(
+                        project_id, _apply_mobile_brief(message, data),
+                        resume_id=native_id, provider_override='codex', incognito=incognito)
+                    session = agent_sessions.get(sid)
+                    if session is not None:
+                        label = state.CONFIG.get('user_name') or 'User'
+                        session['log_lines'][:0] = [
+                            f'\n> {label}: {text}\n' if role == 'user' else text
+                            for role, text in turns]
+                    return jsonify({'ok': True, 'session_id': sid, 'route': 'resume-native'})
+                except Exception as e:
+                    _log(f'[send] native conversation resume failed: {e}')
+                    return jsonify({'error': f'conversation resume failed: {e}'}), 400
+
     # The client can address a chat by an id that is not its live session: its
     # CLAUDE session id (transcript-reconstruct tab), a superseded MC id, or a
     # session whose process died while another session runs the conversation.

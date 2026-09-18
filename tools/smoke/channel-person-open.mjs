@@ -11,6 +11,7 @@ const events = [];
 const context = vm.createContext({
   _channelExpanded: {}, conversationsCache: {},
   _convCharKey: row => row.key, _isNoiseConvoRow: row => !!row.noise,
+  _userInitiatedConvos: pid => context.conversationsCache[pid] || [],
   refreshModalById: pid => events.push(['refresh', pid]),
   openConversation: (...args) => events.push(['open', ...args]),
 });
@@ -42,17 +43,48 @@ context.openChannelPerson('p', 'vector');
 assert.deepEqual(events, [['refresh', 'p'], ['open', 'p', 'native', '', false]]);
 console.log('PASS roster expansion and newest openable conversation selection');
 
-// Clicking an external row must hand its native id to a read-only viewer,
-// without touching the MC cache, reconstruct route, or resume controls.
+// External history opens the normal pane with native identity and full text.
 const openStart = source.indexOf('async function openConversation(');
 const openEnd = source.indexOf('window.openConversation = openConversation;', openStart);
 const viewed = [];
 const viewerContext = vm.createContext({
   conversationsCache: { p: [{ provider: 'codex', provider_session_id: 'native', label: 'External chat' }] },
-  openTranscriptViewer: async (...args) => viewed.push(args),
+  agentStatusCache: {}, agentOutputBuffers: {}, agentServerLines: {}, agentHistory: [], API_BASE: '',
+  fetch: async () => ({ok: true, json: async () => ({messages: [
+    {role: 'user', text: 'original question'}, {role: 'assistant', text: 'original answer'}]})}),
+  switchAgentTab: (...args) => viewed.push(args),
+  showToast: message => { throw new Error(message); },
 });
 vm.runInContext(source.slice(openStart, openEnd), viewerContext);
 await viewerContext.openConversation('p', 'native', '', false);
-assert.deepEqual(viewed, [['p', 'native', 'External chat', 'codex']]);
+assert.deepEqual(viewed, [['p', 'codex:p:native']]);
+assert.equal(viewerContext.agentStatusCache['codex:p:native'].providerSessionId, 'native');
+assert.equal(viewerContext.agentStatusCache['codex:p:native']._nativeHistory, true);
+assert.equal(viewerContext.agentOutputBuffers['codex:p:native'][1], 'original answer');
 assert.ok(source.includes("!c.mc_session_id && c.provider === 'codex' ? c.provider_session_id"));
-console.log('PASS external Codex row opens native transcript read-only');
+console.log('PASS external Codex history opens normal conversation pane');
+
+// The second, slower history source must be consumed after it arrives.
+// Run the actual merge function: no older row at first, then a Dave chat
+// arrives through agentLogCache after the recent-conversations render.
+const mergeStart = source.indexOf('function _userInitiatedConvos(');
+const mergeEnd = source.indexOf('window._userInitiatedConvos = _userInitiatedConvos;', mergeStart);
+const delayed = [];
+const historyContext = vm.createContext({
+  _channelExpanded: {}, _showHiddenConvos: {}, conversationsCache: {p: []}, agentLogCache: {p: []},
+  _hiddenConvSet: () => new Set(), _isStewardConvo: () => false,
+  _convHideKey: c => c.claude_session_id, _isNoiseConvoRow: () => false,
+  _getProviderCaps: () => ({}), _convCharKey: c => c.character?.name || '',
+  refreshModalById: () => {}, openConversation: (...args) => delayed.push(args),
+});
+vm.runInContext(source.slice(mergeStart, mergeEnd), historyContext);
+vm.runInContext(source.slice(start, end), historyContext);
+historyContext.openChannelPerson('p', 'dave');
+assert.equal(delayed.length, 0);
+historyContext.agentLogCache.p = [{session_id: 'old-mc', claude_session_id: 'old-native',
+  character: {name: 'dave'}, ts: '2026-09-10T12:00:00Z', task: 'older conversation'}];
+historyContext.openChannelPerson('p', 'dave');
+assert.deepEqual(delayed, [['p', 'old-native', 'old-mc', false]]);
+assert.ok(source.includes('for (const c of _userInitiatedConvos(projectId, true))'));
+assert.ok(source.includes('const _all = _userInitiatedConvos(p.id, true)'));
+console.log('PASS older persona conversations appear when delayed run history arrives');

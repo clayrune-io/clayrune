@@ -120,6 +120,36 @@ def test_external_codex_viewer_rejects_other_project(client, tmp_path):
     assert http.get(f'/api/project/proj1/transcript/{native_id}?provider=codex').status_code == 404
 
 
+def test_native_history_send_resumes_exact_codex_id(client, tmp_path, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    http, project_path = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(project_path),
+                         [('user', 'old question'), ('assistant', 'old answer')])
+    calls = []
+    def dispatch(pid, message, **kwargs):
+        calls.append((pid, message, kwargs))
+        ar.agent_sessions['owned'] = {'project_id': pid, 'provider': 'codex',
+            'provider_session_id': native_id, 'status': 'idle', 'log_lines': ['new prompt']}
+        return 'owned'
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', dispatch)
+    monkeypatch.setattr(ar, 'agent_followup', lambda pid: ar.jsonify({'ok': True, 'session_id': 'owned'}))
+    body = {'session_id': 'codex:proj1:' + native_id, 'provider': 'codex',
+            'provider_session_id': native_id, 'message': 'continue'}
+    response = http.post('/api/project/proj1/agent/send', json=body)
+    assert response.status_code == 200
+    assert response.get_json()['route'] == 'resume-native'
+    assert calls[0][2]['resume_id'] == native_id
+    assert calls[0][2]['provider_override'] == 'codex'
+    assert ar.agent_sessions['owned']['log_lines'][1] == 'old answer'
+    response = http.post('/api/project/proj1/agent/send', json=body)
+    assert response.status_code == 200
+    assert len(calls) == 1  # subsequent sends reuse the existing owner
+    body['provider_session_id'] = '00000000-0000-0000-0000-000000000000'
+    assert http.post('/api/project/proj1/agent/send', json=body).status_code == 404
+    assert len(calls) == 1  # missing history must never dispatch fresh
+
+
 def _write_log(tmp_path, project_id, entries):
     (tmp_path / 'projects' / f'{project_id}_agent_log.json').write_text(
         json.dumps(entries), encoding='utf-8')
