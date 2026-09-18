@@ -8,7 +8,8 @@ from flask import Flask
 from types import SimpleNamespace
 
 from mc.delegation_delivery import (DeliveryBlocked, DeliveryDeferred,
-                                    DeliveryStore, callback_payload, drain_once,
+                                    DeliveryStore, DeliveryUncertain,
+                                    callback_payload, drain_once,
                                     event_id_for_turn)
 
 
@@ -516,6 +517,80 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
     assert session['_notify_session'] == 'grandparent'
     assert session['_notify_workflow'] == {'run_id': 'run', 'step': 'step'}
     assert session['trigger_type'] == 'workflow' and session['source'] == 'agent'
+
+
+def test_interrupted_parent_status_is_revivable_not_ambiguous(monkeypatch):
+    """Regression for the notify-restart-leg defect (MC W7 item 3).
+
+    _reconcile_pending_agent_log_entries() flips a leftover 'in_progress' row
+    to 'interrupted' at boot because, by its own docstring, "at startup
+    nothing is live yet, so any in_progress row is by definition orphaned" --
+    i.e. this status is a KNOWN dead parent, not an ambiguous one. Before the
+    fix, _revive_parent_for_delegation parked 'interrupted' in the same
+    branch as 'running'/'in_progress' and raised DeliveryUncertain, so a
+    restarted parent could never be revived -- and a reviewed_resolution
+    retry just replayed the same durable status into the same branch again.
+    """
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
+    entry = {'session_id': 'p', 'status': 'interrupted', 'provider': 'unknown',
+             'agent_model': 'model', 'incognito': False, 'ts': '1'}
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    try:
+        ar._revive_parent_for_delegation('p', 'p', 'message', {})
+    except DeliveryUncertain:
+        raise AssertionError(
+            "'interrupted' status must pass the ambiguity gate; it should "
+            "reach the provider check (DeliveryBlocked for an unresolvable "
+            "provider here), not be treated as ambiguous outcome")
+    except DeliveryBlocked:
+        pass  # unknown provider has no native resume identity -- expected
+
+
+def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
+    """End-to-end: a Claude parent reconciled to 'interrupted' after a real
+    server restart is revived from its saved native session identity, same
+    as the 'completed'/'idle' path in
+    test_claude_cold_revival_uses_saved_native_identity_and_lineage."""
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar, 'agent_sessions', {})
+    entry = {'session_id': 'p-claude', 'status': 'interrupted', 'provider': 'claude',
+             'claude_session_id': 'claude-native-9', 'agent_model': 'claude-model',
+             'requested_effort': 'high', 'incognito': False, 'source': 'agent',
+             'spawned_by_session_id': 'grandparent', 'trigger_type': 'workflow',
+             'trigger_id': 'run:step', 'ts': '1'}
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
+    monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [entry])
+    monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
+    monkeypatch.setattr(ar, '_build_agent_context', lambda *a, **k: 'CTX')
+    monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
+    monkeypatch.setattr(ar, '_prior_character', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_resume_cwd_for', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_revive_history_lines', lambda *a, **k: [])
+    monkeypatch.setattr(ar, '_refuse_duplicate_spawn', lambda *a, **k: False)
+    monkeypatch.setattr(ar, '_resolve_claude', lambda: 'fake-claude')
+    monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [
+        '--model', k.get('model_override', ''), '--effort', k.get('effort_override', '')])
+    monkeypatch.setattr(ar, '_sysprompt_file_args', lambda ctx: ([], None))
+    monkeypatch.setattr(ar, '_sysprompt_cleanup', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_register_process', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_hide_windows_delayed', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(seed_delivered=lambda *a: None))
+    class Proc:
+        pid = 999
+        stdout = iter([])
+    argv = []
+    def fake_popen(cmd, **kwargs):
+        argv.append(cmd)
+        return Proc()
+    monkeypatch.setattr(ar.subprocess, 'Popen', fake_popen)
+    monkeypatch.setattr(ar, 'get_manager', lambda pid: SimpleNamespace(
+        lock=threading.RLock(), session_ids=set(), ensure_guardian=lambda: None))
+    project = {'id': 'p', 'project_path': str(tmp_path)}
+    result = ar._revive_parent_for_delegation('p', 'p-claude', 'message', project)
+    assert result['revived'] is True
+    assert argv and 'claude-native-9' in argv[0]
 
 
 def test_cold_revival_unknown_provider_or_missing_native_id_blocks(monkeypatch):

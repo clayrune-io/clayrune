@@ -5290,9 +5290,18 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
     except Exception as exc:
         raise DeliveryBlocked(f'parent project generation is not current: {exc}')
     status = (entry.get('status') or '').lower()
-    if status in ('interrupted', 'error', 'stopped', 'running', 'in_progress'):
+    # 'interrupted' is NOT ambiguous here: it is written only by
+    # _reconcile_pending_agent_log_entries() at server boot, which flips a
+    # leftover 'in_progress' row "because at startup nothing is live yet, so
+    # any in_progress row is by definition orphaned" (server.py). By the time
+    # this function runs post-restart, that parent is definitely dead and
+    # safe to revive from its saved native identity -- the same as
+    # 'completed'/'idle'. Treating it as ambiguous parked every restart-leg
+    # delivery in DeliveryUncertain forever: a reviewed_resolution retry just
+    # replayed the same durable status and hit the same branch again.
+    if status in ('error', 'stopped', 'running', 'in_progress'):
         raise DeliveryUncertain(f'parent durable outcome is ambiguous: {status}')
-    if status not in ('completed', 'idle'):
+    if status not in ('completed', 'idle', 'interrupted'):
         raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
     if entry.get('incognito'):
         raise DeliveryBlocked('private parent cannot receive delegated completion')
