@@ -304,6 +304,22 @@ def test_restart_window_still_dies_if_parent_never_releases(srv, logged, monkeyp
     assert any('waited 15s' in ln for ln in logged)
 
 
+def test_restart_marker_is_consumed_even_when_port_is_free(srv, monkeypatch):
+    """A restart whose port is already free must still clear the marker, or
+    every child this server spawns (agents, their pytest runs) inherits it and
+    later walks into the 15s wait window. Measured 2026-09-17: the full suite
+    hung at ~62% in an agent shell carrying a stale MC_RESTART_FROM_PID."""
+    import socket
+    s = socket.socket()
+    s.bind(('127.0.0.1', 0))
+    free_port = s.getsockname()[1]
+    s.close()
+    monkeypatch.setattr(srv, 'PORT', free_port)
+    monkeypatch.setenv('MC_RESTART_FROM_PID', '4242')
+    assert srv._check_port_conflict() is None
+    assert 'MC_RESTART_FROM_PID' not in __import__('os').environ
+
+
 def test_no_restart_marker_dies_immediately(srv, logged, monkeypatch):
     with _Listener() as lis:
         monkeypatch.setattr(srv, 'PORT', lis.port)

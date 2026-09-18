@@ -47,6 +47,13 @@ import pytest
 # works. setdefault so an operator can still opt a run back in.
 os.environ.setdefault("MC_REMOTE_ENABLED", "0")
 
+# A server restart re-execs with MC_RESTART_FROM_PID set, and anything an older
+# server spawned (an agent shell running this suite) may still carry it. The
+# port-conflict guard reads it as "wait 15s for my parent to release the port",
+# so a stale value turns stranger-holder tests into long waits. Tests that need
+# it set it themselves with monkeypatch.
+os.environ.pop("MC_RESTART_FROM_PID", None)
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
 
 

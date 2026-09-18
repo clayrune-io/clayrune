@@ -2203,20 +2203,24 @@ def _check_port_conflict():
     def _port_free():
         return _try_bind() and _who_answers() is None
 
+    # Consume the restart marker up front, on EVERY path. It used to be popped
+    # only when the wait loop saw the port free up, so a restart whose port was
+    # already free left it in os.environ -- and every agent, test run and
+    # subprocess this server spawned inherited it. Measured 2026-09-17: an
+    # agent's pytest then sent test_port_conflict into this 15s wait loop and
+    # the full suite hung at ~62%.
+    restart_parent = os.environ.pop('MC_RESTART_FROM_PID', '')
+
     if _port_free():
         return  # Clean — port is free.
 
     # Restart re-exec window: the parent we just replaced may still be releasing
     # the socket. Poll briefly before treating this as a real conflict.
-    restart_parent = os.environ.get('MC_RESTART_FROM_PID', '')
     if restart_parent:
         deadline = _time.time() + 15.0
         while _time.time() < deadline:
             _time.sleep(0.3)
             if _port_free():
-                # Clean — clear the marker so a subsequent restart starts fresh
-                # and doesn't inherit a stale value.
-                os.environ.pop('MC_RESTART_FROM_PID', None)
                 _log(f"[port-conflict] dying parent (PID {restart_parent}) released port {PORT}; continuing.", flush=True)
                 return
         _log(f"[port-conflict] waited 15s for parent PID {restart_parent} to release port {PORT}; falling through to conflict check.", flush=True)
