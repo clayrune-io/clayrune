@@ -5147,35 +5147,48 @@ def _revive_from_agent_log(project_id, session_id, message, p):
 # `exec resume` command when called with no live in-memory session (as
 # opposed to only working from `write_followup`, which needs the session to
 # already be alive in `agent_sessions`). Live-verified 2026-09-16:
-#   codex — CodexRuntime.dispatch() passes resume_id straight into
-#           build_command()'s `exec resume <thread_id>` branch.
-#   qwen  — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
-#           build_command()'s `--resume <id>` branch the same way.
-# NOT in this set: gemini. `GeminiRuntime.capabilities().supports_session_
-# resume` reports True, but that flag describes the LIVE-session followup
-# path only (`write_followup` manually appends `--resume <gemini_sid>` from
-# `session['_gemini_session_id']`, a field that is never persisted to the
-# agent log) — `build_command()` has no `resume_id` parameter at all, so a
-# cold dispatch cannot resume a Gemini thread after a restart. Do not trust
-# `supports_session_resume` for this decision; it is provider-declared and
-# already wrong for Gemini.
-_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen'}
+#   codex  — CodexRuntime.dispatch() passes resume_id straight into
+#            build_command()'s `exec resume <thread_id>` branch.
+#   qwen   — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
+#            build_command()'s `--resume <id>` branch the same way.
+#   gemini — added W4/MC-947 (2026-09-18). Previously excluded for two
+#            compounding reasons, both fixed: (1) `GeminiRuntime._read_stream`
+#            stashed its captured session id onto a private
+#            `session['_gemini_session_id']` field that nothing ever
+#            persisted to the agent log, so `provider_session_id` was always
+#            empty for a revived row; (2) `build_command()` had no
+#            `resume_id` parameter at all, so even a caller holding the id
+#            had no way to pass it through a COLD `dispatch()`. Both now
+#            match the codex/qwen shape: the id lands on the generic
+#            `provider_session_id` key (`_runtime_note_init` backfills it
+#            durably), and `build_command(resume_id=...)` appends
+#            `--resume <id>`. Gemini still has NO on-disk transcript file
+#            (`transcript_path()` returns None) — a revived row cannot be
+#            rendered with full prior-turn text the way codex/qwen rollouts
+#            can (see `reconstruct_dead_session`'s `_COLD_RESUMABLE_PROVIDERS`
+#            branch, which degrades gracefully when `transcript_path` is
+#            None) — but the resumed PROCESS itself genuinely continues the
+#            same conversation server-side, which is the property this set
+#            gates.
+_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
 def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     """Continue (or, for a provider with no cold resume, restart) a dead
-    non-Claude conversation (MC-929; cold-resume support added 2026-09-16).
+    non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
+    extended to gemini W4/MC-947 2026-09-18).
 
-    For a provider in `_COLD_RESUMABLE_PROVIDERS` with a captured
-    `provider_session_id`, this IS a resume — the runtime's own `dispatch()`
-    threads `resume_id` into the provider CLI's native resume flag and the
-    conversation continues with its full prior history intact server-side.
-    Every other case (Gemini, or a codex/qwen row whose `provider_session_id`
-    capture failed) has nothing to reattach to and starts cold, with no prior
-    turns as context — it adopts the same MC session_id so the UI tab and
-    agent-log stay addressed to one conversation, but the process itself has
-    no memory of anything before this message. This is what makes the honest
-    trailing line `reconstruct_dead_session` writes for a non-cold-resumable
+    For a provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, gemini) with a
+    captured `provider_session_id`, this IS a resume — the runtime's own
+    `dispatch()` threads `resume_id` into the provider CLI's native resume
+    flag and the conversation continues with its full prior history intact
+    server-side. Every other case (a row whose `provider_session_id` capture
+    failed, predates this fix, or belongs to a provider outside that set) has
+    nothing to reattach to and starts cold, with no prior turns as context —
+    it adopts the same MC session_id so the UI tab and agent-log stay
+    addressed to one conversation, but the process itself has no memory of
+    anything before this message. This is what makes the honest trailing
+    line `reconstruct_dead_session` writes for a non-cold-resumable
     non-Claude history ("sending a message starts a brand-new session")
     actually true, instead of the reply just 404ing.
 
@@ -5492,13 +5505,28 @@ def _last_reply_text(session):
     summary: skip MC status lines in [brackets] and the dispatcher's own
     "> user: task" seed, or the callback would hand the spawner back the very
     task it just sent (MC-935 hit exactly that on the agent_log summary).
+
+    Reconstructs every trailing real-content line (not just the last one) so
+    a delta-chunked Mode-A reply (Gemini/Qwen/Codex/...) is not truncated to
+    its FINAL streamed fragment (MC-947) — the same fix as
+    `_agent_runtime._collect_trailing_reply_text`, deliberately NOT a call to
+    that shared helper: `_log_agent_completion` calls this from its own
+    `finally` block as the safety-net wake when `_log_agent_completion_body`
+    (which DOES use the shared helper, and `_SEED_LINE_RE`) raised on the way
+    there — sharing the dependency would let one fault in `_SEED_LINE_RE`'s
+    matcher take down both the primary scan AND its own backstop
+    (test_a_raise_before_the_wake_still_wakes_the_workflow pins this).
     """
+    collected = []
     for line in reversed(session.get('log_lines') or []):
         t = (line or '').strip()
         if not t or t.startswith('[') or t.startswith('> '):
+            if collected:
+                break
             continue
-        return t
-    return ''
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
 
 
 def _allocate_delegation_turn(session):
@@ -5928,18 +5956,11 @@ def _log_agent_completion_body(session):
     # as "no execution data" — a silent failure that made it into durable
     # memory looking like an ordinary completion).
     lines = session.get('log_lines', [])
-    # Find the last substantial text (skip tool/status markers and the seed).
-    summary = ''
-    for line in reversed(lines):
-        if not line or line.startswith('\n---'):
-            continue
-        stripped = line.strip()
-        if stripped.startswith('['):
-            continue
-        if _agent_runtime._SEED_LINE_RE.match(stripped):
-            continue
-        summary = line
-        break
+    # Find the last substantial text (skip tool/status markers and the seed),
+    # reconstructing the FULL reply across every trailing delta chunk a
+    # Mode-A provider (Gemini/Qwen/Codex/...) logged as separate array
+    # entries — see `_collect_trailing_reply_text` (MC-947).
+    summary = _agent_runtime._collect_trailing_reply_text(lines)
     if not summary:
         # No real assistant text survived the turn. Say so explicitly rather
         # than substituting the last thing in log_lines — for exactly this
@@ -11161,11 +11182,14 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
         _row_spawned = _row_spawned_by(latest, live)
-        # qwen (in `_COLD_RESUMABLE_PROVIDERS`) is cold-resumable exactly like
-        # Codex once we have a captured `provider_session_id` on the latest
-        # turn's log entry — `_revive_non_claude_from_agent_log` uses it the
-        # same way. Everything else (Gemini — MC-929, no transcript store at
-        # all) stays honestly readonly; see reconstruct_dead_session.
+        # Every provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, and
+        # gemini since W4/MC-947) is cold-resumable once we have a captured
+        # `provider_session_id` on the latest turn's log entry —
+        # `_revive_non_claude_from_agent_log` uses it the same way for all
+        # three. Gemini still renders read-only in `reconstruct_dead_session`
+        # (MC-929, no on-disk transcript store to replay prior turns FROM),
+        # but the live process a Resume click spawns genuinely continues the
+        # same conversation server-side.
         _psid = (latest.get('provider_session_id') or '').strip()
         _cold_resumable = provider in _COLD_RESUMABLE_PROVIDERS and bool(_psid)
         rows.append({

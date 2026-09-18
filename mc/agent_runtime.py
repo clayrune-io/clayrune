@@ -664,6 +664,51 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
     return None
 
 
+def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
+    """Reconstruct the final turn's full reply from `log_lines`.
+
+    Claude's block-based reader pushes ONE array element per complete
+    message/content-block (agent_routes.py's claude stream reader,
+    `_visible` appended whole), so the single last non-bracket line already
+    IS the entire reply. Every Mode-A provider instead pushes one element
+    PER STREAMED DELTA CHUNK — `GeminiRuntime._read_stream` appends each
+    `_txt` fragment separately (joined with `''` only in its own local
+    `turn_text_parts`, never back into `log_lines`), and the shared
+    `_mode_a_reader` (Codex/OpenCode/Goose/Aider/Kiro/Qwen) does the same.
+    Taking only the single last line therefore returns just the FINAL delta
+    and silently drops every earlier fragment of that reply.
+
+    Measured live 2026-09-18: a Gemini turn that replied exactly
+    "LIVE2-OK-gemini" streamed as two delta chunks and was persisted as
+    summary "-OK-gemini" — the entire leading chunk lost, not just its first
+    character.
+
+    Walks backward past trailing bracket/seed-line noise, then collects
+    every CONSECUTIVE real-content line and joins them in stream order
+    (mirroring the `''` join `_read_stream` uses for its own local buffer) —
+    a no-op for Claude's one-line-per-message shape, a full reconstruction
+    for delta-chunked providers.
+    """
+    collected: List[str] = []
+    for line in reversed(lines or []):
+        if not line or line.startswith('\n---'):
+            if collected:
+                break
+            continue
+        stripped = line.strip()
+        if stripped.startswith('['):
+            if collected:
+                break
+            continue
+        if _SEED_LINE_RE.match(stripped):
+            if collected:
+                break
+            continue
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
+
+
 # ─────────────────────────────────────────────────────────────────────────────
 # AgentRuntime ABC
 # ─────────────────────────────────────────────────────────────────────────────
@@ -3131,7 +3176,8 @@ class GeminiRuntime(AgentRuntime):
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
-                      channels: str = '', remote_control: bool = False) -> List[str]:
+                      channels: str = '', remote_control: bool = False,
+                      resume_id: str = '') -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
                '--output-format', 'stream-json', '--yolo',
@@ -3147,6 +3193,16 @@ class GeminiRuntime(AgentRuntime):
                # registered, so trusting them for this one process is not a
                # new grant of anything the user didn't already choose.
                '--skip-trust']
+        # --resume <id> continues gemini's OWN session by the id captured off
+        # its `init` envelope (`_read_stream`'s INIT branch, stashed onto
+        # `session['provider_session_id']`) — the same flag `write_followup`
+        # already appends for the LIVE in-memory path. Threading it through
+        # `build_command` itself (W4, MC-947) is what makes a COLD dispatch
+        # after a server restart able to resume too — previously
+        # `_COLD_RESUMABLE_PROVIDERS` excluded gemini specifically because
+        # this method had no resume_id parameter at all.
+        if resume_id:
+            cmd.extend(['--resume', resume_id])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -3174,12 +3230,17 @@ class GeminiRuntime(AgentRuntime):
         session_id = msg.get('session_id')
 
         # init envelope — emitted once at stream start; carries no agent
-        # output. Surfaced as INIT so the reader can consume it silently.
+        # output beyond its own session id and the resolved model (live-
+        # captured 2026-09-18: `{"type":"init",...,"model":"gemini-flash-
+        # lite-latest"}`). Surfaced as INIT so the reader can consume it
+        # silently and backfill `provider_session_id`/`observed_model` (W4,
+        # MC-947) the same way `_mode_a_reader`'s own INIT branch does for
+        # every other Mode-A provider.
         if mtype == 'init':
             return AgentEvent(
                 type=EventType.INIT, provider='gemini',
                 session_id=session_id, mc_session_id=mc_session_id,
-                timestamp=_now_iso(), payload={}, raw=msg,
+                timestamp=_now_iso(), payload={'model': msg.get('model')}, raw=msg,
             )
 
         # 'message' events carry a `role`. Gemini echoes the input prompt
@@ -3682,15 +3743,27 @@ class GeminiRuntime(AgentRuntime):
         slim_prompt = self.with_mc_tool_protocol(
             self._slim_system_prompt(system_prompt))
         task_text = self.with_attachment_hint(task)
-        # Label the boundary explicitly. Everything above is reference setup;
-        # the part below is the ONLY thing to act on. Without this a weaker
-        # model treats the whole context blob as a briefing and invents work.
-        full_prompt = (f"{slim_prompt}\n\n"
-                       f"=== THE USER'S MESSAGE — respond to THIS, and only "
-                       f"this; everything above is reference setup ===\n\n"
-                       f"{task_text}")
+        if resume_id:
+            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
+            # session id, supplied by a caller reviving a dead conversation
+            # after a restart (`_revive_non_claude_from_agent_log`), now that
+            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
+            # full prior turn server-side (mirrors `write_followup`'s own
+            # resumed branch) — re-pasting the whole system prompt here would
+            # both waste tokens and duplicate context the resumed session
+            # already has.
+            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+        else:
+            # Label the boundary explicitly. Everything above is reference
+            # setup; the part below is the ONLY thing to act on. Without this
+            # a weaker model treats the whole context blob as a briefing and
+            # invents work.
+            full_prompt = (f"{slim_prompt}\n\n"
+                           f"=== THE USER'S MESSAGE — respond to THIS, and only "
+                           f"this; everything above is reference setup ===\n\n"
+                           f"{task_text}")
 
-        cmd = self.build_command(model=model)
+        cmd = self.build_command(model=model, resume_id=resume_id)
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
@@ -3923,8 +3996,24 @@ class GeminiRuntime(AgentRuntime):
                     # which grabs whatever gemini session is newest in the
                     # project dir and, after prior runs, is a stale unrelated
                     # conversation that gets continued by mistake.
+                    #
+                    # Stashed under the GENERIC `provider_session_id` key (W4,
+                    # MC-947) — not a gemini-private `_gemini_session_id` —
+                    # because that is the field `_runtime_note_init`
+                    # (agent_routes.py) backfills onto the durable agent_log
+                    # row, and the one `_revive_non_claude_from_agent_log`
+                    # reads back on a cold dispatch after a server restart.
+                    # The private key never reached either: a finished Gemini
+                    # chat's own session id lived ONLY in the volatile
+                    # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
+                    # had to exclude gemini outright (see its own comment,
+                    # now updated) — there was nothing durable to resume BY.
                     if ev.session_id:
-                        session['_gemini_session_id'] = ev.session_id
+                        session['provider_session_id'] = ev.session_id
+                    native_model = ev.payload.get('model')
+                    if isinstance(native_model, str) and native_model:
+                        session['observed_model'] = native_model
+                    _cb('on_init', ev)
                 # USER_MESSAGE (the prompt echo) and unrecognized envelopes
                 # (ev is None) are consumed silently — no agent output.
         except Exception as e:
@@ -4017,12 +4106,18 @@ class GeminiRuntime(AgentRuntime):
         # path re-pasted every turn (the token burn — Gemini has no prompt
         # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
         # loses the ability to ask questions deep into a conversation.
-        gemini_sid = session.get('_gemini_session_id')
+        # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
+        # key — so the same id this dispatch/revive path writes and reads
+        # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
+        # is also what a LIVE followup resumes by; two separate fields for
+        # "gemini's own session id" was how a cold revive after a restart
+        # ended up with nothing to resume.
+        gemini_sid = session.get('provider_session_id')
         # Mode A respawns the CLI per turn, so --model has to be re-stated or
         # the chat silently falls back to the CLI default from turn 2.
         _model = self.session_model(handle)
         if gemini_sid:
-            cmd = self.build_command(model=_model) + ['--resume', gemini_sid]
+            cmd = self.build_command(model=_model, resume_id=gemini_sid)
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
         else:
