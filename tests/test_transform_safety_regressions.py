@@ -8,6 +8,7 @@ nonzero/quota output being published as a successful answer.
 import io
 import json
 from datetime import datetime, timedelta, timezone
+from pathlib import Path
 
 import pytest
 
@@ -250,17 +251,126 @@ def test_claude_transform_refuses_when_not_installed(monkeypatch):
     assert runs == []
 
 
-@pytest.mark.parametrize('name', ['codex', 'gemini', 'qwen'])
-def test_uncertified_vendor_transform_refuses_before_spawn(monkeypatch, name):
+def test_uncertified_vendor_transform_refuses_before_spawn(monkeypatch):
     """Interactive profiles stay unsandboxed by Ron's decision; transforms
-    do not. An adapter that cannot prove tool-freedom refuses."""
+    do not. Codex has no certified no-tools transport yet (offline argv
+    construction only, live proof pending 2026-09-24 -- VENDOR_AGNOSTIC_
+    PROGRAM §8b): it must keep refusing before spawning, and the message
+    must name the vendor and say why (never a silent substitution)."""
     from mc import agent_runtime
     runs = []
     monkeypatch.setattr(agent_runtime.subprocess, 'run', lambda *a, **k: runs.append(a))
     monkeypatch.setattr(agent_runtime.subprocess, 'Popen', lambda *a, **k: runs.append(a))
-    with pytest.raises(RuntimeError, match='cannot enforce tool-free'):
-        agent_runtime.run_text_transform(name, prompt='untrusted transcript')
+    with pytest.raises(agent_runtime.TransformFailure, match='cannot enforce tool-free') as exc:
+        agent_runtime.run_text_transform('codex', prompt='untrusted transcript')
     assert runs == []
+    assert exc.value.provider == 'codex'
+    assert 'not yet certified' in str(exc.value)
+
+
+# ── Gemini/Qwen certified for TOOL_FREE_TRANSFORM (VENDOR_AGNOSTIC_PROGRAM
+#    §8b W1): before this, EVERY Scribe/condense/Distiller/Claydo/character
+#    call on a Gemini or Qwen session silently ran through Claude instead
+#    (mc.memory._scribe_call's hardcoded 'claude' fallback) when Claude was
+#    installed, and refused outright when it wasn't -- either way a non-
+#    Claude user never got a real summary from their own session's provider.
+#    _model_call already threads the session's own provider through
+#    _with_transform_context/_provider_transform; the only missing piece was
+#    these two adapters proving they are tool-free. ──────────────────────────
+
+def _fake_run_capturing(monkeypatch, stdout):
+    from mc import agent_runtime
+    runs = []
+
+    class Done:
+        returncode = 0
+        stderr = ''
+    Done.stdout = stdout
+
+    def fake_run(cmd, **kw):
+        runs.append((cmd, kw))
+        return Done()
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+    return runs
+
+
+def _fresh_certified_gemini(monkeypatch):
+    """A FRESH GeminiRuntime, not the process-wide registered singleton --
+    other test modules exercise that shared instance's real auth cache
+    (`_auth_cache`), which is instance state with no per-test reset."""
+    from mc import agent_runtime
+    runtime = agent_runtime.GeminiRuntime()
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: Path('gemini-fake'))
+    monkeypatch.setattr(runtime, 'auth_status', lambda: {'ok': True})
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'gemini', runtime)
+    return runtime
+
+
+def _fresh_certified_qwen(monkeypatch):
+    from mc import agent_runtime
+    runtime = agent_runtime.QwenRuntime()
+    monkeypatch.setattr(runtime, 'resolve_binary', lambda: Path('qwen-fake'))
+    monkeypatch.setattr(runtime, '_qwen_auth_state', lambda: ('ok', 'test'))
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'qwen', runtime)
+    return runtime
+
+
+@pytest.mark.parametrize('name,make_runtime,flag_pairs', [
+    ('gemini', _fresh_certified_gemini, [('--skip-trust',), ('-e', 'none')]),
+    ('qwen', _fresh_certified_qwen, [('--bare',), ('--max-tool-calls', '0')]),
+])
+def test_gemini_qwen_transform_is_authorized_and_isolated(monkeypatch, name, make_runtime, flag_pairs):
+    from mc import agent_runtime
+    runs = _fake_run_capturing(monkeypatch, 'SUMMARY')
+    runtime = make_runtime(monkeypatch)
+    assert runtime.tool_free_transform_enforced is True
+
+    result = agent_runtime.run_text_transform(name, prompt='summarize', stdin_text='transcript')
+
+    assert result == 'SUMMARY'
+    assert len(runs) == 1
+    cmd = runs[0][0]
+    for pair in flag_pairs:
+        assert agent_runtime._argv_contains(cmd, pair), (name, pair, cmd)
+
+
+@pytest.mark.parametrize('name,make_runtime,argv_attr,break_argv', [
+    ('gemini', _fresh_certified_gemini, '_transform_argv',
+     lambda cmd: [c for c in cmd if c != '--skip-trust']),
+    ('qwen', _fresh_certified_qwen, '_transform_argv',
+     lambda cmd: [c for c in cmd if c != '--bare']),
+])
+def test_gemini_qwen_transform_refuses_when_isolation_flag_is_missing(
+        monkeypatch, name, make_runtime, argv_attr, break_argv):
+    """The self-check in transform_evidence() is load-bearing: a dropped
+    isolation flag must refuse the transform, not silently run with it."""
+    from mc import agent_runtime
+    runs = _fake_run_capturing(monkeypatch, 'SUMMARY')
+    runtime = make_runtime(monkeypatch)
+    real_argv = getattr(runtime, argv_attr)
+    monkeypatch.setattr(runtime, argv_attr, lambda **kw: break_argv(real_argv(**kw)))
+    with pytest.raises(agent_runtime.TransformFailure, match='unauthorized'):
+        agent_runtime.run_text_transform(name, prompt='summarize')
+    assert runs == []
+
+
+def test_codex_transform_argv_is_offline_correct_but_stays_uncertified():
+    """Command-construction proof (VENDOR_AGNOSTIC_PROGRAM §8b W1 item 2):
+    no live call, no allowance spent. `-s read-only` replaces the dispatch
+    path's `--dangerously-bypass-approvals-and-sandbox`, and
+    --ignore-user-config keeps this box's real ~/.codex/config.toml
+    [mcp_servers.*] entries from loading."""
+    from mc import agent_runtime
+    runtime = agent_runtime.CodexRuntime()
+    runtime._bin_cache = 'codex-fake'
+    argv = runtime._transform_argv(model='gpt-6-astra')
+    assert agent_runtime._argv_contains(argv, ('-s', 'read-only'))
+    assert agent_runtime._argv_contains(argv, ('--ignore-user-config',))
+    assert agent_runtime._argv_contains(argv, ('--skip-git-repo-check',))
+    assert agent_runtime._argv_contains(argv, ('--ephemeral',))
+    assert '--dangerously-bypass-approvals-and-sandbox' not in argv
+    # Still refuses through the seam -- offline proof never flips certification.
+    assert runtime.tool_free_transform_enforced is False
 
 
 # ── Fenn #4: a failed transform is raised, typed, and never becomes content ──
