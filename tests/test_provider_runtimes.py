@@ -116,6 +116,28 @@ class TestGeminiRuntime:
         assert '--output-format' in cmd
         assert 'stream-json' in cmd
 
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it) — an agent that could not
+        see a pasted image then burned turns on `run_shell_command` trying
+        to inspect the binary file directly instead. `--include-directories`
+        is the CLI's own documented fix; live re-test with the SAME image
+        one level outside the dispatch cwd, plus this flag pointed at its
+        real parent directory, made `read_file` succeed and the model
+        correctly describe the image ("PURPLE ELEPHANT" in purple, matching
+        the actual drawn content, not a guess)."""
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
+
     def test_parse_event_empty(self):
         assert self.rt.parse_event('') is None
         assert self.rt.parse_event('\n') is None
@@ -962,6 +984,26 @@ class TestQwenRuntime:
         # --chat-recording is required on every respawn for --resume to work
         # at all (the CLI's own --help text) — flags don't persist.
         assert '--chat-recording' in cmd
+
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it). `--include-directories`
+        widens the workspace; live re-test with the SAME image one level
+        outside the dispatch cwd, plus this flag pointed at its parent, made
+        `read_file` succeed and the model correctly describe the image."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
 
     def test_build_command_with_explicit_mcp_config_allowlists_exactly_it(self):
         """W4/MC-947, live-verified 2026-09-18 against real qwen-code 0.23.4

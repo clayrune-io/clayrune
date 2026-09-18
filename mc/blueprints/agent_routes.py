@@ -6877,6 +6877,17 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # dispatch() has a **_extra catchall, so this is a no-op for
             # them — same shape as unattended_sandbox_enabled above.
             mcp_config_json=_resolve_project_mcp_config(p) or '',
+            # W4/MC-947: pasted/uploaded attachments live under
+            # UPLOADS_DIR (`data/uploads/`), a DIFFERENT directory tree
+            # than most projects' own roots. Gemini/Qwen's `read_file`
+            # tool refuses a path outside its workspace root
+            # (`isWithinRoot`, live-reproduced) — widening the workspace
+            # to include UPLOADS_DIR is what makes a pasted image actually
+            # reach the model instead of erroring. Only GeminiRuntime/
+            # QwenRuntime.dispatch() declare this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op for them.
+            extra_include_dirs=(
+                [str(UPLOADS_DIR)] if UPLOADS_DIR else []),
         )
 
     try:

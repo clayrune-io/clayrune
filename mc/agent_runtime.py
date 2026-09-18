@@ -3177,7 +3177,8 @@ class GeminiRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '') -> List[str]:
+                      resume_id: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
                '--output-format', 'stream-json', '--yolo',
@@ -3203,6 +3204,21 @@ class GeminiRuntime(AgentRuntime):
         # this method had no resume_id parameter at all.
         if resume_id:
             cmd.extend(['--resume', resume_id])
+        # W4/MC-947 (2026-09-18), live-verified: `read_file`'s own
+        # `isWithinRoot` workspace check refuses a path outside the CLI's
+        # cwd/workspace root — reproduced live, a pasted-image attachment
+        # under Clayrune's `data/uploads/` (a DIFFERENT directory tree than
+        # any project whose root isn't an ancestor of it) made `read_file`
+        # error every time, and the agent then burned turns on
+        # `run_shell_command` trying to inspect the binary file itself
+        # instead of ever seeing the image. `--include-directories <dir>`
+        # is the CLI's own documented fix (`gemini --help`) — moving the
+        # SAME file one level inside the workspace root and re-running with
+        # this flag pointed at its real parent directory fixed it: the
+        # image loaded and the model correctly described its contents.
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -3732,6 +3748,7 @@ class GeminiRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -3767,7 +3784,8 @@ class GeminiRuntime(AgentRuntime):
                            f"this; everything above is reference setup ===\n\n"
                            f"{task_text}")
 
-        cmd = self.build_command(model=model, resume_id=resume_id)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 extra_include_dirs=extra_include_dirs)
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
@@ -3806,6 +3824,10 @@ class GeminiRuntime(AgentRuntime):
             'incognito': bool(incognito),
             '_dispatch_time': _time.time(),
             '_system_prompt': slim_prompt or '',
+            # Stashed so write_followup's per-turn respawn (Mode A has no
+            # persistent process) keeps the same widened workspace root —
+            # W4/MC-947, mirrors `_mcp_config_json` on QwenRuntime.
+            '_extra_include_dirs': list(extra_include_dirs or []),
         })
         _log_mcp_sync_result(session_dict['log_lines'], mcp_sync)
 
@@ -4134,17 +4156,21 @@ class GeminiRuntime(AgentRuntime):
         # ended up with nothing to resume.
         gemini_sid = session.get('provider_session_id')
         # Mode A respawns the CLI per turn, so --model has to be re-stated or
-        # the chat silently falls back to the CLI default from turn 2.
+        # the chat silently falls back to the CLI default from turn 2. Same
+        # story for the widened workspace root (W4/MC-947) — re-read the
+        # stash `dispatch()` left so an attachment on turn 2+ still resolves.
         _model = self.session_model(handle)
+        _include_dirs = session.get('_extra_include_dirs') or []
         if gemini_sid:
-            cmd = self.build_command(model=_model, resume_id=gemini_sid)
+            cmd = self.build_command(model=_model, resume_id=gemini_sid,
+                                     extra_include_dirs=_include_dirs)
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
-            cmd = self.build_command(model=_model)
+            cmd = self.build_command(model=_model, extra_include_dirs=_include_dirs)
             session['_system_prompt'] = self.with_mc_tool_protocol(
                 self._slim_system_prompt(session.get('_system_prompt') or ''))
             full_prompt = _compose_respawn_prompt(
@@ -5060,7 +5086,8 @@ class QwenRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '', mcp_config_json: str = '') -> List[str]:
+                      resume_id: str = '', mcp_config_json: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         """Return the qwen one-shot command.
 
         Flags verified live against qwen-code 0.23.4 (`qwen --help` plus real
@@ -5156,6 +5183,13 @@ class QwenRuntime(AgentRuntime):
                    + (allowed_names or [_QWEN_MCP_DENY_SENTINEL]))
         if resume_id:
             cmd.extend(['--resume', resume_id])
+        # W4/MC-947 — same `--include-directories` fix as Gemini's own
+        # build_command (qwen-code is a gemini-cli fork and shares the same
+        # `isWithinRoot` workspace-boundary check on its `read_file` tool;
+        # see Gemini's docstring for the live repro).
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -5532,9 +5566,29 @@ class QwenRuntime(AgentRuntime):
             # one-tool-call turn) — same semantics as Claude's, so
             # accumulate_result_turns's per-turn-sum logic applies unchanged.
             emits_num_turns=True,
-            # read_file is a real tool call, not multimodal image input — but
-            # matches the same honest-true bar GeminiRuntime sets for its own
-            # file-based image reading.
+            # W4/MC-947 (2026-09-18), LIVE FINDING, NOT fully fixed — kept
+            # True on mechanism parity with Gemini (the read_file path, its
+            # workspace-boundary fix, and its own --include-directories
+            # widening all apply identically here), but live-verified this
+            # is an OVERCLAIM for the actual default model in use
+            # (qwen3-coder-plus, a code model with no vision). Two distinct
+            # findings, both reproduced:
+            #  1. Without being told to actually verify, the model FABRICATED
+            #     a plausible-looking description ("white text on a black
+            #     background... TEST IMAGE PROBE") that matched the FILENAME,
+            #     not the real image (drawn content: "PURPLE ELEPHANT" in
+            #     purple on white) — no read_file tool call even appears in
+            #     the turn's log_lines. Same fabricate-under-uncertainty
+            #     pattern flagged separately from W5's dispatcher testing.
+            #  2. Explicitly instructed to call read_file and not guess, it
+            #     DID call the tool and then honestly reported: "this model
+            #     doesn't support image input, and the read_file tool cannot
+            #     process this type of file."
+            # Gemini (gemini-flash-lite-latest), same mechanism, same test
+            # image, correctly read and described it both times. Whoever
+            # verifies a Qwen vision-capable model id should re-test and only
+            # then treat this flag as genuinely proven, not just mechanism-
+            # parity-true.
             image_input=True,
             context_window=None,
             # Prepended into the prompt text, same as GeminiRuntime — native
@@ -5616,6 +5670,7 @@ class QwenRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  mcp_config_json: str = '',
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
@@ -5631,7 +5686,8 @@ class QwenRuntime(AgentRuntime):
         # revive always silently started a brand-new thread with no history,
         # despite `build_command` already knowing how to build `--resume`.
         cmd = self.build_command(model=model, resume_id=resume_id,
-                                 mcp_config_json=mcp_config_json)
+                                 mcp_config_json=mcp_config_json,
+                                 extra_include_dirs=extra_include_dirs)
         # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
         # dispatch(): the universal context block already tells the model to
         # use this fence, but nothing explains its shape without this.
@@ -5660,6 +5716,9 @@ class QwenRuntime(AgentRuntime):
         # silently reverting to deny-all on turn 2 — mirrors how
         # `_system_prompt` is stashed for the same reason.
         handle.session_dict['_mcp_config_json'] = mcp_config_json
+        # W4/MC-947 — same per-turn-respawn stash as _mcp_config_json above,
+        # for the widened workspace root (see build_command's docstring).
+        handle.session_dict['_extra_include_dirs'] = list(extra_include_dirs or [])
         return handle
 
     def write_followup(self, handle: SessionHandle, message: str,
@@ -5686,7 +5745,8 @@ class QwenRuntime(AgentRuntime):
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
         cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id,
-                                 mcp_config_json=session.get('_mcp_config_json') or '')
+                                 mcp_config_json=session.get('_mcp_config_json') or '',
+                                 extra_include_dirs=session.get('_extra_include_dirs') or [])
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         # A configured value WINS over the inherited process env — see
