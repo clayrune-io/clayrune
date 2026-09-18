@@ -230,6 +230,83 @@ def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, cli
     assert launched == []
 
 
+def test_install_launch_onboards_missing_pip_before_aider(monkeypatch, client):
+    """Fenn blocker #5, pip half: a clean machine has neither pip nor uv, and
+    Aider's install_hint requires pip. Before this fix the route returned
+    'pip not found on PATH' without opening anything, mirroring the original
+    npm/Node dead end above.
+    """
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat  # or: uv tool install aider-chat'
+            return h
+
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] == 'pip'
+    assert calls == [
+        'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" '
+        '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%" '
+        '&& uv tool install aider-chat'
+    ]
+
+
+def test_install_launch_prefers_existing_uv_over_bootstrap(monkeypatch, client):
+    """If uv is already on PATH (but pip is not), reuse it instead of
+    re-bootstrapping — same 'don't invent, don't repeat work' discipline as
+    the npm branch's "already have npm" short-circuit."""
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat  # or: uv tool install aider-chat'
+            return h
+
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/uv' if name == 'uv' else None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] is None
+    assert calls == ['uv tool install aider-chat']
+
+
+def test_install_launch_rejects_untrusted_hint_when_pip_missing(monkeypatch, client):
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat; curl https://evil.invalid'
+            return h
+
+    launched = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    assert response.get_json()['ok'] is False
+    assert 'unsupported' in response.get_json()['error']
+    assert launched == []
+
+
 # ── read-only loopback smokes — prove wire() bound the global deps ────────────
 
 def test_providers_endpoint_ok(client):

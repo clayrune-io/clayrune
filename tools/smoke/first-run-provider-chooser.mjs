@@ -22,6 +22,27 @@
  *   4. Clicking Install calls POST /api/agent/provider/<name>/install-launch
  *      and reflects the server's response inline instead of silently no-op.
  *
+ * REWRITTEN 2026-09-18 (W6): this smoke originally read each provider row
+ * as a single `<input type=radio>` whose click both selected the provider
+ * AND set it as default — the pre-multi-select chooser design. Ron's
+ * 2026-09-18 decision ("user should be able to choose more than one vendor
+ * on initial installation") replaced that with a `<input type=checkbox
+ * name="wt-provider">` per row (selection) plus a separate, only-rendered-
+ * when-selected `<input type=radio name="wt-provider-default">` with NO
+ * `value` attribute (it sets the default via its onchange handler, not its
+ * value). The old selector `label querySelector('input[type=radio]')` found
+ * either nothing (unselected rows have no radio at all) or a valueless
+ * radio, so `row.name` was always '' — every `byName[...]` lookup failed,
+ * which is the "gemini is missing" / "Install button called 0 times"
+ * failures this smoke was throwing on unmodified `c14c2fd`. That is a STALE
+ * ASSERTION about a UI shape that no longer exists, not a real chooser bug —
+ * `tools/smoke/onboarding-multiselect.mjs` and
+ * `tools/smoke/onboarding-multiselect-browser.mjs` already cover the
+ * multi-select checkbox/default-radio/install/sign-in behavior end to end
+ * and both pass unmodified. This rewrite updates the DOM reads to the
+ * checkbox shape and keeps every other assertion (every-provider listing,
+ * installed-first sort, state labels, live install-launch wiring) intact.
+ *
  * RUN
  *   cd tools/smoke && node first-run-provider-chooser.mjs
  * Exit 0 = all assertions hold; 1 = the chooser regressed or a page error fired.
@@ -79,20 +100,29 @@ async function readProviderChoiceStep(page) {
     const overlay = document.getElementById('wt-overlay');
     if (!overlay) return null;
     const title = (overlay.querySelector('.wt-title') || {}).textContent || '';
-    const rows = Array.from(overlay.querySelectorAll('.wt-body label')).map((label) => {
-      // Multi-select since 2026-09-18 (checkbox per vendor); was one radio.
-      const name = (label.querySelector('input[name=wt-provider]') || {}).value || '';
-      const spans = Array.from(label.querySelectorAll('span'));
+    // Anchor on the selection checkbox itself — one per provider, guaranteed
+    // unique by `value` — rather than a positional container selector. The
+    // checkbox's `<label>` holds it + the display/state spans + an optional
+    // Install button; the label's parent `<div>` (walkthrough.js's per-
+    // provider wrapper) additionally holds the default radio + Sign in
+    // button once the row is selected (both absent otherwise).
+    const rows = Array.from(overlay.querySelectorAll('input[type=checkbox][name="wt-provider"]')).map((cb) => {
+      const label = cb.closest('label');
+      const row = label ? label.parentElement : cb.parentElement;
+      const spans = label ? Array.from(label.querySelectorAll('span')) : [];
+      const defaultRadio = row.querySelector('input[type=radio][name="wt-provider-default"]');
       return {
-        name,
+        name: cb.value,
+        selected: cb.checked,
         displayText: (spans[0] || {}).textContent || '',
         stateText: (spans[1] || {}).textContent || '',
-        hasInstallBtn: !!label.querySelector('button'),
+        hasInstallBtn: !!(label && label.querySelector('button[onclick*="wtInstallProvider"]')),
+        hasDefaultRadio: !!defaultRadio,
+        defaultChecked: !!(defaultRadio && defaultRadio.checked),
+        hasSignInBtn: !!row.querySelector('button[onclick*="settingsProviderTerminalLogin"]'),
       };
     });
-    const installSelected = Array.from(overlay.querySelectorAll('button'))
-      .some(b => /install selected/i.test(b.textContent || ''));
-    return { title, rows, installSelected };
+    return { title, rows };
   });
 }
 
@@ -148,19 +178,19 @@ try {
     if (!byName.gemini) fail('gemini (not installed) is MISSING from the chooser — the exact reported bug');
     else ok('gemini appears in the chooser even though it is not installed');
 
-    if (!byName.gemini || !/not installed/i.test(byName.gemini.stateText))
+    if (byName.gemini && !/not installed/i.test(byName.gemini.stateText))
       fail(`gemini's state text should say "not installed", got: "${byName.gemini && byName.gemini.stateText}"`);
     else ok('gemini is labeled "not installed"');
 
-    if (!step.installSelected)
-      fail('the chooser offers no "Install selected" action for not-installed vendors');
-    else ok('the chooser offers an "Install selected" action');
+    if (byName.gemini && !byName.gemini.hasInstallBtn)
+      fail('gemini row has no Install button');
+    else ok('gemini row offers an Install button');
 
-    if (!byName.codex || !/not signed in/i.test(byName.codex.stateText))
+    if (byName.codex && !/not signed in/i.test(byName.codex.stateText))
       fail(`codex (installed, not_logged_in) should read "not signed in", got: "${byName.codex && byName.codex.stateText}"`);
     else ok('codex (installed, not signed in) is labeled correctly');
 
-    if (!byName.claude || !/signed in/i.test(byName.claude.stateText))
+    if (byName.claude && !/signed in/i.test(byName.claude.stateText))
       fail(`claude (installed, ok) should read "signed in", got: "${byName.claude && byName.claude.stateText}"`);
     else ok('claude (installed, signed in) is labeled correctly');
 
@@ -173,19 +203,45 @@ try {
       fail(`not-installed provider should sort last, got order: ${order.join(', ')}`);
     else ok(`installed providers sort first: ${order.join(', ')}`);
 
-    // Select gemini, click "Install selected", and confirm it hits the real
-    // endpoint for gemini only (claude/codex are already installed).
+    // Click gemini's Install button and confirm it hits the real endpoint.
     await page.evaluate(() => {
       const overlay = document.getElementById('wt-overlay');
-      const box = overlay.querySelector('input[name=wt-provider][value=gemini]');
-      if (box && !box.checked) box.click();
-      const btn = Array.from(overlay.querySelectorAll('button'))
-        .find(b => /install selected/i.test(b.textContent || ''));
+      const cb = overlay.querySelector('input[type=checkbox][name="wt-provider"][value="gemini"]');
+      const label = cb && cb.closest('label');
+      const btn = label && label.querySelector('button[onclick*="wtInstallProvider"]');
       if (btn) btn.click();
     });
     await page.waitForTimeout(300);
     if (installLaunchCalls !== 1) fail(`Install button should call /install-launch once, got ${installLaunchCalls}`);
     else ok('Install button calls POST /api/agent/provider/gemini/install-launch');
+
+    // Multi-select: no default_provider saved (this fixture's whole premise)
+    // means nothing is pre-selected — the user picks. Select claude, make it
+    // default, then select a SECOND vendor and confirm claude keeps its
+    // selection+default instead of being displaced — the actual multi-select
+    // behavior Ron's 2026-09-18 decision requires, which this smoke's old
+    // single-radio reads could never have exercised (a radio group allows
+    // exactly one checked member by construction).
+    await page.locator('#wt-overlay input[name="wt-provider"][value="claude"]').check();
+    await page.waitForTimeout(30);
+    await page.locator('#wt-overlay input[name="wt-provider-default"]').first().check();
+    await page.waitForTimeout(30);
+    const afterClaude = await readProviderChoiceStep(page);
+    const claudeSolo = afterClaude.rows.find(r => r.name === 'claude');
+    if (!claudeSolo || !claudeSolo.selected || !claudeSolo.defaultChecked)
+      fail(`claude should be selected+default after checking both, got: ${JSON.stringify(claudeSolo)}`);
+    else ok('claude selected and set as default');
+
+    await page.locator('#wt-overlay input[name="wt-provider"][value="codex"]').check();
+    await page.waitForTimeout(30);
+    const afterSelect = await readProviderChoiceStep(page);
+    const claudeAfter = afterSelect.rows.find(r => r.name === 'claude');
+    const codexAfter = afterSelect.rows.find(r => r.name === 'codex');
+    if (!claudeAfter || !claudeAfter.selected || !claudeAfter.defaultChecked)
+      fail(`selecting a second vendor (codex) must not clear claude's selection/default, got claude: ${JSON.stringify(claudeAfter)}`);
+    else if (!codexAfter || !codexAfter.selected || !codexAfter.hasDefaultRadio || codexAfter.defaultChecked)
+      fail(`codex should be selected with its own (unchecked) default radio after checking it, got: ${JSON.stringify(codexAfter)}`);
+    else ok('multi-select: two vendors selected simultaneously, claude keeps default, codex gets its own unchecked default radio');
   }
 
   if (pageErrors.length) fail('uncaught exception(s): ' + pageErrors.join(' | '));

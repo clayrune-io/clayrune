@@ -1727,11 +1727,11 @@ def _install_command_required_binary(cmd: str) -> str:
 
 
 # Keep prerequisite onboarding deliberately narrow: only the known provider
-# npm packages may be composed here, and the Node installer is a fixed,
+# packages may be composed here, and each prerequisite installer is a fixed,
 # platform-specific command. We never interpolate user input or credentials
 # into a shell command. The normal installer handles these prerequisites
 # before first launch; this is the in-app repair path for app bundles and
-# upgrades where npm was not present when the UI was opened.
+# upgrades where npm/pip was not present when the UI was opened.
 _PROVIDER_NPM_PACKAGES = {
     'claude': '@anthropic-ai/claude-code',
     'codex': '@openai/codex',
@@ -1739,36 +1739,72 @@ _PROVIDER_NPM_PACKAGES = {
     'qwen': '@qwen-code/qwen-code',
 }
 
+# Aider is the one CLI installed via pip rather than npm (agent_runtime.py's
+# AiderRuntime.health_check() install_hint). A clean machine has neither pip
+# nor a system Python on PATH just as reliably as it lacks Node/npm, so this
+# needs its own prerequisite bootstrap — same allowlist discipline as npm above.
+_PROVIDER_PIP_PACKAGES = {
+    'aider': 'aider-chat',
+}
+
 
 def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
     """Return ``(command, prerequisite)`` for a provider install.
 
     ``hint`` is trusted runtime metadata, but the composed fallback is only
-    emitted when it has the exact expected npm shape for the requested,
+    emitted when it has the exact expected npm/pip shape for the requested,
     allowlisted provider. Unknown provider hints fail closed.
     """
     required = _install_command_required_binary(hint)
-    if required != 'npm' or shutil.which('npm'):
-        return hint, ''
-    package = _PROVIDER_NPM_PACKAGES.get(name)
-    expected = f'npm install -g {package}' if package else ''
-    if not package or hint.strip() != expected:
-        return hint, 'unsupported'
-    if sys.platform == 'win32':
-        # winget updates the machine after this shell starts. Explicitly add
-        # the stable Node/npm locations before invoking npm; inheriting the
-        # old PATH was the original fresh-PC failure.
-        node = ('winget install --id OpenJS.NodeJS.LTS -e --silent '
-                '--accept-source-agreements --accept-package-agreements '
-                '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%"')
-    else:
-        # Reuse the versioned user-local nvm flow from install.sh. It works on
-        # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
-        # Node version, and sources nvm again in this terminal before npm.
-        node = ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
-                '| bash && export NVM_DIR="$HOME/.nvm" && '
-                '. "$NVM_DIR/nvm.sh" && nvm install 20')
-    return f'{node} && {expected}', 'npm'
+    if required == 'npm':
+        if shutil.which('npm'):
+            return hint, ''
+        package = _PROVIDER_NPM_PACKAGES.get(name)
+        expected = f'npm install -g {package}' if package else ''
+        if not package or hint.strip() != expected:
+            return hint, 'unsupported'
+        if sys.platform == 'win32':
+            # winget updates the machine after this shell starts. Explicitly add
+            # the stable Node/npm locations before invoking npm; inheriting the
+            # old PATH was the original fresh-PC failure.
+            node = ('winget install --id OpenJS.NodeJS.LTS -e --silent '
+                    '--accept-source-agreements --accept-package-agreements '
+                    '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%"')
+        else:
+            # Reuse the versioned user-local nvm flow from install.sh. It works on
+            # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
+            # Node version, and sources nvm again in this terminal before npm.
+            node = ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
+                    '| bash && export NVM_DIR="$HOME/.nvm" && '
+                    '. "$NVM_DIR/nvm.sh" && nvm install 20')
+        return f'{node} && {expected}', 'npm'
+    if required == 'pip':
+        if shutil.which('pip') or shutil.which('pip3'):
+            return hint, ''
+        package = _PROVIDER_PIP_PACKAGES.get(name)
+        expected = f'pip install {package}' if package else ''
+        # Exact match only — same discipline as the npm branch above. A
+        # startswith() check would let a hint like 'pip install aider-chat;
+        # curl evil' through on its shared prefix; AiderRuntime's hint has
+        # exactly two known-good literal forms, so allowlist both in full.
+        expected_with_alt = f'{expected}  # or: uv tool install {package}' if package else ''
+        if not package or hint.strip() not in (expected, expected_with_alt):
+            return hint, 'unsupported'
+        # Prefer an already-present uv over bootstrapping one.
+        if shutil.which('uv'):
+            return f'uv tool install {package}', ''
+        # Neither pip nor uv on PATH: bootstrap uv. Unlike pip, uv's installer
+        # needs no pre-existing Python — a standalone per-user binary, no
+        # admin — so it works on a machine that has never had Python at all.
+        if sys.platform == 'win32':
+            uv_install = ('powershell -ExecutionPolicy ByPass -c '
+                          '"irm https://astral.sh/uv/install.ps1 | iex" '
+                          '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%"')
+        else:
+            uv_install = ('curl -LsSf https://astral.sh/uv/install.sh | sh '
+                          '&& export PATH="$HOME/.local/bin:$PATH"')
+        return f'{uv_install} && uv tool install {package}', 'pip'
+    return hint, ''
 
 
 @bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
