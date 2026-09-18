@@ -6,6 +6,15 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17j] — Move Claydo and Scribe transforms behind runtimes
+
+- Give provider runtimes a common short-text streaming boundary so Claydo keeps
+  incremental SSE output while its route no longer constructs or parses a
+  Claude process; runtimes without native streaming emit one safe delta.
+- Route Scribe, checkpoint reduction, continuity, and structured-condense model
+  calls through an authoritative provider context. Non-Claude checkpoints use
+  native session IDs and never inherit Claude tier names such as `haiku`.
+
 ## [2026-09-17i] — Add dormant recoverable memory publication kernel
 
 - Add durable publication intents and receipts for multi-file memory updates,

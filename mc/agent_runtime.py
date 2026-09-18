@@ -34,7 +34,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
 
 # Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
 # set of trigger_types steward/fence.py already treats as "nobody is reading
@@ -801,6 +801,43 @@ class AgentRuntime(ABC):
         """
         return None
 
+    def stream_text(self, *, prompt: str, system_prompt: str = '',
+                    model: str = '', effort: str = '', max_turns: int = 1,
+                    stdin_text: Optional[str] = None,
+                    cwd: Optional[str] = None) -> Iterator[str]:
+        """Yield text produced by a short provider operation.
+
+        Providers with a native text stream override this boundary. The base
+        implementation deliberately yields one delta from ``oneshot`` so a
+        feature can preserve its streaming response contract even when the
+        selected provider only exposes a non-streaming transform.
+        """
+        kwargs: Dict[str, Any] = {
+            'prompt': prompt,
+            'system_prompt': system_prompt,
+            'model': model,
+            'max_turns': max_turns,
+            'stdin_text': stdin_text,
+            'cwd': cwd,
+        }
+        try:
+            params = inspect.signature(self.oneshot).parameters
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                                 for p in params.values())
+        except (TypeError, ValueError):
+            params = {}
+            accepts_kwargs = False
+        if effort and ('effort' in params or accepts_kwargs):
+            kwargs['effort'] = effort
+        result = self.oneshot(**kwargs)
+        if result is None:
+            detail = str(getattr(self, 'last_error', '') or '').strip()
+            suffix = f': {detail}' if detail else ''
+            raise RuntimeError(f"Provider '{self.name}' text stream failed{suffix}")
+        text = str(getattr(result, 'text', '') or '')
+        if text:
+            yield text
+
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         """Translate a non-zero exit code + recent output into a user-friendly hint.
 
@@ -932,9 +969,32 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
     result = fn(**kwargs)
     if result is None:
         detail = str(getattr(runtime, 'last_error', '') or '').strip()
+        if detail.lower().startswith('timeout'):
+            raise TimeoutError(detail)
         suffix = f': {detail}' if detail else ''
         raise RuntimeError(f"Provider '{provider}' text transform failed{suffix}")
     return str(getattr(result, 'text', '') or '')
+
+
+def stream_text_transform(provider: str, *, prompt: str,
+                          system_prompt: str = '', model: str = '',
+                          effort: str = '', stdin_text: Optional[str] = None,
+                          cwd: Optional[str] = None,
+                          max_turns: int = 1) -> Iterator[str]:
+    """Return a provider-neutral iterator for short text streaming.
+
+    The caller owns only the response protocol. Provider command construction,
+    parsing, timeout handling, and child cleanup stay inside the runtime. A
+    runtime without native streaming uses the base one-delta fallback.
+    """
+    runtime = get_runtime((provider or '').strip().lower())
+    fn = getattr(runtime, 'stream_text', None)
+    if not callable(fn):
+        raise RuntimeError(f"Provider '{provider}' does not support text streaming")
+    return cast(Iterator[str], fn(
+        prompt=prompt, system_prompt=system_prompt, model=model,
+        effort=effort, stdin_text=stdin_text, cwd=cwd,
+        max_turns=max_turns))
 
 
 def available_runtimes() -> List[AgentRuntime]:
@@ -2181,6 +2241,20 @@ class ClaudeRuntime(AgentRuntime):
 
     # ── Oneshot — lifted from _scribe_call() in server.py ────────────────────
 
+    @staticmethod
+    def _merge_oneshot_instruction(prompt: str, system_prompt: str,
+                                   cwd: Optional[str]) -> str:
+        """Avoid duplicating a brief Claude already auto-loads from cwd."""
+        if system_prompt and cwd:
+            try:
+                loaded = (Path(cwd) / 'CLAUDE.md').read_text(encoding='utf-8')
+                if loaded == system_prompt:
+                    return prompt
+            except OSError:
+                pass
+        return ((system_prompt + '\n\n' + prompt).strip()
+                if system_prompt else prompt)
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
@@ -2219,7 +2293,7 @@ class ClaudeRuntime(AgentRuntime):
         collapsed timeout / spawn-failure / non-zero-exit into an indistinguish-
         able None, which is why 78 extraction errors sat unexplained for weeks.
         """
-        instruction = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
+        instruction = self._merge_oneshot_instruction(prompt, system_prompt, cwd)
         body = stdin_text or ''
         if body:
             # Fence the transcript as DATA and RESTATE the instruction after it.
@@ -2275,6 +2349,99 @@ class ClaudeRuntime(AgentRuntime):
             self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
         return OneshotResult(text=(r.stdout or '').strip())
+
+    def stream_text(self, *, prompt: str, system_prompt: str = '',
+                    model: str = '', effort: str = '', max_turns: int = 1,
+                    stdin_text: Optional[str] = None,
+                    cwd: Optional[str] = None) -> Iterator[str]:
+        """Stream a short no-tools response through Claude's JSONL protocol.
+
+        Provider command construction, process lifecycle, parsing, incremental
+        assistant deltas, and disconnect cleanup remain adapter-owned.
+        """
+        instruction = self._merge_oneshot_instruction(prompt, system_prompt, cwd)
+        if stdin_text:
+            instruction = f'{instruction}\n\n{stdin_text}'
+        cmd = [
+            self.resolve_binary_str(), '--max-turns', str(max(1, int(max_turns))),
+            '--print', '--verbose', '--input-format', 'stream-json',
+            '--output-format', 'stream-json', '--tools', '',
+            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+        ]
+        if model:
+            cmd.extend(['--model', model])
+        if effort:
+            cmd.extend(['--effort', str(effort)])
+        stdin_payload = json.dumps({
+            'type': 'user',
+            'message': {'role': 'user', 'content': instruction},
+        }) + '\n'
+        proc = None
+        text_parts: List[str] = []
+        result_error = ''
+        try:
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, cwd=cwd or str(Path.home()),
+                    text=True, encoding='utf-8', errors='replace',
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                )
+            except FileNotFoundError as e:
+                raise CLINotInstalledError(
+                    'Claude CLI not found on this server') from e
+            try:
+                assert proc.stdin is not None
+                proc.stdin.write(stdin_payload)
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception as e:
+                raise RuntimeError(f'stdin write failed: {e}') from e
+
+            assert proc.stdout is not None
+            for raw in iter(proc.stdout.readline, ''):
+                line = raw.rstrip('\n')
+                if not line:
+                    continue
+                event = self.parse_event(line)
+                if event is None:
+                    continue
+                if event.type == EventType.TURN_END and event.raw:
+                    if event.raw.get('is_error'):
+                        errors = event.raw.get('errors') or []
+                        if not isinstance(errors, list):
+                            errors = [errors]
+                        result_error = '\n'.join(str(e) for e in errors if e)
+                        result_error = result_error or str(event.raw.get('result') or '')
+                        result_error = result_error or 'Claude could not complete this request'
+                if event.type != EventType.ASSISTANT_TEXT:
+                    continue
+                for block in event.payload.get('blocks', []):
+                    if not isinstance(block, dict) or block.get('type') != 'text':
+                        continue
+                    text = str(block.get('text') or '')
+                    if text:
+                        text_parts.append(text)
+                        yield text
+
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired as e:
+                raise TimeoutError('Claude timed out while exiting') from e
+            if proc.returncode != 0 or result_error:
+                stderr = ''
+                try:
+                    stderr = (proc.stderr.read() if proc.stderr else '').strip()[:500]
+                except Exception as e:
+                    print(f'[runtime:claude-stream] reading CLI error output failed: {e}', flush=True)
+                raise RuntimeError(result_error or stderr or ''.join(text_parts).strip()
+                                   or f'Claude exit {proc.returncode}')
+        finally:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception as e:
+                    print(f'[runtime:claude-stream] stopping process failed: {e}', flush=True)
 
     # ── Health check ──────────────────────────────────────────────────────────
 

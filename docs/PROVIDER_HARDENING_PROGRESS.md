@@ -109,6 +109,17 @@ model-calling Scribe wrapper. Lock order remains canonical writer transaction,
 then memory leaf lock, then publication lease; model calls and follow-up dispatch
 stay outside all three. See `MEMORY_PUBLICATION_CONTRACT.md`.
 
+### Memory model-transform seam (offline)
+
+Memory now has an injectable provider-neutral toolless transform helper backed by
+`agent_runtime.run_text_transform`. Scribe uses the session's explicit provider
+when one is present; checkpoint reduction/continuity use the provider carried by
+the authoritative session snapshot; structured condense uses only an explicitly
+project-owned provider. Records without those facts continue through the legacy
+`_scribe_call` compatibility hook. This increment does not change provider
+selection, remove the legacy Claude agent-condense path, or activate canonical
+memory publication.
+
 ## Architecture direction — replace coupling, not just individual failures
 
 The completion target is a provider-neutral execution boundary, not a count of

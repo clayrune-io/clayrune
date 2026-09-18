@@ -4,6 +4,8 @@ These tests use an in-memory runtime so a route/helper cannot accidentally
 fall back to a Claude subprocess when an explicit foreign provider is chosen.
 """
 
+import io
+import json
 from pathlib import Path
 
 class _Result:
@@ -43,6 +45,138 @@ def test_run_text_transform_forwards_selected_model_and_effort(monkeypatch):
     assert runtime.calls[0]['model'] == 'native-pro'
     assert runtime.calls[0]['effort'] == 'high'
     assert runtime.calls[0]['stdin_text'] == 'source data'
+
+
+def test_stream_text_transform_uses_one_delta_fallback(monkeypatch):
+    from mc import agent_runtime
+
+    runtime = _Runtime('one complete answer')
+    monkeypatch.setitem(agent_runtime._RUNTIMES, runtime.name, runtime)
+
+    deltas = list(agent_runtime.AgentRuntime.stream_text(
+        runtime, prompt='stream this', model='native-pro', effort='low'))
+
+    assert deltas == ['one complete answer']
+    assert runtime.calls[0]['model'] == 'native-pro'
+    assert runtime.calls[0]['effort'] == 'low'
+
+
+def test_claude_stream_runtime_preserves_deltas_and_requested_settings(monkeypatch):
+    from mc import agent_runtime
+
+    class Pipe:
+        def __init__(self):
+            self.data = ''
+
+        def write(self, value):
+            self.data += value
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Proc:
+        def __init__(self):
+            self.stdin = Pipe()
+            self.stdout = io.StringIO(
+                json.dumps({'type': 'assistant', 'message': {
+                    'content': [{'type': 'text', 'text': 'one '}]}}) + '\n' +
+                json.dumps({'type': 'assistant', 'message': {
+                    'content': [{'type': 'text', 'text': 'two'}]}}) + '\n' +
+                json.dumps({'type': 'result', 'is_error': False}) + '\n')
+            self.stderr = io.StringIO('')
+            self.returncode = 0
+            self.killed = False
+            self.command = None
+
+        def wait(self, timeout=None):
+            return self.returncode
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+
+    proc = Proc()
+    monkeypatch.setattr(agent_runtime.subprocess, 'Popen',
+                        lambda command, **kwargs: _capture_proc(
+                            proc, command, kwargs))
+    runtime = agent_runtime.ClaudeRuntime()
+    monkeypatch.setattr(runtime, 'resolve_binary_str', lambda: 'claude-stub')
+
+    deltas = list(runtime.stream_text(
+        prompt='question', system_prompt='guide', model='claude-sonnet-5',
+        effort='high', cwd='C:/guide'))
+
+    assert deltas == ['one ', 'two']
+    assert proc.command[proc.command.index('--model') + 1] == 'claude-sonnet-5'
+    assert proc.command[proc.command.index('--effort') + 1] == 'high'
+    assert json.loads(proc.stdin.data)['message']['content'].startswith('guide')
+
+
+def test_claude_runtime_does_not_duplicate_cwd_brief(tmp_path):
+    from mc import agent_runtime
+
+    (tmp_path / 'CLAUDE.md').write_text('guide brief', encoding='utf-8')
+    assert agent_runtime.ClaudeRuntime._merge_oneshot_instruction(
+        'question', 'guide brief', str(tmp_path)) == 'question'
+    assert agent_runtime.ClaudeRuntime._merge_oneshot_instruction(
+        'question', 'different brief', str(tmp_path)) == \
+        'different brief\n\nquestion'
+
+
+def test_claude_stream_runtime_kills_child_when_consumer_disconnects(monkeypatch):
+    from mc import agent_runtime
+
+    class Pipe:
+        def write(self, value):
+            pass
+
+        def flush(self):
+            pass
+
+        def close(self):
+            pass
+
+    class Proc:
+        def __init__(self):
+            self.stdin = Pipe()
+            self.stdout = io.StringIO(
+                json.dumps({'type': 'assistant', 'message': {
+                    'content': [{'type': 'text', 'text': 'first'}]}}) + '\n')
+            self.stderr = io.StringIO('')
+            self.returncode = None
+            self.killed = False
+
+        def wait(self, timeout=None):
+            self.returncode = 0
+            return 0
+
+        def poll(self):
+            return self.returncode
+
+        def kill(self):
+            self.killed = True
+            self.returncode = -9
+
+    proc = Proc()
+    monkeypatch.setattr(agent_runtime.subprocess, 'Popen',
+                        lambda command, **kwargs: proc)
+    runtime = agent_runtime.ClaudeRuntime()
+    monkeypatch.setattr(runtime, 'resolve_binary_str', lambda: 'claude-stub')
+
+    stream = runtime.stream_text(prompt='question')
+    assert next(stream) == 'first'
+    stream.close()
+    assert proc.killed is True
+
+
+def _capture_proc(proc, command, kwargs):
+    proc.command = command
+    return proc
 
 
 def test_character_helper_does_not_send_foreign_engine_to_scribe(monkeypatch):

@@ -35,6 +35,7 @@ import math as _math
 import threading
 import time as _time
 import uuid
+from contextvars import ContextVar
 
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
 import mc.skills as _skills                # frontmatter parse for position notes
@@ -84,13 +85,21 @@ _topics_refresh_hook: Callable[[str], Any] | None = None
 # Injected provider-neutral canonical Scribe reader. None preserves the legacy
 # provider transcript/log path exactly; the composition root owns cutover policy.
 _canonical_scribe_reader: Callable[[str, dict], Any] | None = None
+# Provider-neutral, toolless model seam.  The composition root may inject the
+# existing agent_runtime.run_text_transform implementation; leaving it unset
+# uses that implementation directly.  ``_scribe_call`` remains the legacy
+# compatibility hook for tests and callers that do not have authoritative
+# provider context.
+_text_transform: Callable[..., str] | None = None
+_transform_context: ContextVar[dict[str, Any] | None] = ContextVar(
+    'memory_transform_context', default=None)
 
 
 def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
          popen_flags, startupinfo, load_project_fn, get_manager_fn,
          resolve_claude_fn, register_process_fn, read_agent_stream_fn,
          hide_windows_delayed_fn, topics_refresh_hook=None,
-         canonical_scribe_reader_fn=None):
+         canonical_scribe_reader_fn=None, text_transform_fn=None):
     """Late-bind path/config roots + dispatch-family deps. Called once by
     server.py BEFORE the blueprint wire() stanzas that pass memory.* values
     (agent_routes' write_session_memory_fn/scribe_call_fn/dispatch_condense_fn
@@ -100,7 +109,7 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     global _POPEN_FLAGS, _STARTUPINFO
     global load_project, get_manager, _resolve_claude, _register_process
     global _read_agent_stream, _hide_windows_delayed, _topics_refresh_hook
-    global _canonical_scribe_reader
+    global _canonical_scribe_reader, _text_transform
     DATA_DIR = data_dir
     MEMORY_DIR = memory_dir
     CLAUDE_HOME = claude_home
@@ -117,6 +126,95 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     # mc.memory keeps its no-blueprint-imports invariant. None = no-op.
     _topics_refresh_hook = topics_refresh_hook
     _canonical_scribe_reader = canonical_scribe_reader_fn
+    _text_transform = text_transform_fn
+
+
+def _provider_transform(provider: str, model: str, instruction: str,
+                        body: str, *, cwd: str | None = None,
+                        effort: str = '') -> str:
+    """Run one provider-selected, toolless transform through the runtime seam.
+
+    The provider and model are caller-owned facts; this helper never guesses a
+    provider.  ``text_transform_fn`` is injectable for composition/tests and
+    defaults to ``agent_runtime.run_text_transform``.  It intentionally does
+    not replace ``_scribe_call``: callers without an authoritative provider
+    continue through that compatibility hook.
+    """
+    fn = _text_transform or _agent_runtime.run_text_transform
+    return str(fn(provider, prompt=instruction, model=model,
+                  effort=effort, stdin_text=body, cwd=cwd, max_turns=1) or '')
+
+
+def _model_call(model: str, instruction: str, body: str) -> str:
+    """Call a model with exact context when one is active, else legacy hook."""
+    ctx = _transform_context.get()
+    if not ctx:
+        return _scribe_call(model, instruction, body)
+    return _provider_transform(
+        str(ctx['provider']), model, instruction, body,
+        cwd=ctx.get('cwd'), effort=str(ctx.get('effort') or ''))
+
+
+def _with_transform_context(provider: str | None, cwd: str | None = None,
+                            effort: str = ''):
+    """Return a context manager-like token pair for exact provider facts."""
+    if not provider:
+        return None
+    return _transform_context.set({
+        'provider': str(provider).strip().lower(),
+        'cwd': cwd,
+        'effort': effort,
+    })
+
+
+def _reset_transform_context(token) -> None:
+    if token is not None:
+        _transform_context.reset(token)
+
+
+def _explicit_project_provider(project: dict) -> str | None:
+    """Return only a provider explicitly owned by this project.
+
+    Condense and other project-wide jobs may not infer a provider from a
+    missing global/default setting in this leaf.  A missing value deliberately
+    preserves the legacy `_scribe_call` compatibility path until composition
+    supplies an authoritative project engine.
+    """
+    value = project.get('provider') if isinstance(project, dict) else None
+    value = str(value or '').strip().lower()
+    return value or None
+
+
+_CLAUDE_MODEL_ALIASES = frozenset({'haiku', 'sonnet', 'opus'})
+
+
+def _model_for_provider(config_key: str, provider: str | None,
+                        *, default: str = 'haiku') -> str:
+    """Resolve a configured transform model without crossing provider lines.
+
+    Scribe/condense historically use Claude tier names as their defaults.  An
+    explicit non-Claude session must not inherit those names: they are not
+    portable CLI model ids and can turn a harmless memory write into a failed
+    provider invocation.  A foreign provider receives an explicit configured
+    model only when its runtime positively recognises it; otherwise its native
+    default is selected by passing an empty model.
+    """
+    configured = str(state.CONFIG.get(config_key, '') or '').strip()
+    normalized_provider = str(provider or '').strip().lower()
+    if normalized_provider in ('', 'claude'):
+        return configured or default
+    if (not configured or configured.lower() in _CLAUDE_MODEL_ALIASES
+            or configured.lower().startswith('claude-')):
+        return ''
+    try:
+        runtime = _agent_runtime.get_runtime(normalized_provider)
+        supported = getattr(runtime, 'model_supported', None)
+        if callable(supported) and supported(configured):
+            return configured
+    except Exception as e:
+        _log(f"[scribe] model compatibility check failed for "
+             f"provider={normalized_provider}: {e}")
+    return ''
 
 
 def _encode_project_path(project_path):
@@ -1624,7 +1722,8 @@ _SCRIBE_CONTINUITY = (
 )
 
 
-def _extract_continuity(project, delta, model, owner=None):
+def _extract_continuity(project, delta, model, owner=None, *, provider=None,
+                        cwd=None):
     """One cheap call: fold a transcript slice into the record. Never raises.
 
     `owner` scopes the write to ONE agent's slots — the model is shown that
@@ -1632,6 +1731,7 @@ def _extract_continuity(project, delta, model, owner=None):
     would invite it to "tidy" another agent's threads, which is the overwrite
     this owner dimension exists to stop.
     """
+    token = _with_transform_context(provider, cwd=cwd)
     try:
         cur = read_continuity(project, owner=owner)
         payload = (
@@ -1640,7 +1740,7 @@ def _extract_continuity(project, delta, model, owner=None):
                           ('threads', 'commitments', 'understanding')},
                          ensure_ascii=False)
             + "\n\nNEW CONVERSATION SLICE:\n" + delta[:12000])
-        raw = _scribe_call(model, _SCRIBE_CONTINUITY, payload)
+        raw = _model_call(model, _SCRIBE_CONTINUITY, payload)
         txt = (raw or '').strip()
         if txt.startswith('```'):
             txt = txt.split('\n', 1)[-1].rsplit('```', 1)[0].strip()
@@ -1659,6 +1759,8 @@ def _extract_continuity(project, delta, model, owner=None):
     except Exception as e:
         _log(f"[continuity] extraction failed: {e}")
         return None
+    finally:
+        _reset_transform_context(token)
 
 
 def write_position(project, subject, verdict, reason,
@@ -3310,8 +3412,20 @@ def _maybe_checkpoint(session):
             return
         pid = session.get('project_id', '')
         sid = session.get('session_id') or session.get('id')
-        csid = session.get('claude_session_id', '')
-        if not (pid and sid and csid):
+        provider = str(session.get('provider') or '').strip().lower()
+        csid = str(session.get('claude_session_id') or '').strip()
+        provider_sid = (csid if provider in ('', 'claude') else
+                        str(session.get('provider_session_id') or '').strip())
+        if not (pid and sid):
+            return
+        # Claude's historical field remains authoritative only for Claude (or
+        # an old session with no provider stamp).  Other runtimes expose their
+        # own native thread/session id and must not be gated by a missing
+        # claude_session_id.
+        if provider in ('', 'claude'):
+            if not csid:
+                return
+        elif not provider_sid:
             return
         p = load_project(pid)
         if not p:
@@ -3338,6 +3452,9 @@ def _maybe_checkpoint(session):
                     return
                 _checkpoint_inflight.add(sid)
             snap = {'pid': pid, 'sid': sid, 'csid': csid,
+                    'provider_session_id': provider_sid,
+                    'provider': provider,
+                    'model': _model_for_provider('scribe_model', provider),
                     'task': (session.get('task', '') or '').strip(),
                     'owner': _session_owner(session), 'tf': '',
                     'canonical_lines': canonical_lines,
@@ -3346,7 +3463,15 @@ def _maybe_checkpoint(session):
                              daemon=True).start()
             return
         pp = p.get('project_path', '')
-        tf = _find_transcript_file(pp, csid)
+        if provider in ('', 'claude'):
+            tf = _find_transcript_file(pp, csid)
+        else:
+            try:
+                tf = _agent_runtime.get_runtime(provider).transcript_path(
+                    pp, provider_sid)
+            except Exception as e:
+                _log(f'[scribe] {provider} checkpoint transcript lookup failed: {e}')
+                return
         if not tf:
             return
         try:
@@ -3361,6 +3486,9 @@ def _maybe_checkpoint(session):
                 return  # previous worker still running; next boundary covers more
             _checkpoint_inflight.add(sid)
         snap = {'pid': pid, 'sid': sid, 'csid': csid,
+                'provider_session_id': provider_sid,
+                'provider': provider,
+                'model': _model_for_provider('scribe_model', provider),
                 'task': (session.get('task', '') or '').strip(),
                 # Whose working state this turn belongs to. A session with no
                 # character writes to the shared bucket rather than claiming
@@ -3377,8 +3505,10 @@ def _checkpoint_worker(snap):
     """Render the delta since the last watermark, fold it into the running
     summary, append a self-contained `_(live)_` entry + upsert the wm marker
     in one leaf-locked atomic write. SPEC §3.A.MID. Never raises."""
-    pid, sid, csid, task, tf = (snap['pid'], snap['sid'], snap['csid'],
+    pid, sid, csid, task, tf = (snap['pid'], snap['sid'], snap.get('csid', ''),
                                 snap['task'], snap.get('tf', ''))
+    provider_sid = str(snap.get('provider_session_id') or csid or '').strip()
+    provider = str(snap.get('provider') or '').strip().lower()
     canonical_lines = tuple(snap.get('canonical_lines') or ())
     canonical_sequence = int(snap.get('canonical_sequence', 0) or 0)
     sema = _get_checkpoint_sema(pid)
@@ -3422,11 +3552,20 @@ def _checkpoint_worker(snap):
             delta, new_off = _scribe_render_delta(tf, prev_off)
             if not delta.strip() or new_off == prev_off:
                 return  # nothing new complete; retry next boundary (offset kept)
-        model = state.CONFIG.get('scribe_model', '') or 'haiku'
-        dsum, reason = _scribe_summarize_text(delta, model)
-        rec = {'session_id': sid, 'claude_session_id': csid,
-               'transcript_path': tf, 'byte_offset': new_off,
-               'slice_hash': _sha8(delta)}
+        model = (str(snap['model']) if 'model' in snap
+                 else _model_for_provider('scribe_model', provider))
+        token = _with_transform_context(provider, cwd=p.get('project_path') or None)
+        try:
+            dsum, reason = _scribe_summarize_text(delta, model)
+        finally:
+            _reset_transform_context(token)
+        rec = {'session_id': sid, 'transcript_path': tf,
+               'byte_offset': new_off, 'slice_hash': _sha8(delta)}
+        if provider in ('', 'claude'):
+            rec['claude_session_id'] = csid
+        else:
+            rec['provider'] = provider
+            rec['provider_session_id'] = provider_sid
         if canonical_lines:
             rec['canonical_sequence'] = canonical_sequence
         if reason != 'extracted':
@@ -3443,9 +3582,13 @@ def _checkpoint_worker(snap):
             return
         if prev_summary:
             try:
-                merged = _scribe_call(
-                    model, _SCRIBE_CHECKPOINT_REDUCE,
-                    f"PREVIOUS:\n{prev_summary}\n\nNEW:\n{dsum}")
+                token = _with_transform_context(provider, cwd=p.get('project_path') or None)
+                try:
+                    merged = _model_call(
+                        model, _SCRIBE_CHECKPOINT_REDUCE,
+                        f"PREVIOUS:\n{prev_summary}\n\nNEW:\n{dsum}")
+                finally:
+                    _reset_transform_context(token)
                 merged = (merged or '').strip().replace('\n', ' ').strip()
                 if not merged or any(mk in merged.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
                     _scribe_stat(pid, 'checkpoint_pending:reduce_incomplete')
@@ -3473,7 +3616,8 @@ def _checkpoint_worker(snap):
         # worst of the three outcomes rather than a safe default.
         if state.CONFIG.get('continuity_enabled', True) and snap.get('owner') is not None:
             if _extract_continuity(p, delta, model,
-                                   owner=snap.get('owner')) is not None:
+                                   owner=snap.get('owner'), provider=provider,
+                                   cwd=p.get('project_path') or None) is not None:
                 _scribe_stat(pid, 'continuity_updated')
     except Exception as e:
         _log(f'[scribe] checkpoint failed: {e}')
@@ -3963,9 +4107,13 @@ def _scribe_extract(project, session):
                     from_log = True
         except Exception:
             return None, 'parse_empty'
-        model = state.CONFIG.get('scribe_model', '') or 'haiku'
+        model = _model_for_provider('scribe_model', provider)
         # want_why: terminal entries only — see _SCRIBE_WHY_SUFFIX.
-        entry, reason = _scribe_summarize_text(transcript, model, want_why=True)
+        token = _with_transform_context(provider, cwd=pp or None)
+        try:
+            entry, reason = _scribe_summarize_text(transcript, model, want_why=True)
+        finally:
+            _reset_transform_context(token)
         if entry is not None and from_log:
             reason = 'extracted_from_log'
         return entry, reason
@@ -4026,7 +4174,7 @@ def _scribe_summarize_text(text, model, want_why=False):
     want_why = bool(want_why) and state.CONFIG.get('scribe_why_enabled', True)
     try:
         if len(_stripped) <= _SCRIBE_SINGLE_LIMIT:
-            out = _scribe_call(
+            out = _model_call(
                 model,
                 _SCRIBE_PROMPT + (_SCRIBE_WHY_SUFFIX if want_why else ''),
                 _stripped)
@@ -4043,7 +4191,7 @@ def _scribe_summarize_text(text, model, want_why=False):
             partials = []
             for i, ch in enumerate(chunks):
                 try:
-                    partial = (_scribe_call(model, _SCRIBE_MAP_PROMPT, ch) or '').strip()
+                    partial = (_model_call(model, _SCRIBE_MAP_PROMPT, ch) or '').strip()
                     if not partial or any(mk in partial.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
                         _log(f"[scribe] model_error: incomplete map coverage at chunk "
                              f"{i + 1}/{len(chunks)} (model={model})")
@@ -4058,7 +4206,7 @@ def _scribe_summarize_text(text, model, want_why=False):
                 _log(f"[scribe] model_error: all {len(chunks)} map chunks failed "
                      f"(model={model})")
                 return None, 'model_error'
-            out = _scribe_call(
+            out = _model_call(
                 model,
                 _SCRIBE_REDUCE_PROMPT + (_SCRIBE_WHY_SUFFIX if want_why else ''),
                 '\n'.join(f"- {p}" for p in partials if p))
@@ -4310,10 +4458,14 @@ def _condense_plan(project):
         # 91 model_errors + 58 timeouts vs 5 successes before this default
         # was corrected). Users who want sonnet can still set condense_model
         # explicitly in Settings.
-        model = state.CONFIG.get('condense_model', '') or 'haiku'
         pid = project.get('id', '')
+        project_provider = _explicit_project_provider(project)
+        model = _model_for_provider('condense_model', project_provider)
+        token = _with_transform_context(
+            project_provider,
+            cwd=project.get('project_path') or None)
         try:
-            raw = _scribe_call(model, _CONDENSE_PLAN_PROMPT, body)
+            raw = _model_call(model, _CONDENSE_PLAN_PROMPT, body)
         except subprocess.TimeoutExpired as e:
             _log(f"[condense] {pid}: model_timeout (model={model}, "
                  f"{len(body)}c in, {len(entries)} entries): {e}")
@@ -4322,6 +4474,8 @@ def _condense_plan(project):
             _log(f"[condense] {pid}: model_error (model={model}, "
                  f"{len(body)}c in, {len(entries)} entries): {e}")
             return None, 'model_error', int((_time.time() - t0) * 1000)
+        finally:
+            _reset_transform_context(token)
         ms = int((_time.time() - t0) * 1000)
         payload = _condense_parse_json(raw)
         if payload is None:
