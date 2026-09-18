@@ -34,6 +34,11 @@
   recreation advances a durable generation so old authority cannot attach to
   the replacement project.
 
+- Persist that canonical project generation in pending/completed Agent Log
+  records and require it across warm dispatch, cold provider revival, Claude
+  revival, and delegated-parent recovery. Legacy generation-one records remain
+  compatible; records missing/stale after recreation fail closed before launch.
+
 - Verify shared replay/store fixture conformance for Codex exec JSONL and
   Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
   replay and revocation fences. Reject unsupported decoders before durable

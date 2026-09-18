@@ -152,6 +152,23 @@ class RuntimeLifecycleService:
             return 1
         return store.project_generation(project_id, include_deleted=include_deleted)
 
+    def assert_project_generation(self, project_id: str, generation: int) -> int:
+        """Authorize a caller against the canonical project generation.
+
+        A missing store is the untouched generation-one state. It may accept
+        generation one without creating or inspecting a database, but it must
+        reject any higher generation because that identity cannot be proven.
+        """
+        if type(generation) is not int or generation < 1:
+            raise ValueError('project_generation must be a positive integer')
+        store = self._existing_store()
+        if store is None:
+            if generation != 1:
+                raise ConversationUnavailable('project generation is unavailable')
+            return 1
+        store.assert_project_generation(project_id, generation)
+        return generation
+
     def recreate_project(self, project_id: str) -> int:
         """Explicitly reopen a deleted project identity at a new generation."""
         store = self._mutation_store()

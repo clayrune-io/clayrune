@@ -52,6 +52,7 @@ import concurrent.futures
 from mc import engine_selection
 from mc.runtime_attempt_owner import DispatchFacts
 import hashlib
+import inspect
 import json
 import math
 import os
@@ -169,6 +170,18 @@ _delivery_shutdown_requested = threading.Event()
 _delivery_stop_in_progress = False
 _delegation_app: Optional[Flask] = None
 _runtime_lifecycle_service = None
+
+
+def _assert_runtime_project_generation(project_id, generation, *, incognito=False):
+    """Validate a persisted runtime identity without waking disabled storage."""
+    if generation is not None and (type(generation) is not int or generation < 1):
+        raise ValueError('project_generation must be a positive integer')
+    if incognito or _runtime_lifecycle_service is None:
+        return 1 if generation is None else generation
+    if generation is None:
+        return _runtime_lifecycle_service.project_generation(
+            project_id, include_deleted=False)
+    return _runtime_lifecycle_service.assert_project_generation(project_id, generation)
 
 
 def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
@@ -4725,6 +4738,9 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     entry = next((e for e in log if e.get('session_id') == session_id), None)
     if not entry:
         return None
+    revive_project_generation = entry.get('project_generation', 1)
+    _assert_runtime_project_generation(
+        project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
     claude_sid = entry.get('claude_session_id')
     if not claude_sid:
         return None
@@ -4927,6 +4943,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             '_notify_session': _revive_notify_session,
             '_delegation_turn': revive_turn,
             '_delivery_generation': revive_generation,
+            'project_generation': revive_project_generation,
             '_notify_workflow': _revive_notify_workflow,
         }
         with mgr.lock:
@@ -5011,6 +5028,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         '_notify_session': _revive_notify_session,   # see top-of-function comment
         '_delegation_turn': revive_turn,
         '_delivery_generation': revive_generation,
+        'project_generation': revive_project_generation,
         '_notify_workflow': _revive_notify_workflow,
     }
     with mgr.lock:
@@ -5072,6 +5090,13 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     provider = (entry.get('provider') or '').lower()
     if not provider or provider == 'claude':
         return None
+    revive_project_generation = entry.get('project_generation', 1)
+    try:
+        _assert_runtime_project_generation(
+            project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
+    except Exception as exc:
+        _log(f"[revive-non-claude] {project_id}: project generation refused: {exc}")
+        return None
     # `character` must be a "scope:name" reference — see `_resolve_character`'s
     # docstring. The agent_log record stores scope and name as separate keys
     # (`{'name': 'dave', 'scope': 'global', ...}`); passing the bare name
@@ -5109,6 +5134,7 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
                                  model_override=(entry.get('pinned_model')
                                                  or _requested_model_snapshot(entry)),
                                  character=character_ref,
+                                 project_generation=revive_project_generation,
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
                                  notify_workflow=_revive_notify_workflow)
@@ -5132,6 +5158,12 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
     if not entries:
         raise DeliveryBlocked('parent has no durable identity record')
     entry = sorted(entries, key=lambda e: e.get('ts', ''))[-1]
+    project_generation = entry.get('project_generation', 1)
+    try:
+        _assert_runtime_project_generation(project_id, project_generation,
+                                           incognito=bool(entry.get('incognito')))
+    except Exception as exc:
+        raise DeliveryBlocked(f'parent project generation is not current: {exc}')
     status = (entry.get('status') or '').lower()
     if status in ('interrupted', 'error', 'stopped', 'running', 'in_progress'):
         raise DeliveryUncertain(f'parent durable outcome is ambiguous: {status}')
@@ -5174,8 +5206,9 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
                                      reuse_session_id=session_id,
                                      provider_override=provider,
                                      effort_override=_continuation_effort(entry),
-                                 model_override=model, character=character,
-                                 preserve_model=True,
+                                     model_override=model, character=character,
+                                     project_generation=project_generation,
+                                     preserve_model=True,
                                      source=entry.get('source') or '',
                                      trigger_type=entry.get('trigger_type') or 'manual',
                                      trigger_id=entry.get('trigger_id') or '',
@@ -5295,6 +5328,7 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         'session_id': sid,
         'delegation_turn': int(session.get('_delegation_turn', 1)),
         'delivery_generation': int(session.get('_delivery_generation', 1)),
+        'project_generation': int(session.get('project_generation', 1)),
         'claude_session_id': session.get('claude_session_id') or '',
         'provider_session_id': session.get('provider_session_id') or '',
         'started_at': session.get('started_at', ''),
@@ -5868,6 +5902,7 @@ def _log_agent_completion_body(session):
         'provider_session_id': session.get('provider_session_id', ''),
         'delegation_turn': int(session.get('_delegation_turn', 1)),
         'delivery_generation': int(session.get('_delivery_generation', 1)),
+        'project_generation': int(session.get('project_generation', 1)),
         # Exact, untruncated recovery source. Legacy `summary` remains the UI
         # preview; recovery refuses rows without this field.
         'delegation_completion': (
@@ -6425,6 +6460,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
                           notify_session='', notify_workflow=None,
+                          project_generation=1,
                           lifecycle_bridge_factory=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
@@ -6520,6 +6556,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             '_notify_session': notify_session,
             '_delegation_turn': 1,
             '_notify_workflow': notify_workflow,
+            'project_generation': project_generation,
         }
         if session['requested_effort']:
             session['log_lines'].append(
@@ -6600,7 +6637,20 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             provenance={'trigger_type': trigger_type, 'trigger_id': trigger_id,
                         'source': source or ''})
         try:
-            bridge = lifecycle_bridge_factory(facts)
+            # Keep one-argument test/integration factories source-compatible;
+            # the startup-owned service accepts the keyword and enforces the
+            # generation fence before any provider launch.
+            try:
+                factory_params = inspect.signature(lifecycle_bridge_factory).parameters
+            except (TypeError, ValueError):
+                factory_params = {}
+            accepts_generation = (
+                'project_generation' in factory_params
+                or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                       for p in factory_params.values()))
+            bridge = (lifecycle_bridge_factory(
+                facts, project_generation=project_generation)
+                      if accepts_generation else lifecycle_bridge_factory(facts))
             if bridge is not None:
                 bridge.prepare(facts)
         except Exception as e:
@@ -7056,7 +7106,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              display_task=None, character='', source='',
                              model_override='', strict_character=False, effort_override=None,
                              notify_session='', notify_workflow=None,
-                             preserve_model=False):
+                             preserve_model=False, project_generation=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -7106,6 +7156,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # Global incognito project always forces incognito on, regardless of caller.
     if p.get('_is_incognito_project') or project_id == INCOGNITO_PROJECT_ID:
         incognito = True
+
+    canonical_project_generation = _assert_runtime_project_generation(
+        project_id, project_generation, incognito=incognito)
 
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
@@ -7206,6 +7259,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          source=source,
                                          notify_session=notify_session,
                                          notify_workflow=notify_workflow,
+                                         project_generation=canonical_project_generation,
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
                                              if _runtime_lifecycle_service is not None else None))
@@ -7419,6 +7473,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_notify_session': notify_session,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
             }, strict=True)
 
         if use_streaming:
@@ -7483,6 +7538,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_notify_session': notify_session,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
                 # Workflow step callback (MC-871 Phase 1) -- see notify_session
                 # above for the sibling mechanism this generalises.
                 '_notify_workflow': notify_workflow,
@@ -7599,6 +7655,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_worktree_isolated': _isolated,
                 '_notify_session': notify_session,  # MC-946, see Mode B note
                 '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
                 '_notify_workflow': notify_workflow,  # MC-871 Phase 1, see Mode B note
                 'mode': 'A',
                 'last_output_time': _time.time(),
