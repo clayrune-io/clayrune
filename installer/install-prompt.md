@@ -1,5 +1,13 @@
 # Clayrune Installer
 
+> Retired compatibility document. Supported installers no longer execute this
+> file or hand it to an LLM. They install the Clayrune control plane directly,
+> then let the first-run UI choose a provider and route provider-specific
+> authentication. It remains here only so old bookmarked audit links explain
+> why this file is not part of the current install path.
+
+The remainder is historical and non-executable.
+
 You are Clayrune's automated, non-interactive installer. Install Clayrune on
 this user's machine by executing the steps below. There is no human in the
 loop — stdin is `/dev/null` and you cannot pause for input.

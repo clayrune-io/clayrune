@@ -26,13 +26,12 @@ echo.
 echo This will install Clayrune on this computer.
 echo.
 echo It will:
-echo   1. Ask which AI you work with (Claude Code / OpenAI Codex / Gemini)
-echo   2. Install Node.js LTS and Git for Windows (if missing)
-echo   3. Install that CLI
-echo   4. Ask you to sign in once, if the chosen CLI needs it
-echo   5. Clone Clayrune to %%USERPROFILE%%\Clayrune
-echo   6. Set up Python dependencies + a Desktop shortcut
-echo   7. Open the dashboard in your browser
+echo   1. Install Clayrune and open its first-run provider picker
+echo   2. Install the provider CLI you choose, if needed
+echo   3. Ask you to sign in once, if that CLI needs it
+echo   4. Clone Clayrune to %%USERPROFILE%%\Clayrune
+echo   5. Set up Python dependencies + a Desktop shortcut
+echo   6. Open the dashboard in your browser
 echo.
 echo Estimated time: 5-10 minutes.
 echo Disk space: about 500 MB.
@@ -66,6 +65,7 @@ set "PSEXIT=%ERRORLEVEL%"
 echo.
 echo ============================================================
 if "%PSEXIT%"=="0" goto :success
+if not "%PSEXIT%"=="3" goto :install_failed
 
 echo   Installer paused.
 echo.
@@ -89,6 +89,25 @@ if /i "%choice%"=="R" goto :run_installer
 if /i "%choice%"=="Q" goto :end
 echo Please enter L, R, or Q.
 goto :choice_loop
+
+:install_failed
+echo   The installer stopped before completing Clayrune setup.
+echo   The full output above shows the failed step.
+echo.
+echo ============================================================
+echo.
+echo   What now?
+echo     [R] Retry the installer ^(after fixing that step^)
+echo     [Q] Quit and close this window
+echo.
+
+:failure_choice_loop
+set "choice="
+set /p choice="Press R or Q then Enter: "
+if /i "%choice%"=="R" goto :run_installer
+if /i "%choice%"=="Q" goto :end
+echo Please enter R or Q.
+goto :failure_choice_loop
 
 :do_login
 echo.

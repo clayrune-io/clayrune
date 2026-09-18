@@ -5,29 +5,23 @@
 #   curl -sSL https://clayrune.io/install.sh | sh
 #
 # What this script does:
-#   1. Sets up Node 18+ via nvm (needed for Claude CLI itself).
-#   2. Installs Claude CLI if missing (Anthropic curl-installer or npm).
-#   3. Verifies Claude CLI is authenticated.
-#   4. Clones the Clayrune repo to ~/Clayrune.
-#   5. Sets up a Python 3.11+ venv + installs dependencies.
-#   6. Creates a launcher (~/Applications/Clayrune.command on macOS,
+#   1. Clones the Clayrune repo to ~/Clayrune.
+#   2. Sets up a Python 3.11+ venv + installs dependencies.
+#   3. Creates a launcher (~/Applications/Clayrune.command on macOS,
 #      ~/.local/share/applications/clayrune.desktop on Linux).
-#   7. Launches the server and opens the dashboard in your browser.
+#   4. Launches the server and opens the dashboard in your browser.
 #
-# Steps 4-7 used to be done by handing off to `claude -p` with a markdown
-# install prompt. That broke on newer Claude models because the
-# "you are an automated installer, do not ask for confirmation" framing
-# is the textbook shape of a prompt-injection attack and Claude refuses
-# to run it. The install steps don't need an LLM anyway -- this shell
-# script does them directly.
+# The old installer handed a markdown prompt to `claude -p`. That path is
+# retired: clone, venv, launcher, and server steps are deterministic and are
+# performed directly by this script. Provider login is likewise not needed to
+# install the control plane.
 #
 # Override:
 #   CLAYRUNE_HOME=...        (override default ~/Clayrune install dir)
-#   CLAYRUNE_NO_CONFIRM=1    (skip the 5-second abort window; also skips the
-#                             interactive provider prompt, see below)
-#   CLAYRUNE_PROVIDER=...    (claude|codex|gemini — skip the "which AI do you
-#                             work with?" prompt; auto-picks the sole detected
-#                             CLI, else claude, when unset in a non-tty run)
+#   CLAYRUNE_NO_CONFIRM=1    (skip the 5-second abort window)
+#   CLAYRUNE_PROVIDER=...    (optional explicit provider override:
+#                             claude|codex|gemini|qwen. When unset, provider
+#                             selection and login happen in Clayrune's UI.)
 
 set -e
 
@@ -96,10 +90,10 @@ if [ -n "$CHOSEN_PROVIDER" ]; then
   esac
 fi
 
-if [ -z "$CHOSEN_PROVIDER" ]; then
+if [ -z "$CHOSEN_PROVIDER" ] && false; then
   _installed_provs=$(_detect_installed_providers)
   _default_prov=$(printf '%s' "$_installed_provs" | awk '{print $1}')
-  [ -n "$_default_prov" ] || _default_prov="claude"
+  [ -n "$_default_prov" ] || _default_prov=""
 
   # A `curl | sh` pipe means stdin IS the script, not a terminal — read the
   # answer from the controlling tty instead (same trick rustup/nvm use).
@@ -153,7 +147,11 @@ if [ -z "$CHOSEN_PROVIDER" ]; then
   fi
   printf "\n"
 fi
-printf "%sOK%s Provider: %s\n\n" "$G" "$R" "$CHOSEN_PROVIDER"
+if [ -n "$CHOSEN_PROVIDER" ]; then
+  printf "%sOK%s Explicit provider: %s\n\n" "$G" "$R" "$CHOSEN_PROVIDER"
+else
+  printf "%sNo provider selected yet.%s Clayrune will ask on first launch.\n\n" "$C" "$R"
+fi
 
 # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -365,8 +363,10 @@ fi
 
 # ── Step 0: Ensure Node 18+ is available ───────────────────────────────────
 #
-# Unconditional regardless of chosen provider: claude/codex/gemini are all
-# npm packages, so all three need a working Node first.
+# Only an explicit provider override needs a CLI preflight. The normal install
+# deliberately gets Clayrune running first; the first-run UI then installs the
+# selected CLI and starts its provider-specific login flow.
+if [ -n "$CHOSEN_PROVIDER" ]; then
 if ! _setup_node; then
   printf "%sCould not set up a working Node 18+ runtime automatically.%s\n\n" "$E" "$R"
   printf "Please install Node 20+ manually, then re-run:\n"
@@ -520,6 +520,7 @@ else
   printf "%sOK%s Authenticated\n\n" "$G" "$R"
 fi
 fi # CHOSEN_PROVIDER != claude / == claude
+fi # explicit CLAYRUNE_PROVIDER preflight
 
 # ── Direct deterministic install (no Claude handoff) ──────────────────────
 #
@@ -751,6 +752,7 @@ printf "%s[STEP 2/5] OK%s\n\n" "$G" "$R"
 # (just built above) to merge safely rather than clobber. A re-run of this
 # installer, or an upgrade, must never overwrite a choice already on disk —
 # Settings -> Default provider is the only place to change it after this.
+if [ -n "$CHOSEN_PROVIDER" ]; then
 "$VENV_DIR/bin/python" - "$INSTALL_DIR/config.json" "$CHOSEN_PROVIDER" <<'PYEOF' || true
 import json, sys
 path, provider = sys.argv[1], sys.argv[2]
@@ -764,6 +766,7 @@ if not cfg.get('default_provider'):
     with open(path, 'w') as f:
         json.dump(cfg, f, indent=2)
 PYEOF
+fi
 
 # ── [STEP 3/5] Launcher entry ─────────────────────────────────────────────
 printf "%s[STEP 3/5]%s Creating launcher...\n" "$B" "$R"
@@ -898,7 +901,11 @@ printf "%s  Clayrune is installed and running.%s\n" "$G" "$R"
 printf "%s============================================================%s\n" "$G" "$R"
 printf "  Open:     http://localhost:5199\n"
 printf "  Location: %s\n" "$INSTALL_DIR"
-printf "  Provider: %s (change any time in Settings)\n" "$CHOSEN_PROVIDER"
+if [ -n "$CHOSEN_PROVIDER" ]; then
+  printf "  Provider: %s (change any time in Settings)\n" "$CHOSEN_PROVIDER"
+else
+  printf "  Provider: choose one in Clayrune on first launch\n"
+fi
 if [ "$OS" = "macos" ]; then
   printf "  Relaunch: open ~/Applications/Clayrune.command\n"
   printf "  Uninstall: open ~/Applications/Uninstall Clayrune.command\n"

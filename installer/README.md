@@ -1,6 +1,12 @@
 # Clayrune Installer
 
-A Claude-driven installer. The user runs one command; Claude executes the install.
+Clayrune is installed first. Provider selection belongs to the first-run UI,
+which lists registered providers, offers provider-specific CLI installation,
+and routes login to the provider the user chose. The normal install path does
+not require Claude (or any other provider), Node, or provider authentication.
+
+`CLAYRUNE_PROVIDER=claude|codex|gemini|qwen` remains an explicit automation
+override. It is never inferred from PATH and is preserved on re-runs.
 
 ## Architecture
 
@@ -41,6 +47,21 @@ A Claude-driven installer. The user runs one command; Claude executes the instal
         │  shortcut for relaunching.      │
         └─────────────────────────────────┘
 ```
+
+## Provider onboarding contract
+
+- Unset `CLAYRUNE_PROVIDER` means no provider CLI or auth probe runs during
+  installation; Clayrune opens and asks in its UI.
+- An explicit provider is validated and only that CLI is provisioned. A Codex,
+  Gemini, or Qwen choice never triggers a Claude-missing prompt.
+- Re-running the installer never overwrites an existing `default_provider`.
+- Provider login is initiated from the selected-provider card in Settings or
+  the first-run walkthrough. The installer does not spend live provider quota
+  merely to render onboarding.
+
+`install-prompt.md` is retained as an audit/history pointer only. Supported
+installers execute clone, Python, launcher, and server steps directly; no LLM
+is handed an installation prompt.
 
 ## Files in this directory
 
@@ -90,6 +111,10 @@ The bootstraps respect a `CLAYRUNE_PROMPT_URL` env var so you can point them at
 any URL.
 
 ## Testing checklist
+
+Offline provider-neutral checks are covered by
+`tests/test_installer_provider_neutral.py` alongside the Qwen, auth-probe, and
+Windows security tests. They do not install or authenticate a live provider.
 
 A new install on a clean VM should:
 

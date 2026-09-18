@@ -4,25 +4,22 @@
 #   iwr https://clayrune.io/install.ps1 -useb | iex
 #
 # What this script does:
-#   1. Verifies Claude CLI is installed (or installs it via npm; falls back to
-#      winget Node.js + npm if npm is missing).
-#   2. Fetches the install prompt from clayrune.io.
-#   3. Discloses what is about to happen, with a short Ctrl-C abort window.
-#   4. Pipes the prompt into `claude --dangerously-skip-permissions`.
+#   1. Installs Clayrune itself (without requiring a provider CLI).
+#   2. Opens Clayrune's first-run provider picker.
+#   3. Installs/logs in to the provider the user selects, when needed.
 #
-# After authorization, Claude itself executes the install - clones the repo,
-# installs Python and Node deps, creates a Desktop / Start Menu shortcut,
-# and opens the app in the user's browser.
+# The bootstrap performs the deterministic install directly, creates a Desktop
+# / Start Menu shortcut, and opens the app in the user's browser. Provider
+# setup is intentionally deferred to the first-run UI unless explicitly pinned.
 #
 # Read the install prompt before running:
 #   iwr https://clayrune.io/install-prompt.md -useb | Select-Object -ExpandProperty Content
 #
 # Override URLs (for testing):
 #   $env:CLAYRUNE_PROMPT_URL = '...'
-#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window; also
-#                                    # skips the interactive provider prompt
-#   $env:CLAYRUNE_PROVIDER = '...'  # claude|codex|gemini - skip the "which AI
-#                                    # do you work with?" prompt
+#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window
+#   $env:CLAYRUNE_PROVIDER = '...'  # optional explicit provider override:
+#                                    # claude|codex|gemini|qwen
 #
 # EXIT CODES — a contract, not an accident. installer/win-exe/ClayruneInstaller.cs
 # maps these to the remediation menu it shows the user, so DO NOT reuse or
@@ -31,9 +28,9 @@
 # sent someone through a pointless OAuth login when the real failure was git.)
 #
 #   0  success
-#   1  a prerequisite could not be installed (Node.js / Claude CLI / runtime shell)
+#   1  an explicitly requested provider prerequisite could not be installed
 #   2  a deterministic install step failed — see the red "[STEP n/5] FAIL" line
-#   3  Claude CLI is installed but NOT AUTHENTICATED (this and only this = login)
+#   3  an explicitly requested Claude CLI is installed but NOT AUTHENTICATED
 
 $ErrorActionPreference = 'Stop'
 
@@ -555,18 +552,19 @@ function Get-InstalledProviders {
 }
 
 $ChosenProvider = $env:CLAYRUNE_PROVIDER
+if ($ChosenProvider) { $ChosenProvider = $ChosenProvider.Trim().ToLower() }
 if ($ChosenProvider -and ($ProviderChoices -notcontains $ChosenProvider)) {
     Write-Host "CLAYRUNE_PROVIDER=$ChosenProvider is not one of: $($ProviderChoices -join ', ')" -ForegroundColor Red
     Exit-WithContact 1
 }
-if (-not $ChosenProvider) {
+if (-not $ChosenProvider -and $false) {
     # @(...) is LOAD-BEARING: PowerShell unwraps a single-element array return
     # to a bare scalar, so with exactly one CLI installed `$installedProvs`
     # would be the STRING 'codex' and `$installedProvs[0]` would index its
     # first CHARACTER ('c'), not the array's first element. Verified live -
     # without this, a one-CLI machine silently defaulted to "c".
     $installedProvs = @(Get-InstalledProviders)
-    $defaultProv = if ($installedProvs.Count -gt 0) { $installedProvs[0] } else { 'claude' }
+    $defaultProv = if ($installedProvs.Count -gt 0) { $installedProvs[0] } else { '' }
 
     # `iwr ... -useb | iex` still leaves Read-Host talking to the real
     # console (unlike a POSIX pipe, PowerShell pipes objects, not stdin), so
@@ -597,11 +595,16 @@ if (-not $ChosenProvider) {
     }
     Write-Host ''
 }
-Write-Host "OK Provider: $ChosenProvider" -ForegroundColor Green
+if ($ChosenProvider) {
+    Write-Host "OK Explicit provider: $ChosenProvider" -ForegroundColor Green
+} else {
+    Write-Host 'No provider selected yet. Clayrune will ask on first launch.' -ForegroundColor Cyan
+}
 Write-Host ''
 
 # -- Step 0: Ensure Node 18+ is available -----------------------------------
 
+if ($ChosenProvider) {
 if (-not (Get-BoolResult (Setup-Node))) {
     Write-Host ''
     Write-Host 'Could not set up a working Node 18+ runtime automatically.' -ForegroundColor Red
@@ -779,6 +782,7 @@ if (-not $claudeAuthenticated) {
 Write-Host 'OK Authenticated' -ForegroundColor Green
 Write-Host ''
 } # ChosenProvider -ne 'claude' / -eq 'claude'
+} # explicit CLAYRUNE_PROVIDER preflight
 
 # -- Direct deterministic install (no Claude handoff) ----------------------
 #
@@ -1118,7 +1122,9 @@ if not cfg.get('default_provider'):
         json.dump(cfg, f, indent=2)
 '@
 try {
+if ($ChosenProvider) {
     & $venvPython -c $mergeScript $configPath $ChosenProvider
+}
 } catch {
     Write-Host "  (could not write default_provider into config.json: $_)" -ForegroundColor DarkGray
 }
@@ -1253,7 +1259,11 @@ Write-Host '  Clayrune is installed and running.' -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 Write-Host "  Open:     http://localhost:5199"
 Write-Host "  Location: $installDir"
-Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
+if ($ChosenProvider) {
+    Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
+} else {
+    Write-Host '  Provider: choose one in Clayrune on first launch'
+}
 Write-Host '  Relaunch: double-click the Clayrune shortcut on your Desktop'
 Write-Host '            (also available in your Start Menu).'
 Write-Host '  Uninstall: choose Uninstall Clayrune from your Start Menu.'
