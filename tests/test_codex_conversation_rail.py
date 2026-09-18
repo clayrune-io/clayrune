@@ -96,6 +96,30 @@ def client(tmp_path, monkeypatch):
         mc_state.agent_sessions.update(sess_snapshot)
 
 
+def test_external_codex_transcript_viewer_without_mc_id(client, tmp_path):
+    http, project_path = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(project_path),
+                         [('user', 'external question'), ('assistant', 'saved answer')])
+    response = http.get(f'/api/project/proj1/transcript/{native_id}?provider=codex')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['provider'] == 'codex'
+    assert data['messages'] == [{'role': 'user', 'text': 'external question'},
+                                {'role': 'assistant', 'text': 'saved answer'}]
+    assert 'session_id' not in data
+    assert http.get(f'/api/project/proj1/transcript/{native_id}?provider=bogus').status_code == 400
+    assert http.get('/api/project/proj1/transcript/*?provider=codex').status_code == 400
+
+
+def test_external_codex_viewer_rejects_other_project(client, tmp_path):
+    http, _ = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(tmp_path / 'other'),
+                         [('user', 'private question')])
+    assert http.get(f'/api/project/proj1/transcript/{native_id}?provider=codex').status_code == 404
+
+
 def _write_log(tmp_path, project_id, entries):
     (tmp_path / 'projects' / f'{project_id}_agent_log.json').write_text(
         json.dumps(entries), encoding='utf-8')

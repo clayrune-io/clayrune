@@ -2271,7 +2271,7 @@ function mobileUserConversationsHTML(p, convos, opts) {
     }
   }
   const _renderConvRow = (c, isChild) => {
-    const csid = c.claude_session_id || '';
+    const csid = c.claude_session_id || (!c.mc_session_id && c.provider === 'codex' ? c.provider_session_id : '') || '';
     const mcsid = c.mc_session_id || '';
     const hideKey = _convHideKey(c);
     const isHidden = hidden.has(hideKey);
@@ -3377,6 +3377,16 @@ window.archiveThread = archiveThread;
 // Deliberately does NOT reuse openProjectAtSession — its `activeAgentTab || sid`
 // fallback dumped every tap back onto the currently-open chat.
 async function openConversation(projectId, csid, mcSessionId, isLive) {
+  // Native-only Codex rows are inspectable history, not MC-owned sessions.
+  // Open the read-only viewer without inventing an MC id or arming a resume.
+  if (!mcSessionId && csid) {
+    const nativeRow = (conversationsCache[projectId] || []).find(c =>
+      c.provider === 'codex' && !c.mc_session_id && c.provider_session_id === csid);
+    if (nativeRow) {
+      await openTranscriptViewer(projectId, csid, nativeRow.label || nativeRow.first_user || '', 'codex');
+      return;
+    }
+  }
   // A resumed session reuses ONE mc_session_id across MULTIPLE claude
   // transcripts (e.g. a live idle tail + the completed run it continued from),
   // so several rail rows share this mcSessionId. Reusing the open tab blindly

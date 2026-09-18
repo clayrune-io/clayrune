@@ -41,3 +41,18 @@ context.conversationsCache.p = [{ key: 'vector', claude_session_id: 'native' }];
 context.openChannelPerson('p', 'vector');
 assert.deepEqual(events, [['refresh', 'p'], ['open', 'p', 'native', '', false]]);
 console.log('PASS roster expansion and newest openable conversation selection');
+
+// Clicking an external row must hand its native id to a read-only viewer,
+// without touching the MC cache, reconstruct route, or resume controls.
+const openStart = source.indexOf('async function openConversation(');
+const openEnd = source.indexOf('window.openConversation = openConversation;', openStart);
+const viewed = [];
+const viewerContext = vm.createContext({
+  conversationsCache: { p: [{ provider: 'codex', provider_session_id: 'native', label: 'External chat' }] },
+  openTranscriptViewer: async (...args) => viewed.push(args),
+});
+vm.runInContext(source.slice(openStart, openEnd), viewerContext);
+await viewerContext.openConversation('p', 'native', '', false);
+assert.deepEqual(viewed, [['p', 'native', 'External chat', 'codex']]);
+assert.ok(source.includes("!c.mc_session_id && c.provider === 'codex' ? c.provider_session_id"));
+console.log('PASS external Codex row opens native transcript read-only');

@@ -9009,6 +9009,30 @@ def get_project_transcript(project_id, claude_session_id):
     p = load_project(project_id)
     if not p:
         return jsonify({'error': 'project not found'}), 404
+    provider = request.args.get('provider', 'claude').strip().lower()
+    if provider == 'codex':
+        # Native-only sessions have no MC run-log row. Resolve through the
+        # provider store, with strict project ownership and no glob patterns.
+        if not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', claude_session_id):
+            return jsonify({'error': 'invalid Codex session id'}), 400
+        runtime = _agent_runtime.get_runtime('codex')
+        f = runtime.transcript_path(p.get('project_path', ''), claude_session_id)
+        if not f:
+            return jsonify({'error': 'transcript not found'}), 404
+        cwd, native_id = _agent_runtime._codex_read_meta(f)
+        if native_id != claude_session_id or not _agent_runtime._codex_same_path(cwd, p.get('project_path', '')):
+            return jsonify({'error': 'transcript not found'}), 404
+        try:
+            messages = [{'role': role, 'text': text}
+                        for role, text in runtime.extract_chat_turns(f)]  # pyright: ignore[reportAttributeAccessIssue]
+            size = f.stat().st_size
+        except OSError as e:
+            _log(f'[transcript] Codex read failed: {e}')
+            return jsonify({'error': 'transcript unavailable'}), 404
+        return jsonify({'provider': provider, 'provider_session_id': native_id,
+                        'size': size, 'message_count': len(messages), 'messages': messages})
+    if provider != 'claude':
+        return jsonify({'error': 'unsupported transcript provider'}), 400
     f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
     if not f:
         return jsonify({'error': 'transcript not found'}), 404
