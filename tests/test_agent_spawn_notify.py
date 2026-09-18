@@ -144,6 +144,38 @@ def test_notify_fires_once_and_is_latched(monkeypatch):
     assert sess['_notify_session_sent'] is True
 
 
+def test_no_notify_while_waiting_for_question(monkeypatch):
+    """Regression, found 2026-09-18 (sessions 7a01a27211ea / e0eb419b1686):
+    both stream readers call `_log_agent_completion` UNCONDITIONALLY in their
+    exit-cleanup `finally` block, including when the process was killed right
+    after an AskUserQuestion tool call (`waiting_for_question=True`, status
+    forced to 'idle' so the guardian doesn't race in — see the AskUserQuestion
+    branch in _read_agent_stream_b). That kill is a PAUSE, not a finish: the
+    child is waiting for its answer and resumes via `-r` once one arrives.
+
+    Before the fix, every such pause fired a genuinely fresh, durably-enqueued
+    "[dispatched agent finished]" notification (a fresh `_delegation_turn`, so
+    the SQL dedup in mc/delegation_delivery.py — correctly idempotent per
+    event_id — had nothing to catch), and a child that asked 2-3 questions
+    before truly finishing told its spawner it was "done" 2-3 times over.
+    """
+    calls = []
+    monkeypatch.setattr(ar, '_notify_agent_spawner',
+                        lambda *a, **k: calls.append(a))
+    sess = {'project_id': 'p', 'session_id': 'child', '_notify_session': 'parent',
+            'status': 'idle', 'waiting_for_question': True,
+            'log_lines': ['let me check something first']}
+    ar._maybe_notify_spawner(sess, 'let me check something first')
+    assert calls == []
+    assert not sess.get('_notify_session_sent')
+
+    # Once the question is answered, waiting_for_question is cleared (see
+    # agent_followup) and a REAL completion must still notify normally.
+    sess['waiting_for_question'] = False
+    ar._maybe_notify_spawner(sess, 'all done, the answer is 4')
+    assert len(calls) == 1
+
+
 def test_last_reply_text_skips_status_lines_and_the_task_seed():
     """MC-935 in miniature: handing back the task instead of the answer."""
     sess = {'log_lines': [
