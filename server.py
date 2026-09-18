@@ -3076,7 +3076,54 @@ def boot(check_port=True):
             _qchan.start_poller(int(CONFIG.get('question_channel_poll_s', 120)))
         except Exception as e:
             _log(f"[question-channel] poller not started: {e}")
+    _boot_phase('guardrail hooks', _install_guardrail_hooks_on_boot)
     _log(f"[boot] ready to serve after {_time.time() - _BOOT_T0:.2f}s")
+
+
+def _install_guardrail_hooks_on_boot(home: Optional[Path] = None) -> None:
+    """Wire Clayrune's process guard into every installed vendor CLI's own
+    hook system (W2, docs/VENDOR_AGNOSTIC_PROGRAM.md §3) — idempotent, and
+    only for a vendor whose CLI `health_check().installed` is true; writing a
+    hook config for a CLI that isn't on this machine would create an unused
+    config tree for nothing. `tools/guards/install_hooks.py` is a standalone
+    script (not a package under mc/), loaded here by file path rather than
+    moved — see that module's own docstring for the full per-vendor design
+    and the evidence behind it.
+
+    `_APP_DIR` (this file's own `_resolve_dirs()`) and `sys.executable` are
+    passed explicitly rather than left to the installer's own defaults:
+    those defaults resolve relative to install_hooks.py's OWN location and
+    THIS process's own interpreter, which is correct when a human runs the
+    script by hand from a permanent checkout, but would bake a throwaway
+    worktree path if this ever ran from one — the installer's own docstring
+    documents the resulting fail-closed (blocks every shell call) failure
+    mode.  Best-effort: one broken vendor settings file (refused by
+    `_load_settings`) must not block boot; `install_for_boot` already
+    isolates that per vendor, this is a second layer for the loader itself.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'clayrune_install_hooks', _APP_DIR / 'tools' / 'guards' / 'install_hooks.py')
+        if spec is None or spec.loader is None:
+            raise ImportError('could not load tools/guards/install_hooks.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        installed = [name for name in mod.VENDOR_CONFIGS
+                     if _agent_runtime.get_runtime(name).health_check().installed]
+        results = mod.install_for_boot(
+            home=home,
+            guard_script=_APP_DIR / 'mc' / 'process_guard.py',
+            python_exe=sys.executable,
+            installed_vendors=installed,
+        )
+        for r in results:
+            if r.get('error'):
+                _log(f"[guardrail-hooks] {r['vendor']}: not installed ({r['error']})")
+            elif r.get('changed'):
+                _log(f"[guardrail-hooks] {r['vendor']}: hook written/updated at {r['path']}")
+    except Exception as e:
+        _log(f"[guardrail-hooks] startup install failed: {e}")
 
 
 if __name__ == '__main__':
