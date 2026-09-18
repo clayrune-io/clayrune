@@ -4678,8 +4678,22 @@ def _save_agent_log(project_id, log):
         log = log[:cap]
     write_json_atomic(filepath, log, indent=2, ensure_ascii=False)
 
+def _context_window_for(provider: str):
+    """The vendor's declared max context size (docs/CONTEXT_ECONOMY_SPEC.md
+    §1's `context_window` field), or None when the runtime doesn't declare
+    one (Gemini/Qwen/Codex today — RuntimeCapabilities.context_window
+    defaults to None). Never fabricated: the counter this feeds shows '—'
+    for the denominator too when unknown, not a guessed number.
+    """
+    try:
+        return _agent_runtime.get_runtime((provider or 'claude').lower()).capabilities().context_window
+    except Exception:
+        return None
+
+
 def _session_usage_payload(session: dict) -> dict:
-    """Build the usage/cost/turns slice of an SSE payload, gated on provider capabilities.
+    """Build the usage/cost/turns/context slice of an SSE payload, gated on
+    provider capabilities.
 
     Providers that don't emit cost or turns (e.g. Gemini) must NOT fabricate zeros —
     the frontend reads absence of the key as "this provider doesn't support it" and
@@ -4688,6 +4702,15 @@ def _session_usage_payload(session: dict) -> dict:
     Always includes 'usage' when emits_usage is True (it is the authoritative token
     counter).  cost_usd and num_turns are only included when their respective
     capability flags are set.
+
+    `context_tokens`/`context_window` are NOT capability-gated the same way:
+    unlike usage/cost/turns, `normalize_context_tokens` can resolve a figure
+    for a provider with emits_usage=False (Gemini's TURN_END usage/stats,
+    agent_runtime.py:4013-4018) — the live context counter (§5) must work
+    for every vendor, so these ride on whatever `session['context_tokens']`
+    actually holds, independent of the emits_usage flag. Always present as
+    keys (None, never a fabricated 0, when not yet known) so the frontend
+    doesn't have to special-case "key absent" vs "value unknown".
     """
     provider = (session.get('provider') or 'claude').lower()
     try:
@@ -4703,6 +4726,8 @@ def _session_usage_payload(session: dict) -> dict:
         out['cost_usd'] = session.get('cost_usd', 0)
     if caps.emits_num_turns:
         out['num_turns'] = session.get('num_turns', 0)
+    out['context_tokens'] = session.get('context_tokens')
+    out['context_window'] = _context_window_for(provider)
     # Refused tool calls. Not capability-gated on a flag of its own: only
     # runtimes that actually report denials ever populate it, and an empty list
     # is the honest answer for the rest (nothing was refused that we saw).
@@ -7373,18 +7398,26 @@ def _context_tokens_over_threshold(context_tokens):
 
 
 def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
-    """Unified auto-fresh decision: ORs the token-based policy trigger with
-    the byte-based `_session_too_large` backstop (docs/CONTEXT_ECONOMY_SPEC.md
-    §2 — "both triggers must be vendor-generic ... independent"). Token check
-    runs first since it's free (no disk I/O) where a live session already
-    has the figure.
+    """Unified auto-fresh decision. A KNOWN `context_tokens` figure is
+    authoritative and decides on its own — the byte check is a backstop
+    consulted only when tokens are unknown, never run alongside a known
+    token figure (fixed 2026-09-18: clayrune_website auto-freshed twice at
+    6.4 MB/9.9 MB transcripts whose real context was only 123k/85k tokens —
+    well under threshold — because the byte check ran independently of the
+    token result and tripped on base64 image blobs the token figure never
+    saw. `_session_too_large` itself now also excludes image bytes as a
+    second layer, see mc.memory._transcript_image_bytes, but the ordering
+    fix here is what stops it running at all when tokens already answered
+    the question).
 
     Returns (reason, detail): reason is 'tokens' | 'bytes' | None; detail is
     the context-tokens int when reason=='tokens', else the transcript
     size_bytes int (0 when no rollover is warranted).
     """
-    if _context_tokens_over_threshold(context_tokens):
-        return 'tokens', int(context_tokens)
+    if context_tokens is not None:
+        if _context_tokens_over_threshold(context_tokens):
+            return 'tokens', int(context_tokens)
+        return None, 0
     too_large, size_bytes = _session_too_large(pp, claude_sid)
     if too_large:
         return 'bytes', size_bytes
@@ -8811,6 +8844,7 @@ def agent_stream(project_id):
         # terminal states) is unaffected.
         last_emitted_status = None
         last_emitted_activity = None  # '' | 'thinking' | 'writing' | 'tool'
+        last_emitted_context_tokens = None  # int | None — see the `context` event below
         emitted_qids = set()  # per-stream: don't re-emit same question_id
         while True:
             session['_last_sse_poll_time'] = _time.time()
@@ -8874,6 +8908,21 @@ def agent_stream(project_id):
             if act != last_emitted_activity:
                 yield f"data: {json.dumps({'type': 'activity', 'state': act or ''})}\n\n"
                 last_emitted_activity = act
+
+            # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
+            # `session['context_tokens']` updates PER MODEL CALL, not just at
+            # turn end (_note_call_context_tokens fires on every streamed
+            # assistant message — several per turn on a tool-use-heavy
+            # Claude turn), so polling it here on the same 0.3s cadence as
+            # `activity` pushes the figure live during a turn instead of only
+            # at turn_complete/status. Emitted only on change, same as
+            # `activity` — a session that never got a figure (context_tokens
+            # stays None) never emits at all, matching "unknown stays unknown".
+            _ctx_now = session.get('context_tokens')
+            if _ctx_now != last_emitted_context_tokens:
+                _ctx_window = _context_window_for(session.get('provider') or 'claude')
+                yield f"data: {json.dumps({'type': 'context', 'context_tokens': _ctx_now, 'context_window': _ctx_window})}\n\n"
+                last_emitted_context_tokens = _ctx_now
 
             if is_mode_b:
                 # A session that is idle ONLY because it is blocked on an
@@ -9158,6 +9207,15 @@ def agent_followup(project_id):
             # place the token trigger can fire (docs/CONTEXT_ECONOMY_SPEC.md
             # §2) — `existing['context_tokens']` is this session's own last
             # per-turn figure, always available here since the process is live.
+            # Detection only — do NOT build the handoff or log here. This just
+            # decides whether the still-alive process should be treated as
+            # dead; the dead-process branch immediately below re-evaluates
+            # `_auto_fresh_trigger` against the same (unchanged) claude_sid/
+            # context_tokens and is the ONE place that logs the roll. Building
+            # the handoff/activity-line here too used to log "Auto-fresh: …"
+            # twice, ~40ms apart, for a single roll (found 2026-09-18) —
+            # this branch's own handoff_text was even discarded (`_,`) since
+            # the dead-process branch below builds the real one anyway.
             if existing.get('process_alive'):
                 _live_sid = existing.get('claude_session_id')
                 if _live_sid:
@@ -9166,11 +9224,6 @@ def agent_followup(project_id):
                     if _live_reason:
                         _log(f"[followup] Live session {_live_sid} rolling to fresh "
                              f"({_live_reason}={_live_detail}) — ending process")
-                        _, _live_log_line, _live_activity_line = _auto_fresh_handoff(
-                            pp, 'claude', _live_sid, project_id, session_id,
-                            reason=_live_reason, detail=_live_detail)
-                        _log_agent_activity(project_id, _live_activity_line)
-                        existing['log_lines'].append(_live_log_line)
                         existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
@@ -10267,6 +10320,17 @@ def agent_status(project_id):
                 'usage': s.get('usage', {}),
                 'cost_usd': s.get('cost_usd', 0),
                 'num_turns': s.get('num_turns', 0),
+                # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
+                # the SAME per-turn normalized figure the auto-fresh rollover
+                # trigger reads (_auto_fresh_trigger/_context_tokens_over_threshold)
+                # — this was previously set on the in-memory session dict
+                # (_note_call_context_tokens et al.) but never surfaced past
+                # that point, so /agent/status genuinely never returned it
+                # (not a null-vs-absent serializer bug — the key was simply
+                # missing). None (never a fabricated 0) when no usage has
+                # been recorded yet — "unknown stays unknown".
+                'context_tokens': s.get('context_tokens'),
+                'context_window': _context_window_for(s.get('provider') or 'claude'),
                 'mode': s.get('mode', 'A'),
                 'long_session_advisory': _long_session_advisory(s),
                 'process_alive': s.get('process_alive', False) if s.get('mode') == 'B' else (s['status'] in ('running',)),

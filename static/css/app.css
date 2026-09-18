@@ -6569,6 +6569,12 @@
   .token-badge:empty { display: none; }
   }
   .token-badge .tb-cost { color: var(--green-text); }
+  /* Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5) — "84k / 200k"
+     against the rollover threshold. Default color is inherited (same as the
+     rest of the token-badge); ctx-warn/ctx-hot shift as the live figure
+     approaches the threshold auto-fresh rolls on. */
+  .token-badge .ctx-counter.ctx-warn { color: var(--amber-text); }
+  .token-badge .ctx-counter.ctx-hot { color: var(--red-text); font-weight: 600; }
   .agent-log-usage {
     font-family: 'JetBrains Mono', monospace; font-size: 11px;
     color: var(--text-faint); margin-top: 2px;

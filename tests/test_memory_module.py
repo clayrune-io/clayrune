@@ -476,3 +476,101 @@ def test_session_too_large_finds_dot_flattened_worktree_transcript(tmp_data_dir,
     too_large, size = m._session_too_large(worktree, session_id)
     assert too_large is True
     assert size == jsonl_file.stat().st_size
+
+
+# ── _session_too_large / _transcript_image_bytes: base64 images must not
+# count toward the byte cap ──────────────────────────────────────────────────
+# Regression (2026-09-18): clayrune_website auto-freshed twice as "session
+# too large" at 6.4 MB and 9.9 MB — real context was only 123k/85k tokens.
+# 2.8 MB / 4.7 MB of each transcript was base64 image data (14 blobs each,
+# product-image work read back through a tool). _session_too_large counted
+# raw transcript bytes, so images tripped a rollover tokens never justified.
+# Fixture below reproduces the shape verified against the real transcript:
+# a tool_result content block nesting a type='image' block with a big
+# base64 `source.data` string, alongside a small amount of real text.
+
+def _fixture_transcript_with_images(path, *, num_images, image_b64_len, text_body):
+    import json as _json
+    lines = [_json.dumps({
+        'type': 'user',
+        'message': {'role': 'user', 'content': [{'type': 'text', 'text': text_body}]},
+    })]
+    for i in range(num_images):
+        lines.append(_json.dumps({
+            'type': 'user',
+            'message': {
+                'role': 'user',
+                'content': [{
+                    'type': 'tool_result',
+                    'tool_use_id': f'tool_{i}',
+                    'content': [{
+                        'type': 'image',
+                        'source': {'type': 'base64', 'media_type': 'image/png',
+                                   'data': 'A' * image_b64_len},
+                    }],
+                }],
+            },
+        }))
+    path.write_text('\n'.join(lines), encoding='utf-8')
+
+
+def test_session_too_large_excludes_base64_image_bytes(tmp_data_dir, monkeypatch):
+    """A transcript that is only over the byte cap because of base64 image
+    payloads must NOT be reported as too-large — the image bytes are
+    subtracted before comparing against _SESSION_SIZE_LIMIT."""
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 5 * 1024 * 1024  # real 5 MB default
+
+    project_path = str(tmp_data_dir / 'proj_images')
+    session_id = '8e5ff4a0-64b4-45d0-b0c9-99647758c04e'
+    encoded = rt._encode_project_path(project_path)
+    cli_dir = fake_home / encoded
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+
+    # 14 images of ~400 KB base64 each (~5.5 MB) + a small amount of real
+    # text — mirrors the measured 9.9 MB / 4.7 MB image / 85k-token transcript,
+    # scaled up slightly so raw size clears the 5 MB limit in this fixture too.
+    _fixture_transcript_with_images(
+        jsonl_file, num_images=14, image_b64_len=400_000, text_body='x' * 2000)
+
+    raw_size = jsonl_file.stat().st_size
+    assert raw_size > m._SESSION_SIZE_LIMIT, 'fixture must reproduce the raw-bytes false positive'
+
+    img_bytes = m._transcript_image_bytes(jsonl_file)
+    assert img_bytes == 14 * 400_000
+
+    too_large, size = m._session_too_large(project_path, session_id)
+    assert too_large is False, \
+        f'image bytes must be excluded: raw={raw_size} net={size} limit={m._SESSION_SIZE_LIMIT}'
+    assert size == raw_size - img_bytes
+
+
+def test_session_too_large_still_trips_on_real_text_bloat(tmp_data_dir, monkeypatch):
+    """Control: a transcript over the cap on genuine (non-image) text must
+    still trip — image-exclusion isn't a blanket size increase."""
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 100  # bytes — small so a short fixture trips it
+
+    project_path = str(tmp_data_dir / 'proj_text')
+    session_id = 'aaaaaaaa-64b4-45d0-b0c9-99647758c04e'
+    encoded = rt._encode_project_path(project_path)
+    cli_dir = fake_home / encoded
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+    _fixture_transcript_with_images(
+        jsonl_file, num_images=0, image_b64_len=0, text_body='x' * 500)
+
+    too_large, size = m._session_too_large(project_path, session_id)
+    assert too_large is True
+    assert size == jsonl_file.stat().st_size

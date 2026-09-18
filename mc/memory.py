@@ -257,12 +257,67 @@ def _session_transcript_path(project_path, claude_session_id):
         project_path, claude_session_id)
 
 
+def _transcript_image_bytes(path):
+    """Total base64 payload bytes across every image block in a Claude
+    transcript .jsonl — top-level message content and content nested inside
+    a `tool_result` (screenshot/Read-image tool output), the two shapes seen
+    in practice (verified 2026-09-18 against a live clayrune_website
+    transcript: 14 `tool_result`-nested image blocks, 4.7 MB of `source.data`
+    out of a 9.9 MB file).
+
+    Used only by `_session_too_large`'s byte-based backstop, itself only
+    consulted when no context-tokens figure is available
+    (`_auto_fresh_trigger`) — a transcript's raw byte size is not what a
+    model re-reads as context when most of those bytes are an inlined image,
+    so counting them toward the resume-latency limit over-fires. Best-effort:
+    an unparseable line or a missing `source.data` string just contributes 0,
+    never raises.
+    """
+    def _block_bytes(b):
+        src = b.get('source')
+        data = src.get('data') if isinstance(src, dict) else None
+        return len(data) if isinstance(data, str) else 0
+
+    total = 0
+    try:
+        with open(path, encoding='utf-8', errors='replace') as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    m = json.loads(line)
+                except Exception:
+                    continue
+                msg = m.get('message') if isinstance(m, dict) else None
+                content = msg.get('content') if isinstance(msg, dict) else None
+                if not isinstance(content, list):
+                    continue
+                for b in content:
+                    if not isinstance(b, dict):
+                        continue
+                    if b.get('type') == 'image':
+                        total += _block_bytes(b)
+                    elif b.get('type') == 'tool_result':
+                        c = b.get('content')
+                        if isinstance(c, list):
+                            for cb in c:
+                                if isinstance(cb, dict) and cb.get('type') == 'image':
+                                    total += _block_bytes(cb)
+    except OSError:
+        pass
+    return total
+
+
 def _session_too_large(project_path, claude_session_id):
-    """Check if a session transcript exceeds the size limit."""
+    """Check if a session transcript exceeds the size limit, net of base64
+    image payload bytes (see `_transcript_image_bytes` — those inflate raw
+    file size without inflating the tokens a model actually re-reads, and
+    this check is the resume-latency backstop, not a cost signal)."""
     p = _session_transcript_path(project_path, claude_session_id)
     if p and p.exists():
         try:
-            size = p.stat().st_size
+            size = p.stat().st_size - _transcript_image_bytes(p)
             return size > _SESSION_SIZE_LIMIT, size
         except OSError:
             pass

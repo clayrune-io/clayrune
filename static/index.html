@@ -2675,6 +2675,44 @@ function formatElapsed(startedAt) {
   return Math.floor(s / 3600) + 'h ' + Math.floor((s % 3600) / 60) + 'm';
 }
 
+// Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5): the same
+// normalized per-call figure the server's rollover trigger uses
+// (session['context_tokens'] / mc.agent_runtime.normalize_context_tokens),
+// against the context_rollover_tokens threshold (default 200000 — mirrors
+// the server-side default in agent_routes.py's _context_tokens_over_threshold
+// so an install that never touched the setting still shows the real ratio).
+// A vendor/session with no figure yet renders '—', never '0k' — "unknown
+// stays unknown" (VENDOR_AGNOSTIC_PROGRAM.md §4); fabricating a zero here
+// would silently claim "empty context" for a provider that simply hasn't
+// reported one.
+function formatContextCount(n) {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + 'M';
+  if (n >= 1_000) return Math.round(n / 1000) + 'k';
+  return String(n);
+}
+
+function contextCounterHTML(session, alwaysShow) {
+  const tokens = session && session.contextTokens;
+  if (typeof tokens !== 'number') {
+    // Only force the '—' placeholder while the session is live — a
+    // finished/never-started session with nothing to report goes back to
+    // being silently omitted (same as the usage/cost/turns segments), so old
+    // history doesn't grow a permanent dash for chats that predate this
+    // feature or ran on a vendor that never reported a figure.
+    return alwaysShow
+      ? `<span class="ctx-counter" title="Context size not yet reported for this session">&mdash;</span>`
+      : '';
+  }
+  const thr = ((typeof _globalConfig !== 'undefined' && _globalConfig
+                && _globalConfig.context_rollover_tokens) || 200000);
+  const ratio = thr > 0 ? tokens / thr : 0;
+  const cls = ratio >= 1 ? ' ctx-hot' : ratio >= 0.8 ? ' ctx-warn' : '';
+  const label = thr > 0
+    ? `${formatContextCount(tokens)} / ${formatContextCount(thr)}`
+    : formatContextCount(tokens);
+  return `<span class="ctx-counter${cls}" title="Context size this session last reported (${tokens.toLocaleString()} tokens${thr > 0 ? `, rolls fresh at ${thr.toLocaleString()}` : ''})">${label}</span>`;
+}
+
 function sessionMetricsHTML(session, caps) {
   if (!session) return '';
   // Fall back to claude defaults when no caps provided (safe for existing callers)
@@ -2687,11 +2725,13 @@ function sessionMetricsHTML(session, caps) {
   const turns = session.num_turns || 0;
   const cost = formatCost(session.cost_usd);
   const isRunning = session.status === 'running' || session.status === 'idle';
+  const ctxHTML = contextCounterHTML(session, isRunning);
 
   if (isRunning) {
     const elapsed = formatElapsed(session.startedAt);
     const parts = [];
     if (elapsed) parts.push(`&#x23F1; ${elapsed}`);
+    if (ctxHTML) parts.push(ctxHTML);
     if (c.emits_usage && total) {
       let tokenDetail = `${formatTokens(total)} tokens`;
       if (cache_read) tokenDetail += ` (${formatTokens(cache_read)} cached)`;
@@ -2702,9 +2742,14 @@ function sessionMetricsHTML(session, caps) {
     return parts.join(' &middot; ');
   }
   // Completed/stopped/error
-  if (c.emits_usage && total) {
-    const parts = [`${formatTokens(total)} tokens`];
-    if (cache_read) parts[0] += ` (${formatTokens(cache_read)} cached)`;
+  if (ctxHTML || (c.emits_usage && total)) {
+    const parts = [];
+    if (ctxHTML) parts.push(ctxHTML);
+    if (c.emits_usage && total) {
+      let tokenDetail = `${formatTokens(total)} tokens`;
+      if (cache_read) tokenDetail += ` (${formatTokens(cache_read)} cached)`;
+      parts.push(tokenDetail);
+    }
     if (c.emits_num_turns && turns) parts.push(`${turns} turn${turns !== 1 ? 's' : ''}`);
     if (c.emits_cost && cost) parts.push(`<span class="tb-cost">${cost}</span>`);
     return parts.join(' &middot; ');
@@ -2724,7 +2769,11 @@ setInterval(() => {
     if (!el) continue;
     const _tickProj = allProjects.find(p => p.id === cached.projectId);
     const _tickCaps = _tickProj ? _capsForProject(_tickProj) : _CLAUDE_DEFAULT_CAPS;
-    if (_tickCaps.emits_usage) el.innerHTML = sessionMetricsHTML(cached, _tickCaps);
+    // Not gated on emits_usage: the elapsed-time segment and the context
+    // counter (contextTokens) both render for every provider, including
+    // ones with no usage/cost telemetry (Gemini) — sessionMetricsHTML
+    // itself decides what each field shows.
+    el.innerHTML = sessionMetricsHTML(cached, _tickCaps);
   }
 }, 1000);
 // ── Terminal pop-out state — window-bridged (module 8: js/terminal.js) ───────

@@ -69,13 +69,21 @@ class TestAutoFreshTrigger:
         reason, detail = ar._auto_fresh_trigger('/no/such/project', 'sid-1', context_tokens=5000)
         assert (reason, detail) == ('tokens', 5000)
 
-    def test_byte_trigger_fires_when_tokens_under(self, ar, monkeypatch):
+    def test_known_tokens_under_threshold_never_falls_through_to_bytes(self, ar, monkeypatch):
+        """Regression (2026-09-18): clayrune_website auto-freshed twice at
+        6.4 MB/9.9 MB transcripts whose real context was only 123k/85k
+        tokens, well under threshold — because the OLD OR-based trigger ran
+        the byte check independently of a KNOWN token result, and the byte
+        check tripped on base64 image blobs the token figure never saw. A
+        known token figure now decides on its own; the byte check must not
+        even be consulted."""
         from mc import state as mc_state
         monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 1_000_000)
-        monkeypatch.setattr(ar, '_session_too_large', lambda pp, sid: (True, 6 * 1024 * 1024))
+        monkeypatch.setattr(ar, '_session_too_large',
+                            lambda *a, **k: (_ for _ in ()).throw(
+                                AssertionError('byte check must not run when tokens are known')))
         reason, detail = ar._auto_fresh_trigger('/p', 'sid-1', context_tokens=100)
-        assert reason == 'bytes'
-        assert detail == 6 * 1024 * 1024
+        assert (reason, detail) == (None, 0)
 
     def test_neither_trigger_fires(self, ar, monkeypatch):
         from mc import state as mc_state
