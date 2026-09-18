@@ -44,6 +44,7 @@ from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional,
 # existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
 import hashlib
+import tempfile
 from datetime import timedelta
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
@@ -990,7 +991,10 @@ def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
     """
     if not getattr(runtime, 'tool_free_transform_enforced', False):
         raise TransformFailure(
-            provider, 'refused', 'cannot enforce tool-free transforms; refusing input')
+            provider, 'refused',
+            'cannot enforce tool-free transforms; not yet certified for the '
+            'tool_free_transform profile, refusing input rather than risk a '
+            'substitution')
     if identity is None and readiness is None and certification is None:
         make = getattr(runtime, 'transform_evidence', None)
         if not callable(make):
@@ -2886,6 +2890,7 @@ class GeminiRuntime(AgentRuntime):
     """
 
     name = 'gemini'
+    tool_free_transform_enforced = True
     display_name = 'Gemini CLI'
     # Verified 2026-08-31 against the LIVE API (ListModels + a real generateContent
     # call per id), NOT against the CLI's own constants. That distinction is the
@@ -2907,6 +2912,115 @@ class GeminiRuntime(AgentRuntime):
     ]
 
     _bin_cache: Optional[str] = None
+
+    # Certified tool-free (VENDOR_AGNOSTIC_PROGRAM §2/§8b W1). Measured live
+    # 2026-09-18 against gemini-cli 0.59.0: a fresh cwd + this box's REAL
+    # `~/.gemini/settings.json` (four live mcpServers: tradingview,
+    # sequential-thinking, mail, higgsfield) still ran an MCP-shaped
+    # `update_topic` tool call on a plain "say hi" — user-level config loads
+    # from an empty directory. `GEMINI_CLI_HOME` pointed at an isolated,
+    # never-populated directory removes that config entirely (no
+    # settings.json means no mcpServers to discover); `--policy` with a
+    # `toolName = "*"` + `mcpName = "*"` deny-all rule is the second layer,
+    # because the policy engine's own docs promise a `deny` rule EXCLUDES the
+    # tool from the model's option set, not just from execution. Live
+    # comparison of `stream-json` output with/without the policy: identical
+    # prompt, unrestricted run emits `tool_use`/`tool_result` events and
+    # `stats.tools.totalCalls: 2`; under this policy the same prompt emits
+    # zero tool events and `totalCalls: 0`. `--skip-trust` is required to run
+    # headless in a directory gemini hasn't seen before (a trust prompt, not
+    # a tool grant) and `-e none` drops extensions (none exist in the
+    # isolated home, kept for defense-in-depth against a future one).
+    TRANSFORM_EVIDENCE_ID = 'gemini-0.59.0-policy-denyall-probe-2026-09-18'
+    _TRANSFORM_POLICY_TOML = (
+        '[[rule]]\n'
+        'toolName = "*"\n'
+        'decision = "deny"\n'
+        'priority = 999\n'
+        'denyMessage = "tool_free_transform profile: no tools permitted"\n'
+        '\n'
+        '[[rule]]\n'
+        'toolName = "*"\n'
+        'mcpName = "*"\n'
+        'decision = "deny"\n'
+        'priority = 999\n'
+        'denyMessage = "tool_free_transform profile: no MCP tools permitted"\n'
+    )
+    _transform_home: Optional[str] = None
+    _transform_policy_file: Optional[str] = None
+
+    @classmethod
+    def _transform_home_dir(cls) -> str:
+        """Isolated GEMINI_CLI_HOME: never holds a settings.json, so there is
+        no mcpServers/extensions entry to discover regardless of what the
+        real `~/.gemini` carries on this machine."""
+        if cls._transform_home is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'gemini-home'
+            path.mkdir(parents=True, exist_ok=True)
+            cls._transform_home = str(path)
+        return cls._transform_home
+
+    @classmethod
+    def _transform_policy_path(cls) -> str:
+        """Materialize the deny-all policy TOML once, idempotently."""
+        if cls._transform_policy_file is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'gemini-tool-free.toml'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path.read_text(encoding='utf-8') != cls._TRANSFORM_POLICY_TOML:
+                    raise ValueError('stale')
+            except Exception:
+                path.write_text(cls._TRANSFORM_POLICY_TOML, encoding='utf-8')
+            cls._transform_policy_file = str(path)
+        return cls._transform_policy_file
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        bin_path = self.resolve_binary()
+        cmd = [str(bin_path) if bin_path else 'gemini',
+               '--skip-trust', '-e', 'none', '--policy', self._transform_policy_path()]
+        if model:
+            cmd.extend(['--model', model])
+        return cmd
+
+    def _transform_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env['GEMINI_CLI_HOME'] = self._transform_home_dir()
+        return env
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM). Same shape
+        as ClaudeRuntime.transform_evidence: a self-check that the argv this
+        adapter would actually spawn still carries every isolation flag, so a
+        dropped flag fails every transform closed instead of running with
+        tools. `effort` isn't a gemini concept — accepted for signature
+        parity, never forwarded."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            (self._TRANSFORM_POLICY_TOML + '|GEMINI_CLI_HOME-isolated').encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('gemini', model or '', effort or '', 'default'),
+            'gemini-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if self.resolve_binary() else Support.UNSUPPORTED
+        try:
+            auth_ok = (self.auth_status() or {}).get('ok') is not False
+        except Exception as e:
+            print(f'[runtime:gemini] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        argv = self._transform_argv(model=model)
+        isolated = (_argv_contains(argv, ('--skip-trust',))
+                   and _argv_contains(argv, ('-e', 'none'))
+                   and _argv_contains(argv, ('--policy', self._transform_policy_path())))
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
 
     def __init__(self) -> None:
         self._auth_cache: dict = {
@@ -3881,20 +3995,24 @@ class GeminiRuntime(AgentRuntime):
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None) -> Optional[OneshotResult]:
-        bin_path = self.resolve_binary()
-        if not bin_path:
+        """Every caller is a pure text transform (Scribe/condense/Distiller,
+        Claydo, character/voice generation) -- see TRANSFORM_EVIDENCE_ID's
+        comment for the live proof. `--skip-trust`/`-e none`/`--policy` and
+        the isolated `GEMINI_CLI_HOME` are load-bearing: dropping any of them
+        re-exposes this box's real `~/.gemini/settings.json` mcpServers and
+        the model's own filesystem tools to untrusted transform input."""
+        if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt) if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = [str(bin_path)]
-        if model:
-            cmd.extend(['--model', model])
+        cmd = self._transform_argv(model=model)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                input=full,
                                cwd=cwd, timeout=180,
                                encoding='utf-8', errors='replace',
+                               env=self._transform_env(),
                                creationflags=_POPEN_FLAGS,
                                startupinfo=_STARTUPINFO)
         except Exception:
@@ -4622,6 +4740,7 @@ class QwenRuntime(AgentRuntime):
     """
 
     name = 'qwen'
+    tool_free_transform_enforced = True
     display_name = 'Qwen Code'
     # No fixed catalog: the CLI's own docs (bundled qc-helper auth.md) name
     # ids like qwen3-coder-plus / qwen3.7-plus / glm-5 / kimi-k2.5, but those
@@ -5251,16 +5370,84 @@ class QwenRuntime(AgentRuntime):
     def stop(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
 
+    # Certified tool-free (VENDOR_AGNOSTIC_PROGRAM §2/§8b W1). Measured live
+    # 2026-09-18 against qwen-code 0.23.4 (the binary this box's
+    # resolve_binary() actually picks, C:\...\AppData\Local\qwen-code\bin):
+    # `--core-tools ''` does NOT reduce the model's tool list to zero (yargs
+    # coerces the bare flag to a non-restrictive value) -- built-in tools
+    # (read_file, run_shell_command, ...) plus this CLI's own bundled
+    # "qc-helper" orchestration tools (get_goal, agent, skill, tool_search,
+    # ...) stayed visible even with `--bare -e none`. `--max-tool-calls 0` is
+    # the enforcement that actually matters: it is a hard runtime circuit
+    # breaker, not a visibility filter -- live-verified, a prompt engineered
+    # to force a tool call aborted the run with `FatalBudgetExceededError:
+    # Run aborted: tool-call budget of 0 exceeded; observed 1` (exit 55)
+    # rather than executing it. A normal transform prompt with no reason to
+    # call a tool completed cleanly with `stats.tools.totalCalls: 0` and the
+    # real answer text. `--bare` (already load-bearing for dispatch, see
+    # class docstring) plus an explicit empty `--mcp-config` keep this box's
+    # real `.mcp.json`/`.claude` catalog and MCP servers from loading at all;
+    # `-e none` drops extensions; `--core-tools ''` stays as best-effort
+    # surface reduction even though it isn't the enforcement boundary.
+    TRANSFORM_EVIDENCE_ID = 'qwen-0.23.4-max-tool-calls-probe-2026-09-18'
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '--bare', '--mcp-config', '{"mcpServers":{}}',
+        '-e', 'none', '--core-tools', '', '--max-tool-calls', '0',
+    )
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        bin_path = self.resolve_binary()
+        cmd = [str(bin_path) if bin_path else 'qwen',
+               '--output-format', 'stream-json', *self.TRANSFORM_ISOLATION]
+        if model:
+            cmd.extend(['--model', model])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM); same
+        argv-self-check shape as Claude/Gemini. `effort` isn't a qwen
+        concept -- accepted for signature parity, never forwarded."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('qwen', model or '', effort or '', 'default'),
+            'qwen-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if self.resolve_binary() else Support.UNSUPPORTED
+        try:
+            auth_ok = self._qwen_auth_state()[0] == 'ok'
+        except Exception as e:
+            print(f'[runtime:qwen] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        isolated = _argv_contains(self._transform_argv(model=model), self.TRANSFORM_ISOLATION)
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None) -> Optional[OneshotResult]:
+        """Every caller is a pure text transform (Scribe/condense/Distiller,
+        Claydo, character/voice generation) -- see TRANSFORM_EVIDENCE_ID's
+        comment for the live proof. Runs the isolated `_transform_argv`, NOT
+        `build_command()` (that one is the dispatch/interactive shape:
+        `--yolo` auto-accepts tool calls and `--chat-recording` persists a
+        session neither of which a bounded, ephemeral transform wants)."""
         if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = self.build_command(model=model)
+        cmd = self._transform_argv(model=model)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         for k, v in self._settings_auth_env().items():
@@ -5334,6 +5521,12 @@ class CodexRuntime(AgentRuntime):
     # Codex's CLI does not currently expose a certified no-tools transport.
     # Keep this false until a canary proves the boundary; run_text_transform
     # therefore refuses Codex before sensitive transform input is delivered.
+    # `_transform_argv`/`transform_evidence` below are prepared and offline-
+    # tested (VENDOR_AGNOSTIC_PROGRAM §8b W1 item 2) so the eventual flip is
+    # a one-line change, not a redesign; Codex is OUT of allowance until
+    # 2026-09-24, so nothing here has been run against the live API — only
+    # command construction and the architecture guard. Flip only after the
+    # §8b checklist's live pass.
     tool_free_transform_enforced = False
     display_name = 'Codex CLI'
     # Verified 2026-08-31 against ~/.codex/models_cache.json from codex 0.151.
@@ -6332,6 +6525,78 @@ class CodexRuntime(AgentRuntime):
     def stop(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
 
+    # NOT YET CERTIFIED (tool_free_transform_enforced stays False -- see the
+    # class-level comment). `codex exec --help` (codex-cli 0.154.0, checked
+    # 2026-09-18, no prompt sent -- Codex is out of allowance until
+    # 2026-09-24) documents everything this needs offline:
+    #   -s read-only            -- sandbox policy for model-generated shell
+    #                              commands; the only one of the three
+    #                              (read-only/workspace-write/danger-full-access)
+    #                              that cannot write.
+    #   --ignore-user-config    -- does not load $CODEX_HOME/config.toml,
+    #                              which is where this box's real
+    #                              [mcp_servers.*] tables live (node_repl,
+    #                              mail, sequential-thinking, tradingview --
+    #                              verified present in ~/.codex/config.toml
+    #                              2026-09-18); auth still resolves via
+    #                              CODEX_HOME per the flag's own help text.
+    #   --skip-git-repo-check   -- the isolated transform cwd (below) is not
+    #                              a git repo.
+    #   --ephemeral             -- no session file persisted for a call that
+    #                              has nothing to resume.
+    # Explicitly NOT `--dangerously-bypass-approvals-and-sandbox` (this
+    # runtime's interactive/dispatch flag, matching skip-permissions on
+    # every other vendor per VENDOR_AGNOSTIC_PROGRAM §2 -- a transform is a
+    # different profile, not a weaker version of the same one).
+    TRANSFORM_EVIDENCE_ID = 'codex-0.154.0-offline-argv-2026-09-18-PENDING-LIVE-PROOF'
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '-s', 'read-only', '--ignore-user-config', '--skip-git-repo-check', '--ephemeral',
+    )
+    _transform_cwd: Optional[str] = None
+
+    @classmethod
+    def _transform_cwd_dir(cls) -> str:
+        """Empty, never-a-git-repo cwd so `--skip-git-repo-check` isn't
+        masking a real repo, and so no per-project `[projects.'<path>']`
+        trust_level entry from this box's real config.toml (already bypassed
+        by --ignore-user-config) is even relevant."""
+        if cls._transform_cwd is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'codex-cwd'
+            path.mkdir(parents=True, exist_ok=True)
+            cls._transform_cwd = str(path)
+        return cls._transform_cwd
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        cmd = self._cmd_prefix() + ['exec', '--json', *self.TRANSFORM_ISOLATION]
+        if model:
+            cmd.extend(['-m', model])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Offline argv-self-check only -- same shape as the other three
+        runtimes, but every capability claim stays UNSUPPORTED until a live
+        canary exists (there is deliberately no such canary yet: Codex is
+        out of allowance, and §8b bars exploring against paid time). This
+        method is unused while tool_free_transform_enforced is False; it
+        exists so flipping that flag later is a one-line change plus a live
+        proof, not a redesign."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('codex', model or '', effort or '', 'default'),
+            'codex-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if (self.resolve_binary() or self._npx_fallback) else Support.UNSUPPORTED
+        readiness = Readiness(identity, installed, Support.UNVERIFIED,
+                              now, now + timedelta(minutes=5))
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, Support.UNVERIFIED) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check-offline-only', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
@@ -6341,16 +6606,13 @@ class CodexRuntime(AgentRuntime):
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = self._cmd_prefix() + ['exec', '--json',
-                                    '--dangerously-bypass-approvals-and-sandbox']
-        if model:
-            cmd.extend(['-m', model])
+        cmd = self._transform_argv(model=model)
         self.last_error = ''
         try:
             r = subprocess.run(
                 cmd, input=full,
                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                cwd=cwd or str(Path.home()),
+                cwd=cwd or self._transform_cwd_dir(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
