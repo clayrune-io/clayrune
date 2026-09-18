@@ -54,7 +54,7 @@ def test_router_off_site_bakes_tail_ahead_of_the_mobile_brief():
     src = _source()
     fn_start = src.find("# Router off — write stdin directly (original path)")
     assert fn_start != -1
-    fn_end = src.find('threading.Thread(target=_write_stdin,', fn_start)
+    fn_end = src.find('_write_mode_b_stdin(claude_content, existing, p, message)', fn_start)
     assert fn_end != -1
     body = src[fn_start:fn_end]
     brief_idx = body.find('claude_content = _apply_mobile_brief(message, data)')
@@ -64,15 +64,15 @@ def test_router_off_site_bakes_tail_ahead_of_the_mobile_brief():
     assert brief_idx < tail_idx < bake_idx, (
         'tail must be computed and baked in AFTER the mobile-brief line so '
         'it ends up ahead of (further from the message than) the directive')
-    assert '_memory_turn.refresh_for_turn(' in body, (
-        'this site must still carry the memory_turn per-turn refresh too')
+    # The per-turn memory refresh lives in the shared _write_mode_b_stdin
+    # helper both direct-write sites call (test_memory_turn_wiring pins it).
 
 
 def test_same_tier_site_bakes_tail_ahead_of_the_mobile_brief():
     src = _source()
     fn_start = src.find('# Same tier — write stdin directly')
     assert fn_start != -1
-    fn_end = src.find('threading.Thread(target=_write_stdin_routed,', fn_start)
+    fn_end = src.find('_write_mode_b_stdin(claude_content, _rs_existing, p, message)', fn_start)
     assert fn_end != -1
     body = src[fn_start:fn_end]
     brief_idx = body.find('claude_content = _apply_mobile_brief(message, data)')
@@ -80,7 +80,6 @@ def test_same_tier_site_bakes_tail_ahead_of_the_mobile_brief():
     bake_idx = body.find("claude_content = _tail_text + '\\n\\n' + claude_content")
     assert -1 not in (brief_idx, tail_idx, bake_idx), body
     assert brief_idx < tail_idx < bake_idx
-    assert '_memory_turn.refresh_for_turn(' in body
 
 
 def test_the_two_respawn_sites_are_not_touched():

@@ -8974,6 +8974,7 @@ def agent_followup(project_id):
             if _tail_text:
                 claude_content = _tail_text + '\n\n' + claude_content
 
+            ack = _write_mode_b_stdin(claude_content, _rs_existing, p, message)
             _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
             if durable_ack:
                 if ack and ack.get('ack') == 'written':

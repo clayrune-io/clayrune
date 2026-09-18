@@ -337,3 +337,42 @@ def test_session_cwd_keeps_worktree_and_records_move(env):
     gone = {'session_id': 'y', '_agent_cwd': str(pp / '.clayrune' / 'agents' / 'gone')}
     assert ar._session_cwd(gone, str(pp)) == str(pp)
     assert gone['_cwd_moved_from'].endswith('gone')
+
+
+@pytest.mark.parametrize('route', ['pinned_same_model', 'auto_same_tier'])
+def test_same_tier_followup_actually_writes_stdin(env, monkeypatch, route):
+    """Fenn #3 follow-on: c14c2fd moved the direct stdin writes into
+    _write_mode_b_stdin but dropped the call on the post-lock same-tier
+    branch, so a follow-up to a live Mode-B session whose model did not
+    change returned ok:true and wrote nothing. That branch is hit by every
+    session with a model set (the manual-pin path), not just the router."""
+    ar = env['ar']
+    sess = _session('a', csid=FAKE_CSID)
+    sess['model'] = 'sonnet'
+    if route == 'auto_same_tier':
+        sess['model_auto_requested'] = True
+        monkeypatch.setattr(ar, '_resolve_dispatch_model', lambda p, m: ('sonnet', 'auto'))
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'a', 'message': 'the same-tier message'})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert _wait(lambda: sess['proc'].stdin.written), 'follow-up never reached the live process'
+    assert 'the same-tier message' in sess['proc'].stdin.written[0]
+
+
+def test_same_tier_durable_followup_acks_the_real_write(env, monkeypatch):
+    """The durable delegation handoff must see stdin_write_ack=written on the
+    same-tier branch too, never a NameError or an unwritten success."""
+    ar = env['ar']
+    sess = _session('a', csid=FAKE_CSID)
+    sess['model'] = 'sonnet'
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'a', 'message': 'child result', '_durable_delivery_ack': True})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert resp.get_json()['stdin_write_ack'] == 'written'
+    assert 'child result' in sess['proc'].stdin.written[0]

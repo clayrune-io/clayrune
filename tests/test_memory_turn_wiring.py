@@ -25,18 +25,29 @@ def _source():
     return ROUTES.read_text(encoding='utf-8')
 
 
+def _helper_body(src):
+    """The shared live-process writer both direct-write sites call."""
+    start = src.find('    def _write_mode_b_stdin(')
+    assert start != -1, 'the shared Mode-B stdin writer moved — update this test'
+    end = src.find('\n    # Pre-check:', start)
+    assert end != -1
+    return src[start:end]
+
+
 def test_exactly_four_call_sites_exist():
-    """Spec §9.6: 'four stdin write sites ... agent_routes.py:4021, :5615,
-    :6460, :6563' (line numbers as measured against the pre-fix tree; this
-    repo has since grown a few lines above each from the fix itself, so this
-    pins the COUNT and the surrounding shape rather than exact line numbers)."""
+    """Spec §9.6 names four stdin write sites: 2 seed_delivered (dispatch,
+    revival) and 2 per-turn refreshes at the live direct writes. The two live
+    writes now share `_write_mode_b_stdin`, so the refresh call lives once, in
+    that helper, and BOTH direct-write branches must call the helper. A
+    branch that stops calling it drops the user's message on the floor (the
+    c14c2fd same-tier regression)."""
     src = _source()
     calls = re.findall(r'_memory_turn\.(seed_delivered|refresh_for_turn)\(', src)
-    assert len(calls) == 4, (
-        f'expected exactly 4 call sites (2 seed_delivered at dispatch/revival, '
-        f'2 refresh_for_turn at the live direct-stdin-writes), found {len(calls)}: {calls}')
     assert calls.count('seed_delivered') == 2, calls
-    assert calls.count('refresh_for_turn') == 2, calls
+    assert calls.count('refresh_for_turn') == 1, calls
+    assert '_memory_turn.refresh_for_turn(' in _helper_body(src)
+    writes = re.findall(r'_write_mode_b_stdin\(claude_content, (\w+), p, message\)', src)
+    assert writes == ['existing', '_rs_existing'], writes
 
 
 def test_revival_seeds_before_its_stdin_write():
@@ -76,36 +87,30 @@ def test_dispatch_seeds_before_its_deferred_stdin_write():
 
 
 def test_router_off_direct_write_refreshes_and_prepends_the_block():
-    """agent_routes.py:6460 (the citation's third site) — a direct write to an
-    ALREADY-LIVE process with auto-routing OFF. No context rebuild happens on
-    this path at all, which is exactly the B5 break; this is the site that
-    must call refresh_for_turn and prepend its block ahead of the existing
-    message content (mobile-brief directive stays LAST/closest to the user's
-    own words — spec's 'behaviour rules ... positioned late')."""
+    """The router-off direct write to an ALREADY-LIVE process. No context
+    rebuild happens on this path, which is exactly the B5 break; the shared
+    helper must refresh and prepend its block ahead of the message content
+    (mobile-brief directive stays closest to the user's own words)."""
     src = _source()
     fn_start = src.find("# Router off — write stdin directly (original path)")
     assert fn_start != -1
-    fn_end = src.find('threading.Thread(target=_write_stdin,', fn_start)
-    assert fn_end != -1
-    body = src[fn_start:fn_end]
-    assert '_memory_turn.refresh_for_turn(' in body
-    assert re.search(r"_refresh\['block'\]\s*\+\s*'\\n\\n'\s*\+\s*_content", body), (
+    fn_end = src.find('_write_mode_b_stdin(claude_content, existing, p, message)', fn_start)
+    assert fn_end != -1, 'router-off branch no longer writes through the shared helper'
+    helper = _helper_body(src)
+    assert re.search(r"refresh\['block'\]\s*\+\s*'\\n\\n'\s*\+\s*content", helper), (
         'the refreshed block must be prepended ahead of the mobile-brief-'
         'augmented message content, not appended after or dropped')
 
 
 def test_same_tier_direct_write_refreshes_and_prepends_the_block():
-    """agent_routes.py:6563 (the citation's fourth site) — a direct write to an
-    already-live process when the auto-router picked the SAME model tier (so
-    no respawn happens, no context rebuild either)."""
+    """The same-tier direct write (router or manual pin chose the running
+    model, so no respawn and no context rebuild)."""
     src = _source()
     fn_start = src.find('# Same tier — write stdin directly')
     assert fn_start != -1
-    fn_end = src.find('threading.Thread(target=_write_stdin_routed,', fn_start)
-    assert fn_end != -1
-    body = src[fn_start:fn_end]
-    assert '_memory_turn.refresh_for_turn(' in body
-    assert re.search(r"_refresh\['block'\]\s*\+\s*'\\n\\n'\s*\+\s*_content", body)
+    fn_end = src.find('_write_mode_b_stdin(claude_content, _rs_existing, p, message)', fn_start)
+    assert fn_end != -1, 'same-tier branch no longer writes through the shared helper'
+    assert '_memory_turn.refresh_for_turn(' in _helper_body(src)
 
 
 def test_the_two_respawn_sites_are_not_touched():
