@@ -65,6 +65,12 @@ function fixtureProject(id, name) {
   };
 }
 const PROJECTS_JSON = JSON.stringify([fixtureProject(PID, 'Placeholder Smoke')]);
+// The catalog record the composer resolves a pick against. Case 3 goes through
+// resolveCharacterMeta (the real dispatch path), so the avatar must come from
+// HERE -- the hand-built FENN/MARLOW fixtures below already carry one and so
+// could never catch a resolver that drops it.
+const DAVE_REC = { name: 'dave', scope: 'global', display_name: 'dave', agent_name: 'Dave', avatar: 'fig:guard' };
+const CHARACTERS_JSON = JSON.stringify([DAVE_REC]);
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -84,7 +90,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
     if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
-    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: CHARACTERS_JSON });
     return route.abort();
   });
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
@@ -158,6 +164,30 @@ try {
   (await rosterNames()).includes('Marlow')
     ? ok('a later characterless poll does not clobber an already-resolved persona')
     : fail('Marlow disappeared from the roster after a characterless follow-up poll — a present value was overwritten with empty');
+
+  // ── Case 3: a chat dispatched from the composer builds its placeholder
+  // persona with resolveCharacterMeta. That meta must carry the avatar, or
+  // the newest (placeholder) row wins the roster and the row renders an empty
+  // face until the next /conversations poll (seen live 2026-09-18). ─────────
+  await page.evaluate(async (pid) => {
+    reloadCharacters(pid);
+    for (let i = 0; i < 50 && !window.characterCacheFor(pid).length; i++) await new Promise((r) => setTimeout(r, 20));
+    upsertConversationCache(pid, '', 'what did we do', 'running', {
+      mcSessionId: 'mc-dave-new', provider: 'claude', live: true,
+      character: window.resolveCharacterMeta(pid, 'global:dave'),
+    });
+    refreshModalById(pid);
+  }, PID);
+  await page.waitForTimeout(150);
+  const daveFace = await page.$$eval(`${scope}.channel-row`, (rows) => {
+    const r = rows.find((el) => (el.querySelector('.conv-name') || {}).textContent?.trim() === 'Dave');
+    return r ? { found: true, img: !!r.querySelector('img, .av-fig, [style*="background-image"]'), html: r.innerHTML.slice(0, 300) } : { found: false };
+  });
+  !daveFace.found
+    ? fail(`Dave should be on the roster after a composer dispatch, got: ${JSON.stringify(await rosterNames())}`)
+    : daveFace.img
+      ? ok('a composer-dispatched placeholder row renders the persona avatar, not an empty face')
+      : fail('Dave row rendered with no avatar -- resolveCharacterMeta dropped it: ' + daveFace.html);
 
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) {

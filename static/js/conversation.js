@@ -294,6 +294,10 @@ function resolveCharacterMeta(projectId, character) {
                  display_name: (rec && (rec.display_name || rec.name)) || name };
   if (rec && rec.engine) meta.engine = rec.engine;
   if (rec && rec.agent_name) meta.agent_name = rec.agent_name;
+  // Without this the optimistic new-chat row is the newest one for its
+  // persona, so _channelRoster picks it and the Channel row renders an
+  // empty face until the next /conversations poll replaces it.
+  if (rec && rec.avatar) meta.avatar = rec.avatar;
   return meta;
 }
 window.setComposerCharacter = setComposerCharacter;
