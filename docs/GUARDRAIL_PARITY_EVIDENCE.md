@@ -184,3 +184,155 @@ lives); live confirmation of the block itself is pending 2026-09-24.
   case. None of Claude/Gemini/Qwen/Codex resolved on this box hit it.
 - **Qwen's reopened native skill/subagent/QWen.md discovery** (§2): a
   capability-surface question, not a guardrail one — flagged for W4/Wren.
+
+## 7. Three live regressions on Ron's real instance (2026-09-18, branch `fix/w2-live-regressions`)
+
+Found after `integrate/vendor-agnostic` reached Ron's actual running
+instance, on a restart — none of these were caught by the unit suite,
+because none of them mock the real shell/CLI boundary these bugs live in.
+
+### 7a. Codex could not launch AT ALL
+
+Live cmd: `codex.CMD exec --json --dangerously-bypass-approvals-and-sandbox
+-c hooks='C:\Users\levir\.clayrune\hooks\codex-hooks.json' -c
+bypass_hook_trust=true`. Died instantly: `Error loading config.toml: invalid
+type: string "...", expected struct HooksToml in \`hooks\``. Reproduced
+directly, then root-caused: `hooks` is a TOML **table**
+(`HooksToml`), not a file-path value — no code path in Codex loads an
+external hooks file via `-c`.
+
+**Verified offline, no allowance spent**, using exactly the signal Dave
+proposed: with allowance out, a config that parses successfully reaches the
+real API and fails with `usage_limit_exceeded`; a bad config fails at
+parse time instead, before any API call. Tested every candidate this way
+(`codex exec ... "say hi"`, `--strict-config` to reject any unrecognized
+field):
+- `-c hooks='<path>'` → `expected struct HooksToml` (the exact live bug).
+- `-c bypass_hook_trust=true` → `unknown configuration field
+  'bypass_hook_trust'` under `--strict-config` (the OTHER broken half —
+  not a real config key at all).
+- `--dangerously-bypass-hook-trust` (the real CLI flag) +
+  `-c hooks.PreToolUse=[{matcher="shell",hooks=[{type="command",
+  command="...",name="clayrune-process-guard"}]}]` (a **dotted-path**
+  inline TOML override) → reached `usage_limit_exceeded` under
+  `--strict-config` with zero warnings. Re-verified via a direct Python
+  `subprocess.run` (no shell, matching the real dispatch code path exactly
+  — a bash-quoted reproduction of the same string had ALSO failed, purely
+  from bash's own re-escaping, which is precisely the kind of
+  reproduction-vs-real-path mismatch that caused the Gemini bug below; the
+  actual argv list is what matters).
+
+The dotted path was deliberate, not incidental: `-c hooks=<table>` (no dot)
+is also valid TOML but would REPLACE the entire `hooks` table, silently
+dropping anything the user has for other events. `hooks.PreToolUse=` sets
+only that one array. Fixed in `mc.guardrail_hooks.codex_hook_config_args()`,
+injected unconditionally (no file, no gate) in `CodexRuntime.build_command()`.
+
+**The generated file also copied the user's own hooks.** The superseded
+design's `~/.clayrune/hooks/codex-hooks.json` was a MERGE of Clayrune's
+entry with the user's real `~/.codex/hooks.json` — on this box, that meant
+a personal `codetalk.py` Stop hook ended up copied into a Clayrune-owned
+file. Fixed by removing the file entirely: `mc/guardrail_hooks.py` no longer
+lists `codex` in `LAUNCH_FILENAMES`, and nothing reads
+`~/.codex/hooks.json` anymore. Inline injection means there is no file that
+could ever hold a copy of anything.
+
+Live-block proof (does the guard actually fire) remains pending 2026-09-24
+per plan — the config-shape fix above is independently verified without it.
+
+### 7b. Gemini agents refused with "not running in a trusted directory"
+
+Reproduced with the raw CLI in the main checkout, with AND without
+`GEMINI_CLI_SYSTEM_SETTINGS_PATH` set — confirmed NOT caused by this
+guardrail work. `grep`-checked the whole repo (source, tests, W1/W2
+harnesses) for `trustedFolders`: zero references anywhere except this
+fix's own new comment — nothing in Clayrune's code or test suite deletes
+or ever touches `~/.gemini/trustedFolders.json`. Root cause is Gemini 0.59's
+own headless-trust behavior on a box/profile with no trusted-folders record
+at all (a fresh install, or — as reproduced here — an isolated test home).
+
+Fixed: `--skip-trust` (the CLI's own documented flag, "Trust the current
+workspace for this session") added unconditionally in
+`GeminiRuntime.build_command()` — the single builder both `dispatch()` and
+`write_followup()` call, so every launch path is covered by one change.
+Clayrune only ever launches Gemini inside project directories the user
+already registered, so this trusts nothing the user hasn't already chosen.
+
+**Live proof:** real second instance (`MC_REMOTE_ENABLED=0`, isolated
+`MC_DATA_DIR`/port/home with NO `~/.gemini/trustedFolders.json` at all —
+the exact fresh-install condition), dispatched a Gemini agent with a reply
+marker (`"Reply with exactly this text and nothing else:
+GEMINI-TRUST-FIX-MARKER-OK"`). Replied correctly; `status: "completed"`.
+
+### 7c. Qwen agents 404'd on `qwen-coder-plus-latest`
+
+Root cause (Dave's own diagnosis, confirmed): Ron's Windows USER environment
+held `OPENAI_API_KEY`/`OPENAI_MODEL=qwen-coder-plus-latest`/
+`OPENAI_BASE_URL=https://aliyuncs.com` — stale values from an earlier
+broken Qwen login attempt. `~/.qwen/settings.json` was correct
+(`dashscope-intl.aliyuncs.com`, `qwen3-coder-plus`). `_settings_auth_env()`
+only ever `setdefault`-ed its values onto the child env — "never override a
+real env var already set" — so the broken global env always won. Generic
+`OPENAI_*` names are the root design bug: Codex reads the exact same
+variables, so a Qwen/DashScope credential in the global env can equally
+mislabel Codex's own state (see 7d).
+
+Fixed: every `_settings_auth_env()` call site (`dispatch`, `write_followup`,
+the `oneshot` transform path) now does `env[k] = v` unconditionally for
+each key `_settings_auth_env()` actually returns — a value configured
+there represents a deliberate, Qwen-specific choice and must beat an
+ambient same-named env var from a different vendor's login. Returns `{}`
+when settings.json defines nothing, so the inherited env is untouched in
+that case, exactly as before.
+
+**Live proof:** real second instance, server PROCESS ENV set to the exact
+broken triple (`OPENAI_API_KEY`/`OPENAI_BASE_URL=https://aliyuncs.com`/
+`OPENAI_MODEL=qwen-coder-plus-latest`), `~/.qwen/settings.json` in the
+isolated home copied byte-for-byte from the real working config (never
+typed/echoed — a file copy, so the real key never touched a command line
+or this document). Dispatched a Qwen agent, model `qwen3-coder-plus`, with
+a reply marker. Replied correctly (`QWEN-ENV-FIX-MARKER-OK`); agent log
+confirms `"model": "qwen3-coder-plus"`, `"observed_model":
+"qwen3-coder-plus"` — the broken global env had zero effect.
+
+### 7d. Codex auth precedence (investigated, mostly NOT a bug)
+
+Live-tested directly (`codex exec`, real dispatch, no allowance so the
+outcome is legible): with `OPENAI_API_KEY` (a stray/wrong value) AND
+`OPENAI_BASE_URL=https://aliyuncs.com` AND `OPENAI_MODEL=qwen-coder-plus-latest`
+all set — Ron's exact broken triple — `codex exec` still correctly reached
+`chatgpt.com`'s real backend and returned the real `usage_limit_exceeded`
+message. `codex doctor` corroborates: `stored auth mode: chatgpt`, `auth env
+vars present: OPENAI_API_KEY` shown side-by-side, with the ACTIVE
+reachability mode reported as `ChatGPT auth`. `~/.codex/auth.json` has
+`"OPENAI_API_KEY": null` alongside real stored OAuth `tokens` — this is the
+on-disk signal that a stored ChatGPT login exists and takes precedence.
+
+**Conclusion: no env-stripping code needed for the case that matters** (a
+box with a stored ChatGPT login, which is Ron's real setup) — generic
+`OPENAI_*` env vars have zero effect on Codex's own model-provider routing
+when a ChatGPT login is stored, live-proven twice (once with just the API
+key, once with the full broken triple).
+
+### 7e. Two Qwen installs on this box (reported, not changed)
+
+`QwenRuntime.resolve_binary()` resolved `C:\Users\levir\AppData\Local\qwen-code\bin\qwen.CMD`,
+not `~/.npm-global/qwen`. Root cause, confirmed live (`shutil.which('qwen')`
++ printing `PATH`): `resolve_binary()` has NO preference logic between the
+two at all — it calls `shutil.which('qwen')` and takes whatever that
+returns, which is simply the FIRST match scanning `PATH` directories in
+order. On this box, `C:\Users\levir\AppData\Local\qwen-code\bin` sits at
+PATH index 28, `C:\Users\levir\.npm-global` at index 29 — a Windows PATH
+ordering artifact (likely: a native Qwen installer added itself earlier in
+PATH than the later npm-global install), not a Clayrune decision. Per
+Dave's instruction, not changed.
+
+**What WAS a real bug:** `CodexRuntime._codex_auth_state()` (the health
+check) checked bare `OPENAI_API_KEY`/`CODEX_API_KEY` env vars BEFORE reading
+`~/.codex/auth.json` — so it reported `'ok, env:OPENAI_API_KEY'` even on a
+box logged into Codex via ChatGPT OAuth, exactly mislabeling the credential
+that will actually be used (Dave's fix (c) — the health check must report
+the truth, not just whichever signal it finds first). Fixed: `auth.json`
+(stored ChatGPT tokens, then a stored API key) is checked FIRST; bare env
+vars are the fallback ONLY when no stored login exists at all — matching
+the precedence just proven live.

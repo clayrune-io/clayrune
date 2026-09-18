@@ -1126,7 +1126,14 @@ class TestQwenRuntime:
         assert status == 'not_logged_in'
         assert method is None
 
-    def test_auth_state_dashscope_env(self, monkeypatch):
+    def test_auth_state_dashscope_env(self, monkeypatch, tmp_path):
+        # Isolate USERPROFILE/HOME: _settings_auth_env() is checked FIRST as
+        # of 2026-09-18 (settings.json wins over a generic env var — see its
+        # docstring), so this test must not see this box's own REAL
+        # ~/.qwen/settings.json or it stops testing the env-var fallback
+        # path at all.
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
         monkeypatch.setenv('DASHSCOPE_API_KEY', 'sk-test')
         status, method = self.rt._qwen_auth_state()
         assert status == 'ok'

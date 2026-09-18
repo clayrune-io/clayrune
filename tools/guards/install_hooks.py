@@ -18,13 +18,15 @@ starts, via a flag/env var each CLI resolves fresh per invocation:
     above project settings.
   - Qwen Code: `QWEN_CODE_SYSTEM_SETTINGS_PATH` env var — same mechanism,
     confirmed present in the bundled CLI (`chunk-IDS7MSUP.js`).
-  - Codex CLI: `-c hooks="<file>"` plus `-c bypass_hook_trust=true` (the
-    interactive hook-trust gate has no non-interactive prompt path — see
-    docs/GUARDRAIL_PARITY_EVIDENCE.md §1). NOT independently confirmed live
-    (no Codex launches); the codex file below is generated as a MERGE with
-    the user's real hooks.json specifically because that CLI's own merge-vs-
-    replace behavior for this override is unverified — Claude/Gemini/Qwen's
-    IS verified additive, so their generated files are guard-only.
+
+**Codex is NOT generated here at all** — see `mc/guardrail_hooks.py`'s
+module docstring for why: its hooks config is a TOML table, not a file
+reference, so `CodexRuntime.build_command()` injects it INLINE via
+`codex_hook_config_args()` on every launch. No file, so nothing can ever
+hold a copy of the user's own hooks (the first version's generated
+codex-hooks.json did exactly that — copied a personal Stop hook into a
+Clayrune-owned file, on top of using a config key Codex doesn't accept as a
+path at all, which killed every Codex launch outright).
 
 Live-verified, 2026-09-18, each with an isolated test home carrying a
 harmless marker-writing "user" hook plus the per-launch mechanism pointed at
@@ -47,7 +49,6 @@ Nothing here writes to those files anymore.
 from __future__ import annotations
 
 import argparse
-import copy
 import difflib
 import json
 import sys
@@ -59,55 +60,21 @@ from mc import guardrail_hooks as _gh  # noqa: E402
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_SCRIPT = REPO_ROOT / 'mc' / 'process_guard.py'
-HOOK_NAME = 'clayrune-process-guard'
+HOOK_NAME = _gh.HOOK_NAME
 
-# Per-vendor hook-file SHAPE (event name + matcher) — the DESTINATION and
-# whether the vendor's real global config gets read (for merging) lives in
-# mc/guardrail_hooks.py / _real_codex_hooks_path below, not here.
+# Per-vendor hook-file SHAPE (event name + matcher). Codex is deliberately
+# absent — see the module docstring.
 VENDOR_CONFIGS: Dict[str, Dict[str, str]] = {
     'claude': {'event': 'PreToolUse', 'matcher': 'Bash|PowerShell'},
     'gemini': {'event': 'BeforeTool', 'matcher': 'run_shell_command'},
     'qwen': {'event': 'PreToolUse', 'matcher': 'Bash|PowerShell|run_shell_command'},
-    'codex': {'event': 'PreToolUse', 'matcher': 'shell'},
 }
-
-# Vendors whose per-launch override is verified additive — their generated
-# file needs only Clayrune's own entry, nothing read from the real install.
-_GUARD_ONLY_VENDORS = {'claude', 'gemini', 'qwen'}
-# Vendors whose override semantics are unverified — merge with the real file
-# ourselves so correctness doesn't depend on an unconfirmed CLI behavior.
-_MERGE_VENDORS = {'codex'}
-assert _GUARD_ONLY_VENDORS | _MERGE_VENDORS == set(VENDOR_CONFIGS), \
-    'every vendor must be classified as guard-only or merge'
 
 
 def guard_command(guard_script: Path = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
-    """Command string a vendor's hook runner executes.
-
-    Quoting the interpreter path unconditionally (`"<py>" "<script>"`) was
-    the first version of this function and broke SILENTLY in production:
-    live-tested 2026-09-18 against a real dispatch, Gemini's CLI (the
-    Windows `.cmd` launcher `resolve_binary()` finds) executes hook commands
-    through a shell that parses two adjacent quoted tokens as a syntax
-    error ("UnexpectedToken") — the hook then failed to even run, and
-    Gemini treated that failure as an ALLOW, not a deny (unlike a genuinely
-    MISSING script, which every vendor treats as a deny — see
-    docs/GUARDRAIL_PARITY_EVIDENCE.md §1a). `taskkill /IM notepad.exe` went
-    through and killed a live test process before this was caught. Claude
-    and Qwen were re-verified unaffected by the same quoted format, so this
-    was Gemini-specific, not a two-vendor coincidence.
-
-    Fix: quote the interpreter ONLY when its path actually contains a space
-    (the one case an unquoted bareword can't handle) — live re-verified
-    against Gemini's real `.cmd` launcher, a real taskkill, blocked
-    correctly. An interpreter path WITH a space is a known, disclosed gap:
-    no single quoting form is confirmed safe across every vendor's hook
-    shell in that case, and none of the vendors tested here need it (their
-    resolved interpreters have no spaces).
-    """
-    py = python_exe or sys.executable or 'python'
-    py_token = f'"{py}"' if ' ' in py else py
-    return f'{py_token} "{guard_script}"'
+    """Thin wrapper — see `mc.guardrail_hooks.guard_shell_command`'s
+    docstring for the full history (the quoting bug this fixed)."""
+    return _gh.guard_shell_command(guard_script, python_exe)
 
 
 def _desired_group(cfg: Dict[str, str], command: str) -> Dict[str, Any]:
@@ -130,10 +97,6 @@ def _find_group_index(event_list: Any, marker: str) -> Optional[int]:
     return None
 
 
-def _real_codex_hooks_path(home: Path) -> Path:
-    return home / '.codex' / 'hooks.json'
-
-
 def _load_json_object(path: Path) -> Dict[str, Any]:
     if not path.exists():
         return {}
@@ -153,25 +116,19 @@ def plan_generate(vendor: str, guard_script: Path = GUARD_SCRIPT,
                    ) -> Tuple[Dict[str, Any], Dict[str, Any], bool]:
     """Return (before, after, changed) for the GENERATED launch file.
 
-    `before` is what's on disk at the destination NOW (for the diff/idempotency
-    check) — for a guard-only vendor that's simply the previous generation;
-    for codex it's the previously-generated MERGED file, so a diff still shows
-    only what actually changes on regeneration, not the user's whole real file
-    every time.
+    `before` is what's on disk at the destination NOW (for the diff/
+    idempotency check). Every vendor here is guard-only (Codex, the one
+    exception, is injected inline and never has a file — see the module
+    docstring) so `after` always regenerates from scratch: there is nothing
+    else in the file to preserve, it's 100% Clayrune's own. `real_home` is
+    accepted for call-signature stability but unused now that no vendor
+    needs to read the real install.
     """
     cfg = VENDOR_CONFIGS[vendor]
     command = guard_command(guard_script, python_exe)
     dest = _gh.launch_file_path(vendor, clayrune_home)
     before = _load_json_object(dest)
-
-    if vendor in _MERGE_VENDORS:
-        real_home = real_home or Path.home()
-        after = copy.deepcopy(_load_json_object(_real_codex_hooks_path(real_home)))
-    else:
-        # Guard-only vendors regenerate from scratch each time — no reason to
-        # carry forward a stale prior shape, and there is nothing else in
-        # this file to preserve (it's 100% Clayrune's own).
-        after = {}
+    after: Dict[str, Any] = {}
 
     hooks = after.setdefault('hooks', {})
     if not isinstance(hooks, dict):

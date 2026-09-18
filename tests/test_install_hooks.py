@@ -93,50 +93,16 @@ def test_python_exe_override_is_used(tmp_path):
     assert 'C:/venv/python.exe' in command
 
 
-def test_codex_merges_with_real_hooks_json_without_modifying_it(tmp_path):
-    clayrune_home = tmp_path / '.clayrune'
-    real_home = tmp_path / 'real_home'
-    real_hooks_path = real_home / '.codex' / 'hooks.json'
-    real_hooks_path.parent.mkdir(parents=True)
-    users_own_hooks = {
-        'hooks': {
-            'Stop': [{'hooks': [{'type': 'command', 'command': 'python C:/users/own/stop-hook.py'}]}]
-        }
-    }
-    real_hooks_path.write_text(json.dumps(users_own_hooks), encoding='utf-8')
-
-    result = install_hooks.generate('codex', apply=True, real_home=real_home,
-                                     clayrune_home=clayrune_home)
-
-    assert result['changed'] is True
-    # The user's real file is completely untouched.
-    assert json.loads(real_hooks_path.read_text(encoding='utf-8')) == users_own_hooks
-    # The GENERATED file has both: the user's own Stop hook, verbatim...
-    generated = _read(clayrune_home, 'codex')
-    assert generated['hooks']['Stop'] == users_own_hooks['hooks']['Stop']
-    # ...and Clayrune's own PreToolUse guard.
-    assert generated['hooks']['PreToolUse'][0]['hooks'][0]['name'] == install_hooks.HOOK_NAME
-    assert generated['hooks']['PreToolUse'][0]['matcher'] == 'shell'
-
-
-def test_codex_reinstall_replaces_only_our_group_not_the_users(tmp_path):
-    clayrune_home = tmp_path / '.clayrune'
-    real_home = tmp_path / 'real_home'
-    real_hooks_path = real_home / '.codex' / 'hooks.json'
-    real_hooks_path.parent.mkdir(parents=True)
-    real_hooks_path.write_text(json.dumps({
-        'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'python stop.py'}]}]}
-    }), encoding='utf-8')
-
-    install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home,
-                            guard_script=Path('old/process_guard.py'))
-    install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home,
-                            guard_script=Path('new/process_guard.py'))
-
-    generated = _read(clayrune_home, 'codex')
-    assert len(generated['hooks']['PreToolUse']) == 1
-    assert 'new' in generated['hooks']['PreToolUse'][0]['hooks'][0]['command']
-    assert generated['hooks']['Stop'] == [{'hooks': [{'type': 'command', 'command': 'python stop.py'}]}]
+def test_codex_is_not_in_the_generated_vendor_set():
+    # Codex's hooks config is a TOML table, not a file reference — injected
+    # INLINE by CodexRuntime.build_command() via
+    # mc.guardrail_hooks.codex_hook_config_args(), never generated here. The
+    # first version generated ~/.clayrune/hooks/codex-hooks.json as a MERGE
+    # with the user's real ~/.codex/hooks.json, which (a) used a config key
+    # (`-c hooks='<path>'`) Codex rejects outright — killed every Codex
+    # launch — and (b) copied the user's own hooks into a Clayrune-owned
+    # file. Both are gone; this pins that Codex never gets a file again.
+    assert 'codex' not in install_hooks.VENDOR_CONFIGS
 
 
 def test_guard_only_vendor_diff_never_shows_unrelated_content(tmp_path):
@@ -151,48 +117,18 @@ def test_guard_only_vendor_diff_never_shows_unrelated_content(tmp_path):
     assert result['diff'].count('matcher') == 1  # nothing else in this file
 
 
-def test_codex_first_generation_diff_legitimately_shows_the_merged_real_content(tmp_path):
-    # NOT a leak: codex's file is a real merge (unverified override semantics
-    # — see module docstring), so the first-ever diff for it necessarily shows
-    # the user's pre-existing hooks.json content, because from the (empty)
-    # destination's own perspective all of it is new. This is disclosed,
-    # intended behavior for a merge — Dave asked to see the exact diff a
-    # write would produce, and for codex that IS the merged result.
+def test_non_dict_generated_file_refuses_to_read(tmp_path):
     clayrune_home = tmp_path / '.clayrune'
-    real_home = tmp_path / 'real_home'
-    real_hooks_path = real_home / '.codex' / 'hooks.json'
-    real_hooks_path.parent.mkdir(parents=True)
-    real_hooks_path.write_text(json.dumps({
-        'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'echo real-hook'}]}]}
-    }), encoding='utf-8')
-
-    first = install_hooks.generate('codex', apply=True, real_home=real_home,
-                                    clayrune_home=clayrune_home)
-    assert 'real-hook' in first['diff']
-    assert 'clayrune-process-guard' in first['diff']
-
-    # But a SECOND generation, with nothing changed on either side, shows
-    # nothing — it does not re-surface the same real content as if it were
-    # new every time.
-    second = install_hooks.generate('codex', apply=False, real_home=real_home,
-                                     clayrune_home=clayrune_home)
-    assert second['changed'] is False
-    assert second['diff'] == ''
-
-
-def test_non_dict_json_refuses_to_read_the_real_file(tmp_path):
-    clayrune_home = tmp_path / '.clayrune'
-    real_home = tmp_path / 'real_home'
-    real_hooks_path = real_home / '.codex' / 'hooks.json'
-    real_hooks_path.parent.mkdir(parents=True)
-    real_hooks_path.write_text('[1, 2, 3]', encoding='utf-8')
+    dest = clayrune_home / 'hooks' / 'qwen-settings.json'
+    dest.parent.mkdir(parents=True)
+    dest.write_text('[1, 2, 3]', encoding='utf-8')
 
     try:
-        install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home)
+        install_hooks.generate('qwen', apply=True, clayrune_home=clayrune_home)
         assert False, 'expected RuntimeError'
     except RuntimeError as e:
         assert 'not an object' in str(e)
-    assert real_hooks_path.read_text(encoding='utf-8') == '[1, 2, 3]'
+    assert dest.read_text(encoding='utf-8') == '[1, 2, 3]'
 
 
 def test_guard_command_points_at_the_one_shared_guard():
@@ -208,21 +144,28 @@ def test_generate_for_boot_only_touches_requested_vendors(tmp_path):
     assert gh.launch_file_path('gemini', clayrune_home).exists()
     assert not gh.launch_file_path('qwen', clayrune_home).exists()
     assert not gh.launch_file_path('claude', clayrune_home).exists()
-    assert not gh.launch_file_path('codex', clayrune_home).exists()
+
+
+def test_generate_for_boot_silently_skips_codex():
+    # Codex isn't in VENDOR_CONFIGS at all (inline injection, no file — see
+    # module docstring) — passing it in `installed_vendors` (as the caller's
+    # generic "which vendors are installed" list naturally would) must be a
+    # silent no-op, not an error and not a file.
+    results = install_hooks.generate_for_boot(installed_vendors=['codex'])
+    assert results == []
 
 
 def test_generate_for_boot_survives_one_vendor_failing(tmp_path):
     clayrune_home = tmp_path / '.clayrune'
-    real_home = tmp_path / 'real_home'
-    bad = real_home / '.codex' / 'hooks.json'
+    bad = clayrune_home / 'hooks' / 'qwen-settings.json'
     bad.parent.mkdir(parents=True)
     bad.write_text('not json', encoding='utf-8')
 
-    results = install_hooks.generate_for_boot(clayrune_home=clayrune_home, real_home=real_home,
-                                               installed_vendors=['codex', 'gemini'])
+    results = install_hooks.generate_for_boot(clayrune_home=clayrune_home,
+                                               installed_vendors=['qwen', 'gemini'])
 
     by_vendor = {r['vendor']: r for r in results}
-    assert 'error' in by_vendor['codex']
+    assert 'error' in by_vendor['qwen']
     assert by_vendor['gemini']['changed'] is True
     assert gh.launch_file_path('gemini', clayrune_home).exists()
 
