@@ -332,6 +332,10 @@ def test_claude_never_routes_through_the_runtime_hook(env, monkeypatch):
     monkeypatch.setattr(ar, '_dispatch_via_runtime',
                         lambda *a, **k: calls.append(k) or 'sid')
     monkeypatch.setattr(ar, '_resolve_character', lambda *a, **k: (None, ''))
+
+    def _no_real_cli(*a, **k):  # tests never spawn a real model
+        raise RuntimeError('real CLI spawn blocked in test')
+    monkeypatch.setattr(ar.subprocess, 'Popen', _no_real_cli)
     try:
         ar._dispatch_agent_internal('proj1', 'a claude task',
                                     provider_override='claude')
