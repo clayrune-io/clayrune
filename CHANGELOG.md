@@ -6,6 +6,21 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17h] — Preserve Gemini fixture evidence without guessing
+
+- Add a pure offline Gemini stream decoder for repository-observed event shapes.
+  Exact tool IDs, arguments, outputs, status, usage, and session observations are
+  retained; unknown message identity/finality and unsupported fields become gaps.
+- Keep runtime activation explicitly out of scope until a complete native stream
+  and CLI-version contract can be certified.
+
+## [2026-09-17g] — Route built-in model work through the selected provider
+
+- Add a provider-selected text-transform seam and use it for Claydo, project
+  summaries, character identity/voice/avatar helpers, and Hivemind orchestration.
+- Preserve explicit provider/model/effort through Hivemind manifests and worker
+  sessions; Claude tier defaults are never injected into non-Claude providers.
+
 ## [2026-09-17f] — Install Clayrune before choosing an AI provider
 
 - Make the normal Windows/macOS/Linux installer provider-neutral: install and

@@ -62,7 +62,7 @@ as the full-fidelity canonical capture source.
 
 ### Native capture and publication-read safety increment (offline)
 
-- Codex exec fixture families 0.133/0.151 and repository Claude/Qwen record
+- Codex exec fixture families 0.133/0.151 and repository Claude/Qwen/Gemini record
   fixtures now have pure decoders before UI formatting. Exact mixed text/tool
   content, native IDs, exposed thinking and source identity are retained where
   the fixture format supplies them. Unsupported shapes and missing identities
@@ -88,8 +88,13 @@ Validation checkpoint: **1,015 selected offline tests passed**, with one optiona
 PySocks dependency warning; changed/new modules pass Pyright. No real provider
 capability, installer behavior or production cutover was tested by this run.
 
-Still missing from native capture: complete Gemini/other-provider decoders,
-Codex rollout and MCP/web/file-change formats, Qwen native recording import,
+The Gemini decoder is deliberately limited to repository fixture evidence: text
+without stable native message/finality semantics remains an observation plus an
+explicit gap, and tool results require native call ID, output, and known status.
+It does not certify a Gemini CLI version or activate runtime capture.
+
+Still missing from native capture: a complete version-pinned Gemini/other-provider
+decoder, Codex rollout and MCP/web/file-change formats, Qwen native recording import,
 typed partial/unknown-status tool results, durable source reconciliation,
 transport backpressure and all live reader wiring.
 
