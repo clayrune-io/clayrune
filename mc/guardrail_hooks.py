@@ -18,26 +18,43 @@ config, not a project record, and `~/.clayrune/` already holds the secrets
 vault and other Clayrune-owned, non-project state) and are entirely
 Clayrune's own — nothing else ever reads or writes them, so generation is a
 wholesale overwrite, not a preserve-and-merge like a real global settings
-file would need. The one exception is Codex: unlike Claude/Gemini/Qwen (each
-empirically verified, 2026-09-18, to MERGE a per-launch settings layer with
-the user's real one rather than replace it), Codex's own merge behavior for
-its `-c hooks=<path>` override could not be verified without a live launch —
-so the codex file is generated as a MERGE of the user's real
-`~/.codex/hooks.json` (read-only) with Clayrune's own tagged entry, done in
-Python rather than trusted to the CLI, so it is safe either way.
+file would need.
+
+**Codex has NO file here (removed 2026-09-18, live regression fix).** The
+first version generated `~/.clayrune/hooks/codex-hooks.json` as a MERGE of
+the user's real `~/.codex/hooks.json` with Clayrune's own entry, pointed at
+via `-c hooks='<path>'`. Both halves of that were wrong, caught on Ron's
+live instance: (1) `-c hooks=<path>` is not a valid override — Codex's
+`hooks` config key is a TOML **table** (`HooksToml` struct), not a file
+path; the CLI died at config-parse time on every launch
+(`Error loading config.toml: invalid type: string ..., expected struct
+HooksToml`). (2) even had that worked, the generated file copied the user's
+own hooks (e.g. a personal `codetalk.py` Stop hook) into a Clayround-owned
+file — exactly the "never hold a copy of the user's data" line this
+redesign exists to hold. Fixed by injecting the hooks table INLINE via
+`-c hooks.PreToolUse=[...]` (a dotted-path override — see
+`codex_hook_config_args()`) directly in `CodexRuntime.build_command()`: no
+file, no merge, no copy, nothing to go stale. Live-verified against the
+real `codex.exe` (0.154.0, no allowance — see `docs/GUARDRAIL_PARITY_EVIDENCE.md`
+§4 for the exact commands and the parse-vs-usage_limit_exceeded signal used
+to confirm it without spending a real turn) with `--strict-config`, which
+rejects any unrecognized field: this shape has none.
 """
 from __future__ import annotations
 
+import sys
 from pathlib import Path
-from typing import Optional
+from typing import List, Optional
 
-# {vendor: filename under ~/.clayrune/hooks/}
+# {vendor: filename under ~/.clayrune/hooks/} — Codex is deliberately absent,
+# see the module docstring's "NO file here" section.
 LAUNCH_FILENAMES = {
     'claude': 'claude-settings.json',
     'gemini': 'gemini-settings.json',
     'qwen': 'qwen-settings.json',
-    'codex': 'codex-hooks.json',
 }
+
+HOOK_NAME = 'clayrune-process-guard'
 
 
 def clayrune_home() -> Path:
@@ -69,3 +86,82 @@ def launch_file_if_exists(vendor: str, clayrune_home_dir: Optional[Path] = None)
     """
     p = launch_file_path(vendor, clayrune_home_dir)
     return p if p.is_file() else None
+
+
+def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None) -> str:
+    """The command string every vendor's hook config points at — the ONE
+    place this is built, shared by `tools/guards/install_hooks.py` (writes
+    it into claude/gemini/qwen's generated files) and Codex's inline `-c`
+    injection (`codex_hook_config_args`, no file at all).
+
+    Quoting the interpreter path unconditionally (`"<py>" "<script>"`) was
+    the first version and broke SILENTLY in production: live-tested through
+    a REAL Clayrune dispatch, Gemini's Windows `.cmd` launcher executes hook
+    commands through a shell that parses two adjacent quoted tokens as a
+    syntax error ("UnexpectedToken") — the hook then failed to even run, and
+    Gemini treated that failure as an ALLOW, not a deny (a genuinely MISSING
+    script fails closed instead — see docs/GUARDRAIL_PARITY_EVIDENCE.md
+    §1a/§4). `taskkill /IM notepad.exe` went through and killed a live test
+    process before this was caught. Claude and Qwen were separately
+    re-verified unaffected by the identical quoted input — Gemini-specific.
+
+    Fix: quote the interpreter ONLY when its path contains a space (the one
+    case a bareword can't handle). Re-verified through the same real
+    dispatch path: blocked, notepad survived. An interpreter path WITH a
+    space remains a disclosed, untested gap.
+    """
+    guard_script = guard_script or (Path(__file__).resolve().parent / 'process_guard.py')
+    py = python_exe or sys.executable or 'python'
+    py_token = f'"{py}"' if ' ' in py else py
+    return f'{py_token} "{guard_script}"'
+
+
+def _toml_basic_string(s: str) -> str:
+    """Escape `s` for embedding as a TOML basic (double-quoted) string —
+    used ONLY for the command string inside Codex's inline `-c hooks.*=`
+    override (`codex_hook_config_args`). Backslashes and double quotes are
+    the two characters that matter for a Windows path embedded this way;
+    hand-rolling this exact kind of escaping is what caused the Gemini
+    quoting bug above, so it is centralized here rather than repeated at
+    the call site.
+    """
+    return '"' + s.replace('\\', '\\\\').replace('"', '\\"') + '"'
+
+
+def codex_hook_config_args(guard_script: Optional[Path] = None,
+                           python_exe: Optional[str] = None) -> List[str]:
+    """`-c`/flag arguments for CodexRuntime.build_command() — no file,
+    nothing written to disk, nothing that could ever hold a copy of the
+    user's own hooks (see module docstring for why that matters here).
+
+    Two pieces, both load-bearing:
+      --dangerously-bypass-hook-trust  Codex's hook-trust review
+                                        (`"Hooks need review... Trust all
+                                        and continue"`) has no
+                                        non-interactive prompt path; without
+                                        this flag a freshly-injected hook
+                                        sits untrusted and inert in a
+                                        headless run.
+      -c hooks.PreToolUse=[...]        A DOTTED-PATH override — confirmed
+                                        (via `--strict-config`, which
+                                        rejects any unrecognized field) to
+                                        set just the `PreToolUse` array
+                                        within the `hooks` table, not
+                                        replace the whole table — so a
+                                        native `~/.codex/hooks.json` or
+                                        `<project>/.codex/hooks.json` the
+                                        user already has for OTHER events
+                                        (`Stop`, etc.) is left alone. `hooks`
+                                        alone (no dotted path) IS a valid
+                                        TOML table value too, but would
+                                        require reconstructing the user's
+                                        entire hooks table in Python to
+                                        avoid clobbering it — the dotted
+                                        path makes that unnecessary.
+    """
+    command = guard_shell_command(guard_script, python_exe)
+    hooks_value = (
+        'hooks.PreToolUse=[{matcher="shell",hooks=[{type="command",'
+        f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}]}}]'
+    )
+    return ['--dangerously-bypass-hook-trust', '-c', hooks_value]

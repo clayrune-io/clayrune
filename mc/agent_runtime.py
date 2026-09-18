@@ -53,6 +53,7 @@ from mc.execution_policy import (
     required_capabilities,
 )
 from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
+from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
 
 # Per-vendor env var each CLI resolves fresh per invocation for a per-launch
 # settings override — verified additive with the user's own config (not a
@@ -3133,7 +3134,19 @@ class GeminiRuntime(AgentRuntime):
                       channels: str = '', remote_control: bool = False) -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
-               '--output-format', 'stream-json', '--yolo']
+               '--output-format', 'stream-json', '--yolo',
+               # LIVE REGRESSION (2026-09-18): a fresh Gemini 0.59 install (no
+               # ~/.gemini/trustedFolders.json) refuses every headless launch —
+               # "Gemini CLI is not running in a trusted directory" — on EVERY
+               # dispatch, resume, followup and hivemind launch, not just
+               # first-run. Reproduced with the raw CLI, with and without the
+               # guardrail env var, so it is not this runtime's own doing.
+               # `--skip-trust` is the CLI's own documented answer ("Trust the
+               # current workspace for this session"); Clayrune already only
+               # launches Gemini inside project directories the user
+               # registered, so trusting them for this one process is not a
+               # new grant of anything the user didn't already choose.
+               '--skip-trust']
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -5235,14 +5248,21 @@ class QwenRuntime(AgentRuntime):
 
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
+        # settings.json (the CLI's own /auth screen) is checked FIRST, ahead
+        # of generic env vars — reordered 2026-09-18 (live regression, third
+        # fix on this branch) to match dispatch-time precedence: OPENAI_* are
+        # generic OpenAI-compatible names Codex reads too, so a stale value
+        # left in the Windows USER environment by another vendor's login
+        # must not be reported as "ok" for Qwen when settings.json holds the
+        # real, working DashScope credential. Before this fix, health_check
+        # showed green using a broken inherited key while every real
+        # dispatch 404'd — the exact mismatch Dave's fix (c) asks this
+        # function to stop hiding.
+        if self._settings_auth_env().get('OPENAI_API_KEY'):
+            return ('ok', 'settings.json security.auth')
         for env_var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'):
             if os.environ.get(env_var):
                 return ('ok', f'env:{env_var}')
-        # What the CLI's own /auth screen writes. Checked BEFORE GEMINI_API_KEY
-        # so a real configured Qwen credential is never reported as the
-        # Google fallback (which health_check flags as not-really-Qwen).
-        if self._settings_auth_env().get('OPENAI_API_KEY'):
-            return ('ok', 'settings.json security.auth')
         if os.environ.get('GEMINI_API_KEY'):
             return ('ok', 'env:GEMINI_API_KEY')
         home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
@@ -5371,20 +5391,26 @@ class QwenRuntime(AgentRuntime):
     def _settings_auth_env(self) -> Dict[str, str]:
         """OPENAI_* env derived from ~/.qwen/settings.json.
 
-        Originated as a `--bare` workaround (measured 2026-09-16: `--bare`
-        disabled the CLI's own settings-file loading, so a user who
-        configured their key the normal way — the CLI's own /auth screen
-        writes `security.auth` / `modelProviders.openai` — got "No auth
-        type is selected" on every dispatch). `--bare` was dropped
-        2026-09-18 (see build_command's docstring), so the CLI now reads
-        settings.json natively too; this stays as a harmless, redundant
-        second path (`env.setdefault` below never overrides a value
-        already present) rather than a required one, since removing it
-        now needs re-verifying auth on every code path this runtime has,
-        which is outside W2's scope.
+        LOAD-BEARING again as of 2026-09-18 (live regression, third fix on
+        this branch): `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` are
+        generic OpenAI-compatible names, not Qwen-specific ones — Codex reads
+        the exact same variables, so whichever vendor's login the user last
+        touched can leave stale values sitting in the Windows USER
+        environment. Measured live: Ron's real env held
+        `OPENAI_BASE_URL=https://aliyuncs.com` and
+        `OPENAI_MODEL=qwen-coder-plus-latest` from an earlier broken Qwen
+        login attempt, while his REAL, working config lived in
+        `~/.qwen/settings.json` (`dashscope-intl.aliyuncs.com`,
+        `qwen3-coder-plus`) — the CLI's own /auth screen writes there. The
+        broken global env silently outranked the correct per-vendor config
+        and every Qwen dispatch 404'd. This function returns what the user
+        configured FOR QWEN SPECIFICALLY; callers now OVERRIDE the inherited
+        process env with whatever key this returns, precisely because a
+        value here represents a deliberate, vendor-specific choice that must
+        beat an ambient global env var of the same generic name.
 
-        Returns {} when nothing is configured — the CLI's own fallbacks
-        (real env vars, gemini OAuth) then apply unchanged.
+        Returns {} when nothing is configured in settings.json — callers
+        then inherit the real process env unchanged, exactly as before.
         """
         home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                 or str(Path.home()))
@@ -5456,12 +5482,11 @@ class QwenRuntime(AgentRuntime):
 
         env = dict(env_extra or {})
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
-        # Redundant since --bare was dropped (settings.json now loads
-        # natively) but harmless. See _settings_auth_env()'s docstring.
-        # Never overrides a real env var already set.
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring for the live regression this
+        # fixes (a stale global OPENAI_* from another vendor's login).
         for k, v in self._settings_auth_env().items():
-            if not os.environ.get(k):
-                env.setdefault(k, v)
+            env[k] = v
         _inject_guardrail_env('qwen', env)
 
         return _mode_a_dispatch(
@@ -5497,8 +5522,10 @@ class QwenRuntime(AgentRuntime):
         cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
-            env.setdefault(k, v)
+            env[k] = v
         _inject_guardrail_env('qwen', env)
         proc = subprocess.Popen(
             cmd,
@@ -5624,8 +5651,10 @@ class QwenRuntime(AgentRuntime):
         cmd = self._transform_argv(model=model)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
-            env.setdefault(k, v)
+            env[k] = v
         try:
             r = subprocess.run(
                 cmd, input=full,
@@ -5868,24 +5897,26 @@ class CodexRuntime(AgentRuntime):
         if model:
             cmd.extend(['-m', model])
         # Per-launch guardrail injection (W2 redesign,
-        # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4) — NOT independently
-        # confirmed live, no Codex launches permitted while allowance is out
-        # until 2026-09-24; reconstructed from `codex exec --help` and
-        # offline binary-string extraction. `-c hooks='<path>'` (TOML
-        # literal string — single-quoted so a Windows path's backslashes are
-        # NOT escape-processed) points this ONE invocation at Clayrune's
-        # generated, merged hooks.json (real ~/.codex/hooks.json content
-        # plus Clayrune's own tagged entry — done in Python because,
-        # unlike Claude/Gemini/Qwen's per-launch override, whether Codex's
-        # own `-c hooks=` replaces or merges with the user's real file could
-        # not be verified). `bypass_hook_trust=true` is required alongside
-        # it: the CLI's own hook-trust review is interactive-only (no
-        # non-interactive prompt path), so a freshly-generated hooks file
-        # would otherwise sit untrusted and inert in a headless run.
-        guardrail_hooks_path = _guardrail_launch_file('codex')
-        if guardrail_hooks_path:
-            cmd.extend(['-c', f"hooks='{guardrail_hooks_path}'"])
-            cmd.extend(['-c', 'bypass_hook_trust=true'])
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4). LIVE REGRESSION FIXED
+        # 2026-09-18: the first version passed `-c hooks='<path>'`, which
+        # killed every Codex launch instantly — `hooks` is a TOML *table*
+        # (`HooksToml` struct), not a file path; Codex died at config-parse
+        # time before ever reaching the API
+        # ("Error loading config.toml: invalid type: string ..., expected
+        # struct HooksToml"). Fixed: `codex_hook_config_args()` injects the
+        # hooks table INLINE via a dotted-path `-c hooks.PreToolUse=[...]`
+        # override — no file, so nothing can ever hold a copy of the user's
+        # own hooks (the first version's generated file did exactly that,
+        # copying a personal `codetalk.py` Stop hook into a Clayrune-owned
+        # file). `--dangerously-bypass-hook-trust` is the real CLI flag for
+        # the interactive-only hook-trust review — `-c bypass_hook_trust=true`
+        # (the first version's other broken half) is not a recognized
+        # config field at all. Verified with `--strict-config` (rejects any
+        # unrecognized field) via a real `codex exec` invocation, identical
+        # argv, that reached `usage_limit_exceeded` — past config parsing,
+        # into the real API — rather than a config error; see
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §4 for the exact commands.
+        cmd.extend(_guardrail_codex_hook_args())
         return cmd
 
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
@@ -6479,12 +6510,22 @@ class CodexRuntime(AgentRuntime):
         CODEX_API_KEY/OPENAI_API_KEY reported a fully signed-in install as
         'unknown', which the settings UI renders as needing authentication.
 
+        `auth.json` is checked BEFORE bare env vars — reordered 2026-09-18
+        (live regression, third fix on this branch, Dave's fix (c)): OPENAI_*
+        are generic OpenAI-compatible names Qwen reads too, so a Qwen/
+        DashScope key left in the environment made this report
+        'ok, env:OPENAI_API_KEY' even on a box logged into Codex via ChatGPT
+        OAuth. Live-verified 2026-09-18 (`codex exec`, real dispatch, real
+        `usage_limit_exceeded` response from chatgpt.com) that a stored
+        ChatGPT login is used REGARDLESS of OPENAI_API_KEY/OPENAI_BASE_URL/
+        OPENAI_MODEL being present in the environment — a broken env value
+        for a DIFFERENT vendor cannot hijack Codex's own login when one is
+        stored, so no env-stripping is needed for that case. This function
+        must report the credential that will actually be used, matching
+        that precedence, not just whichever it finds first.
+
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
-        if os.environ.get('CODEX_API_KEY'):
-            return ('ok', 'env:CODEX_API_KEY')
-        if os.environ.get('OPENAI_API_KEY'):
-            return ('ok', 'env:OPENAI_API_KEY')
         try:
             home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                     or str(Path.home()))
@@ -6492,14 +6533,20 @@ class CodexRuntime(AgentRuntime):
             if auth.is_file():
                 data = json.loads(auth.read_text(encoding='utf-8'))
                 if isinstance(data, dict):
-                    if data.get('OPENAI_API_KEY'):
-                        return ('ok', 'api key (auth.json)')
                     tok = data.get('tokens') or {}
                     if isinstance(tok, dict) and (tok.get('refresh_token')
                                                   or tok.get('access_token')):
                         return ('ok', 'chatgpt oauth')
+                    if data.get('OPENAI_API_KEY'):
+                        return ('ok', 'api key (auth.json)')
         except Exception as e:
             print(f"[codex] reading auth.json failed: {e}", flush=True)
+        # No stored login at all — an env var is the ONLY thing that could
+        # authenticate this dispatch, so (and only so) it is reported here.
+        if os.environ.get('CODEX_API_KEY'):
+            return ('ok', 'env:CODEX_API_KEY')
+        if os.environ.get('OPENAI_API_KEY'):
+            return ('ok', 'env:OPENAI_API_KEY')
         return ('not_logged_in', None)
 
     def health_check(self) -> HealthStatus:
