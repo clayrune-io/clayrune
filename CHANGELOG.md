@@ -219,6 +219,14 @@
 - Refine the offline execution contract after independent review. These changes
   are not live journal activation or a claim of full provider parity; migration,
   safety certification and clean-environment validation remain required.
+## [2026-09-17a] — Prevent duplicate streamed chat messages
+
+- Give every streamed agent-log line its authoritative server position so the
+  browser can reconcile missed output without rendering a delayed SSE copy.
+- Keep the browser cursor monotonic across stale status responses, recover
+  forward gaps from server state, and preserve older unindexed streams.
+- Cover reset/replay indices, both race orderings, legitimate repeated text,
+  forward gaps, and legacy events with backend and JavaScript regression tests.
 
 ## [2026-09-16m] — Establish provider-neutral conversation storage contracts
 

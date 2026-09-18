@@ -369,6 +369,7 @@ def test_stream_cursor_overshoot_resets_and_replays(client):
     assert evs[0] == {'type': 'reset'}
     assert [e.get('text') for e in evs[1:4]] == ['a', 'b', 'c']
     assert all(e.get('type') == 'output' for e in evs[1:4])
+    assert [e.get('line_index') for e in evs[1:4]] == [1, 2, 3]
     assert evs[4].get('type') == 'turn_start'
 
 
@@ -383,6 +384,7 @@ def test_stream_normal_cursor_no_reset(client):
     finally:
         resp.close()
     assert [e.get('text') for e in evs[:2]] == ['b', 'c']
+    assert [e.get('line_index') for e in evs[:2]] == [2, 3]
     assert evs[2].get('type') == 'turn_start'
 
 

@@ -26,6 +26,7 @@ context.openChannelPerson('p', 'vector');
 assert.equal(context._channelExpanded.p, 'vector');
 assert.deepEqual(events, [['refresh', 'p'], ['open', 'p', '', 'saved-vector', false]]);
 
+// External-only and empty rosters must still expand, without a no-op open.
 events.length = 0;
 context.conversationsCache.p = [{ key: 'vector', provider_session_id: 'external' }];
 context.openChannelPerson('p', 'vector');
@@ -35,12 +36,14 @@ context.conversationsCache.p = [];
 context.openChannelPerson('p', 'vector');
 assert.deepEqual(events, [['refresh', 'p']]);
 
+// Existing Claude transcript-only shortcuts remain supported.
 events.length = 0;
 context.conversationsCache.p = [{ key: 'vector', claude_session_id: 'native' }];
 context.openChannelPerson('p', 'vector');
 assert.deepEqual(events, [['refresh', 'p'], ['open', 'p', 'native', '', false]]);
 console.log('PASS roster expansion and newest openable conversation selection');
 
+// External history opens the normal pane with native identity and full text.
 const openStart = source.indexOf('async function openConversation(');
 const openEnd = source.indexOf('window.openConversation = openConversation;', openStart);
 const viewed = [];
@@ -61,6 +64,9 @@ assert.equal(viewerContext.agentOutputBuffers['codex:p:native'][1], 'original an
 assert.ok(source.includes("!c.mc_session_id && c.provider === 'codex' ? c.provider_session_id"));
 console.log('PASS external Codex history opens normal conversation pane');
 
+// The second, slower history source must be consumed after it arrives.
+// Run the actual merge function: no older row at first, then a Dave chat
+// arrives through agentLogCache after the recent-conversations render.
 const mergeStart = source.indexOf('function _userInitiatedConvos(');
 const mergeEnd = source.indexOf('window._userInitiatedConvos = _userInitiatedConvos;', mergeStart);
 const delayed = [];
@@ -79,4 +85,6 @@ historyContext.agentLogCache.p = [{session_id: 'old-mc', claude_session_id: 'old
   character: {name: 'dave'}, ts: '2026-09-10T12:00:00Z', task: 'older conversation'}];
 historyContext.openChannelPerson('p', 'dave');
 assert.deepEqual(delayed, [['p', 'old-native', 'old-mc', false]]);
+assert.ok(source.includes('for (const c of _userInitiatedConvos(projectId, true))'));
+assert.ok(source.includes('const _all = _userInitiatedConvos(p.id, true)'));
 console.log('PASS older persona conversations appear when delayed run history arrives');

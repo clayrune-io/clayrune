@@ -8367,8 +8367,13 @@ def agent_stream(project_id):
                 yield f"data: {json.dumps({'type': 'reset'})}\n\n"
                 sent = 0
             if sent < len(lines):
-                for line in lines[sent:]:
-                    yield f"data: {json.dumps({'type': 'output', 'text': line})}\n\n"
+                # Identify every output by its authoritative one-based
+                # position.  /agent/status reconciliation can render a line
+                # before its delayed SSE event arrives; the position lets the
+                # browser discard that late duplicate without text-deduping
+                # legitimate repeated messages.
+                for line_index, line in enumerate(lines[sent:], start=sent + 1):
+                    yield f"data: {json.dumps({'type': 'output', 'text': line, 'line_index': line_index})}\n\n"
                 sent = len(lines)
 
             # Send pending AskUserQuestion data. We keep `pending_questions`

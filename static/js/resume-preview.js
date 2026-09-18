@@ -576,7 +576,7 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
         agentOutputBuffers[sessionId] = serverLines.slice();
         _repaintAgentOutput(sessionId);
       }
-      agentServerLines[sessionId] = serverLines.length;
+      _advanceAgentServerCursor(sessionId, serverLines.length);
       return;
     }
     if (serverLines.length === have) return;  // buffer in sync — nothing more to recover
@@ -707,6 +707,30 @@ function _repaintAgentOutput(sessionId) {
   return true;
 }
 
+// Atomically claim an authoritative SSE output position before rendering it.
+// Reconciliation and EventSource deliver the same server log through different
+// paths, so a delayed indexed event at/before our cursor is a duplicate.  A
+// forward gap is withheld until reconciliation recovers the ordered slice.
+// Unindexed events retain compatibility with older servers during upgrades.
+function _advanceAgentServerCursor(sessionId, lineCount) {
+  if (!Number.isInteger(lineCount) || lineCount < 0) return;
+  agentServerLines[sessionId] = Math.max(agentServerLines[sessionId] || 0, lineCount);
+}
+
+function _claimAgentOutputEvent(sessionId, msg) {
+  const current = agentServerLines[sessionId] || 0;
+  const lineIndex = Number.isInteger(msg?.line_index) && msg.line_index > 0
+    ? msg.line_index : null;
+  if (lineIndex === null) {
+    agentServerLines[sessionId] = current + 1;
+    return { accepted: true, gap: false };
+  }
+  if (lineIndex <= current) return { accepted: false, gap: false };
+  if (lineIndex !== current + 1) return { accepted: false, gap: true };
+  agentServerLines[sessionId] = lineIndex;
+  return { accepted: true, gap: false };
+}
+
 function connectAgentStream(projectId, sessionId) {
   if (agentEventSources[sessionId]) {
     agentEventSources[sessionId].close();
@@ -752,16 +776,19 @@ function connectAgentStream(projectId, sessionId) {
       if (msg.type === 'output') {
         sseRetryCount[sessionId] = 0;  // successful data — reset retry counter
         if (followupTimeouts[sessionId]) { clearTimeout(followupTimeouts[sessionId].timerId); delete followupTimeouts[sessionId]; }
+        const outputClaim = _claimAgentOutputEvent(sessionId, msg);
+        if (!outputClaim.accepted) {
+          if (outputClaim.gap) setTimeout(() => _reconcileAgentBuffer(projectId, sessionId), 0);
+          return;
+        }
         if (_historyReplay[sessionId]) {
           // Replay after a `reset`: hold it, decide once it settles (see reset).
           _historyReplay[sessionId].lines.push(msg.text);
-          agentServerLines[sessionId] = (agentServerLines[sessionId] || 0) + 1;
           _scheduleReplaySettle(sessionId);
           return;
         }
         if (!agentOutputBuffers[sessionId]) agentOutputBuffers[sessionId] = [];
         agentOutputBuffers[sessionId].push(msg.text);
-        agentServerLines[sessionId] = (agentServerLines[sessionId] || 0) + 1;
         // Cap buffer to prevent unbounded memory growth
         if (agentOutputBuffers[sessionId].length > 2000) {
           agentOutputBuffers[sessionId] = agentOutputBuffers[sessionId].slice(-1500);
@@ -1205,6 +1232,8 @@ window.sessionPickerHTML = sessionPickerHTML;
 window.closeAgentTab = closeAgentTab;
 window.dispatchAgent = dispatchAgent;
 window._reconcileAgentBuffer = _reconcileAgentBuffer;
+window._advanceAgentServerCursor = _advanceAgentServerCursor;
+window._claimAgentOutputEvent = _claimAgentOutputEvent;
 window._repaintAgentOutput = _repaintAgentOutput;
 window._mergeShorterHistory = _mergeShorterHistory;
 window._settleHistoryReplay = _settleHistoryReplay;

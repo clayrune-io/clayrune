@@ -5187,7 +5187,11 @@ async function fetchAgentStatus(projectId) {
         // a subsequent connectAgentStream() resumes at the right index instead
         // of replaying all log_lines from 0 (which would double the buffer
         // and double-render every line in the DOM).
-        agentServerLines[sid] = s.log_lines.length;
+        // Status fetches can resolve out of order with SSE. Never let an older
+        // response move the stream cursor backward: that reconnects with a
+        // stale `since=` value and replays an already-rendered line. Genuine
+        // server buffer rebuilds use the stream's explicit `reset` event.
+        window._advanceAgentServerCursor?.(sid, s.log_lines.length);
         // Render-gap recovery: if the buffer just GREW here (lines arrived while
         // this panel was inactive/backgrounded and its SSE was parked), the
         // refreshModal() at the end of this function PRESERVES the existing
