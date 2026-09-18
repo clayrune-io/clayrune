@@ -142,6 +142,30 @@ the plan's own gate. Codex install, auth detection and offline fixtures proceed 
 Plan certification by a second vendor resumes when Codex returns. Until then Ron
 has approved proceeding.
 
+## 8b. Codex live-run gate (Ron, 2026-09-18)
+
+Ron will buy more Codex allowance **only when everything else is ready**. So the Codex
+live pass is one scripted run, prepared in full in advance. Nothing gets explored or
+debugged while paid allowance runs. Dave reports READY and asks Ron for allowance only
+when every item below is checked:
+
+1. W0 is merged: branch green, full suite + smokes, and the Codex 0.154 rollout
+   importer is proven on a fixture.
+2. W1 is merged: Codex `transform` is tool-free (`-s read-only` + empty cwd), proven
+   offline by command construction, and the architecture guard is green.
+3. W2 is merged: the Codex hook config is installed, and its exact diff has been
+   reviewed. Its live block test is the first item of the Codex run.
+4. W3 is merged: `usage_limit_exceeded` is parsed from the **captured real** error
+   (Sep 18), so the Floor shows "out until …" and no quota text becomes content.
+   This proves itself today, while Codex is actually out: Clayrune must show the
+   real exhausted state for Codex.
+5. W6 is merged: Codex install and auth detection pass on the clean VM.
+6. Every Codex cell of `PROVIDER_LIVE_TEST_PLAN.md` has an exact scripted step
+   (prompt, expected evidence, file path) and is runnable in order by one driver
+   script, with an estimated token cost.
+7. The same cells are already green on Claude, Gemini and Qwen, so any Codex failure
+   is Codex-specific, not a platform bug found on paid time.
+
 ## 9. Definition of done
 
 1. Full pytest is green on master, and every smoke is green, run from a clean worktree.
