@@ -428,13 +428,21 @@ def is_nonuser_message(text: str) -> bool:
 # "Continue from where you left off." nudge) that are ordinary continuations,
 # not a retracted draft — only the prefix narrows to the hook-block shape this
 # exists to catch.
+#
+# The LIVE stream-json copy of the same turn has a different shape (captured
+# from Claude Code 2.1.274, tests/fixtures/stop_hook_live_stream.jsonl):
+# `isSynthetic:true` and NO `isMeta`, with `content` a list of text blocks.
+# Requiring `isMeta` alone meant the live readers never recognised it, and the
+# transcript fallback (stop_hook_precedes) loses the race whenever the resend
+# opens with a thinking block, which reaches disk seconds after stdout.
 STOP_HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:'
 
 
 def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
     """True for a synthetic Stop-hook block/resend turn in a raw stream-json /
     transcript message dict (the same shape `parse_event()` receives)."""
-    if not isinstance(raw_msg, dict) or not raw_msg.get('isMeta'):
+    if not isinstance(raw_msg, dict) or not (
+            raw_msg.get('isMeta') or raw_msg.get('isSynthetic')):
         return False
     content = (raw_msg.get('message') or {}).get('content', '')
     if isinstance(content, list):
