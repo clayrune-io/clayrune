@@ -19,9 +19,19 @@ def lifecycle(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, '_delivery_stop_event', None)
     monkeypatch.setattr(ar, '_delivery_stop_in_progress', False)
     monkeypatch.setattr(ar, '_delivery_shutdown_requested', threading.Event())
-    yield tmp_path
-    result = ar.stop_delegation_delivery(1.0)
-    assert not result['alive']
+    # Some tests call ar.wire() for real, which rebinds every wired module
+    # global (load_project, the lifecycle service, ...) to a test double.
+    # Restore them, or every later test file inherits the doubles.
+    saved = dict(vars(ar))
+    try:
+        yield tmp_path
+        result = ar.stop_delegation_delivery(1.0)
+        assert not result['alive']
+    finally:
+        current = vars(ar)
+        for name, value in saved.items():
+            if current.get(name) is not value:
+                setattr(ar, name, value)
 
 
 def test_concurrent_start_is_idempotent_and_retains_one_owner(lifecycle, monkeypatch):
