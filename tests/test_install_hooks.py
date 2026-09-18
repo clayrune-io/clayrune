@@ -5,15 +5,23 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'tools' / 'guards'))
 
 import install_hooks  # noqa: E402
+from mc import guardrail_hooks as gh  # noqa: E402
 
 
-def test_fresh_home_writes_hook_for_gemini_and_qwen(tmp_path):
-    for vendor in ('gemini', 'qwen'):
-        result = install_hooks.install(vendor, tmp_path, apply=True)
+def _read(clayrune_home: Path, vendor: str) -> dict:
+    return json.loads(gh.launch_file_path(vendor, clayrune_home).read_text(encoding='utf-8'))
+
+
+def test_generates_a_clayrune_owned_file_never_touching_real_home(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'  # deliberately never created
+
+    for vendor in ('claude', 'gemini', 'qwen'):
+        result = install_hooks.generate(vendor, apply=True, real_home=real_home,
+                                         clayrune_home=clayrune_home)
         assert result['changed'] is True
-        path = Path(result['path'])
-        assert path.exists()
-        data = json.loads(path.read_text(encoding='utf-8'))
+        assert not real_home.exists(), f'{vendor} generation must never touch the real home'
+        data = _read(clayrune_home, vendor)
         cfg = install_hooks.VENDOR_CONFIGS[vendor]
         entries = data['hooks'][cfg['event']]
         assert len(entries) == 1
@@ -23,75 +31,168 @@ def test_fresh_home_writes_hook_for_gemini_and_qwen(tmp_path):
 
 
 def test_second_run_is_a_no_op(tmp_path):
-    install_hooks.install('gemini', tmp_path, apply=True)
-    path = tmp_path / '.gemini' / 'settings.json'
+    clayrune_home = tmp_path / '.clayrune'
+    install_hooks.generate('gemini', apply=True, clayrune_home=clayrune_home)
+    path = gh.launch_file_path('gemini', clayrune_home)
     before = path.read_text(encoding='utf-8')
 
-    result = install_hooks.install('gemini', tmp_path, apply=True)
+    result = install_hooks.generate('gemini', apply=True, clayrune_home=clayrune_home)
 
     assert result['changed'] is False
     assert path.read_text(encoding='utf-8') == before
 
 
-def test_diff_never_shows_unrelated_preexisting_content(tmp_path):
-    # Regression: a non-zero diff context window pulled in unchanged lines
-    # sitting near the insertion point — on a real ~/.qwen/settings.json this
-    # included a live API key. The installer only ever appends, so the diff
-    # must show ONLY the new lines, never neighboring existing content.
-    settings_path = tmp_path / '.qwen' / 'settings.json'
-    settings_path.parent.mkdir(parents=True)
-    existing = {'security': {'auth': {'apiKey': 'sk-super-secret-do-not-leak'}}}
-    settings_path.write_text(json.dumps(existing), encoding='utf-8')
-
-    result = install_hooks.install('qwen', tmp_path, apply=False)
-
-    assert 'sk-super-secret-do-not-leak' not in result['diff']
-    assert 'clayrune-process-guard' in result['diff']
-
-
 def test_dry_run_never_writes(tmp_path):
-    result = install_hooks.install('qwen', tmp_path, apply=False)
+    clayrune_home = tmp_path / '.clayrune'
+    result = install_hooks.generate('qwen', apply=False, clayrune_home=clayrune_home)
     assert result['changed'] is True
     assert result['diff']
-    assert not (tmp_path / '.qwen' / 'settings.json').exists()
+    assert not gh.launch_file_path('qwen', clayrune_home).exists()
 
 
-def test_existing_user_hook_is_preserved_not_overwritten(tmp_path):
-    settings_path = tmp_path / '.gemini' / 'settings.json'
-    settings_path.parent.mkdir(parents=True)
-    existing = {
-        'hooks': {
-            'BeforeTool': [
-                {'matcher': 'write_file', 'hooks': [{'type': 'command', 'command': 'echo mine'}]}
-            ]
-        },
-        'someOtherSetting': True,
-    }
-    settings_path.write_text(json.dumps(existing), encoding='utf-8')
-
-    result = install_hooks.install('gemini', tmp_path, apply=True)
+def test_reinstall_with_changed_path_replaces_in_place(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    install_hooks.generate('qwen', apply=True, clayrune_home=clayrune_home,
+                            guard_script=Path('old/process_guard.py'))
+    result = install_hooks.generate('qwen', apply=True, clayrune_home=clayrune_home,
+                                     guard_script=Path('new/process_guard.py'))
 
     assert result['changed'] is True
-    data = json.loads(settings_path.read_text(encoding='utf-8'))
-    entries = data['hooks']['BeforeTool']
-    assert len(entries) == 2
-    assert entries[0] == existing['hooks']['BeforeTool'][0]
-    assert entries[1]['hooks'][0]['command'] == install_hooks.guard_command()
-    assert data['someOtherSetting'] is True
+    data = _read(clayrune_home, 'qwen')
+    entries = data['hooks']['PreToolUse']
+    assert len(entries) == 1
+    assert 'new' in entries[0]['hooks'][0]['command']
+    assert 'old' not in entries[0]['hooks'][0]['command']
 
 
-def test_non_dict_json_refuses_to_touch_the_file(tmp_path):
-    settings_path = tmp_path / '.qwen' / 'settings.json'
-    settings_path.parent.mkdir(parents=True)
-    settings_path.write_text('[1, 2, 3]', encoding='utf-8')
+def test_guard_command_leaves_a_no_space_interpreter_unquoted():
+    # Regression: quoting an interpreter with no spaces broke Gemini's real
+    # hook execution in production (its .cmd launcher's shell parses two
+    # adjacent quoted tokens as a syntax error and then treats the failed
+    # hook as an ALLOW) — live-tested 2026-09-18, see guard_command's
+    # docstring. Claude and Qwen were unaffected by the same input, but the
+    # fix (unquote when safe) must hold regardless.
+    cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
+                                       python_exe='C:/no/spaces/python.exe')
+    assert cmd == 'C:/no/spaces/python.exe "C:\\no\\spaces\\process_guard.py"'
+    assert '""' not in cmd
+
+
+def test_guard_command_quotes_an_interpreter_with_a_space():
+    cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
+                                       python_exe='C:/Program Files/python.exe')
+    assert cmd.startswith('"C:/Program Files/python.exe"')
+
+
+def test_python_exe_override_is_used(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    result = install_hooks.generate('gemini', apply=True, clayrune_home=clayrune_home,
+                                     python_exe='C:/venv/python.exe')
+    data = _read(clayrune_home, 'gemini')
+    command = data['hooks']['BeforeTool'][0]['hooks'][0]['command']
+    assert 'C:/venv/python.exe' in command
+
+
+def test_codex_merges_with_real_hooks_json_without_modifying_it(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'
+    real_hooks_path = real_home / '.codex' / 'hooks.json'
+    real_hooks_path.parent.mkdir(parents=True)
+    users_own_hooks = {
+        'hooks': {
+            'Stop': [{'hooks': [{'type': 'command', 'command': 'python C:/users/own/stop-hook.py'}]}]
+        }
+    }
+    real_hooks_path.write_text(json.dumps(users_own_hooks), encoding='utf-8')
+
+    result = install_hooks.generate('codex', apply=True, real_home=real_home,
+                                     clayrune_home=clayrune_home)
+
+    assert result['changed'] is True
+    # The user's real file is completely untouched.
+    assert json.loads(real_hooks_path.read_text(encoding='utf-8')) == users_own_hooks
+    # The GENERATED file has both: the user's own Stop hook, verbatim...
+    generated = _read(clayrune_home, 'codex')
+    assert generated['hooks']['Stop'] == users_own_hooks['hooks']['Stop']
+    # ...and Clayrune's own PreToolUse guard.
+    assert generated['hooks']['PreToolUse'][0]['hooks'][0]['name'] == install_hooks.HOOK_NAME
+    assert generated['hooks']['PreToolUse'][0]['matcher'] == 'shell'
+
+
+def test_codex_reinstall_replaces_only_our_group_not_the_users(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'
+    real_hooks_path = real_home / '.codex' / 'hooks.json'
+    real_hooks_path.parent.mkdir(parents=True)
+    real_hooks_path.write_text(json.dumps({
+        'hooks': {'Stop': [{'hooks': [{'type': 'command', 'command': 'python stop.py'}]}]}
+    }), encoding='utf-8')
+
+    install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home,
+                            guard_script=Path('old/process_guard.py'))
+    install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home,
+                            guard_script=Path('new/process_guard.py'))
+
+    generated = _read(clayrune_home, 'codex')
+    assert len(generated['hooks']['PreToolUse']) == 1
+    assert 'new' in generated['hooks']['PreToolUse'][0]['hooks'][0]['command']
+    assert generated['hooks']['Stop'] == [{'hooks': [{'type': 'command', 'command': 'python stop.py'}]}]
+
+
+def test_guard_only_vendor_diff_never_shows_unrelated_content(tmp_path):
+    # Regression, back when this wrote into the user's real global settings
+    # file directly: a wide diff-context window pulled in an unrelated,
+    # unchanged line sitting near the insertion point (a live API key).
+    # claude/gemini/qwen's generated file is 100% Clayrune's own now, so
+    # there's nothing foreign to leak — this pins that it stays that way.
+    clayrune_home = tmp_path / '.clayrune'
+    result = install_hooks.generate('gemini', apply=False, clayrune_home=clayrune_home)
+    assert 'clayrune-process-guard' in result['diff']
+    assert result['diff'].count('matcher') == 1  # nothing else in this file
+
+
+def test_codex_first_generation_diff_legitimately_shows_the_merged_real_content(tmp_path):
+    # NOT a leak: codex's file is a real merge (unverified override semantics
+    # — see module docstring), so the first-ever diff for it necessarily shows
+    # the user's pre-existing hooks.json content, because from the (empty)
+    # destination's own perspective all of it is new. This is disclosed,
+    # intended behavior for a merge — Dave asked to see the exact diff a
+    # write would produce, and for codex that IS the merged result.
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'
+    real_hooks_path = real_home / '.codex' / 'hooks.json'
+    real_hooks_path.parent.mkdir(parents=True)
+    real_hooks_path.write_text(json.dumps({
+        'hooks': {'SessionStart': [{'hooks': [{'type': 'command', 'command': 'echo real-hook'}]}]}
+    }), encoding='utf-8')
+
+    first = install_hooks.generate('codex', apply=True, real_home=real_home,
+                                    clayrune_home=clayrune_home)
+    assert 'real-hook' in first['diff']
+    assert 'clayrune-process-guard' in first['diff']
+
+    # But a SECOND generation, with nothing changed on either side, shows
+    # nothing — it does not re-surface the same real content as if it were
+    # new every time.
+    second = install_hooks.generate('codex', apply=False, real_home=real_home,
+                                     clayrune_home=clayrune_home)
+    assert second['changed'] is False
+    assert second['diff'] == ''
+
+
+def test_non_dict_json_refuses_to_read_the_real_file(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'
+    real_hooks_path = real_home / '.codex' / 'hooks.json'
+    real_hooks_path.parent.mkdir(parents=True)
+    real_hooks_path.write_text('[1, 2, 3]', encoding='utf-8')
 
     try:
-        install_hooks.install('qwen', tmp_path, apply=True)
+        install_hooks.generate('codex', apply=True, real_home=real_home, clayrune_home=clayrune_home)
         assert False, 'expected RuntimeError'
     except RuntimeError as e:
         assert 'not an object' in str(e)
-    # File must be untouched.
-    assert settings_path.read_text(encoding='utf-8') == '[1, 2, 3]'
+    assert real_hooks_path.read_text(encoding='utf-8') == '[1, 2, 3]'
 
 
 def test_guard_command_points_at_the_one_shared_guard():
@@ -99,123 +200,58 @@ def test_guard_command_points_at_the_one_shared_guard():
     assert install_hooks.GUARD_SCRIPT.exists()
 
 
-def test_repo_root_override_points_hook_at_a_different_checkout(tmp_path):
-    # A worktree's mc/process_guard.py is deleted with the worktree — writing
-    # the REAL install from one must be able to point at the permanent (main)
-    # checkout instead, via --repo-root / the guard_script param it maps to.
-    other_checkout_guard = tmp_path / 'other_checkout' / 'mc' / 'process_guard.py'
-    result = install_hooks.install('gemini', tmp_path / 'home', apply=True,
-                                    guard_script=other_checkout_guard)
-    assert result['changed'] is True
-    data = json.loads(Path(result['path']).read_text(encoding='utf-8'))
-    written_command = data['hooks']['BeforeTool'][0]['hooks'][0]['command']
-    assert str(other_checkout_guard) in written_command
-    assert str(install_hooks.GUARD_SCRIPT) not in written_command
-
-
-def test_cli_repo_root_flag_is_wired(tmp_path, capsys):
-    home = tmp_path / 'home'
-    rc = install_hooks.main([
-        '--vendor', 'qwen', '--home', str(home),
-        '--repo-root', str(tmp_path / 'other_checkout'),
-    ])
-    assert rc == 0
-    out = capsys.readouterr().out
-    # The diff is pretty-printed JSON, so backslashes come back doubled.
-    expected = json.dumps(str(tmp_path / 'other_checkout' / 'mc' / 'process_guard.py'))[1:-1]
-    assert expected in out
-    assert json.dumps(str(install_hooks.GUARD_SCRIPT))[1:-1] not in out
-
-
-def test_python_exe_override_is_used_instead_of_sys_executable(tmp_path):
-    result = install_hooks.install('gemini', tmp_path, apply=True, python_exe='C:/venv/python.exe')
-    data = json.loads(Path(result['path']).read_text(encoding='utf-8'))
-    command = data['hooks']['BeforeTool'][0]['hooks'][0]['command']
-    assert 'C:/venv/python.exe' in command
-    assert install_hooks.sys.executable not in command
-
-
-def test_reinstall_with_changed_path_replaces_in_place_not_appends(tmp_path):
-    # A path or interpreter change (e.g. after a Clayrune update) must UPDATE
-    # the group this installer owns, never accumulate a second stale one.
-    install_hooks.install('qwen', tmp_path, apply=True, guard_script=Path('old/process_guard.py'))
-    result = install_hooks.install('qwen', tmp_path, apply=True, guard_script=Path('new/process_guard.py'))
-
-    assert result['changed'] is True
-    data = json.loads(Path(result['path']).read_text(encoding='utf-8'))
-    entries = data['hooks']['PreToolUse']
-    assert len(entries) == 1
-    assert 'new' in entries[0]['hooks'][0]['command']
-    assert 'old' not in entries[0]['hooks'][0]['command']
-
-
-def test_claude_coexists_with_untagged_legacy_hook(tmp_path):
-    # Simulates Ron's REAL live ~/.claude/settings.json: an existing
-    # PreToolUse entry with no "name" tag (the legacy, narrower guard this
-    # installer did not write and must never touch or remove).
-    settings_path = tmp_path / '.claude' / 'settings.json'
-    settings_path.parent.mkdir(parents=True)
-    legacy = {
-        'hooks': {
-            'PreToolUse': [
-                {'matcher': 'Bash|PowerShell',
-                 'hooks': [{'type': 'command',
-                            'command': 'python "C:/Users/levir/.claude/hooks/process-guard.py"',
-                            'timeout': 10000}]}
-            ]
-        }
-    }
-    settings_path.write_text(json.dumps(legacy), encoding='utf-8')
-
-    result = install_hooks.install('claude', tmp_path, apply=True)
-
-    assert result['changed'] is True
-    data = json.loads(settings_path.read_text(encoding='utf-8'))
-    entries = data['hooks']['PreToolUse']
-    assert len(entries) == 2
-    # The legacy entry is byte-for-byte untouched.
-    assert entries[0] == legacy['hooks']['PreToolUse'][0]
-    assert entries[1]['hooks'][0]['name'] == install_hooks.HOOK_NAME
-
-    # Re-running must update ONLY the tagged group, never duplicate or touch
-    # the legacy one.
-    result2 = install_hooks.install('claude', tmp_path, apply=True,
-                                     guard_script=Path('different/process_guard.py'))
-    assert result2['changed'] is True
-    data2 = json.loads(settings_path.read_text(encoding='utf-8'))
-    entries2 = data2['hooks']['PreToolUse']
-    assert len(entries2) == 2
-    assert entries2[0] == legacy['hooks']['PreToolUse'][0]
-    assert 'different' in entries2[1]['hooks'][0]['command']
-
-
-def test_codex_writes_hooks_json_not_settings_json(tmp_path):
-    result = install_hooks.install('codex', tmp_path, apply=True)
-    assert result['changed'] is True
-    assert Path(result['path']).name == 'hooks.json'
-    assert (tmp_path / '.codex' / 'hooks.json').exists()
-    data = json.loads((tmp_path / '.codex' / 'hooks.json').read_text(encoding='utf-8'))
-    entries = data['hooks']['PreToolUse']
-    assert entries[0]['matcher'] == 'shell'
-
-
-def test_install_for_boot_only_touches_requested_vendors(tmp_path):
-    results = install_hooks.install_for_boot(home=tmp_path, installed_vendors=['gemini'])
+def test_generate_for_boot_only_touches_requested_vendors(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    results = install_hooks.generate_for_boot(clayrune_home=clayrune_home,
+                                               installed_vendors=['gemini'])
     assert [r['vendor'] for r in results] == ['gemini']
-    assert (tmp_path / '.gemini' / 'settings.json').exists()
-    assert not (tmp_path / '.qwen' / 'settings.json').exists()
-    assert not (tmp_path / '.claude' / 'settings.json').exists()
-    assert not (tmp_path / '.codex' / 'hooks.json').exists()
+    assert gh.launch_file_path('gemini', clayrune_home).exists()
+    assert not gh.launch_file_path('qwen', clayrune_home).exists()
+    assert not gh.launch_file_path('claude', clayrune_home).exists()
+    assert not gh.launch_file_path('codex', clayrune_home).exists()
 
 
-def test_install_for_boot_survives_one_vendor_failing(tmp_path):
-    bad = tmp_path / '.gemini' / 'settings.json'
+def test_generate_for_boot_survives_one_vendor_failing(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    real_home = tmp_path / 'real_home'
+    bad = real_home / '.codex' / 'hooks.json'
     bad.parent.mkdir(parents=True)
     bad.write_text('not json', encoding='utf-8')
 
-    results = install_hooks.install_for_boot(home=tmp_path, installed_vendors=['gemini', 'qwen'])
+    results = install_hooks.generate_for_boot(clayrune_home=clayrune_home, real_home=real_home,
+                                               installed_vendors=['codex', 'gemini'])
 
     by_vendor = {r['vendor']: r for r in results}
-    assert 'error' in by_vendor['gemini']
-    assert by_vendor['qwen']['changed'] is True
-    assert (tmp_path / '.qwen' / 'settings.json').exists()
+    assert 'error' in by_vendor['codex']
+    assert by_vendor['gemini']['changed'] is True
+    assert gh.launch_file_path('gemini', clayrune_home).exists()
+
+
+def test_launch_file_if_exists_is_none_before_generation(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    assert gh.launch_file_if_exists('gemini', clayrune_home) is None
+    install_hooks.generate('gemini', apply=True, clayrune_home=clayrune_home)
+    assert gh.launch_file_if_exists('gemini', clayrune_home) is not None
+
+
+def test_cli_flags_are_wired(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    rc = install_hooks.main([
+        '--vendor', 'gemini', '--clayrune-home', str(clayrune_home),
+        '--repo-root', str(tmp_path / 'other_checkout'),
+        '--python-exe', 'C:/venv/python.exe',
+        '--apply',
+    ])
+    assert rc == 0
+    assert (clayrune_home / 'hooks' / 'gemini-settings.json').exists()
+    data = _read(clayrune_home, 'gemini')
+    command = data['hooks']['BeforeTool'][0]['hooks'][0]['command']
+    assert str(tmp_path / 'other_checkout' / 'mc' / 'process_guard.py') in command
+    assert 'C:/venv/python.exe' in command
+
+
+def test_cli_dry_run_default_never_writes(tmp_path):
+    clayrune_home = tmp_path / '.clayrune'
+    rc = install_hooks.main(['--vendor', 'qwen', '--clayrune-home', str(clayrune_home)])
+    assert rc == 0
+    assert not (clayrune_home / 'hooks' / 'qwen-settings.json').exists()

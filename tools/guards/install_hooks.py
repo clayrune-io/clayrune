@@ -1,71 +1,48 @@
 #!/usr/bin/env python3
-"""Install Clayrune's process guard into every vendor CLI's own hook system.
+"""Generate Clayrune's per-launch guardrail hook files (W2, redesigned).
 
-W2 (docs/VENDOR_AGNOSTIC_PROGRAM.md §3): guardrails are a Clayrune policy,
-installed into each vendor CLI's own hook mechanism rather than reimplemented
-per vendor. Full per-vendor evidence: docs/GUARDRAIL_PARITY_EVIDENCE.md.
+**This does NOT touch any vendor CLI's global config** (`~/.claude`,
+`~/.gemini`, `~/.qwen`, `~/.codex`). It writes small, Clayrune-owned files
+under `~/.clayrune/hooks/` (see `mc/guardrail_hooks.py` for the exact paths),
+which `mc/agent_runtime.py` and `mc/blueprints/agent_routes.py`'s
+`_build_claude_flags` point a CLI at ONLY on the launches Clayrune itself
+starts, via a flag/env var each CLI resolves fresh per invocation:
 
-  - Gemini CLI: `~/.gemini/settings.json`, `hooks.BeforeTool`, matcher
-    `run_shell_command`. Live-verified: exit code 2 blocks, stderr is the
-    denial reason.
-  - Qwen Code: `~/.qwen/settings.json`, `hooks.PreToolUse` — same event/shape
-    as Claude Code. Requires QwenRuntime to run WITHOUT `--bare` (see
-    mc/agent_runtime.py QwenRuntime.build_command's docstring) — `--bare`
-    unconditionally disables hooks with no CLI-flag workaround.
-  - Claude Code: `~/.claude/settings.json`, `hooks.PreToolUse`. Ron's
-    pre-existing entry here (`~/.claude/hooks/process-guard.py`) blocks
-    image-name kills only for a hand-maintained process list, not universally
-    — SHARED_RULES' "never kill by image name" has no such exception, so this
-    installer adds Clayrune's OWN entry (matched/replaced by its `name` tag,
-    see `_find_our_group_index`) alongside it. It does not touch, replace or
-    remove the pre-existing untagged entry — that is Ron's call, not this
-    installer's.
-  - Codex CLI: `~/.codex/hooks.json`, `hooks.PreToolUse`, matcher `shell`.
-    NOT independently confirmed by loading a real hooks.json (no Codex
-    launches — see docs/GUARDRAIL_PARITY_EVIDENCE.md §1 for exactly what was
-    and wasn't verified): reconstructed from `codex exec --help`
-    (`--dangerously-bypass-hook-trust`) and printable-string extraction from
-    the installed `codex.exe` (0.154.0), which independently confirms the
-    event name, the exit-code-2-blocks convention, and a `tool_name`/
-    `tool_input` payload shape identical to Claude's. Best-evidence, not
-    field-tested. Separately, CodexRuntime's own dispatch command needs
-    `--dangerously-bypass-hook-trust` (or `-c bypass_hook_trust=true`) added
-    for a freshly-written hook to be TRUSTED (and therefore active) in a
-    headless run at all — codex.exe's strings show an interactive
-    "Hooks need review... Trust all and continue / Continue without
-    trusting (hooks won't run)" gate with no non-interactive prompt path.
-    That CodexRuntime change is NOT made here (Codex is out of allowance
-    until 2026-09-24; changing live dispatch flags with no way to verify
-    them is a separate, riskier change) — flagged for whoever runs the
-    Sep-24 live proof.
+  - Claude Code: `--settings <file>` — CLI help: "load additional settings
+    from" (additive), and explicitly still applies under
+    `--dangerously-skip-permissions`. NOT one of the `--setting-sources`
+    (user/project/local) a project could exclude.
+  - Gemini CLI: `GEMINI_CLI_SYSTEM_SETTINGS_PATH` env var — the CLI's own
+    docs (`bundle/docs/reference/configuration.md`) name this as the
+    override for its "System settings file", the highest-precedence layer,
+    above project settings.
+  - Qwen Code: `QWEN_CODE_SYSTEM_SETTINGS_PATH` env var — same mechanism,
+    confirmed present in the bundled CLI (`chunk-IDS7MSUP.js`).
+  - Codex CLI: `-c hooks="<file>"` plus `-c bypass_hook_trust=true` (the
+    interactive hook-trust gate has no non-interactive prompt path — see
+    docs/GUARDRAIL_PARITY_EVIDENCE.md §1). NOT independently confirmed live
+    (no Codex launches); the codex file below is generated as a MERGE with
+    the user's real hooks.json specifically because that CLI's own merge-vs-
+    replace behavior for this override is unverified — Claude/Gemini/Qwen's
+    IS verified additive, so their generated files are guard-only.
 
-Every vendor points at the SAME guard, `mc/process_guard.py`, invoked with
-the SAME Python interpreter this installer itself is running under
-(`sys.executable`, captured at install time — never bare `python`, which
-depends on the external CLI's own PATH at hook-fire time, not this process's).
-No second guard implementation; `mc/process_guard.py`'s `_SHELL_TOOL_NAMES`
-covers every vendor's shell-tool naming, so only the hook-config *shape*
-(event name, matcher, file location) differs per vendor, and that's what
-`VENDOR_CONFIGS` below encodes.
+Live-verified, 2026-09-18, each with an isolated test home carrying a
+harmless marker-writing "user" hook plus the per-launch mechanism pointed at
+`mc/process_guard.py`: for Claude, Gemini and Qwen, BOTH hooks fired for the
+same `taskkill /IM notepad.exe` attempt (the user's marker was written AND
+Clayrune's guard blocked the command) — proving the per-launch layer adds to,
+never replaces, whatever the user has configured for themselves.
 
-Idempotent by NAME, not by exact command string: each written hook carries
-`"name": "clayrune-process-guard"`. Re-running looks up that name within the
-target event's array and REPLACES only that group in place (so an interpreter
-or repo-root path change updates cleanly instead of accumulating duplicate
-stale entries) — every other group in the array, including a pre-existing
-hook this installer did not write, is left byte-for-byte untouched.
+Regenerated idempotently (this script always overwrites its own files
+wholesale — they are 100% Clayrune-owned, so there is nothing to preserve),
+normally called once at Clayrune startup (`server.py`'s
+`_install_guardrail_hooks_on_boot`), gated per vendor on
+`health_check().installed` exactly as before.
 
-Dry-run (the default) never writes; `--apply` is required to write.
-
-Failure mode when the written path goes missing or unreadable later (e.g. a
-worktree the guard path pointed at gets deleted): live-tested 2026-09-18
-against Claude, Gemini and Qwen — all three treat a hook command that cannot
-even execute as a DENY (fails closed: the underlying tool call is blocked,
-not silently allowed to proceed). This is a byproduct of the interpreter's
-own missing-script exit code (2) coinciding with each vendor's own
-hook-block convention, not a designed safety net — a broken path fails safe
-by blocking every shell call, which is why `--repo-root` (below) exists: to
-get the path right rather than lean on that coincidence.
+Superseded design (kept only as history in git, not in this file): writing
+directly into `~/.claude/settings.json` etc. That silently changed how a
+user's OWN, Clayrune-independent CLI use behaved, with no uninstall path.
+Nothing here writes to those files anymore.
 """
 from __future__ import annotations
 
@@ -77,60 +54,71 @@ import sys
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[2]))
+from mc import guardrail_hooks as _gh  # noqa: E402
+
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GUARD_SCRIPT = REPO_ROOT / 'mc' / 'process_guard.py'
 HOOK_NAME = 'clayrune-process-guard'
 
+# Per-vendor hook-file SHAPE (event name + matcher) — the DESTINATION and
+# whether the vendor's real global config gets read (for merging) lives in
+# mc/guardrail_hooks.py / _real_codex_hooks_path below, not here.
 VENDOR_CONFIGS: Dict[str, Dict[str, str]] = {
-    'claude': {
-        'settings_rel': '.claude/settings.json',
-        'event': 'PreToolUse',
-        'matcher': 'Bash|PowerShell',
-    },
-    'gemini': {
-        'settings_rel': '.gemini/settings.json',
-        'event': 'BeforeTool',
-        'matcher': 'run_shell_command',
-    },
-    'qwen': {
-        'settings_rel': '.qwen/settings.json',
-        'event': 'PreToolUse',
-        'matcher': 'Bash|PowerShell|run_shell_command',
-    },
-    'codex': {
-        'settings_rel': '.codex/hooks.json',
-        'event': 'PreToolUse',
-        'matcher': 'shell',
-    },
+    'claude': {'event': 'PreToolUse', 'matcher': 'Bash|PowerShell'},
+    'gemini': {'event': 'BeforeTool', 'matcher': 'run_shell_command'},
+    'qwen': {'event': 'PreToolUse', 'matcher': 'Bash|PowerShell|run_shell_command'},
+    'codex': {'event': 'PreToolUse', 'matcher': 'shell'},
 }
+
+# Vendors whose per-launch override is verified additive — their generated
+# file needs only Clayrune's own entry, nothing read from the real install.
+_GUARD_ONLY_VENDORS = {'claude', 'gemini', 'qwen'}
+# Vendors whose override semantics are unverified — merge with the real file
+# ourselves so correctness doesn't depend on an unconfirmed CLI behavior.
+_MERGE_VENDORS = {'codex'}
+assert _GUARD_ONLY_VENDORS | _MERGE_VENDORS == set(VENDOR_CONFIGS), \
+    'every vendor must be classified as guard-only or merge'
 
 
 def guard_command(guard_script: Path = GUARD_SCRIPT, python_exe: Optional[str] = None) -> str:
+    """Command string a vendor's hook runner executes.
+
+    Quoting the interpreter path unconditionally (`"<py>" "<script>"`) was
+    the first version of this function and broke SILENTLY in production:
+    live-tested 2026-09-18 against a real dispatch, Gemini's CLI (the
+    Windows `.cmd` launcher `resolve_binary()` finds) executes hook commands
+    through a shell that parses two adjacent quoted tokens as a syntax
+    error ("UnexpectedToken") — the hook then failed to even run, and
+    Gemini treated that failure as an ALLOW, not a deny (unlike a genuinely
+    MISSING script, which every vendor treats as a deny — see
+    docs/GUARDRAIL_PARITY_EVIDENCE.md §1a). `taskkill /IM notepad.exe` went
+    through and killed a live test process before this was caught. Claude
+    and Qwen were re-verified unaffected by the same quoted format, so this
+    was Gemini-specific, not a two-vendor coincidence.
+
+    Fix: quote the interpreter ONLY when its path actually contains a space
+    (the one case an unquoted bareword can't handle) — live re-verified
+    against Gemini's real `.cmd` launcher, a real taskkill, blocked
+    correctly. An interpreter path WITH a space is a known, disclosed gap:
+    no single quoting form is confirmed safe across every vendor's hook
+    shell in that case, and none of the vendors tested here need it (their
+    resolved interpreters have no spaces).
+    """
     py = python_exe or sys.executable or 'python'
-    return f'"{py}" "{guard_script}"'
+    py_token = f'"{py}"' if ' ' in py else py
+    return f'{py_token} "{guard_script}"'
 
 
-def _load_settings(path: Path) -> Dict[str, Any]:
-    if not path.exists():
-        return {}
-    try:
-        data = json.loads(path.read_text(encoding='utf-8'))
-    except Exception as e:
-        raise RuntimeError(
-            f'{path} exists but is not valid JSON ({e}) — refusing to touch '
-            'a file this installer cannot safely merge') from e
-    if not isinstance(data, dict):
-        raise RuntimeError(f'{path} is valid JSON but not an object — refusing to touch it')
-    return data
+def _desired_group(cfg: Dict[str, str], command: str) -> Dict[str, Any]:
+    return {
+        'matcher': cfg['matcher'],
+        'hooks': [{'type': 'command', 'command': command, 'name': HOOK_NAME}],
+    }
 
 
 def _find_group_index(event_list: Any, marker: str) -> Optional[int]:
-    """Index of the group THIS installer previously wrote, or None.
-
-    Identity is the `name` tag on an individual hook entry, never the command
-    string or position — a path/interpreter change must update this group in
-    place, not be mistaken for a different (or the user's own) hook.
-    """
+    """Index of the group carrying `marker` on one of its hooks, or None."""
     if not isinstance(event_list, list):
         return None
     for i, entry in enumerate(event_list):
@@ -142,97 +130,115 @@ def _find_group_index(event_list: Any, marker: str) -> Optional[int]:
     return None
 
 
-def _desired_group(cfg: Dict[str, str], command: str) -> Dict[str, Any]:
-    return {
-        'matcher': cfg['matcher'],
-        'hooks': [{
-            'type': 'command',
-            'command': command,
-            'name': HOOK_NAME,
-        }],
-    }
+def _real_codex_hooks_path(home: Path) -> Path:
+    return home / '.codex' / 'hooks.json'
 
 
-def plan_install(vendor: str, home: Path, guard_script: Path = GUARD_SCRIPT,
-                  python_exe: Optional[str] = None
-                  ) -> Tuple[Path, Dict[str, Any], Dict[str, Any], bool]:
-    """Return (settings_path, before, after, changed) — never writes."""
+def _load_json_object(path: Path) -> Dict[str, Any]:
+    if not path.exists():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding='utf-8'))
+    except Exception as e:
+        raise RuntimeError(f'{path} exists but is not valid JSON ({e}) — refusing to read it') from e
+    if not isinstance(data, dict):
+        raise RuntimeError(f'{path} is valid JSON but not an object — refusing to read it')
+    return data
+
+
+def plan_generate(vendor: str, guard_script: Path = GUARD_SCRIPT,
+                   python_exe: Optional[str] = None,
+                   real_home: Optional[Path] = None,
+                   clayrune_home: Optional[Path] = None
+                   ) -> Tuple[Dict[str, Any], Dict[str, Any], bool]:
+    """Return (before, after, changed) for the GENERATED launch file.
+
+    `before` is what's on disk at the destination NOW (for the diff/idempotency
+    check) — for a guard-only vendor that's simply the previous generation;
+    for codex it's the previously-generated MERGED file, so a diff still shows
+    only what actually changes on regeneration, not the user's whole real file
+    every time.
+    """
     cfg = VENDOR_CONFIGS[vendor]
-    path = home / Path(cfg['settings_rel'])
-    before = _load_settings(path)
-    after = copy.deepcopy(before)
     command = guard_command(guard_script, python_exe)
+    dest = _gh.launch_file_path(vendor, clayrune_home)
+    before = _load_json_object(dest)
+
+    if vendor in _MERGE_VENDORS:
+        real_home = real_home or Path.home()
+        after = copy.deepcopy(_load_json_object(_real_codex_hooks_path(real_home)))
+    else:
+        # Guard-only vendors regenerate from scratch each time — no reason to
+        # carry forward a stale prior shape, and there is nothing else in
+        # this file to preserve (it's 100% Clayrune's own).
+        after = {}
+
     hooks = after.setdefault('hooks', {})
     if not isinstance(hooks, dict):
-        raise RuntimeError(f"{path}: top-level 'hooks' is not an object — refusing to touch it")
+        raise RuntimeError(f"unexpected non-object 'hooks' key while generating {vendor}'s launch file")
     event_list = hooks.setdefault(cfg['event'], [])
     if not isinstance(event_list, list):
-        raise RuntimeError(
-            f"{path}: 'hooks.{cfg['event']}' is not an array — refusing to touch it")
+        raise RuntimeError(f"unexpected non-array 'hooks.{cfg['event']}' while generating {vendor}'s launch file")
 
     desired = _desired_group(cfg, command)
     idx = _find_group_index(event_list, HOOK_NAME)
     if idx is None:
         event_list.append(desired)
-        changed = True
     else:
-        changed = event_list[idx] != desired
         event_list[idx] = desired
-    return path, before, after, changed
+
+    changed = before != after
+    return before, after, changed
 
 
 def diff_text(before: Dict[str, Any], after: Dict[str, Any]) -> str:
-    """Zero-context diff — deliberate, not a cosmetic choice.
-
-    A non-zero context window pulls in surrounding UNCHANGED lines from the
-    user's real settings.json — measured 2026-09-18: on this box that
-    included a live API key sitting a few lines above the insertion point.
-    Showing a diff must not leak content this installer never reads or
-    touches. Zero context still shows every line an install/replace writes,
-    since json.dumps re-serializes the whole file — a replace shows both the
-    old and new group as remove/add lines with no surrounding context either.
+    """Zero-context diff — see docs/GUARDRAIL_PARITY_EVIDENCE.md for why: a
+    wider window pulled a live API key out of a real settings file in
+    testing, back when this wrote into global config. Kept even though the
+    generated files are Clayrune-owned now, since Codex's is a merge of the
+    user's real hooks.json and could still carry content this script never
+    means to display.
     """
     b = json.dumps(before, indent=2, sort_keys=True).splitlines(keepends=True)
     a = json.dumps(after, indent=2, sort_keys=True).splitlines(keepends=True)
     return ''.join(difflib.unified_diff(b, a, fromfile='before', tofile='after', lineterm='\n', n=0))
 
 
-def install(vendor: str, home: Path, apply: bool, guard_script: Path = GUARD_SCRIPT,
-            python_exe: Optional[str] = None) -> Dict[str, Any]:
-    path, before, after, changed = plan_install(vendor, home, guard_script, python_exe)
-    result: Dict[str, Any] = {'vendor': vendor, 'path': str(path), 'changed': changed, 'diff': ''}
+def generate(vendor: str, apply: bool, guard_script: Path = GUARD_SCRIPT,
+             python_exe: Optional[str] = None, real_home: Optional[Path] = None,
+             clayrune_home: Optional[Path] = None) -> Dict[str, Any]:
+    before, after, changed = plan_generate(vendor, guard_script, python_exe, real_home, clayrune_home)
+    dest = _gh.launch_file_path(vendor, clayrune_home)
+    result: Dict[str, Any] = {'vendor': vendor, 'path': str(dest), 'changed': changed, 'diff': ''}
     if not changed:
         return result
     result['diff'] = diff_text(before, after)
     if apply:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(after, indent=2) + '\n', encoding='utf-8')
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_text(json.dumps(after, indent=2) + '\n', encoding='utf-8')
     return result
 
 
-def install_for_boot(home: Optional[Path] = None, guard_script: Path = GUARD_SCRIPT,
-                      python_exe: Optional[str] = None,
-                      installed_vendors: Optional[List[str]] = None) -> List[Dict[str, Any]]:
+def generate_for_boot(clayrune_home: Optional[Path] = None, guard_script: Path = GUARD_SCRIPT,
+                       python_exe: Optional[str] = None,
+                       installed_vendors: Optional[List[str]] = None,
+                       real_home: Optional[Path] = None) -> List[Dict[str, Any]]:
     """Server-startup entry point — see server.py's wiring.
 
-    Applies for real (no dry-run) but ONLY for vendors in `installed_vendors`
-    (the caller passes the set whose CLI health_check() found installed —
-    writing a hook config for a vendor with no CLI does nothing harmful, but
-    it is also not this installer's job to speculatively create config trees
-    for tools that aren't there). Never raises on a single vendor's failure —
-    one vendor's malformed settings.json (refused by `_load_settings`) must
-    not block boot or the other vendors' installs; the failure is returned in
-    the result list instead.
+    Generates (applies for real) ONLY for vendors in `installed_vendors`.
+    Never raises on a single vendor's failure (e.g. a malformed real
+    ~/.codex/hooks.json for the codex merge) — one vendor's problem must not
+    block boot or the other vendors' generation.
     """
-    home = home or Path.home()
     vendors = installed_vendors if installed_vendors is not None else sorted(VENDOR_CONFIGS)
     results: List[Dict[str, Any]] = []
     for vendor in vendors:
         if vendor not in VENDOR_CONFIGS:
             continue
         try:
-            results.append(install(vendor, home, apply=True,
-                                    guard_script=guard_script, python_exe=python_exe))
+            results.append(generate(vendor, apply=True, guard_script=guard_script,
+                                     python_exe=python_exe, real_home=real_home,
+                                     clayrune_home=clayrune_home))
         except Exception as e:
             results.append({'vendor': vendor, 'error': str(e), 'changed': False})
     return results
@@ -242,39 +248,36 @@ def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__,
                                       formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument('--vendor', choices=sorted(VENDOR_CONFIGS), action='append',
-                         help='Install for this vendor only (repeatable). Default: all.')
-    parser.add_argument('--home', default=None,
-                         help='Override home directory (isolated/test homes). '
-                              'Default: the real user home (Path.home()).')
+                         help='Generate for this vendor only (repeatable). Default: all.')
+    parser.add_argument('--real-home', default=None,
+                         help="Home directory to read the user's REAL config from, for the "
+                              "codex merge only (claude/gemini/qwen never read the real "
+                              "install at all). Default: Path.home().")
+    parser.add_argument('--clayrune-home', default=None,
+                         help='Where to write the generated files, under <this>/hooks/. '
+                              'Default: ~/.clayrune (isolated/test homes override this).')
     parser.add_argument('--repo-root', default=None,
-                         help="Repo checkout whose mc/process_guard.py the written hook "
-                              "config should point at. Default: this script's own checkout. "
-                              "Use this when previewing/writing the REAL install from a "
-                              "throwaway worktree — a worktree's process_guard.py is deleted "
-                              "when the worktree is, so a hook baked with that path would "
-                              "silently stop working (see module docstring: it fails CLOSED, "
-                              "blocking every shell call, not open). Point this at the "
-                              "permanent (main) checkout instead.")
+                         help="Repo checkout whose mc/process_guard.py the generated hook "
+                              "command should point at. Default: this script's own checkout.")
     parser.add_argument('--python-exe', default=None,
-                         help='Python interpreter the written hook command invokes. '
-                              'Default: sys.executable of THIS process — pass the server '
-                              'process\'s own interpreter (venv / frozen exe) when installing '
-                              'on its behalf; bare "python" depends on the external CLI\'s '
-                              'own PATH at hook-fire time, not this one.')
+                         help='Python interpreter the generated hook command invokes. '
+                              'Default: sys.executable of THIS process.')
     parser.add_argument('--apply', action='store_true',
                          help='Write the change. Default is dry-run: show the diff, write nothing.')
     args = parser.parse_args(argv)
 
-    home = Path(args.home) if args.home else Path.home()
+    real_home = Path(args.real_home) if args.real_home else None
+    clayrune_home = Path(args.clayrune_home) if args.clayrune_home else None
     guard_script = (Path(args.repo_root) / 'mc' / 'process_guard.py') if args.repo_root else GUARD_SCRIPT
     vendors = args.vendor or sorted(VENDOR_CONFIGS)
 
     for vendor in vendors:
-        result = install(vendor, home, apply=args.apply, guard_script=guard_script,
-                          python_exe=args.python_exe)
+        result = generate(vendor, apply=args.apply, guard_script=guard_script,
+                           python_exe=args.python_exe, real_home=real_home,
+                           clayrune_home=clayrune_home)
         print(f"== {vendor}: {result['path']} ==")
         if not result['changed']:
-            print('  already installed (idempotent no-op) — nothing to write')
+            print('  already up to date — nothing to write')
             continue
         print(result['diff'], end='')
         print('  [dry-run — pass --apply to write]' if not args.apply else '  written')

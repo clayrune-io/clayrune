@@ -47,6 +47,33 @@ from mc.execution_policy import (
     Blocker, Certification, ExecutionIdentity, Profile, Readiness,
     authorize_execution,
 )
+from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
+
+# Per-vendor env var each CLI resolves fresh per invocation for a per-launch
+# settings override — verified additive with the user's own config (not a
+# replacement), docs/GUARDRAIL_PARITY_EVIDENCE.md §4. Claude/Codex use an
+# argv flag instead (`--settings`, `-c hooks=`), handled directly in their
+# own build_command().
+_GUARDRAIL_ENV_VAR = {
+    'gemini': 'GEMINI_CLI_SYSTEM_SETTINGS_PATH',
+    'qwen': 'QWEN_CODE_SYSTEM_SETTINGS_PATH',
+}
+
+
+def _inject_guardrail_env(vendor: str, env: Dict[str, str]) -> Dict[str, str]:
+    """Mutate `env` in place, adding the per-launch guardrail env var for
+    `vendor` if (a) it uses one and (b) tools/guards/install_hooks.py has
+    generated a file for it. No-op otherwise — see launch_file_if_exists's
+    docstring for why a not-yet-generated file must mean "add nothing."
+    Call at EVERY subprocess.Popen site for gemini/qwen (dispatch AND
+    write_followup are separate code paths, not a single shared launcher)."""
+    var = _GUARDRAIL_ENV_VAR.get(vendor)
+    if not var:
+        return env
+    path = _guardrail_launch_file(vendor)
+    if path:
+        env[var] = str(path)
+    return env
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1565,6 +1592,16 @@ class ClaudeRuntime(AgentRuntime):
         # to keep — e.g. engram). Empty string → no flags → full fleet, unchanged.
         if mcp_config_json and mcp_config_json.strip():
             cmd.extend(['--strict-mcp-config', '--mcp-config', mcp_config_json])
+        # Per-launch guardrail injection (W2 redesign, docs/GUARDRAIL_PARITY_EVIDENCE.md
+        # §4): `--settings <file>` loads ADDITIONAL settings for this invocation only —
+        # never touches ~/.claude/settings.json, and live-verified (2026-09-18) to be
+        # additive with whatever the user has configured for themselves, not a
+        # replacement. No-op when tools/guards/install_hooks.py hasn't generated the
+        # file yet (fresh install, boot still running) — see launch_file_if_exists's
+        # docstring for why that must mean "add nothing," not "add a broken path."
+        guardrail_settings = _guardrail_launch_file('claude')
+        if guardrail_settings:
+            cmd.extend(['--settings', str(guardrail_settings)])
         return cmd
 
     # ── JSONL event parser — lifted from _read_agent_stream in server.py ──────
@@ -3378,6 +3415,7 @@ class GeminiRuntime(AgentRuntime):
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
+        _inject_guardrail_env('gemini', env)
 
         proc = subprocess.Popen(
             cmd,
@@ -3718,6 +3756,7 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
+            env=_inject_guardrail_env('gemini', os.environ.copy()),
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,
         )
@@ -5122,6 +5161,7 @@ class QwenRuntime(AgentRuntime):
         for k, v in self._settings_auth_env().items():
             if not os.environ.get(k):
                 env.setdefault(k, v)
+        _inject_guardrail_env('qwen', env)
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -5158,6 +5198,7 @@ class QwenRuntime(AgentRuntime):
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         for k, v in self._settings_auth_env().items():
             env.setdefault(k, v)
+        _inject_guardrail_env('qwen', env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -5441,6 +5482,25 @@ class CodexRuntime(AgentRuntime):
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
+        # Per-launch guardrail injection (W2 redesign,
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4) — NOT independently
+        # confirmed live, no Codex launches permitted while allowance is out
+        # until 2026-09-24; reconstructed from `codex exec --help` and
+        # offline binary-string extraction. `-c hooks='<path>'` (TOML
+        # literal string — single-quoted so a Windows path's backslashes are
+        # NOT escape-processed) points this ONE invocation at Clayrune's
+        # generated, merged hooks.json (real ~/.codex/hooks.json content
+        # plus Clayrune's own tagged entry — done in Python because,
+        # unlike Claude/Gemini/Qwen's per-launch override, whether Codex's
+        # own `-c hooks=` replaces or merges with the user's real file could
+        # not be verified). `bypass_hook_trust=true` is required alongside
+        # it: the CLI's own hook-trust review is interactive-only (no
+        # non-interactive prompt path), so a freshly-generated hooks file
+        # would otherwise sit untrusted and inert in a headless run.
+        guardrail_hooks_path = _guardrail_launch_file('codex')
+        if guardrail_hooks_path:
+            cmd.extend(['-c', f"hooks='{guardrail_hooks_path}'"])
+            cmd.extend(['-c', 'bypass_hook_trust=true'])
         return cmd
 
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
