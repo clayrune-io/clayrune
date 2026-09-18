@@ -1,6 +1,7 @@
 # Vendor-agnostic program: plan of record
 
-Status: DRAFT v1 (Dave, 2026-09-18) for cross-vendor certification
+Status: DRAFT v2 (Dave, 2026-09-18). v1 was reviewed by Codex Astra, whose run hit the
+OpenAI usage limit partway through; its 3 findings are applied below (marked [Astra r1]).
 Supersedes nothing. It orders and owns the work that `PROVIDER_HARDENING_PROGRESS.md`
 (architecture) and `MULTI_PROVIDER_PARITY_MATRIX.md` (feature cells) describe.
 
@@ -28,7 +29,7 @@ Supersedes nothing. It orders and owns the work that `PROVIDER_HARDENING_PROGRES
 | Profile | Used by | Tools | Enforcement per vendor |
 |---|---|---|---|
 | `interactive` | chats, dispatched agents, workflow agent steps | full | Claude `--dangerously-skip-permissions`; Codex `--dangerously-bypass-approvals-and-sandbox`; Gemini/Qwen `--yolo` |
-| `unattended` | scheduler, steward, night review | full, confined | MC-949 (next week): workspace-write sandbox + per-job network. Until then same as interactive **plus** the guardrail hooks in §3 |
+| `unattended` | scheduler, steward, night review | full, confined | MC-949 (next week): workspace-write sandbox + per-job network. Until then the EXISTING `codex_unattended_sandbox` switch keeps working as-is (currently off by Ron's choice); nothing here removes a restriction that exists today [Astra r1]. Plus the guardrail hooks in §3 |
 | `transform` | Scribe, condense, Distiller, Claydo, character generation, mail laundering, anything fed third-party or transcript text | **none** | Claude `--allowedTools '' --strict-mcp-config`; Codex `-s read-only` + empty temp cwd; Qwen `--exclude-tools`/`--core-tools` empty + `--bare`; Gemini equivalent. **An adapter that cannot prove tool-freedom refuses.** |
 
 Every launch goes through `execution_policy.authorize_execution(profile, provider)`.
@@ -45,6 +46,7 @@ All four CLIs have one: `~/.claude/settings.json` hooks, Codex hooks,
 - Minimum set for every vendor: `process-guard` (never kill by image name, never
   kill the Clayrune port owner). Stop and reply guards follow wherever the vendor
   exposes an equivalent turn-end event.
+- **Qwen caveat [Astra r1]:** QwenRuntime launches with `--bare`, which disables user hooks along with project config. Replace `--bare` with targeted flags that stop native `.mcp.json`/skills discovery but keep hooks, or pass the hook config explicitly. `--bare` was added to close an MCP capability leak, so whatever replaces it must keep that leak closed (re-run the leak probe).
 - One source of truth: `tools/guards/*.py`, plus a per-vendor installer that writes
   each CLI's hook config. It is idempotent and never overwrites user hooks.
 - Proof: for each vendor, an agent is told to `taskkill /IM notepad.exe` against a
@@ -54,8 +56,11 @@ All four CLIs have one: `~/.claude/settings.json` hooks, Codex hooks,
 
 - Each adapter maps its CLI's real exhaustion signals to one normalized event:
   `ALLOWANCE_EXHAUSTED{vendor, limit_kind, resets_at|unknown, raw_ref}`.
-  Sources: Claude `rate_limit_event`; Gemini 429/`RESOURCE_EXHAUSTED`; Codex and
-  Qwen as observed. Fixtures come from **real captured text**. Ron's Claude outage
+  Sources: Claude `rate_limit_event`; Gemini 429/`RESOURCE_EXHAUSTED`; Codex
+  `task_complete.error.codex_error_info = "usage_limit_exceeded"` with the reset time
+  in the message ("try again at Sep 24th, 2026 7:58 AM"; captured live 2026-09-18,
+  when Clayrune showed it only as a generic `error` with a partial summary). Qwen as
+  observed. Fixtures come from **real captured text**. Ron's Claude outage
   on 2026-09-17 left logs to mine. Nothing is invented.
 - Allowance state is kept per vendor (server-side, outside DATA_DIR) and shown on the
   Floor, in the chooser and in chat: "Out of allowance, resets 14:00".
@@ -105,7 +110,7 @@ unit is its own branch. **Merges are serialized with smokes after each merge**
 
 | # | Workstream | Owner (engine) | Reviewer | Depends on |
 |---|---|---|---|---|
-| W0 | Stabilize: Fenn's 5 blockers, 3 dormant defects, guard escapes, master's 5 failing tests, main-checkout WIP out of the live tree, empty commit bodies | Vector (Codex Sol), author of the branch | Fenn | none. **Gates every merge** |
+| W0 | Stabilize: Fenn's 5 blockers, 3 dormant defects, guard escapes, master's 5 failing tests, empty commit bodies, and the branch's rollout importer rejecting the installed Codex 0.154.0 [Astra r1]. Vector's work in progress was checkpointed as `c14c2fd` when he hit the usage limit | Vector (Codex Sol), author of the branch | Fenn | none. **Gates every merge** |
 | W1 | Execution profiles + `authorize_execution` on every path (§2) | Vector (Codex Sol) | Wren (security) | W0 |
 | W2 | Guardrail parity via vendor hooks (§3) | Tobin (Claude Sonnet) | Wren | none; parallel with W0 |
 | W3 | Allowance state + typed failures (§4) | Tobin, after W2 | Bram (verifies no failure reads as success) | W0 #4 |
@@ -116,6 +121,20 @@ unit is its own branch. **Merges are serialized with smokes after each merge**
 
 Wave 1 (now): **W0 (Vector) and W2 (Tobin)** in parallel, with no file overlap
 beyond the hook installer. Wave 2: W1, W3 and W6. Wave 3: W4 and W5. Then W7.
+
+## 8a. Allowance reality (2026-09-18)
+
+The OpenAI/Codex account is **out of usage until Sep 24, 7:58 AM**. That affects every
+Codex-engined character: Vector (Sol), Fenn, Tilda, Marlow, Kestrel, Posy and Vance.
+Following the plan's own rule, work is reassigned by what has allowance; nothing
+waits silently on a Codex agent:
+- W0 (continue Vector's branch from `c14c2fd`): Bram (Claude Opus). He takes over a
+  half-finished branch and has to reason about its failure modes.
+- Code review: Fenn's engine is Codex, so reviews go to a Claude reviewer until
+  Sep 24.
+- W4 Codex cells can only be *live*-verified after Sep 24. Gemini and Qwen cells go
+  first.
+- Vector resumes as owner of W1/W5 when Codex allowance returns.
 
 ## 9. Definition of done
 
