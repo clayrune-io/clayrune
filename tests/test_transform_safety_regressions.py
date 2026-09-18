@@ -261,3 +261,70 @@ def test_uncertified_vendor_transform_refuses_before_spawn(monkeypatch, name):
     with pytest.raises(RuntimeError, match='cannot enforce tool-free'):
         agent_runtime.run_text_transform(name, prompt='untrusted transcript')
     assert runs == []
+
+
+# ── Fenn #4: a failed transform is raised, typed, and never becomes content ──
+
+class _CertifiedFailingRuntime:
+    """A certified adapter whose oneshot fails the way Codex's did in Fenn's
+    repro: nothing usable, quota JSON as the only output."""
+    name = 'certified-failing'
+    tool_free_transform_enforced = True
+
+    def __init__(self, last_error):
+        self.last_error = last_error
+
+    def transform_evidence(self, *, model='', effort=''):
+        from tests.test_provider_neutral_orchestration import _certified_evidence
+        return _certified_evidence(self.name, model, effort)
+
+    def oneshot(self, **kwargs):
+        return None
+
+
+def test_quota_failure_raises_typed_failure_with_raw_detail(monkeypatch):
+    from mc import agent_runtime
+    quota = 'rc=1: {"type":"error","message":"quota exceeded"}'
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'certified-failing',
+                        _CertifiedFailingRuntime(quota))
+    with pytest.raises(agent_runtime.TransformFailure) as exc:
+        agent_runtime.run_text_transform('certified-failing', prompt='summarize')
+    assert exc.value.kind == 'failed'
+    assert exc.value.provider == 'certified-failing'
+    assert exc.value.detail == quota          # verbatim, for the allowance layer
+    assert isinstance(exc.value, RuntimeError)
+
+
+def test_timeout_is_typed_and_still_a_timeout_error(monkeypatch):
+    from mc import agent_runtime
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'certified-failing',
+                        _CertifiedFailingRuntime('timeout after 180s (12c in)'))
+    with pytest.raises(agent_runtime.TransformTimeout) as exc:
+        agent_runtime.run_text_transform('certified-failing', prompt='summarize')
+    assert isinstance(exc.value, TimeoutError) and exc.value.kind == 'timeout'
+
+
+def test_refusal_is_typed(monkeypatch):
+    from mc import agent_runtime
+    with pytest.raises(agent_runtime.TransformFailure) as exc:
+        agent_runtime.run_text_transform('codex', prompt='summarize')
+    assert exc.value.kind == 'refused'
+
+
+def test_fenn_repro_quota_json_never_becomes_a_scribe_summary(monkeypatch):
+    """Fenn's exact repro: a provider-context Scribe summary whose model call
+    'returns' quota JSON came back as ('{"type":"error",...}', 'extracted').
+    It must be a model_error with no summary."""
+    from mc import agent_runtime, memory
+    quota = '{"type":"error","message":"quota exceeded"}'
+    monkeypatch.setitem(agent_runtime._RUNTIMES, 'certified-failing',
+                        _CertifiedFailingRuntime('rc=1: ' + quota))
+    monkeypatch.setattr(memory, '_text_transform', None)
+    token = memory._with_transform_context('certified-failing')
+    try:
+        summary, reason = memory._scribe_summarize_text(
+            'USER: do the thing. ASSISTANT: did the thing. ' * 20, 'native')
+    finally:
+        memory._reset_transform_context(token)
+    assert summary is None
+    assert reason == 'model_error'

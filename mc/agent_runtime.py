@@ -66,6 +66,35 @@ else:
     _STARTUPINFO = None
 
 
+class TransformFailure(RuntimeError):
+    """A text transform that produced no content. It is raised, never returned
+    as text: a failed or quota-exhausted call must not reach Scribe, the
+    Distiller, Claydo or a workflow as if it were the model's answer (Fenn #4).
+
+    `kind` is one of 'refused' (the adapter could not be authorized for the
+    tool-free profile), 'timeout', or 'failed' (non-zero exit, spawn failure,
+    error envelope). `detail` is the adapter's raw reason (rc + output tail),
+    kept verbatim so the allowance layer (VENDOR_AGNOSTIC_PROGRAM §4) can map
+    real exhaustion text to ALLOWANCE_EXHAUSTED without re-running anything.
+    Subclasses RuntimeError so every existing `except RuntimeError` still
+    treats it as a failure.
+    """
+
+    def __init__(self, provider: str, kind: str, detail: str = ''):
+        self.provider = provider
+        self.kind = kind
+        self.detail = detail
+        suffix = f': {detail}' if detail else ''
+        super().__init__(f"Provider '{provider}' text transform {kind}{suffix}")
+
+
+class TransformTimeout(TransformFailure, TimeoutError):
+    """Timed-out transform; still a TimeoutError for routes that map it to 504."""
+
+    def __init__(self, provider: str, detail: str = ''):
+        super().__init__(provider, 'timeout', detail)
+
+
 class CLINotInstalledError(RuntimeError):
     """Raised by a runtime's dispatch()/write_followup() pre-flight check when
     its CLI binary isn't on this machine at all — as opposed to a transient
@@ -846,8 +875,9 @@ class AgentRuntime(ABC):
         result = self.oneshot(**kwargs)
         if result is None:
             detail = str(getattr(self, 'last_error', '') or '').strip()
-            suffix = f': {detail}' if detail else ''
-            raise RuntimeError(f"Provider '{self.name}' text stream failed{suffix}")
+            if detail.lower().startswith('timeout'):
+                raise TransformTimeout(self.name, detail)
+            raise TransformFailure(self.name, 'failed', detail)
         text = str(getattr(result, 'text', '') or '')
         if text:
             yield text
@@ -959,19 +989,19 @@ def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
     adapter without that method cannot prove it is tool-free, so it refuses.
     """
     if not getattr(runtime, 'tool_free_transform_enforced', False):
-        raise RuntimeError(
-            f"Provider '{provider}' cannot enforce tool-free transforms; refusing input")
+        raise TransformFailure(
+            provider, 'refused', 'cannot enforce tool-free transforms; refusing input')
     if identity is None and readiness is None and certification is None:
         make = getattr(runtime, 'transform_evidence', None)
         if not callable(make):
-            raise RuntimeError(
-                f"Provider '{provider}' cannot prove a tool-free transform; refusing input")
+            raise TransformFailure(
+                provider, 'refused', 'cannot prove a tool-free transform; refusing input')
         identity, readiness, certification = cast(
             Tuple[ExecutionIdentity, Readiness, Certification],
             make(model=model or "", effort=effort or ""))
     if identity is None or readiness is None or certification is None:
-        raise RuntimeError(
-            f"Provider '{provider}' text transform lacks fresh tool-free authorization")
+        raise TransformFailure(
+            provider, 'refused', 'lacks fresh tool-free authorization')
     try:
         authorize_execution(
             identity, Profile.TOOL_FREE_TRANSFORM, readiness=readiness,
@@ -979,7 +1009,7 @@ def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
             required=frozenset(), now=datetime.now(timezone.utc),
         )
     except Exception as exc:
-        raise RuntimeError(f"Provider '{provider}' text transform unauthorized: {exc}") from exc
+        raise TransformFailure(provider, 'refused', f'unauthorized: {exc}') from exc
 
 
 def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
@@ -1001,8 +1031,9 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
     ``**kwargs``); runtimes that do not support an effort control retain their
     native behavior rather than silently selecting a Claude tier.
 
-    A failed/unsupported call is raised as a normal ``RuntimeError`` so the
-    route can return its existing provider-neutral error response.  Returning
+    A failed/unsupported call raises ``TransformFailure`` (a RuntimeError;
+    ``TransformTimeout`` is also a TimeoutError) so the route can return its
+    existing provider-neutral error response. Failure is never content.  Returning
     an empty successful answer is allowed: callers decide whether that output
     is useful for their particular artifact.
     """
@@ -1038,9 +1069,8 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
     if result is None:
         detail = str(getattr(runtime, 'last_error', '') or '').strip()
         if detail.lower().startswith('timeout'):
-            raise TimeoutError(detail)
-        suffix = f': {detail}' if detail else ''
-        raise RuntimeError(f"Provider '{provider}' text transform failed{suffix}")
+            raise TransformTimeout(provider, detail)
+        raise TransformFailure(provider, 'failed', detail)
     return str(getattr(result, 'text', '') or '')
 
 
@@ -2573,15 +2603,16 @@ class ClaudeRuntime(AgentRuntime):
             try:
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired as e:
-                raise TimeoutError('Claude timed out while exiting') from e
+                raise TransformTimeout('claude', 'Claude timed out while exiting') from e
             if proc.returncode != 0 or result_error:
                 stderr = ''
                 try:
                     stderr = (proc.stderr.read() if proc.stderr else '').strip()[:500]
                 except Exception as e:
                     print(f'[runtime:claude-stream] reading CLI error output failed: {e}', flush=True)
-                raise RuntimeError(result_error or stderr or ''.join(text_parts).strip()
-                                   or f'Claude exit {proc.returncode}')
+                raise TransformFailure('claude', 'failed',
+                                       result_error or stderr or ''.join(text_parts).strip()
+                                       or f'Claude exit {proc.returncode}')
         finally:
             if proc is not None and proc.poll() is None:
                 try:
