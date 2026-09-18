@@ -109,11 +109,44 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     case a bareword can't handle). Re-verified through the same real
     dispatch path: blocked, notepad survived. An interpreter path WITH a
     space remains a disclosed, untested gap.
+
+    W4/MC-947 (2026-09-18): the SAME unconditional-quoting mistake existed
+    for the SCRIPT path too, and broke Qwen specifically — live-reproduced
+    through a real `QwenRuntime.dispatch()` (env with no `MSYSTEM`/`TERM`,
+    i.e. the shape Clayrune's own server process runs under, which resolves
+    Qwen's hook shell to `cmd.exe` per `getShellConfiguration()` in the
+    bundled `chunk-V545KI73.js` — a git-bash-launched shell with `MSYSTEM`
+    set masked this by resolving to bash instead, which is why earlier
+    ad-hoc testing from a bash prompt never caught it). Qwen's own
+    `executeCommandHook` spawns `cmd.exe /d /s /c <command>` with
+    `shell: false`, handing the single already-quoted `command` STRING as
+    one argv element; Node then has to re-serialize that array into ONE
+    Win32 command-line for `CreateProcess`, and an argv element that already
+    contains embedded `"..."` gets re-escaped on top of its own quoting.
+    Every `run_shell_command` call in the affected session failed with
+    (paraphrased) 'python.exe: cannot open file [cwd glued onto the still-
+    quoted script path, quote characters included]: Invalid argument' —
+    and Qwen's hook layer treats a hook that
+    fails to even launch as `execution_denied`, not an allow, so EVERY shell
+    tool call in the session was silently blocked (matching a live incident:
+    a Qwen-hosted dispatcher agent, unable to run `curl`/`python -c` at all,
+    gave up on shell tools entirely — see docs/_journal/provider-live/
+    cross-vendor/W5-notes.md). Re-verified live after this fix: the same
+    stripped-env dispatch ran `echo`/`curl`/`dir` via `run_shell_command`
+    with no error at all.
+
+    Same fix, same reasoning: quote the script path ONLY when it contains a
+    space. This repo's own path never does, so the common case now emits NO
+    embedded quote characters for either token — nothing left for a
+    naive-relaunch shell to mis-parse. A script path WITH a space remains
+    the same disclosed, untested gap the interpreter path already carries.
     """
     guard_script = guard_script or (Path(__file__).resolve().parent / 'process_guard.py')
     py = python_exe or sys.executable or 'python'
     py_token = f'"{py}"' if ' ' in py else py
-    return f'{py_token} "{guard_script}"'
+    script_str = str(guard_script)
+    script_token = f'"{script_str}"' if ' ' in script_str else script_str
+    return f'{py_token} {script_token}'
 
 
 def _toml_basic_string(s: str) -> str:
@@ -158,8 +191,23 @@ def codex_hook_config_args(guard_script: Optional[Path] = None,
                                         entire hooks table in Python to
                                         avoid clobbering it — the dotted
                                         path makes that unnecessary.
+
+    Deliberately does NOT call `guard_shell_command()` — builds its own
+    unconditionally-quoted `"<py>" "<script>"` string inline instead. W4/
+    MC-947 (2026-09-18) made `guard_shell_command()` quote the script path
+    ONLY when it contains a space (fixing a real Qwen breakage — see that
+    function's docstring), but the byte-exact QUOTED shape this function
+    produces is the one actually live-verified against real `codex.exe`
+    (0.154.0) with `--strict-config` — Codex was out of allowance to re-
+    verify a changed shape at the time of that fix, so this stays pinned to
+    the proven bytes rather than silently drifting with an unrelated
+    vendor's fix. Re-verify live before ever pointing this at the shared
+    helper.
     """
-    command = guard_shell_command(guard_script, python_exe)
+    py = python_exe or sys.executable or 'python'
+    script = str(guard_script or (Path(__file__).resolve().parent / 'process_guard.py'))
+    py_token = f'"{py}"' if ' ' in py else py
+    command = f'{py_token} "{script}"'
     hooks_value = (
         'hooks.PreToolUse=[{matcher="shell",hooks=[{type="command",'
         f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}]}}]'

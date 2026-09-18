@@ -276,14 +276,20 @@ def test_failed_run_with_truly_no_output_says_so_explicitly(env):
 
 
 def test_completed_run_summary_still_picks_real_output(env):
-    """Regression guard: the fix must not break the ordinary, working case."""
+    """Regression guard: the fix must not break the ordinary, working case.
+
+    'Halloway here.' and 'Done.' are two consecutive real-content log_lines
+    from the SAME turn (no bracket/seed line between them), so the summary
+    is their full join — not just the last one (MC-947,
+    `_collect_trailing_reply_text`; see test_gemini_delta_reply_truncation.py
+    for the live Gemini bug this generalizes)."""
     sid, handle = _dispatch(env, task='do the thing')
     env['runtime'].run_turn(handle, ['Halloway here.', 'Done.'], rc=0)
 
     rows = _log_rows(env)
     assert len(rows) == 1
     assert rows[0]['status'] == 'completed'
-    assert rows[0]['summary'] == 'Done.'
+    assert rows[0]['summary'] == 'Halloway here.Done.'
 
 
 def test_log_agent_completion_direct_error_no_output(env):

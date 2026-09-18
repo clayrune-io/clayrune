@@ -236,7 +236,14 @@ class TestQwenDispatchInjection:
                                    task, mc_sid, session_dict, incognito, env,
                                    callbacks, register_process, **kw):
             captured['env'] = env
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json`/`_extra_include_dirs` onto
+            # `handle.session_dict` after this call returns (W4/MC-947),
+            # so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id=mc_sid, provider='qwen', mode='A',
+                project_path=project_path, project_id=project_id,
+                session_dict=session_dict if session_dict is not None else {})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         rt = QwenRuntime()
@@ -252,7 +259,14 @@ class TestQwenDispatchInjection:
                                    task, mc_sid, session_dict, incognito, env,
                                    callbacks, register_process, **kw):
             captured['env'] = env
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json`/`_extra_include_dirs` onto
+            # `handle.session_dict` after this call returns (W4/MC-947),
+            # so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id=mc_sid, provider='qwen', mode='A',
+                project_path=project_path, project_id=project_id,
+                session_dict=session_dict if session_dict is not None else {})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         rt = QwenRuntime()
@@ -313,7 +327,14 @@ class TestQwenSettingsWinOverInheritedEnv:
                                    task, mc_sid, session_dict, incognito, env,
                                    callbacks, register_process, **kw):
             captured['env'] = env
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json`/`_extra_include_dirs` onto
+            # `handle.session_dict` after this call returns (W4/MC-947),
+            # so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id=mc_sid, provider='qwen', mode='A',
+                project_path=project_path, project_id=project_id,
+                session_dict=session_dict if session_dict is not None else {})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         rt = QwenRuntime()
@@ -376,7 +397,14 @@ class TestQwenSettingsWinOverInheritedEnv:
                                    task, mc_sid, session_dict, incognito, env,
                                    callbacks, register_process, **kw):
             captured['env'] = env
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json`/`_extra_include_dirs` onto
+            # `handle.session_dict` after this call returns (W4/MC-947),
+            # so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id=mc_sid, provider='qwen', mode='A',
+                project_path=project_path, project_id=project_id,
+                session_dict=session_dict if session_dict is not None else {})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         rt = QwenRuntime()

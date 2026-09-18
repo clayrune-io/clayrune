@@ -203,7 +203,11 @@ def test_completed_non_claude_session_writes_exactly_one_row(env):
     assert row['provider'] == 'fakeprov'
     assert row['claude_session_id'] == ''
     assert row['status'] == 'completed'
-    assert row['summary'] == 'Done.'
+    # Both lines are one turn's reply with no bracket/seed line between them,
+    # so the summary is their full join, not just the last fragment (MC-947 —
+    # see `_collect_trailing_reply_text`: a Mode-A provider that logs a reply
+    # as several log_lines entries must not have it truncated to the last one).
+    assert row['summary'] == 'Halloway here.Done.'
 
 
 # ── provider_session_id: captured, and now persisted (parity audit §0/item 2) ─

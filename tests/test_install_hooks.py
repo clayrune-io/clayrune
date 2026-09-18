@@ -72,16 +72,50 @@ def test_guard_command_leaves_a_no_space_interpreter_unquoted():
     # hook as an ALLOW) — live-tested 2026-09-18, see guard_command's
     # docstring. Claude and Qwen were unaffected by the same input, but the
     # fix (unquote when safe) must hold regardless.
+    #
+    # W4/MC-947 (2026-09-18): the script path is ALSO unquoted here now — see
+    # test_guard_command_leaves_a_no_space_script_unquoted below for the
+    # separate live Qwen regression that fix closes.
     cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert cmd == 'C:/no/spaces/python.exe "C:\\no\\spaces\\process_guard.py"'
-    assert '""' not in cmd
+    assert cmd == 'C:/no/spaces/python.exe C:\\no\\spaces\\process_guard.py'
+    assert '"' not in cmd
 
 
 def test_guard_command_quotes_an_interpreter_with_a_space():
     cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
                                        python_exe='C:/Program Files/python.exe')
     assert cmd.startswith('"C:/Program Files/python.exe"')
+
+
+def test_guard_command_leaves_a_no_space_script_unquoted():
+    """W4/MC-947, live-verified 2026-09-18: the script path was
+    UNCONDITIONALLY quoted, regardless of whether it had a space — the same
+    mistake the interpreter path already had one fix for, just on the other
+    token. This one broke Qwen specifically: live-reproduced through a real
+    `QwenRuntime.dispatch()` in an environment matching Clayrune's own
+    server process (no `MSYSTEM`/`TERM`, which makes Qwen's bundled
+    `getShellConfiguration()` resolve its hook shell to `cmd.exe` instead of
+    git-bash). Every `run_shell_command` call in that session failed —
+    `python.exe: can't open file` with the cwd glued onto the still-quoted
+    script path, quote characters and all — and Qwen's hook layer treats a
+    hook that fails to even launch as `execution_denied`, not an allow, so
+    EVERY shell tool call was silently blocked. A dispatched Qwen agent
+    hitting this gave up on shell entirely and, in one observed case,
+    fabricated a plausible-looking result instead of reporting the failure
+    (docs/_journal/provider-live/cross-vendor/W5-notes.md). Re-verified live
+    after this fix: the same environment ran `echo`/`curl`/`dir`/`taskkill`
+    (correctly still blocked) via `run_shell_command` with no error."""
+    cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
+                                       python_exe='C:/no/spaces/python.exe')
+    assert 'C:\\no\\spaces\\process_guard.py' in cmd
+    assert '"' not in cmd
+
+
+def test_guard_command_quotes_a_script_path_with_a_space():
+    cmd = install_hooks.guard_command(Path('C:/Program Files/process_guard.py'),
+                                       python_exe='C:/no/spaces/python.exe')
+    assert cmd.endswith('"C:\\Program Files\\process_guard.py"')
 
 
 def test_python_exe_override_is_used(tmp_path):
