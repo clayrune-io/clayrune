@@ -927,7 +927,16 @@ class TestQwenRuntime:
         assert cmd[cmd.index('--output-format') + 1] == 'stream-json'
         assert '--include-partial-messages' in cmd
         assert '--yolo' in cmd
-        assert '--bare' in cmd
+        # --bare was dropped 2026-09-18 (W2): it also disabled hooks, with
+        # no CLI-flag channel to pass a hook config through bare mode.
+        # --allowed-mcp-server-names with a sentinel that matches no real
+        # server takes over closing the native-MCP leak --bare used to
+        # close (see QwenRuntime.build_command's docstring for the live
+        # leak re-probe against this repo's real .mcp.json).
+        assert '--bare' not in cmd
+        assert '--allowed-mcp-server-names' in cmd
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
         assert '--chat-recording' in cmd
         assert '--resume' not in cmd
 

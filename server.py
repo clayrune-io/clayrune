@@ -3088,7 +3088,58 @@ def boot(check_port=True):
             _qchan.start_poller(int(CONFIG.get('question_channel_poll_s', 120)))
         except Exception as e:
             _log(f"[question-channel] poller not started: {e}")
+    _boot_phase('guardrail hooks', _install_guardrail_hooks_on_boot)
     _log(f"[boot] ready to serve after {_time.time() - _BOOT_T0:.2f}s")
+
+
+def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> None:
+    """Generate Clayrune's PER-LAUNCH guardrail hook files (W2 redesign,
+    docs/VENDOR_AGNOSTIC_PROGRAM.md §3) under `~/.clayrune/hooks/` — never the
+    vendor CLI's own global config. Only for a vendor whose CLI
+    `health_check().installed` is true. `tools/guards/install_hooks.py` is a
+    standalone script (not a package under mc/), loaded here by file path
+    rather than moved — see that module's own docstring for the full
+    per-vendor injection design (flag/env var per vendor, verified additive
+    for Claude/Gemini/Qwen) and mc/guardrail_hooks.py for the generated file
+    locations every dispatch path reads at launch time.
+
+    `_APP_DIR` (this file's own `_resolve_dirs()`) and `sys.executable` are
+    passed explicitly rather than left to the installer's own defaults:
+    those defaults resolve relative to install_hooks.py's OWN location and
+    THIS process's own interpreter, which is correct when a human runs the
+    script by hand from a permanent checkout, but would bake a throwaway
+    worktree path if this ever ran from one. Unlike the superseded
+    global-config design, a broken path here just means the generated file
+    is wrong — dispatch paths check `guardrail_hooks.launch_file_if_exists`
+    and add no flag at all when generation hasn't produced a usable file, so
+    this never turns into every shell call failing closed. Best-effort: one
+    vendor's generation failure (e.g. a malformed real ~/.codex/hooks.json
+    for the codex merge) must not block boot; `generate_for_boot` already
+    isolates that per vendor, this is a second layer for the loader itself.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'clayrune_install_hooks', _APP_DIR / 'tools' / 'guards' / 'install_hooks.py')
+        if spec is None or spec.loader is None:
+            raise ImportError('could not load tools/guards/install_hooks.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        installed = [name for name in mod.VENDOR_CONFIGS
+                     if _agent_runtime.get_runtime(name).health_check().installed]
+        results = mod.generate_for_boot(
+            clayrune_home=clayrune_home,
+            guard_script=_APP_DIR / 'mc' / 'process_guard.py',
+            python_exe=sys.executable,
+            installed_vendors=installed,
+        )
+        for r in results:
+            if r.get('error'):
+                _log(f"[guardrail-hooks] {r['vendor']}: not generated ({r['error']})")
+            elif r.get('changed'):
+                _log(f"[guardrail-hooks] {r['vendor']}: launch hook file written/updated at {r['path']}")
+    except Exception as e:
+        _log(f"[guardrail-hooks] startup generation failed: {e}")
 
 
 if __name__ == '__main__':

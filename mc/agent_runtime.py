@@ -51,6 +51,33 @@ from mc.execution_policy import (
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
     required_capabilities,
 )
+from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
+
+# Per-vendor env var each CLI resolves fresh per invocation for a per-launch
+# settings override — verified additive with the user's own config (not a
+# replacement), docs/GUARDRAIL_PARITY_EVIDENCE.md §4. Claude/Codex use an
+# argv flag instead (`--settings`, `-c hooks=`), handled directly in their
+# own build_command().
+_GUARDRAIL_ENV_VAR = {
+    'gemini': 'GEMINI_CLI_SYSTEM_SETTINGS_PATH',
+    'qwen': 'QWEN_CODE_SYSTEM_SETTINGS_PATH',
+}
+
+
+def _inject_guardrail_env(vendor: str, env: Dict[str, str]) -> Dict[str, str]:
+    """Mutate `env` in place, adding the per-launch guardrail env var for
+    `vendor` if (a) it uses one and (b) tools/guards/install_hooks.py has
+    generated a file for it. No-op otherwise — see launch_file_if_exists's
+    docstring for why a not-yet-generated file must mean "add nothing."
+    Call at EVERY subprocess.Popen site for gemini/qwen (dispatch AND
+    write_followup are separate code paths, not a single shared launcher)."""
+    var = _GUARDRAIL_ENV_VAR.get(vendor)
+    if not var:
+        return env
+    path = _guardrail_launch_file(vendor)
+    if path:
+        env[var] = str(path)
+    return env
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1632,6 +1659,16 @@ class ClaudeRuntime(AgentRuntime):
         # to keep — e.g. engram). Empty string → no flags → full fleet, unchanged.
         if mcp_config_json and mcp_config_json.strip():
             cmd.extend(['--strict-mcp-config', '--mcp-config', mcp_config_json])
+        # Per-launch guardrail injection (W2 redesign, docs/GUARDRAIL_PARITY_EVIDENCE.md
+        # §4): `--settings <file>` loads ADDITIONAL settings for this invocation only —
+        # never touches ~/.claude/settings.json, and live-verified (2026-09-18) to be
+        # additive with whatever the user has configured for themselves, not a
+        # replacement. No-op when tools/guards/install_hooks.py hasn't generated the
+        # file yet (fresh install, boot still running) — see launch_file_if_exists's
+        # docstring for why that must mean "add nothing," not "add a broken path."
+        guardrail_settings = _guardrail_launch_file('claude')
+        if guardrail_settings:
+            cmd.extend(['--settings', str(guardrail_settings)])
         return cmd
 
     # ── JSONL event parser — lifted from _read_agent_stream in server.py ──────
@@ -3530,6 +3567,7 @@ class GeminiRuntime(AgentRuntime):
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
+        _inject_guardrail_env('gemini', env)
 
         proc = subprocess.Popen(
             cmd,
@@ -3879,6 +3917,7 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
+            env=_inject_guardrail_env('gemini', os.environ.copy()),
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,
         )
@@ -4639,6 +4678,12 @@ def _codex_same_path(a: Optional[str], b: Optional[str]) -> bool:
     return ra == rb
 
 
+# Matches no real MCP server name (`assembleMcpServers()`/`getMcpServers()`
+# never emit one) — see QwenRuntime.build_command's docstring for why this
+# replaces `--bare` for closing the native project-`.mcp.json` leak.
+_QWEN_MCP_DENY_SENTINEL = '__clayrune_none__'
+
+
 class QwenRuntime(AgentRuntime):
     """Driver for Alibaba's `qwen` (Qwen Code) CLI — a gemini-cli fork.
 
@@ -4652,15 +4697,63 @@ class QwenRuntime(AgentRuntime):
     `parse_event` below mirrors `ClaudeRuntime.parse_event`, not
     `GeminiRuntime`'s or `CodexRuntime`'s.
 
-    `--bare` is load-bearing, not cosmetic: without it, a plain one-shot run
-    from this repo's root silently connected this project's OWN `.mcp.json`
-    (a "browser" MCP server with click/navigate/run_code_unsafe, a
-    "filesystem" MCP server with unrestricted read/write) and `.claude/`
-    skills/subagents catalog — none of which this runtime declares or
-    controls. `--bare` disables that native auto-discovery so a Qwen
-    session's real capability set matches what `capabilities()` declares,
-    the same posture Gemini/Codex take (their own catalogs are injected via
-    system-prompt text, not native discovery).
+    `--bare` USED to be load-bearing for exactly one reason: without it, a
+    plain one-shot run from this repo's root silently connected this
+    project's OWN `.mcp.json` (a "browser" MCP server with
+    click/navigate/run_code_unsafe, a "filesystem" MCP server with
+    unrestricted read/write) — none of which this runtime declares or
+    controls.
+
+    2026-09-18 [W2, Astra r1]: `--bare` ALSO unconditionally zeroes
+    `hooks`/`userHooks`/`disableAllHooks` (confirmed by reading
+    `@qwen-code/qwen-code`'s bundled config loader,
+    `chunk-QM2MRAG4.js`: `hooks: bareMode || safeMode ? void 0 : ...`,
+    `disableAllHooks: bareMode || safeMode ? true : ...`) — there is no
+    settings.json or CLI-flag channel that survives bare mode to pass a
+    hook config explicitly; `hooksConfig` is a `loadCliConfig()` library
+    parameter with no CLI-flag surface, confirmed by reading the same
+    chunk. So `--bare` and vendor-hook guardrail parity (`tools/guards/`)
+    are mutually exclusive — one of them has to go.
+
+    Replaced `--bare` with `--allowed-mcp-server-names __clayrune_none__`
+    instead: a sentinel name that matches no real server, so
+    `Config.getMcpServers()`'s `matchesAnyServerPattern` filter (confirmed
+    in `chunk-DCRVSIK6.js`) drops every entry `assembleMcpServers()` finds
+    — including a project's own `.mcp.json` — the same way `--bare` did,
+    but the filter runs in `Config`, entirely orthogonal to `hooks`, so
+    hooks now load. Live leak re-probe, this repo's real `.mcp.json`
+    (filesystem + browser servers), 2026-09-18:
+      - WITHOUT this flag (bare dropped, nothing else changed): `qwen
+        --output-format stream-json --yolo -p 'reply OK, no tools'` from
+        this repo's root emitted `"mcp_servers":[{"name":"filesystem",
+        "status":"connected"},{"name":"browser","status":"connected"}]`
+        in its `system`/`init` envelope, WITH `browser_run_code_unsafe`
+        in `tools` — the exact leak this docstring used to warn about,
+        reproduced live.
+      - WITH `--allowed-mcp-server-names __clayrune_none__` added, same
+        repo root, same command: `"mcp_servers":[]`, no `mcp__*` tools in
+        `tools`.
+    `supports_mcp=False` below still holds — this closes the leak, it
+    does not restore MCP support (that is W4's job: replace the sentinel
+    with Clayrune's actually-resolved server names).
+
+    Known, disclosed, NOT fixed by this change (out of scope for W2 —
+    flagged for whoever owns Qwen's W4 capability-bridge pass, since it
+    changes what every Qwen dispatch can do): dropping `--bare` also
+    re-enables native `QWEN.md` project-context discovery (redundant with
+    this runtime's own `context_injection='prepend'`, not a correctness
+    break) AND native skill/slash-command/subagent catalog discovery from
+    the user's real Qwen config — live-observed in the same probe: the
+    `system`/`init` envelope's `slash_commands`/`agents` arrays list this
+    box's real global skills and subagents (e.g. `mc-memory-search`,
+    `claude-code`, `codex`) even from a scratch cwd with no project
+    `.claude`/`.qwen` directory at all. `capabilities()` already declares
+    `supports_skills=True` on the theory that the catalog is
+    prompt-injected text a Qwen session can `read_file` open, same as
+    Gemini/Codex; this reopens a SECOND, native channel to the same
+    catalog as real invocable tools, which is a bigger capability change
+    than "hooks now fire" and deserves its own review before being called
+    intentional.
 
     Native Qwen OAuth was discontinued 2026-04-15 (bundled docs,
     qc-helper/docs/configuration/auth.md) — this runtime's auth story is
@@ -4740,9 +4833,14 @@ class QwenRuntime(AgentRuntime):
                                          a headless dispatch with no TTY to
                                          approve from — mirrors GeminiRuntime's
                                          own `--yolo` for the same reason.
-          --bare                      -- disable native project-config
-                                         auto-discovery. LOAD-BEARING — see
-                                         class docstring.
+          --allowed-mcp-server-names  -- set to a sentinel matching no real
+                                         server, closing the native
+                                         project-`.mcp.json` MCP leak
+                                         `--bare` used to close, WITHOUT
+                                         `--bare`'s side effect of also
+                                         disabling hooks. LOAD-BEARING —
+                                         see class docstring (2026-09-18,
+                                         W2).
           --chat-recording             -- required for --resume to work at
                                          all (the CLI's own --help text
                                          states this); re-stated on every
@@ -4767,7 +4865,8 @@ class QwenRuntime(AgentRuntime):
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'qwen',
                '--output-format', 'stream-json', '--include-partial-messages',
-               '--yolo', '--bare', '--chat-recording']
+               '--yolo', '--allowed-mcp-server-names', _QWEN_MCP_DENY_SENTINEL,
+               '--chat-recording']
         if resume_id:
             cmd.extend(['--resume', resume_id])
         if model:
@@ -5113,9 +5212,10 @@ class QwenRuntime(AgentRuntime):
             default_mode='A',
             # --resume <session_id>, live-verified cross-process continuity.
             supports_session_resume=True,
-            # --bare deliberately disables the native project MCP discovery
-            # this CLI otherwise performs (see class docstring) and no
-            # --mcp-config flag is wired here — declaring this True with
+            # `--allowed-mcp-server-names __clayrune_none__` (see
+            # build_command's docstring, 2026-09-18) deliberately closes the
+            # native project MCP discovery this CLI otherwise performs, and
+            # no --mcp-config flag is wired here — declaring this True with
             # nothing behind it would be the same overclaim CodexRuntime's
             # own supports_plan_mode=False comment warns against.
             supports_mcp=False,
@@ -5124,7 +5224,7 @@ class QwenRuntime(AgentRuntime):
             supports_skills=True,
             supports_plan_mode=False,
             # Emulated via the mc:question fence (with_mc_tool_protocol) —
-            # no native ask-the-user tool is present in --bare mode.
+            # no native ask-the-user tool is present.
             supports_ask_user_question=True,
             supports_streaming_text=True,
             emits_usage=True,
@@ -5140,8 +5240,10 @@ class QwenRuntime(AgentRuntime):
             # file-based image reading.
             image_input=True,
             context_window=None,
-            # --bare disables native QWEN.md discovery, so context must be
-            # prepended into the prompt text instead, same as GeminiRuntime.
+            # Prepended into the prompt text, same as GeminiRuntime — native
+            # QWEN.md discovery reopened 2026-09-18 when `--bare` was
+            # dropped (see build_command's docstring) but this runtime's
+            # own injection is left as the declared, guaranteed channel.
             context_injection='prepend',
             context_file_name='QWEN.md',
             oneshot_supported=True,
@@ -5150,14 +5252,17 @@ class QwenRuntime(AgentRuntime):
     def _settings_auth_env(self) -> Dict[str, str]:
         """OPENAI_* env derived from ~/.qwen/settings.json.
 
-        LOAD-BEARING because of `--bare`: measured 2026-09-16, `--bare`
-        disables the CLI's settings-file loading along with project config,
-        so a user who configured their key the normal way (the CLI's own
-        /auth screen writes `security.auth` / `modelProviders.openai`) gets
-        "No auth type is selected" / "Missing API key" on every dispatch
-        while a plain interactive `qwen` works fine. Env vars are the ONE
-        channel that survives `--bare`, so read what the user configured and
-        pass it through.
+        Originated as a `--bare` workaround (measured 2026-09-16: `--bare`
+        disabled the CLI's own settings-file loading, so a user who
+        configured their key the normal way — the CLI's own /auth screen
+        writes `security.auth` / `modelProviders.openai` — got "No auth
+        type is selected" on every dispatch). `--bare` was dropped
+        2026-09-18 (see build_command's docstring), so the CLI now reads
+        settings.json natively too; this stays as a harmless, redundant
+        second path (`env.setdefault` below never overrides a value
+        already present) rather than a required one, since removing it
+        now needs re-verifying auth on every code path this runtime has,
+        which is outside W2's scope.
 
         Returns {} when nothing is configured — the CLI's own fallbacks
         (real env vars, gemini OAuth) then apply unchanged.
@@ -5232,11 +5337,13 @@ class QwenRuntime(AgentRuntime):
 
         env = dict(env_extra or {})
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
-        # --bare drops settings.json; re-supply it as env. See
-        # _settings_auth_env(). Never overrides a real env var already set.
+        # Redundant since --bare was dropped (settings.json now loads
+        # natively) but harmless. See _settings_auth_env()'s docstring.
+        # Never overrides a real env var already set.
         for k, v in self._settings_auth_env().items():
             if not os.environ.get(k):
                 env.setdefault(k, v)
+        _inject_guardrail_env('qwen', env)
 
         return _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -5273,6 +5380,7 @@ class QwenRuntime(AgentRuntime):
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
         for k, v in self._settings_auth_env().items():
             env.setdefault(k, v)
+        _inject_guardrail_env('qwen', env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -5556,6 +5664,25 @@ class CodexRuntime(AgentRuntime):
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
+        # Per-launch guardrail injection (W2 redesign,
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4) — NOT independently
+        # confirmed live, no Codex launches permitted while allowance is out
+        # until 2026-09-24; reconstructed from `codex exec --help` and
+        # offline binary-string extraction. `-c hooks='<path>'` (TOML
+        # literal string — single-quoted so a Windows path's backslashes are
+        # NOT escape-processed) points this ONE invocation at Clayrune's
+        # generated, merged hooks.json (real ~/.codex/hooks.json content
+        # plus Clayrune's own tagged entry — done in Python because,
+        # unlike Claude/Gemini/Qwen's per-launch override, whether Codex's
+        # own `-c hooks=` replaces or merges with the user's real file could
+        # not be verified). `bypass_hook_trust=true` is required alongside
+        # it: the CLI's own hook-trust review is interactive-only (no
+        # non-interactive prompt path), so a freshly-generated hooks file
+        # would otherwise sit untrusted and inert in a headless run.
+        guardrail_hooks_path = _guardrail_launch_file('codex')
+        if guardrail_hooks_path:
+            cmd.extend(['-c', f"hooks='{guardrail_hooks_path}'"])
+            cmd.extend(['-c', 'bypass_hook_trust=true'])
         return cmd
 
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
