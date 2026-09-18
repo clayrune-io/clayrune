@@ -91,6 +91,23 @@ class TestBuildClaudeFlagsEquivalence:
     used to produce. Reference implementation copied from the pre-refactor
     version of server.py for cross-check."""
 
+    @pytest.fixture(autouse=True)
+    def _no_guardrail_file(self, monkeypatch):
+        # W2 appends `--settings <file>` only when the per-launch guardrail file
+        # exists on THIS machine's disk, so without pinning it these tests passed
+        # or failed depending on whether a prior run had generated
+        # ~/.clayrune/... (8 failures in isolation, 0 inside the full suite).
+        # The guardrail flag has its own test below.
+        monkeypatch.setattr(ar, "_guardrail_launch_file", lambda _p: None)
+
+    def test_guardrail_settings_appended_when_present(self, monkeypatch, tmp_path):
+        f = tmp_path / 'claude-guard.json'
+        f.write_text('{}', encoding='utf-8')
+        monkeypatch.setattr(ar, "_guardrail_launch_file",
+                            lambda p: f if p == 'claude' else None)
+        cmd = ar.ClaudeRuntime().build_command()
+        assert cmd[-2:] == ['--settings', str(f)]
+
     def _legacy_flags(self, *, model='', max_turns=0, streaming=False,
                       perm_mode='', channels='', remote_control=False):
         """Pre-refactor _build_claude_flags() logic reconstructed from git history."""
