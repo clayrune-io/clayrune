@@ -74,10 +74,18 @@ def clayrune_listener_pids() -> set[str]:
     return found
 
 
+# Shell-tool names across the four vendor CLIs this guard is installed into:
+# Claude Code and Qwen Code's PreToolUse both name their shell tool "Bash" /
+# "PowerShell"; Gemini CLI's BeforeTool and Qwen Code's own native shell tool
+# (confirmed live, 2026-09-18: qwen-code bundles gemini-cli's shell tool
+# verbatim) both name it "run_shell_command" instead. One guard, one set.
+_SHELL_TOOL_NAMES = {"Bash", "PowerShell", "run_shell_command"}
+
+
 def hook_main(payload: object) -> int:
     if not isinstance(payload, dict):
         return 0
-    if payload.get("tool_name") not in {"Bash", "PowerShell"}:
+    if payload.get("tool_name") not in _SHELL_TOOL_NAMES:
         return 0
     tool_input = payload.get("tool_input")
     command = tool_input.get("command") if isinstance(tool_input, dict) else ""
