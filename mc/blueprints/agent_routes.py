@@ -170,6 +170,7 @@ _delivery_shutdown_requested = threading.Event()
 _delivery_stop_in_progress = False
 _delegation_app: Optional[Flask] = None
 _runtime_lifecycle_service = None
+_conversation_cutover = None
 
 
 def _assert_runtime_project_generation(project_id, generation, *, incognito=False):
@@ -194,7 +195,8 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          recent_claude_transcripts_fn, session_too_large_fn,
          long_session_advisory_fn, resume_is_fragile_fn,
          encode_project_path_fn, extract_transcript_telemetry_fn,
-         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None):
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None,
+         conversation_cutover=None):
     """Late-bind cross-family deps. Called once by server.py after the
     memory/scribe/condense machinery (which stays there) is defined."""
     global DATA_DIR, UPLOADS_DIR, _APP_DIR, PORT, SHARED_RULES_PATH
@@ -211,6 +213,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     global _delivery_thread, _delivery_stop_event, _delegation_app
     global _delivery_stop_in_progress
     global _runtime_lifecycle_service
+    global _conversation_cutover
     with _delivery_lifecycle_lock:
         if _delivery_thread is not None and _delivery_thread.is_alive():
             raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
@@ -258,6 +261,7 @@ def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     _delivery_shutdown_requested.clear()
     _delegation_app = Flask('mc-delegation-delivery')
     _runtime_lifecycle_service = runtime_lifecycle_service
+    _conversation_cutover = conversation_cutover
     # Moved module-level side effect (see the tombstone in the provider-env
     # section below): hydrate persisted provider env vars into os.environ now
     # that PROVIDER_ENV_PATH is bound. Runs during server.py module exec,
@@ -275,7 +279,8 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          recent_claude_transcripts_fn, session_too_large_fn,
          long_session_advisory_fn, resume_is_fragile_fn,
          encode_project_path_fn, extract_transcript_telemetry_fn,
-         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None):
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None,
+         conversation_cutover=None):
     """Atomically bind agent dependencies and delivery ownership state.
 
     The implementation retains its keyword-only binding surface in
@@ -311,7 +316,8 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
             extract_transcript_telemetry_fn=extract_transcript_telemetry_fn,
             proc_identity_fn=proc_identity_fn,
             persist_pid_ledger_fn=persist_pid_ledger_fn,
-            runtime_lifecycle_service=runtime_lifecycle_service)
+            runtime_lifecycle_service=runtime_lifecycle_service,
+            conversation_cutover=conversation_cutover)
 
 # ── Claude CLI binary resolution ────────────────────────────────────────────
 # Delegates to ClaudeRuntime.resolve_binary_str() — single source of truth.
@@ -6436,7 +6442,7 @@ def _apply_mobile_brief(message: str, request_data: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_runtime_model(runtime, p, model_override=''):
+def _resolve_runtime_model(runtime, p, model_override='', provider_name=''):
     """Pick the model id to hand a non-claude runtime.
 
     An explicit per-chat pick (composer Model picker) wins and is passed
@@ -6448,8 +6454,11 @@ def _resolve_runtime_model(runtime, p, model_override=''):
     the old code forwarded it unconditionally — so a project pinned to Opus
     spawned `codex -m claude-opus-5`, which the CLI rejects outright.
     """
+    runtime_name = provider_name or getattr(runtime, 'name', '')
+    if not runtime_name:
+        raise ValueError('runtime provider identity is missing')
     model, _ = engine_selection.resolve_model(
-        runtime.name, state.CONFIG, p, override=model_override or None)
+        runtime_name, state.CONFIG, p, override=model_override or None)
     return model
 
 
@@ -6497,7 +6506,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     project_id = p.get('id', '')
     # A native resume with no recorded model must retain the CLI's saved
     # thread configuration, rather than importing today's project default.
-    model = model_override if resume_id else _resolve_runtime_model(runtime, p, model_override)
+    model = model_override if resume_id else _resolve_runtime_model(
+        runtime, p, model_override, provider_name)
 
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
@@ -9722,6 +9732,10 @@ def _looks_like_claydo_entry(entry):
 def get_agent_log(project_id):
     log = _load_agent_log(project_id)
     log = [e for e in log if not _looks_like_claydo_entry(e)]
+    if _conversation_cutover is not None:
+        canonical = _conversation_cutover.agent_log(project_id)
+        if canonical:
+            log = [row.as_dict() for row in canonical]
     for entry in log:
         entry['ts_relative'] = time_ago(entry.get('ts'))
         entry['started_relative'] = time_ago(entry.get('started_at'))
@@ -9934,6 +9948,16 @@ def reconstruct_dead_session(project_id, session_id):
     # A live session should go through /agent/status, not here.
     if session_id in agent_sessions:
         return jsonify({'error': 'session is live'}), 409
+    if _conversation_cutover is not None:
+        canonical_lines = _conversation_cutover.display_lines(project_id, session_id)
+        if canonical_lines:
+            lines = list(canonical_lines)
+            lines.append('[— read-only history; send a message to resume this session —]')
+            return jsonify({
+                'session_id': session_id, 'claude_session_id': '',
+                'task': '', 'started_at': '', 'log_lines': lines,
+                'read_only': True, 'resumable': False, 'canonical': True,
+            })
     entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
     if not entries:
         return jsonify({'error': 'session not in agent log'}), 404
@@ -10156,6 +10180,10 @@ def delete_conversation(project_id, claude_session_id):
             if (live_session.get('project_id') == project_id and
                     live_session.get('claude_session_id') == claude_session_id):
                 return jsonify({'error': 'conversation is live'}), 409
+        if (_conversation_cutover is not None
+                and _conversation_cutover.privacy_delete(project_id, claude_session_id)):
+            return jsonify({'ok': True, 'conversation_id': claude_session_id,
+                            'canonical': True})
         f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
         if not f:
             return jsonify({'error': 'transcript not found'}), 404
@@ -10317,6 +10345,11 @@ def _search_project_transcripts(project, query, limit=50):
     JSON-parsed, so the whole project scans in ~scan-cost (benchmarked ~2s on a
     195 MB / 181-file project, sub-second elsewhere). Read-only, no locks.
     """
+    if _conversation_cutover is not None:
+        canonical = _conversation_cutover.search(
+            (project or {}).get('id', ''), query, limit=limit)
+        if canonical is not None:
+            return canonical
     pp = (project or {}).get('project_path', '')
     q = (query or '').strip()
     if not pp or len(q) < 2:
@@ -10816,6 +10849,11 @@ def get_project_conversations(project_id):
     p = load_project(project_id)
     if not p:
         return jsonify([])
+    if _conversation_cutover is not None:
+        canonical_rows = _conversation_cutover.conversation_rows(
+            project_id, limit=limit)
+        if canonical_rows is not None and canonical_rows:
+            return jsonify(canonical_rows)
     project_path = p.get('project_path', '')
 
     # Built BEFORE the transcript scan (not after, as it used to be) so the

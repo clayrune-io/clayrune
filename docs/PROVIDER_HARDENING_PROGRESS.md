@@ -254,6 +254,26 @@ new modules pass Pyright with zero errors. Independent review identified and
 closed request/retry duplication, malformed-content loss and delayed-retry
 takeover risks. No real-provider run or production capture validation is claimed.
 
+### Canonical read/cutover seam (offline, default-off)
+
+`mc/conversation_cutover.py` now provides one explicit selection policy for the
+history rail, Agent Log, and Scribe consumers. It is disabled by default, never
+opens canonical state unless the caller supplies an enabled policy, and only
+selects canonical history for Scribe when both source coverage and the structured
+projection are complete. A partial/gapped canonical history remains inspectable,
+but falls back to the caller's legacy source when one exists; it is never
+mislabelled complete. The read-only Agent Log projection keeps requested engine
+metadata and observed native handles distinct and does not mutate legacy sidecars.
+
+`ConversationStore.read_history_snapshot()` adds the missing fixed-boundary read
+for gapped captured history. It applies the same privacy/high-water fence as a
+derivation snapshot without requiring a complete-coverage attestation. This
+remains default-off. Agent Log, read-only history, listing/search, privacy
+deletion, terminal Scribe, and checkpoint Scribe now accept an injected cutover
+reader, but startup does not compose one, so installed behavior is unchanged.
+Resume/export and native runtime capture remain open. See
+`docs/PROVIDER_CANONICAL_CUTOVER.md` for the remaining activation gates.
+
 ### Activation gate: migrate a whole conversation path
 
 Current live buffers are insufficient as the canonical input: Claude Mode B

@@ -81,12 +81,16 @@ _hide_windows_delayed: Callable[[int], Any] = None  # type: ignore[assignment]
 # Session-end topics-digest refresh. Wired by server.py (never imported here —
 # mc.memory must not import a blueprint). None = feature absent, hook no-ops.
 _topics_refresh_hook: Callable[[str], Any] | None = None
+# Injected provider-neutral canonical Scribe reader. None preserves the legacy
+# provider transcript/log path exactly; the composition root owns cutover policy.
+_canonical_scribe_reader: Callable[[str, dict], Any] | None = None
 
 
 def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
          popen_flags, startupinfo, load_project_fn, get_manager_fn,
          resolve_claude_fn, register_process_fn, read_agent_stream_fn,
-         hide_windows_delayed_fn, topics_refresh_hook=None):
+         hide_windows_delayed_fn, topics_refresh_hook=None,
+         canonical_scribe_reader_fn=None):
     """Late-bind path/config roots + dispatch-family deps. Called once by
     server.py BEFORE the blueprint wire() stanzas that pass memory.* values
     (agent_routes' write_session_memory_fn/scribe_call_fn/dispatch_condense_fn
@@ -96,6 +100,7 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     global _POPEN_FLAGS, _STARTUPINFO
     global load_project, get_manager, _resolve_claude, _register_process
     global _read_agent_stream, _hide_windows_delayed, _topics_refresh_hook
+    global _canonical_scribe_reader
     DATA_DIR = data_dir
     MEMORY_DIR = memory_dir
     CLAUDE_HOME = claude_home
@@ -111,6 +116,7 @@ def wire(*, data_dir, memory_dir, claude_home, session_size_limit,
     # Optional: session-end topics-digest refresh. Wired rather than imported so
     # mc.memory keeps its no-blueprint-imports invariant. None = no-op.
     _topics_refresh_hook = topics_refresh_hook
+    _canonical_scribe_reader = canonical_scribe_reader_fn
 
 
 def _encode_project_path(project_path):
@@ -2958,6 +2964,7 @@ def _commit_managed_entry(p, mem_entry=None, wm_upsert=None, wm_remove_sid=None,
       • write MEMORY.md (curated only — untouched here except for a
         one-time, lossless pull of any managed content an UNMIGRATED file
         still carries inline, §10.4) and SESSION_LOG.md, each atomically.
+    Index overflow never raises here: the ring evicts to the archive instead.
     No scribe call and no condense dispatch inside the lock (the slow/process
     parts stay out). Returns whether condense should fire; caller dispatches it
     OUTSIDE the lock. File failures propagate; callers must not acknowledge
@@ -3256,8 +3263,8 @@ def _get_checkpoint_sema(pid):
     return s
 
 
-def _checkpoint_prev_offset(p, sid):
-    """Cheap read of this session's last watermark byte_offset (0 if none).
+def _checkpoint_watermark(p, sid):
+    """Read this session's last checkpoint watermark (empty when absent).
 
     §16 step 4: markers live in SESSION_LOG.md; a legacy MEMORY.md is still
     consulted for a not-yet-migrated project (§10.4 both-formats-coexist).
@@ -3266,15 +3273,20 @@ def _checkpoint_prev_offset(p, sid):
         _log_wm = _session_log_read(p)[1]
         r = _wm_find(_log_wm, sid)
         if r:
-            return int(r.get('byte_offset', 0))
+            return r
         mp = _get_memory_path(p)
         if not mp.exists():
             return 0
         _c, _e, legacy_wm = _mem_split_full(mp.read_text(encoding='utf-8'))
         r = _wm_find(legacy_wm, sid)
-        return int(r.get('byte_offset', 0)) if r else 0
+        return r or {}
     except Exception:
-        return 0
+        return {}
+
+
+def _checkpoint_prev_offset(p, sid):
+    """Compatibility helper returning the legacy byte offset."""
+    return int(_checkpoint_watermark(p, sid).get('byte_offset', 0) or 0)
 
 
 def _maybe_checkpoint(session):
@@ -3303,6 +3315,35 @@ def _maybe_checkpoint(session):
             return
         p = load_project(pid)
         if not p:
+            return
+        canonical_lines = None
+        canonical_sequence = 0
+        if _canonical_scribe_reader is not None:
+            try:
+                selection = _canonical_scribe_reader(pid, sid, session)
+                history = getattr(selection, 'canonical', None) if selection is not None else None
+                if (selection is not None and getattr(selection, 'source', '') == 'canonical'
+                        and history is not None and getattr(history, 'complete', False)):
+                    canonical_lines = tuple(selection.lines)
+                    canonical_sequence = int(history.projection.through_sequence)
+            except Exception as e:
+                _log(f"[scribe] canonical checkpoint lookup failed: {e}")
+        if canonical_lines:
+            previous = _checkpoint_watermark(p, sid)
+            if canonical_sequence <= int(previous.get('canonical_sequence', 0) or 0):
+                return
+            with _checkpoint_guard:
+                if sid in _checkpoint_inflight:
+                    _scribe_stat(pid, 'checkpoint_coalesced')
+                    return
+                _checkpoint_inflight.add(sid)
+            snap = {'pid': pid, 'sid': sid, 'csid': csid,
+                    'task': (session.get('task', '') or '').strip(),
+                    'owner': _session_owner(session), 'tf': '',
+                    'canonical_lines': canonical_lines,
+                    'canonical_sequence': canonical_sequence}
+            threading.Thread(target=_checkpoint_worker, args=(snap,),
+                             daemon=True).start()
             return
         pp = p.get('project_path', '')
         tf = _find_transcript_file(pp, csid)
@@ -3337,7 +3378,9 @@ def _checkpoint_worker(snap):
     summary, append a self-contained `_(live)_` entry + upsert the wm marker
     in one leaf-locked atomic write. SPEC §3.A.MID. Never raises."""
     pid, sid, csid, task, tf = (snap['pid'], snap['sid'], snap['csid'],
-                                snap['task'], snap['tf'])
+                                snap['task'], snap.get('tf', ''))
+    canonical_lines = tuple(snap.get('canonical_lines') or ())
+    canonical_sequence = int(snap.get('canonical_sequence', 0) or 0)
     sema = _get_checkpoint_sema(pid)
     if not sema.acquire(blocking=False):
         _scribe_stat(pid, 'checkpoint_coalesced')  # project at fan-out cap
@@ -3370,14 +3413,22 @@ def _checkpoint_worker(snap):
         except Exception as e:
             _log(f'[scribe] checkpoint watermark read failed: {e}')
             prev_off, prev_summary = 0, ''
-        delta, new_off = _scribe_render_delta(tf, prev_off)
-        if not delta.strip() or new_off == prev_off:
-            return  # nothing new complete; retry next boundary (offset kept)
+        if canonical_lines:
+            delta, new_off = '\n'.join(canonical_lines), 0
+            if not delta.strip() or canonical_sequence <= int(
+                    (r or {}).get('canonical_sequence', 0) or 0):
+                return
+        else:
+            delta, new_off = _scribe_render_delta(tf, prev_off)
+            if not delta.strip() or new_off == prev_off:
+                return  # nothing new complete; retry next boundary (offset kept)
         model = state.CONFIG.get('scribe_model', '') or 'haiku'
         dsum, reason = _scribe_summarize_text(delta, model)
         rec = {'session_id': sid, 'claude_session_id': csid,
                'transcript_path': tf, 'byte_offset': new_off,
                'slice_hash': _sha8(delta)}
+        if canonical_lines:
+            rec['canonical_sequence'] = canonical_sequence
         if reason != 'extracted':
             # Only explicit content-policy dispositions acknowledge coverage.
             # Operational/unknown failures leave this source span pending.
@@ -3851,13 +3902,25 @@ def _scribe_extract(project, session):
     pp = project.get('project_path', '')
     provider = (session.get('provider') or 'claude').lower()
     csid = session.get('claude_session_id', '')
+    canonical_transcript = None
+    if _canonical_scribe_reader is not None and pid and (session.get('session_id') or session.get('id')):
+        try:
+            selection = _canonical_scribe_reader(
+                pid, session.get('session_id') or session.get('id'), session)
+            if (selection is not None and getattr(selection, 'source', '') == 'canonical'
+                    and getattr(selection, 'lines', ())):
+                canonical_transcript = '\n'.join(selection.lines)
+        except Exception as e:
+            _log(f"[scribe] canonical projection lookup failed: {e}")
     # The id that identifies this session TO its own provider — csid for
     # Claude, the Codex/opencode thread id (provider_session_id) otherwise.
     # Only used to pick the 'no_csid' vs 'no_transcript' outcome reason below;
     # actual lookup is per-provider (tf resolution just under this).
     provider_sid = csid if provider == 'claude' else session.get('provider_session_id', '')
     tf = None
-    if provider == 'claude':
+    if canonical_transcript is not None:
+        from_log = False
+    elif provider == 'claude':
         tf = _find_transcript_file(pp, csid) if csid else None
     elif provider_sid:
         try:
@@ -3866,7 +3929,7 @@ def _scribe_extract(project, session):
             _log(f"[scribe] {provider} transcript_path lookup failed: {e}")
     from_log = False
     log_lines = None
-    if not tf:
+    if canonical_transcript is None and not tf:
         log_lines = session.get('log_lines') or []
         if not log_lines:
             return None, ('no_csid' if not provider_sid else 'no_transcript')
@@ -3877,7 +3940,9 @@ def _scribe_extract(project, session):
         _scribing_projects.add(pid)
     try:
         try:
-            if from_log:
+            if canonical_transcript is not None:
+                transcript = canonical_transcript
+            elif from_log:
                 transcript = _render_log_lines_as_transcript(log_lines)
             elif provider == 'claude':
                 transcript = _scribe_render_transcript(tf)

@@ -6,6 +6,26 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-17f] — Install Clayrune before choosing an AI provider
+
+- Make the normal Windows/macOS/Linux installer provider-neutral: install and
+  open Clayrune first, then use the first-run UI to choose, install, and log in
+  to a provider. No missing-Claude prompt appears for a Codex-first user.
+- Keep `CLAYRUNE_PROVIDER` as an explicit automation override and provision
+  only that provider; re-runs preserve an existing saved default.
+- Restrict the Windows wrapper's login remediation to the dedicated Claude-auth
+  exit code instead of offering Claude login after unrelated failures.
+
+## [2026-09-17e] — Default-off canonical conversation read seam (feature branch)
+
+- Add a fixed-boundary gapped-history reader and an explicit provider-neutral
+  cutover policy for canonical history, read-only Agent Log rows, and Scribe
+  projection. Canonical history is selected only after complete coverage and
+  projection checks; incomplete sources remain inspectable or fall back to the
+  richer legacy reader. Consumer hooks are dependency-injected but startup does
+  not compose them, so the feature stays inert; no provider reader, restart, or
+  operator transcript is touched.
+
 ## [2026-09-17d] — Durable delegation delivery (feature branch)
 
 - Add a default-inert, provider-neutral runtime lifecycle bridge around the

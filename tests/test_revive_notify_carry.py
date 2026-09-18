@@ -80,6 +80,19 @@ def ar(tmp_path, monkeypatch):
     monkeypatch.setattr(_ar, '_sysprompt_cleanup', lambda *a, **k: None)
     monkeypatch.setattr(_ar.subprocess, 'Popen', lambda *a, **k: _Proc())
 
+    class _DeliveryStore:
+        def __init__(self):
+            self.turn = 0
+
+        def project_generation(self, project_id):
+            return 1
+
+        def allocate_turn(self, session_id):
+            self.turn += 1
+            return self.turn
+
+    monkeypatch.setattr(_ar, '_delivery_store', _DeliveryStore())
+
     snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
     try:
@@ -169,6 +182,7 @@ def test_notify_fires_again_after_rearm_but_not_workflow(monkeypatch):
                         lambda *a, **k: spawner_calls.append(a))
     monkeypatch.setattr(ar, '_notify_workflow_step',
                         lambda *a, **k: workflow_calls.append(a))
+    monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: 2)
 
     session = {
         'project_id': 'p1', 'session_id': 'child-1',

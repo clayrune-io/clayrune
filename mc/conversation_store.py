@@ -1392,6 +1392,38 @@ class ConversationStore:
             state = self._load_lifecycle(db,project_id,conversation_id)
             return HistorySnapshot(project_id,conversation_id,state.privacy_generation,state.high_water)
 
+    def read_history_snapshot(self, snapshot: HistorySnapshot, *, after: int = 0,
+                              limit: int = 100) -> list[ConversationEvent]:
+        """Read a fixed captured-history boundary, including known gaps.
+
+        ``read_snapshot`` is intentionally reserved for derivation and requires
+        an explicit complete-coverage attestation.  The canonical history rail
+        must still be able to show a partial/gapped capture without treating it
+        as Scribe-safe, so this companion checks the same privacy/high-water
+        fence but does not require ``coverage_complete``.
+        """
+        if not isinstance(snapshot, HistorySnapshot):
+            raise ValueError('History snapshot required')
+        if (type(after) is not int or after < 0 or after > snapshot.high_water
+                or type(limit) is not int or not 1 <= limit <= 10000):
+            raise ValueError('Invalid history snapshot page')
+        with self._connection() as db:
+            if db is None:
+                raise ConversationUnavailable('Conversation missing')
+            self._conversation(db, snapshot.project_id, snapshot.conversation_id)
+            state = self._load_lifecycle(db, snapshot.project_id, snapshot.conversation_id)
+            if (snapshot.privacy_generation != state.privacy_generation
+                    or snapshot.high_water > state.high_water):
+                raise lifecycle.LifecycleConflict('History snapshot revoked')
+            rows = db.execute(
+                'SELECT e.*,m.protocol_version,m.disposition FROM events e '
+                'JOIN lifecycle_event_meta m USING(project_id,conversation_id,sequence) '
+                'WHERE project_id=? AND conversation_id=? AND sequence>? AND sequence<=? '
+                'ORDER BY sequence LIMIT ?',
+                (snapshot.project_id, snapshot.conversation_id, after,
+                 snapshot.high_water, limit)).fetchall()
+            return [self._event(row) for row in rows]
+
     def read_history_chunk(self, snapshot: HistorySnapshot, sequence: int, *,
                            offset: int = 0, max_bytes: int = 65536) -> HistoryChunk:
         """Read bounded UTF-8 JSON bytes without loading a giant tool result.

@@ -91,6 +91,15 @@ class RuntimeLifecycleService:
                 self._store = ConversationStore(self.db_path)
             return self._store
 
+    def read_store(self) -> ConversationStore | None:
+        """Return an already-configured store for injected read consumers.
+
+        Disabled services stay inert, and an enabled service only opens an
+        existing database.  Read-only consumers therefore cannot create a
+        lifecycle database merely by rendering history.
+        """
+        return self._existing_store()
+
     def _mutation_store(self) -> ConversationStore | None:
         """Return the store for explicit project lifecycle mutations.
 
