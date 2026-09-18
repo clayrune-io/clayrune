@@ -1530,7 +1530,13 @@ function agentPanelHTML(p) {
         ${_apkBadge}
         ${isActiveOrch ? '<span class="hm-orch-label">&#x2B21; Hivemind</span>' : ''}
         ${stopBtn}
-        ${_pcaps.emits_usage ? `<span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>` : ''}
+        <!-- Always rendered (not gated on _pcaps.emits_usage): the live
+             context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) is available
+             even for providers with no usage/cost telemetry, e.g. Gemini —
+             sessionMetricsHTML/contextCounterHTML decide the content per
+             field, and .token-badge:empty hides the wrapper when there's
+             truly nothing to show for this provider yet. -->
+        <span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>
         <span class="agent-activity" id="agent-activity-${esc(activeSessionId)}"></span>
         ${_pcaps.supports_plan_mode ? `<span id="plan-file-btn-${esc(activeSessionId)}">${planFileBtn}</span>` : ''}
         <button class="btn-popout btn-chat-search" onclick="openChatSearch('${esc(p.id)}','${esc(activeSessionId)}')" title="Find in this conversation (Ctrl/Cmd+F)">&#128269; Find</button>
@@ -5137,7 +5143,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch

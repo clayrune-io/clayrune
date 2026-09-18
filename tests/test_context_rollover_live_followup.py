@@ -163,6 +163,15 @@ def test_token_trigger_rolls_live_session_and_logs_context_measurement(env, monk
         env['activity_lines']
     assert any('too large' in l for l in live['log_lines']) or \
            any('250' in l for l in live['log_lines']), live['log_lines']
+    # Regression (2026-09-18): the live-process branch used to build its own
+    # handoff and log "Auto-fresh: context 250k tokens" immediately, THEN
+    # flip process_alive=False and fall into the dead-process branch just
+    # below, which re-evaluated the SAME (unchanged) claude_sid/context_tokens
+    # and logged the identical line again, ~40ms apart. One roll must log
+    # exactly once.
+    matching = [l for l in env['activity_lines'] if 'context' in l and '250k tokens' in l]
+    assert len(matching) == 1, \
+        f'expected exactly one Auto-fresh activity line for this roll, got {matching}'
 
 
 def test_under_threshold_with_small_transcript_stays_on_stdin(env, monkeypatch):

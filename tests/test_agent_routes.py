@@ -499,6 +499,80 @@ def test_stream_exact_cursor_no_reset(client):
     assert evs[0].get('type') == 'turn_start'
 
 
+# ── live context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) ───────────────────
+# Two gaps closed together: (1) GET /agent/status never returned
+# context_tokens at all (the key was absent, not null — a serializer
+# omission, not the field failing to be set on the live session dict), and
+# (2) nothing pushed the figure over SSE mid-turn, only at turn boundaries.
+
+def test_status_endpoint_returns_context_tokens_and_window(client):
+    """Regression: /agent/status previously omitted `context_tokens` and
+    `context_window` entirely — confirmed live against 3 running Claude
+    sessions that had recorded a figure internally but never surfaced it."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['ctx-status'] = {
+        'session_id': 'ctx-status', 'project_id': 'sse-test-proj', 'mode': 'B',
+        'status': 'idle', 'log_lines': [], 'provider': 'claude',
+        'context_tokens': 84213, 'task': 't', 'started_at': '',
+    }
+    resp = client.get('/api/project/sse-test-proj/agent/status')
+    assert resp.status_code == 200
+    row = next(s for s in resp.get_json()['sessions'] if s['session_id'] == 'ctx-status')
+    assert row['context_tokens'] == 84213
+    assert row['context_window'] == 200_000  # Claude's declared max
+
+
+def test_status_endpoint_context_tokens_none_not_zero_when_unknown(client):
+    """A session that never recorded a figure must report null, never a
+    fabricated 0 — 'unknown stays unknown' (VENDOR_AGNOSTIC_PROGRAM.md §4)."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['ctx-unknown'] = {
+        'session_id': 'ctx-unknown', 'project_id': 'sse-test-proj', 'mode': 'B',
+        'status': 'idle', 'log_lines': [], 'provider': 'gemini',
+        'task': 't', 'started_at': '',
+    }
+    resp = client.get('/api/project/sse-test-proj/agent/status')
+    row = next(s for s in resp.get_json()['sessions'] if s['session_id'] == 'ctx-unknown')
+    assert row['context_tokens'] is None
+    assert row['context_window'] is None  # Gemini declares no context_window today
+
+
+def test_stream_emits_context_event_on_change(client):
+    """The SSE stream must push a `context` event carrying the SAME figure
+    the auto-fresh trigger reads (session['context_tokens']), independent of
+    turn_complete/status — the live-during-a-turn requirement."""
+    _seed_stream_session('sse-ctx', [])
+    from mc import state as mc_state
+    mc_state.agent_sessions['sse-ctx']['context_tokens'] = 84_000
+    mc_state.agent_sessions['sse-ctx']['provider'] = 'claude'
+    resp = client.get(
+        '/api/project/sse-test-proj/agent/stream?session=sse-ctx&since=0',
+        buffered=False)
+    try:
+        evs = _sse_events(resp, 2)
+    finally:
+        resp.close()
+    ctx_evs = [e for e in evs if e.get('type') == 'context']
+    assert ctx_evs, evs
+    assert ctx_evs[0]['context_tokens'] == 84_000
+    assert ctx_evs[0]['context_window'] == 200_000
+
+
+def test_stream_emits_no_context_event_when_never_recorded(client):
+    """A session with no context_tokens figure at all must not emit a
+    `context` event — never a fabricated 0/'—' push for a vendor/session
+    that simply has nothing to report yet."""
+    _seed_stream_session('sse-ctx-none', ['a'])
+    resp = client.get(
+        '/api/project/sse-test-proj/agent/stream?session=sse-ctx-none&since=0',
+        buffered=False)
+    try:
+        evs = _sse_events(resp, 2)  # output line 'a', then turn_start
+    finally:
+        resp.close()
+    assert not any(e.get('type') == 'context' for e in evs)
+
+
 # ── in-chat model switcher: POST /agent/<sid>/model (pin/clear) ───────────────
 
 def _seed_model_session(sid, provider='claude', model='claude-opus-4-8',

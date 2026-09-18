@@ -989,6 +989,11 @@ function connectAgentStream(projectId, sessionId) {
           if (msg.usage) agentStatusCache[sessionId].usage = msg.usage;
           if (msg.cost_usd !== undefined) agentStatusCache[sessionId].cost_usd = msg.cost_usd;
           if (msg.num_turns !== undefined) agentStatusCache[sessionId].num_turns = msg.num_turns;
+          // context_tokens/context_window always ride on this payload now
+          // (docs/CONTEXT_ECONOMY_SPEC.md §5) — typeof-checked so a null
+          // (genuinely unknown) doesn't get coerced into the cache as 0.
+          if (typeof msg.context_tokens === 'number') agentStatusCache[sessionId].contextTokens = msg.context_tokens;
+          if (typeof msg.context_window === 'number') agentStatusCache[sessionId].contextWindow = msg.context_window;
         }
         updateHistoryStatus(sessionId, 'idle');
         updateAgentStatusUI(sessionId, 'idle');
@@ -1026,6 +1031,8 @@ function connectAgentStream(projectId, sessionId) {
           if (msg.usage) agentStatusCache[sessionId].usage = msg.usage;
           if (msg.cost_usd !== undefined) agentStatusCache[sessionId].cost_usd = msg.cost_usd;
           if (msg.num_turns !== undefined) agentStatusCache[sessionId].num_turns = msg.num_turns;
+          if (typeof msg.context_tokens === 'number') agentStatusCache[sessionId].contextTokens = msg.context_tokens;
+          if (typeof msg.context_window === 'number') agentStatusCache[sessionId].contextWindow = msg.context_window;
         }
         updateHistoryStatus(sessionId, msg.status);
         // Surface a fresh auth banner if the session ended in error (claude's
@@ -1097,6 +1104,21 @@ function connectAgentStream(projectId, sessionId) {
         renderAgentConsole();
         // Surface a fresh auth banner if the failure was caused by a 401.
         refreshAuthStatus();
+      } else if (msg.type === 'context') {
+        // Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md \u00a75) \u2014 pushed
+        // on the SAME 0.3s poll cadence as `activity`, so this lands MID-TURN
+        // after every model call, not only at turn_complete/status. Patch the
+        // cache + repaint the badge in place \u2014 no refreshModal/renderAgentConsole,
+        // same reasoning as `activity`/`turn_start`: this fires often enough
+        // during a busy turn that rebuilding the chat DOM on every tick would
+        // cost real paint time and risk the mobile IME-death class of bug.
+        const cached = agentStatusCache[sessionId];
+        if (cached) {
+          cached.contextTokens = (typeof msg.context_tokens === 'number') ? msg.context_tokens : null;
+          if (typeof msg.context_window === 'number') cached.contextWindow = msg.context_window;
+          const el = document.getElementById(`session-metrics-${sessionId}`);
+          if (el) el.innerHTML = sessionMetricsHTML(cached, _getProviderCaps(cached.provider || 'claude'));
+        }
       } else if (msg.type === 'guardian') {
         const cached = agentStatusCache[sessionId];
         if (cached) {
