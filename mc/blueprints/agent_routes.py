@@ -3939,6 +3939,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4201,6 +4202,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'])
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4914,7 +4916,13 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         _log(f"[revive] {project_id}: could not recover the persona for "
              f"{claude_sid[:12]}: {e}")
 
-    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    # No live in-memory session survives a revive (that's the whole point of
+    # this path — the process/server restarted), so there's no per-turn
+    # context_tokens to read: the token trigger naturally sits out here and
+    # the byte-based backstop alone decides, same as before this trigger
+    # existed (docs/CONTEXT_ECONOMY_SPEC.md §2, "byte-based trigger ...
+    # independent of cost").
+    _af_reason, _af_detail = _auto_fresh_trigger(pp, claude_sid)
     resume_flags = []
     context = None
     revival_msg = message
@@ -4925,17 +4933,18 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # MC-925 "unnamed worker" framing and could claim the default agent_name.
     _revive_incognito = bool(entry.get('incognito'))
     _revive_source = entry.get('source') or ''
-    if too_large:
-        size_mb = size_bytes / (1024 * 1024)
+    if _af_reason:
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
                                        session_id=session_id,
                                        character_skills=_revive_char_skills,
                                        source=_revive_source)
-        revival_msg = (f"[Resuming a previous conversation that grew too large to "
-                       f"resume directly ({size_mb:.0f} MB). Start fresh but continue "
-                       f"the user's request below.]\n\n{message}")
+        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+            pp, 'claude', claude_sid, project_id, session_id,
+            reason=_af_reason, detail=_af_detail)
+        _log_agent_activity(project_id, _activity_line)
+        revival_msg = f"{_handoff_text}\n\n{message}"
     else:
         resume_flags = ['-r', claude_sid]
     if context is None:
@@ -4961,7 +4970,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # (about the agent's pre-restart reply) doesn't land on a one-sided chat.
     # Skipped when the transcript was too large to resume directly (we started
     # fresh, so there's no coherent -r history to show anyway).
-    history_lines = [] if too_large else _revive_history_lines(pp, claude_sid, user_label)
+    history_lines = [] if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
     seed_lines = history_lines + [revive_note, f"\n> {user_label}: {message}\n"]
 
     if use_streaming:
@@ -5347,6 +5356,9 @@ def _accumulate_session_usage(session, turn_usage):
     carries only THAT turn's token counts, not a cumulative total. Overwriting
     session['usage'] discards all prior turns; instead we sum the numeric
     fields so the final value reflects the whole session.
+
+    `session['context_tokens']` is NOT set here: `result.usage` sums every
+    model call in the turn. See `_note_call_context_tokens`.
     """
     _INT_FIELDS = ('input_tokens', 'output_tokens',
                    'cache_read_input_tokens', 'cache_creation_input_tokens')
@@ -5359,6 +5371,22 @@ def _accumulate_session_usage(session, turn_usage):
         if k not in _INT_FIELDS:
             merged[k] = v
     session['usage'] = merged
+
+
+def _note_call_context_tokens(session, message):
+    """Record `session['context_tokens']` from ONE model call's usage.
+
+    Claude's `result.usage` is the SUM over every model call in the turn, not
+    the context size: measured 2026-09-18 with a 2-Read turn, the calls held
+    30.2k and 32.4k of context but `result` reported 62.5k (cache_read 17640 +
+    30165 = 47805). A tool-heavy turn would read as several times its real
+    size and roll far too early, so the Claude readers take the LAST
+    assistant message's usage instead. Streamed assistant events repeat the
+    same usage per content block, so overwriting is idempotent.
+    """
+    _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
+    if _ctx is not None:
+        session['context_tokens'] = _ctx
 
 
 def _note_claude_sid(session, sid):
@@ -7303,6 +7331,119 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
                      'included_turns': len(kept), 'omitted_turns': omitted}
 
 
+def _live_context_tokens(project_id, claude_sid):
+    """The last per-turn `context_tokens` recorded for a still-live in-memory
+    session owning `claude_sid`, or None — mirrors the `agent_sessions` scan
+    `_prior_conversation_provider` already does. Used by auto-fresh call
+    sites (dispatch, revive) that only hold a durable claude_session_id, not
+    the live session dict itself, so the token trigger can still see it when
+    a live entry happens to exist.
+    """
+    if not claude_sid:
+        return None
+    for s in agent_sessions.values():
+        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
+            return s.get('context_tokens')
+    return None
+
+
+def _context_tokens_over_threshold(context_tokens):
+    """Token-based auto-fresh trigger (`context_rollover_tokens`, default
+    200000, 0 disables) — the live counterpart to `_session_too_large`'s
+    byte-based backstop. Either trigger may fire a rollover independently
+    (docs/CONTEXT_ECONOMY_SPEC.md §2). `context_tokens` is a live session's
+    last per-turn normalized figure (mc.agent_runtime.normalize_context_tokens,
+    set by `_accumulate_session_usage`/the Mode-A readers) — None when no
+    usage has been recorded yet (a revived/never-live session), which never
+    trips this trigger, matching "unknown stays unknown".
+    """
+    thr = int(state.CONFIG.get('context_rollover_tokens', 200000) or 0)
+    if thr <= 0:
+        return False
+    return isinstance(context_tokens, (int, float)) and context_tokens >= thr
+
+
+def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
+    """Unified auto-fresh decision: ORs the token-based policy trigger with
+    the byte-based `_session_too_large` backstop (docs/CONTEXT_ECONOMY_SPEC.md
+    §2 — "both triggers must be vendor-generic ... independent"). Token check
+    runs first since it's free (no disk I/O) where a live session already
+    has the figure.
+
+    Returns (reason, detail): reason is 'tokens' | 'bytes' | None; detail is
+    the context-tokens int when reason=='tokens', else the transcript
+    size_bytes int (0 when no rollover is warranted).
+    """
+    if _context_tokens_over_threshold(context_tokens):
+        return 'tokens', int(context_tokens)
+    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    if too_large:
+        return 'bytes', size_bytes
+    return None, 0
+
+
+def _in_flight_children(project_id, session_id):
+    """Live sessions dispatched BY `session_id` (`_notify_session` points
+    back at it) that haven't finished yet — folded into the auto-fresh
+    handoff (§3) so a rollover doesn't silently orphan a child that will
+    later report back to this session_id. Safe across a roll because the MC
+    session_id is never replaced by auto-fresh — the session dict is mutated
+    in place (new `claude_session_id`, `proc`, etc.), so a child's
+    `_notify_session` still resolves after the fresh process starts.
+    """
+    out = []
+    for s in agent_sessions.values():
+        if s.get('project_id') != project_id:
+            continue
+        if (s.get('_notify_session') or '').strip() != session_id:
+            continue
+        if s.get('status') in ('done', 'error'):
+            continue
+        out.append({'session_id': s.get('session_id', ''),
+                    'task': (s.get('task') or '')[:200],
+                    'status': s.get('status', 'unknown')})
+    return out
+
+
+def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
+                        *, reason, detail):
+    """Build the real rollover handoff (§3) that replaces the old one-sentence
+    'Continuing from a previous conversation ... too large to resume' prefix,
+    plus the log/activity lines auto-fresh call sites append.
+
+    Prefers `_build_handoff_context` (the owning provider's real turns,
+    W5). Falls back to a labeled one-liner — never a silently shorter
+    substitute (SUBSTITUTION IS A LIE) — when that raises (no transcript for
+    this provider/id, e.g. a `claude_sid` whose file was never flushed).
+
+    Returns (handoff_text, log_line, activity_line).
+    """
+    try:
+        handoff_text, _meta = _build_handoff_context(
+            pp, provider, claude_sid, project_id=project_id)
+    except ValueError as e:
+        handoff_text = (
+            f"[Continuing from a previous conversation (session {claude_sid}) "
+            f"that rolled to a fresh session. Real handoff unavailable: {e}. "
+            f"Start fresh but continue the user's request below.]")
+    children = _in_flight_children(project_id, session_id)
+    if children:
+        lines = '\n'.join(f"- {c['session_id']} ({c['status']}): {c['task']}"
+                          for c in children)
+        handoff_text += (
+            f"\n\n=== Still waiting on {len(children)} dispatched session(s) "
+            f"— do not re-dispatch these, they will notify back when done ===\n"
+            f"{lines}")
+    if reason == 'tokens':
+        log_line = f'[Session context is {detail // 1000}k tokens — starting fresh]'
+        activity_line = f"Auto-fresh: context {detail // 1000}k tokens"
+    else:
+        size_mb = detail / (1024 * 1024)
+        log_line = f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]'
+        activity_line = f"Auto-fresh: previous session too large ({size_mb:.0f} MB)"
+    return handoff_text, log_line, activity_line
+
+
 def _prior_conversation_settings(project_id, resume_id, provider=''):
     """Recover latest engine settings, keeping explicit clears authoritative."""
     rows = sorted([s for s in list(agent_sessions.values())
@@ -7654,18 +7795,24 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
-    # Check session transcript size — auto-start fresh if too large
+    # Check session transcript size / context weight — auto-start fresh if
+    # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
     original_resume = resume_id
+    _af_log_line = ''
     if resume_id:
-        too_large, size_bytes = _session_too_large(pp, resume_id)
-        if too_large:
-            size_mb = size_bytes / (1024 * 1024)
-            _log(f"[dispatch] Session {resume_id} transcript is {size_mb:.1f} MB — starting fresh")
-            _log_agent_activity(project_id,
-                                f"Auto-fresh: previous session too large ({size_mb:.0f} MB)")
-            # Prepend context about the previous session
-            task = (f"[Continuing from a previous conversation (session {resume_id}) that grew too large "
-                    f"to resume ({size_mb:.0f} MB). Start fresh but continue the user's request below.]\n\n{task}")
+        _af_reason, _af_detail = _auto_fresh_trigger(
+            pp, resume_id, _live_context_tokens(project_id, resume_id))
+        if _af_reason:
+            _log(f"[dispatch] Session {resume_id} rolling to fresh ({_af_reason}={_af_detail})")
+            # This dispatch call is spawning a NEW MC session, so `reuse_session_id`
+            # (when the caller supplied one) is the only stable id an in-flight
+            # child could already be pointed at -- the fresh session_id this call
+            # will generate below doesn't exist yet at this point in the function.
+            _handoff_text, _af_log_line, _activity_line = _auto_fresh_handoff(
+                pp, 'claude', resume_id, project_id, reuse_session_id or '',
+                reason=_af_reason, detail=_af_detail)
+            _log_agent_activity(project_id, _activity_line)
+            task = f"{_handoff_text}\n\n{task}"
             resume_id = ''
 
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
@@ -8120,10 +8267,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             if notice:
                 session['log_lines'].append(notice)
 
-        # Notify user if session was auto-started fresh due to transcript size
-        if original_resume and not resume_id:
-            session['log_lines'].append(
-                f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+        # Notify user if session was auto-started fresh (§2 — byte or token trigger)
+        if original_resume and not resume_id and _af_log_line:
+            session['log_lines'].append(_af_log_line)
 
     resume_label = f" (resuming {resume_id})" if resume_id else ""
     try:
@@ -8999,20 +9145,23 @@ def agent_followup(project_id):
             # _SESSION_SIZE_LIMIT and never auto-fresh. Flip it "dead" here so
             # it falls into the existing dead-process auto-fresh handoff just
             # below: closes stdin, kills the old process, drops -r, and starts
-            # fresh automatically, no prompt (Ron, 2026-09-18).
+            # fresh automatically, no prompt (Ron, 2026-09-18). Also the first
+            # place the token trigger can fire (docs/CONTEXT_ECONOMY_SPEC.md
+            # §2) — `existing['context_tokens']` is this session's own last
+            # per-turn figure, always available here since the process is live.
             if existing.get('process_alive'):
                 _live_sid = existing.get('claude_session_id')
                 if _live_sid:
-                    _live_too_large, _live_size = _session_too_large(pp, _live_sid)
-                    if _live_too_large:
-                        _live_size_mb = _live_size / (1024 * 1024)
-                        _log(f"[followup] Live session {_live_sid} is {_live_size_mb:.1f} MB — "
-                             f"ending process and starting fresh")
-                        _log_agent_activity(project_id,
-                                            f"Auto-fresh: session too large ({_live_size_mb:.0f} MB)")
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({_live_size_mb:.0f} MB) — '
-                            f'ending session and starting fresh]')
+                    _live_reason, _live_detail = _auto_fresh_trigger(
+                        pp, _live_sid, existing.get('context_tokens'))
+                    if _live_reason:
+                        _log(f"[followup] Live session {_live_sid} rolling to fresh "
+                             f"({_live_reason}={_live_detail}) — ending process")
+                        _, _live_log_line, _live_activity_line = _auto_fresh_handoff(
+                            pp, 'claude', _live_sid, project_id, session_id,
+                            reason=_live_reason, detail=_live_detail)
+                        _log_agent_activity(project_id, _live_activity_line)
+                        existing['log_lines'].append(_live_log_line)
                         existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
@@ -9048,17 +9197,18 @@ def agent_followup(project_id):
                 else:
                     # Normal session, OR a resume that already produced output
                     # (healthy — it just died later). Resume with -r to keep context.
-                    too_large, size_bytes = _session_too_large(pp, claude_sid)
-                    if too_large:
-                        size_mb = size_bytes / (1024 * 1024)
-                        _log(f"[followup] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                        _log_agent_activity(project_id,
-                                            f"Auto-fresh: session too large ({size_mb:.0f} MB)")
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                    _af_reason, _af_detail = _auto_fresh_trigger(
+                        pp, claude_sid, existing.get('context_tokens'))
+                    if _af_reason:
+                        _log(f"[followup] Session {claude_sid} rolling to fresh "
+                             f"({_af_reason}={_af_detail})")
+                        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                            pp, 'claude', claude_sid, project_id, session_id,
+                            reason=_af_reason, detail=_af_detail)
+                        _log_agent_activity(project_id, _activity_line)
+                        existing['log_lines'].append(_log_line)
                         context = _fresh_context_for(p, existing, message or '')
-                        message = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                        message = f"{_handoff_text}\n\n{message}"
                     else:
                         resume_flags = ['-r', claude_sid]
                         _log(f"[followup] {project_id}: respawning Mode B with -r {claude_sid[:12]}")
@@ -9417,18 +9567,19 @@ def agent_followup(project_id):
         try:
             followup_msg = message
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    _log(f"[followup-A] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                    _log_agent_activity(project_id,
-                                        f"Auto-fresh: session too large ({size_mb:.0f} MB)")
+                _af_reason, _af_detail = _auto_fresh_trigger(
+                    pp, claude_sid, existing.get('context_tokens'))
+                if _af_reason:
+                    _log(f"[followup-A] Session {claude_sid} rolling to fresh "
+                         f"({_af_reason}={_af_detail})")
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                        existing['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, existing, message or '')
-                    followup_msg = (f"[Continuing from a previous conversation that grew too large "
-                                    f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                    followup_msg = f"{_handoff_text}\n\n{message}"
                     resume_flags = []
                 else:
                     resume_flags = ['-r', claude_sid]
@@ -9688,14 +9839,16 @@ def agent_interrupt(project_id):
             context = None
             respawn_msg = message
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    session['log_lines'].append(
-                        f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                _af_reason, _af_detail = _auto_fresh_trigger(
+                    pp, claude_sid, session.get('context_tokens'))
+                if _af_reason:
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
+                    session['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, session, message or '')
-                    respawn_msg = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                    respawn_msg = f"{_handoff_text}\n\n{message}"
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
