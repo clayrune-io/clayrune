@@ -230,6 +230,53 @@ def test_the_bench_reads_the_engine_off_its_own_key(floor):
         ('claude', 'claude-sonnet-5', 'high')
 
 
+# ── allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4 item 4) ─────────────────
+# "Out of allowance, resets <time>" reads off the SAME state a dispatch
+# refusal reads from (mc.allowance_state) — never a second source of truth
+# for what "exhausted" means.
+
+@pytest.fixture(autouse=True)
+def _isolated_allowance_state(tmp_path):
+    from mc import allowance_state as al
+    al.wire(tmp_path / 'allowance_state.json')
+    yield
+    al._STATE = {}
+
+
+def test_figure_shows_out_of_allowance_for_its_own_provider(floor):
+    fr, c, sessions, projects, _ = floor
+    from mc import allowance_state as al
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', provider='codex')
+    al.record_exhaustion('codex', limit_kind='usage_limit',
+                          resets_at_display='Sep 24, 2026 7:58 AM')
+
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert f['allowance_exhausted'] == 'Out of allowance, resets Sep 24, 2026 7:58 AM'
+
+
+def test_figure_on_an_unaffected_provider_shows_nothing(floor):
+    fr, c, sessions, projects, _ = floor
+    from mc import allowance_state as al
+    projects.append({'id': 'a', 'name': 'Alpha'})
+    sessions['1'] = _session('a', '1', provider='claude')
+    al.record_exhaustion('codex', limit_kind='usage_limit')
+
+    f = _get(c)['rooms'][0]['figures'][0]
+    assert f['allowance_exhausted'] == ''
+
+
+def test_bench_card_shows_out_of_allowance_for_its_own_provider(floor):
+    fr, c, sessions, projects, chars = floor
+    from mc import allowance_state as al
+    chars.append({'name': 'kestrel', 'agent_name': 'Kestrel', 'scope': 'global',
+                  'engine': {'provider': 'qwen'}})
+    al.record_exhaustion('qwen', limit_kind='daily')
+
+    b = _get(c)['bench'][0]
+    assert b['allowance_exhausted'] == 'Out of allowance, resets reset time unknown'
+
+
 def test_a_broken_character_pool_costs_the_bench_not_the_board(floor):
     """The board is the load-bearing half. A roster that cannot be read must
     not take the running sessions down with it."""

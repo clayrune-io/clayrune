@@ -3408,6 +3408,14 @@
     cursor: pointer; outline: none; transition: border-color 0.15s;
   }
   .composer-provider-select:hover { border-color: var(--text-dim); }
+  /* VENDOR_AGNOSTIC_PROGRAM.md §4 item 4 — same treatment as .fl-allowance
+     on the Floor, so "out of allowance" reads as one visual language
+     wherever it shows up. */
+  .composer-allowance-warn {
+    font-size: 11px; font-weight: 600; color: var(--red-text);
+    background: var(--red-dim); border-radius: 4px; padding: 3px 8px;
+    margin: -4px 0 8px; display: inline-block;
+  }
   /* Free-text model id, shown only when the Model picker is set to Custom… —
      the provider catalogs are a snapshot and these CLIs ship new ids often. */
   .composer-model-custom {
@@ -5068,6 +5076,14 @@
   .fl-room-flag {
     font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--amber);
     text-transform: uppercase;
+  }
+  /* VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: the one refusal reason that is not
+     a bug — distinct from a generic error/blocked pill on purpose, since
+     nothing about the session is broken, it is only waiting on a reset. */
+  .fl-allowance {
+    display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 600;
+    color: var(--red-text); background: var(--red-dim);
+    border-radius: 4px; padding: 2px 7px;
   }
 
   /* ── figures ──────────────────────────────────────────────────────────── */

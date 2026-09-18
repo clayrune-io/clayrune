@@ -26,6 +26,7 @@ from typing import Any, Callable
 
 from flask import Blueprint, jsonify, request
 
+from mc import allowance_state as _allowance_state
 from mc import identity as _identity
 from mc import state
 from mc.characters import MAX_EMOJI_LEN, clean_avatar
@@ -357,6 +358,11 @@ def _figure(s, proj_default='', labels=None):
         # Same source and liveness rule as /agent/status (MC-937 Phase 4); the
         # figure carries the count, the card can expand it.
         'subagents': _figure_subagents(s),
+        # VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: "Out of allowance, resets
+        # <time>" reads from the SAME state a dispatch refusal reads from —
+        # never a second, drifting notion of what "exhausted" means. Empty
+        # string when the vendor is fine, so the card renders nothing extra.
+        'allowance_exhausted': _allowance_state.display_text(s.get('provider') or 'claude'),
     }
 
 
@@ -526,7 +532,9 @@ def floor():
                 # which is only dispatchable into its own.
                 'project_id': project_id, 'project_name': project_name,
                 # Rooms this type is ALREADY working in. Empty = free.
-                'rooms': [nm for _, nm in seen]}
+                'rooms': [nm for _, nm in seen],
+                'allowance_exhausted': _allowance_state.display_text(
+                    eng.get('provider') or 'claude')}
 
     bench = []
     try:

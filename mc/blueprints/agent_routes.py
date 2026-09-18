@@ -1580,6 +1580,12 @@ def agent_providers():
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
+            # VENDOR_AGNOSTIC_PROGRAM.md §4: distinct from quota_warnings
+            # above (a per-model heuristic scraped from the log) — this is
+            # the normalized, per-vendor ALLOWANCE_EXHAUSTED state a dispatch
+            # call actually refuses on, so the chooser shows the SAME fact a
+            # click would hit, not a weaker warning.
+            'allowance_exhausted': _allowance_state.display_text(rt.name),
             'default': (rt.name == default_name),
             # Auth-alert gate (provider-auth.js): true if this provider is the
             # default, or pinned by some project/character. A provider nobody
