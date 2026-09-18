@@ -45,6 +45,7 @@ from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional,
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
 import hashlib
 from datetime import timedelta
+from mc import allowance_state as _allowance_state
 from mc.execution_policy import (
     Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
     Profile, Readiness, RequestedEngine, Support, authorize_execution,
@@ -154,6 +155,14 @@ class EventType(str, Enum):
     TURN_END = 'turn_end'
     USAGE = 'usage'
     RATE_LIMIT = 'rate_limit'
+    # A vendor's own signal that its usage allowance is exhausted (not merely
+    # a soft rate-limit warning — RATE_LIMIT covers the ordinary "allowed" /
+    # "allowed_warning" states too). VENDOR_AGNOSTIC_PROGRAM.md §4: normalized
+    # across vendors via mc.allowance_state.detect(), payload shape matches
+    # its return: {limit_kind, resets_at, resets_at_display, raw_ref,
+    # verified}. Never carries content a chat would render as the model's own
+    # answer — readers turn it into a distinct "[out of allowance]" line.
+    ALLOWANCE_EXHAUSTED = 'allowance_exhausted'
     AUTH_ERROR = 'auth_error'
     PLAN_REQUEST = 'plan_request'
     QUESTION = 'question'
@@ -1800,6 +1809,16 @@ class ClaudeRuntime(AgentRuntime):
 
         if msg_type == 'rate_limit_event':
             ri = msg.get('rate_limit_info', {}) or {}
+            # A rejected/exceeded status is exhaustion, not a soft warning —
+            # give it its own normalized shape (mc.allowance_state.detect)
+            # instead of leaving callers to notice inside a RATE_LIMIT event.
+            _exhausted = _allowance_state.detect_from_claude_rate_limit_event(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='claude',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             return AgentEvent(
                 type=EventType.RATE_LIMIT, provider='claude',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -3102,6 +3121,13 @@ class GeminiRuntime(AgentRuntime):
             # fell back to a generic "exited with code N" guess.
             err = msg.get('error') or {}
             err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
+            _exhausted = _allowance_state.detect('gemini', msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='gemini',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             return AgentEvent(
                 type=EventType.ERROR, provider='gemini',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -3745,7 +3771,16 @@ class GeminiRuntime(AgentRuntime):
                         f"[tool: {nm} result{(' — ' + st) if st else ''}]")
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
+                    _allowance_state.clear_exhaustion('gemini')
                     _cb('on_turn_end', ev)
+                elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                    # Mirrors _mode_a_reader's own branch — a terminal
+                    # failure is never content (Fenn #4).
+                    _allowance_state.record_exhaustion('gemini', **ev.payload)
+                    session['log_lines'].append(
+                        f"[gemini] {_allowance_state.refusal_message('gemini')}")
+                    session['last_output_time'] = _time.time()
+                    session['_allowance_exhausted'] = True
                 elif ev and ev.type == EventType.ERROR:
                     # The CLI's own reason (quota, auth, network — see
                     # parse_event's 'result'+status=='error' branch) surfaced
@@ -4383,7 +4418,21 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['usage'] = _usage
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
+                _allowance_state.clear_exhaustion(runtime.name)
                 _cb('on_turn_end', ev)
+            elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                # A terminal failure is never content (Fenn #4): this is the
+                # normalized allowance shape, never the vendor's raw quota
+                # text appended as if it were the model's own line.
+                _allowance_state.record_exhaustion(runtime.name, **ev.payload)
+                session['log_lines'].append(
+                    f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
+                session['last_output_time'] = _time.time()
+                # A session that died on allowance must read that way, not as
+                # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
+                # Floor/chat read this flag to render "Out of allowance"
+                # instead of a red Blocked/Error pill.
+                session['_allowance_exhausted'] = True
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
                     f"[{runtime.name} error] {ev.payload.get('text', line)}")
@@ -4938,6 +4987,13 @@ class QwenRuntime(AgentRuntime):
                 err = msg.get('error') or {}
                 err_text = (err.get('message') or msg.get('result')
                            or 'Qwen Code reported an error with no message')
+                _exhausted = _allowance_state.detect('qwen', msg)
+                if _exhausted:
+                    return AgentEvent(
+                        type=EventType.ALLOWANCE_EXHAUSTED, provider='qwen',
+                        session_id=session_id, mc_session_id=mc_session_id,
+                        timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                    )
                 return AgentEvent(
                     type=EventType.ERROR, provider='qwen',
                     session_id=session_id, mc_session_id=mc_session_id,
@@ -5838,6 +5894,24 @@ class CodexRuntime(AgentRuntime):
                 raw=msg,
             )
         if etype in ('error', 'turn.failed'):
+            # A quota exhaustion arriving through this shape used to fall
+            # straight into the generic ERROR branch below, which flattens
+            # everything to free text. explain_exit_error() then pattern-
+            # matched that text for a hint and mis-fired: the real message
+            # ("...purchase more credits...chatgpt.com/codex/settings/usage
+            # ...") contains the substring "chatgpt", which its auth-hint
+            # check tests BEFORE its quota check — live-reproduced 2026-09-18
+            # 05:21:29 in data/logs/clayrune.log, one second after the real
+            # `usage_limit_exceeded` event, as "Codex isn't authenticated."
+            # Classifying it here, from the structured field, means it never
+            # reaches that text-matching hint chooser at all.
+            _exhausted = _allowance_state.detect_from_codex_message(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             err_msg = (msg.get('message') or
                        (msg.get('error') or {}).get('message', '') or
                        str(msg))
@@ -5848,6 +5922,22 @@ class CodexRuntime(AgentRuntime):
                 payload={'text': err_msg},
                 raw=msg,
             )
+        if etype == 'event_msg':
+            # The rollout file's OWN event schema (session_meta / event_msg /
+            # task_complete), distinct from `codex exec --json`'s translated
+            # thread.*/item.*/turn.* protocol handled above. Whether a
+            # session-level failure like usage_limit_exceeded is ever
+            # translated into that protocol, or passed through in this native
+            # shape, is unconfirmed without spending Codex allowance to find
+            # out — so both shapes are checked rather than assuming one.
+            _exhausted = _allowance_state.detect_from_codex_message(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
+            return None
         return None
 
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
@@ -6513,6 +6603,20 @@ class CodexRuntime(AgentRuntime):
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
+        # Checked BEFORE the auth-hint match below on purpose: the real
+        # usage_limit_exceeded message ("...purchase more credits...
+        # chatgpt.com/codex/settings/usage...") contains "chatgpt", which
+        # used to hit the auth branch first and mislabel a quota exhaustion
+        # as "Codex isn't authenticated" — live-reproduced 2026-09-18
+        # 05:21:29 in data/logs/clayrune.log. By the time text reaches this
+        # method the structured `codex_error_info` field is already gone
+        # (parse_event's own ALLOWANCE_EXHAUSTED branch normally intercepts
+        # it first), so this stays a text match as a fallback net, not the
+        # primary detection.
+        if any(p in s for p in ('usage limit', 'usage_limit_exceeded',
+                                'quota', 'rate limit', '429',
+                                'too many requests')):
+            return "Codex is out of allowance. Wait for it to reset and try again."
         if any(p in s for p in ('not authenticated', 'invalid api key',
                                 'unauthorized', 'auth_error',
                                 'login required', 'chatgpt')):
@@ -6521,8 +6625,6 @@ class CodexRuntime(AgentRuntime):
         if any(p in s for p in ('enoent', 'command not found', 'no such file',
                                 'cannot find the path', "is not recognized")):
             return "Codex CLI not found. Run: npm install -g @openai/codex"
-        if any(p in s for p in ('quota', 'rate limit', '429', 'too many requests')):
-            return "Codex rate limit hit. Wait a minute and try again."
         if rc != 0:
             real_line = _last_real_error_line(log_tail)
             if real_line:

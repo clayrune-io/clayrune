@@ -315,6 +315,27 @@ def test_providers_endpoint_ok(client):
     assert isinstance(resp.get_json(), (list, dict))
 
 
+def test_providers_endpoint_reports_allowance_exhausted(client, tmp_path):
+    """VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: the chooser must show the SAME
+    fact a dispatch call would refuse on — 'allowance_exhausted' comes off
+    mc.allowance_state, not a second, drifting notion of quota exhaustion."""
+    from mc import allowance_state as al
+    al.wire(tmp_path / 'allowance_state.json')
+    try:
+        al.record_exhaustion('codex', limit_kind='usage_limit',
+                             resets_at_display='Sep 24, 2026 7:58 AM')
+        resp = client.get('/api/agent/providers')
+        assert resp.status_code == 200
+        providers = resp.get_json()['providers']
+        codex = next(p for p in providers if p['name'] == 'codex')
+        claude = next(p for p in providers if p['name'] == 'claude')
+        assert codex['allowance_exhausted'] == \
+            'Out of allowance, resets Sep 24, 2026 7:58 AM'
+        assert claude['allowance_exhausted'] == ''
+    finally:
+        al._STATE = {}
+
+
 def test_providers_endpoint_reports_in_use(client, monkeypatch):
     """The `default` provider is always in_use; providers nobody touches
     aren't. Backs the auth-banner suppression in provider-auth.js.

@@ -25,6 +25,7 @@ from typing import Any, Callable
 from flask import Blueprint, jsonify, request
 
 import mc.agent_runtime as _agent_runtime
+from mc import allowance_state as _allowance_state
 from mc import obs, state
 from mc.blueprints.workflow_routes import _is_agent_caller
 from mc import slash_commands as slash_cmds
@@ -417,6 +418,14 @@ def _capture_system_init(msg):
                 state._LAST_SYSTEM_STATUS['rate_limit_captured_at'] = now_iso
                 state._LAST_SYSTEM_STATUS['captured_at'] = now_iso
                 _save_system_status_to_disk()
+                # VENDOR_AGNOSTIC_PROGRAM.md §4: a normalized
+                # ALLOWANCE_EXHAUSTED record, kept separately from the raw
+                # cache above (that one is a passive mirror of the last event;
+                # this one is a claim a dispatch call site refuses on).
+                if info.get('status') == 'allowed':
+                    _allowance_state.clear_exhaustion('claude')
+                else:
+                    _allowance_state.observe('claude', msg)
     except Exception:
         pass  # Capture is best-effort; never break the reader on a parse error.
 

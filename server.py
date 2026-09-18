@@ -2635,6 +2635,14 @@ app.register_blueprint(_bp_system.bp)
 # agent_routes, which cross-imports it directly; no server.py caller remains.
 _update_check_loop = _bp_system._update_check_loop
 
+# ── Per-vendor allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4) ──────────────
+# Same sibling-file placement as SYSTEM_STATUS_PATH above: a file next to
+# data/, never inside data/projects/ (DATA_DIR — load_projects() would treat
+# it as a malformed project).
+from mc import allowance_state as _allowance_state  # noqa: E402
+
+_allowance_state.wire(_DATA_ROOT / 'data' / 'allowance_state.json')
+
 # ── Terminal session endpoints ── extracted to
 # mc/blueprints/terminal_routes.py (1.8): the 5 /api/terminal/* routes +
 # /api/project/<id>/terminal/status, the reader/kill helpers, and the

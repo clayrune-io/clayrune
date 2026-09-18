@@ -93,6 +93,7 @@ from mc.state import (
 )
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
+from mc import allowance_state as _allowance_state
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
@@ -1579,6 +1580,12 @@ def agent_providers():
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
+            # VENDOR_AGNOSTIC_PROGRAM.md §4: distinct from quota_warnings
+            # above (a per-model heuristic scraped from the log) — this is
+            # the normalized, per-vendor ALLOWANCE_EXHAUSTED state a dispatch
+            # call actually refuses on, so the chooser shows the SAME fact a
+            # click would hit, not a weaker warning.
+            'allowance_exhausted': _allowance_state.display_text(rt.name),
             'default': (rt.name == default_name),
             # Auth-alert gate (provider-auth.js): true if this provider is the
             # default, or pinned by some project/character. A provider nobody
@@ -7333,6 +7340,18 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # Per-call copy only: every context builder sees the effective owner,
     # without changing the project's saved default for other conversations.
     p = dict(p, provider=provider_name)
+    # VENDOR_AGNOSTIC_PROGRAM.md §4: allowance is the ONLY reason an
+    # installed, signed-in agent may be refused, and it must be shown, never
+    # silently rerouted — so this is a hard refusal here, not a warning, and
+    # there is no fallback provider substituted in its place. Single choke
+    # point: dispatch (the HTTP endpoint), the scheduler, hivemind and every
+    # workflow agent step all call this function (never each other's own
+    # copy of this check), so one refusal covers all four surfaces named in
+    # the brief. Follow-up has its own copy — see agent_followup, which does
+    # not re-resolve a provider (the session already has one).
+    _allowance_block = _allowance_state.refusal_message(provider_name)
+    if _allowance_block:
+        raise ValueError(_allowance_block)
     _resume_auto_requested = False
     if resume_id and not model_override and not preserve_model:
         _resume_settings = _prior_conversation_settings(project_id, resume_id, provider_name)
@@ -8658,6 +8677,17 @@ def agent_followup(project_id):
         # Non-claude providers route through the runtime; their write_followup
         # owns process kill + respawn. We just append the user line and hand off.
         session_provider = (existing.get('provider') or 'claude').lower()
+        # VENDOR_AGNOSTIC_PROGRAM.md §4: same refusal as dispatch — a message
+        # into an exhausted vendor's process would just fail the same way
+        # again, so it is refused before the write, named and with no
+        # fallback, rather than left to _dispatch_agent_internal's own check
+        # (which never runs for a followup — the session already has a
+        # provider, nothing re-resolves one here).
+        _allowance_block = _allowance_state.refusal_message(session_provider)
+        if _allowance_block:
+            return jsonify({'error': _allowance_block,
+                            'allowance_exhausted': True,
+                            'vendor': session_provider}), 409
         if session_provider != 'claude':
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):

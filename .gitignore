@@ -142,6 +142,9 @@ data/push_vapid.json
 data/push_subscriptions.json
 data/notifications.json
 data/system_status.json
+# Per-vendor allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4) — same runtime
+# cache pattern as system_status.json above; regenerated from live CLI output.
+data/allowance_state.json
 
 # First-boot onboarding-seed marker (guide_routes.seed_onboarding_on_startup).
 # Lives in data/ (NOT data/projects/ — load_projects() must never see it).

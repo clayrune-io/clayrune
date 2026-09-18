@@ -343,13 +343,22 @@ function _composerProviderPicker(p) {
   const provs = (_agentProviders || []).filter(x => x.installed);
   if (provs.length <= 1) return '';
   const cur = _composerProvider(p);
+  // VENDOR_AGNOSTIC_PROGRAM.md §4: allowance is the ONLY reason an installed,
+  // signed-in agent may be refused, and it must be SHOWN, never silently
+  // rerouted — an <option> can't carry a colored badge, so the fact is
+  // spelled out in its own label text instead of a separate pill.
   const opts = provs.map(x =>
-    `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.display_name)}</option>`
+    `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.display_name)}${
+      x.allowance_exhausted ? ` — ${esc(x.allowance_exhausted)}` : ''}</option>`
   ).join('');
+  const curRec = provs.find(x => x.name === cur);
+  const warn = (curRec && curRec.allowance_exhausted)
+    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent</div>`
+    : '';
   return `<div class="composer-provider-row">
     <span class="composer-provider-label">Agent</span>
     <select class="composer-provider-select" onchange="setComposerProvider('${esc(p.id)}',this.value)">${opts}</select>
-  </div>`;
+  </div>${warn}`;
 }
 
 function setComposerProvider(projectId, provider) {

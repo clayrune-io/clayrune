@@ -271,6 +271,7 @@ function _floorFigure(pid, f) {
         <span class="fl-state">${esc(stateWord)}</span>${helpers}
         <span class="fl-age">${esc(f.age || '')}</span></div>
       <div class="fl-engine">${esc(engine)}</div>
+      ${f.allowance_exhausted ? `<div class="fl-allowance">${esc(f.allowance_exhausted)}</div>` : ''}
       <div class="fl-act">${esc(_floorLine(f, helperActive))}</div>
       <div class="fl-task">${esc(f.task || '')}</div>
       <div class="fl-cta">Open this chat &#8594;</div>
@@ -389,6 +390,7 @@ function _floorBench(bench, rooms, quiet) {
           <span class="fl-cta">${open ? 'Pick a room &#8595;'
             : ((b.rooms || []).length ? 'Put in another room &#8594;' : 'Put in a room &#8594;')}</span>
         </span>
+        ${b.allowance_exhausted ? `<div class="fl-allowance">${esc(b.allowance_exhausted)}</div>` : ''}
       </div>
       ${open ? _floorRoomPicker(b, rooms, quiet) : ''}
     </div>`;
