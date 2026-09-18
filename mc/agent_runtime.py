@@ -3441,7 +3441,11 @@ class GeminiRuntime(AgentRuntime):
             # apply_mc_tool_blocks. Honestly true: Gemini can ask the user.
             supports_ask_user_question=True,
             supports_streaming_text=True,
-            emits_usage=False,
+            # W4/MC-947 (2026-09-18): `_read_stream`'s TURN_END branch now
+            # stores the `result` event's `stats` object onto
+            # `session['usage']` — see that branch's comment. Genuinely True
+            # now, not an overclaim.
+            emits_usage=True,
             emits_rate_limit=False,
             emits_cost=False,
             emits_num_turns=False,
@@ -3971,6 +3975,22 @@ class GeminiRuntime(AgentRuntime):
                         f"[tool: {nm} result{(' — ' + st) if st else ''}]")
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
+                    # W4/MC-947 (2026-09-18): the payload always carried real
+                    # token counts (parse_event's TURN_END branch reads
+                    # `msg.get('stats')`, live-confirmed shape
+                    # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
+                    # ...}`) but nothing stored it — `emits_usage=False` was
+                    # an honest description of THIS bug, not of the CLI.
+                    # Mirrors `_mode_a_reader`'s own TURN_END branch (same
+                    # straight-overwrite-per-turn convention every other
+                    # Mode-A provider uses; Gemini respawns a process per
+                    # turn same as they do). `cost_usd`/`num_turns` stay
+                    # unset — parse_event hard-codes them None because the
+                    # CLI genuinely never emits either (emits_cost/
+                    # emits_num_turns are correctly False, unaffected).
+                    _usage = ev.payload.get('usage')
+                    if isinstance(_usage, dict):
+                        session['usage'] = _usage
                     _allowance_state.clear_exhaustion('gemini')
                     _cb('on_turn_end', ev)
                 elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
