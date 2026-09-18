@@ -30,8 +30,25 @@ def test_claude_mixed_thinking_then_text_is_not_dropped():
     })
     event = ClaudeRuntime().parse_event(line)
     assert event is not None
-    assert event.type is EventType.ASSISTANT_TEXT
+    # Classification stays first-block (TOOL_USE-gated consumers rely on it);
+    # the text must survive in the blocks for stream_text to read.
+    assert event.type is EventType.THINKING
     assert [b['text'] for b in event.payload['blocks'] if b['type'] == 'text'] == ['THE ANSWER']
+
+
+def test_claude_tool_use_then_text_stays_tool_use_for_doc_scanner():
+    from mc.agent_runtime import ClaudeRuntime, EventType
+
+    line = json.dumps({
+        'type': 'assistant', 'session_id': 'fake',
+        'message': {'content': [
+            {'type': 'tool_use', 'id': 't1', 'name': 'Write',
+             'input': {'file_path': 'notes.md', 'content': 'x'}},
+            {'type': 'text', 'text': 'wrote it'},
+        ]},
+    })
+    event = ClaudeRuntime().parse_event(line)
+    assert event is not None and event.type is EventType.TOOL_USE
 
 
 def test_claude_stream_helper_yields_text_after_thinking(monkeypatch):

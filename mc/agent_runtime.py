@@ -1637,16 +1637,16 @@ class ClaudeRuntime(AgentRuntime):
                         'type': 'thinking',
                         'text': block.get('thinking') or block.get('text', ''),
                     })
-            # Text is independently meaningful even when thinking/tool blocks
-            # precede it.  The old first-block classification dropped valid
-            # answers from [thinking, text] messages in the streaming helper.
-            primary_type = EventType.ASSISTANT_TEXT if any(
-                b.get('type') == 'text' for b in blocks) else EventType.THINKING
+            # Primary type: determined by the first content block. Consumers
+            # that gate on TOOL_USE (the doc-write scanner, subagent tool
+            # counts) depend on this. A consumer that needs every text block
+            # must read payload['blocks'] itself -- see stream_text.
+            primary_type = EventType.ASSISTANT_TEXT
             if blocks:
                 first_bt = blocks[0].get('type', 'text')
-                if first_bt == 'tool_use' and primary_type != EventType.ASSISTANT_TEXT:
+                if first_bt == 'tool_use':
                     primary_type = EventType.TOOL_USE
-                elif first_bt == 'thinking' and primary_type != EventType.ASSISTANT_TEXT:
+                elif first_bt == 'thinking':
                     primary_type = EventType.THINKING
             return AgentEvent(
                 type=primary_type, provider='claude',
@@ -2465,7 +2465,13 @@ class ClaudeRuntime(AgentRuntime):
                         result_error = '\n'.join(str(e) for e in errors if e)
                         result_error = result_error or str(event.raw.get('result') or '')
                         result_error = result_error or 'Claude could not complete this request'
-                if event.type != EventType.ASSISTANT_TEXT:
+                # An assistant message is classified by its FIRST block, so a
+                # [thinking, text] message arrives as THINKING. Read the text
+                # blocks of every assistant-message event, never just the
+                # ASSISTANT_TEXT ones, or the answer after a thinking block is
+                # silently dropped (Fenn #2).
+                if event.type not in (EventType.ASSISTANT_TEXT,
+                                      EventType.THINKING, EventType.TOOL_USE):
                     continue
                 for block in event.payload.get('blocks', []):
                     if not isinstance(block, dict) or block.get('type') != 'text':
