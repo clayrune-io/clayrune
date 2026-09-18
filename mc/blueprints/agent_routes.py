@@ -1501,6 +1501,36 @@ def _providers_in_use() -> set:
     return in_use
 
 
+def _merge_registry_path():
+    """Windows: append any PATH entries the registry has gained since this
+    process started. The first-run chooser installs Node and the vendor CLIs
+    while the server runs, and every child (claude.cmd/gemini.cmd call bare
+    `node`) inherits our PATH — so without this they fail until a restart
+    (clean-VM run, 2026-09-18). Additive only; never drops an entry."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import winreg
+        fresh = []
+        for root, subkey in (
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'),
+                (winreg.HKEY_CURRENT_USER, r'Environment')):
+            try:
+                with winreg.OpenKey(root, subkey) as key:
+                    val, _ = winreg.QueryValueEx(key, 'Path')
+                    fresh.extend(os.path.expandvars(x) for x in val.split(';') if x)
+            except OSError:
+                pass
+        cur = os.environ.get('PATH', '').split(os.pathsep)
+        have = {c.rstrip('\\').lower() for c in cur if c}
+        add = [f for f in fresh if f.rstrip('\\').lower() not in have]
+        if add:
+            os.environ['PATH'] = os.pathsep.join(cur + add)
+    except Exception as e:
+        _log(f'[providers] PATH refresh failed: {e}', flush=True)
+
+
 @bp.route('/api/agent/providers')
 def agent_providers():
     """List all registered agent runtimes (claude + alternatives) with their
@@ -1510,6 +1540,7 @@ def agent_providers():
     Returns: [{name, display_name, installed, version, install_hint,
                capabilities: {...}, default: bool, in_use: bool}]
     """
+    _merge_registry_path()
     out = []
     default_name = _agent_runtime.default_runtime_name()
     try:
@@ -1774,9 +1805,14 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
             # winget updates the machine after this shell starts. Explicitly add
             # the stable Node/npm locations before invoking npm; inheriting the
             # old PATH was the original fresh-PC failure.
-            node = ('winget install --id OpenJS.NodeJS.LTS -e --silent --source winget '
-                    '--accept-source-agreements --accept-package-agreements '
-                    '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%"')
+            # PATH goes first and winget runs only when npm is still missing:
+            # a second vendor's install re-ran winget, which exits non-zero on
+            # "already installed, no upgrade" and broke the && chain before npm
+            # (clean-VM run, 2026-09-18).
+            node = ('set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+                    '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+                    '-e --silent --source winget '
+                    '--accept-source-agreements --accept-package-agreements)')
         else:
             # Reuse the versioned user-local nvm flow from install.sh. It works on
             # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro

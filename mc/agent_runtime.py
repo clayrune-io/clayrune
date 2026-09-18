@@ -3179,7 +3179,7 @@ class GeminiRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -5128,7 +5128,7 @@ class QwenRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -6101,7 +6101,7 @@ class CodexRuntime(AgentRuntime):
             self._npx_fallback = True
             return None
 
-        self._bin_cache = ''
+        self._bin_cache = None  # never cache a miss (see GeminiRuntime)
         self._npx_fallback = False
         return None
 
@@ -7295,7 +7295,7 @@ class OpenCodeRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -7647,7 +7647,7 @@ class GooseRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -8016,7 +8016,7 @@ class AiderRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -8321,7 +8321,7 @@ class KiroRuntime(AgentRuntime):
                     return c
             except Exception:
                 pass
-        self._bin_cache = ''
+        self._bin_cache = None  # never cache a miss (see GeminiRuntime)
         return None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
