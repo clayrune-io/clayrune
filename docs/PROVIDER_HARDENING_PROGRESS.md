@@ -98,15 +98,16 @@ decoder, Codex rollout and MCP/web/file-change formats, Qwen native recording im
 typed partial/unknown-status tool results, durable source reconciliation,
 transport backpressure and all live reader wiring.
 
-Memory publication remains blocked on a receipt-aware writer transaction:
-terminal retries and overflow can duplicate entries, and the current three-file
-archive/MEMORY.md/SESSION_LOG.md write sequence is not crash-atomic. Existing
-watermarks can be GC'd and cannot serve as permanent publication receipts.
-Canonical deletion/coverage checks must guard a strict idempotent materializer,
-not the outer model-calling Scribe wrapper. Lock order must be canonical writer
-transaction then memory leaf lock, never the reverse. Model calls and follow-up
-dispatch stay outside both locks. No claim of power-loss durability follows
-from the current per-file atomic replacement helper.
+A dormant receipt-aware publication kernel now provides durable intents,
+permanent receipts, explicit forward/abort recovery, bounded staged images, and
+hash-guarded multi-file publication. It is not yet a production memory writer:
+canonical cursor acknowledgment, archive batch identity, legacy writer adoption,
+and real cross-process locking still gate composition. Existing watermarks can
+be GC'd and cannot serve as permanent publication receipts. Canonical
+deletion/coverage checks must guard the idempotent materializer, not the outer
+model-calling Scribe wrapper. Lock order remains canonical writer transaction,
+then memory leaf lock, then publication lease; model calls and follow-up dispatch
+stay outside all three. See `MEMORY_PUBLICATION_CONTRACT.md`.
 
 ## Architecture direction — replace coupling, not just individual failures
 
