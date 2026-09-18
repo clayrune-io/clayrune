@@ -124,17 +124,23 @@ beyond the hook installer. Wave 2: W1, W3 and W6. Wave 3: W4 and W5. Then W7.
 
 ## 8a. Allowance reality (2026-09-18)
 
-The OpenAI/Codex account is **out of usage until Sep 24, 7:58 AM**. That affects every
-Codex-engined character: Vector (Sol), Fenn, Tilda, Marlow, Kestrel, Posy and Vance.
-Following the plan's own rule, work is reassigned by what has allowance; nothing
-waits silently on a Codex agent:
-- W0 (continue Vector's branch from `c14c2fd`): Bram (Claude Opus). He takes over a
-  half-finished branch and has to reason about its failure modes.
-- Code review: Fenn's engine is Codex, so reviews go to a Claude reviewer until
-  Sep 24.
-- W4 Codex cells can only be *live*-verified after Sep 24. Gemini and Qwen cells go
-  first.
-- Vector resumes as owner of W1/W5 when Codex allowance returns.
+The OpenAI/Codex account is **out of usage until Sep 24, 7:58 AM**. Ron: *nothing is
+parked; our own agents do the work.* Every workstream runs now on Claude, Gemini or
+Qwen engines, whatever its original owner:
+
+| # | Now owned by | Session |
+|---|---|---|
+| W0 stabilize branch | Bram (Claude Opus) | 4377d59b48db |
+| W2 guardrail parity | Tobin (Claude Sonnet) | a36ac17b16ce |
+| W6 multi-vendor first run + prerequisites (incl. Fenn #5) | builder (Claude Sonnet) | 9e68b2942e16 |
+| W1 execution profiles, W3 allowance, W4 bridges, W5 cross-vendor | builders on Claude/Gemini/Qwen, dispatched as W0 lands | pending W0 |
+| Code review | Dave, plus a Claude-engined reviewer | per merge |
+
+Codex-specific **live** checks (sending a Codex agent a prompt) are the only thing
+that waits for Sep 24. They are physically impossible without allowance, which is
+the plan's own gate. Codex install, auth detection and offline fixtures proceed now.
+Plan certification by a second vendor resumes when Codex returns. Until then Ron
+has approved proceeding.
 
 ## 9. Definition of done
 
