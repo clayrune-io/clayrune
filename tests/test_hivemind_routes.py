@@ -2,8 +2,8 @@
 
 Added with blueprint step 1.10 (MODERNIZATION_PLAN.md Phase 5): happy path,
 auth-rejected path, malformed-input path across the CRUD + workstream + bus +
-knowledge + escalation + runs surfaces, plus the two spawn paths (claude
-direct-Popen and non-claude runtime routing) and the SSE bus stream.
+knowledge + escalation + runs surfaces, provider-neutral worker/orchestrator
+runtime routing, and the SSE bus stream.
 
 Auth contract (same as 1.8/1.9): no route-private gate — protection is the
 app-wide local_auth_gate (mc/blueprints/local_auth.py). Loopback is exempt;
@@ -11,7 +11,7 @@ a non-loopback peer with no passcode cookie gets 401 auth_required BEFORE
 the handler runs (proved by the untouched recorders + empty data dir).
 
 Determinism: no real child processes, no real threads from the blueprint.
-`subprocess` AND `threading` are replaced ON THE BLUEPRINT MODULE (the
+`threading` and provider runtimes are replaced ON THE BLUEPRINT MODULE (the
 Phase-0 test-port rule: patch mc.blueprints.hivemind_routes.*, never
 server.*) with recorder namespaces; `_agent_runtime` is a fake registry for
 the non-claude routing test. HIVEMIND_DIR is repointed at tmp_path. Shared
@@ -128,15 +128,6 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hm, '_register_process',
                         lambda proc, name, t, sid, pid, prev='': reg_calls.append(
                             (proc, name, t, sid, pid, prev)))
-    monkeypatch.setattr(hm, '_read_agent_stream',
-                        lambda proc, session: None)
-    monkeypatch.setattr(hm, '_resolve_claude', lambda: 'claude-stub')
-    monkeypatch.setattr(hm, '_sysprompt_file_args',
-                        lambda ctx: (sp_ctx.append(ctx), ([], None))[1])
-    monkeypatch.setattr(hm, '_sysprompt_cleanup',
-                        lambda path, proc: cleanup_calls.append((path, proc)))
-    monkeypatch.setattr(hm, '_hide_windows_delayed',
-                        lambda pid: hidden.append(pid))
     monkeypatch.setattr(hm, '_log_agent_activity',
                         lambda pid, msg, bump_updated=True: activity.append((pid, msg)))
     monkeypatch.setattr(hm, '_clayrune_universal_capabilities',
@@ -144,6 +135,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(hm, '_clayrune_api_reference', lambda: 'API-REF-BODY')
     monkeypatch.setattr(hm, '_clayrune_api_pointer_card',
                         lambda port, pid: 'API-CARD pid=%s' % pid)
+    # Lifecycle-generation fence: creation resolves None to the current
+    # generation; dispatch receives and validates the persisted exact value.
+    monkeypatch.setattr(hm, '_assert_runtime_project_generation',
+                        lambda pid, generation: 7 if generation is None else generation)
 
     # Run-history stubs (straggler route deps).
     agent_log = []
@@ -161,21 +156,21 @@ def client(tmp_path, monkeypatch):
             raise out
         return out
 
-    import subprocess as real_subprocess
-    monkeypatch.setattr(hm, 'subprocess', types.SimpleNamespace(
-        Popen=_popen, PIPE=-1, STDOUT=-2, DEVNULL=-3,
-        TimeoutExpired=real_subprocess.TimeoutExpired))
     FakeThread.started = []
     monkeypatch.setattr(hm, 'threading', types.SimpleNamespace(Thread=FakeThread))
 
     # Fake provider registry for the non-claude branch.
     fake_rt = FakeRuntime()
+    fake_claude = FakeRuntime()
+    fake_claude.name = 'claude'
     from mc import agent_runtime
     monkeypatch.setitem(agent_runtime._RUNTIMES, 'fakeprov', fake_rt)
 
     def _get_runtime(name):
         if name == 'fakeprov':
             return fake_rt
+        if name == 'claude':
+            return fake_claude
         raise KeyError(name)
 
     monkeypatch.setattr(hm, '_agent_runtime',
@@ -207,6 +202,7 @@ def client(tmp_path, monkeypatch):
     c.popen_calls = popen_calls        # type: ignore[attr-defined]
     c.holder = holder                  # type: ignore[attr-defined]
     c.fake_rt = fake_rt                # type: ignore[attr-defined]
+    c.claude_rt = fake_claude          # type: ignore[attr-defined]
     c.agent_log = agent_log            # type: ignore[attr-defined]
     c.state = mc_state                 # type: ignore[attr-defined]
     try:
@@ -238,6 +234,21 @@ def _create(client, **over):
 # ── management CRUD ───────────────────────────────────────────────────────────
 
 class TestCreate:
+    def test_creation_persists_authoritative_current_generation(self, client, monkeypatch):
+        calls = []
+
+        def resolve(pid, generation):
+            calls.append((pid, generation))
+            return 23 if generation is None else generation
+
+        monkeypatch.setattr(client.hm, '_assert_runtime_project_generation', resolve)
+        body = _create(client)
+        assert body['hivemind']['project_generation'] == 23
+        saved = json.loads(
+            (client.hm_dir / body['hivemind']['id'] / 'manifest.json').read_text())
+        assert saved['project_generation'] == 23
+        assert calls == [('thm', None)]
+
     def test_happy_inline_workstreams(self, client):
         body = _create(client)
         assert body['ok'] is True
@@ -265,6 +276,17 @@ class TestCreate:
         # (recorded, never run — so the in-flight guard still holds the id).
         assert len(FakeThread.started) == 1
         assert hm_id in client.state._hivemind_orchestrating
+        thread = FakeThread.started[0]
+        thread.target(*thread.args)
+        assert len(client.claude_rt.dispatch_calls) == 1
+        call = client.claude_rt.dispatch_calls[0]
+        assert call['max_turns'] == 5
+        assert call['model'] == 'sonnet'
+        assert call['callbacks']['on_process_exit']
+        # Starting the native process is not terminal completion.
+        assert hm_id in client.state._hivemind_orchestrating
+        call['callbacks']['on_process_exit'](None, {})
+        assert hm_id not in client.state._hivemind_orchestrating
 
     @pytest.mark.parametrize('payload,err', [
         ({}, 'goal required'),
@@ -420,35 +442,64 @@ class TestWorkstreams:
         assert r.status_code == 404
 
 
-# ── worker spawn (claude direct + runtime routing) ────────────────────────────
+# ── worker spawn (all providers through the runtime seam) ────────────────────
 
 class TestSpawn:
-    def test_claude_path_spawns_recorder_proc(self, client):
+    @pytest.mark.parametrize('generation_field', ['stale', 'missing'])
+    def test_generation_fence_refuses_before_runtime_launch(self, client, monkeypatch,
+                                                            generation_field):
+        body = _create(client)
+        hm_id = body['hivemind']['id']
+        manifest_path = client.hm_dir / hm_id / 'manifest.json'
+        manifest = json.loads(manifest_path.read_text())
+        if generation_field == 'stale':
+            manifest['project_generation'] = 6
+        else:
+            manifest.pop('project_generation')
+        manifest_path.write_text(json.dumps(manifest), encoding='utf-8')
+
+        validations = []
+
+        def refuse(pid, generation):
+            validations.append((pid, generation))
+            if generation != 7:
+                raise ValueError('project generation is not current')
+            return generation
+
+        monkeypatch.setattr(client.hm, '_assert_runtime_project_generation', refuse)
+        response = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
+        assert response.status_code == 500
+        assert client.fake_rt.dispatch_calls == []
+        if generation_field == 'stale':
+            assert validations == [('thm', 6)]
+        else:
+            # Missing is rejected locally; the authoritative resolver is not
+            # called with None during a resume/dispatch attempt.
+            assert validations == []
+
+    def test_claude_provider_routes_through_runtime(self, client):
         hm_id = _create(client)['hivemind']['id']
         r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
         assert r.status_code == 200, r.get_json()
         sid = r.get_json()['session_id']
         assert sid.startswith('hm_')
 
-        # Exactly one (fake) Popen; argv = claude direct-spawn shape.
-        assert len(client.popen_calls) == 1
-        cmd, kw = client.popen_calls[0]
-        assert cmd[0] == 'claude-stub' and cmd[1] == '-p'
-        assert '--dangerously-skip-permissions' in cmd
-        assert cmd[cmd.index('--model') + 1] == 'sonnet'
-        assert '--max-turns' not in cmd          # pinned agent_max_turns=0
-        assert kw['cwd'] == str(client.proj_path)
-
-        # Worker context flowed through _sysprompt_file_args and carries the
-        # wired clayrune feeders + the workstream brief.
-        assert len(client.sp_ctx) == 1
-        ctx = client.sp_ctx[0]
+        # Claude uses exactly the same runtime seam as every other provider;
+        # the blueprint never constructs a provider CLI command.
+        assert client.popen_calls == []
+        assert len(client.claude_rt.dispatch_calls) == 1
+        kw = client.claude_rt.dispatch_calls[0]
+        assert kw['mc_session_id'] == sid
+        assert kw['model'] == 'sonnet'
+        assert kw['effort'] == ''
+        assert kw['system_prompt']
+        ctx = kw['system_prompt']
         assert 'YOUR WORKSTREAM: Schema review' in ctx
         assert 'UNIVERSAL-CAPS' in ctx and 'API-CARD pid=thm' in ctx
         assert f'/api/hivemind/{hm_id}/bus/post' in ctx
 
-        # Ledger + session bookkeeping (recorders; manager is the fake).
-        assert client.reg_calls[0][2] == 'hivemind_worker'
+        # Ledger + session bookkeeping (runtime owns process registration).
+        assert client.reg_calls == []
         s = client.state.agent_sessions[sid]
         assert s['hivemind_id'] == hm_id and s['hivemind_ws_id'] == 'ws_001'
         assert s['trigger_type'] == 'hivemind_worker'
@@ -468,14 +519,14 @@ class TestSpawn:
         r = client.post(f'/api/hivemind/{hm_id}/workstreams/ws_001/spawn')
         assert r.status_code == 200
         sid = r.get_json()['session_id']
-        # No direct Popen — the runtime got the dispatch, context prepended.
+        # No direct Popen — the runtime got the dispatch and context.
         assert client.popen_calls == []
         assert len(client.fake_rt.dispatch_calls) == 1
         kw = client.fake_rt.dispatch_calls[0]
         assert kw['mc_session_id'] == sid
-        assert kw['task'].startswith('You are a specialist agent') or \
-            'UNIVERSAL-CAPS' in kw['task']  # worker context prepended
-        assert '---' in kw['task']
+        assert kw['task'].startswith('You are a Hivemind worker')
+        assert 'YOUR WORKSTREAM: Schema review' in kw['system_prompt']
+        assert 'UNIVERSAL-CAPS' in kw['system_prompt']
         s = client.state.agent_sessions[sid]
         assert s['provider'] == 'fakeprov' and s['trigger_type'] == 'hivemind_worker'
 

@@ -1555,6 +1555,9 @@ try:
         now_iso=now_iso,
         config_get=lambda k, d=None: CONFIG.get(k, d),
         get_per_project_semaphore=memory._get_checkpoint_sema,
+        text_transform=memory._provider_transform,
+        resolve_model=memory._model_for_provider,
+        load_agent_log=_bp_agent._load_agent_log,
     )
 except Exception as _distiller_reg_err:
     _log(f"[distiller] registration failed: {_distiller_reg_err!r} — "
@@ -1743,6 +1746,7 @@ _bp_hivemind.wire(
     clayrune_universal_capabilities_fn=_bp_agent._clayrune_universal_capabilities,
     clayrune_api_reference_fn=_bp_agent._clayrune_api_reference,
     clayrune_api_pointer_card_fn=_bp_agent._clayrune_api_pointer_card,
+    assert_runtime_project_generation_fn=_bp_agent._assert_runtime_project_generation,
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
 )
@@ -2731,6 +2735,10 @@ def _claude_dispatch_hook(**kwargs):
     trigger_id = kwargs.get('trigger_id') or ''
     mc_session_id = kwargs.get('mc_session_id') or ''
 
+    # Preserve the full provider-neutral dispatch contract. Hivemind and
+    # other runtime callers must not lose model, effort, context, lifecycle
+    # callbacks or housekeeping metadata merely because Claude uses a server
+    # hook behind its AgentRuntime adapter.
     session_id = _dispatch_agent_internal(
         project_id, task,
         resume_id=resume_id,
@@ -2738,6 +2746,16 @@ def _claude_dispatch_hook(**kwargs):
         trigger_type=trigger_type,
         trigger_id=trigger_id,
         reuse_session_id=mc_session_id,
+        model_override=kwargs.get('model') or '',
+        effort_override=kwargs.get('effort'),
+        source=kwargs.get('source') or '',
+        project_generation=kwargs.get('project_generation'),
+        system_prompt_suffix=kwargs.get('system_prompt') or '',
+        housekeeping=bool(kwargs.get('housekeeping', False)),
+        runtime_callbacks=kwargs.get('callbacks') or {},
+        session_metadata=kwargs.get('session_metadata') or {},
+        session_dict_override=kwargs.get('session_dict'),
+        max_turns_override=kwargs.get('max_turns'),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}

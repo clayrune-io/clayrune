@@ -18,7 +18,7 @@ from mc.conversation_store import ConversationStore
 ENGINE = {'provider': 'fixture', 'model': 'requested', 'effort': 'high'}
 
 
-def journal(tmp_path: Path, *, complete: bool = True):
+def journal(tmp_path: Path, *, complete: bool = True, output: str = 'full result'):
     store = ConversationStore(tmp_path / 'canonical.sqlite')
     state = store.create_lifecycle_conversation('p', 'c', engine=ENGINE, event_id='create')
     state = store.accept_request('p', 'c', request_id='request',
@@ -32,7 +32,7 @@ def journal(tmp_path: Path, *, complete: bool = True):
     store.append_evidence(token, event_id='call', kind='tool_call',
         payload={'call_id': 'call', 'name': 'Read', 'input': {'path': 'note.txt'}})
     store.append_evidence(token, event_id='result', kind='tool_result',
-        payload={'call_id': 'call', 'output': 'full result', 'is_error': False})
+        payload={'call_id': 'call', 'output': output, 'is_error': False})
     store.append_evidence(token, event_id='reply', kind='assistant_message',
         payload={'message_id': 'message', 'block_id': 'message/text',
                  'text': 'final answer', 'completeness': 'final'})
@@ -42,6 +42,21 @@ def journal(tmp_path: Path, *, complete: bool = True):
             source_reference='fixture-complete', expected_revision=state.revision,
             event_id='coverage')
     return store
+
+
+def test_display_preserves_large_tool_result_while_scribe_has_explicit_budget(tmp_path):
+    from mc.conversation_cutover import ConversationCutover
+
+    output = 'start-' + '🧱中' * 5000 + '-end'
+    store = journal(tmp_path, output=output)
+    cutover = ConversationCutover(policy=CutoverPolicy(enabled=True),
+                                  store_provider=lambda: store)
+    lines = cutover.display_lines('p', 'c')
+    assert lines is not None
+    assert f'RESULT [call call]: {output}' in lines
+    scribe = cutover.scribe('p', 'c')
+    assert any('chars elided' in line for line in scribe.lines)
+    assert read_canonical_history(store, 'p', 'c').complete
 
 
 def test_default_off_selection_never_promotes_canonical_history(tmp_path):

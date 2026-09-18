@@ -667,7 +667,7 @@ def _resolve_project_mcp_config(project):
         return None
 
 def _build_claude_flags(project=None, streaming=False, model_override=None,
-                        effort_override=None):
+                        effort_override=None, max_turns_override=None):
     """Build common Claude CLI flags from config, with optional per-project overrides.
     Delegates to ClaudeRuntime.build_command()[1:] — single source of truth.
     Returns flags only (no binary prefix), matching the legacy contract.
@@ -688,7 +688,8 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
                or state.CONFIG.get('agent_effort', '')))
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
-        max_turns=state.CONFIG.get('agent_max_turns', 0),
+        max_turns=(max_turns_override if max_turns_override is not None
+                   else state.CONFIG.get('agent_max_turns', 0)),
         streaming=streaming,
         perm_mode=state.CONFIG.get('agent_permission_mode', ''),
         channels=(project or {}).get('agent_channels', '') or state.CONFIG.get('agent_channels', ''),
@@ -1725,6 +1726,51 @@ def _install_command_required_binary(cmd: str) -> str:
     return parts[0] if parts else ''
 
 
+# Keep prerequisite onboarding deliberately narrow: only the known provider
+# npm packages may be composed here, and the Node installer is a fixed,
+# platform-specific command. We never interpolate user input or credentials
+# into a shell command. The normal installer handles these prerequisites
+# before first launch; this is the in-app repair path for app bundles and
+# upgrades where npm was not present when the UI was opened.
+_PROVIDER_NPM_PACKAGES = {
+    'claude': '@anthropic-ai/claude-code',
+    'codex': '@openai/codex',
+    'gemini': '@google/gemini-cli',
+    'qwen': '@qwen-code/qwen-code',
+}
+
+
+def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
+    """Return ``(command, prerequisite)`` for a provider install.
+
+    ``hint`` is trusted runtime metadata, but the composed fallback is only
+    emitted when it has the exact expected npm shape for the requested,
+    allowlisted provider. Unknown provider hints fail closed.
+    """
+    required = _install_command_required_binary(hint)
+    if required != 'npm' or shutil.which('npm'):
+        return hint, ''
+    package = _PROVIDER_NPM_PACKAGES.get(name)
+    expected = f'npm install -g {package}' if package else ''
+    if not package or hint.strip() != expected:
+        return hint, 'unsupported'
+    if sys.platform == 'win32':
+        # winget updates the machine after this shell starts. Explicitly add
+        # the stable Node/npm locations before invoking npm; inheriting the
+        # old PATH was the original fresh-PC failure.
+        node = ('winget install --id OpenJS.NodeJS.LTS -e --silent '
+                '--accept-source-agreements --accept-package-agreements '
+                '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%"')
+    else:
+        # Reuse the versioned user-local nvm flow from install.sh. It works on
+        # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
+        # Node version, and sources nvm again in this terminal before npm.
+        node = ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
+                '| bash && export NVM_DIR="$HOME/.nvm" && '
+                '. "$NVM_DIR/nvm.sh" && nvm install 20')
+    return f'{node} && {expected}', 'npm'
+
+
 @bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
 def agent_provider_install_launch(name):
     """Run the SAME install command install.sh/install.ps1 use for this
@@ -1753,15 +1799,21 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False,
                         'error': f'no automatic install available for {name}',
                         'command': ''}), 200
-    required = _install_command_required_binary(hint)
-    if required and not shutil.which(required):
+    command, prerequisite = _provider_install_command(name, hint)
+    if prerequisite == 'unsupported':
+        return jsonify({'ok': False,
+                        'error': 'unsupported provider install command',
+                        'command': command}), 200
+    required = _install_command_required_binary(command)
+    if required and not shutil.which(required) and not prerequisite:
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
-                        'command': hint}), 200
-    err = _launch_terminal_for_binary(hint)
+                        'command': command}), 200
+    err = _launch_terminal_for_binary(command)
     if err:
-        return jsonify({'ok': False, 'error': err, 'command': hint}), 200
-    return jsonify({'ok': True, 'command': hint})
+        return jsonify({'ok': False, 'error': err, 'command': command}), 200
+    return jsonify({'ok': True, 'command': command,
+                    'prerequisite': prerequisite or None})
 
 
 def _auth_probe_cwd() -> str:
@@ -4047,6 +4099,7 @@ def _read_agent_stream(proc, session):
                 elif session['status'] == 'stopped':
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
+                _run_runtime_callbacks(session)
 
                 # Auto-dispatch pending follow-ups
                 pending = session.get('pending_followups', [])
@@ -4311,6 +4364,7 @@ def _read_agent_stream_b(proc, session):
                 elif session['status'] == 'stopped':
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
+                _run_runtime_callbacks(session)
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
@@ -5603,9 +5657,11 @@ def _process_inbox(row):
             raise DeliveryBlocked(quota_block)
         if _delegation_app is None:
             raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
+        needs_write_ack = parent.get('mode') == 'B'
         with _delegation_app.test_request_context(
                 json={'message': payload['message'],
-                      'session_id': row['parent_session_id']}):
+                      'session_id': row['parent_session_id'],
+                      '_durable_delivery_ack': needs_write_ack}):
             try:
                 response = _delegation_app.make_response(
                     agent_followup(row['project_id']))
@@ -5614,16 +5670,24 @@ def _process_inbox(row):
                 # observed; it is never safe to replay this action implicitly.
                 raise DeliveryUncertain(f'guarded parent submission outcome unknown: {exc}')
             status_code = getattr(response, 'status_code', 200)
+            body = response.get_json(silent=True) or {}
+            write_ack = body.get('stdin_write_ack')
+            if needs_write_ack and write_ack == 'failed':
+                raise DeliveryDeferred(body.get('error', 'parent stdin write failed'))
+            if needs_write_ack and write_ack != 'written':
+                # A timeout or process crash leaves the outcome unknowable;
+                # never replay implicitly across that boundary.
+                raise DeliveryUncertain('parent stdin write acknowledgment is unknown')
             if status_code >= 500:
                 raise DeliveryUncertain(f'guarded parent submission returned HTTP {status_code}')
             if status_code >= 400:
                 raise DeliveryBlocked(f'guarded parent submission rejected HTTP {status_code}')
-            body = response.get_json(silent=True) or {}
             if body.get('session_id') != row['parent_session_id']:
                 raise DeliveryUncertain('parent submission switched session identity')
             if body.get('queued'):
                 raise DeliveryUncertain('parent submission entered an in-memory queue')
             return {'http_status': status_code, 'parent_session_id': row['parent_session_id'],
+                    'stdin_write_ack': ('written' if needs_write_ack else 'legacy'),
                     'provider': parent.get('provider', 'claude'),
                     'model': parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or ''}
 
@@ -6119,6 +6183,17 @@ _RUNTIME_CALLBACKS = {
     'on_process_exit': _runtime_log_completion,
     'on_init': _runtime_note_init,
 }
+
+
+def _run_runtime_callbacks(session, event=None):
+    """Run optional feature callbacks without affecting terminal handling."""
+    callback = (session.get('_runtime_callbacks') or {}).get('on_process_exit')
+    if not callback:
+        return
+    try:
+        callback(event, session)
+    except Exception as exc:
+        _log(f'[runtime-callback] on_process_exit failed: {exc}')
 
 
 def _auto_dispatch_followup(session, message):
@@ -7116,7 +7191,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              display_task=None, character='', source='',
                              model_override='', strict_character=False, effort_override=None,
                              notify_session='', notify_workflow=None,
-                             preserve_model=False, project_generation=None):
+                             preserve_model=False, project_generation=None,
+                             system_prompt_suffix='', housekeeping=False,
+                             runtime_callbacks=None, session_metadata=None,
+                             session_dict_override=None,
+                             max_turns_override=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -7374,13 +7453,13 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # native resume restore it, rather than choosing today's defaults.
         routed_model, routed_source = '', 'resume'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
-                                         model_override='', effort_override=_char_effort)
+                                         model_override='', effort_override=_char_effort,
+                                         max_turns_override=max_turns_override)
         context = _build_agent_context(
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
             session_id=_planned_sid, character_skills=_char_skills,
             source=source)
-        _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
         # Composer "Model" picker, or the character's pinned model: an explicit
         # choice either way, so the auto-router is bypassed entirely. The
@@ -7390,14 +7469,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         routed_source = 'character' if model_override == _char_model else 'manual'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
                                          model_override=model_override,
-                                         effort_override=_char_effort)
+                                         effort_override=_char_effort,
+                                         max_turns_override=max_turns_override)
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body,
                                        character_name=_char_agent_name,
                                        session_id=_planned_sid,
                                        character_skills=_char_skills,
                                        source=source)
-        _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
             _dispatch_with_routing_parallel(
@@ -7408,7 +7487,19 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     session_id=_planned_sid, character_skills=_char_skills,
                     source=source),
                 streaming=use_streaming, effort_override=_char_effort))
-        _sp_args, _sp_path = _sysprompt_file_args(context)
+        if max_turns_override is not None:
+            base_flags = _build_claude_flags(
+                p, streaming=use_streaming, model_override=routed_model,
+                effort_override=_char_effort,
+                max_turns_override=max_turns_override)
+    if system_prompt_suffix:
+        # Provider-neutral callers such as Hivemind may supply an additional
+        # feature context block. Keep the authoritative project context first,
+        # and let the runtime adapter deliver the combined prompt according to
+        # its provider's context-injection capability.
+        context = f"{context}\n\n{system_prompt_suffix}".strip()
+    _sp_args, _sp_path = _sysprompt_file_args(context)
+
     # Per-dispatch telemetry — best-effort; never raises. requested = the
     # model the user configured; chosen = what actually went to --model
     # (post-router). See docs/DISPATCH_AND_ROUTING_ANALYSIS.md §B.5.
@@ -7442,7 +7533,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     with mgr.lock:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
-        if reuse_session_id and reuse_session_id not in agent_sessions:
+        if reuse_session_id and (
+                reuse_session_id not in agent_sessions
+                or (session_dict_override is not None
+                    and agent_sessions.get(reuse_session_id) is session_dict_override)):
             session_id = reuse_session_id
         else:
             session_id = _fresh_sid
@@ -7480,6 +7574,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'incognito': False, 'source': source or '',
                 'trigger_type': trigger_type, 'trigger_id': trigger_id,
                 'character': character_meta,
+                'housekeeping': bool(housekeeping),
+                '_runtime_callbacks': dict(runtime_callbacks or {}),
                 '_notify_session': notify_session,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
@@ -7592,6 +7688,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # content keeps the resumed prefix cache-friendly.
                 '_system_prompt': context or '',
             }
+            if session_dict_override is not None:
+                session_dict_override.update(session)
+                session = session_dict_override
+            if session_metadata:
+                session.update(session_metadata)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
@@ -7698,11 +7799,18 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
                 'character': character_meta,
+                'housekeeping': bool(housekeeping),
+                '_runtime_callbacks': dict(runtime_callbacks or {}),
                 # Spawn context stash — re-appended verbatim on every `-r`
                 # respawn (see _respawn_sysprompt_args). Byte-identical
                 # content keeps the resumed prefix cache-friendly.
                 '_system_prompt': context or '',
             }
+            if session_dict_override is not None:
+                session_dict_override.update(session)
+                session = session_dict_override
+            if session_metadata:
+                session.update(session_metadata)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
@@ -7926,6 +8034,44 @@ def agent_send(project_id):
     )
     if not message:
         return jsonify({'error': 'message required'}), 400
+
+    native_id = (data.get('provider_session_id') or '').strip()
+    if native_id:
+        # A native-history tab has no MC run id yet. Never let a failed
+        # identity lookup fall through to a fresh conversation/provider.
+        if data.get('provider') != 'codex' or not re.fullmatch(
+                r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', native_id):
+            return jsonify({'error': 'invalid native conversation identity'}), 400
+        runtime = _agent_runtime.get_runtime('codex')
+        tpath = runtime.transcript_path(pp, native_id)
+        if not tpath:
+            return jsonify({'error': 'original conversation not found'}), 404
+        cwd, recorded_id = _agent_runtime._codex_read_meta(tpath)
+        if recorded_id != native_id or not _agent_runtime._codex_same_path(cwd, pp):
+            return jsonify({'error': 'original conversation not found'}), 404
+        with get_manager(project_id).lock:
+            owner = next((sid for sid, s in agent_sessions.items()
+                          if s.get('project_id') == project_id
+                          and s.get('provider') == 'codex'
+                          and s.get('provider_session_id') == native_id), None)
+            if owner:
+                data['session_id'] = session_id = owner
+            else:
+                try:
+                    turns = runtime.extract_chat_turns(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+                    sid = _dispatch_agent_internal(
+                        project_id, _apply_mobile_brief(message, data),
+                        resume_id=native_id, provider_override='codex', incognito=incognito)
+                    session = agent_sessions.get(sid)
+                    if session is not None:
+                        label = state.CONFIG.get('user_name') or 'User'
+                        session['log_lines'][:0] = [
+                            f'\n> {label}: {text}\n' if role == 'user' else text
+                            for role, text in turns]
+                    return jsonify({'ok': True, 'session_id': sid, 'route': 'resume-native'})
+                except Exception as e:
+                    _log(f'[send] native conversation resume failed: {e}')
+                    return jsonify({'error': f'conversation resume failed: {e}'}), 400
 
     # The client can address a chat by an id that is not its live session: its
     # CLAUDE session id (transcript-reconstruct tab), a superseded MC id, or a
@@ -8366,6 +8512,62 @@ def agent_followup(project_id):
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
 
+    # Durable delegation callers must not treat the enqueue of this writer
+    # thread as submission.  The normal interactive path remains fire-and-
+    # forget; the internal flag makes the caller wait for the real pipe write.
+    durable_ack = bool(data.get('_durable_delivery_ack'))
+
+    def _write_mode_b_stdin(content, sess, project, msg):
+        if durable_ack and sess.get('_stdin_write_uncertain'):
+            return {'ack': 'unknown', 'error': 'previous stdin write outcome requires review'}
+        result = {}
+        done = threading.Event()
+
+        def _writer():
+            write_started = False
+            try:
+                refresh = _memory_turn.refresh_for_turn(project, sess, msg)
+                out = (refresh['block'] + '\n\n' + content
+                       if refresh['block'] else content)
+                stdin_msg = json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": out}
+                }) + '\n'
+                lock = sess.get('stdin_lock')
+                if lock:
+                    lock.acquire()
+                try:
+                    write_started = True
+                    sess['proc'].stdin.write(stdin_msg)
+                    sess['proc'].stdin.flush()
+                finally:
+                    if lock:
+                        lock.release()
+            except Exception as exc:
+                result['error'] = str(exc)
+                result['ack'] = 'unknown' if write_started else 'failed'
+                if write_started:
+                    sess['_stdin_write_uncertain'] = True
+                sess['log_lines'].append(f'[stdin write error: {exc}]')
+                sess['status'] = 'error'
+                sess['last_status_change_time'] = _time.time()
+                sess['process_alive'] = False
+            else:
+                result['written'] = True
+            finally:
+                done.set()
+
+        threading.Thread(target=_writer, daemon=True).start()
+        if not durable_ack:
+            return None
+        if not done.wait(timeout=10.0):
+            sess['_stdin_write_uncertain'] = True
+            return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
+        if result.get('written'):
+            return {'ack': 'written'}
+        return {'ack': result.get('ack', 'failed'),
+                'error': result.get('error', 'stdin write failed')}
+
     # Pre-check: if session is gone from agent_sessions (server restart, tab close,
     # 24h purge), try reviving from agent_log via -r <claude_session_id>.
     # Roll back: set CONFIG['agent_revive_from_log'] = False.
@@ -8671,37 +8873,18 @@ def agent_followup(project_id):
                     if _tail_text:
                         claude_content = _tail_text + '\n\n' + claude_content
 
-                    def _write_stdin(_content=claude_content, _sess=existing, _p=p, _msg=message):
-                        # MC-944 (§9.6): this is a direct write to an ALREADY-
-                        # LIVE process — no context rebuild happens on this
-                        # path, ever, which is exactly the B5 break ("the read
-                        # floor fires at fresh dispatch" and a session that
-                        # stays alive for days never sees it again). Recompute
-                        # the notes/positions blocks for THIS message and
-                        # prepend them, off mgr.lock like the write itself.
-                        _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
-                        _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
-                        stdin_msg = json.dumps({
-                            "type": "user",
-                            "message": {"role": "user", "content": _out}
-                        }) + '\n'
-                        lock = _sess.get('stdin_lock')
-                        if lock:
-                            lock.acquire()
-                        try:
-                            _sess['proc'].stdin.write(stdin_msg)
-                            _sess['proc'].stdin.flush()
-                        except Exception as e:
-                            _sess['log_lines'].append(f'[stdin write error: {e}]')
-                            _sess['status'] = 'error'
-                            _sess['last_status_change_time'] = _time.time()
-                            _sess['process_alive'] = False
-                        finally:
-                            if lock:
-                                lock.release()
-
-                    threading.Thread(target=_write_stdin, daemon=True).start()
+                    ack = _write_mode_b_stdin(claude_content, existing, p, message)
                     _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
+                    if durable_ack:
+                        if ack and ack.get('ack') == 'written':
+                            return jsonify({'ok': True, 'session_id': session_id,
+                                            'stdin_write_ack': 'written'})
+                        if ack and ack.get('ack') == 'failed':
+                            return jsonify({'ok': False, 'session_id': session_id,
+                                            'stdin_write_ack': 'failed',
+                                            'error': ack.get('error', 'stdin write failed')}), 503
+                        return jsonify({'ok': False, 'session_id': session_id,
+                                        'stdin_write_ack': 'unknown'}), 504
                     return jsonify({'ok': True, 'session_id': session_id})
 
         else:
@@ -8791,33 +8974,17 @@ def agent_followup(project_id):
             if _tail_text:
                 claude_content = _tail_text + '\n\n' + claude_content
 
-            def _write_stdin_routed(_content=claude_content, _sess=_rs_existing, _p=p, _msg=message):
-                # MC-944 (§9.6) — same rationale as the router-off direct
-                # write above: no context rebuild happens on this path, so
-                # recompute the notes/positions blocks for THIS message here.
-                _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
-                _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
-                stdin_msg = json.dumps({
-                    "type": "user",
-                    "message": {"role": "user", "content": _out}
-                }) + '\n'
-                lock = _sess.get('stdin_lock')
-                if lock:
-                    lock.acquire()
-                try:
-                    _sess['proc'].stdin.write(stdin_msg)
-                    _sess['proc'].stdin.flush()
-                except Exception as e:
-                    _sess['log_lines'].append(f'[stdin write error: {e}]')
-                    _sess['status'] = 'error'
-                    _sess['last_status_change_time'] = _time.time()
-                    _sess['process_alive'] = False
-                finally:
-                    if lock:
-                        lock.release()
-
-            threading.Thread(target=_write_stdin_routed, daemon=True).start()
             _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
+            if durable_ack:
+                if ack and ack.get('ack') == 'written':
+                    return jsonify({'ok': True, 'session_id': session_id,
+                                    'stdin_write_ack': 'written'})
+                if ack and ack.get('ack') == 'failed':
+                    return jsonify({'ok': False, 'session_id': session_id,
+                                    'stdin_write_ack': 'failed',
+                                    'error': ack.get('error', 'stdin write failed')}), 503
+                return jsonify({'ok': False, 'session_id': session_id,
+                                'stdin_write_ack': 'unknown'}), 504
             return jsonify({'ok': True, 'session_id': session_id})
 
     # Mode B respawn — spawn outside the lock to avoid blocking stop/other ops
@@ -9735,7 +9902,15 @@ def get_agent_log(project_id):
     if _conversation_cutover is not None:
         canonical = _conversation_cutover.agent_log(project_id)
         if canonical:
-            log = [row.as_dict() for row in canonical]
+            # Canonical coverage of one conversation is not proof of coverage
+            # of the project's inventory. Keep legacy rows and their live/resume
+            # metadata until each consumer has a certified migration boundary.
+            seen = {e.get('session_id') for e in log if e.get('session_id')}
+            for row in canonical:
+                item = row.as_dict()
+                if item.get('session_id') not in seen:
+                    log.append(item)
+                    seen.add(item.get('session_id'))
     for entry in log:
         entry['ts_relative'] = time_ago(entry.get('ts'))
         entry['started_relative'] = time_ago(entry.get('started_at'))
@@ -9769,6 +9944,30 @@ def get_project_transcript(project_id, claude_session_id):
     p = load_project(project_id)
     if not p:
         return jsonify({'error': 'project not found'}), 404
+    provider = request.args.get('provider', 'claude').strip().lower()
+    if provider == 'codex':
+        # Native-only sessions have no MC run-log row. Resolve through the
+        # provider store, with strict project ownership and no glob patterns.
+        if not re.fullmatch(r'[0-9a-fA-F]{8}(?:-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}', claude_session_id):
+            return jsonify({'error': 'invalid Codex session id'}), 400
+        runtime = _agent_runtime.get_runtime('codex')
+        f = runtime.transcript_path(p.get('project_path', ''), claude_session_id)
+        if not f:
+            return jsonify({'error': 'transcript not found'}), 404
+        cwd, native_id = _agent_runtime._codex_read_meta(f)
+        if native_id != claude_session_id or not _agent_runtime._codex_same_path(cwd, p.get('project_path', '')):
+            return jsonify({'error': 'transcript not found'}), 404
+        try:
+            messages = [{'role': role, 'text': text}
+                        for role, text in runtime.extract_chat_turns(f)]  # pyright: ignore[reportAttributeAccessIssue]
+            size = f.stat().st_size
+        except OSError as e:
+            _log(f'[transcript] Codex read failed: {e}')
+            return jsonify({'error': 'transcript unavailable'}), 404
+        return jsonify({'provider': provider, 'provider_session_id': native_id,
+                        'size': size, 'message_count': len(messages), 'messages': messages})
+    if provider != 'claude':
+        return jsonify({'error': 'unsupported transcript provider'}), 400
     f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
     if not f:
         return jsonify({'error': 'transcript not found'}), 404
@@ -10849,11 +11048,10 @@ def get_project_conversations(project_id):
     p = load_project(project_id)
     if not p:
         return jsonify([])
+    canonical_rows = None
     if _conversation_cutover is not None:
         canonical_rows = _conversation_cutover.conversation_rows(
             project_id, limit=limit)
-        if canonical_rows is not None and canonical_rows:
-            return jsonify(canonical_rows)
     project_path = p.get('project_path', '')
 
     # Built BEFORE the transcript scan (not after, as it used to be) so the
@@ -10998,6 +11196,12 @@ def get_project_conversations(project_id):
     codex_rows, codex_covered_sids = _recent_codex_conversation_rows(project_id, p, limit)
     out.extend(codex_rows)
     out.extend(_non_claude_conversation_rows(project_id, p, limit, exclude_sids=codex_covered_sids))
+    if canonical_rows:
+        seen = {row.get('mc_session_id') for row in out if row.get('mc_session_id')}
+        for row in canonical_rows:
+            if row.get('mc_session_id') not in seen:
+                out.append(row)
+                seen.add(row.get('mc_session_id'))
     out.sort(key=lambda r: r['mtime'], reverse=True)
     # The final union-wide cut (ws001/D6): up to 3 independently-limited
     # sources compete for `limit` slots here, so a row that's actually LIVE

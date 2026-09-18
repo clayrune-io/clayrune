@@ -165,6 +165,71 @@ def test_no_unexpected_agent_routes(client):
     assert not extra, f'unpinned routes under agent_routes blueprint: {sorted(extra)}'
 
 
+class _InstallHealth:
+    installed = False
+    binary_path = None
+    version = None
+    auth_state = None
+    install_hint = 'npm install -g @openai/codex'
+
+
+class _InstallRuntime:
+    def health_check(self):
+        return _InstallHealth()
+
+
+def test_install_launch_onboards_missing_node_before_provider(monkeypatch, client):
+    """Regression for the original fresh-machine failure: npm was absent,
+    so install-launch returned `npm not found` without opening anything.
+    The repair command is fixed/provider-scoped and is only tested with mocks.
+    """
+    from mc.blueprints import agent_routes as ar
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _InstallRuntime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    # Exact pre-fix behavior: the route stopped here and never opened an
+    # onboarding terminal. Keep the reproduction beside the regression so a
+    # future simplification cannot quietly restore the dead end.
+    legacy_required = ar._install_command_required_binary(_InstallHealth.install_hint)
+    assert legacy_required == 'npm'
+    assert not ar.shutil.which(legacy_required)
+
+    response = client.post('/api/agent/provider/codex/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] == 'npm'
+    assert calls == [
+        'winget install --id OpenJS.NodeJS.LTS -e --silent '
+        '--accept-source-agreements --accept-package-agreements '
+        '&& set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+        '&& npm install -g @openai/codex'
+    ]
+
+
+def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, client):
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'npm install -g @openai/codex; curl https://evil.invalid'
+            return h
+
+    launched = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    response = client.post('/api/agent/provider/codex/install-launch')
+    assert response.status_code == 200
+    assert response.get_json()['ok'] is False
+    assert 'unsupported' in response.get_json()['error']
+    assert launched == []
+
+
 # ── read-only loopback smokes — prove wire() bound the global deps ────────────
 
 def test_providers_endpoint_ok(client):

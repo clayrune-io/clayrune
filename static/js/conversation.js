@@ -1975,6 +1975,7 @@ function _userInitiatedConvos(projectId, includeHidden) {
       label: e.task || '', last_user: e.task || '', first_user: e.task || '',
       status: e.status || 'completed', turns: e.num_turns || 0,
       ts_relative: e.ts_relative || e.ts || '', trigger_type: e.trigger_type || '',
+      mtime: Date.parse(e.ts || e.started_at || '') / 1000 || 0,
       source: e.source || '', live: false,
       resumable: !!(csid || (psid && caps.supports_session_resume)),
       resume_mode: (csid || (psid && caps.supports_session_resume)) ? 'live' : 'readonly',
@@ -2271,7 +2272,7 @@ function mobileUserConversationsHTML(p, convos, opts) {
     }
   }
   const _renderConvRow = (c, isChild) => {
-    const csid = c.claude_session_id || '';
+    const csid = c.claude_session_id || (!c.mc_session_id && c.provider === 'codex' ? c.provider_session_id : '') || '';
     const mcsid = c.mc_session_id || '';
     const hideKey = _convHideKey(c);
     const isHidden = hidden.has(hideKey);
@@ -2457,7 +2458,7 @@ let _channelExpanded = {};
 // its first /conversations poll — still shows up live.
 function _channelRoster(projectId) {
   const groups = {};
-  for (const c of (conversationsCache[projectId] || [])) {
+  for (const c of _userInitiatedConvos(projectId, true)) {
     const key = _convCharKey(c);
     // 'unnamed:' (a delegated session with no persona — MC-925) is live-only
     // by design: a HISTORICAL row for one is never roster material, or a
@@ -2653,7 +2654,7 @@ function _railChannelHTML(p) {
     // for it to reveal, because nothing had been concealed. Honour the hide,
     // and honour the per-project reveal toggle that undoes it.
     const _hiddenKeys = _hiddenConvSet(p.id);
-    const _all = (conversationsCache[p.id] || []).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
+    const _all = _userInitiatedConvos(p.id, true).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
     const _hiddenHere = _all.filter(c => _hiddenKeys.has(_convHideKey(c)));
     const convos = _showHiddenConvos[p.id] ? _all : _all.filter(c => !_hiddenKeys.has(_convHideKey(c)));
     // Rendered whenever this person has ANY chat at all, hidden ones included —
@@ -2684,15 +2685,15 @@ function _railChannelHTML(p) {
 // into their (empty) expanded view.
 function openChannelPerson(projectId, key) {
   _channelExpanded[projectId] = key;
-  const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
+  // Expanding the roster must not depend on opening a transcript. External
+  // provider sessions can appear here without an id this UI can open.
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else refreshModal();
+  const convos = _userInitiatedConvos(projectId, true).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
   convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
-  if (convos.length) {
-    const c = convos[0];
+  const c = convos.find(c => c.mc_session_id || c.claude_session_id);
+  if (c) {
     openConversation(projectId, c.claude_session_id || '', c.mc_session_id || '', !!c.live);
-  } else if (typeof refreshModalById === 'function') {
-    refreshModalById(projectId);
-  } else {
-    refreshModal();
   }
 }
 window.openChannelPerson = openChannelPerson;
@@ -3377,6 +3378,39 @@ window.archiveThread = archiveThread;
 // Deliberately does NOT reuse openProjectAtSession — its `activeAgentTab || sid`
 // fallback dumped every tap back onto the currently-open chat.
 async function openConversation(projectId, csid, mcSessionId, isLive) {
+  // Native-only Codex history belongs in the normal conversation pane. Its
+  // synthetic tab key is UI-only; sends carry the actual provider identity.
+  if (!mcSessionId && csid) {
+    const nativeRow = (conversationsCache[projectId] || []).find(c =>
+      c.provider === 'codex' && !c.mc_session_id && c.provider_session_id === csid);
+    if (nativeRow) {
+      const sid = `codex:${projectId}:${csid}`;
+      if (!agentStatusCache[sid]) {
+        try {
+          const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(csid)}?provider=codex`);
+          if (!res.ok) throw new Error('Could not load conversation');
+          const data = await res.json();
+          agentOutputBuffers[sid] = (data.messages || []).map(m =>
+            m.role === 'user' ? `\n> User: ${m.text || ''}\n` : m.text || '');
+          agentServerLines[sid] = agentOutputBuffers[sid].length;
+          agentStatusCache[sid] = { status: 'completed', projectId,
+            task: nativeRow.first_user || nativeRow.label || '', startedAt: nativeRow.ts || '',
+            provider: 'codex', providerSessionId: csid, claudeSessionId: '',
+            _nativeHistory: true, _readOnlyRevived: true };
+          if (!agentHistory.some(h => h.sessionId === sid)) {
+            agentHistory.unshift({ projectId, sessionId: sid, projectName: projectId,
+              task: nativeRow.first_user || nativeRow.label || '', status: 'completed',
+              startedAt: nativeRow.ts || '' });
+          }
+        } catch (e) {
+          showToast(e.message || 'Could not load conversation', 3500);
+          return;
+        }
+      }
+      switchAgentTab(projectId, sid);
+      return;
+    }
+  }
   // A resumed session reuses ONE mc_session_id across MULTIPLE claude
   // transcripts (e.g. a live idle tail + the completed run it continued from),
   // so several rail rows share this mcSessionId. Reusing the open tab blindly
@@ -4837,6 +4871,11 @@ async function sendFollowup(projectId, sessionId) {
   // to incognito (matters when the server falls back to dispatching fresh —
   // e.g. revive of a purged session that has no log entry).
   const sendBody = { message: fullMessage, session_id: sessionId };
+  const nativeHistory = agentStatusCache[sessionId];
+  if (nativeHistory && nativeHistory._nativeHistory) {
+    sendBody.provider = nativeHistory.provider;
+    sendBody.provider_session_id = nativeHistory.providerSessionId;
+  }
   // Forward incognito from the SESSION's own flag, not just the project toggle:
   // the toggle is now a one-shot that resets after dispatch, but this session
   // may itself be incognito. Matters when the server falls back to a fresh
@@ -4870,6 +4909,7 @@ async function sendFollowup(projectId, sessionId) {
     // is set by the push-tap reconstruct path and was never cleared).
     if (data.ok && agentStatusCache[sessionId]) {
       delete agentStatusCache[sessionId]._readOnlyRevived;
+      delete agentStatusCache[sessionId]._nativeHistory;
     }
     // If queued (Mode A follow-up while previous turn still running),
     // mark the echo so the user knows it isn't going out yet.

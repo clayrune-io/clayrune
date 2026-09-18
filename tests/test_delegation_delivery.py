@@ -1,8 +1,11 @@
 """Offline integration seams for durable child completion delivery."""
 import json
 import threading
+import time
 from unittest.mock import patch
 import pytest
+from flask import Flask
+from types import SimpleNamespace
 
 from mc.delegation_delivery import (DeliveryBlocked, DeliveryDeferred,
                                     DeliveryStore, callback_payload, drain_once,
@@ -85,6 +88,19 @@ def test_receiver_crash_reconciles_to_uncertain_without_replay(tmp_path):
     assert reopened.reconcile() == 1
     assert reopened.status('inbox', 'e1', 'p')['state'] == 'uncertain'
     assert reopened.claim_inbox() is None
+
+
+def test_submitted_ack_requires_real_write_and_is_idempotent(tmp_path):
+    store = DeliveryStore(tmp_path / 'delivery.db')
+    store.enqueue('e-ack', 'p', 'parent', payload())
+    store.accept('e-ack', 'p', 'parent', payload())
+    row = store.claim_inbox()
+    with pytest.raises(ValueError, match='stdin write acknowledgment'):
+        store.submit_inbox('e-ack', row['fence_token'], {'stdin_write_ack': 'failed'})
+    assert store.status('inbox', 'e-ack', 'p')['state'] == 'dispatch_intent'
+    store.submit_inbox('e-ack', row['fence_token'], {'stdin_write_ack': 'written'})
+    store.submit_inbox('e-ack', row['fence_token'], {'stdin_write_ack': 'written'})
+    assert store.status('inbox', 'e-ack', 'p')['state'] == 'submitted'
 
 
 def test_blocked_and_busy_parent_are_distinct_and_recoverable(tmp_path):
@@ -241,6 +257,115 @@ def test_busy_parent_defers_and_completed_mode_a_parent_is_submitted(monkeypatch
     assert ar.agent_sessions['done']['status'] == 'running'
     ar.agent_sessions.clear()
     ar.agent_sessions.update(before)
+
+
+@pytest.mark.parametrize('write_mode', ['success', 'broken_pipe', 'flush_broken_pipe', 'delayed'])
+def test_real_mode_b_followup_ack_waits_for_stdin_write(monkeypatch, tmp_path, write_mode):
+    """The durable handoff acknowledges the real writer, not thread creation."""
+    from mc.blueprints import agent_routes as ar
+
+    class FakeStdin:
+        def __init__(self):
+            self.writes = []
+
+        def write(self, value):
+            if write_mode == 'delayed':
+                time.sleep(0.03)
+            if write_mode == 'broken_pipe':
+                raise BrokenPipeError('pipe closed')
+            self.writes.append(value)
+
+        def flush(self):
+            if write_mode in ('broken_pipe', 'flush_broken_pipe'):
+                raise BrokenPipeError('pipe closed')
+
+    stdin = FakeStdin()
+    proc = SimpleNamespace(stdin=stdin, pid=12345, poll=lambda: None)
+    parent = {'project_id': 'p', 'status': 'completed', 'mode': 'B',
+              'provider': 'claude', 'agent_model': 'sonnet', 'incognito': False,
+              'process_alive': True, 'proc': proc, 'stdin_lock': threading.Lock(),
+              'log_lines': []}
+    monkeypatch.setattr(ar, 'agent_sessions', {'parent': parent})
+    monkeypatch.setattr(ar, 'load_project', lambda _: {'id': 'p', 'project_path': str(tmp_path)})
+    monkeypatch.setattr(ar, 'get_manager', lambda _: SimpleNamespace(lock=threading.RLock()))
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda _: True)
+    monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
+    monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(refresh_for_turn=lambda *args: {'block': ''}))
+    monkeypatch.setattr(ar, '_behavior_tail', SimpleNamespace(render=lambda: ''))
+    monkeypatch.setattr(ar, '_apply_mobile_brief', lambda message, data: message)
+    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', lambda _: None)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *args: None)
+
+    app = Flask('real-followup-ack')
+    app.register_blueprint(ar.bp)
+    with app.test_client() as client:
+        response = client.post('/api/project/p/agent/followup', json={
+            'message': 'delegated completion', 'session_id': 'parent',
+            '_durable_delivery_ack': True,
+        })
+
+    body = response.get_json()
+    if write_mode == 'broken_pipe':
+        assert response.status_code == 504
+        assert body['stdin_write_ack'] == 'unknown'
+        assert parent['process_alive'] is False
+        assert stdin.writes == []
+    elif write_mode == 'flush_broken_pipe':
+        assert response.status_code == 504
+        assert body['stdin_write_ack'] == 'unknown'
+        assert parent['_stdin_write_uncertain'] is True
+        assert len(stdin.writes) == 1
+    else:
+        assert response.status_code == 200
+        assert body['stdin_write_ack'] == 'written'
+        assert len(stdin.writes) == 1
+        assert stdin.writes[0].endswith('\n')
+        assert json.loads(stdin.writes[0])['message']['content'] == 'delegated completion'
+
+
+def test_real_process_inbox_acknowledges_only_after_mode_b_write(monkeypatch, tmp_path):
+    from mc.blueprints import agent_routes as ar
+
+    class FakeStdin:
+        def __init__(self):
+            self.writes = []
+        def write(self, value):
+            self.writes.append(value)
+        def flush(self):
+            pass
+
+    stdin = FakeStdin()
+    parent = {'project_id': 'p', 'status': 'completed', 'mode': 'B',
+              'provider': 'claude', 'agent_model': 'sonnet', 'incognito': False,
+              'process_alive': True,
+              'proc': SimpleNamespace(stdin=stdin, pid=12345, poll=lambda: None),
+              'stdin_lock': threading.Lock(), 'log_lines': []}
+    monkeypatch.setattr(ar, 'agent_sessions', {'parent': parent})
+    monkeypatch.setattr(ar, 'load_project', lambda _: {'id': 'p', 'project_path': str(tmp_path)})
+    monkeypatch.setattr(ar, 'get_manager', lambda _: SimpleNamespace(lock=threading.RLock()))
+    monkeypatch.setattr(ar, '_pid_is_alive', lambda _: True)
+    monkeypatch.setattr(ar, '_model_quota_blocked', lambda *args: '')
+    monkeypatch.setattr(ar, '_memory_turn', SimpleNamespace(refresh_for_turn=lambda *args: {'block': ''}))
+    monkeypatch.setattr(ar, '_behavior_tail', SimpleNamespace(render=lambda: ''))
+    monkeypatch.setattr(ar, '_apply_mobile_brief', lambda message, data: message)
+    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', lambda _: None)
+    monkeypatch.setattr(ar, '_log_agent_activity', lambda *args: None)
+
+    app = Flask('real-process-inbox')
+    app.register_blueprint(ar.bp)
+    monkeypatch.setattr(ar, '_delegation_app', app)
+    store = DeliveryStore(tmp_path / 'delivery.db')
+    monkeypatch.setattr(ar, '_delivery_store', store)
+    event = 'child:turn:real'
+    event_payload = dict(payload(), event_id=event, message='delegated completion')
+    store.enqueue(event, 'p', 'parent', event_payload)
+    store.accept(event, 'p', 'parent', event_payload)
+    row = store.claim_inbox()
+    evidence = ar._process_inbox(row)
+    assert evidence['stdin_write_ack'] == 'written'
+    assert json.loads(stdin.writes[0])['message']['content'] == 'delegated completion'
+    store.submit_inbox(event, row['fence_token'], evidence)
+    assert store.claim_inbox() is None
 
 
 @pytest.mark.parametrize('requested_model', ['gpt-5.6-luna', ''])

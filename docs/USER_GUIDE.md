@@ -63,6 +63,24 @@ Plans — extends or organizes that loop.
 
 ---
 
+### First-run provider onboarding
+
+On a fresh install, Clayrune installs the control plane first. The first-run
+walkthrough then lists every supported vendor, including CLIs that are not yet
+installed. Select one or more vendors, choose an explicit default, and use
+**Install selected** for missing CLIs. Each selected vendor remains available
+for individual agents and chats.
+
+After an install terminal finishes, click **Check setup status**. An installed
+vendor may still show **not signed in**; use its **Sign in** button and check
+status again. **Next** stays disabled until every selected vendor is installed
+and signed in and one selected vendor is the default. You can skip the
+walkthrough and complete this later from Settings.
+
+The walkthrough also works on narrow/mobile screens. Provider setup opens the
+host terminal for package installation and authentication so progress and any
+required human prompts remain visible.
+
 ## Surfaces overview
 
 ### Dashboard

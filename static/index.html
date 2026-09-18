@@ -2952,15 +2952,14 @@ function _jumpToLiveRun(projectId, sessionId) {
 
 
 async function openTranscriptViewer(projectId, csid, label, provider) {
-  const modalId = '__transcript_' + csid;
+  // Historical callers pass Claude ids. Native providers pass their owner
+  // explicitly; changing a project's default must not reinterpret old ids.
+  provider = provider || 'claude';
+  const cacheKey = `${projectId}:${provider}:${csid}`;
+  const modalId = '__transcript_' + cacheKey;
   if (openModals.has(modalId)) {
     focusModal(modalId);
     return;
-  }
-  // Derive provider from the project if not passed explicitly
-  if (!provider) {
-    const tvProj = allProjects.find(p => p.id === projectId);
-    provider = tvProj ? (tvProj.provider || 'claude') : 'claude';
   }
   const tvBadge = _providerBadge(provider);
   const win = document.createElement('div');
@@ -2980,7 +2979,7 @@ async function openTranscriptViewer(projectId, csid, label, provider) {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div id="transcript-body-${csid}" class="transcript-body">Loading transcript...</div>`;
+    <div id="transcript-body-${cacheKey}" class="transcript-body">Loading transcript...</div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
   const z = nextModalZ++;
@@ -2990,19 +2989,19 @@ async function openTranscriptViewer(projectId, csid, label, provider) {
   focusModal(modalId);
 
   try {
-    let data = _transcriptCache[csid];
+    let data = _transcriptCache[cacheKey];
     if (!data) {
-      const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(csid)}`);
+      const res = await fetch(API_BASE + `/api/project/${encodeURIComponent(projectId)}/transcript/${encodeURIComponent(csid)}?provider=${encodeURIComponent(provider)}`);
       if (!res.ok) {
         const err = await res.json().catch(() => ({}));
-        const body = document.getElementById('transcript-body-' + csid);
+        const body = document.getElementById('transcript-body-' + cacheKey);
         if (body) body.innerHTML = `<div class="transcript-empty">Could not load transcript: ${esc(err.error || res.statusText)}</div>`;
         return;
       }
       data = await res.json();
-      _transcriptCache[csid] = data;
+      _transcriptCache[cacheKey] = data;
     }
-    const body = document.getElementById('transcript-body-' + csid);
+    const body = document.getElementById('transcript-body-' + cacheKey);
     if (!body) return;
     if (!data.messages || !data.messages.length) {
       // Non-JSONL providers may return log_lines instead of structured messages
@@ -3028,7 +3027,7 @@ async function openTranscriptViewer(projectId, csid, label, provider) {
       </div>`;
     }).join('');
   } catch(e) {
-    const body = document.getElementById('transcript-body-' + csid);
+    const body = document.getElementById('transcript-body-' + cacheKey);
     if (body) body.innerHTML = `<div class="transcript-empty">Failed to load transcript.</div>`;
   }
 }

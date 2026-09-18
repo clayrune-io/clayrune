@@ -121,3 +121,20 @@ def test_codex_checkpoint_uses_native_session_and_model(monkeypatch, tmp_path):
     assert started[0]['provider_session_id'] == 'codex-thread'
     assert started[0]['csid'] == ''
     assert started[0]['model'] == ''
+
+
+def test_codex_checkpoint_delta_uses_selected_runtime_parser(tmp_path):
+    """Codex response_item lines must not be sent through Claude parsing."""
+    from mc import memory
+
+    transcript = tmp_path / 'rollout.jsonl'
+    transcript.write_text(
+        '{"type":"response_item","payload":{"type":"message",'
+        '"role":"assistant","content":[{"type":"output_text",'
+        '"text":"THE CODEX CHECKPOINT ANSWER"}]}}\n',
+        encoding='utf-8')
+
+    rendered, offset = memory._scribe_render_delta(transcript, 0, provider='codex')
+
+    assert offset == transcript.stat().st_size
+    assert rendered == 'ASSISTANT: THE CODEX CHECKPOINT ANSWER'

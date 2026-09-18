@@ -27,6 +27,7 @@ import subprocess
 import sys
 import threading
 import time as _time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 import uuid
@@ -42,6 +43,10 @@ from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional,
 # nothing from mc/, so this is a one-way, cycle-free dependency (mirrors the
 # existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
+from mc.execution_policy import (
+    Blocker, Certification, ExecutionIdentity, Profile, Readiness,
+    authorize_execution,
+)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -801,6 +806,12 @@ class AgentRuntime(ABC):
         """
         return None
 
+    # A policy certificate describes an expected boundary; it cannot enforce
+    # one.  Adapters must opt in only after their command construction and
+    # transport have been independently verified to disable tools/MCP/hooks/
+    # plugins/config inheritance.  The conservative default is refusal.
+    tool_free_transform_enforced: bool = False
+
     def stream_text(self, *, prompt: str, system_prompt: str = '',
                     model: str = '', effort: str = '', max_turns: int = 1,
                     stdin_text: Optional[str] = None,
@@ -924,11 +935,37 @@ def get_runtime(name: str) -> AgentRuntime:
     return _RUNTIMES[name]
 
 
+def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
+                              identity: Optional[ExecutionIdentity],
+                              readiness: Optional[Readiness],
+                              certification: Optional[Certification],
+                              blockers: tuple[Blocker, ...]) -> None:
+    """Authorize before either oneshot or streaming transform input delivery."""
+    if not getattr(runtime, 'tool_free_transform_enforced', False):
+        raise RuntimeError(
+            f"Provider '{provider}' cannot enforce tool-free transforms; refusing input")
+    if identity is None or readiness is None or certification is None:
+        raise RuntimeError(
+            f"Provider '{provider}' text transform lacks fresh tool-free authorization")
+    try:
+        authorize_execution(
+            identity, Profile.TOOL_FREE_TRANSFORM, readiness=readiness,
+            certification=certification, blockers=blockers,
+            required=frozenset(), now=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Provider '{provider}' text transform unauthorized: {exc}") from exc
+
+
 def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
                        model: str = '', effort: str = '',
                        stdin_text: Optional[str] = None,
                        cwd: Optional[str] = None,
-                       max_turns: int = 1) -> str:
+                       max_turns: int = 1,
+                       identity: Optional[ExecutionIdentity] = None,
+                       readiness: Optional[Readiness] = None,
+                       certification: Optional[Certification] = None,
+                       blockers: tuple[Blocker, ...] = ()) -> str:
     """Run a provider-selected, non-interactive text transform.
 
     Feature routes should not know a provider's executable or command-line
@@ -944,6 +981,9 @@ def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
     is useful for their particular artifact.
     """
     runtime = get_runtime((provider or '').strip().lower())
+    _authorize_text_transform(runtime, provider, identity=identity,
+                              readiness=readiness, certification=certification,
+                              blockers=blockers)
     fn = getattr(runtime, 'oneshot', None)
     if not callable(fn):
         raise RuntimeError(f"Provider '{provider}' does not support text transforms")
@@ -980,7 +1020,11 @@ def stream_text_transform(provider: str, *, prompt: str,
                           system_prompt: str = '', model: str = '',
                           effort: str = '', stdin_text: Optional[str] = None,
                           cwd: Optional[str] = None,
-                          max_turns: int = 1) -> Iterator[str]:
+                          max_turns: int = 1,
+                          identity: Optional[ExecutionIdentity] = None,
+                          readiness: Optional[Readiness] = None,
+                          certification: Optional[Certification] = None,
+                          blockers: tuple[Blocker, ...] = ()) -> Iterator[str]:
     """Return a provider-neutral iterator for short text streaming.
 
     The caller owns only the response protocol. Provider command construction,
@@ -988,6 +1032,9 @@ def stream_text_transform(provider: str, *, prompt: str,
     runtime without native streaming uses the base one-delta fallback.
     """
     runtime = get_runtime((provider or '').strip().lower())
+    _authorize_text_transform(runtime, provider, identity=identity,
+                              readiness=readiness, certification=certification,
+                              blockers=blockers)
     fn = getattr(runtime, 'stream_text', None)
     if not callable(fn):
         raise RuntimeError(f"Provider '{provider}' does not support text streaming")
@@ -1357,6 +1404,7 @@ class ClaudeRuntime(AgentRuntime):
     """
 
     name = 'claude'
+    tool_free_transform_enforced = True
     display_name = 'Claude Code'
     # Mirrors MC_MODEL_CHOICES in static/js/modal-manager.js (the Agent-settings
     # + chat-pill picker). Keep the two in step when a model ships or retires.
@@ -1589,13 +1637,16 @@ class ClaudeRuntime(AgentRuntime):
                         'type': 'thinking',
                         'text': block.get('thinking') or block.get('text', ''),
                     })
-            # Primary type: determined by the first content block
-            primary_type = EventType.ASSISTANT_TEXT
+            # Text is independently meaningful even when thinking/tool blocks
+            # precede it.  The old first-block classification dropped valid
+            # answers from [thinking, text] messages in the streaming helper.
+            primary_type = EventType.ASSISTANT_TEXT if any(
+                b.get('type') == 'text' for b in blocks) else EventType.THINKING
             if blocks:
                 first_bt = blocks[0].get('type', 'text')
-                if first_bt == 'tool_use':
+                if first_bt == 'tool_use' and primary_type != EventType.ASSISTANT_TEXT:
                     primary_type = EventType.TOOL_USE
-                elif first_bt == 'thinking':
+                elif first_bt == 'thinking' and primary_type != EventType.ASSISTANT_TEXT:
                     primary_type = EventType.THINKING
             return AgentEvent(
                 type=primary_type, provider='claude',
@@ -5154,6 +5205,10 @@ class CodexRuntime(AgentRuntime):
     """
 
     name = 'codex'
+    # Codex's CLI does not currently expose a certified no-tools transport.
+    # Keep this false until a canary proves the boundary; run_text_transform
+    # therefore refuses Codex before sensitive transform input is delivered.
+    tool_free_transform_enforced = False
     display_name = 'Codex CLI'
     # Verified 2026-08-31 against ~/.codex/models_cache.json from codex 0.151.
     # Internal/special-purpose entries (gpt-reserve, codex-auto-review) are not
@@ -6164,23 +6219,44 @@ class CodexRuntime(AgentRuntime):
                                     '--dangerously-bypass-approvals-and-sandbox']
         if model:
             cmd.extend(['-m', model])
+        self.last_error = ''
         try:
             r = subprocess.run(
                 cmd, input=full,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                 cwd=cwd or str(Path.home()),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout during Codex text transform'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e}'
+            return None
+        # stdout is a structured event stream; never classify answer content
+        # (for example, a perfectly valid answer mentioning "quota" or
+        # "429") as a terminal provider error.  Only a nonzero process exit is
+        # authoritative failure here; stderr is diagnostic context then.
+        tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
+        if r.returncode != 0:
+            self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
         last_text = ''
         for raw_line in (r.stdout or '').splitlines():
             ev = self.parse_event(raw_line)
-            if ev and ev.type == EventType.ASSISTANT_TEXT:
+            # parse_event intentionally turns unstructured diagnostics into a
+            # readable ASSISTANT_TEXT for interactive rendering.  A oneshot
+            # transform must be stricter: accept only a genuine structured
+            # assistant event, never a raw error line or JSON fallback.
+            if (ev and ev.type == EventType.ASSISTANT_TEXT
+                    and isinstance(ev.raw, dict)):
                 last_text = ev.payload.get('text', last_text)
-        return OneshotResult(text=last_text or (r.stdout or '').strip())
+        if not last_text:
+            self.last_error = 'Codex returned no assistant text'
+            return None
+        return OneshotResult(text=last_text)
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()

@@ -11,9 +11,9 @@ cohesive family, ~1,700 lines):
     section — hivemind-family route, moved with its family.
 
 Scoping calls:
-  • _dispatch_agent_internal is NOT used by this family (verified — the 1.9
-    terrain note said x1, but that call site is schedule_run_now's). The worker/
-    orchestrator spawn paths Popen directly + _read_agent_stream, both wired.
+  • Worker and orchestrator execution use AgentRuntime.dispatch for every
+    provider. The blueprint owns Hivemind metadata/context, while runtime
+    adapters own process launch, streaming, progress and provider errors.
   • _clayrune_universal_capabilities / _clayrune_api_reference feed
     _build_agent_context too (dispatch family, 1.12) — wired in, not moved.
   • _load_agent_log / _enrich_run_entries are agent-log/run-history family —
@@ -34,7 +34,6 @@ _start_hivemind_orchestrator, _hm_reconcile_stale_on_startup.
 """
 
 import json
-import subprocess
 import threading
 import uuid
 import time as _time
@@ -64,17 +63,13 @@ bp = Blueprint('hivemind_routes', __name__)
 load_project: Callable[[str], Any] = None  # type: ignore[assignment]
 get_manager: Callable[[str], Any] = None  # type: ignore[assignment]
 _register_process: Callable[..., Any] = None  # type: ignore[assignment]
-_read_agent_stream: Callable[..., Any] = None  # type: ignore[assignment]
-_resolve_claude: Callable[[], str] = None  # type: ignore[assignment]
-_sysprompt_file_args: Callable[..., Any] = None  # type: ignore[assignment]
-_sysprompt_cleanup: Callable[..., Any] = None  # type: ignore[assignment]
-_hide_windows_delayed: Callable[..., Any] = None  # type: ignore[assignment]
 _log_agent_activity: Callable[..., Any] = None  # type: ignore[assignment]
 _load_agent_log: Callable[[str], Any] = None  # type: ignore[assignment]
 _enrich_run_entries: Callable[..., Any] = None  # type: ignore[assignment]
 _clayrune_universal_capabilities: Callable[..., Any] = None  # type: ignore[assignment]
 _clayrune_api_reference: Callable[[], str] = None  # type: ignore[assignment]
 _clayrune_api_pointer_card: Callable[[int, str], str] = None  # type: ignore[assignment]
+_assert_runtime_project_generation: Callable[..., int] = None  # type: ignore[assignment]
 PORT: int = 0
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
@@ -90,22 +85,20 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
          hide_windows_delayed_fn, log_agent_activity_fn, load_agent_log_fn,
          enrich_run_entries_fn, clayrune_universal_capabilities_fn,
          clayrune_api_reference_fn, clayrune_api_pointer_card_fn,
+         assert_runtime_project_generation_fn,
          popen_flags, startupinfo):
     """Late-bind cross-family deps: load_project (projects family, 1.11);
-    get_manager + the process-ledger/stream-reader/spawn helpers
-    (_register_process, _read_agent_stream, _resolve_claude,
-    _sysprompt_file_args/_cleanup, _hide_windows_delayed — dispatch family,
-    1.12); _log_agent_activity + _load_agent_log + _enrich_run_entries
+    get_manager + the process-ledger helper (_register_process — dispatch
+    family, 1.12); _log_agent_activity + _load_agent_log + _enrich_run_entries
     (agent-log/run-history family); the _clayrune_* context feeders (they also
     feed _build_agent_context — dispatch, 1.12); the Popen platform consts;
     PORT; and the _DATA_ROOT-derived hivemind dir. Called once from server.py
     at import, BEFORE app.register_blueprint(bp)."""
     global HIVEMIND_DIR, PORT, load_project, get_manager, _register_process
-    global _read_agent_stream, _resolve_claude, _sysprompt_file_args
-    global _sysprompt_cleanup, _hide_windows_delayed, _log_agent_activity
+    global _log_agent_activity
     global _load_agent_log, _enrich_run_entries
     global _clayrune_universal_capabilities, _clayrune_api_reference
-    global _clayrune_api_pointer_card
+    global _clayrune_api_pointer_card, _assert_runtime_project_generation
     global _POPEN_FLAGS, _STARTUPINFO
     HIVEMIND_DIR = hivemind_dir
     HIVEMIND_DIR.mkdir(parents=True, exist_ok=True)
@@ -113,17 +106,13 @@ def wire(*, hivemind_dir, port, load_project_fn, get_manager_fn,
     load_project = load_project_fn
     get_manager = get_manager_fn
     _register_process = register_process_fn
-    _read_agent_stream = read_agent_stream_fn
-    _resolve_claude = resolve_claude_fn
-    _sysprompt_file_args = sysprompt_file_args_fn
-    _sysprompt_cleanup = sysprompt_cleanup_fn
-    _hide_windows_delayed = hide_windows_delayed_fn
     _log_agent_activity = log_agent_activity_fn
     _load_agent_log = load_agent_log_fn
     _enrich_run_entries = enrich_run_entries_fn
     _clayrune_universal_capabilities = clayrune_universal_capabilities_fn
     _clayrune_api_reference = clayrune_api_reference_fn
     _clayrune_api_pointer_card = clayrune_api_pointer_card_fn
+    _assert_runtime_project_generation = assert_runtime_project_generation_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
 
@@ -502,6 +491,16 @@ def hivemind_create():
     if not p:
         return jsonify({'error': 'project not found'}), 404
 
+    # Resolve the lifecycle generation only at creation. Dispatch/resume paths
+    # validate this saved value exactly and never resolve a current generation
+    # for an old or incomplete manifest.
+    try:
+        project_generation = _assert_runtime_project_generation(project_id, None)
+    except Exception as exc:
+        return jsonify({'error': f'project generation unavailable: {exc}'}), 409
+    if type(project_generation) is not int or project_generation < 1:
+        return jsonify({'error': 'project generation unavailable: invalid generation'}), 409
+
     hivemind_id = 'hm_' + str(uuid.uuid4())[:8]
     _hm_ensure_dirs(hivemind_id)
 
@@ -517,6 +516,7 @@ def hivemind_create():
         'status': 'active',
         'created_at': now_iso(),
         'updated_at': now_iso(),
+        'project_generation': project_generation,
         'session_count': 0,
         'config': {
             'max_concurrent_workers': data.get('max_concurrent_workers', 3),
@@ -950,16 +950,70 @@ def _hm_build_worker_context(hivemind_id, ws_id):
     return "\n\n".join(parts)
 
 
-def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
-    """Spawn a hivemind worker session. Returns session_id.
+def _hm_runtime_dispatch(*, provider_name, project_id, project_path, task,
+                         system_prompt, model, effort, session_id,
+                         session_dict, project_generation, metadata=None,
+                         callbacks=None, max_turns=None):
+    """Dispatch one Hivemind process through the provider-neutral runtime.
 
-    Routes through the AgentRuntime for non-claude projects; uses the claude
-    direct-spawn path otherwise (byte-identical argv). Claude is the default
-    provider for hivemind workers (the bus/tool protocol is claude-native).
-
-    Worker context is injected via --append-system-prompt for claude; prepended
-    to the task for other providers (context_injection='prepend').
+    The blueprint supplies only Hivemind context and durable session metadata.
+    Runtime adapters own binary resolution, process launch, stream parsing,
+    auth/quota errors, cancellation and progress. Unknown providers fail
+    closed; this helper never substitutes Claude.
     """
+    if type(project_generation) is not int or project_generation < 1:
+        raise ValueError(
+            'Hivemind manifest has no valid project_generation; refusing runtime launch')
+    if _assert_runtime_project_generation is None:
+        raise RuntimeError('Hivemind project-generation validator is not wired')
+    # Pass the persisted generation, never None: missing legacy generations
+    # fail closed instead of silently attaching to the current project run.
+    _assert_runtime_project_generation(project_id, project_generation)
+    try:
+        runtime = _agent_runtime.get_runtime(provider_name)
+    except KeyError as exc:
+        raise ValueError(
+            f"Unknown provider '{provider_name}'; no fallback attempted") from exc
+    if runtime is None:
+        raise ValueError(
+            f"Unknown provider '{provider_name}'; no fallback attempted")
+
+    mgr = get_manager(project_id)
+    mgr.ensure_guardian()
+    with mgr.lock:
+        agent_sessions[session_id] = session_dict
+        mgr.session_ids.add(session_id)
+
+    try:
+        runtime.dispatch(
+            project_path=project_path,
+            task=task,
+            system_prompt=system_prompt,
+            mode='A',
+            model=model,
+            effort=effort,
+            max_turns=max_turns,
+            mc_session_id=session_id,
+            session_dict=session_dict,
+            project_id=project_id,
+            housekeeping=True,
+            trigger_type=metadata.get('trigger_type', '') if metadata else '',
+            trigger_id=metadata.get('trigger_id', '') if metadata else '',
+            project_generation=project_generation,
+            session_metadata=metadata or {},
+            callbacks=callbacks or {},
+            register_process=_register_process,
+        )
+    except Exception:
+        # Preserve the session entry so status, failure reason and any runtime
+        # diagnostics remain visible to the caller; the runtime owns the exact
+        # provider failure text and status transition.
+        raise
+    return session_id
+
+
+def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
+    """Spawn a Hivemind worker through AgentRuntime for every provider."""
     project_id = p.get('id', '')
     pp = p.get('project_path', '')
     worker_context = _hm_build_worker_context(hivemind_id, ws_id)
@@ -983,95 +1037,7 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     max_turns = (manifest.get('config', {}).get('worker_max_turns', 0) or
                  state.CONFIG.get('agent_max_turns', 0))
 
-    if provider_name != 'claude':
-        # Non-claude: route through the runtime. Worker context prepended to
-        # task since non-claude runtimes use context_injection='prepend'.
-        try:
-            rt = _agent_runtime.get_runtime(provider_name)
-        except KeyError as exc:
-            raise ValueError(f"Unknown provider '{provider_name}'; no fallback attempted") from exc
-
-        if rt is not None:
-            task_with_ctx = f"{worker_context}\n\n---\n\n{task}"
-            pre_session = {
-                'status': 'running',
-                'task': task,
-                'log_lines': [],
-                'started_at': now_iso(),
-                'session_id': session_id,
-                'project_id': project_id,
-                'mode': 'A',
-                'housekeeping': True,
-                'hivemind_id': hivemind_id,
-                'hivemind_ws_id': ws_id,
-                'trigger_type': 'hivemind_worker',
-                'trigger_id': ws_id,
-                'provider': provider_name,
-                'model': model,
-                'effort': effort,
-                'requested_effort': effort,
-                'process_alive': True,
-                'last_output_time': _time.time(),
-                'last_status_change_time': _time.time(),
-                'guardian_state': None,
-                'recovery_attempts': 0,
-                'last_recovery_time': 0,
-                'pending_recovery_message': None,
-                'circuit_breaker_tripped': False,
-                '_dispatch_time': _time.time(),
-            }
-            mgr = get_manager(project_id)
-            mgr.ensure_guardian()
-            with mgr.lock:
-                agent_sessions[session_id] = pre_session
-                mgr.session_ids.add(session_id)
-            rt.dispatch(
-                project_path=pp,
-                task=task_with_ctx,
-                system_prompt='',
-                mode='A',
-                model=model,
-                effort=effort,
-                max_turns=(int(max_turns) if max_turns and int(max_turns) > 0 else None),
-                mc_session_id=session_id,
-                session_dict=pre_session,
-                project_id=project_id,
-                register_process=_register_process,
-            )
-            return session_id
-
-    # Claude path (byte-identical) — _resolve_claude() delegates to ClaudeRuntime.
-    _sp_args, _sp_path = _sysprompt_file_args(worker_context)
-    cmd = [_resolve_claude(), '-p', task, '--print', '--verbose',
-           '--output-format', 'stream-json',
-           '--dangerously-skip-permissions',
-           *_sp_args]
-    if model:
-        cmd.extend(['--model', model])
-    if effort:
-        cmd.extend(['--effort', str(effort)])
-    if max_turns and int(max_turns) > 0:
-        cmd.extend(['--max-turns', str(int(max_turns))])
-
-    proc = subprocess.Popen(
-        cmd,
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
-        cwd=pp,
-        text=True,
-        encoding='utf-8',
-        errors='replace',
-        creationflags=_POPEN_FLAGS,
-        startupinfo=_STARTUPINFO,
-    )
-    _sysprompt_cleanup(_sp_path, proc)
-    threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
-    _register_process(proc, f'Hivemind Worker ({ws.get("title", ws_id)[:30]})',
-                      'hivemind_worker', session_id, project_id, task[:80])
-
-    session = {
-        'proc': proc,
+    pre_session = {
         'status': 'running',
         'task': task,
         'log_lines': [],
@@ -1088,15 +1054,30 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
         'model': model,
         'effort': effort,
         'requested_effort': effort,
+        'process_alive': True,
+        'last_output_time': _time.time(),
+        'last_status_change_time': _time.time(),
+        'guardian_state': None,
+        'recovery_attempts': 0,
+        'last_recovery_time': 0,
+        'pending_recovery_message': None,
+        'circuit_breaker_tripped': False,
+        '_dispatch_time': _time.time(),
     }
-    mgr = get_manager(project_id)
-    mgr.ensure_guardian()
-    with mgr.lock:
-        agent_sessions[session_id] = session
-        mgr.session_ids.add(session_id)
-
-    threading.Thread(target=_read_agent_stream, args=(proc, session), daemon=True).start()
-    return session_id
+    metadata = {
+        'hivemind_id': hivemind_id,
+        'hivemind_ws_id': ws_id,
+        'trigger_type': 'hivemind_worker',
+        'trigger_id': ws_id,
+        'housekeeping': True,
+    }
+    return _hm_runtime_dispatch(
+        provider_name=provider_name, project_id=project_id, project_path=pp,
+        task=task, system_prompt=worker_context, model=model, effort=effort,
+        session_id=session_id, session_dict=pre_session,
+        project_generation=manifest.get('project_generation'),
+        metadata=metadata,
+        max_turns=(int(max_turns) if max_turns and int(max_turns) > 0 else None))
 
 
 @bp.route('/api/hivemind/<hivemind_id>/workstreams/<ws_id>/spawn', methods=['POST'])
@@ -1316,110 +1297,41 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
             },
         })
 
-    if engine.provider != 'claude':
-        def _run_runtime():
-            try:
-                rt = _agent_runtime.get_runtime(engine.provider)
-                pre_session = {
-                    'status': 'running', 'task': f'Hivemind orchestrator: {task_type}',
-                    'log_lines': [], 'started_at': now_iso(),
-                    'session_id': session_id, 'project_id': project_id, 'mode': 'A',
-                    'housekeeping': True, 'hivemind_id': hivemind_id,
-                    'hivemind_role': 'orchestrator',
-                    'trigger_type': 'hivemind_orchestrator', 'trigger_id': hivemind_id,
-                    'provider': engine.provider, 'model': model, 'effort': effort,
-                    'requested_effort': effort,
-                    'process_alive': True, 'last_output_time': _time.time(),
-                    'last_status_change_time': _time.time(), '_dispatch_time': _time.time(),
-                }
-                mgr = get_manager(project_id)
-                mgr.ensure_guardian()
-                with mgr.lock:
-                    agent_sessions[session_id] = pre_session
-                    mgr.session_ids.add(session_id)
+    def _on_exit(*_args, **_kwargs):
+        _orchestrator_done()
+        with _hivemind_orch_lock:
+            _hivemind_orchestrating.discard(hivemind_id)
 
-                def _on_exit(*_args, **_kwargs):
-                    _orchestrator_done()
-                    with _hivemind_orch_lock:
-                        _hivemind_orchestrating.discard(hivemind_id)
-
-                rt.dispatch(
-                    project_path=pp, task=prompt, system_prompt='', mode='A',
-                    model=model, effort=effort, mc_session_id=session_id,
-                    max_turns=5,
-                    session_dict=pre_session, project_id=project_id,
-                    housekeeping=True,
-                    trigger_type='hivemind_orchestrator',
-                    register_process=_register_process,
-                    callbacks={'on_process_exit': _on_exit},
-                )
-            except Exception as e:
-                _log(f"[hivemind-orchestrator-runtime] error: {e}")
-                with _hivemind_orch_lock:
-                    _hivemind_orchestrating.discard(hivemind_id)
-
-        threading.Thread(target=_run_runtime, daemon=True).start()
-        return session_id
-
-    cmd = [_resolve_claude(), '-p', prompt, '--max-turns', '5',
-           '--print', '--verbose', '--output-format', 'stream-json',
-           '--dangerously-skip-permissions']
-    if model:
-        cmd.extend(['--model', model])
-    if effort:
-        cmd.extend(['--effort', effort])
+    pre_session = {
+        'status': 'running', 'task': f'Hivemind orchestrator: {task_type}',
+        'log_lines': [], 'started_at': now_iso(),
+        'session_id': session_id, 'project_id': project_id, 'mode': 'A',
+        'housekeeping': True, 'hivemind_id': hivemind_id,
+        'hivemind_role': 'orchestrator',
+        'trigger_type': 'hivemind_orchestrator', 'trigger_id': hivemind_id,
+        'provider': engine.provider, 'model': model, 'effort': effort,
+        'requested_effort': effort,
+        'process_alive': True, 'last_output_time': _time.time(),
+        'last_status_change_time': _time.time(), '_dispatch_time': _time.time(),
+    }
 
     def _run():
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.DEVNULL,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                cwd=pp,
-                text=True,
-                encoding='utf-8',
-                errors='replace',
-                creationflags=_POPEN_FLAGS,
-                startupinfo=_STARTUPINFO,
-            )
-            threading.Thread(target=_hide_windows_delayed, args=(proc.pid,), daemon=True).start()
-            _register_process(proc, f'Hivemind Orchestrator ({task_type})', 'hivemind_orchestrator',
-                              session_id, project_id, f'Hivemind orchestrator: {task_type}')
-
-            session = {
-                'proc': proc,
-                'status': 'running',
-                'task': f'Hivemind orchestrator: {task_type}',
-                'log_lines': [],
-                'started_at': now_iso(),
-                'session_id': session_id,
-                'project_id': project_id,
-                'mode': 'A',
-                'housekeeping': True,
-                'hivemind_id': hivemind_id,
-                'hivemind_role': 'orchestrator',
-                'trigger_type': 'hivemind_orchestrator',
-                'trigger_id': hivemind_id,
-                'provider': engine.provider,
-                'model': model,
-                'effort': effort,
-                'requested_effort': effort,
-            }
-            mgr = get_manager(project_id)
-            mgr.ensure_guardian()
-            with mgr.lock:
-                agent_sessions[session_id] = session
-                mgr.session_ids.add(session_id)
-
-            _read_agent_stream(proc, session)
-
-            # After orchestrator finishes, push SSE update
-            _orchestrator_done()
-
+            _hm_runtime_dispatch(
+                provider_name=engine.provider, project_id=project_id,
+                project_path=pp, task=prompt, system_prompt='', model=model,
+                effort=effort, session_id=session_id, session_dict=pre_session,
+                project_generation=manifest.get('project_generation'),
+                metadata={
+                    'hivemind_id': hivemind_id,
+                    'hivemind_role': 'orchestrator',
+                    'trigger_type': 'hivemind_orchestrator',
+                    'trigger_id': hivemind_id,
+                    'housekeeping': True,
+                },
+                callbacks={'on_process_exit': _on_exit}, max_turns=5)
         except Exception as e:
-            _log(f"[hivemind-orchestrator-cli] error: {e}")
-        finally:
+            _log(f"[hivemind-orchestrator-runtime] error: {e}")
             with _hivemind_orch_lock:
                 _hivemind_orchestrating.discard(hivemind_id)
 

@@ -402,6 +402,11 @@ class DeliveryStore:
 
     def submit_inbox(self, event_id: str, token: str, evidence: dict[str, Any]) -> None:
         """Record that parent submission was accepted; not task success."""
+        # A durable Mode-B handoff must carry proof that the real stdin write
+        # completed.  The legacy marker remains valid for Mode-A parents.
+        write_ack = evidence.get('stdin_write_ack')
+        if write_ack is not None and write_ack not in ('written', 'legacy'):
+            raise ValueError('parent submission lacks a successful stdin write acknowledgment')
         with self._db() as db:
             db.execute('BEGIN IMMEDIATE')
             db.execute("UPDATE inbox SET state='submitted',lease_until=0,last_error=?,submit_evidence=? "

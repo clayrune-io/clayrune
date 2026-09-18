@@ -535,65 +535,15 @@ function Exit-WithContact {
     [Environment]::Exit($Code)
 }
 
-# -- Which AI do you work with? ----------------------------------------------
-#
-# Asked ONCE, here, at install time -- not as an in-app popup an existing
-# user gets ambushed by on a routine dashboard refresh (Ron 2026-09-14).
-# Settings -> Default provider remains the place to change it later.
+# Optional provider override
+# Provider selection, CLI installation, and login belong to the first-run UI.
 $ProviderChoices = @('claude', 'codex', 'gemini', 'qwen')
-$ProviderLabels = @{ claude = 'Claude Code'; codex = 'OpenAI Codex'; gemini = 'Gemini'; qwen = 'Qwen Code' }
-
-function Get-InstalledProviders {
-    $found = @()
-    foreach ($p in $ProviderChoices) {
-        if (Get-Command $p -ErrorAction SilentlyContinue) { $found += $p }
-    }
-    return $found
-}
 
 $ChosenProvider = $env:CLAYRUNE_PROVIDER
 if ($ChosenProvider) { $ChosenProvider = $ChosenProvider.Trim().ToLower() }
 if ($ChosenProvider -and ($ProviderChoices -notcontains $ChosenProvider)) {
     Write-Host "CLAYRUNE_PROVIDER=$ChosenProvider is not one of: $($ProviderChoices -join ', ')" -ForegroundColor Red
     Exit-WithContact 1
-}
-if (-not $ChosenProvider -and $false) {
-    # @(...) is LOAD-BEARING: PowerShell unwraps a single-element array return
-    # to a bare scalar, so with exactly one CLI installed `$installedProvs`
-    # would be the STRING 'codex' and `$installedProvs[0]` would index its
-    # first CHARACTER ('c'), not the array's first element. Verified live -
-    # without this, a one-CLI machine silently defaulted to "c".
-    $installedProvs = @(Get-InstalledProviders)
-    $defaultProv = if ($installedProvs.Count -gt 0) { $installedProvs[0] } else { '' }
-
-    # `iwr ... -useb | iex` still leaves Read-Host talking to the real
-    # console (unlike a POSIX pipe, PowerShell pipes objects, not stdin), so
-    # this works over the normal curl-equivalent install command. Only skip
-    # it when there is provably no one to ask: CLAYRUNE_NO_CONFIRM (already
-    # the "don't wait on me" signal) or genuinely redirected input (CI, a
-    # scheduled task, ClayruneInstaller.exe piping stdin).
-    if ($env:CLAYRUNE_NO_CONFIRM -or [Console]::IsInputRedirected) {
-        $ChosenProvider = $defaultProv
-        Write-Host "Non-interactive install: defaulting provider to $ChosenProvider (set CLAYRUNE_PROVIDER to override)."
-    } else {
-        Write-Host 'Which AI do you work with?' -ForegroundColor White
-        foreach ($p in $ProviderChoices) {
-            $mark = if ($p -eq $defaultProv) { ' (detected)' } else { '' }
-            Write-Host "  $($ProviderLabels[$p])$mark"
-        }
-        $ans = ''
-        try { $ans = Read-Host "Type one of [claude/codex/gemini/qwen], or press Enter for $defaultProv" } catch { $ans = '' }
-        $ans = ("$ans").Trim().ToLower()
-        if ([string]::IsNullOrWhiteSpace($ans)) {
-            $ChosenProvider = $defaultProv
-        } elseif ($ProviderChoices -contains $ans) {
-            $ChosenProvider = $ans
-        } else {
-            Write-Host "Unrecognized choice '$ans' - using $defaultProv." -ForegroundColor Yellow
-            $ChosenProvider = $defaultProv
-        }
-    }
-    Write-Host ''
 }
 if ($ChosenProvider) {
     Write-Host "OK Explicit provider: $ChosenProvider" -ForegroundColor Green

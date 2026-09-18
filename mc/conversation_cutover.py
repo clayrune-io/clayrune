@@ -125,7 +125,9 @@ class ConversationCutover:
         if (selection.source != 'canonical' or selection.canonical is None
                 or not selection.canonical.complete):
             return None
-        return _scribe_projection_lines(selection.canonical, detail_limit=4000)
+        # Display is a history consumer, not a model prompt budget. Keep the
+        # captured text intact; Scribe applies its own explicit detail limit.
+        return _scribe_projection_lines(selection.canonical, detail_limit=None)
 
     def agent_log(self, project_id: str) -> tuple[CanonicalLogRow, ...]:
         store = self._store() if self.policy.enabled else None
@@ -319,8 +321,8 @@ def read_history_with_cutover(store: ConversationStore, project_id: str,
                           policy=policy)
 
 
-def _shorten(text: str, limit: int) -> str:
-    if len(text) <= limit:
+def _shorten(text: str, limit: int | None) -> str:
+    if limit is None or len(text) <= limit:
         return text
     left = limit // 2
     right = limit - left
@@ -332,7 +334,7 @@ def _render_value(value: Any) -> str:
         value, ensure_ascii=False, sort_keys=True, allow_nan=False)
 
 
-def _scribe_projection_lines(history: CanonicalHistory, *, detail_limit: int) -> tuple[str, ...]:
+def _scribe_projection_lines(history: CanonicalHistory, *, detail_limit: int | None) -> tuple[str, ...]:
     """Render the structured projection without provider-specific inference."""
     result: list[str] = []
     for block in scribe_input(history.projection).blocks:

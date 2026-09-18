@@ -59,25 +59,9 @@ _clayrune_exit_footer() {
 }
 trap _clayrune_exit_footer EXIT
 
-# ── Which AI do you work with? ─────────────────────────────────────────────
-#
-# Asked ONCE, here, at install time. Ron 2026-09-14: an existing user got
-# ambushed by this as an in-app popup on a routine dashboard refresh — the
-# question belongs at install, not as a surprise inside a running app.
-# Settings -> Default provider remains the place to change it later.
+# Optional provider override
+# Provider selection, CLI installation, and login belong to the first-run UI.
 _PROVIDER_CHOICES="claude codex gemini qwen"
-
-_detect_installed_providers() {
-  # Space-separated, in prompt order. Not a full auth check — the app's own
-  # auth banner (provider-auth.js) already surfaces sign-in state once it's
-  # running, for whichever provider ends up in_use.
-  out=""
-  command -v claude >/dev/null 2>&1 && out="$out claude"
-  command -v codex  >/dev/null 2>&1 && out="$out codex"
-  command -v gemini >/dev/null 2>&1 && out="$out gemini"
-  command -v qwen   >/dev/null 2>&1 && out="$out qwen"
-  printf '%s' "$out" | sed 's/^ //'
-}
 
 CHOSEN_PROVIDER="${CLAYRUNE_PROVIDER:-}"
 if [ -n "$CHOSEN_PROVIDER" ]; then
@@ -88,64 +72,6 @@ if [ -n "$CHOSEN_PROVIDER" ]; then
       exit 1
       ;;
   esac
-fi
-
-if [ -z "$CHOSEN_PROVIDER" ] && false; then
-  _installed_provs=$(_detect_installed_providers)
-  _default_prov=$(printf '%s' "$_installed_provs" | awk '{print $1}')
-  [ -n "$_default_prov" ] || _default_prov=""
-
-  # A `curl | sh` pipe means stdin IS the script, not a terminal — read the
-  # answer from the controlling tty instead (same trick rustup/nvm use).
-  # CLAYRUNE_NO_CONFIRM doubles as "don't wait on me" here: CI sets it and
-  # has no controlling tty anyway, but this is a belt-and-suspenders guard
-  # against ever blocking an unattended run on a read that will never come.
-  _tty_src=""
-  if [ -z "${CLAYRUNE_NO_CONFIRM:-}" ]; then
-    if [ -t 0 ]; then
-      _tty_src="stdin"
-    elif [ -r /dev/tty ] 2>/dev/null; then
-      _tty_src="/dev/tty"
-    fi
-  fi
-
-  if [ -n "$_tty_src" ]; then
-    printf "%sWhich AI do you work with?%s\n" "$B" "$R"
-    for p in $_PROVIDER_CHOICES; do
-      case "$p" in
-        claude) label="Claude Code" ;;
-        codex)  label="OpenAI Codex" ;;
-        gemini) label="Gemini" ;;
-        qwen)   label="Qwen Code" ;;
-      esac
-      mark=""
-      [ "$p" = "$_default_prov" ] && mark=" (detected)"
-      printf "  %s%s%s\n" "$label" "$mark" ""
-    done
-    printf "Type one of [claude/codex/gemini/qwen], or press Enter for %s%s%s: " "$C" "$_default_prov" "$R"
-    _prov_ans=""
-    if [ "$_tty_src" = "stdin" ]; then
-      read -r _prov_ans || _prov_ans=""
-    else
-      # `-r /dev/tty` can lie (true) in a headless container with no
-      # controlling terminal — the node exists but opening it fails with
-      # ENXIO. Group-redirect stderr so that failure stays silent; the
-      # empty-answer fallback below still lands on $_default_prov either way.
-      { read -r _prov_ans < /dev/tty; } 2>/dev/null || _prov_ans=""
-    fi
-    case "$_prov_ans" in
-      "") CHOSEN_PROVIDER="$_default_prov" ;;
-      claude|codex|gemini|qwen) CHOSEN_PROVIDER="$_prov_ans" ;;
-      *)
-        printf "%sUnrecognized choice %s — using %s.%s\n" "$Y" "$_prov_ans" "$_default_prov" "$R"
-        CHOSEN_PROVIDER="$_default_prov"
-        ;;
-    esac
-  else
-    CHOSEN_PROVIDER="$_default_prov"
-    printf "Non-interactive install: defaulting provider to %s%s%s (set CLAYRUNE_PROVIDER to override).\n" "$C" "$CHOSEN_PROVIDER" "$R"
-  fi
-  printf "\n"
 fi
 if [ -n "$CHOSEN_PROVIDER" ]; then
   printf "%sOK%s Explicit provider: %s\n\n" "$G" "$R" "$CHOSEN_PROVIDER"

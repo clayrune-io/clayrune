@@ -3,6 +3,9 @@
 let wtActive = false;
 let wtStep = 0;
 let wtDontShow = false;
+let wtSelectedProviders = new Set();
+let wtExplicitDefault = '';
+let wtProviderChoiceVisited = false;
 
 const WT_STEPS = [
   {
@@ -24,8 +27,10 @@ const WT_STEPS = [
       // report 2026-09-15: a 2-provider list with the 3rd silently missing).
       const provs = (_agentProviders || []).slice()
         .sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
-      const cur = (_globalConfig && _globalConfig.default_provider) || 'claude';
-      return `Clayrune drives whichever coding agent you sign in with. Pick one — you can change this any time in Settings, or per-chat in the composer.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+      const cur = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider) || '';
+      if (!wtProviderChoiceVisited && cur) wtSelectedProviders.add(cur);
+      wtProviderChoiceVisited = true;
+      return `Choose one or more vendors to set up. Pick one default; every selected vendor stays available per agent and per chat.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
         provs.map(p => {
           const state = _wtProviderState(p);
           const installBtn = p.installed ? '' : `
@@ -34,16 +39,25 @@ const WT_STEPS = [
           return `
           <div>
             <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
-              <input type="radio" name="wt-provider" value="${esc(p.name)}" ${cur === p.name ? 'checked' : ''}
-                onchange="wtSetDefaultProvider('${esc(p.name)}')"
+              <input type="checkbox" name="wt-provider" value="${esc(p.name)}" ${wtSelectedProviders.has(p.name) ? 'checked' : ''}
+                onchange="wtSelectProvider('${esc(p.name)}',this.checked)"
                 style="width:15px;height:15px;accent-color:var(--accent)">
               <span style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
               <span style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
               ${installBtn}
             </label>
+            ${wtSelectedProviders.has(p.name) ? `<div style="display:flex;gap:10px;align-items:center;padding:4px 8px">
+              <label><input type="radio" name="wt-provider-default" ${cur === p.name ? 'checked' : ''}
+                onchange="wtSetDefaultProvider('${esc(p.name)}')"> Default</label>
+              ${p.installed && p.auth_status !== 'ok' ? `<button type="button" class="btn-add"
+                onclick="settingsProviderTerminalLogin('${esc(p.name)}',this)">Sign in</button>` : ''}
+            </div>` : ''}
             <div id="wt-install-msg-${esc(p.name)}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
           </div>`;
-        }).join('') + `</div>`;
+        }).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
+          <button type="button" class="btn-add" onclick="wtInstallSelectedProviders(this)">Install selected</button>
+          <button type="button" class="btn-add" onclick="wtRefreshProviders()">Check setup status</button>
+        </div><div id="wt-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`;
     },
     target: null, pos: 'center',
     // Skip ONLY when the installer already wrote default_provider into
@@ -52,7 +66,7 @@ const WT_STEPS = [
     // step exists to avoid. Does NOT skip on "only one CLI installed" (or
     // zero) any more: that was exactly the fresh-Mac-.app case where nothing
     // is installed yet and the user still needs to see the install offer.
-    skip: () => !!(_globalConfig && _globalConfig.default_provider),
+    skip: () => !wtProviderChoiceVisited && !!(_globalConfig && _globalConfig.default_provider),
   },
   {
     id: 'advanced-picker',
@@ -166,7 +180,9 @@ const WT_STEPS = [
 // Provider-choice step handler. Reuses the generic saveSetting() PUT that
 // Settings -> Default provider already calls — one write path, not two.
 async function wtSetDefaultProvider(name) {
+  if (!wtSelectedProviders.has(name)) return;
   await saveSetting('default_provider', name);
+  wtExplicitDefault = name;
   // First-run follows the user's choice immediately. Refresh the provider
   // inventory (its `default`/`in_use` flags predate this click), then run the
   // same selected-provider auth check used at boot so Codex never produces a
@@ -174,6 +190,24 @@ async function wtSetDefaultProvider(name) {
   _agentProviders = null;
   try { await _ensureAgentProviders(); } catch (e) { /* auth refresh still uses config */ }
   if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
+}
+
+function wtSelectProvider(name, selected) {
+  if (selected) wtSelectedProviders.add(name);
+  else wtSelectedProviders.delete(name);
+  if (wtActive) wtShow(wtStep);
+}
+
+async function wtInstallSelectedProviders(button) {
+  if (button) button.disabled = true;
+  try {
+    for (const provider of (_agentProviders || [])) {
+      if (wtSelectedProviders.has(provider.name) && !provider.installed)
+        await wtInstallProvider(provider.name, null);
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
 }
 
 // Per-provider state label for the provider-choice step — same three states
@@ -643,7 +677,19 @@ function wtPositionCard(targetEl, cardEl, pos) {
   cardEl.style.top = top + 'px';
 }
 
-function wtNext() { if (wtStep < WT_STEPS.length - 1) wtShow(wtStep + 1); else wtEnd(); }
+function wtNext() {
+  if (WT_STEPS[wtStep].id === 'provider-choice') {
+    const selected = (_agentProviders || []).filter(p => wtSelectedProviders.has(p.name));
+    const defaultProvider = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider);
+    if (!selected.length || !wtSelectedProviders.has(defaultProvider)
+        || selected.some(p => !p.installed || p.auth_status !== 'ok')) {
+      const el = document.getElementById('wt-provider-validation');
+      if (el) el.textContent = 'Choose a default, install every selected vendor, then sign in and check setup status. You can also skip the tour and finish setup later.';
+      return;
+    }
+  }
+  if (wtStep < WT_STEPS.length - 1) wtShow(wtStep + 1); else wtEnd();
+}
 function wtBack() {
   let prev = wtStep - 1;
   while (prev > 0 && WT_STEPS[prev].skip && WT_STEPS[prev].skip()) prev--;
@@ -683,6 +729,8 @@ window.wtBack = wtBack; // interop: wt-card generated onclick (Back)
 window.wtSkip = wtSkip; // interop: wt-card generated onclick (Skip)
 window.wtEnd = wtEnd;   // interop: wt-card generated onclick (Get Started)
 window.wtSetDefaultProvider = wtSetDefaultProvider; // interop: provider-choice step's generated onchange
+window.wtSelectProvider = wtSelectProvider; // interop: provider selection checkboxes
+window.wtInstallSelectedProviders = wtInstallSelectedProviders; // interop: install selected button
 window.wtInstallProvider = wtInstallProvider; // interop: provider-choice step's generated Install button onclick
 window.wtRefreshProviders = wtRefreshProviders; // interop: wtInstallProvider's generated Refresh button onclick
 // interop: the "Don't show this again" checkbox writes `wtDontShow=this.checked`

@@ -16,6 +16,7 @@ not a silent expansion of a broad file allowlist.
 from __future__ import annotations
 
 import ast
+import pytest
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable
@@ -97,37 +98,37 @@ class AllowlistedException:
 # these functions gets a new line number and fails until somebody documents
 # why it must remain and when it will be removed.
 ALLOWLIST: tuple[AllowlistedException, ...] = (
-    AllowlistedException("mc/blueprints/agent_routes.py", 1852,
+    AllowlistedException("mc/blueprints/agent_routes.py", 1853,
                          "inference-subprocess", "agent-runtime owner",
                          "move Claude auth probing behind Runtime.auth_status"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 4359,
+    AllowlistedException("mc/blueprints/agent_routes.py", 4362,
                          "inference-subprocess", "agent-runtime owner",
                          "remove legacy Claude auto-recovery after generic resume is complete"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 4399,
+    AllowlistedException("mc/blueprints/agent_routes.py", 4402,
                          "inference-subprocess", "agent-runtime owner",
                          "remove legacy Claude auto-recovery after generic resume is complete"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 4879,
+    AllowlistedException("mc/blueprints/agent_routes.py", 4882,
                          "inference-subprocess", "agent-runtime owner",
                          "route cold revival through the durable provider-neutral lifecycle"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 4981,
+    AllowlistedException("mc/blueprints/agent_routes.py", 4984,
                          "inference-subprocess", "agent-runtime owner",
                          "route cold revival through the durable provider-neutral lifecycle"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 6154,
+    AllowlistedException("mc/blueprints/agent_routes.py", 6168,
                          "inference-subprocess", "agent-runtime owner",
                          "route follow-up turns through the provider runtime"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 7496,
+    AllowlistedException("mc/blueprints/agent_routes.py", 7531,
                          "inference-subprocess", "agent-runtime owner",
                          "delete the legacy Claude dispatch path after runtime parity"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 7637,
+    AllowlistedException("mc/blueprints/agent_routes.py", 7677,
                          "inference-subprocess", "agent-runtime owner",
                          "delete the legacy Claude dispatch path after runtime parity"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 8943,
+    AllowlistedException("mc/blueprints/agent_routes.py", 9028,
                          "inference-subprocess", "agent-runtime owner",
                          "delete the legacy Claude follow-up path after runtime parity"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 9205,
+    AllowlistedException("mc/blueprints/agent_routes.py", 9290,
                          "inference-subprocess", "agent-runtime owner",
                          "delete the legacy Claude interrupt respawn after runtime parity"),
-    AllowlistedException("mc/blueprints/agent_routes.py", 9256,
+    AllowlistedException("mc/blueprints/agent_routes.py", 9341,
                          "inference-subprocess", "agent-runtime owner",
                          "delete the legacy Claude interrupt respawn after runtime parity"),
     AllowlistedException("mc/memory.py", 4804,
@@ -163,6 +164,9 @@ class _Scanner(ast.NodeVisitor):
         self.findings: list[Finding] = []
         self.functions: list[str] = []
         self.tainted_names: set[str] = set()
+        self.subprocess_modules = {'subprocess'}
+        self.subprocess_functions: set[str] = set()
+        self.runtime_factories = {'get_runtime'}
 
     @property
     def function(self) -> str:
@@ -177,8 +181,13 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_ImportFrom(self, node: ast.ImportFrom) -> None:
         module = node.module or ""
+        if module == 'subprocess':
+            self.subprocess_functions.update(alias.asname or alias.name for alias in node.names
+                if alias.name in {'Popen', 'run', 'call', 'check_output', 'check_call'})
         if module in {"mc.agent_runtime", "agent_runtime"}:
             for alias in node.names:
+                if alias.name == 'get_runtime':
+                    self.runtime_factories.add(alias.asname or alias.name)
                 if alias.name in _CONCRETE_RUNTIME_NAMES:
                     self.findings.append(Finding(
                         self.path, node.lineno, self.function,
@@ -191,6 +200,8 @@ class _Scanner(ast.NodeVisitor):
 
     def visit_Import(self, node: ast.Import) -> None:
         for alias in node.names:
+            if alias.name == 'subprocess':
+                self.subprocess_modules.add(alias.asname or alias.name)
             if alias.name in _RAW_VENDOR_MODULES:
                 self.findings.append(Finding(
                     self.path, node.lineno, self.function,
@@ -210,19 +221,32 @@ class _Scanner(ast.NodeVisitor):
         self.generic_visit(node)
 
     def visit_Call(self, node: ast.Call) -> None:
-        if (isinstance(node.func, ast.Attribute)
+        is_subprocess = (isinstance(node.func, ast.Attribute)
                 and isinstance(node.func.value, ast.Name)
-                and node.func.value.id == "subprocess"
-                and node.func.attr in {"Popen", "run", "call", "check_output", "check_call"}):
+                and node.func.value.id in self.subprocess_modules
+                and node.func.attr in {"Popen", "run", "call", "check_output", "check_call"})
+        is_subprocess = is_subprocess or (isinstance(node.func, ast.Name)
+                and node.func.id in self.subprocess_functions)
+        if is_subprocess:
             provider_args = any(
                 (isinstance(arg, ast.Name) and arg.id in self.tainted_names)
                 or _text_has_provider(arg)
-                for arg in node.args
+                for arg in list(node.args) + [kw.value for kw in node.keywords if kw.arg == 'args']
             )
             if provider_args:
                 self.findings.append(Finding(
                     self.path, node.lineno, self.function,
-                    "inference-subprocess", f"subprocess.{node.func.attr}"))
+                    "inference-subprocess", ast.unparse(node.func)))
+        if (isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Call)
+                and node.func.attr in {'oneshot', 'oneshot_via_hook', 'dispatch',
+                                       'write_followup', 'stream_text_transform'}):
+            factory = node.func.value
+            factory_name = (factory.func.id if isinstance(factory.func, ast.Name)
+                            else factory.func.attr if isinstance(factory.func, ast.Attribute) else '')
+            if factory_name in self.runtime_factories and any(
+                    _text_has_provider(arg) for arg in list(factory.args) + [kw.value for kw in factory.keywords]):
+                self.findings.append(Finding(self.path, node.lineno, self.function,
+                                             'concrete-runtime-call', ast.unparse(node.func)))
         self.generic_visit(node)
 
 
@@ -269,6 +293,20 @@ def test_new_provider_subprocess_is_detected(tmp_path: Path) -> None:
     )
     finding = scan_modules((path,), root=tmp_path)
     assert [(item.kind, item.line) for item in finding] == [("inference-subprocess", 4)]
+
+
+@pytest.mark.parametrize('source,kind', [
+    ("import subprocess as sp\nsp.run(['codex', 'exec'])\n", 'inference-subprocess'),
+    ("from subprocess import Popen as spawn\nspawn(['qwen'])\n", 'inference-subprocess'),
+    ("import subprocess\nsubprocess.run(args=['claude', '-p', 'x'])\n", 'inference-subprocess'),
+    ("from mc.agent_runtime import get_runtime\nget_runtime('claude').oneshot(prompt='x')\n", 'concrete-runtime-call'),
+])
+def test_fenn_escape_shapes_are_detected(tmp_path: Path, source: str, kind: str) -> None:
+    path = tmp_path / 'mc' / 'blueprints' / 'feature.py'
+    path.parent.mkdir(parents=True)
+    path.write_text(source, encoding='utf-8')
+    findings = scan_modules((path,), root=tmp_path)
+    assert any(f.kind == kind for f in findings)
 
 
 def test_concrete_runtime_and_raw_parser_imports_are_detected(tmp_path: Path) -> None:

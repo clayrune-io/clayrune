@@ -31,6 +31,7 @@ import json
 import os
 import re
 import subprocess
+import tempfile
 import math as _math
 import threading
 import time as _time
@@ -3549,7 +3550,7 @@ def _checkpoint_worker(snap):
                     (r or {}).get('canonical_sequence', 0) or 0):
                 return
         else:
-            delta, new_off = _scribe_render_delta(tf, prev_off)
+            delta, new_off = _scribe_render_delta(tf, prev_off, provider=provider)
             if not delta.strip() or new_off == prev_off:
                 return  # nothing new complete; retry next boundary (offset kept)
         model = (str(snap['model']) if 'model' in snap
@@ -3889,7 +3890,7 @@ def _render_log_lines_as_transcript(log_lines):
     return '\n'.join(out)
 
 
-def _scribe_render_delta(path, byte_offset):
+def _scribe_render_delta(path, byte_offset, provider='claude'):
     """Step 6: render ONLY the transcript bytes after `byte_offset`.
 
     Returns (rendered_text, new_byte_offset). new_byte_offset is the position
@@ -3919,6 +3920,27 @@ def _scribe_render_delta(path, byte_offset):
         return '', byte_offset  # no complete line yet
     consumed = blob[:last_nl].decode('utf-8', errors='replace')
     new_offset = byte_offset + last_nl + 1
+    if (provider or 'claude').lower() not in ('', 'claude'):
+        # Provider rollouts are not Claude's `{message: {content: [...]}}`
+        # shape. Reuse the selected runtime's authoritative parser against
+        # this complete-line delta, preserving the watermark byte offset.
+        tmp_name = ''
+        try:
+            runtime = _agent_runtime.get_runtime(provider.lower())
+            with tempfile.NamedTemporaryFile(mode='wb', suffix='.jsonl', delete=False) as tmp:
+                tmp.write(blob[:last_nl + 1])
+                tmp_name = tmp.name
+            rendered = runtime.render_transcript_for_scribe(Path(tmp_name))
+            return (rendered or ''), new_offset
+        except Exception as e:
+            _log(f'[scribe] {provider} checkpoint render failed: {e}')
+            return '', byte_offset
+        finally:
+            if tmp_name:
+                try:
+                    os.unlink(tmp_name)
+                except OSError as e:
+                    _log(f'[scribe] checkpoint temp cleanup failed: {e}')
     return _scribe_render_lines(consumed.split('\n')), new_offset
 
 

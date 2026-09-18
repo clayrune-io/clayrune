@@ -9,6 +9,12 @@ supported providers. The inventory is in
 
 ## Feature-branch continuation after independent review
 
+Resume checkpoint: Hivemind creation binds the current project generation, and
+worker/coordinator dispatch rejects missing or stale saved generations. Canonical
+display retains full captured tool text; Scribe's prompt budget is separate.
+Independent lifecycle/cutover/publication/Hivemind regression: 93 passed. These
+checks do not certify native capture or activate canonical startup composition.
+
 Development is isolated on `feat/provider-neutral-execution`. The changes in
 this section are not merged to the release branch and do not change the running
 installation. Detailed remaining contracts: `PROVIDER_EXECUTION_CONTRACT.md`.
@@ -320,10 +326,11 @@ conversation history remains distinct from inaccessible private vendor reasoning
   pairs are errors; inherited legacy foreign model defaults are omitted. Custom
   model IDs and Claude native tier aliases remain supported.
 - Ordinary dispatch and project runtime lookup use the resolver. Hivemind
-  workers validate before spawning; its existing Sonnet manifest defaults can
-  now be rejected on Codex rather than sent to an incompatible CLI. The
-  coordinator is still Claude-only: this is a fail-closed guard, not Hivemind
-  feature parity.
+  workers and the coordinator now dispatch through `AgentRuntime` for every
+  selected provider; the blueprint no longer owns a Claude subprocess or
+  stream reader. Existing Sonnet manifest defaults can still be rejected on
+  Codex rather than sent to an incompatible CLI. Native Claude hook argument
+  preservation and production startup wiring remain separately tested gates.
 - Context/skill delivery follows the effective conversation provider using a
   per-call project copy, without mutating saved project defaults.
 - Conversation provider ownership and recorded model choices survive native
