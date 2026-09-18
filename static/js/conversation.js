@@ -2684,15 +2684,15 @@ function _railChannelHTML(p) {
 // into their (empty) expanded view.
 function openChannelPerson(projectId, key) {
   _channelExpanded[projectId] = key;
+  // Expanding the roster must not depend on opening a transcript. External
+  // provider sessions can appear here without an id this UI can open.
+  if (typeof refreshModalById === 'function') refreshModalById(projectId);
+  else refreshModal();
   const convos = (conversationsCache[projectId] || []).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
   convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
-  if (convos.length) {
-    const c = convos[0];
+  const c = convos.find(c => c.mc_session_id || c.claude_session_id);
+  if (c) {
     openConversation(projectId, c.claude_session_id || '', c.mc_session_id || '', !!c.live);
-  } else if (typeof refreshModalById === 'function') {
-    refreshModalById(projectId);
-  } else {
-    refreshModal();
   }
 }
 window.openChannelPerson = openChannelPerson;
