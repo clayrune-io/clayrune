@@ -310,7 +310,7 @@ class Instance:
 
     def env(self) -> Dict[str, str]:
         e = dict(os.environ)
-        e.update({'MC_REMOTE_ENABLED': '0', 'MC_PORT': str(self.port),
+        e.update({'MC_REMOTE_ENABLED': '0', 'MC_BIND_LOOPBACK': '1', 'MC_PORT': str(self.port),
                   'MC_DATA_DIR': str(self.data_dir), 'USERPROFILE': str(self.home),
                   'HOME': str(self.home), 'CODEX_HOME': str(self.home / '.codex'),
                   'PYTHONIOENCODING': 'utf-8'})
@@ -800,7 +800,7 @@ def run_schedule(ctx: Ctx, run: CellRun) -> None:
 def run_memory(ctx: Ctx, run: CellRun) -> None:
     a, b, e = ctx.mk('memory', 1)
     fact = f'The deployment codename is {a}-{b}.'
-    code, r = ctx.api.request('POST', f'/api/project/{ctx.project}/memory/append', {'text': fact}, human=True)
+    code, r = ctx.api.request('POST', f'/api/project/{ctx.project}/memory/append', {'content': fact}, human=True)
     run.ok('fact_written_to_project_memory', code < 300, str(r)[:160])
     run.steps.append('Scribe WRITE leg not run by default: the Scribe summarizer is a Claude oneshot '
                      '(mc/memory.py ~4027) and would spend Claude allowance, not this vendor\'s. '
