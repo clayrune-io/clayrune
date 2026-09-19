@@ -28,17 +28,19 @@ const providers = [
   {name: 'codex', display_name: 'Codex', installed: false, auth_status: 'unknown'},
   {name: 'claude', display_name: 'Claude', installed: false, auth_status: 'unknown'},
   {name: 'gemini', display_name: 'Gemini', installed: true, auth_status: 'not_logged_in'},
+  {name: 'qwen', display_name: 'Qwen Code', installed: true, auth_status: 'not_logged_in'},
 ];
+const envCalls = [];
 const installCalls = [], loginCalls = [], singleInstallCalls = [];
 const POLICY_NOTE = 'PowerShell script policy was Restricted; set to RemoteSigned for your user account.';
 const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><script>
 let API_BASE=''; let _agentProviders=${JSON.stringify(providers)}; let _globalConfig={};
 const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
-function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
+function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
 async function _ensureAgentProviders(){const r=await fetch('/api/agent/providers'); _agentProviders=await r.json();}
-const browserLoginCalls=[]; function settingsProviderTerminalLogin(name){browserLoginCalls.push(name);} window.settingsProviderTerminalLogin=settingsProviderTerminalLogin; window.browserLoginCalls=browserLoginCalls;
-</script><script src="/static/js/walkthrough.js"></script><script>startWalkthrough();</script>`;
+const browserLoginCalls=[]; function stubTerminalLogin(name){browserLoginCalls.push(name);} window.browserLoginCalls=browserLoginCalls;
+</script><script src="/static/js/walkthrough.js"></script><script src="/static/js/provider-auth.js"></script><script>window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startWalkthrough();</script>`;
 
 let server, browserServer, browser, page;
 try {
@@ -46,6 +48,7 @@ try {
     const path = decodeURIComponent((req.url || '').split('?')[0]);
     if (path === '/') { res.writeHead(200, {'content-type': 'text/html'}); return res.end(pageHTML); }
     if (path === '/static/js/walkthrough.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/walkthrough.js'))); }
+    if (path === '/static/js/provider-auth.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/provider-auth.js'))); }
     if (path === '/static/css/app.css') { res.writeHead(200, {'content-type': 'text/css'}); return res.end(readFileSync(resolve(root, 'static/css/app.css'))); }
     if (path === '/api/agent/providers') { res.writeHead(200, {'content-type': 'application/json'}); return res.end(JSON.stringify(providers)); }
     // F7: "Install selected" is ONE batch request for every selected vendor.
@@ -57,6 +60,15 @@ try {
         res.writeHead(200, {'content-type': 'application/json'});
         res.end(JSON.stringify({ok: true, installed: names, unsupported: [],
           execution_policy: {action: 'set', effective: 'Restricted', message: POLICY_NOTE}}));
+      });
+      return;
+    }
+    // Qwen's only sign-in is a key: the same Settings save route flips it to ok.
+    if (path === '/api/agent/provider/qwen/env' && req.method === 'POST') {
+      let raw = ''; req.on('data', c => { raw += c; }); req.on('end', () => {
+        const body = JSON.parse(raw || '{}'); envCalls.push({key: body.key, hasValue: !!body.value});
+        if (body.value) providers.find(p => p.name === 'qwen').auth_status = 'ok';
+        res.writeHead(200, {'content-type': 'application/json'}); res.end(JSON.stringify({ok: true, key: body.key}));
       });
       return;
     }
@@ -100,12 +112,31 @@ try {
   await page.evaluate(() => wtRefreshProviders()); await page.waitForTimeout(40);
   await page.getByRole('button', {name: 'Next'}).click();
   if (!(await page.locator('#wt-overlay .wt-title').innerText()).includes('Choose your level')) throw new Error('completed onboarding did not advance');
+  // Clean-VM run 3 (C4): Qwen's only sign-in is DASHSCOPE_API_KEY. The tour row
+  // must carry the SAME key field + save path Settings -> Providers uses, or a
+  // user who picks Qwen can never get past the gate.
+  await page.evaluate(() => wtBack()); await page.waitForTimeout(30);
+  if (await page.locator('#wt-overlay #settings-prov-key-qwen').count()) throw new Error('key field shown for an unselected vendor');
+  await page.locator('#wt-overlay input[name="wt-provider"][value="qwen"]').check();
+  await page.locator('#wt-overlay input[name="wt-provider-default"]').first().waitFor();
+  await page.getByRole('button', {name: 'Next'}).click();
+  const qwenGate = await page.locator('#wt-provider-validation').innerText();
+  if (!qwenGate.includes('Qwen Code: not signed in')) throw new Error(`gate did not name unsigned Qwen: ${qwenGate}`);
+  const keyBox = page.locator('#wt-overlay #settings-prov-key-qwen');
+  if (!(await keyBox.count())) throw new Error('tour Qwen row has no API-key field');
+  if (!(await page.locator('#wt-overlay .prov-row[data-provider="qwen"]').innerText()).includes('DASHSCOPE_API_KEY')) throw new Error('Qwen key field is not labelled DASHSCOPE_API_KEY');
+  await keyBox.fill('smoke-not-a-real-key');
+  await page.locator('#wt-overlay .prov-row[data-provider="qwen"] .prov-row-extra button').click();
+  await page.waitForFunction(() => /signed in/.test(document.querySelector('#wt-overlay .prov-row[data-provider="qwen"] .prov-row-state')?.textContent || ''));
+  if (JSON.stringify(envCalls) !== JSON.stringify([{key: 'DASHSCOPE_API_KEY', hasValue: true}])) throw new Error(`key save did not use the Settings env route: ${JSON.stringify(envCalls)}`);
+  await page.getByRole('button', {name: 'Next'}).click();
+  if (!(await page.locator('#wt-overlay .wt-title').innerText()).includes('Choose your level')) throw new Error('signing Qwen in from the tour did not clear the gate');
   await page.setViewportSize({width: 390, height: 844});
   await page.evaluate(() => wtBack()); await page.waitForTimeout(30);
   const overflow = await page.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
   if (overflow.scrollWidth > overflow.clientWidth + 1) throw new Error(`mobile onboarding overflow: ${JSON.stringify(overflow)}`);
   if (pageErrors.length) throw new Error(pageErrors.join('; '));
-  console.log(JSON.stringify({ok: true, installCalls, singleInstallCalls, loginCalls: await page.evaluate(() => browserLoginCalls), overflow, registrations}));
+  console.log(JSON.stringify({ok: true, envCalls, installCalls, singleInstallCalls, loginCalls: await page.evaluate(() => browserLoginCalls), overflow, registrations}));
 } finally {
   if (browser) await browser.close();
   if (browserServer) await browserServer.close();

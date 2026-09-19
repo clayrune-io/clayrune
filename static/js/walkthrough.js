@@ -40,6 +40,7 @@ const WT_STEPS = [
           mode: 'tour',
           selected: wtSelectedProviders.has(p.name),
           defaultName: cur,
+          keyEntry: true,   // clean-VM run 3 (C4): Qwen's only sign-in is a key, so the tour row needs the same key field Settings shows
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="wtInstallSelectedProviders(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="wtRefreshProviders()">Check setup status</button>
@@ -289,8 +290,8 @@ function _wtProviderState(p) {
 //             > .prov-row-actions   (Default radio, Sign in, Sign in remotely,
 //                                    Check status)
 //             > .prov-row-detail    (version / error text / install hint)
-//             > .prov-row-extra     (Settings only: API-key entry, if the
-//                                    vendor takes one)
+//             > .prov-row-extra     (API-key entry, if the vendor takes one;
+//                                    opts.keyEntry — Settings and the tour)
 //             > #wt-install-msg-<name>
 // opts.mode 'tour'     — box = "set this vendor up"; actions only when selected
 //           'settings' — box = "batch-install this one" (uninstalled rows
@@ -337,7 +338,7 @@ function _renderProviderRow(p, opts) {
   if (!installed && p.install_hint) bits.push(`<span style="font-family:monospace;color:var(--accent)">${esc(p.install_hint)}</span>`);
   const detail = bits.length
     ? `<div class="prov-row-detail" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0;word-break:break-word">${bits.join(' · ')}</div>` : '';
-  const envKey = (opts.keyEntry && installed && window.PROVIDER_AUTH_KEYS) ? window.PROVIDER_AUTH_KEYS[p.name] : '';
+  const envKey = (opts.keyEntry && installed && showActions && window.PROVIDER_AUTH_KEYS) ? window.PROVIDER_AUTH_KEYS[p.name] : '';
   const extra = envKey ? `<div class="prov-row-extra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px 0">
               <span style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</span>
               <input id="settings-prov-key-${n}" type="password" class="settings-input" style="flex:1;min-width:140px"

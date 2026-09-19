@@ -81,6 +81,10 @@ def test_failed_project_creation_does_not_reopen_revoked_generation(tmp_path, mo
             'FROM revocations ORDER BY identity')]
     monkeypatch.setattr(pr, 'DATA_DIR', data_dir)
     monkeypatch.setattr(pr, 'get_manager', lambda _pid: type('M', (), {'lock': __import__('threading').RLock()})())
+    # `import server` (test_agent_routes et al.) wires pr._APP_DIR to the checkout
+    # and it outlives that test; a tmp workspace under the checkout then trips the
+    # install-dir guard (400) before the failure this test injects (500).
+    monkeypatch.setattr(pr, '_APP_DIR', None)
     monkeypatch.setitem(pr.state.CONFIG, 'auto_workspace_base', str(tmp_path / 'auto'))
     app = Flask('failed-recreate')
     app.register_blueprint(pr.bp)
