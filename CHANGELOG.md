@@ -6,6 +6,29 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-19] — Mid-turn context rollover (off by default)
+
+- The token rollover only ran when a message arrived, so a dispatched worker
+  (one prompt, hundreds of tool calls) grew to 325k tokens unchecked. New
+  `midturn_rollover_enabled` (default false): when a Claude session's context
+  crosses `context_rollover_tokens` it now rolls at the next tool-result
+  boundary, never mid tool call, through the existing interrupt path, so the
+  session id and the spawner callback survive.
+- The fresh session gets the original task verbatim, the branch, `git status`
+  and `git diff --stat`, the last 10 tool calls and any background jobs, on top
+  of the transcript handoff.
+- Every roll is appended to `data/midturn_rollover_log/<project>.jsonl`.
+  Other vendors report usage only at turn end and are not covered.
+- Review fixes: a roll rebuilds context from the ORIGINAL task (a steward
+  cycle stays an unattended consumer); a killed process's orphaned tool ids no
+  longer block later rolls; Mode A sends the roll prompt on stdin (was over the
+  cmd.exe 8191-char cap); git state is read after the old process is dead, and a
+  roll overtaken by a newer interrupt is dropped; `_interrupting` is set only
+  after the steps that can raise; re-rolls need 20k tokens of growth and stop
+  after 3 failed attempts; subagent usage no longer decides the parent's roll.
+  Known gap: a rolled process is killed before its `result` event, so its
+  pre-roll spend is not added to the session's `cost_usd`.
+
 ## [2026-09-17l] — Stabilize the provider-neutral branch (W0)
 
 - Every text transform (Claydo, character and profile generation, Scribe,

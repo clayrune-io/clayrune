@@ -189,6 +189,12 @@ def _load_config():
         # 5 MB _SESSION_SIZE_LIMIT byte check stays as an independent backstop
         # -- either trigger can fire a rollover.
         'context_rollover_tokens': 200000,
+        # Mid-turn rollover (mc/midturn_rollover.py): the check above only runs
+        # when a message ARRIVES, so a dispatched worker with one prompt and a
+        # long tool loop climbs past the threshold unchecked. ON = roll it at
+        # the next tool_result boundary (Claude streams only). Default OFF until
+        # reviewed; rolls are logged to data/midturn_rollover_log/.
+        'midturn_rollover_enabled': False,
         # Idle-session eviction — reclaim a warm Mode B fleet (claude.exe + its
         # MCP servers) after long inactivity; the next message transparently
         # respawns it with `-r <csid>` (full context preserved). Default OFF;
