@@ -1843,9 +1843,6 @@ class ClaudeRuntime(AgentRuntime):
                     # See accumulate_result_cost.
                     'cost_usd': msg.get('cost_usd'),
                     'total_cost_usd': msg.get('total_cost_usd'),
-                    # Keys the per-Claude-session saved total that a resumed
-                    # process on CLI >= 2.1.277 starts from.
-                    'session_id': session_id,
                     'num_turns': msg.get('num_turns'),
                     'rc': msg.get('result_code'),
                     # Tool calls this turn REFUSED. Claude Code has always put
@@ -4620,7 +4617,10 @@ CLAUDE_RESUME_CARRIES_COST = (2, 1, 277)
 
 def _version_tuple(v):
     parts = []
-    for p in str(v or '').strip().split('.'):
+    s = str(v or '').strip()
+    if s[:1] in ('v', 'V'):
+        s = s[1:]
+    for p in s.split('.'):
         digits = ''.join(ch for ch in p if ch.isdigit()) if p else ''
         if not digits:
             break
@@ -4630,19 +4630,91 @@ def _version_tuple(v):
     return tuple(parts)
 
 
-def note_cli_init(proc_cost, msg):
-    """Record the CLI version from a Claude `system/init` message (raw msg or
-    the parsed INIT payload) into this process's `proc_cost` dict.
+def read_saved_cli_cost(path) -> Optional[float]:
+    """The session total a Claude CLI >= 2.1.277 resume will start from.
 
-    accumulate_result_cost needs it to know whether this process's first
-    `total_cost_usd` already includes what earlier processes on the same
-    Claude session spent (see CLAUDE_RESUME_CARRIES_COST).
+    The CLI appends a `{"type":"cost-state","totalCostUSD":...}` line to the
+    session transcript when a headless process EXITS CLEANLY, and a resume
+    starts its counter from the last such line. A process that is force-killed
+    (taskkill /F, proc.kill()) writes none, so its spend is not carried.
+    Measured 2026-09-19 on 2.1.278, one session, seven processes:
+        T1 clean 0.0255332 -> cost-state 0.0255332
+        T2 clean 0.0296387 -> cost-state 0.0296387
+        T3 killed /F after its result, 0.0332395 -> NO cost-state
+        T4 clean 0.0341232 = 0.0296387 (T2's line) + T4's own spend
+        T5 killed /F mid-turn, no result -> NO cost-state
+        T6 clean 0.0403146, T7 clean 0.0441431 (each = previous line + spend)
+    So the transcript, not anything MC remembers, is what the CLI carries.
+    Returns 0.0 when the transcript has no such line, None when unreadable.
+    """
+    if not path:
+        return None
+    last = 0.0
+    try:
+        with open(path, 'r', encoding='utf-8', errors='replace') as f:
+            for line in f:
+                if '"cost-state"' not in line:
+                    continue
+                try:
+                    obj = json.loads(line)
+                except ValueError:
+                    continue
+                if not isinstance(obj, dict) or obj.get('type') != 'cost-state':
+                    continue
+                v = obj.get('totalCostUSD')
+                if isinstance(v, (int, float)) and not isinstance(v, bool):
+                    last = float(v)
+    except OSError:
+        return None
+    return last
+
+
+def _find_claude_transcript(cwd, session_id):
+    """Locate `<session_id>.jsonl` under ~/.claude/projects: by the process
+    cwd first, then by a glob on the (unique, uuid) session id."""
+    if not isinstance(session_id, str) or not session_id:
+        return None
+    if isinstance(cwd, str) and cwd:
+        try:
+            f = ClaudeRuntime().transcript_path(cwd, session_id)
+            if f:
+                return f
+        except Exception:
+            pass
+    try:
+        for f in _CLAUDE_HOME.glob(f'*/{session_id}.jsonl'):
+            return f
+    except OSError:
+        pass
+    return None
+
+
+def note_cli_init(proc_cost, msg, find_transcript=None):
+    """Record what a Claude `system/init` (raw msg, or the parsed INIT payload
+    plus `session_id`) tells accumulate_result_cost about THIS process.
+
+    On CLI >= 2.1.277 that includes the total the process carried over on
+    resume, read from the transcript's last `cost-state` line (see
+    read_saved_cli_cost). It is read here, at init, because that is when
+    the CLI itself has just read it. Claude only: other CLIs' versions do
+    not share this numbering.
     """
     if not isinstance(msg, dict) or not isinstance(proc_cost, dict):
         return
     v = msg.get('claude_code_version') or msg.get('cli_version')
-    if isinstance(v, str) and v:
-        proc_cost['cli_version'] = v
+    if not isinstance(v, str) or not v:
+        return
+    proc_cost['cli_version'] = v
+    if _version_tuple(v) < CLAUDE_RESUME_CARRIES_COST:
+        return
+    finder = find_transcript or _find_claude_transcript
+    try:
+        path = finder(msg.get('cwd'), msg.get('session_id'))
+    except Exception:
+        path = None
+    saved = read_saved_cli_cost(path)
+    if saved is not None:
+        proc_cost['cli_saved_total'] = saved
 
 
 def accumulate_result_cost(session, msg, proc_cost):
@@ -4660,13 +4732,15 @@ def accumulate_result_cost(session, msg, proc_cost):
 
     So the running total is kept as deltas. `proc_cost` is a dict the caller
     creates once PER PROCESS (one reader thread per proc), holding the last
-    `total_cost_usd` that process reported. The last total seen for each
-    Claude session id is also kept on the session (`cli_cost_totals`, which
-    the agent log persists). On a process's first result, if the CLI is new
-    enough to carry totals over (version from `note_cli_init`), the baseline
-    is seeded from that saved total, so only the new spend is added. On an
-    older CLI, or an unknown version, or a session id never seen before, the
-    first turn counts in full as before. A total that goes backwards is
+    `total_cost_usd` that process reported. On a process's first result, if
+    the CLI is new enough to carry totals over, the baseline is seeded from
+    the total it carried (`cli_saved_total`, read from the transcript by
+    note_cli_init), so only the new spend is added. That figure comes from
+    the CLI's own record rather than the last total MC saw, because a
+    force-killed process never saves its total: seeding from MC's figure
+    would drop the resumed turn's spend. On an older CLI, an unknown version,
+    or a transcript with nothing saved, the first turn counts in full. A
+    total that goes backwards is
     treated as a restart rather than a refund. `cost_usd` stays as a per-turn
     fallback for any runtime that emits it.
     """
@@ -4674,25 +4748,17 @@ def accumulate_result_cost(session, msg, proc_cost):
         return
     total = msg.get('total_cost_usd')
     if isinstance(total, (int, float)) and not isinstance(total, bool):
-        sid = msg.get('session_id')
-        totals = session.get('cli_cost_totals')
-        if not isinstance(totals, dict):
-            totals = {}
         if 'total_cost_usd' not in proc_cost:
             seed = 0.0
             carries = (_version_tuple(proc_cost.get('cli_version'))
                        >= CLAUDE_RESUME_CARRIES_COST)
-            if carries and isinstance(sid, str) and sid:
-                prior = totals.get(sid)
-                if isinstance(prior, (int, float)) and prior > 0:
-                    seed = float(prior)
+            saved = proc_cost.get('cli_saved_total')
+            if carries and isinstance(saved, (int, float)) and saved > 0:
+                seed = float(saved)
             proc_cost['total_cost_usd'] = seed
         seen = proc_cost.get('total_cost_usd', 0.0)
         delta = total - seen if total >= seen else total
         proc_cost['total_cost_usd'] = total
-        if isinstance(sid, str) and sid:
-            totals[sid] = total
-            session['cli_cost_totals'] = totals
     else:
         turn = msg.get('cost_usd')
         if not isinstance(turn, (int, float)):
@@ -4931,7 +4997,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                             "outside its project folder, that needs an "
                             "allowance for this job, not a retry.")
             elif ev.type == EventType.INIT:
-                note_cli_init(proc_cost, ev.payload)
+                if ev.provider == 'claude':
+                    note_cli_init(proc_cost, {**ev.payload,
+                                              'session_id': ev.session_id})
                 native_id = ev.payload.get('session_id') or ev.payload.get('thread_id')
                 if native_id:
                     session['provider_session_id'] = native_id

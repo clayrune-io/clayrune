@@ -4334,9 +4334,9 @@ def _read_agent_stream(proc, session):
     # Snapshot the proc we were launched with so we can detect if a follow-up
     # replaced us with a newer process while we were still draining stdout.
     my_proc = proc
-    # Last total_cost_usd THIS process reported (plus its CLI version); a
-    # resume on CLI >= 2.1.277 is seeded from the session total. This reader
-    # IS the process. See accumulate_result_cost.
+    # Last total_cost_usd THIS process reported, plus its CLI version and, on
+    # CLI >= 2.1.277, the total its resume carried over (read from the
+    # transcript at init). This reader IS the process. See accumulate_result_cost.
     proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
@@ -4611,9 +4611,9 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
-    # Last total_cost_usd THIS process reported (plus its CLI version); a
-    # resume on CLI >= 2.1.277 is seeded from the session total. This reader
-    # IS the process. See accumulate_result_cost.
+    # Last total_cost_usd THIS process reported, plus its CLI version and, on
+    # CLI >= 2.1.277, the total its resume carried over (read from the
+    # transcript at init). This reader IS the process. See accumulate_result_cost.
     proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
@@ -5502,7 +5502,6 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             '_dispatch_time': _time.time(),
             'usage': entry.get('usage', {}),
             'cost_usd': entry.get('cost_usd', 0),
-            'cli_cost_totals': dict(entry.get('cli_cost_totals') or {}),
             'num_turns': entry.get('num_turns', 0),
             '_system_prompt': context or '',
             # Carried so the header pill, the NEXT respawn and every agent_log
@@ -5603,7 +5602,6 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         '_dispatch_time': _time.time(),
         'usage': entry.get('usage', {}),
         'cost_usd': entry.get('cost_usd', 0),
-        'cli_cost_totals': dict(entry.get('cli_cost_totals') or {}),
         'num_turns': entry.get('num_turns', 0),
         '_system_prompt': context or '',
         'character': _revive_character,   # same reason as Mode B above
@@ -6587,9 +6585,6 @@ def _log_agent_completion_body(session):
         'started_at': session.get('started_at', ''),
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),
-        # Last total_cost_usd per Claude session id; a revived --resume on
-        # CLI >= 2.1.277 starts from it (see accumulate_result_cost).
-        'cli_cost_totals': session.get('cli_cost_totals', {}),
         'num_turns': session.get('num_turns', 0),
         'permission_denials': session.get('permission_denials', []),
         'plan_file': session.get('plan_file', ''),
