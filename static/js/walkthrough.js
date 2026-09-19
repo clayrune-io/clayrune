@@ -28,33 +28,19 @@ const WT_STEPS = [
       const provs = (_agentProviders || []).slice()
         .sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
       const cur = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider) || '';
-      if (!wtProviderChoiceVisited && cur) wtSelectedProviders.add(cur);
+      if (!wtProviderChoiceVisited) {
+        if (cur) wtSelectedProviders.add(cur);
+        // Vendors already installed AND signed in need no setup — pre-tick
+        // them so the user only has to act on what's missing.
+        provs.forEach(p => { if (p.installed && p.auth_status === 'ok') wtSelectedProviders.add(p.name); });
+      }
       wtProviderChoiceVisited = true;
       return `Choose one or more vendors to set up. Pick one default; every selected vendor stays available per agent and per chat.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
-        provs.map(p => {
-          const state = _wtProviderState(p);
-          const installBtn = p.installed ? '' : `
-            <button type="button" class="btn-add" style="padding:2px 10px;font-size:11px;flex-shrink:0"
-              onclick="event.preventDefault();wtInstallProvider('${esc(p.name)}',this)">Install</button>`;
-          return `
-          <div>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
-              <input type="checkbox" name="wt-provider" value="${esc(p.name)}" ${wtSelectedProviders.has(p.name) ? 'checked' : ''}
-                onchange="wtSelectProvider('${esc(p.name)}',this.checked)"
-                style="width:15px;height:15px;accent-color:var(--accent)">
-              <span style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
-              <span style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
-              ${installBtn}
-            </label>
-            ${wtSelectedProviders.has(p.name) ? `<div style="display:flex;gap:10px;align-items:center;padding:4px 8px">
-              <label><input type="radio" name="wt-provider-default" ${cur === p.name ? 'checked' : ''}
-                onchange="wtSetDefaultProvider('${esc(p.name)}')"> Default</label>
-              ${p.installed && p.auth_status !== 'ok' ? `<button type="button" class="btn-add"
-                onclick="settingsProviderTerminalLogin('${esc(p.name)}',this)">Sign in</button>` : ''}
-            </div>` : ''}
-            <div id="wt-install-msg-${esc(p.name)}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
-          </div>`;
-        }).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
+        provs.map(p => _renderProviderRow(p, {
+          mode: 'tour',
+          selected: wtSelectedProviders.has(p.name),
+          defaultName: cur,
+        })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="wtInstallSelectedProviders(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="wtRefreshProviders()">Check setup status</button>
         </div><div id="wt-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`;
@@ -190,8 +176,15 @@ const WT_STEPS = [
 // Settings -> Default provider already calls — one write path, not two.
 async function wtSetDefaultProvider(name) {
   if (!wtSelectedProviders.has(name)) return;
-  await saveSetting('default_provider', name);
   wtExplicitDefault = name;
+  await applyDefaultProvider(name);
+}
+
+// The save + refresh half of the above, shared with Settings -> Providers'
+// per-row "Set default" (provider-auth.js settingsSetDefaultProvider) so the
+// tour and Settings can't drift into two ways of changing the default.
+async function applyDefaultProvider(name) {
+  await saveSetting('default_provider', name);
   // First-run follows the user's choice immediately. Refresh the provider
   // inventory (its `default`/`in_use` flags predate this click), then run the
   // same selected-provider auth check used at boot so Codex never produces a
@@ -213,9 +206,11 @@ function wtSelectProvider(name, selected) {
 // other. One batch request now runs every selected-but-uninstalled vendor
 // in a single terminal, with the Node/npm (or pip/uv) prerequisite handled
 // once — see agent_routes.py's _provider_install_command_batch.
-async function wtInstallSelectedProviders(button) {
+// `only`: Settings -> Providers passes its own checked rows; the tour omits it
+// and gets its wtSelectedProviders set.
+async function wtInstallSelectedProviders(button, only) {
   const names = (_agentProviders || [])
-    .filter((p) => wtSelectedProviders.has(p.name) && !p.installed)
+    .filter((p) => (only ? only.includes(p.name) : wtSelectedProviders.has(p.name)) && !p.installed)
     .map((p) => p.name);
   if (!names.length) return;
   if (button) button.disabled = true;
@@ -257,9 +252,8 @@ async function wtInstallSelectedProviders(button) {
   }
 }
 
-// Per-provider state label for the provider-choice step — same three states
-// the Settings provider card already shows (provider-settings.js), so a user
-// who later opens Settings sees consistent language, not a second vocabulary.
+// Per-provider state label — ONE vocabulary for the tour and Settings ->
+// Providers (both render rows through _renderProviderRow below).
 function _wtProviderState(p) {
   if (!p.installed) return { label: 'not installed', color: 'var(--text-faint)' };
   if (p.auth_status === 'ok') return { label: 'signed in', color: 'var(--green)' };
@@ -270,7 +264,124 @@ function _wtProviderState(p) {
   // reported honestly instead of a false green "signed in".
   if (p.auth_status === 'unverified') return { label: 'unverified', color: 'var(--amber)' };
   if (p.auth_status === 'oauth_rejected') return { label: 'sign-in rejected', color: 'var(--amber)' };
+  // MC-934: a key that exists but has no quota left, or is refused, is
+  // neither "signed in" nor merely "not signed in".
+  if (p.auth_status === 'quota_exceeded') return { label: 'quota exceeded', color: 'var(--red)' };
+  if (p.auth_status === 'invalid_api_key') return { label: 'credentials invalid', color: 'var(--red)' };
   return { label: 'installed', color: 'var(--text-faint)' };
+}
+
+// THE provider row — one component for every vendor (Claude included), used
+// by the tour's provider-choice step and by Settings -> Providers, so both
+// surfaces and every vendor look and behave the same. Per-vendor differences
+// live only in what an action DOES (the server-side login flow, the optional
+// API-key field), never in the row's shape. Structure:
+//   .prov-row > label.prov-row-head (select box, name, state pill, Install)
+//             > .prov-row-actions   (Default radio, Sign in, Sign in remotely,
+//                                    Check status)
+//             > .prov-row-detail    (version / error text / install hint)
+//             > .prov-row-extra     (Settings only: API-key entry, if the
+//                                    vendor takes one)
+//             > #wt-install-msg-<name>
+// opts.mode 'tour'     — box = "set this vendor up"; actions only when selected
+//           'settings' — box = "batch-install this one" (uninstalled rows
+//                        only); actions for every installed vendor
+function _renderProviderRow(p, opts) {
+  const tour = opts.mode === 'tour';
+  const n = esc(p.name);
+  const state = _wtProviderState(p);
+  const installed = !!p.installed;
+  const authOk = p.auth_status === 'ok';
+  const isDefault = opts.defaultName === p.name;
+  const showActions = tour ? !!opts.selected : installed;
+  const box = tour
+    ? `<input type="checkbox" name="wt-provider" class="prov-row-select" value="${n}" ${opts.selected ? 'checked' : ''}
+         onchange="wtSelectProvider('${n}',this.checked)"
+         style="width:15px;height:15px;accent-color:var(--accent)">`
+    : (installed ? '' : `<input type="checkbox" class="prov-row-select settings-prov-install-sel" value="${n}"
+         aria-label="Select ${esc(p.display_name)} for batch install"
+         style="width:15px;height:15px;accent-color:var(--accent)">`);
+  const installBtn = installed ? '' : `
+              <button type="button" class="btn-add prov-install" style="padding:2px 10px;font-size:11px;flex-shrink:0"
+                onclick="event.preventDefault();wtInstallProvider('${n}',this)">Install</button>`;
+  const btnCss = 'padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)';
+  const costs = !!(p.capabilities && p.capabilities.auth_probe_spends_quota);
+  const defaultCtl = tour
+    ? `<label class="prov-default"><input type="radio" name="wt-provider-default" ${isDefault ? 'checked' : ''}
+         onchange="wtSetDefaultProvider('${n}')"> Default</label>`
+    : `<label class="prov-default"><input type="radio" name="prov-default" ${isDefault ? 'checked' : ''}
+         onchange="settingsSetDefaultProvider('${n}')"> Default</label>`;
+  const needSignIn = installed && (!authOk || opts.signInWhenOk);
+  const actions = !showActions ? '' : `<div class="prov-row-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
+              ${defaultCtl}
+              ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
+                onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}
+              ${needSignIn && p.remote_login ? `<button type="button" class="btn-add prov-sign-in-remote" style="${btnCss}"
+                onclick="settingsRemoteLogin('${n}',this)">Sign in remotely</button>` : ''}
+              ${installed ? `<button type="button" class="btn-add prov-check" style="${btnCss}"
+                ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."` : ''}
+                onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
+            </div>`;
+  const bits = [];
+  if (installed && p.version) bits.push('v' + esc(p.version));
+  if (installed && !authOk && p.auth_error_text) bits.push(esc(String(p.auth_error_text).slice(0, 200)));
+  if (!installed && p.install_hint) bits.push(`<span style="font-family:monospace;color:var(--accent)">${esc(p.install_hint)}</span>`);
+  const detail = bits.length
+    ? `<div class="prov-row-detail" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0;word-break:break-word">${bits.join(' · ')}</div>` : '';
+  const envKey = (opts.keyEntry && installed && window.PROVIDER_AUTH_KEYS) ? window.PROVIDER_AUTH_KEYS[p.name] : '';
+  const extra = envKey ? `<div class="prov-row-extra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px 0">
+              <span style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</span>
+              <input id="settings-prov-key-${n}" type="password" class="settings-input" style="flex:1;min-width:140px"
+                placeholder="${authOk ? '(saved — paste to replace)' : 'paste API key'}" autocomplete="off">
+              <button type="button" class="btn-add" onclick="settingsProviderSetEnv('${n}','${esc(envKey)}',this)">Save</button>
+            </div>` : '';
+  return `
+          <div class="prov-row" data-provider="${n}">
+            <label class="prov-row-head" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
+              ${box}
+              <span class="prov-row-name" style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
+              <span class="prov-row-state" id="prov-auth-pill-${n}" style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
+              ${installBtn}
+            </label>
+            ${actions}
+            ${detail}
+            ${extra}
+            <div id="wt-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
+          </div>`;
+}
+
+// Per-row "Check status": re-probe ONE vendor (POST /api/agent/<p>/auth-probe —
+// the same route for every vendor, Claude's `claude -p ok` and Gemini's
+// quota-costing live call included; the tooltip discloses the cost), fold the
+// verdict into the cached provider list, and repaint whichever surface shows
+// the row.
+async function providerCheckStatus(name, btnEl) {
+  const msgEl = document.getElementById(`wt-install-msg-${name}`);
+  if (btnEl) btnEl.disabled = true;
+  if (msgEl) msgEl.textContent = 'Checking…';
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${name}/auth-probe`, { method: 'POST' });
+    const state = await res.json().catch(() => ({}));
+    const p = (_agentProviders || []).find(x => x.name === name);
+    if (p && res.ok) {
+      p.auth_status = state.status || (state.ok ? 'ok' : 'unknown');
+      p.auth_error_text = state.error_text || null;
+    }
+    _repaintProviderRows();
+  } catch (e) {
+    if (msgEl) msgEl.textContent = 'Check failed: ' + e;
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+// Repaint every surface that renders provider rows from the cached list. The
+// Settings rebuild keeps the drill-down position (module-scope view state).
+function _repaintProviderRows() {
+  if (wtActive) wtShow(wtStep);
+  if (document.getElementById('settings-providers-section') && typeof window._renderSettings === 'function') {
+    window._renderSettings();
+  }
 }
 
 // "Install" button on an uninstalled provider row. Launches the SAME command
@@ -317,7 +428,8 @@ async function wtInstallProvider(name, btnEl) {
 // CLI's state flips without the user having to close and reopen the tour.
 async function wtRefreshProviders() {
   try { await _ensureAgentProviders(true); } catch (e) { /* leave stale on failure */ }
-  if (wtActive) wtShow(wtStep);
+  // Settings -> Providers reuses this button + the install handlers above.
+  _repaintProviderRows();
 }
 
 // Build virtual demo elements for the walkthrough
@@ -816,6 +928,9 @@ window.wtEnd = wtEnd;   // interop: wt-card generated onclick (Get Started)
 window.wtSetDefaultProvider = wtSetDefaultProvider; // interop: provider-choice step's generated onchange
 window.wtSelectProvider = wtSelectProvider; // interop: provider selection checkboxes
 window.wtInstallSelectedProviders = wtInstallSelectedProviders; // interop: install selected button
+window._renderProviderRow = _renderProviderRow; // interop: Settings -> Providers (provider-settings.js) renders its rows with the tour's component
+window.providerCheckStatus = providerCheckStatus; // interop: per-row Check status button onclick
+window.applyDefaultProvider = applyDefaultProvider; // interop: Settings -> Providers per-row Set default (provider-auth.js)
 window.wtInstallProvider = wtInstallProvider; // interop: provider-choice step's generated Install button onclick
 window.wtRefreshProviders = wtRefreshProviders; // interop: wtInstallProvider's generated Refresh button onclick
 // interop: the "Don't show this again" checkbox writes `wtDontShow=this.checked`
