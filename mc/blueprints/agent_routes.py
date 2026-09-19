@@ -10165,11 +10165,24 @@ def agent_interrupt(project_id, *, _internal=None):
         # flash that flipped the UI to "stopped" between kill and respawn.
         # Cleared by the respawn thread once the new proc replaces session['proc'].
         #
-        # Everything that can raise (`_rearm_notify_for_new_turn` writes the
-        # delegation DB) runs BEFORE the flag goes up: a raise after it would
-        # leave the still-live old reader gated out of every status write, the
-        # session stuck at 'running' and the spawner never notified.
-        _rearm_notify_for_new_turn(session)
+        # The flag goes up FIRST so the old reader (a different thread on the
+        # HTTP path) cannot deliver a turn-end notify while the rearm below
+        # clears the sent-latch - that would hand the spawner the old turn's
+        # reply under the new turn number and swallow the real one. The rearm
+        # writes the delegation DB and can raise; on a raise the flag is
+        # cleared again so the still-live old reader is not gated out of every
+        # status write (session stuck 'running', spawner never notified).
+        _unset = object()
+        _prior_interrupting = session.get('_interrupting', _unset)
+        session['_interrupting'] = True
+        try:
+            _rearm_notify_for_new_turn(session)
+        except Exception:
+            if _prior_interrupting is _unset:
+                session.pop('_interrupting', None)
+            else:
+                session['_interrupting'] = _prior_interrupting
+            raise
         # Stop the current process
         # Shown in the chat as a system-style line when the user interrupts a
         # running turn with a new message. Friendlier than "Agent interrupted
@@ -10183,7 +10196,6 @@ def agent_interrupt(project_id, *, _internal=None):
         session['waiting_for_plan_approval'] = False
         session['waiting_for_question'] = False
         session.pop('pending_questions', None)
-        session['_interrupting'] = True
         if session.get('mode') == 'B':
             try:
                 old_proc.stdin.close()

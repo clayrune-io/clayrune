@@ -528,3 +528,19 @@ def test_low_toggling_the_flag_off_and_on_drops_stale_pending_ids(env):
     mt.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'a'}])  # unseen
     env['CONFIG']['midturn_rollover_enabled'] = True
     assert mt.should_roll(session, over), 'stale id from before the toggle blocked the roll'
+
+
+def test_n1_interrupting_is_raised_before_the_rearm_runs(env, monkeypatch):
+    """The rearm clears the notify sent-latch. If the old reader (another thread
+    on the HTTP path) can still deliver a turn-end notify during it, the spawner
+    gets the old reply under the new turn and never hears the real one. So the
+    flag must already be up when the rearm runs."""
+    ar = env['ar']
+    seen = []
+    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn',
+                        lambda s: seen.append(s.get('_interrupting')))
+    old = _Proc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ar._maybe_midturn_roll(session, old)
+    assert seen == [True]
