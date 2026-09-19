@@ -826,6 +826,15 @@ class AgentRuntime(ABC):
             return f"{self.ATTACHMENT_INSTRUCTION}\n\n{text}"
         return text
 
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Context held by a finished turn's LAST model request, for the
+        token rollover trigger. Default: the turn's usage dict normalized.
+        A runtime whose turn usage is a sum over several requests overrides
+        this (QwenRuntime), or the rollover fires on a phantom figure."""
+        return normalize_context_tokens(usage)
+
     # ── MC Tool Protocol (provider-agnostic emulated tools) ───────────────────
     def with_mc_tool_protocol(self, system_prompt: str) -> str:
         """Append the MC Tool Protocol instructions to a system prompt so a
@@ -4741,6 +4750,103 @@ def gemini_turn_context_tokens(provider_session_id: str,
     return None
 
 
+def qwen_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-request usage of the MAIN conversation from a qwen chat recording.
+
+    qwen-code 0.23.4 appends one `{"type":"assistant","usageMetadata":{
+    "promptTokenCount","candidatesTokenCount","cachedContentTokenCount",...}}`
+    record per model request of the conversation itself, with
+    `promptTokenCount` INCLUDING the cached part. Side requests the CLI makes
+    on its own (the managed auto-memory extractor) are logged only as
+    `ui_telemetry` and never as an `assistant` record, so they are not here.
+    Measured live 2026-09-19: a read_file turn wrote two records, 26,262 and
+    26,300, while the stream `result.usage` said input 52,562 (their sum)
+    and cache_read 43,850 (the two cached parts summed)."""
+    out: List[Dict[str, Any]] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'assistant':
+            continue
+        um = rec.get('usageMetadata')
+        if isinstance(um, dict) and um:
+            out.append(um)
+    return out
+
+
+def qwen_turn_context_tokens(transcript: Optional[Path],
+                             usage: Optional[Dict[str, Any]],
+                             num_turns: Any = None) -> Optional[int]:
+    """Context size of a Qwen turn's LAST model request.
+
+    The stream-json `result.usage` is NOT a per-request figure, for three
+    stacked reasons, all measured 2026-09-19 against qwen-code 0.23.4:
+      1. `input_tokens` sums every request of the turn (tool loops re-send
+         the whole prompt each time);
+      2. it also counts the background auto-memory extractor request
+         (39,733 = 27,274 main + 12,459 extractor on a one-word reply);
+      3. `input_tokens` already INCLUDES the cached part, so
+         `normalize_context_tokens` (input + cache_read) counted cached
+         tokens twice: that read_file turn came out at 96,412 against a real
+         last request of 26,300.
+    Preference: the chat recording's last main-conversation request; else
+    `input_tokens` alone when the turn was one request (`num_turns == 1`);
+    else None, so the byte backstop decides instead of an inflated number."""
+    if transcript is not None:
+        try:
+            reqs = qwen_chat_request_tokens(
+                transcript.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:qwen] chat recording read failed: {e}', flush=True)
+            reqs = []
+        if reqs:
+            v = reqs[-1].get('promptTokenCount')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(usage, dict) and num_turns == 1:
+        v = usage.get('input_tokens')
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+# Qwen settings DEFAULTS layer (lowest precedence: the user's own
+# ~/.qwen/settings.json still wins). `memory.enableManagedAutoMemory`
+# defaults to true in qwen-code 0.23.4, which runs a background model request
+# after EVERY turn that re-sends the conversation to extract "memories" into
+# qwen's own store: measured 12,459 extra input tokens on a one-word turn,
+# and a second memory system competing with Clayrune's. Off by default here;
+# a user who wants it sets it in their own settings.json.
+QWEN_SYSTEM_DEFAULTS: Dict[str, Any] = {'memory': {'enableManagedAutoMemory': False}}
+QWEN_DEFAULTS_ENV = 'QWEN_CODE_SYSTEM_DEFAULTS_PATH'
+
+
+def _inject_qwen_defaults_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Point `env` at Clayrune's qwen defaults file, writing it if needed.
+    Leaves a defaults path the user already set alone. A write failure is
+    logged and injects nothing (the CLI then runs on its own defaults)."""
+    if env.get(QWEN_DEFAULTS_ENV) or os.environ.get(QWEN_DEFAULTS_ENV):
+        return env
+    try:
+        from mc.guardrail_hooks import clayrune_home
+        path = clayrune_home() / 'qwen-system-defaults.json'
+        body = json.dumps(QWEN_SYSTEM_DEFAULTS, indent=2)
+        if not path.is_file() or path.read_text(encoding='utf-8') != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(body, encoding='utf-8')
+            os.replace(tmp, path)
+        env[QWEN_DEFAULTS_ENV] = str(path)
+    except Exception as e:
+        print(f'[runtime:qwen] writing system defaults failed: {e}', flush=True)
+    return env
+
+
 def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
     """Best-effort, vendor-agnostic size of what ONE turn re-read/held as
     context — the signal `context_rollover_tokens` (docs/CONTEXT_ECONOMY_SPEC.md
@@ -5056,7 +5162,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
-                    _ctx = normalize_context_tokens(_usage)
+                    _ctx = runtime.turn_context_tokens(handle, _usage, ev.payload)
                     if _ctx is not None:
                         session['context_tokens'] = _ctx
                 accumulate_result_cost(session, ev.payload, proc_cost)
@@ -5735,6 +5841,15 @@ class QwenRuntime(AgentRuntime):
                 return candidate
         return None
 
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Last request's prompt, from this session's chat recording — see
+        `qwen_turn_context_tokens` for why `result.usage` cannot be used."""
+        sid = handle.session_dict.get('provider_session_id') or ''
+        path = self.transcript_path(handle.project_path, sid) if sid else None
+        return qwen_turn_context_tokens(path, usage, (turn or {}).get('num_turns'))
+
     def extract_chat_turns(self, path: Path) -> List[Tuple[str, str]]:
         """Rebuild the real user/assistant exchange from a `--chat-recording`
         file, for chat display (dead-session reconstruction sibling to
@@ -6076,6 +6191,7 @@ class QwenRuntime(AgentRuntime):
         for k, v in self._settings_auth_env().items():
             env[k] = v
         _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
 
         handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -6126,6 +6242,7 @@ class QwenRuntime(AgentRuntime):
         for k, v in self._settings_auth_env().items():
             env[k] = v
         _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,

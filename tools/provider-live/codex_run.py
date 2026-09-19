@@ -1166,6 +1166,12 @@ def read_native_transcript(ctx: Ctx, s: dict) -> str:
             if isinstance(meta, dict) and meta.get('sessionId') == sid:
                 texts.append(text)
         return '\n'.join(texts)
+    if ctx.vendor == 'qwen' and s.get('provider_session_id'):
+        # qwen-code 0.23.4 --chat-recording: <home>/.qwen/projects/<encoded
+        # cwd>/chats/<session id>.jsonl, one file per session, appended to on
+        # --resume (live-verified 2026-09-19).
+        hits = list((Path(home) / '.qwen' / 'projects').glob(f"*/chats/{s['provider_session_id']}.jsonl"))
+        return hits[0].read_text(encoding='utf-8', errors='replace') if hits else ''
     return ''
 
 

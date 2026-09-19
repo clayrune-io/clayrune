@@ -669,6 +669,43 @@ def _resolve_project_mcp_config(project):
              level='warn')
         return None
 
+def _runtime_mcp_config_json(project, provider_name):
+    """The MCP set a non-Claude runtime is given explicitly, as a JSON string.
+
+    Claude needs nothing when a project has not opted into trimming
+    (`_resolve_project_mcp_config` -> None): with no flags it loads the full
+    fleet itself. Qwen cannot. It only reaches servers named on its
+    `--allowed-mcp-server-names`, and '' meant the deny-all sentinel, so a
+    project that never touched trimming got NO MCP on Qwen while Claude and
+    Gemini (via `sync_to_gemini`) got every server. Live 2026-09-19: the
+    fixture server registered through POST /api/mcp, Claude and Gemini called
+    it, Qwen answered "MCP server 'clayrune_fixture' is not configured".
+
+    For qwen, None becomes the same set Gemini receives
+    (`mcp.collect_effective_servers_for_project`), and an opted-in set is
+    converted to that shape too: qwen-code is a gemini-cli fork and reads a
+    bare `url` as SSE (createTransport), so Claude's `{"type":"http","url"}`
+    would connect with the wrong transport. Other runtimes: unchanged."""
+    resolved = _resolve_project_mcp_config(project)
+    if provider_name != 'qwen':
+        return resolved or ''
+    try:
+        from mc import mcp as _mcp_mod
+        if resolved is None:
+            servers = _mcp_mod.collect_effective_servers_for_project(
+                (project or {}).get('project_path') or None)
+        else:
+            servers = {
+                name: _mcp_mod._to_gemini_config(_mcp_mod._infer_transport(cfg), cfg)
+                for name, cfg in (json.loads(resolved).get('mcpServers') or {}).items()
+                if isinstance(cfg, dict)}
+        return json.dumps({'mcpServers': servers})
+    except Exception as e:
+        _log(f"[mcp] qwen MCP set failed ({e!r}); dispatching with none",
+             level='warn')
+        return resolved or ''
+
+
 def _build_claude_flags(project=None, streaming=False, model_override=None,
                         effort_override=None, max_turns_override=None,
                         character_skills=None):
@@ -7405,7 +7442,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # native ~/.qwen/settings.json discovery. Every other runtime's
             # dispatch() has a **_extra catchall, so this is a no-op for
             # them — same shape as unattended_sandbox_enabled above.
-            mcp_config_json=_resolve_project_mcp_config(p) or '',
+            mcp_config_json=_runtime_mcp_config_json(p, provider_name),
             # W4/MC-947: pasted/uploaded attachments live under
             # UPLOADS_DIR (`data/uploads/`), a DIFFERENT directory tree
             # than most projects' own roots. Gemini/Qwen's `read_file`
@@ -7869,6 +7906,34 @@ def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
     if too_large:
         return 'bytes', size_bytes
     return None, 0
+
+
+def _mode_a_token_rollover(pp, project_id, session_id, session, provider, message):
+    """Token rollover for a per-turn-respawn (non-Claude) session. Returns
+    the message to send: unchanged, or prefixed with the real handoff after
+    the native id is dropped so the runtime's `write_followup` starts a fresh
+    thread (every one that resumes keys on `provider_session_id`).
+
+    The non-Claude follow-up and interrupt branches used to return before
+    `_auto_fresh_trigger` was ever consulted, so no Qwen/Gemini/Codex chat
+    could roll over however large it grew (Qwen live pass 2026-09-19: a
+    session sat at a reported 233,881 with no rollover logged). Token trigger
+    only: the byte backstop (`_session_too_large`) reads a Claude transcript
+    and does not apply; an unknown figure never rolls ("unknown stays
+    unknown")."""
+    ctx = session.get('context_tokens')
+    native_id = session.get('provider_session_id') or ''
+    if not native_id or not _context_tokens_over_threshold(ctx):
+        return message
+    _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
+    handoff_text, log_line, activity_line = _auto_fresh_handoff(
+        pp, provider, native_id, project_id, session_id,
+        reason='tokens', detail=int(ctx))
+    _log_agent_activity(project_id, activity_line)
+    session.setdefault('log_lines', []).append(log_line)
+    session.pop('provider_session_id', None)
+    session.pop('context_tokens', None)
+    return f"{handoff_text}\n\n{message}"
 
 
 def _in_flight_children(project_id, session_id):
@@ -9632,6 +9697,8 @@ def agent_followup(project_id):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, existing, session_provider, message)
                 runtime.write_followup(handle, message)
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
@@ -10321,6 +10388,8 @@ def agent_interrupt(project_id, *, _internal=None):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, session, session_provider, message)
                 runtime.write_followup(handle, message)
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
