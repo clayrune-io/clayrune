@@ -168,3 +168,126 @@ def test_shared_mode_a_reader_two_turns_one_process():
     )
     rt._mode_a_reader(proc, handle, rt.ClaudeRuntime())
     assert session['cost_usd'] == pytest.approx(P1_T2)
+
+
+# ── CLI >= 2.1.277: a headless resume carries the session total over ────────
+#
+# Real figures, 2026-09-19, haiku, `-p` then two `-p --resume` turns, each in
+# a new process:  2.1.278 -> 0.0275012, 0.0355756, 0.0394183.
+
+N1 = 0.0275012
+N2 = 0.0355756
+N3 = 0.0394183
+
+
+def _init(version, sid='sess-cost'):
+    return json.dumps({'type': 'system', 'subtype': 'init', 'session_id': sid,
+                       'model': 'claude-haiku-4-5', 'claude_code_version': version})
+
+
+def test_helper_new_cli_resume_counts_only_new_spend():
+    from mc.agent_runtime import accumulate_result_cost, note_cli_init
+    session = {}
+    for total in (N1, N2, N3):  # each a fresh process on 2.1.278
+        proc = {}
+        note_cli_init(proc, {'claude_code_version': '2.1.278'})
+        accumulate_result_cost(session, {'total_cost_usd': total,
+                                         'session_id': 's1'}, proc)
+    assert session['cost_usd'] == pytest.approx(N3)
+    assert session['cli_cost_totals'] == {'s1': N3}
+
+
+def test_helper_old_cli_resume_still_counts_first_turn_in_full():
+    # Pre-2.1.277 the counter restarts; a first turn costing MORE than the
+    # prior total must not be mistaken for a carried-over figure.
+    from mc.agent_runtime import accumulate_result_cost, note_cli_init
+    session = {}
+    p1 = {}
+    note_cli_init(p1, {'claude_code_version': '2.1.274'})
+    accumulate_result_cost(session, {'total_cost_usd': 0.004, 'session_id': 's1'}, p1)
+    p2 = {}
+    note_cli_init(p2, {'claude_code_version': '2.1.274'})
+    accumulate_result_cost(session, {'total_cost_usd': 0.03, 'session_id': 's1'}, p2)
+    assert session['cost_usd'] == pytest.approx(0.034)
+
+
+def test_helper_unknown_version_does_not_seed():
+    from mc.agent_runtime import accumulate_result_cost
+    session = {'cli_cost_totals': {'s1': 0.5}}
+    accumulate_result_cost(session, {'total_cost_usd': 0.02, 'session_id': 's1'}, {})
+    assert session['cost_usd'] == pytest.approx(0.02)
+
+
+def test_helper_new_cli_fresh_session_id_counts_in_full():
+    # A brand-new (or forked) Claude session has no saved total to seed from.
+    from mc.agent_runtime import accumulate_result_cost, note_cli_init
+    session = {'cli_cost_totals': {'old': 0.5}}
+    proc = {}
+    note_cli_init(proc, {'cli_version': '2.1.278'})
+    accumulate_result_cost(session, {'total_cost_usd': 0.02, 'session_id': 'new'}, proc)
+    assert session['cost_usd'] == pytest.approx(0.02)
+
+
+def test_version_gate_boundaries():
+    from mc.agent_runtime import _version_tuple, CLAUDE_RESUME_CARRIES_COST as G
+    assert _version_tuple('2.1.276') < G <= _version_tuple('2.1.277')
+    assert _version_tuple('2.2.0') > G
+    assert _version_tuple('3.0.0-beta.1') > G
+    assert _version_tuple('') < G
+    assert _version_tuple(None) < G
+
+
+def test_claude_turn_end_payload_carries_session_id():
+    from mc.agent_runtime import ClaudeRuntime
+    ev = ClaudeRuntime().parse_event(_result(total=N1, sid='abc'))
+    assert ev.payload['session_id'] == 'abc'
+
+
+def test_mode_b_reader_new_cli_resume_no_double_count(tmp_data_dir):
+    server = importlib.import_module('server')
+    importlib.reload(server)
+    session = _new_session()
+    _run(server._read_agent_stream_b, session,
+         [_init('2.1.278'), _assistant('one'), _result(total=N1)])
+    _run(server._read_agent_stream_b, session,
+         [_init('2.1.278'), _assistant('two'), _result(total=N2)])
+    _run(server._read_agent_stream_b, session,
+         [_init('2.1.278'), _assistant('three'), _result(total=N3)])
+    assert session['cost_usd'] == pytest.approx(N3)
+
+
+def test_mode_a_reader_new_cli_resume_no_double_count(tmp_data_dir):
+    server = importlib.import_module('server')
+    importlib.reload(server)
+    session = _new_session()
+    _run(server._read_agent_stream, session,
+         [_init('2.1.278'), _assistant('one'), _result(total=N1)])
+    _run(server._read_agent_stream, session,
+         [_init('2.1.278'), _assistant('two'), _result(total=N2)])
+    assert session['cost_usd'] == pytest.approx(N2)
+
+
+def test_mode_a_reader_old_cli_resume_unchanged(tmp_data_dir):
+    server = importlib.import_module('server')
+    importlib.reload(server)
+    session = _new_session()
+    _run(server._read_agent_stream, session,
+         [_init('2.1.274'), _assistant('one'), _result(total=0.031132)])
+    _run(server._read_agent_stream, session,
+         [_init('2.1.274'), _assistant('two'), _result(total=0.0037736)])
+    assert session['cost_usd'] == pytest.approx(0.031132 + 0.0037736)
+
+
+def test_shared_mode_a_reader_new_cli_resume_no_double_count():
+    from mc import agent_runtime as rt
+    session: dict = {'log_lines': []}
+    for total in (N1, N2):
+        proc = _FakeProc([_init('2.1.278'), _assistant('x'), _result(total=total)])
+        session['proc'] = proc
+        handle = rt.SessionHandle(
+            mc_session_id='sid-cost', provider='claude', mode='A',
+            project_path='/p', project_id='p-cost', session_dict=session,
+            meta={'callbacks': {}},
+        )
+        rt._mode_a_reader(proc, handle, rt.ClaudeRuntime())
+    assert session['cost_usd'] == pytest.approx(N2)
