@@ -88,6 +88,44 @@ EST_FLOOR = G.BASELINE_FIRST_TURN
 EST_GROWTH = 1_500
 
 
+def qwen_settings_env(real_home: Optional[Path] = None) -> Dict[str, str]:
+    """OPENAI_* env for the disposable instance's Qwen, from the REAL
+    ~/.qwen/settings.json (modelProviders.openai / security.auth).
+
+    This box signs Qwen in with a DashScope key in settings.json, not with
+    oauth_creds.json, and the disposable HOME has no settings.json. The
+    product then falls through to the AMBIENT env, which here holds stale
+    OPENAI_BASE_URL/OPENAI_MODEL/key values from an earlier failed login, so
+    every turn 404'd against the wrong host (first Qwen live pass, 2026-09-19).
+    Passing the values through the child env authenticates the instance the
+    way the real one is, and nothing is written to disk: the key never touches
+    the repo, the run dir or the isolated home. Never printed. {} when
+    settings.json holds no key (the instance then inherits, as the product
+    does)."""
+    try:
+        data = json.loads(((real_home or Path.home()) / '.qwen' / 'settings.json')
+                          .read_text(encoding='utf-8'))
+    except Exception:
+        return {}
+    if not isinstance(data, dict):
+        return {}
+    auth = data.get('security', {}).get('auth', {}) if isinstance(data.get('security'), dict) else {}
+    prov = (data.get('modelProviders') or {}).get('openai', {})         if isinstance(data.get('modelProviders'), dict) else {}
+    auth = auth if isinstance(auth, dict) else {}
+    prov = prov if isinstance(prov, dict) else {}
+    key = auth.get('apiKey') or prov.get('apiKey')
+    if not key:
+        return {}
+    out = {'OPENAI_API_KEY': str(key)}
+    base = auth.get('baseUrl') or prov.get('baseUrl')
+    model = prov.get('defaultModel')
+    if base:
+        out['OPENAI_BASE_URL'] = str(base)
+    if model:
+        out['OPENAI_MODEL'] = str(model)
+    return out
+
+
 class AllowanceStop(Exception):
     """The vendor under test reported exhaustion. The run stops here."""
 
@@ -314,6 +352,8 @@ class Instance:
                   'MC_DATA_DIR': str(self.data_dir), 'USERPROFILE': str(self.home),
                   'HOME': str(self.home), 'CODEX_HOME': str(self.home / '.codex'),
                   'PYTHONIOENCODING': 'utf-8'})
+        if self.vendor == 'qwen':
+            e.update(qwen_settings_env())
         return e
 
     def _seed_auth(self) -> None:
