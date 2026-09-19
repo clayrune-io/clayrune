@@ -19,6 +19,15 @@
   of the transcript handoff.
 - Every roll is appended to `data/midturn_rollover_log/<project>.jsonl`.
   Other vendors report usage only at turn end and are not covered.
+- Review fixes: a roll rebuilds context from the ORIGINAL task (a steward
+  cycle stays an unattended consumer); a killed process's orphaned tool ids no
+  longer block later rolls; Mode A sends the roll prompt on stdin (was over the
+  cmd.exe 8191-char cap); git state is read after the old process is dead, and a
+  roll overtaken by a newer interrupt is dropped; `_interrupting` is set only
+  after the steps that can raise; re-rolls need 20k tokens of growth and stop
+  after 3 failed attempts; subagent usage no longer decides the parent's roll.
+  Known gap: a rolled process is killed before its `result` event, so its
+  pre-roll spend is not added to the session's `cost_usd`.
 
 ## [2026-09-17l] — Stabilize the provider-neutral branch (W0)
 

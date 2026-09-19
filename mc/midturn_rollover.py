@@ -33,6 +33,13 @@ from mc import state
 from mc.core import _log
 
 RECENT_TOOLS_KEEP = 10
+# A roll that lands on a fresh prefix already over the threshold (threshold set
+# below the size of the injected context) would otherwise re-roll at every tool
+# boundary. Re-rolling needs this much growth over the fresh session's first
+# reading, so the worst case is one roll per this many tokens of real work.
+MIN_GROWTH_TOKENS = 20_000
+# Consecutive refused/failed roll attempts before this session stops trying.
+MAX_ROLL_FAILURES = 3
 _BG_JOBS_KEEP = 10
 _INPUT_PREVIEW = 160
 _GIT_OUT_CAP = 4000
@@ -61,15 +68,36 @@ def _preview(tool_input):
     return ' '.join(json.dumps(tool_input, default=str).split())[:_INPUT_PREVIEW]
 
 
+def _pending(session):
+    """The pending tool-call id set, scoped to the CURRENT process. Every path
+    that replaces `session['proc']` (user interrupt, stop+resume, guardian,
+    idle eviction, the Mode A AskUserQuestion kill) orphans whatever the old
+    process had in flight — no tool_result will ever arrive for it, so an id
+    left behind would hold `should_roll` False for the rest of the session.
+    Comparing the owning proc here covers all of them without a hook at each
+    reassignment."""
+    proc = session.get('proc')
+    if session.get('_mt_pending_proc') is not proc:
+        session['_mt_pending_proc'] = proc
+        session['_mt_pending_tools'] = set()
+    return session.setdefault('_mt_pending_tools', set())
+
+
 def note_tool_use(session, block):
-    """Record one `tool_use` content block. No-op while the flag is off."""
-    if not enabled() or not isinstance(block, dict):
+    """Record one `tool_use` content block. While the flag is off this records
+    nothing, and drops any pending set left from an earlier enabled stretch:
+    a result that arrives while off is never discarded, so keeping the id
+    would block every roll after the flag comes back on."""
+    if not enabled():
+        session.pop('_mt_pending_tools', None)
+        return
+    if not isinstance(block, dict):
         return
     name = block.get('name', '')
     tool_input = block.get('input')
     tid = block.get('id')
     if tid:
-        session.setdefault('_mt_pending_tools', set()).add(tid)
+        _pending(session).add(tid)
     recent = session.setdefault('_mt_recent_tools', [])
     recent.append({'name': name, 'input': _preview(tool_input)})
     del recent[:-RECENT_TOOLS_KEEP]
@@ -81,24 +109,46 @@ def note_tool_use(session, block):
 
 def note_tool_results(session, content):
     """Clear the pending-call ids a `user` message's tool_result blocks answer.
-    Returns True when at least one tool_result was seen (a tool boundary)."""
-    if not enabled() or not isinstance(content, list):
+    Returns True when at least one of them answered a call we tracked (a tool
+    boundary). A result for a call we never saw — one already in flight when
+    the flag was switched on — is not a boundary: other untracked calls may
+    still be running beside it."""
+    if not enabled():
+        session.pop('_mt_pending_tools', None)
         return False
-    pending = session.setdefault('_mt_pending_tools', set())
+    if not isinstance(content, list):
+        return False
+    pending = _pending(session)
     seen = False
     for block in content:
         if isinstance(block, dict) and block.get('type') == 'tool_result':
-            seen = True
-            pending.discard(block.get('tool_use_id'))
+            tid = block.get('tool_use_id')
+            if tid in pending:
+                seen = True
+                pending.discard(tid)
     return seen
+
+
+def note_call_tokens(session, tokens, parent_tool_use_id=None):
+    """Record the MAIN conversation's context size from one model call.
+    A subagent (Task) call streams through the same reader with a
+    `parent_tool_use_id`; its usage describes the subagent's own, separate
+    context, so it must not decide when the parent rolls."""
+    if not enabled() or parent_tool_use_id or tokens is None:
+        return
+    session['_mt_main_tokens'] = tokens
+    if session.get('_mt_awaiting_baseline'):
+        session['_mt_awaiting_baseline'] = False
+        session['_mt_baseline_tokens'] = tokens
 
 
 def should_roll(session, over_threshold):
     """True when the session should roll NOW: flag on, a Claude stream (the
     only vendor with a per-call usage figure — the others report usage at turn
     end, where the follow-up check already runs), token threshold crossed, no
-    tool call still awaiting its result, and no roll already requested or in
-    flight. `over_threshold` is agent_routes._context_tokens_over_threshold."""
+    tool call still awaiting its result, no roll already requested or in
+    flight, and — after a previous roll — real growth over the fresh session's
+    first reading. `over_threshold` is agent_routes._context_tokens_over_threshold."""
     if not enabled():
         return False
     if (session.get('provider') or 'claude').lower() != 'claude':
@@ -108,9 +158,32 @@ def should_roll(session, over_threshold):
     if session.get('incognito') or session.get('waiting_for_question') \
             or session.get('waiting_for_plan_approval'):
         return False
-    if session.get('_mt_pending_tools'):
+    if not session.get('claude_session_id'):
+        return False    # the handoff is built from the transcript; no id, no roll
+    if session.get('_mt_roll_failures', 0) >= MAX_ROLL_FAILURES:
         return False
-    return bool(over_threshold(session.get('context_tokens')))
+    if _pending(session):
+        return False
+    tokens = session.get('_mt_main_tokens')
+    if not over_threshold(tokens):
+        return False
+    base = session.get('_mt_baseline_tokens')
+    if base is not None and tokens - base < MIN_GROWTH_TOKENS:
+        return False    # fresh prefix alone is at/over the threshold: no loop
+    return True
+
+
+def begin_roll(session):
+    """Reset the per-process readings for the fresh session a roll is about to
+    start. The first main-conversation reading it reports becomes the baseline
+    `should_roll` measures growth from (MIN_GROWTH_TOKENS). Called by
+    agent_interrupt once the roll is committed to, so a refused or failed
+    attempt never leaves a baseline armed."""
+    session['_mt_main_tokens'] = None
+    session['_mt_awaiting_baseline'] = True
+    session['_mt_baseline_tokens'] = None
+    session['_mt_roll_failures'] = 0
+    session['_mt_rolls'] = session.get('_mt_rolls', 0) + 1
 
 
 def _git(cwd, *args):
@@ -180,6 +253,7 @@ def record_roll(session, context_tokens):
         'claude_session_id': session.get('claude_session_id', ''),
         'context_tokens': context_tokens,
         'threshold': state.CONFIG.get('context_rollover_tokens'),
+        'roll_number': session.get('_mt_rolls', 0),
         'recent_tools': len(session.get('_mt_recent_tools') or []),
         'epoch': int(time.time()),
     }

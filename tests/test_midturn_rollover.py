@@ -56,20 +56,23 @@ class _Proc:
         return 0
 
 
-def _assistant(text_or_tool, ctx, mid):
-    """One streamed assistant message whose usage totals `ctx` context tokens."""
+def _assistant(text_or_tool, ctx, mid, parent=None):
+    """One streamed assistant message whose usage totals `ctx` context tokens.
+    `parent` marks a subagent (Task) message, as the CLI does."""
     block = ({'type': 'tool_use', 'id': text_or_tool, 'name': 'Bash',
               'input': {'command': f'echo {text_or_tool}', 'description': 'probe'}}
              if text_or_tool.startswith('tool') else
              {'type': 'text', 'text': text_or_tool})
-    return json.dumps({'type': 'assistant', 'session_id': CSID, 'message': {
+    return json.dumps({'type': 'assistant', 'session_id': CSID,
+                       'parent_tool_use_id': parent, 'message': {
         'id': mid, 'content': [block],
         'usage': {'input_tokens': ctx, 'cache_read_input_tokens': 0,
                   'cache_creation_input_tokens': 0, 'output_tokens': 10}}}) + '\n'
 
 
-def _tool_result(tool_id):
-    return json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [
+def _tool_result(tool_id, parent=None):
+    return json.dumps({'type': 'user', 'parent_tool_use_id': parent,
+                       'message': {'role': 'user', 'content': [
         {'type': 'tool_result', 'tool_use_id': tool_id, 'content': 'ok'}]}}) + '\n'
 
 
@@ -103,6 +106,8 @@ def env(tmp_path, monkeypatch):
 
     project = {'id': 'p1', 'project_path': str(project_path), 'provider': 'claude'}
     real_reader = ar._read_agent_stream_b
+    real_reader_a = ar._read_agent_stream
+    real_fresh = ar._fresh_context_for
     monkeypatch.setattr(ar, 'load_project', lambda pid: project)
     monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
@@ -113,11 +118,13 @@ def env(tmp_path, monkeypatch):
     monkeypatch.setitem(mc_state.CONFIG, 'context_rollover_tokens', 200_000)
     monkeypatch.setitem(mc_state.CONFIG, 'midturn_rollover_enabled', True)
     monkeypatch.setattr(ar, '_session_too_large', lambda pp, sid: (False, 4096))
-    monkeypatch.setattr(ar, '_kill_proc_background', lambda *a, **k: None)
+    events = []
+    monkeypatch.setattr(ar, '_kill_proc_background', lambda *a, **k: events.append('kill'))
     monkeypatch.setattr(ar, '_unregister_process', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_register_process', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_hide_windows_delayed', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_read_agent_stream_b', lambda *a, **k: None)  # new proc's reader
+    monkeypatch.setattr(ar, '_read_agent_stream', lambda *a, **k: None)    # (Mode A)
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [])
     monkeypatch.setattr(ar, '_fresh_context_for', lambda *a, **k: 'FRESH CONTEXT')
@@ -132,14 +139,17 @@ def env(tmp_path, monkeypatch):
                         lambda pid, sid, child, summary: notified.append((pid, sid, summary)))
 
     spawned = []
+    spawned_kwargs = []
+    mode_a_spawn = []   # non-empty: a `-p` argv IS the Mode A roll, let it through
     new_proc = _Proc(pid=999999)
 
     def _popen(cmd, **kwargs):
         if cmd and cmd[0] == 'git':  # midturn_rollover._git shells out through Popen
             return _REAL_POPEN(cmd, **kwargs)
-        if '-p' in cmd:  # Scribe/distiller one-shots fired by reader teardown
+        if '-p' in cmd and not mode_a_spawn:  # Scribe/distiller one-shots fired by reader teardown
             raise FileNotFoundError('one-shot model calls are stubbed out')
         spawned.append(cmd)
+        spawned_kwargs.append(kwargs)
         return new_proc
 
     monkeypatch.setattr(ar.subprocess, 'Popen', _popen)
@@ -147,7 +157,9 @@ def env(tmp_path, monkeypatch):
     snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
     try:
-        yield {'ar': ar, 'reader': real_reader, 'sessions': mc_state.agent_sessions,
+        yield {'ar': ar, 'reader': real_reader, 'reader_a': real_reader_a,
+               'events': events, 'spawned_kwargs': spawned_kwargs, 'real_fresh': real_fresh, 'mode_a_spawn': mode_a_spawn,
+               'sessions': mc_state.agent_sessions,
                'activity': activity, 'notified': notified, 'spawned': spawned,
                'new_proc': new_proc, 'tmp': tmp_path, 'pp': project_path,
                'CONFIG': mc_state.CONFIG}
@@ -170,12 +182,15 @@ def _session(proc, **extra):
     return s
 
 
-def _run_reader(env, lines_fn):
-    """Run the real Mode B reader over `lines_fn()` (a generator of stdout lines)."""
-    proc = _Proc(stdout=lines_fn())
-    session = _session(proc)
+def _run_reader(env, lines_fn, session=None, proc=None, reader='reader', **extra):
+    """Run a real reader (Mode B by default) over `lines_fn()` (a generator of
+    stdout lines)."""
+    proc = proc or _Proc(stdout=lines_fn())
+    proc.stdout = lines_fn()
+    session = session or _session(proc, **extra)
+    session['proc'] = proc
     env['sessions']['worker-1'] = session
-    env['reader'](proc, session)
+    env[reader](proc, session)
     return session
 
 
@@ -290,7 +305,7 @@ def test_parallel_tool_calls_wait_for_every_result(env):
     ar = env['ar']
     session = _session(_Proc())
     env['sessions']['worker-1'] = session
-    session['context_tokens'] = 250_000
+    session['_mt_main_tokens'] = 250_000
     ar._midturn.note_tool_use(session, {'type': 'tool_use', 'id': 'a', 'name': 'Read',
                                         'input': {'file_path': 'x'}})
     ar._midturn.note_tool_use(session, {'type': 'tool_use', 'id': 'b', 'name': 'Read',
@@ -303,10 +318,213 @@ def test_parallel_tool_calls_wait_for_every_result(env):
 
 def test_non_claude_and_unknown_tokens_never_roll(env):
     ar = env['ar']
-    s = _session(_Proc(), context_tokens=250_000, provider='gemini')
+    s = _session(_Proc(), _mt_main_tokens=250_000, provider='gemini')
     assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
-    s = _session(_Proc(), context_tokens=None)
+    s = _session(_Proc(), _mt_main_tokens=None)
     assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
     env['CONFIG']['context_rollover_tokens'] = 0
-    s = _session(_Proc(), context_tokens=999_999)
+    s = _session(_Proc(), _mt_main_tokens=999_999)
     assert not ar._midturn.should_roll(s, ar._context_tokens_over_threshold)
+
+
+# --- Review fixes (b5fa971 review, 2026-09-18) --------------------------------
+
+def _tool_use_block(tid, name='Bash'):
+    return {'type': 'tool_use', 'id': tid, 'name': name, 'input': {'command': 'x'}}
+
+
+def _roll_lines():
+    yield _assistant('tool1', 250_000, 'm1')
+    yield _tool_result('tool1')
+
+
+def test_finding1_roll_keeps_the_steward_task_for_the_context_rebuild(env, monkeypatch):
+    """`_fresh_context_for` is NOT stubbed here. A roll's `message` is the canned
+    ROLL_MESSAGE; the rebuild used to key `is_unattended_task` (and the read
+    floor / positions) on it, so a steward cycle came back as an ATTENDED
+    consumer of unattended-origin artifacts (CLAUDE.md learning rail 2)."""
+    ar = env['ar']
+    monkeypatch.setattr(ar, '_fresh_context_for', env['real_fresh'])
+    seen = []
+
+    def _floor(pid, task, topk, consumer_unattended=False):
+        seen.append({'task': task, 'consumer_unattended': consumer_unattended})
+        return []
+
+    monkeypatch.setattr(ar._distiller, 'exploration_read_floor', _floor)
+    steward_task = '[Steward cycle] Review the backlog and pick the next goal.'
+
+    _run_reader(env, _roll_lines, task=steward_task)
+    assert _wait(lambda: env['spawned']), 'roll did not spawn a fresh session'
+    assert seen, 'read floor was never consulted on the rebuild'
+    assert seen[0]['task'] == steward_task, seen
+    assert seen[0]['consumer_unattended'] is True, seen
+
+
+def test_finding2_kill_mid_tool_does_not_block_a_later_roll(env):
+    """A proc killed with a tool call in flight never delivers its tool_result.
+    That id used to stay in `_mt_pending_tools` forever, so `should_roll` was
+    False for the rest of the session and the original bug came back silently."""
+    ar = env['ar']
+    session = _session(_Proc(pid=111))
+    env['sessions']['worker-1'] = session
+    ar._midturn.note_tool_use(session, _tool_use_block('orphan'))       # in flight...
+    assert session['_mt_pending_tools'] == {'orphan'}
+    # ...then the process is replaced (user interrupt / stop+resume / guardian).
+    _run_reader(env, _roll_lines, session=session, proc=_Proc(pid=222))
+    assert _wait(lambda: len(env['spawned']) == 1), \
+        'orphaned tool id from the killed proc blocked the roll'
+
+
+def test_finding3_mode_a_roll_with_a_huge_task_keeps_the_prompt_off_the_command_line(env):
+    """cmd.exe caps a command line at 8191 chars. The Mode A roll passed the
+    handoff + task (uncapped) + git state via `-p <msg>`."""
+    big_task = 'Investigate the flaky importer. ' + ('detail ' * 3000)   # ~21k chars
+    assert len(big_task) > 10_000
+
+    env['mode_a_spawn'].append(True)
+    session = _run_reader(env, _roll_lines, reader='reader_a', mode='A', task=big_task)
+    assert _wait(lambda: len(env['spawned']) == 1), env['spawned']
+    cmd = env['spawned'][0]
+    assert sum(len(c) + 1 for c in cmd) < 8191, f'command line is {sum(len(c) for c in cmd)} chars'
+    assert not any(big_task in c for c in cmd)
+    assert env['spawned_kwargs'][0]['stdin'] == subprocess.PIPE
+    assert _wait(lambda: env['new_proc'].stdin.written), 'prompt never written to stdin'
+    written = ''.join(env['new_proc'].stdin.written)
+    assert big_task in written
+    assert 'Mid-task rollover state' in written
+    assert session['session_id'] == 'worker-1'
+
+
+def test_finding4_state_is_collected_after_the_kill_not_before(env, monkeypatch):
+    """Three git calls (10s timeout each) ran on the reader thread while the old
+    proc was still alive, so the roll could land mid tool call."""
+    ar = env['ar']
+    real = ar._midturn.build_state_block
+
+    def _spy(session, cwd):
+        env['events'].append('state')
+        return real(session, cwd)
+
+    monkeypatch.setattr(ar._midturn, 'build_state_block', _spy)
+    _run_reader(env, _roll_lines)
+    assert _wait(lambda: len(env['spawned']) == 1)
+    assert env['events'] == ['kill', 'state'], env['events']
+
+
+def test_finding4_a_roll_decided_before_a_newer_interrupt_is_dropped(env):
+    """The reader decides to roll, then a user interrupt lands and replaces the
+    process before the roll reaches the project lock. The stale roll must not
+    kill the newer process or overwrite its turn."""
+    ar = env['ar']
+    old, newer = _Proc(pid=1), _Proc(pid=2)
+    session = _session(newer, _mt_main_tokens=250_000)   # session already moved on
+    env['sessions']['worker-1'] = session
+    ar._maybe_midturn_roll(session, old)                  # the stale reader's call
+    assert env['spawned'] == [] and env['events'] == []
+    assert '_interrupting' not in session and '_mt_roll_requested' not in session
+    assert session.get('_mt_roll_failures', 0) == 0, 'a superseded roll is not a failure'
+    # An interrupt already in flight is dropped the same way.
+    session2 = _session(old, _mt_main_tokens=250_000, _interrupting=True)
+    env['sessions']['worker-1'] = session2
+    payload, status = ar.agent_interrupt('p1', _internal={
+        'session_id': 'worker-1', 'message': 'm', 'midturn': True, 'proc': old,
+        'tokens': 250_000, 'build_state': lambda cwd: ''})
+    assert status == 409 and env['spawned'] == [] and env['events'] == []
+
+
+def test_finding5_failure_before_the_kill_does_not_leave_the_session_gated(env, monkeypatch):
+    """`_interrupting` used to be set BEFORE `_rearm_notify_for_new_turn`, which
+    writes the delegation DB and can raise. Left set, the still-live old reader
+    is gated out of every status write: stuck 'running', spawner never told."""
+    ar = env['ar']
+
+    def _boom(session):
+        raise RuntimeError('delegation db locked')
+
+    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', _boom)
+    old = _Proc(pid=1)
+    session = _session(old, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ar._maybe_midturn_roll(session, old)
+    assert '_interrupting' not in session
+    assert '_mt_roll_requested' not in session
+    assert ar._session_owned_by(session, old), 'old reader must still own the session'
+    assert env['events'] == [] and env['spawned'] == []
+    assert session['status'] == 'running'
+    assert not [l for l in session['log_lines'] if 'rolled over' in l]
+    assert session['_mt_roll_failures'] == 1
+
+
+def test_finding6_no_reroll_loop_when_the_fresh_prefix_is_over_the_threshold(env):
+    """threshold below the fresh session's own size: every tool boundary would
+    roll again, forever. Re-rolling needs real growth over the fresh figure."""
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc())
+    mt.begin_roll(session)                       # a roll just happened
+    mt.note_call_tokens(session, 250_000)        # fresh session reports 250k already
+    mt.note_tool_use(session, _tool_use_block('a'))
+    mt.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'a'}])
+    assert not mt.should_roll(session, over), 'rolled again with zero growth'
+    mt.note_call_tokens(session, 250_000 + mt.MIN_GROWTH_TOKENS - 1)
+    assert not mt.should_roll(session, over)
+    mt.note_call_tokens(session, 250_000 + mt.MIN_GROWTH_TOKENS)
+    assert mt.should_roll(session, over)
+
+
+def test_finding6_repeated_failed_rolls_stop_being_attempted(env):
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc(), _mt_main_tokens=250_000,
+                       _mt_roll_failures=mt.MAX_ROLL_FAILURES)
+    assert not mt.should_roll(session, over)
+
+
+def test_low_roll_is_fresh_even_when_the_token_recheck_would_say_no(env):
+    """The interrupt path re-ran `_auto_fresh_trigger`; with `context_tokens`
+    unknown/stale it fell to the byte check (False here) and RESUMED, silently
+    dropping the state block. A mid-task roll must force the fresh branch."""
+    ar = env['ar']
+    old = _Proc(pid=1)
+    session = _session(old, context_tokens=None, _mt_main_tokens=250_000)
+    env['sessions']['worker-1'] = session
+    ar._maybe_midturn_roll(session, old)
+    assert _wait(lambda: len(env['spawned']) == 1)
+    assert '-r' not in env['spawned'][0], 'resumed instead of starting fresh'
+    assert _wait(lambda: env['new_proc'].stdin.written)
+    assert 'Mid-task rollover state' in env['new_proc'].stdin.written[0]
+
+
+def test_low_subagent_tokens_do_not_trigger_the_parents_roll(env):
+    """A Task subagent streams through the same reader; its usage is its own
+    context. The Task tool_result boundary was judged on the subagent's 250k."""
+    def lines():
+        yield _assistant('toolTask', 100_000, 'm1')                    # parent: 100k
+        yield _assistant('toolSub', 250_000, 'm2', parent='toolTask')  # subagent: 250k
+        yield _tool_result('toolSub', parent='toolTask')
+        yield _tool_result('toolTask')                                 # boundary
+
+    session = _run_reader(env, lines)
+    time.sleep(0.2)
+    assert env['spawned'] == []
+    assert session['_mt_main_tokens'] == 100_000
+    assert session['context_tokens'] == 250_000, 'flag-off figure must be unchanged'
+
+
+def test_low_results_for_calls_started_before_the_flag_are_not_boundaries(env):
+    mt = env['ar']._midturn
+    session = _session(_Proc(), _mt_main_tokens=250_000)
+    assert mt.note_tool_results(
+        session, [{'type': 'tool_result', 'tool_use_id': 'started-before-flag'}]) is False
+
+
+def test_low_toggling_the_flag_off_and_on_drops_stale_pending_ids(env):
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc(), _mt_main_tokens=250_000, claude_session_id=CSID)
+    mt.note_tool_use(session, _tool_use_block('a'))
+    env['CONFIG']['midturn_rollover_enabled'] = False
+    mt.note_tool_results(session, [{'type': 'tool_result', 'tool_use_id': 'a'}])  # unseen
+    env['CONFIG']['midturn_rollover_enabled'] = True
+    assert mt.should_roll(session, over), 'stale id from before the toggle blocked the roll'
