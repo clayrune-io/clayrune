@@ -1856,6 +1856,49 @@ def _uv_prereq_snippet() -> str:
             '&& export PATH="$HOME/.local/bin:$PATH"')
 
 
+def _npm_major_version(npm_bin: str) -> Optional[int]:
+    """Parse the resolved `npm` binary's major version, or None if it can't
+    be determined — treated as "flag unsupported" (fail closed) rather than
+    risking an unrecognized flag on some npm we couldn't identify."""
+    try:
+        r = subprocess.run([npm_bin, '--version'], capture_output=True,
+                          text=True, timeout=10)
+        return int((r.stdout or '').strip().split('.', 1)[0])
+    except Exception:
+        return None
+
+
+def _npm_install_g_segment(package: str, *, npm_bin: Optional[str] = None) -> str:
+    """`npm install -g <package>`, adding `--allow-scripts=<package>` only for
+    npm >= 12 — the version that SKIPS an unapproved postinstall instead of
+    just warning about it (F12, clean-VM run 2, 2026-09-18:
+    @anthropic-ai/claude-code's `install.cjs` postinstall never ran during
+    the in-app install). Older npm ignores the flag with a harmless
+    deprecation warning ("Unknown cli config", verified locally on
+    11.13.0 — exit 0, script still ran), but we only add it on positive
+    version evidence rather than lean on that.
+
+    ``npm_bin`` is the ALREADY-RESOLVED npm on this machine, checked here
+    directly. When it's None (the bootstrap branch, where the composed shell
+    command installs Node/npm before this segment runs and no npm exists yet
+    in this process to query), the version check is embedded in the shell
+    snippet itself and evaluated against whatever npm the prerequisite step
+    just installed.
+    """
+    if npm_bin:
+        major = _npm_major_version(npm_bin)
+        if major is not None and major >= 12:
+            return f'npm install -g --allow-scripts={package} {package}'
+        return f'npm install -g {package}'
+    if sys.platform == 'win32':
+        return (f'for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+               f'(if %v GEQ 12 (npm install -g --allow-scripts={package} {package}) '
+               f'else (npm install -g {package}))')
+    return (f'NPMV=$(npm -v | cut -d. -f1); '
+           f'if [ "$NPMV" -ge 12 ]; then npm install -g --allow-scripts={package} {package}; '
+           f'else npm install -g {package}; fi')
+
+
 def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
     """Return ``(command, prerequisite)`` for a provider install.
 
@@ -1865,13 +1908,16 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
     """
     required = _install_command_required_binary(hint)
     if required == 'npm':
-        if shutil.which('npm'):
-            return hint, ''
         package = _PROVIDER_NPM_PACKAGES.get(name)
+        npm_bin = shutil.which('npm')
+        if npm_bin:
+            if package and hint.strip() == f'npm install -g {package}':
+                return _npm_install_g_segment(package, npm_bin=npm_bin), ''
+            return hint, ''
         expected = f'npm install -g {package}' if package else ''
         if not package or hint.strip() != expected:
             return hint, 'unsupported'
-        return f'{_node_prereq_snippet()} && {expected}', 'npm'
+        return f'{_node_prereq_snippet()} && {_npm_install_g_segment(package)}', 'npm'
     if required == 'pip':
         if shutil.which('pip') or shutil.which('pip3'):
             return hint, ''
@@ -1925,7 +1971,8 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
     unsupported: List[str] = []
     needs_npm_prereq = False
     needs_pip_prereq = False
-    have_npm = bool(shutil.which('npm'))
+    npm_bin = shutil.which('npm')
+    have_npm = bool(npm_bin)
     have_pip = bool(shutil.which('pip') or shutil.which('pip3'))
     have_uv = bool(shutil.which('uv'))
     for name in names:
@@ -1945,7 +1992,7 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
             if not package or hint.strip() != expected:
                 unsupported.append(name)
                 continue
-            npm_expected.append(expected)
+            npm_expected.append(_npm_install_g_segment(package, npm_bin=npm_bin))
             if not have_npm:
                 needs_npm_prereq = True
         elif required == 'pip':

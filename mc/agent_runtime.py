@@ -3372,6 +3372,18 @@ class GeminiRuntime(AgentRuntime):
              the short-lived access_token has expired, the CLI refreshes it.
              The active Google account is read from google_accounts.json for
              a friendlier label.
+          3. ~/.gemini/settings.json's security.auth.selectedType ==
+             'gemini-api-key' (F11, clean-VM run 2, 2026-09-18): the CLI's
+             OWN interactive "Use Gemini API key" prompt stores the key in
+             the OS keychain (keytar service 'gemini-cli-api-key') and never
+             writes it to this settings file or an env var — so neither
+             evidence source above sees it, and a user who signed in this
+             way was reported "not signed in" even though `gemini` itself
+             worked. We never read the key value (it isn't ours to read),
+             so this is local evidence only, exactly like the oauth case
+             above; auth_probe() verifies it live via the CLI binary itself
+             (the only thing that can reach the keychain) instead of the
+             direct HTTP call the env-var path gets.
 
         Returns (status, method, error_text) where status is one of
         'ok' | 'not_logged_in'.
@@ -3395,6 +3407,13 @@ class GeminiRuntime(AgentRuntime):
                         except Exception:
                             email = ''
                     return ('ok', f'oauth ({email})' if email else 'oauth', None)
+            settings_path = gdir / 'settings.json'
+            if settings_path.is_file():
+                settings = json.loads(settings_path.read_text(encoding='utf-8'))
+                selected = (((settings.get('security') or {}).get('auth') or {})
+                            .get('selectedType') or '')
+                if selected == 'gemini-api-key':
+                    return ('ok', 'keychain:gemini-api-key', None)
         except Exception:
             pass
         return ('not_logged_in', None,
@@ -3601,6 +3620,50 @@ class GeminiRuntime(AgentRuntime):
                     'quota_id': None, 'quota_value': None, 'invalid_key': False,
                     'error_text': str(e)}
 
+    def _probe_gemini_cli_call(self, bin_path: Path, timeout: float = 25.0) -> dict:
+        """Spend one real, cheap `gemini` CLI call to verify a credential this
+        process cannot see directly (F11: a key the CLI's own "Use Gemini API
+        key" prompt stored in the OS keychain, service 'gemini-cli-api-key' —
+        never in an env var or a file this runtime reads). We never read or
+        log the key value; the CLI resolving it from its own keychain entry
+        is exactly the point of shelling out instead of hitting Google's API
+        directly the way `_probe_live_quota` does for an env-var key.
+
+        Runs from a scratch temp directory (never a real project) with tool
+        use and MCP disabled, so the only thing exercised is auth — same
+        `--allowed-mcp-server-names __clayrune_none__` sentinel QwenRuntime
+        uses to close the same class of leak. `--yolo` matches every other
+        headless gemini invocation this runtime makes (build_command); the
+        prompt itself asks for no tool use, so it should never be exercised.
+
+        Returns {'ok': bool, 'error_text': str|None}. Never raises.
+        """
+        cmd = [str(bin_path), '--output-format', 'stream-json', '--yolo',
+               '--skip-trust', '--allowed-mcp-server-names', '__clayrune_none__',
+               '--model', self._PROBE_MODEL, '-p',
+               'Reply with the single word OK. Do not use any tools.']
+        try:
+            with tempfile.TemporaryDirectory(prefix='clayrune-gemini-probe-') as td:
+                r = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=timeout, cwd=td,
+                                   creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            return {'ok': False,
+                    'error_text': 'gemini CLI did not respond within the probe timeout'}
+        except Exception as e:
+            return {'ok': False, 'error_text': str(e)}
+        if r.returncode == 0:
+            return {'ok': True, 'error_text': None}
+        out = (r.stdout or '') + (r.stderr or '')
+        err_line = ''
+        for line in reversed(out.strip().splitlines()):
+            line = line.strip()
+            if line:
+                err_line = line
+                break
+        return {'ok': False,
+                'error_text': err_line or f'gemini exited with code {r.returncode}'}
+
     def auth_probe(self) -> dict:
         """Verify Gemini auth can actually serve a request — not just that a
         credential is present.
@@ -3622,6 +3685,14 @@ class GeminiRuntime(AgentRuntime):
         subprocess, not a single cheap call) rather than one HTTP request,
         which is out of scope here — local evidence is the best signal
         available for that path and is reported honestly as such.
+
+        A CLI-native API key (F11: `selectedType == 'gemini-api-key'`, the
+        key sitting in the OS keychain, invisible to this process and never
+        read) gets the CLI-spawn treatment the OAuth path above declines —
+        there is no key value to hit Google's HTTP API with directly, so
+        `_probe_gemini_cli_call` runs the `gemini` binary itself with a
+        trivial, tool-free prompt instead. Success -> 'ok'; failure surfaces
+        the CLI's own error text verbatim.
         """
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -3645,6 +3716,22 @@ class GeminiRuntime(AgentRuntime):
             return state
 
         api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key and (method or '').startswith('keychain'):
+            probe = self._probe_gemini_cli_call(bin_path)
+            if probe['ok']:
+                state = {
+                    'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                    'quota_status': 'unknown', 'tier': 'unknown', 'last_checked': _now_iso(),
+                }
+            else:
+                state = {
+                    'ok': False, 'status': 'unknown', 'method': method,
+                    'error_text': probe['error_text'], 'quota_status': 'unknown',
+                    'tier': 'unknown', 'last_checked': _now_iso(),
+                }
+            with self._auth_lock:
+                self._auth_cache.update(state)
+            return state
         if not api_key:
             # OAuth path — see docstring. Report what local evidence shows,
             # honestly labeled 'unverified' (F9, 2026-09-18) rather than
