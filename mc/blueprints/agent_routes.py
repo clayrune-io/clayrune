@@ -2074,6 +2074,116 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
     return ' && '.join(segments), unsupported, prerequisite_added
 
 
+# ── PowerShell execution policy (F6, clean-VM run 2026-09-18) ────────────────
+#
+# npm installs each CLI as claude.cmd AND claude.ps1. On a clean Windows client
+# the default policy is Restricted, so typing `claude` / `gemini` in PowerShell
+# fails with a SecurityError while `claude.cmd` works. Ron's decision: during
+# the in-app vendor install set RemoteSigned at CurrentUser scope (no admin,
+# reversible, still blocks unsigned DOWNLOADED scripts) — but ONLY when the
+# effective policy is Restricted/Undefined, and never over a policy someone
+# chose on purpose (AllSigned, or anything set by Group Policy).
+
+# Scopes that persist across terminals. `Process` is left out on purpose: it
+# dies with the shell that set it, so it says nothing about what the user's
+# next terminal will do.
+_PS_POLICY_UNDO = 'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Undefined'
+
+
+def _execution_policy_decision(scopes: dict) -> tuple[str, str]:
+    """Pure decision: ``(action, effective)`` for a ``Get-ExecutionPolicy -List``
+    result mapped scope -> policy name.
+
+    ``action`` is ``'set'`` (write RemoteSigned to CurrentUser), ``'left_alone'``
+    (a blocking policy someone chose that we must not override) or
+    ``'unchanged'`` (already permissive enough for the npm .ps1 shims).
+    """
+    def val(scope):
+        return str(scopes.get(scope) or 'Undefined').strip()
+
+    for gpo_scope in ('MachinePolicy', 'UserPolicy'):
+        gpo = val(gpo_scope)
+        if gpo.lower() != 'undefined':
+            # Group Policy wins over anything we could write; even a blocking
+            # one is the administrator's call, not ours.
+            blocking = gpo.lower() in ('restricted', 'allsigned')
+            return ('left_alone' if blocking else 'unchanged'), gpo
+    effective = next((val(s) for s in ('CurrentUser', 'LocalMachine')
+                      if val(s).lower() != 'undefined'), 'Undefined')
+    if effective.lower() in ('restricted', 'undefined'):
+        return 'set', effective
+    if effective.lower() == 'allsigned':
+        return 'left_alone', effective
+    return 'unchanged', effective
+
+
+def _read_powershell_execution_scopes() -> Optional[dict]:
+    """``Get-ExecutionPolicy -List`` as {scope: policy}, or None if it can't be read."""
+    try:
+        r = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             'Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }'],
+            capture_output=True, text=True, timeout=30)
+        out = {}
+        for line in (r.stdout or '').splitlines():
+            if '=' in line:
+                k, v = line.strip().split('=', 1)
+                out[k.strip()] = v.strip()
+        return out if r.returncode == 0 and out else None
+    except Exception as e:
+        _log(f"[provider-install] reading PowerShell execution policy failed: {e}", flush=True)
+        return None
+
+
+def _set_powershell_execution_policy_remotesigned() -> Optional[str]:
+    """Write RemoteSigned at CurrentUser scope. Returns None on success, else an error string."""
+    try:
+        r = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return (r.stderr or r.stdout or f'exit {r.returncode}').strip()[:300]
+        return None
+    except Exception as e:
+        return str(e)
+
+
+def _ensure_powershell_execution_policy() -> dict:
+    """Apply the F6 rule and report what happened; never raises.
+
+    Returns ``{'action', 'effective', 'message'}``. ``message`` is '' when there
+    is nothing worth telling the user (non-Windows, or policy already fine).
+    """
+    if sys.platform != 'win32':
+        return {'action': 'not_applicable', 'effective': None, 'message': ''}
+    try:
+        scopes = _read_powershell_execution_scopes()
+        if scopes is None:
+            return {'action': 'unknown', 'effective': None, 'message': ''}
+        action, effective = _execution_policy_decision(scopes)
+        if action == 'unchanged':
+            return {'action': action, 'effective': effective, 'message': ''}
+        if action == 'left_alone':
+            return {'action': action, 'effective': effective, 'message': (
+                f'PowerShell script policy is {effective} (set on purpose or by your '
+                'organization), so it was left alone. Typing claude/gemini in PowerShell '
+                'may be blocked; use Command Prompt or claude.cmd / gemini.cmd instead.')}
+        err = _set_powershell_execution_policy_remotesigned()
+        if err:
+            return {'action': 'failed', 'effective': effective, 'message': (
+                f'PowerShell script policy is {effective}, which blocks typing claude/gemini '
+                f'in PowerShell, and it could not be changed ({err}). Use Command Prompt, '
+                'or run: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned')}
+        return {'action': 'set', 'effective': effective, 'message': (
+            f'PowerShell script policy was {effective}, which blocks typing claude/gemini '
+            'in PowerShell. Set it to RemoteSigned for your user account only (no admin). '
+            f'Undo with: {_PS_POLICY_UNDO}')}
+    except Exception as e:
+        _log(f"[provider-install] execution policy step failed: {e}", flush=True)
+        return {'action': 'unknown', 'effective': None, 'message': ''}
+
+
 @bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
 def agent_provider_install_launch(name):
     """Run the SAME install command install.sh/install.ps1 use for this
@@ -2115,8 +2225,11 @@ def agent_provider_install_launch(name):
     err = _launch_terminal_for_binary(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command}), 200
+    policy = (_ensure_powershell_execution_policy()
+              if name in _PROVIDER_NPM_PACKAGES else None)
     return jsonify({'ok': True, 'command': command,
-                    'prerequisite': prerequisite or None})
+                    'prerequisite': prerequisite or None,
+                    'execution_policy': policy})
 
 
 @bp.route('/api/agent/providers/install-launch', methods=['POST'])
@@ -2160,8 +2273,11 @@ def agent_providers_install_launch_batch():
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command,
                         'unsupported': unsupported}), 200
+    policy = (_ensure_powershell_execution_policy()
+              if any(n in _PROVIDER_NPM_PACKAGES for n in installed) else None)
     return jsonify({'ok': True, 'command': command,
-                    'installed': installed, 'unsupported': unsupported})
+                    'installed': installed, 'unsupported': unsupported,
+                    'execution_policy': policy})
 
 
 def _auth_probe_cwd() -> str:

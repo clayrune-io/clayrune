@@ -123,6 +123,18 @@ def client(tmp_path, monkeypatch):
     data_dir.mkdir()
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
 
+    # F6: the install-launch routes now touch the PowerShell execution policy
+    # on win32. No test may read or WRITE the real one (this box's, in CI or
+    # on Ron's machine) — default to "already RemoteSigned, nothing to do",
+    # and make any accidental write loud. F6 tests override both.
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: {'CurrentUser': 'RemoteSigned'})
+
+    def _no_real_policy_write():
+        raise AssertionError('test attempted to write the real execution policy')
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        _no_real_policy_write)
+
     # mc.state.agent_sessions is a shared object (blueprint imports it) —
     # snapshot, clear, restore IN PLACE; never rebind (split-brain).
     sess_snapshot = dict(mc_state.agent_sessions)
@@ -1173,3 +1185,124 @@ def test_dispatch_route_missing_cli_returns_install_message_not_generic(client, 
     assert 'Install it with: npm install -g @openai/codex' in body['error']
     from mc import state as mc_state
     mc_state.agent_sessions.clear()
+
+
+# ── F6: PowerShell ExecutionPolicy during vendor install ─────────────────────
+
+def _scopes(**kw):
+    base = {'MachinePolicy': 'Undefined', 'UserPolicy': 'Undefined', 'Process': 'Undefined',
+            'CurrentUser': 'Undefined', 'LocalMachine': 'Undefined'}
+    base.update(kw)
+    return base
+
+
+@pytest.mark.parametrize('scopes,action,effective', [
+    # Clean Windows client: nothing defined anywhere -> Undefined -> fix it.
+    (_scopes(), 'set', 'Undefined'),
+    (_scopes(LocalMachine='Restricted'), 'set', 'Restricted'),
+    (_scopes(CurrentUser='Restricted'), 'set', 'Restricted'),
+    # CurrentUser outranks LocalMachine: a user-level RemoteSigned stands even
+    # over a Restricted machine default, and vice versa for a user AllSigned.
+    (_scopes(CurrentUser='RemoteSigned', LocalMachine='Restricted'), 'unchanged', 'RemoteSigned'),
+    (_scopes(CurrentUser='AllSigned', LocalMachine='RemoteSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(LocalMachine='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(LocalMachine='RemoteSigned'), 'unchanged', 'RemoteSigned'),
+    (_scopes(CurrentUser='Bypass'), 'unchanged', 'Bypass'),
+    (_scopes(LocalMachine='Unrestricted'), 'unchanged', 'Unrestricted'),
+    # Group Policy always wins and is never overridden, blocking or not.
+    (_scopes(MachinePolicy='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(MachinePolicy='Restricted', CurrentUser='Undefined'), 'left_alone', 'Restricted'),
+    (_scopes(UserPolicy='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(MachinePolicy='RemoteSigned', CurrentUser='Restricted'), 'unchanged', 'RemoteSigned'),
+    # A Process-scope value is per-shell and must not steer a persistent write.
+    (_scopes(Process='Bypass'), 'set', 'Undefined'),
+    (_scopes(Process='AllSigned'), 'set', 'Undefined'),
+    # Case/whitespace from the shell must not defeat the check.
+    (_scopes(CurrentUser=' restricted '), 'set', 'restricted'),
+])
+def test_execution_policy_decision(scopes, action, effective):
+    from mc.blueprints import agent_routes as ar
+    assert ar._execution_policy_decision(scopes) == (action, effective)
+
+
+def test_execution_policy_set_reports_and_writes_once(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    writes = []
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: _scopes(LocalMachine='Restricted'))
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: writes.append(1))
+    out = ar._ensure_powershell_execution_policy()
+    assert writes == [1]
+    assert out['action'] == 'set' and out['effective'] == 'Restricted'
+    assert 'RemoteSigned' in out['message'] and 'Restricted' in out['message']
+    assert 'Undo with' in out['message']
+
+
+@pytest.mark.parametrize('scopes,action', [
+    (_scopes(LocalMachine='AllSigned'), 'left_alone'),
+    (_scopes(MachinePolicy='AllSigned'), 'left_alone'),
+    (_scopes(LocalMachine='RemoteSigned'), 'unchanged'),
+])
+def test_execution_policy_never_writes_when_not_needed(monkeypatch, scopes, action):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: scopes)
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: pytest.fail('must not write'))
+    out = ar._ensure_powershell_execution_policy()
+    assert out['action'] == action
+    # Only a deliberate, blocking policy earns a UI message; an already-fine
+    # one stays silent.
+    assert bool(out['message']) == (action == 'left_alone')
+
+
+def test_execution_policy_write_failure_is_reported_not_raised(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: _scopes())
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: 'access denied')
+    out = ar._ensure_powershell_execution_policy()
+    assert out['action'] == 'failed'
+    assert 'access denied' in out['message']
+
+
+def test_execution_policy_unreadable_and_non_windows_do_nothing(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: pytest.fail('non-windows must not probe'))
+    monkeypatch.setattr(ar.sys, 'platform', 'linux')
+    assert ar._ensure_powershell_execution_policy()['action'] == 'not_applicable'
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: None)
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: pytest.fail('unreadable policy must not be written'))
+    assert ar._ensure_powershell_execution_policy() == {
+        'action': 'unknown', 'effective': None, 'message': ''}
+
+
+def test_install_launch_routes_surface_execution_policy(monkeypatch, client):
+    """Both install routes must set the policy AFTER the terminal launched and
+    return the message the UI shows; a failed launch must not touch it."""
+    from mc.blueprints import agent_routes as ar
+    runtimes = {'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli')}
+    order = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: order.append('launch'))
+    monkeypatch.setattr(ar, '_ensure_powershell_execution_policy',
+                        lambda: order.append('policy') or {
+                            'action': 'set', 'effective': 'Restricted', 'message': 'MSG'})
+    single = client.post('/api/agent/provider/gemini/install-launch').get_json()
+    batch = client.post('/api/agent/providers/install-launch',
+                        json={'names': ['gemini']}).get_json()
+    assert order == ['launch', 'policy', 'launch', 'policy']
+    assert single['execution_policy']['message'] == 'MSG'
+    assert batch['execution_policy']['message'] == 'MSG'
+
+    order.clear()
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: 'no terminal')
+    failed = client.post('/api/agent/provider/gemini/install-launch').get_json()
+    assert failed['ok'] is False and 'policy' not in order
