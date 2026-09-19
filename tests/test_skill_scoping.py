@@ -190,3 +190,40 @@ def test_non_claude_catalog_flag_off_is_unchanged(ar, monkeypatch):
     skills = [dict(s, path='/x') for s in INSTALLED]
     monkeypatch.setattr(ar._skills, 'list_skills', lambda *a, **k: list(skills))
     assert ar._skills_catalog_block(proj, ['dataviz']) == ar._skills_catalog_block(proj)
+
+
+def test_tampered_scoped_file_is_rewritten(tmp_path):
+    """The scoped copy carries the guardrail hooks. An edit to it (hooks
+    stripped) must not survive the next launch, same as the base file's
+    boot-time self-heal."""
+    guard = tmp_path / 'claude-settings.json'
+    guard.write_text(json.dumps({'hooks': {'PreToolUse': [{'matcher': 'Bash'}]}}), encoding='utf-8')
+    ov = {'dataviz': 'name-only'}
+    p = ss.scoped_settings_path(guard, ov, tmp_path / 'scoped')
+    good = p.read_text(encoding='utf-8')
+    p.write_text(json.dumps({'skillOverrides': ov}), encoding='utf-8')
+    p2 = ss.scoped_settings_path(guard, ov, tmp_path / 'scoped')
+    assert p2 == p
+    assert p.read_text(encoding='utf-8') == good
+
+
+def test_concurrent_first_writes_use_distinct_temp_files(tmp_path, monkeypatch):
+    """Two first launches of the same combination must not share one temp
+    path (one would truncate the other's half-written file)."""
+    import threading
+    seen = []
+    real = ss.Path.write_text
+
+    def spy(self, *a, **k):
+        seen.append(self.name)
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(ss.Path, 'write_text', spy)
+    ts = [threading.Thread(target=ss.scoped_settings_path,
+                           args=(None, {'a': 'name-only'}, tmp_path / 's')) for _ in range(2)]
+    for t in ts:
+        t.start()
+    for t in ts:
+        t.join()
+    tmps = [n for n in seen if n.endswith('.tmp')]
+    assert tmps and len(set(tmps)) == len(tmps)

@@ -1462,9 +1462,17 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     const input = panel.querySelector('#pe-skills');
     if (!row || !input || !skills.length) return;
     const names = () => input.value.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+    // The server keeps only the first 12 (mc/characters.py MAX_SKILLS) and
+    // drops the rest silently, so the picker stops offering more at the cap.
+    const MAX_SKILLS = 12;
     const paint = () => {
       const on = new Set(names());
-      row.querySelectorAll('.pe-skill').forEach((b) => b.classList.toggle('sel', on.has(b.dataset.skill)));
+      const full = on.size >= MAX_SKILLS;
+      row.querySelectorAll('.pe-skill').forEach((b) => {
+        const sel = on.has(b.dataset.skill);
+        b.classList.toggle('sel', sel);
+        b.disabled = full && !sel;
+      });
     };
     row.innerHTML = skills.filter((k) => k.scope === 'global').map((k) =>
       `<button type="button" class="pe-skill" data-skill="${esc(k.name.toLowerCase())}"

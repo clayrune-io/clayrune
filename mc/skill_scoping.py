@@ -23,6 +23,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
+import threading
 from pathlib import Path
 from typing import Any, Callable, Dict, Iterable, List, Optional, Set
 
@@ -101,8 +103,18 @@ def scoped_settings_path(base_settings: Optional[Path],
         digest = hashlib.sha256(text.encode('utf-8')).hexdigest()[:16]
         out_dir.mkdir(parents=True, exist_ok=True)
         path = out_dir / f'claude-settings-{digest}.json'
-        if not path.is_file():
-            tmp = path.with_suffix('.tmp')
+        # Rewrite on ANY mismatch, not just absence: this file carries the
+        # guardrail hooks, and the base file self-heals at every boot
+        # (install_hooks.py). A reused-if-present scoped copy would keep an
+        # agent's edit (hooks stripped, permissions added) across restarts.
+        try:
+            current = path.read_text(encoding='utf-8') if path.is_file() else None
+        except OSError:
+            current = None
+        if current != text:
+            # Per-writer temp name: two first launches of the same combination
+            # must not truncate each other's half-written file.
+            tmp = path.with_name(f'{path.name}.{os.getpid()}.{threading.get_ident()}.tmp')
             tmp.write_text(text, encoding='utf-8')
             tmp.replace(path)
         return path
