@@ -372,6 +372,9 @@ def _run_revived(tmp_data_dir, monkeypatch, transcript_path, reader_name, stream
     monkeypatch.setattr(routes, '_transcript_tail_records',
                         lambda f: calls.append(str(f)) or real_tail(f))
     monkeypatch.setattr(routes, 'load_project', lambda pid: {'project_path': '/p'})
+    # Reader teardown runs the Scribe, which shells out to a real `claude -p`
+    # (haiku) unless stubbed; caught by the real-CLI guard in tests/conftest.py.
+    monkeypatch.setattr(routes, '_write_session_memory', lambda *a, **k: True)
     session = _new_session('p-revived')
     session['claude_session_id'] = 'sess-revived-fixture'
     proc = _FakeProc(stream if stream is not None else _revived_stream(_revived_records()))

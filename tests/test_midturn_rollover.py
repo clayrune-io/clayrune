@@ -9,7 +9,14 @@ behaviour (no roll at all) and pin: one roll, at a tool boundary, carrying the
 task + git state, keeping the MC session_id and spawner callback, and nothing
 at all when `midturn_rollover_enabled` is off.
 
-Never spawns a real model CLI.
+Never spawns a real model CLI. Three things enforce that, because a roll
+starts a daemon `_do_respawn` thread that can outlive the test that caused it
+(measured 2026-09-18: it launched the real claude.exe in 5 of 10 runs):
+the `env` fixture joins every respawn thread before it restores anything and
+fails the test if one is still alive; its fake Popen refuses (and records) any
+spawn whose cwd is not THIS test's project dir, so a stray can never be counted
+as this test's own spawn; and tests/conftest.py blocks real CLI binaries
+outright.
 """
 import json
 import subprocess
@@ -140,6 +147,7 @@ def env(tmp_path, monkeypatch):
 
     spawned = []
     spawned_kwargs = []
+    strays = []         # spawns whose cwd is not this test's project dir
     mode_a_spawn = []   # non-empty: a `-p` argv IS the Mode A roll, let it through
     new_proc = _Proc(pid=999999)
 
@@ -148,24 +156,50 @@ def env(tmp_path, monkeypatch):
             return _REAL_POPEN(cmd, **kwargs)
         if '-p' in cmd and not mode_a_spawn:  # Scribe/distiller one-shots fired by reader teardown
             raise FileNotFoundError('one-shot model calls are stubbed out')
+        if str(kwargs.get('cwd')) != str(project_path):
+            # Every spawn a roll makes runs in the session's cwd, which is this
+            # test's own tmp project. Anything else is a stray from elsewhere.
+            strays.append((cmd, kwargs.get('cwd'), threading.current_thread().name))
+            raise AssertionError(f'stray spawn not owned by this test: {cmd!r}')
         spawned.append(cmd)
         spawned_kwargs.append(kwargs)
         return new_proc
 
     monkeypatch.setattr(ar.subprocess, 'Popen', _popen)
 
+    respawn_threads = []
+    real_start = threading.Thread.start
+
+    def _tracking_start(self):
+        if getattr(self._target, '__name__', '').startswith('_do_respawn'):
+            respawn_threads.append(self)
+        return real_start(self)
+
+    monkeypatch.setattr(threading.Thread, 'start', _tracking_start)
+
+    def join_respawns(timeout=10.0):
+        """Wait for every post-roll respawn thread this test started."""
+        for t in list(respawn_threads):
+            t.join(timeout)
+        alive = [t.name for t in respawn_threads if t.is_alive()]
+        assert not alive, f'respawn thread(s) still running: {alive}'
+
     snapshot = dict(mc_state.agent_sessions)
     mc_state.agent_sessions.clear()
     try:
-        yield {'ar': ar, 'reader': real_reader, 'reader_a': real_reader_a,
+        yield {'join_respawns': join_respawns, 'strays': strays, 'ar': ar, 'reader': real_reader, 'reader_a': real_reader_a,
                'events': events, 'spawned_kwargs': spawned_kwargs, 'real_fresh': real_fresh, 'mode_a_spawn': mode_a_spawn,
                'sessions': mc_state.agent_sessions,
                'activity': activity, 'notified': notified, 'spawned': spawned,
                'new_proc': new_proc, 'tmp': tmp_path, 'pp': project_path,
                'CONFIG': mc_state.CONFIG}
     finally:
-        mc_state.agent_sessions.clear()
-        mc_state.agent_sessions.update(snapshot)
+        try:
+            join_respawns()
+        finally:
+            mc_state.agent_sessions.clear()
+            mc_state.agent_sessions.update(snapshot)
+    assert not strays, f'spawn(s) not owned by this test: {strays}'
 
 
 def _session(proc, **extra):
@@ -260,6 +294,8 @@ def test_roll_is_logged_to_a_durable_file(env):
     assert rows[0]['session_id'] == 'worker-1'
     assert rows[0]['context_tokens'] == 250_000
     assert rows[0]['threshold'] == 200_000
+    env['join_respawns']()   # the roll's respawn thread is this test's to finish
+    assert len(env['spawned']) == 1
 
 
 def test_spawner_callback_still_fires_after_the_roll(env):
@@ -544,3 +580,75 @@ def test_n1_interrupting_is_raised_before_the_rearm_runs(env, monkeypatch):
     env['sessions']['worker-1'] = session
     ar._maybe_midturn_roll(session, old)
     assert seen == [True]
+    env['join_respawns']()
+    assert len(env['spawned']) == 1
+
+
+# --- N2 (re-review of 639adc0): failed rolls back off, and give-up is visible ---
+
+def _failed_attempt_at(mt, over, session, tokens):
+    """Drive one attempt the way `_maybe_midturn_roll` does: should_roll says
+    yes, the interrupt path fails and bumps `_mt_roll_failures`."""
+    session['_mt_main_tokens'] = tokens
+    assert mt.should_roll(session, over), f'expected an attempt at {tokens}'
+    session['_mt_roll_failures'] = session.get('_mt_roll_failures', 0) + 1
+
+
+def test_n2_failed_roll_waits_for_growth_before_the_next_attempt(env):
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc())
+    _failed_attempt_at(mt, over, session, 250_000)
+    # The very next tool boundary (no growth) used to retry at once.
+    assert not mt.should_roll(session, over)
+    session['_mt_main_tokens'] = 250_000 + mt.MIN_GROWTH_TOKENS - 1
+    assert not mt.should_roll(session, over)
+    session['_mt_main_tokens'] = 250_000 + mt.MIN_GROWTH_TOKENS
+    assert mt.should_roll(session, over)
+
+
+def test_n2_three_back_to_back_boundaries_do_not_exhaust_the_retries(env):
+    """One brief fault (agent_log locked) spans many tool boundaries. Before
+    the back-off, MAX_ROLL_FAILURES of them in a row disabled rollover."""
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc())
+    _failed_attempt_at(mt, over, session, 250_000)
+    for _ in range(10):
+        session['_mt_main_tokens'] += 500       # boundaries during the fault
+        assert not mt.should_roll(session, over)
+    assert session['_mt_roll_failures'] == 1
+    assert not session.get('_mt_gave_up')
+
+
+def test_n2_giving_up_is_visible_once_in_the_session_log_and_the_durable_log(env):
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc())
+    tokens = 250_000
+    for _ in range(mt.MAX_ROLL_FAILURES):
+        _failed_attempt_at(mt, over, session, tokens)
+        tokens += mt.MIN_GROWTH_TOKENS
+    session['_mt_main_tokens'] = tokens
+    assert not mt.should_roll(session, over)
+    assert not mt.should_roll(session, over), 'a second look must not re-announce'
+    notes = [l for l in session['log_lines'] if 'gave up' in l]
+    assert len(notes) == 1, session['log_lines']
+    assert str(mt.MAX_ROLL_FAILURES) in notes[0]
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert [r['event'] for r in rows] == ['gave_up']
+    assert rows[0]['failures'] == mt.MAX_ROLL_FAILURES
+    assert rows[0]['session_id'] == 'worker-1'
+
+
+def test_n2_a_committed_roll_clears_the_back_off_state(env):
+    mt = env['ar']._midturn
+    over = env['ar']._context_tokens_over_threshold
+    session = _session(_Proc())
+    _failed_attempt_at(mt, over, session, 250_000)
+    assert not mt.should_roll(session, over)    # observes the failure
+    mt.begin_roll(session)
+    for k in ('_mt_seen_failures', '_mt_fail_tokens', '_mt_gave_up'):
+        assert k not in session
+    assert session['_mt_roll_failures'] == 0

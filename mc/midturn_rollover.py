@@ -39,6 +39,11 @@ RECENT_TOOLS_KEEP = 10
 # reading, so the worst case is one roll per this many tokens of real work.
 MIN_GROWTH_TOKENS = 20_000
 # Consecutive refused/failed roll attempts before this session stops trying.
+# Every tool boundary re-evaluates `should_roll`, so without a back-off three
+# failures caused by one brief fault (agent_log locked on Windows) land within
+# seconds and switch rollover off for the whole session. After a failure the
+# next attempt therefore waits for MIN_GROWTH_TOKENS of real growth over the
+# context size the failed attempt was made at.
 MAX_ROLL_FAILURES = 3
 _BG_JOBS_KEEP = 10
 _INPUT_PREVIEW = 160
@@ -153,6 +158,7 @@ def should_roll(session, over_threshold):
         return False
     if (session.get('provider') or 'claude').lower() != 'claude':
         return False
+    _observe_failures(session)
     if session.get('_mt_roll_requested') or session.get('_interrupting'):
         return False
     if session.get('incognito') or session.get('waiting_for_question') \
@@ -161,7 +167,7 @@ def should_roll(session, over_threshold):
     if not session.get('claude_session_id'):
         return False    # the handoff is built from the transcript; no id, no roll
     if session.get('_mt_roll_failures', 0) >= MAX_ROLL_FAILURES:
-        return False
+        return False    # already announced by _observe_failures
     if _pending(session):
         return False
     tokens = session.get('_mt_main_tokens')
@@ -170,7 +176,37 @@ def should_roll(session, over_threshold):
     base = session.get('_mt_baseline_tokens')
     if base is not None and tokens - base < MIN_GROWTH_TOKENS:
         return False    # fresh prefix alone is at/over the threshold: no loop
+    failed_at = session.get('_mt_fail_tokens')
+    if failed_at is not None and tokens - failed_at < MIN_GROWTH_TOKENS:
+        return False    # back off: the last attempt failed at this size
+    session['_mt_attempt_tokens'] = tokens    # the caller attempts the roll now
     return True
+
+
+def _observe_failures(session):
+    """The caller (agent_routes._maybe_midturn_roll) counts a failed attempt in
+    `_mt_roll_failures` and nothing else, so failures are noticed here, at the
+    next evaluation: a new one arms the back-off from the context size that
+    attempt was made at, and reaching MAX_ROLL_FAILURES gives up out loud once."""
+    failures = session.get('_mt_roll_failures', 0)
+    if failures > session.get('_mt_seen_failures', 0):
+        session['_mt_seen_failures'] = failures
+        session['_mt_fail_tokens'] = session.get('_mt_attempt_tokens')
+    if failures >= MAX_ROLL_FAILURES and not session.get('_mt_gave_up'):
+        session['_mt_gave_up'] = True
+        tokens = session.get('_mt_attempt_tokens')
+        note = (f"[Mid-turn rollover gave up after {failures} failed attempts; "
+                f"this session will not roll again, so its context keeps growing "
+                f"until the next message arrives.]")
+        try:
+            session.setdefault('log_lines', []).append(note)
+        except Exception as e:
+            _log(f"[midturn-rollover] session log write failed: {e}")
+        _log(f"[midturn-rollover] {session.get('project_id', '')}/"
+             f"{session.get('session_id', '')}: gave up after {failures} failed "
+             f"rolls (last attempt at {tokens} tokens)")
+        _append_row(session, {'event': 'gave_up', 'failures': failures,
+                              'context_tokens': tokens})
 
 
 def begin_roll(session):
@@ -183,6 +219,8 @@ def begin_roll(session):
     session['_mt_awaiting_baseline'] = True
     session['_mt_baseline_tokens'] = None
     session['_mt_roll_failures'] = 0
+    for k in ('_mt_seen_failures', '_mt_fail_tokens', '_mt_gave_up'):
+        session.pop(k, None)
     session['_mt_rolls'] = session.get('_mt_rolls', 0) + 1
 
 
@@ -242,23 +280,19 @@ def _log_dir():
     return base / 'midturn_rollover_log'
 
 
-def record_roll(session, context_tokens):
-    """Append one JSONL line per roll: server log + a file that survives.
-    Never raises — a failed write must not break the roll."""
+def _append_row(session, extra):
+    """Append one JSONL row to the durable roll log. Never raises."""
     pid = session.get('project_id', '') or 'unknown'
     row = {
         'ts': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
         'project_id': pid,
         'session_id': session.get('session_id', ''),
         'claude_session_id': session.get('claude_session_id', ''),
-        'context_tokens': context_tokens,
         'threshold': state.CONFIG.get('context_rollover_tokens'),
         'roll_number': session.get('_mt_rolls', 0),
-        'recent_tools': len(session.get('_mt_recent_tools') or []),
         'epoch': int(time.time()),
     }
-    _log(f"[midturn-rollover] {pid}/{row['session_id']}: context "
-         f"{context_tokens} tokens crossed threshold mid-turn — rolling")
+    row.update(extra)
     try:
         d = _log_dir()
         d.mkdir(parents=True, exist_ok=True)
@@ -267,3 +301,15 @@ def record_roll(session, context_tokens):
             fh.write(json.dumps(row) + '\n')
     except Exception as e:
         _log(f"[midturn-rollover] log write failed: {e}")
+
+
+def record_roll(session, context_tokens):
+    """Append one JSONL line per roll: server log + a file that survives.
+    Never raises — a failed write must not break the roll."""
+    pid = session.get('project_id', '') or 'unknown'
+    _log(f"[midturn-rollover] {pid}/{session.get('session_id', '')}: context "
+         f"{context_tokens} tokens crossed threshold mid-turn — rolling")
+    _append_row(session, {
+        'context_tokens': context_tokens,
+        'recent_tools': len(session.get('_mt_recent_tools') or []),
+    })
