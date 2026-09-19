@@ -115,3 +115,47 @@ def test_no_override_scopes_to_mc_data_dir_when_set(tmp_path, monkeypatch):
         'must not fall back to the (fake) home dir while MC_DATA_DIR is set')
     written = list(scoped_hooks.rglob('*.json')) if scoped_hooks.is_dir() else []
     assert written, 'expected the hooks to be generated under the scoped MC_DATA_DIR instead'
+
+
+def test_launch_reads_the_same_dir_boot_wrote_under_mc_data_dir(tmp_path, monkeypatch):
+    """Regression, 2026-09-19 (first live Claude pass, run 0919100639): boot
+    wrote `<MC_DATA_DIR>/.clayrune/hooks/claude-settings.json`, but every
+    launch resolved `~/.clayrune/hooks/` — the write-side fix above never
+    reached the readers. `launch_file_if_exists` returned None, the Claude
+    argv carried no `--settings`, and `taskkill /IM <decoy>` killed the
+    decoy. The frozen app always sets MC_DATA_DIR (app.py), so this was
+    every packaged install. The test above only checked WHERE boot wrote;
+    this one closes the loop: boot writes, then a real launch must find it.
+    """
+    import server
+    from mc import agent_runtime
+    from mc import guardrail_hooks as gh
+
+    fake_home = tmp_path / 'fake_home'
+    monkeypatch.setattr(gh.Path, 'home', staticmethod(lambda: fake_home))
+    scoped_data_dir = tmp_path / 'mc_data'
+    monkeypatch.setenv('MC_DATA_DIR', str(scoped_data_dir))
+    monkeypatch.setattr(server, '_DATA_ROOT', scoped_data_dir)
+
+    class _Installed:
+        def health_check(self):
+            return type('H', (), {'installed': True})()
+    # Every vendor "installed" so the test does not depend on which CLIs this
+    # machine happens to have.
+    monkeypatch.setattr(server._agent_runtime, 'get_runtime', lambda name: _Installed())
+
+    server._install_guardrail_hooks_on_boot()  # bare call — exactly what boot() does
+
+    expected = scoped_data_dir / '.clayrune' / 'hooks' / 'claude-settings.json'
+    assert expected.is_file(), 'boot must write the Claude launch file under MC_DATA_DIR'
+
+    rt = agent_runtime.ClaudeRuntime()
+    rt.resolve_binary_str = lambda: 'claude'
+    cmd = rt.build_command()
+    assert '--settings' in cmd, 'Claude launch went out with no guard: reader and writer disagree'
+    assert Path(cmd[cmd.index('--settings') + 1]) == expected
+
+    for vendor, var in (('gemini', 'GEMINI_CLI_SYSTEM_SETTINGS_PATH'),
+                        ('qwen', 'QWEN_CODE_SYSTEM_SETTINGS_PATH')):
+        env = agent_runtime._inject_guardrail_env(vendor, {})
+        assert Path(env[var]) == scoped_data_dir / '.clayrune' / 'hooks' / f'{vendor}-settings.json'

@@ -43,6 +43,7 @@ rejects any unrecognized field: this shape has none.
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -58,6 +59,25 @@ HOOK_NAME = 'clayrune-process-guard'
 
 
 def clayrune_home() -> Path:
+    """Where the hook files live — the ONE resolution both the boot-time
+    writer and every dispatch-time reader use.
+
+    `<MC_DATA_DIR>/.clayrune` when MC_DATA_DIR is set, else `~/.clayrune`.
+    This rule used to live only on the WRITE side (server.py's
+    `_install_guardrail_hooks_on_boot`, 889258e) while the readers
+    (`launch_file_if_exists`, called by every Claude/Gemini/Qwen launch) kept
+    resolving `~/.clayrune`. Under MC_DATA_DIR the file was written to one
+    dir and looked for in another, `launch_file_if_exists` returned None, and
+    every launch went out with NO guard — silently, since "missing" means
+    "don't inject" by design. Caught by the first live Claude pass
+    (2026-09-19, run 0919100639): `taskkill /IM <decoy>` killed the decoy and
+    the dispatch argv carried no `--settings`. The frozen app ALWAYS sets
+    MC_DATA_DIR (app.py `_start_flask`), so on merge this would have removed
+    the guard from every packaged install.
+    """
+    data_dir = os.environ.get('MC_DATA_DIR')
+    if data_dir:
+        return Path(data_dir) / '.clayrune'
     return Path.home() / '.clayrune'
 
 
