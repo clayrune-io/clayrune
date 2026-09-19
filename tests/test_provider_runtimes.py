@@ -734,6 +734,28 @@ class TestCodexRuntime:
         monkeypatch.setattr(self.rt, '_codex_auth_state', lambda: ('not_logged_in', None))
         assert self.rt.health_check().auth_state.status == 'not_logged_in'
 
+    def test_health_check_npx_fallback_not_counted_as_installed(self, monkeypatch):
+        """F10 (clean-VM run 2026-09-18): a machine with npm but no codex CLI
+        at all showed installed=True / "not signed in" with an empty
+        binary_path in the first-run chooser, because the npx fallback (a
+        per-dispatch `npx --yes @openai/codex`, never a persistent install)
+        counted as installed. It must not: the chooser's Install button is
+        how a user notices codex was never actually installed. Dispatch is
+        unaffected — it calls _cmd_prefix()/resolve_binary() directly, not
+        this flag.
+        """
+        self.rt._bin_cache = '__npx__'
+        self.rt._npx_fallback = True
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=0,
+                stdout='codex-cli 0.153.0', stderr=''))
+        monkeypatch.setattr(self.rt, '_codex_auth_state', lambda: ('not_logged_in', None))
+        hs = self.rt.health_check()
+        assert hs.installed is False
+        assert hs.binary_path is None
+
     def test_npx_fallback_uses_absolute_path(self, monkeypatch):
         """npx is npx.cmd on Windows; CreateProcess can't launch it by bare name.
 
@@ -1963,6 +1985,48 @@ def test_gemini_auth_state_not_logged_in(monkeypatch, tmp_path):
     assert status == 'not_logged_in'
     assert method is None
     assert err and 'GEMINI_API_KEY' in err
+
+
+def test_gemini_health_check_oauth_only_is_unverified(monkeypatch, tmp_path):
+    """F9 (clean-VM run 2026-09-18): a cached oauth_creds.json only proves a
+    credential was ONCE issued — Google now refuses personal-account OAuth
+    for Gemini Code Assist ("This client is no longer supported... migrate
+    to the Antigravity suite") while the file on disk still looks valid.
+    health_check() must not upgrade that local evidence to a verified 'ok'.
+    """
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'oauth_creds.json').write_text(
+        json.dumps({'access_token': 'a', 'refresh_token': 'r'}), encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()  # fresh instance — this test relies on a clean _auth_cache
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    monkeypatch.setattr(
+        agent_runtime.subprocess, 'run',
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a[0] if a else [], returncode=0, stdout='0.59.0', stderr=''))
+    hs = rt.health_check()
+    assert hs.auth_state.status == 'unverified'
+    assert 'GEMINI_API_KEY' in (hs.auth_state.error_text or '')
+
+
+def test_gemini_explain_exit_error_detects_oauth_rejection(monkeypatch):
+    """A real dispatch failure carrying Google's exact refusal text must
+    both explain itself to the user AND stamp the cache (F9) so the NEXT
+    health_check() reports oauth_rejected instead of a stale 'ok'/'unverified'."""
+    rt = GeminiRuntime()  # fresh instance — never share _auth_cache with other tests
+    log_tail = (
+        'FetchError: This client is no longer supported for Gemini Code '
+        'Assist for individuals. Please migrate to the Antigravity suite.'
+    )
+    msg = rt.explain_exit_error(1, log_tail)
+    assert msg and 'GEMINI_API_KEY' in msg
+    cached = rt.auth_status()
+    assert cached['status'] == 'oauth_rejected'
+    assert cached['ok'] is False
 
 
 # ─────────────────────────────────────────────────────────────────────────────

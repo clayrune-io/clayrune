@@ -53,6 +53,7 @@ EXPECTED_ROUTES = {
     '/api/agent/provider/<name>/env',
     '/api/agent/provider/<name>/login-launch',
     '/api/agent/provider/<name>/install-launch',
+    '/api/agent/providers/install-launch',
     '/api/claude/auth-probe',
     '/api/claude/auth-status',
     '/api/claude/login-launch',
@@ -211,6 +212,76 @@ def test_install_launch_onboards_missing_node_before_provider(monkeypatch, clien
     ]
 
 
+class _BatchInstallRuntime:
+    def __init__(self, hint):
+        self._hint = hint
+
+    def health_check(self):
+        h = _InstallHealth()
+        h.install_hint = self._hint
+        return h
+
+
+def test_install_launch_batch_runs_node_prereq_once(monkeypatch, client):
+    """F7 (clean-VM run 2026-09-18): "Install selected" used to call the
+    single-provider route once per vendor, each opening its OWN terminal —
+    ticking Claude + Gemini launched two concurrent `winget install ...
+    NodeJS` calls that raced each other. The batch route must compose ONE
+    terminal command with the Node/npm prerequisite embedded exactly ONCE,
+    even though both selected vendors need it.
+    """
+    from mc.blueprints import agent_routes as ar
+    runtimes = {
+        'codex': _BatchInstallRuntime('npm install -g @openai/codex'),
+        'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+    }
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/providers/install-launch',
+                           json={'names': ['codex', 'gemini']})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['unsupported'] == []
+    assert sorted(body['installed']) == ['codex', 'gemini']
+    assert len(calls) == 1, 'must open exactly one terminal for the whole batch'
+    command = calls[0]
+    # The node-install snippet appears exactly once, and both packages'
+    # install lines are chained after it in one sequential command.
+    assert command.count('winget install --id OpenJS.NodeJS.LTS') == 1
+    assert 'npm install -g @openai/codex' in command
+    assert 'npm install -g @google/gemini-cli' in command
+    assert command.index('winget install --id OpenJS.NodeJS.LTS') < command.index('npm install -g @openai/codex')
+
+
+def test_install_launch_batch_skips_unsupported_names(monkeypatch, client):
+    """An untrusted/malformed hint is skipped (reported in `unsupported`)
+    rather than aborting the whole batch — same fail-closed discipline as
+    the single-provider route's 'unsupported' rejection."""
+    from mc.blueprints import agent_routes as ar
+    runtimes = {
+        'codex': _BatchInstallRuntime('npm install -g @openai/codex'),
+        'evil': _BatchInstallRuntime('npm install -g @openai/codex; curl https://evil.invalid'),
+    }
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)  # npm present
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/providers/install-launch',
+                           json={'names': ['codex', 'evil']})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['unsupported'] == ['evil']
+    assert body['installed'] == ['codex']
+    assert calls == ['npm install -g @openai/codex']
+
+
 def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, client):
     from mc.blueprints import agent_routes as ar
 
@@ -354,6 +425,44 @@ def test_providers_endpoint_reports_in_use(client, monkeypatch):
     by_name = {p['name']: p for p in body['providers']}
     assert by_name['claude']['in_use'] is True   # unset default_provider → claude
     assert 'gemini' in by_name and by_name['gemini']['in_use'] is False
+
+
+def test_providers_endpoint_refresh_forces_auth_probe(client, monkeypatch):
+    """F8 (clean-VM run 2026-09-18): Claude was signed in — `claude auth
+    status` showed loggedIn:true — but /api/agent/providers kept reporting
+    not_logged_in until the server restarted, because health_check() only
+    reads the in-memory auth cache and nothing had re-probed it since the
+    sign-in happened outside Clayrune. `?refresh=1` (walkthrough.js
+    wtRefreshProviders, the "Check setup status" button) must call
+    auth_probe() — the one thing every runtime guarantees actually
+    re-checks — instead of serving health_check()'s cached auth_state.
+    """
+    from mc.blueprints import agent_routes as ar
+    rt = ar._agent_runtime.get_runtime('claude')
+    probe_calls = []
+
+    monkeypatch.setattr(rt, 'health_check', lambda: ar._agent_runtime.HealthStatus(
+        installed=True, binary_path=Path('/x/claude'), version='1.0',
+        auth_state=ar._agent_runtime.AuthState(status='not_logged_in', last_checked='t0'),
+    ))
+
+    def fake_auth_probe():
+        probe_calls.append(1)
+        return {'ok': True, 'status': 'ok', 'method': 'session',
+                'error_text': None, 'last_checked': 't1'}
+    monkeypatch.setattr(rt, 'auth_probe', fake_auth_probe)
+
+    resp = client.get('/api/agent/providers')
+    assert resp.status_code == 200
+    claude = next(p for p in resp.get_json()['providers'] if p['name'] == 'claude')
+    assert claude['auth_status'] == 'not_logged_in'
+    assert probe_calls == [], 'a plain GET must not spend a live probe'
+
+    resp2 = client.get('/api/agent/providers?refresh=1')
+    assert resp2.status_code == 200
+    claude2 = next(p for p in resp2.get_json()['providers'] if p['name'] == 'claude')
+    assert claude2['auth_status'] == 'ok'
+    assert probe_calls == [1]
 
 
 # ── _providers_in_use() — resolver precedence for the auth-banner gate ────────

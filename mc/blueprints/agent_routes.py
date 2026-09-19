@@ -1539,8 +1539,22 @@ def agent_providers():
 
     Returns: [{name, display_name, installed, version, install_hint,
                capabilities: {...}, default: bool, in_use: bool}]
+
+    ``?refresh=1`` forces a fresh AUTH probe for every runtime instead of
+    serving health_check()'s cached auth_state (F8, clean-VM run 2026-09-18):
+    Claude was signed in — `claude auth status` showed loggedIn:true — but
+    this endpoint kept reporting not_logged_in until the server restarted,
+    because health_check() only reads the in-memory `_claude_auth_state`
+    cache and nothing had re-probed it since the sign-in happened outside
+    Clayrune. `rt.auth_probe()` is the one call every runtime guarantees
+    actually re-checks (ClaudeRuntime runs `claude -p ok`; Gemini's spends a
+    live API call when a key is present). Gated behind an explicit query
+    param — never the default — because a probe can be a real subprocess or
+    spend quota, and this route is also hit on every page's boot-time
+    provider-catalog fetch.
     """
     _merge_registry_path()
+    refresh = str(request.args.get('refresh', '')).strip().lower() in ('1', 'true', 'yes')
     out = []
     default_name = _agent_runtime.default_runtime_name()
     try:
@@ -1556,6 +1570,22 @@ def agent_providers():
                 auth_state=_agent_runtime.AuthState(status='unknown', last_checked=''),
                 install_hint='', diagnostic=str(e),
             )
+        if refresh:
+            try:
+                probe = rt.auth_probe() or {}
+                status = probe.get('status') or ('ok' if probe.get('ok') else 'unknown')
+                h = _agent_runtime.HealthStatus(
+                    installed=h.installed, binary_path=h.binary_path,
+                    version=h.version,
+                    auth_state=_agent_runtime.AuthState(
+                        status=status, method=probe.get('method'),
+                        error_text=probe.get('error_text'),
+                        last_checked=probe.get('last_checked') or h.auth_state.last_checked,
+                    ),
+                    install_hint=h.install_hint, diagnostic=h.diagnostic,
+                )
+            except Exception as e:
+                _log(f'[providers] refresh auth_probe failed for {rt.name}: {e}', flush=True)
         try:
             caps = rt.capabilities()
             caps_dict = {
@@ -1786,6 +1816,46 @@ _PROVIDER_PIP_PACKAGES = {
 }
 
 
+def _node_prereq_snippet() -> str:
+    """Shell snippet that installs Node/npm if missing, else no-ops.
+
+    Extracted out of `_provider_install_command` (F7, clean-VM run
+    2026-09-18) so `_provider_install_command_batch` can emit this segment
+    ONCE for a multi-vendor install instead of once per vendor — the original
+    bug: "Install selected" ran N single-provider commands in N separate
+    terminals, each with its OWN copy of this snippet, so two npm-based
+    vendors raced two concurrent `winget install` calls.
+    """
+    if sys.platform == 'win32':
+        # winget updates the machine after this shell starts. Explicitly add
+        # the stable Node/npm locations before invoking npm; inheriting the
+        # old PATH was the original fresh-PC failure.
+        # PATH goes first and winget runs only when npm is still missing:
+        # a second vendor's install re-ran winget, which exits non-zero on
+        # "already installed, no upgrade" and broke the && chain before npm
+        # (clean-VM run, 2026-09-18).
+        return ('set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+                '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+                '-e --silent --source winget '
+                '--accept-source-agreements --accept-package-agreements)')
+    # Reuse the versioned user-local nvm flow from install.sh. It works on
+    # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
+    # Node version, and sources nvm again in this terminal before npm.
+    return ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
+            '| bash && export NVM_DIR="$HOME/.nvm" && '
+            '. "$NVM_DIR/nvm.sh" && nvm install 20')
+
+
+def _uv_prereq_snippet() -> str:
+    """Shell snippet that bootstraps `uv` if missing. See `_node_prereq_snippet`."""
+    if sys.platform == 'win32':
+        return ('powershell -ExecutionPolicy ByPass -c '
+                '"irm https://astral.sh/uv/install.ps1 | iex" '
+                '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%"')
+    return ('curl -LsSf https://astral.sh/uv/install.sh | sh '
+            '&& export PATH="$HOME/.local/bin:$PATH"')
+
+
 def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
     """Return ``(command, prerequisite)`` for a provider install.
 
@@ -1801,26 +1871,7 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
         expected = f'npm install -g {package}' if package else ''
         if not package or hint.strip() != expected:
             return hint, 'unsupported'
-        if sys.platform == 'win32':
-            # winget updates the machine after this shell starts. Explicitly add
-            # the stable Node/npm locations before invoking npm; inheriting the
-            # old PATH was the original fresh-PC failure.
-            # PATH goes first and winget runs only when npm is still missing:
-            # a second vendor's install re-ran winget, which exits non-zero on
-            # "already installed, no upgrade" and broke the && chain before npm
-            # (clean-VM run, 2026-09-18).
-            node = ('set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
-                    '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
-                    '-e --silent --source winget '
-                    '--accept-source-agreements --accept-package-agreements)')
-        else:
-            # Reuse the versioned user-local nvm flow from install.sh. It works on
-            # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
-            # Node version, and sources nvm again in this terminal before npm.
-            node = ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
-                    '| bash && export NVM_DIR="$HOME/.nvm" && '
-                    '. "$NVM_DIR/nvm.sh" && nvm install 20')
-        return f'{node} && {expected}', 'npm'
+        return f'{_node_prereq_snippet()} && {expected}', 'npm'
     if required == 'pip':
         if shutil.which('pip') or shutil.which('pip3'):
             return hint, ''
@@ -1839,15 +1890,93 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
         # Neither pip nor uv on PATH: bootstrap uv. Unlike pip, uv's installer
         # needs no pre-existing Python — a standalone per-user binary, no
         # admin — so it works on a machine that has never had Python at all.
-        if sys.platform == 'win32':
-            uv_install = ('powershell -ExecutionPolicy ByPass -c '
-                          '"irm https://astral.sh/uv/install.ps1 | iex" '
-                          '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%"')
-        else:
-            uv_install = ('curl -LsSf https://astral.sh/uv/install.sh | sh '
-                          '&& export PATH="$HOME/.local/bin:$PATH"')
-        return f'{uv_install} && uv tool install {package}', 'pip'
+        return f'{_uv_prereq_snippet()} && uv tool install {package}', 'pip'
     return hint, ''
+
+
+def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], bool]:
+    """Compose ONE shell command that installs every provider in ``names``
+    sequentially, running each platform prerequisite (Node/npm, or pip's uv
+    bootstrap) at most ONCE no matter how many selected vendors need it.
+
+    Returns ``(command, unsupported, prerequisite_added)`` — ``unsupported``
+    lists any name whose install_hint didn't match the allowlisted npm/pip
+    shape (same fail-closed discipline as `_provider_install_command`); those
+    names are just skipped from `command` rather than aborting the whole
+    batch. `command` is ``''`` when nothing in `names` was installable this
+    way. `prerequisite_added` mirrors the single-provider function's
+    `prerequisite` return: True when a Node/npm or uv bootstrap segment was
+    embedded, so the caller's PATH preflight (which would otherwise reject
+    a command whose first token is that bootstrap's own shell builtin, e.g.
+    Windows `set`) knows to skip itself exactly as it already does for the
+    single-provider route.
+
+    F7 (clean-VM run 2026-09-18): "Install selected" used to call
+    `_provider_install_command` once per selected vendor and open a
+    SEPARATE terminal for each — so ticking Claude + Gemini launched two
+    concurrent `winget install ... NodeJS` calls that raced each other. One
+    combined command in one terminal, with the prerequisite check run once
+    up front, removes the race without changing the single-provider path
+    (`_provider_install_command` itself, used by the unchanged
+    single-vendor `install-launch` route) at all.
+    """
+    npm_expected: List[str] = []
+    pip_packages: List[str] = []
+    unsupported: List[str] = []
+    needs_npm_prereq = False
+    needs_pip_prereq = False
+    have_npm = bool(shutil.which('npm'))
+    have_pip = bool(shutil.which('pip') or shutil.which('pip3'))
+    have_uv = bool(shutil.which('uv'))
+    for name in names:
+        try:
+            rt = _agent_runtime.get_runtime(name)
+            hint = rt.health_check().install_hint or ''
+        except Exception:
+            unsupported.append(name)
+            continue
+        if not hint:
+            unsupported.append(name)
+            continue
+        required = _install_command_required_binary(hint)
+        if required == 'npm':
+            package = _PROVIDER_NPM_PACKAGES.get(name)
+            expected = f'npm install -g {package}' if package else ''
+            if not package or hint.strip() != expected:
+                unsupported.append(name)
+                continue
+            npm_expected.append(expected)
+            if not have_npm:
+                needs_npm_prereq = True
+        elif required == 'pip':
+            package = _PROVIDER_PIP_PACKAGES.get(name)
+            expected = f'pip install {package}' if package else ''
+            expected_with_alt = f'{expected}  # or: uv tool install {package}' if package else ''
+            if not package or hint.strip() not in (expected, expected_with_alt):
+                unsupported.append(name)
+                continue
+            pip_packages.append(package)
+            if not have_pip:
+                needs_pip_prereq = True
+        else:
+            # Already runnable as-is (no prerequisite gap) — nothing to
+            # dedupe or batch; run it standalone in this same terminal.
+            npm_expected.append(hint)
+    segments: List[str] = []
+    if npm_expected:
+        if needs_npm_prereq:
+            segments.append(_node_prereq_snippet())
+        segments.extend(npm_expected)
+    if pip_packages:
+        if needs_pip_prereq:
+            segments.append(_uv_prereq_snippet())
+            segments.extend(f'uv tool install {p}' for p in pip_packages)
+        elif have_uv:
+            segments.extend(f'uv tool install {p}' for p in pip_packages)
+        else:
+            segments.extend(f'pip install {p}' for p in pip_packages)
+    prerequisite_added = needs_npm_prereq or needs_pip_prereq
+    return ' && '.join(segments), unsupported, prerequisite_added
 
 
 @bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
@@ -1893,6 +2022,51 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False, 'error': err, 'command': command}), 200
     return jsonify({'ok': True, 'command': command,
                     'prerequisite': prerequisite or None})
+
+
+@bp.route('/api/agent/providers/install-launch', methods=['POST'])
+def agent_providers_install_launch_batch():
+    """Install several providers with ONE terminal (F7, clean-VM run
+    2026-09-18): the walkthrough's "Install selected" used to call the
+    single-provider route above once per vendor, each opening its OWN
+    terminal — ticking Claude + Gemini launched two concurrent
+    `winget install ... NodeJS` calls that raced each other.
+    `_provider_install_command_batch` composes one sequential command (Node/
+    npm or pip/uv bootstrapped at most once) and this launches it in a
+    single terminal.
+
+    Body: {"names": ["claude", "gemini", ...]}. Returns
+    {'ok': True, 'command', 'installed': [...], 'unsupported': [...]} once
+    the terminal is launched, or {'ok': False, 'error', 'command'} when it
+    can't start at all (same contract as the single-provider route) —
+    `unsupported` names still come back 200 so the caller can show them
+    without failing the whole batch.
+    """
+    body = request.get_json(silent=True) or {}
+    names = [str(n).strip().lower() for n in (body.get('names') or []) if str(n).strip()]
+    if not names:
+        return jsonify({'ok': False, 'error': 'no providers given', 'command': ''}), 200
+    # De-dupe while keeping the caller's order — a repeated name would just
+    # duplicate its install line in the composed command.
+    seen = set()
+    names = [n for n in names if not (n in seen or seen.add(n))]
+    command, unsupported, prereq_added = _provider_install_command_batch(names)
+    installed = [n for n in names if n not in unsupported]
+    if not command:
+        return jsonify({'ok': False,
+                        'error': 'no supported install command for the selected providers',
+                        'command': '', 'unsupported': unsupported}), 200
+    required = _install_command_required_binary(command)
+    if required and not shutil.which(required) and not prereq_added:
+        return jsonify({'ok': False,
+                        'error': f'{required} not found on PATH',
+                        'command': command, 'unsupported': unsupported}), 200
+    err = _launch_terminal_for_binary(command)
+    if err:
+        return jsonify({'ok': False, 'error': err, 'command': command,
+                        'unsupported': unsupported}), 200
+    return jsonify({'ok': True, 'command': command,
+                    'installed': installed, 'unsupported': unsupported})
 
 
 def _auth_probe_cwd() -> str:

@@ -207,12 +207,50 @@ function wtSelectProvider(name, selected) {
   if (wtActive) wtShow(wtStep);
 }
 
+// F7 (clean-VM run 2026-09-18): used to loop calling wtInstallProvider() per
+// vendor, and EACH call opened its OWN terminal — ticking Claude + Gemini
+// launched two concurrent `winget install ... NodeJS` calls that raced each
+// other. One batch request now runs every selected-but-uninstalled vendor
+// in a single terminal, with the Node/npm (or pip/uv) prerequisite handled
+// once — see agent_routes.py's _provider_install_command_batch.
 async function wtInstallSelectedProviders(button) {
+  const names = (_agentProviders || [])
+    .filter((p) => wtSelectedProviders.has(p.name) && !p.installed)
+    .map((p) => p.name);
+  if (!names.length) return;
   if (button) button.disabled = true;
+  const msgFor = (name) => document.getElementById(`wt-install-msg-${name}`);
   try {
-    for (const provider of (_agentProviders || [])) {
-      if (wtSelectedProviders.has(provider.name) && !provider.installed)
-        await wtInstallProvider(provider.name, null);
+    const res = await fetch(API_BASE + '/api/agent/providers/install-launch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      for (const name of (data.installed || names)) {
+        const el = msgFor(name);
+        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".';
+      }
+      for (const name of (data.unsupported || [])) {
+        const el = msgFor(name);
+        if (el) el.textContent = 'No automatic install available for this vendor — see its own Install button.';
+      }
+    } else if (data.command) {
+      for (const name of names) {
+        const el = msgFor(name);
+        if (el) el.textContent = `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`;
+      }
+    } else {
+      for (const name of names) {
+        const el = msgFor(name);
+        if (el) el.textContent = data.error || 'Could not start the install.';
+      }
+    }
+  } catch (e) {
+    for (const name of names) {
+      const el = msgFor(name);
+      if (el) el.textContent = 'Install failed: ' + e;
     }
   } finally {
     if (button) button.disabled = false;
@@ -226,6 +264,12 @@ function _wtProviderState(p) {
   if (!p.installed) return { label: 'not installed', color: 'var(--text-faint)' };
   if (p.auth_status === 'ok') return { label: 'signed in', color: 'var(--green)' };
   if (p.auth_status === 'not_logged_in') return { label: 'not signed in', color: 'var(--amber)' };
+  // F9 (clean-VM run 2026-09-18): a Gemini OAuth credential file can exist
+  // and still be dead — Google retired personal-account sign-in for Gemini
+  // Code Assist. Local evidence alone can't tell live vs. dead, so it's
+  // reported honestly instead of a false green "signed in".
+  if (p.auth_status === 'unverified') return { label: 'unverified', color: 'var(--amber)' };
+  if (p.auth_status === 'oauth_rejected') return { label: 'sign-in rejected', color: 'var(--amber)' };
   return { label: 'installed', color: 'var(--text-faint)' };
 }
 
@@ -263,13 +307,16 @@ async function wtInstallProvider(name, btnEl) {
   }
 }
 
-// Re-fetch /api/agent/providers (bypassing the boot-time cache, same pattern
-// as settingsProviderRefresh in provider-auth.js) and re-render the CURRENT
-// walkthrough step so a just-installed CLI's state flips from "not installed"
-// without the user having to close and reopen the tour.
+// Re-fetch /api/agent/providers AND force every runtime to re-probe its auth
+// state (`_ensureAgentProviders(true)` → `?refresh=1`) rather than just
+// re-reading the server's cached health_check() result — a plain re-fetch
+// still returned stale not_logged_in for a provider signed in from OUTSIDE
+// Clayrune (F8, clean-VM run 2026-09-18: `claude auth status` showed
+// loggedIn:true, but this button kept the step blocked until a server
+// restart). Then re-render the CURRENT step so a just-installed/signed-in
+// CLI's state flips without the user having to close and reopen the tour.
 async function wtRefreshProviders() {
-  _agentProviders = null;
-  try { await _ensureAgentProviders(); } catch (e) { /* leave stale on failure */ }
+  try { await _ensureAgentProviders(true); } catch (e) { /* leave stale on failure */ }
   if (wtActive) wtShow(wtStep);
 }
 
@@ -686,14 +733,43 @@ function wtPositionCard(targetEl, cardEl, pos) {
   cardEl.style.top = top + 'px';
 }
 
+// Human-readable reason a selected provider is blocking Next — F2 (clean-VM
+// run 2026-09-18): the old message was the step's own static hint repeated
+// verbatim, so clicking a gated Next looked like it did nothing. Naming the
+// exact vendor + exact problem gives the user something actionable instead.
+function _wtProviderBlockReason(p) {
+  if (!p.installed) return 'not installed';
+  switch (p.auth_status) {
+    case 'not_logged_in': return 'not signed in';
+    case 'invalid_api_key': return 'invalid API key';
+    case 'quota_exceeded': return 'quota exceeded';
+    case 'unverified': return 'sign-in unverified — see note below';
+    case 'oauth_rejected': return 'sign-in rejected by Google';
+    case 'unknown': return 'status unknown — click Check setup status';
+    default: return 'not signed in';
+  }
+}
+
 function wtNext() {
   if (WT_STEPS[wtStep].id === 'provider-choice') {
     const selected = (_agentProviders || []).filter(p => wtSelectedProviders.has(p.name));
     const defaultProvider = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-    if (!selected.length || !wtSelectedProviders.has(defaultProvider)
-        || selected.some(p => !p.installed || p.auth_status !== 'ok')) {
+    const problems = [];
+    if (!selected.length) {
+      problems.push('Select at least one vendor.');
+    } else {
+      if (!wtSelectedProviders.has(defaultProvider)) {
+        problems.push('Choose a default from your selected vendors.');
+      }
+      for (const p of selected) {
+        if (!p.installed || p.auth_status !== 'ok') {
+          problems.push(`${p.display_name || p.name}: ${_wtProviderBlockReason(p)}`);
+        }
+      }
+    }
+    if (problems.length) {
       const el = document.getElementById('wt-provider-validation');
-      if (el) el.textContent = 'Choose a default, install every selected vendor, then sign in and check setup status. You can also skip the tour and finish setup later.';
+      if (el) el.textContent = problems.join(' · ') + ' — or skip the tour and finish setup later.';
       return;
     }
   }
