@@ -1217,6 +1217,29 @@ def _validated_schedule_character(character, project_id):
     return f'{scope}:{name}', None
 
 
+def _run_at_error(run_at):
+    """Error text for a `run_at` without an explicit timezone; None = fine.
+
+    `_compute_next_run` reads a naive run_at as UTC. A caller that meant its
+    own wall clock (the 2026-09-19 live-pass driver did) lands hours in the
+    past west of Greenwich, next_run comes out None, and the once-row sits
+    enabled and never fires -- no error anywhere. The UI always sends
+    toISOString() (Z), so refusing naive values costs it nothing.
+    """
+    if not run_at:
+        return None
+    if not isinstance(run_at, str):
+        return 'run_at must be an ISO 8601 string'
+    try:
+        dt = datetime.fromisoformat(run_at.strip().replace('Z', '+00:00'))
+    except ValueError:
+        return f'run_at is not ISO 8601: {run_at!r}'
+    if dt.tzinfo is None:
+        return (f'run_at {run_at!r} has no timezone; send UTC with Z '
+                '(e.g. 2026-09-19T17:30:00Z) or an explicit offset')
+    return None
+
+
 def create_schedule_from_spec(data: dict):
     """THE schedule-create path. Returns (sched, None) or (None, (resp, code)).
 
@@ -1234,6 +1257,9 @@ def create_schedule_from_spec(data: dict):
     task = (data.get('task') or '').strip()
     workflow_id = (data.get('workflow_id') or '').strip()
     stype = data.get('schedule_type', 'daily')
+    rerr = _run_at_error(data.get('run_at'))
+    if rerr:
+        return None, (jsonify({'error': rerr}), 400)
     # MC-871 Q4: a schedule invokes EITHER a raw task OR a workflow, never
     # both and never neither -- a row that could mean two things is a row
     # that fires as whichever branch happened to be checked first.
@@ -1367,6 +1393,11 @@ def update_schedule(schedule_id):
         for key in ('model', 'effort'):
             if key in data:
                 sched[key] = (data.get(key) or '').strip()
+
+    if 'run_at' in data:
+        rerr = _run_at_error(data.get('run_at'))
+        if rerr:
+            return jsonify({'error': rerr}), 400
 
     for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
