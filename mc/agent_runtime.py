@@ -225,7 +225,8 @@ CapabilityFlags = ProviderCapabilities
 @dataclass
 class AuthState:
     status: Literal['ok', 'not_logged_in', 'invalid_api_key', 'unknown',
-                    'not_installed', 'quota_exceeded']
+                    'not_installed', 'quota_exceeded', 'unverified',
+                    'oauth_rejected']
     method: Optional[str] = None
     last_checked: str = ''
     error_text: Optional[str] = None
@@ -3431,9 +3432,27 @@ class GeminiRuntime(AgentRuntime):
         # probe just proved the key can't serve a request (MC-934).
         with self._auth_lock:
             _cached = dict(self._auth_cache)
-        if auth_status == 'ok' and _cached.get('status') in ('quota_exceeded', 'invalid_api_key'):
+        if auth_status == 'ok' and _cached.get('status') in (
+                'quota_exceeded', 'invalid_api_key', 'oauth_rejected'):
             auth_status = _cached['status']
             auth_err = _cached.get('error_text')
+        elif (auth_status == 'ok' and (auth_method or '').startswith('oauth')
+              and not os.environ.get('GEMINI_API_KEY')):
+            # F9 (clean-VM run 2026-09-18): a cached oauth_creds.json only
+            # proves a credential was ONCE issued — it does NOT prove Google
+            # still honors it. Live-verified that day: Google now refuses
+            # personal-account OAuth for Gemini Code Assist ("This client is
+            # no longer supported... migrate to the Antigravity suite") while
+            # the file on disk looks perfectly valid. auth_probe() can't
+            # cheaply verify this path (it would mean spawning the full
+            # `gemini` CLI, not one HTTP call — see its docstring), so report
+            # honestly instead of a false green until either a live dispatch
+            # trips explain_exit_error()'s oauth_rejected detector below, or
+            # the user switches to GEMINI_API_KEY (which DOES get probed).
+            auth_status = 'unverified'
+            auth_err = ('Signed in with Google, but this cannot be verified '
+                        'without a real request. If Gemini refuses to run, '
+                        'set GEMINI_API_KEY in Provider Settings instead.')
         return HealthStatus(
             installed=True,
             binary_path=bin_path,
@@ -3628,9 +3647,17 @@ class GeminiRuntime(AgentRuntime):
         api_key = os.environ.get('GEMINI_API_KEY')
         if not api_key:
             # OAuth path — see docstring. Report what local evidence shows,
-            # honestly labeled 'unknown' rather than upgraded to a verified 'ok'.
+            # honestly labeled 'unverified' (F9, 2026-09-18) rather than
+            # upgraded to a verified 'ok': a cached oauth_creds.json proves a
+            # credential was issued, not that Google still honors it — a
+            # clean-VM run hit exactly this with Google's personal-account
+            # Gemini Code Assist OAuth already retired.
             state = {
-                'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                'ok': False, 'status': 'unverified', 'method': method,
+                'error_text': ('Signed in with Google, but this cannot be '
+                              'verified without a real request. If Gemini '
+                              'refuses to run, set GEMINI_API_KEY in Provider '
+                              'Settings instead.'),
                 'quota_status': 'unknown', 'tier': 'unknown',
                 'last_checked': _now_iso(),
             }
@@ -3863,8 +3890,31 @@ class GeminiRuntime(AgentRuntime):
         t.start()
         return handle
 
+    # F9 (clean-VM run 2026-09-18): Google's exact refusal text for personal
+    # Gemini Code Assist OAuth accounts. A live dispatch is the only place
+    # this can actually be OBSERVED (health_check() has no way to provoke
+    # it without spawning the CLI) — when it shows up here, stamp the cache
+    # so the NEXT health_check()/auth_status() call reports the real state
+    # instead of the false "signed in" a valid-looking oauth_creds.json
+    # would otherwise keep producing.
+    _OAUTH_REJECTED_PATTERNS = (
+        'no longer supported for gemini code assist',
+        'migrate to the antigravity',
+    )
+
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
+        if any(p in s for p in self._OAUTH_REJECTED_PATTERNS):
+            real_line = _last_real_error_line(log_tail) or (log_tail or '').strip()[:300]
+            with self._auth_lock:
+                self._auth_cache.update({
+                    'ok': False, 'status': 'oauth_rejected', 'method': 'oauth',
+                    'error_text': real_line or 'Google rejected this Gemini OAuth login.',
+                    'last_checked': _now_iso(),
+                })
+            return ("Google rejected this Gemini sign-in — personal-account "
+                    "OAuth for Gemini Code Assist has been retired. Set "
+                    "GEMINI_API_KEY in Settings → Agent Providers instead.")
         if 'command line is too long' in s:
             return ("Your prompt + project context was too large for Windows "
                     "to send to Gemini. This shouldn't happen anymore after "
@@ -6827,8 +6877,16 @@ class CodexRuntime(AgentRuntime):
     def health_check(self) -> HealthStatus:
         p = self.resolve_binary()
         is_npx = self._npx_fallback
-        installed = bool(p) or is_npx
-        if not installed:
+        # `installed` drives the first-run chooser / Settings provider card
+        # (F10, clean-VM run 2026-09-18): a machine with npm but no codex CLI
+        # at all showed "installed" / "not signed in" with an empty
+        # binary_path, because the npx fallback (a per-dispatch `npx --yes
+        # @openai/codex`, never a persistent install) counted as installed.
+        # `runnable` keeps the original "can we even probe --version"
+        # gate — npx is a real way to RUN codex, just not evidence it is
+        # installed, so dispatch still works unchanged via `_cmd_prefix()`.
+        runnable = bool(p) or is_npx
+        if not runnable:
             return HealthStatus(
                 installed=False, binary_path=None, version=None,
                 auth_state=AuthState(status='not_installed', last_checked=_now_iso()),
@@ -6843,7 +6901,7 @@ class CodexRuntime(AgentRuntime):
             version = raw.splitlines()[0] if raw else None
         except Exception as e:
             return HealthStatus(
-                installed=True, binary_path=p, version=None,
+                installed=bool(p), binary_path=p, version=None,
                 auth_state=AuthState(status='unknown', last_checked=_now_iso()),
                 diagnostic=str(e),
                 install_hint='npm install -g @openai/codex',
@@ -6851,7 +6909,7 @@ class CodexRuntime(AgentRuntime):
         auth_status, auth_method = self._codex_auth_state()
         has_key = auth_status == 'ok'
         return HealthStatus(
-            installed=True,
+            installed=bool(p),
             binary_path=p,
             version=version,
             auth_state=AuthState(
