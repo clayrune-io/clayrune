@@ -194,6 +194,15 @@ async function applyDefaultProvider(name) {
   if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
 }
 
+// F6 (clean-VM run 2026-09-18): the install route may have changed (or
+// deliberately left alone) the PowerShell script policy so typed claude/gemini
+// works; when it has something to say, show it verbatim next to the install
+// message rather than changing the user's machine silently.
+function _wtPolicyNote(data) {
+  const m = data && data.execution_policy && data.execution_policy.message;
+  return m ? ' ' + m : '';
+}
+
 function wtSelectProvider(name, selected) {
   if (selected) wtSelectedProviders.add(name);
   else wtSelectedProviders.delete(name);
@@ -225,7 +234,7 @@ async function wtInstallSelectedProviders(button, only) {
     if (data.ok) {
       for (const name of (data.installed || names)) {
         const el = msgFor(name);
-        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".';
+        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".' + _wtPolicyNote(data);
       }
       for (const name of (data.unsupported || [])) {
         const el = msgFor(name);
@@ -399,7 +408,7 @@ async function wtInstallProvider(name, btnEl) {
                             { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (data.ok) {
-      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.';
+      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.' + _wtPolicyNote(data);
       if (btnEl) {
         btnEl.textContent = 'Refresh';
         btnEl.disabled = false;
