@@ -141,6 +141,8 @@ _CONFIG_EDITABLE_KEYS = {
     'artifact_coverage_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     'context_rollover_tokens', 'midturn_rollover_enabled',
+    # Per-agent skill scoping (mc/skill_scoping.py). Read at each spawn.
+    'agent_skill_scoping_enabled',
     # Keep-awake wake lock (mc/wake_lock.py). Reconciler reads both live —
     # no respawn, no restart. Without these here the Settings toggle
     # rendered OFF and silently failed to save (found 2026-07-16).

@@ -1665,7 +1665,8 @@ class ClaudeRuntime(AgentRuntime):
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
                       effort: str = '', mcp_config_json: str = '',
-                      partial_messages: bool = False) -> List[str]:
+                      partial_messages: bool = False,
+                      skill_overrides: Optional[Dict[str, str]] = None) -> List[str]:
         """Return [binary, *flags]. Equivalent to _build_claude_flags() in server.py.
 
         Config values are passed explicitly (not read from server.py CONFIG) so
@@ -1680,6 +1681,9 @@ class ClaudeRuntime(AgentRuntime):
                               in server.py). '' / empty → omit the flags entirely,
                               so the session inherits the full global+project fleet
                               exactly as before (default-off invariant).
+            skill_overrides = {skill: 'name-only'} from mc/skill_scoping.py. Empty /
+                              None → the `--settings` argument is byte-for-byte what it
+                              was (guardrail file alone, or absent).
 
         The returned list is [binary, '--print', '--verbose', ...] — callers extend
         with -p <task>, --append-system-prompt <ctx>, -r <csid>, etc.
@@ -1726,6 +1730,16 @@ class ClaudeRuntime(AgentRuntime):
         # file yet (fresh install, boot still running) — see launch_file_if_exists's
         # docstring for why that must mean "add nothing," not "add a broken path."
         guardrail_settings = _guardrail_launch_file('claude')
+        # Per-agent skill scoping rides in the SAME file: `--settings` takes one
+        # value, so the overrides are merged into a content-addressed copy of the
+        # guardrail file instead of being a second flag. On any failure the
+        # unscoped guardrail file is used — scoping never costs the guard.
+        if skill_overrides:
+            from mc import skill_scoping as _skill_scoping
+            from mc.guardrail_hooks import hooks_dir as _hooks_dir
+            scoped = _skill_scoping.scoped_settings_path(
+                guardrail_settings, skill_overrides, _hooks_dir() / 'scoped')
+            guardrail_settings = scoped or guardrail_settings
         if guardrail_settings:
             cmd.extend(['--settings', str(guardrail_settings)])
         return cmd

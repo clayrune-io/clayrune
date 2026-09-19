@@ -195,6 +195,11 @@ def _load_config():
         # the next tool_result boundary (Claude streams only). Default OFF until
         # reviewed; rolls are logged to data/midturn_rollover_log/.
         'midturn_rollover_enabled': False,
+        # Per-agent skill scoping (mc/skill_scoping.py): an agent whose type
+        # declares `skills` gets those + the project's own skills at full
+        # description and every other installed skill name-only (still
+        # callable). Undeclared agents are untouched. Default OFF.
+        'agent_skill_scoping_enabled': False,
         # Idle-session eviction — reclaim a warm Mode B fleet (claude.exe + its
         # MCP servers) after long inactivity; the next message transparently
         # respawns it with `-r <csid>` (full context preserved). Default OFF;

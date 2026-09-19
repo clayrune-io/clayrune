@@ -2019,6 +2019,11 @@ async function runFloorGuard(browser) {
       engine: {}, });
     if (path === '/api/avatars') return json({
       figures: ['wizard', 'beekeeper', 'archivist', 'warden'], prefix: 'fig:' });
+    // The persona editor's skill picker: 2 global + 1 archived (never offered).
+    if (path === '/api/skills') return json([
+      { name: 'dataviz', scope: 'global', description: 'charts' },
+      { name: 'Apple-Design', scope: 'global', description: 'design review' },
+      { name: 'old-thing', scope: 'archive', description: 'gone' }]);
     if (path.startsWith('/api/avatars/')) return route.fulfill({
       status: 200, contentType: 'image/png',
       body: Buffer.from(PNG.split(',')[1], 'base64') });
@@ -2204,6 +2209,21 @@ async function runFloorGuard(browser) {
       const pe = document.querySelector('.persona-editor');
       const chip = pe && pe.querySelector('.pe-fig');
       r.pickerChips = pe ? pe.querySelectorAll('.pe-fig').length : 0;
+      // Skill picker: chips toggle names in the comma-separated field, and the
+      // field stays the source of truth (typing repaints the chips).
+      const sInput = pe && pe.querySelector('#pe-skills');
+      const sChips = pe ? Array.from(pe.querySelectorAll('.pe-skill')) : [];
+      r.skillChips = sChips.map((b) => b.dataset.skill);
+      if (sInput && sChips.length) {
+        sChips[0].click();
+        r.skillAfterPick = sInput.value;
+        r.skillSel = sChips[0].classList.contains('sel');
+        sInput.value = 'apple-design';
+        sInput.dispatchEvent(new Event('input', { bubbles: true }));
+        r.skillTyped = sChips.map((b) => b.classList.contains('sel'));
+        sChips[1].click();
+        r.skillAfterUnpick = sInput.value;
+      }
       if (chip) {
         chip.dispatchEvent(new MouseEvent('mouseenter', { bubbles: false }));
         await settle(120);
@@ -2324,6 +2344,16 @@ async function runFloorGuard(browser) {
       + 'right persona: ' + JSON.stringify(out.edits));
   if (JSON.stringify(out.busy || []) !== JSON.stringify(['already in Alpha']))
     fails.push('a type already working did not say where: ' + JSON.stringify(out.busy));
+  if (JSON.stringify(out.skillChips) !== '["dataviz","apple-design"]')
+    fails.push('the persona editor skill picker listed ' + JSON.stringify(out.skillChips)
+      + ' (want the 2 global skills, none archived)');
+  if (out.skillAfterPick !== 'dataviz' || out.skillSel !== true)
+    fails.push('clicking a skill chip did not add it to the Skills field: '
+      + JSON.stringify([out.skillAfterPick, out.skillSel]));
+  if (JSON.stringify(out.skillTyped) !== '[false,true]')
+    fails.push('typing in the Skills field did not repaint the chips: ' + JSON.stringify(out.skillTyped));
+  if (out.skillAfterUnpick !== '')
+    fails.push('clicking a selected skill chip did not remove it: ' + JSON.stringify(out.skillAfterUnpick));
   if (out.pickerChips !== 4)
     fails.push('the persona editor listed the wrong number of faces: ' + out.pickerChips);
   if (!out.peekShown) fails.push('hovering a face showed no preview');

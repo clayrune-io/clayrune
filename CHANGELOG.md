@@ -6,6 +6,18 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-19] — Per-agent skill scoping (off by default)
+
+- New `agent_skill_scoping_enabled` (default false). A character that declares
+  `skills` (frontmatter, edited in the persona editor, now with a chip picker)
+  gets those + the project's own `.claude/skills` at full description; every
+  other installed skill is listed name-only (still callable). Claude: a
+  `skillOverrides` block merged into the per-launch `--settings` file
+  (`mc/skill_scoping.py`), applied on dispatch, followup, respawn, revive and
+  rollover alike. Non-Claude: the same rule in `_skills_catalog_block`.
+  Characters with no declared skills are unchanged. Measured on Sonnet 5:
+  52,800 → 47,288 prompt tokens per turn (−5,512).
+
 ## [2026-09-19] — Mid-turn context rollover (off by default)
 
 - The token rollover only ran when a message arrived, so a dispatched worker
