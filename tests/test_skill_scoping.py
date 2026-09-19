@@ -50,6 +50,16 @@ def test_declared_plus_project_local_stay_full_everything_else_name_only():
     assert set(out.values()) == {'name-only'}
 
 
+def test_global_preference_skills_are_never_demoted():
+    installed = INSTALLED + [
+        {'name': 'preference-abc123', 'scope': 'global', 'description': 'a rule'},
+        {'name': 'Preference-DEF', 'scope': 'global', 'description': 'a rule'},
+    ]
+    out = ss.skill_overrides('/p', 'p', ['dataviz'],
+                             list_skills=lambda *a: list(installed))
+    assert out == {'apple-design': 'name-only', 'mc-steward': 'name-only'}
+
+
 def test_declared_name_match_is_case_insensitive():
     out = ss.skill_overrides('/p', 'p', ['DataViz'], list_skills=_list)
     assert 'dataviz' not in out

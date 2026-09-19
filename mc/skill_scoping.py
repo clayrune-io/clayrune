@@ -42,11 +42,22 @@ def _installed(project_path: Optional[str], project_id: Optional[str],
             if s.get('scope') != 'archive']
 
 
+PREFERENCE_PREFIX = 'preference-'
+
+
 def effective_full_set(declared: Iterable[str], skills: List[dict]) -> Set[str]:
-    """Names that keep their full description: declared ∪ project-local."""
+    """Names that keep their full description: declared ∪ project-local ∪
+    every `preference-*` skill.
+
+    Preference skills are the user's conduct rules, not a toolkit. Demoting
+    them would silently drop a rule from any agent with a declared list, so
+    they are never scoped (Ron, 2026-09-18).
+    """
     full = {str(n).strip().lower() for n in declared or [] if str(n).strip()}
     full.update(str(s.get('name') or '').lower()
                 for s in skills if s.get('scope') == 'project')
+    full.update(str(s.get('name') or '').lower() for s in skills
+                if str(s.get('name') or '').lower().startswith(PREFERENCE_PREFIX))
     return full
 
 

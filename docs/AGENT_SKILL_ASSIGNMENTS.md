@@ -28,9 +28,8 @@ Baseline for every character (Clayrune plumbing): `mc-clayrune-apis`, `mc-memory
 Left unassigned on purpose: `mc-steward` (loaded by the steward task marker, not a
 character), `model-web-viewer` (3D projects only; stays name-only and loadable).
 
-## Open issue: global `preference-*` skills
+## Global `preference-*` skills
 
-24 global `preference-*` skills are conduct rules, not toolkits. skill_scoping.py has
-no exemption for them, so any character with a declared list demotes them to
-name-only. Options: exempt `preference-*` from demotion in code (recommended), or
-list them on every character.
+Never scoped: `effective_full_set` keeps every `preference-*` skill at full
+description (Ron, 2026-09-18). They are conduct rules, not a toolkit, so no
+character needs to list them.
