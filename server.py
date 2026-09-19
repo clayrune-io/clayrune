@@ -3146,12 +3146,12 @@ def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> No
     temp dir that was later deleted, which would have blocked every agent's
     shell command. The one production call site (`boot()`, see
     tests/test_guardrail_hooks_boot.py) still passes no override at all —
-    resolving that default here, rather than at the call site, keeps that
-    site a bare-name call (never silently redirectable) while still scoping
-    a test/second instance to its own data dir.
+    the default (None) is resolved by `mc.guardrail_hooks.clayrune_home()`,
+    NOT here: the readers call that same function, and resolving it on the
+    write side only (as this function did until 2026-09-19) wrote the file
+    under MC_DATA_DIR while every launch looked under ~/.clayrune and went
+    out unguarded. One rule, one place.
     """
-    if clayrune_home is None and os.environ.get('MC_DATA_DIR'):
-        clayrune_home = _DATA_ROOT / '.clayrune'
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(
