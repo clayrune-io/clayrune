@@ -139,6 +139,20 @@ def _no_real_cli_spawn():
         raise AssertionError("real model CLI launch attempted:\n  " + "\n  ".join(new))
 
 
+@pytest.fixture(autouse=True)
+def _isolated_allowance_state():
+    """Importing server.py wires mc.allowance_state to the REAL
+    data/allowance_state.json, so a vendor that is genuinely out of quota on
+    the box running the suite (Codex, 2026-09-19) made unrelated dispatch
+    tests raise "out of allowance". Every test starts with empty, unwired
+    allowance state; a test that needs some sets it itself."""
+    from mc import allowance_state as _as
+    saved = (_as.STATE_PATH, _as._STATE)
+    _as.STATE_PATH, _as._STATE = None, {}
+    yield
+    _as.STATE_PATH, _as._STATE = saved
+
+
 def pytest_sessionfinish(session, exitstatus):
     # A leaked thread can fire after the last test's teardown; nothing else sees it.
     if _REAL_CLI_ATTEMPTS and session.exitstatus == 0:
