@@ -142,6 +142,16 @@ class CellRun:
 
 # ── helpers ─────────────────────────────────────────────────────────────────
 
+def native_id(s: Optional[dict], vendor: str) -> str:
+    """The vendor's own conversation id from a status/conversations row. Claude
+    reports it as claude_session_id; every other vendor as provider_session_id.
+    Falls back to the other field so a payload shape change reads as a value,
+    not as an empty string that fails every id check."""
+    s = s or {}
+    order = ('claude_session_id', 'provider_session_id') if vendor == 'claude'         else ('provider_session_id', 'claude_session_id')
+    return next((s[k] for k in order if s.get(k)), '') or ''
+
+
 def now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec='seconds')
 
@@ -314,12 +324,33 @@ class Instance:
             shutil.copyfile(src, dst)
 
     def port_free(self) -> bool:
+        """Bindable now. A plain bind (no SO_REUSEADDR) is the test: it fails while
+        anything listens and passes with only TIME_WAIT sockets left over from
+        this driver's own client, which do not stop the next server binding."""
         with socket.socket() as s:
-            return s.connect_ex(('127.0.0.1', self.port)) != 0
+            try:
+                s.bind(('127.0.0.1', self.port))
+            except OSError:
+                return False
+        return True
+
+    def listening(self) -> bool:
+        with socket.socket() as s:
+            return s.connect_ex(('127.0.0.1', self.port)) == 0
+
+    def wait_port_free(self, timeout: float = 30.0, poll: float = 0.5) -> bool:
+        deadline = time.time() + timeout
+        while not self.port_free():
+            if time.time() >= deadline:
+                return False
+            time.sleep(poll)
+        return True
 
     def start(self) -> None:
-        if self.port == PROD_PORT or not self.port_free():
-            raise RuntimeError(f'port {self.port} is 5199 or already in use; refusing')
+        if self.port == PROD_PORT:
+            raise RuntimeError(f'port {self.port} is 5199; refusing')
+        if not self.wait_port_free():
+            raise RuntimeError(f'port {self.port} still in use after 30s (not our own exited instance); refusing')
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self._seed_auth()
         py = REPO_ROOT / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
@@ -340,7 +371,7 @@ class Instance:
         while time.time() < deadline:
             if self.proc.poll() is not None:
                 raise RuntimeError(f'instance exited early rc={self.proc.returncode}')
-            if not self.port_free():
+            if self.listening():
                 return
             time.sleep(1)
         raise RuntimeError('instance did not open its port in 90s')
@@ -359,16 +390,26 @@ class Instance:
                 self.proc.wait(20)
             except Exception:
                 self.proc.kill()
+                self.proc.wait(10)
         rc = self.proc.poll()
         if self.log:
             self.log.close()
         self.proc = None
-        return f'pid {pid} exited rc={rc}'
+        # the listener is released a beat after the PID is gone; start() waits for it too
+        freed = self.wait_port_free()
+        return f'pid {pid} exited rc={rc}; port {self.port} ' + ('released' if freed else 'NOT released after 30s')
 
     def restart(self) -> str:
         note = self.stop()
         self.start()
         return note
+
+    def recover(self) -> str:
+        """Bring up a clean instance after a cell ERROR left the last one dead or
+        wedged. Same home and data dir, so the test project survives."""
+        note = self.stop()
+        self.start()
+        return f'recovered: {note}'
 
     def cleanup(self) -> str:
         shutil.rmtree(self.home, ignore_errors=True)
@@ -561,15 +602,14 @@ def run_newchat(ctx: Ctx, run: CellRun) -> None:
     x1, x2 = ctx.wait(run, s1), ctx.wait(run, s2)
     t1, t2 = ctx.reply_text(x1), ctx.reply_text(x2)
     run.ok('distinct_session_ids', s1 != s2)
-    run.ok('distinct_native_ids', bool(x1.get('provider_session_id')) and
-           x1.get('provider_session_id') != x2.get('provider_session_id'),
-           f"{x1.get('provider_session_id')} vs {x2.get('provider_session_id')}")
+    n1, n2 = native_id(x1, ctx.vendor), native_id(x2, ctx.vendor)
+    run.ok('distinct_native_ids', bool(n1) and n1 != n2, f'{n1} vs {n2}')
     run.ok('reply_1_has_marker_1_only', e1 in t1 and e2 not in t1)
     run.ok('reply_2_has_marker_2_only', e2 in t2 and e1 not in t2)
     code, conv = ctx.api.request('GET', f'/api/project/{ctx.project}/conversations', human=True)
     listed = json.dumps(conv)
-    run.ok('both_rows_visible_in_rail', s1 in listed or (x1.get('provider_session_id') or '~') in listed
-           and (x2.get('provider_session_id') or '~') in listed, 'rail lists both conversations')
+    run.ok('both_rows_visible_in_rail', s1 in listed or ((n1 or '~') in listed and (n2 or '~') in listed),
+           'rail lists both conversations')
     run.artifacts.update({'reply_1': t1, 'reply_2': t2, 'conversations': listed[:2000]})
     run.claims += [G.Claim('chat 1 answered its marker', 'reply_1', e1), G.Claim('chat 2 answered its marker', 'reply_2', e2)]
 
@@ -577,12 +617,12 @@ def run_newchat(ctx: Ctx, run: CellRun) -> None:
 def run_followup(ctx: Ctx, run: CellRun) -> None:
     (a1, b1, e1), (a2, b2, e2) = ctx.mk('follow-up', 1), ctx.mk('follow-up', 2)
     sid, s = ctx.chat(run, marker_prompt(a1, b1))
-    native = s.get('provider_session_id')
+    native = native_id(s, ctx.vendor)
     ctx.api.send(ctx.project, sid, marker_prompt(a2, b2))
     s = ctx.wait(run, sid)
     text = ctx.reply_text(s)
     run.ok('same_session', s.get('session_id') == sid)
-    run.ok('same_native_thread', bool(native) and s.get('provider_session_id') == native, f'{native} -> {s.get("provider_session_id")}')
+    run.ok('same_native_thread', bool(native) and native_id(s, ctx.vendor) == native, f'{native} -> {native_id(s, ctx.vendor)}')
     run.ok('both_markers_in_order', e1 in text and e2 in text and text.index(e1) < text.index(e2))
     if ctx.model:
         run.ok('exact_requested_model', (s.get('observed_model') or s.get('model') or s.get('agent_model')) == ctx.model,
@@ -597,7 +637,7 @@ def run_followup(ctx: Ctx, run: CellRun) -> None:
 def run_restart_resume(ctx: Ctx, run: CellRun) -> None:
     a, b, word = ctx.mk('restart-resume', 1)
     sid, s = ctx.chat(run, f'Remember this code word for later: {a}-{b}. Reply with exactly the word ACK.')
-    native = s.get('provider_session_id')
+    native = native_id(s, ctx.vendor)
     run.steps.append('restarting the disposable instance (own PID only): ' + ctx.inst.restart())
     ctx.sleep(3)
     ctx.api.send(ctx.project, sid, 'What was the code word I gave you? Reply with the two parts joined by a hyphen, nothing else.',
@@ -605,8 +645,9 @@ def run_restart_resume(ctx: Ctx, run: CellRun) -> None:
     s = ctx.wait(run, sid)
     text = ctx.reply_text(s)
     run.ok('code_word_recalled_after_restart', f'{a}-{b}' in text, 'history preserved across restart')
-    run.ok('same_native_identity_or_lossless_resume', s.get('provider_session_id') in (native, None, '') or bool(text),
-           f'native before={native} after={s.get("provider_session_id")}')
+    after = native_id(s, ctx.vendor)
+    run.ok('same_native_identity_or_lossless_resume', after in (native, '') or bool(text),
+           f'native before={native} after={after}')
     run.artifacts['post_restart_reply'] = text
     run.claims.append(G.Claim('recalled the pre-restart code word', 'post_restart_reply', f'{a}-{b}'))
 
@@ -901,7 +942,7 @@ def run_handoff(ctx: Ctx, run: CellRun) -> None:
     for dest in _others(ctx):
         a, b, e = ctx.mk(f'handoff-{dest}', 1)
         sid, s = ctx.chat(run, 'Remember the word PINEAPPLE. Reply with exactly ACK.')
-        conv = s.get('claude_session_id') or s.get('provider_session_id') or ''
+        conv = native_id(s, ctx.vendor)
         nsid = ctx.api.dispatch(ctx.project, f'What word did I ask you to remember? Then also output {a}{b}.', provider=dest,
                                 extra={'resume_conversation_id': conv, 'cross_provider_handoff': True})
         n = ctx.wait(run, nsid)
@@ -1239,6 +1280,12 @@ def run_all(args, ctx: Ctx) -> Tuple[int, Dict[str, str]]:
             continue
         except Exception as e:
             note = f'ERROR: {type(e).__name__}: {sanitize(str(e))[:400]}'
+            recover = getattr(ctx.inst, 'recover', None)
+            if recover:  # one bad cell (or a failed restart) must not leave a dead instance for every cell after it
+                try:
+                    note += f'\n\n    instance {sanitize(recover())}'
+                except Exception as e2:
+                    note += f'\n\n    instance recovery FAILED: {type(e2).__name__}: {sanitize(str(e2))[:200]}'
             run.checks.append(G.check('runner_completed', G.FAIL, note))
         status, token, align = finalize(ctx, cell, run) if 'ERROR' not in note else ('ERROR', {}, {})
         ctx.notes['all_sessions'] += run.sessions
