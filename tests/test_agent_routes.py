@@ -208,7 +208,9 @@ def test_install_launch_onboards_missing_node_before_provider(monkeypatch, clien
         '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
         '-e --silent --source winget '
         '--accept-source-agreements --accept-package-agreements) '
-        '&& npm install -g @openai/codex'
+        '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+        '(if %v GEQ 12 (npm install -g --allow-scripts=@openai/codex @openai/codex) '
+        'else (npm install -g @openai/codex))'
     ]
 
 

@@ -2030,6 +2030,113 @@ def test_gemini_explain_exit_error_detects_oauth_rejection(monkeypatch):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# F11 (clean-VM run 2, 2026-09-18): a CLI-native "Use Gemini API key" login
+# stores the key in the OS keychain + ~/.gemini/settings.json's
+# security.auth.selectedType — invisible to both prior evidence sources
+# (env var, oauth_creds.json).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_gemini_auth_state_keychain_api_key(monkeypatch, tmp_path):
+    """settings.json selectedType == 'gemini-api-key' (no oauth_creds.json,
+    no env var) must count as signed in, distinctly labeled from oauth."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    status, method, err = agent_runtime.get_runtime('gemini')._gemini_auth_state()
+    assert status == 'ok'
+    assert method == 'keychain:gemini-api-key'
+    assert err is None
+
+
+def test_gemini_health_check_keychain_api_key_is_ok_not_unverified(monkeypatch, tmp_path):
+    """Unlike the OAuth path (F9), a keychain-native API key must NOT be
+    downgraded to 'unverified' by health_check() — it gets the same local
+    trust as an env-var key; auth_probe() (not health_check) is where it
+    gets actually verified, via a real CLI call."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()  # fresh instance — clean _auth_cache
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    monkeypatch.setattr(
+        agent_runtime.subprocess, 'run',
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a[0] if a else [], returncode=0, stdout='0.59.0', stderr=''))
+    hs = rt.health_check()
+    assert hs.auth_state.status == 'ok'
+    assert hs.auth_state.method == 'keychain:gemini-api-key'
+
+
+def test_gemini_auth_probe_keychain_api_key_success(monkeypatch, tmp_path):
+    """auth_probe() must spend a real gemini CLI call for a keychain-native
+    key (never an HTTP call — there is no key value to send) and report ok
+    on success, never reading/logging the key itself."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout='OK', stderr='')
+
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+    state = rt.auth_probe()
+    assert state['ok'] is True
+    assert state['status'] == 'ok'
+    assert state['method'] == 'keychain:gemini-api-key'
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert '--allowed-mcp-server-names' in cmd and '__clayrune_none__' in cmd
+    assert '-p' in cmd
+
+
+def test_gemini_auth_probe_keychain_api_key_failure_surfaces_cli_error(monkeypatch, tmp_path):
+    """A dead/expired keychain key must surface the CLI's own error text,
+    not a generic failure."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout='', stderr='Error: API key not valid')
+
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+    state = rt.auth_probe()
+    assert state['ok'] is False
+    assert 'API key not valid' in (state['error_text'] or '')
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Per-provider model catalogs (composer "Model" picker)
 # ─────────────────────────────────────────────────────────────────────────────
 
