@@ -203,3 +203,33 @@ class TestItReachesDispatch:
         sid = _mk(client).get_json()['id']
         assert client.post(f'/api/schedule/{sid}/run-now').status_code == 200
         assert seen['character'] == ''
+
+
+class TestEnginePin:
+    """A schedule pins its model the way it pins its persona (live pass
+    2026-09-19: an unpinnable schedule silently ran the project default)."""
+
+    def test_model_and_effort_round_trip_and_reach_dispatch(self, client, monkeypatch):
+        from mc.blueprints import scheduler_routes as sr
+        seen = {}
+        monkeypatch.setattr(sr, '_dispatch_agent_internal',
+                            lambda pid, task, **kw: (seen.update(kw), 'sess1')[1])
+        monkeypatch.setattr(sr, '_latest_session_id_for_schedule', lambda *a: '')
+        monkeypatch.setattr(sr, '_latest_claude_sid_for_schedule', lambda *a: '')
+        r = _mk(client, model='claude-sonnet-5', effort='high')
+        assert r.status_code == 201, r.get_json()
+        row = r.get_json()
+        assert (row['model'], row['effort']) == ('claude-sonnet-5', 'high')
+        assert client.post(f"/api/schedule/{row['id']}/run-now").status_code == 200
+        assert seen['model_override'] == 'claude-sonnet-5'
+        assert seen['effort_override'] == 'high'
+
+    def test_update_changes_the_pin(self, client):
+        sid = _mk(client).get_json()['id']
+        r = client.put(f'/api/schedules/{sid}', json={'model': 'claude-haiku-4-5'})
+        assert r.status_code == 200, r.get_json()
+        assert _row(client, sid)['model'] == 'claude-haiku-4-5'
+
+    @pytest.mark.parametrize('bad', ['--dangerously-skip-permissions', 'a b', 7])
+    def test_a_malformed_model_is_refused_at_write(self, client, bad):
+        assert _mk(client, model=bad).status_code == 400
