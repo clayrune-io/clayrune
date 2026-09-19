@@ -275,8 +275,11 @@ class Api:
                 return s
         return None
 
-    def providers(self) -> List[dict]:
-        code, r = self.request('GET', '/api/agent/providers', human=True)
+    def providers(self, refresh: bool = False) -> List[dict]:
+        # A fresh instance has probed nothing yet: without refresh=1 every
+        # vendor reads auth_status 'unknown' (first live run, 2026-09-19).
+        path = '/api/agent/providers' + ('?refresh=1' if refresh else '')
+        code, r = self.request('GET', path, human=True)
         return r.get('providers', []) if isinstance(r, dict) else []
 
 
@@ -1253,7 +1256,7 @@ def run_all(args, ctx: Ctx) -> Tuple[int, Dict[str, str]]:
 
 def preflight(ctx: Ctx) -> None:
     """Refuse to spend anything if the vendor is already exhausted or unusable."""
-    prov = [p for p in ctx.api.providers() if p.get('name') == ctx.vendor]
+    prov = [p for p in ctx.api.providers(refresh=True) if p.get('name') == ctx.vendor]
     if not prov or not prov[0].get('installed'):
         raise RuntimeError(f'{ctx.vendor} CLI not installed in the disposable instance')
     if prov[0].get('auth_status') not in ('ok', 'logged_in', 'authenticated', 'signed_in'):
