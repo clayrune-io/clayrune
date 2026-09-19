@@ -701,22 +701,71 @@ def run_restart_resume(ctx: Ctx, run: CellRun) -> None:
     run.claims.append(G.Claim('recalled the pre-restart code word', 'post_restart_reply', f'{a}-{b}'))
 
 
-def _png_stripes() -> bytes:
+# Unguessable fixture (run 3, 2026-09-19): a fixed red/green/blue PNG passed on
+# qwen3-coder-plus, a model recorded as having NO vision -- "red, green, blue"
+# is what any model says for "three stripes". So the image is drawn fresh every
+# run: 4 stripes, colours drawn WITHOUT replacement from 6 (360 orderings) plus
+# a random 4-digit code rendered in a bitmap font. Both are checked exactly.
+_STRIPE_COLOURS = {'red': (255, 0, 0), 'green': (0, 170, 0), 'blue': (0, 0, 255),
+                   'yellow': (255, 255, 0), 'black': (0, 0, 0), 'white': (255, 255, 255)}
+_GLYPHS = {  # 5x7, one string per row
+    '0': ('01110', '10001', '10011', '10101', '11001', '10001', '01110'),
+    '1': ('00100', '01100', '00100', '00100', '00100', '00100', '01110'),
+    '2': ('01110', '10001', '00001', '00010', '00100', '01000', '11111'),
+    '3': ('11110', '00001', '00001', '01110', '00001', '00001', '11110'),
+    '4': ('00010', '00110', '01010', '10010', '11111', '00010', '00010'),
+    '5': ('11111', '10000', '11110', '00001', '00001', '10001', '01110'),
+    '6': ('00110', '01000', '10000', '11110', '10001', '10001', '01110'),
+    '7': ('11111', '00001', '00010', '00100', '01000', '01000', '01000'),
+    '8': ('01110', '10001', '10001', '01110', '10001', '10001', '01110'),
+    '9': ('01110', '10001', '10001', '01111', '00001', '00010', '01100'),
+}
+
+
+def _png_fixture(rng: Any) -> Tuple[bytes, List[str], str]:
+    """(png bytes, stripe colour names left to right, rendered digit code)."""
     import struct
     import zlib
-    w, h = 96, 32
-    row = b'\x00' + b''.join(bytes(c) * (w // 3) for c in ((255, 0, 0), (0, 255, 0), (0, 0, 255)))
-    raw = row * h
+    names = rng.sample(sorted(_STRIPE_COLOURS), 4)
+    code = ''.join(rng.choice('0123456789') for _ in range(4))
+    sw, sh, scale, gap, pad = 40, 60, 6, 6, 8
+    w = sw * len(names)
+    dh = 7 * scale
+    h = sh + pad + dh + pad
+    rows = []
+    for y in range(h):
+        row = bytearray(b'\x00')
+        if y < sh:
+            for n in names:
+                row += bytes(_STRIPE_COLOURS[n]) * sw
+        else:
+            line = [(255, 255, 255)] * w
+            gy = y - sh - pad
+            if 0 <= gy < dh:
+                total = len(code) * 5 * scale + (len(code) - 1) * gap
+                x0 = (w - total) // 2
+                for i, ch in enumerate(code):
+                    for gx, bit in enumerate(_GLYPHS[ch][gy // scale]):
+                        if bit == '1':
+                            for k in range(scale):
+                                line[x0 + i * (5 * scale + gap) + gx * scale + k] = (0, 0, 0)
+            for px in line:
+                row += bytes(px)
+        rows.append(bytes(row))
+    raw = b''.join(rows)
 
     def chunk(t: bytes, d: bytes) -> bytes:
         return struct.pack('>I', len(d)) + t + d + struct.pack('>I', zlib.crc32(t + d) & 0xffffffff)
-    return (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
-            + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+    png = (b'\x89PNG\r\n\x1a\n' + chunk(b'IHDR', struct.pack('>IIBBBBB', w, h, 8, 2, 0, 0, 0))
+           + chunk(b'IDAT', zlib.compress(raw)) + chunk(b'IEND', b''))
+    return png, names, code
 
 
 def run_image_paste(ctx: Ctx, run: CellRun) -> None:
+    import random
     boundary = 'x' + ctx.run_id
-    png = _png_stripes()
+    png, names, code = _png_fixture(random.SystemRandom())
+    run.artifacts['image_truth'] = f"stripes {', '.join(names)}; code {code}"
     body = (f'--{boundary}\r\nContent-Disposition: form-data; name="file"; filename="stripes.png"\r\n'
             f'Content-Type: image/png\r\n\r\n').encode() + png + f'\r\n--{boundary}--\r\n'.encode()
     req = urllib.request.Request(ctx.api.base + '/api/agent/upload-image', data=body, method='POST',
@@ -726,15 +775,19 @@ def run_image_paste(ctx: Ctx, run: CellRun) -> None:
         up = json.loads(r.read().decode())
     path = up.get('path', '')
     run.ok('upload_ok_and_file_persists', bool(up.get('ok')) and Path(path).is_file(), path)
-    task = ('What are the three vertical colour stripes in this image, left to right? Reply with just the '
-            f'three colour names.\n\n[Screenshot: {path}]')
+    task = ('This image has four vertical colour stripes above a row of four digits. Reply with exactly one line: '
+            'the four stripe colour names left to right, then the four digits, all separated by commas.'
+            f'\n\n[Screenshot: {path}]')
     sid, s = ctx.chat(run, task)
     text = ctx.reply_text(s).lower()
-    run.ok('answer_uses_image', all(c in text for c in ('red', 'green', 'blue')) and
-           text.index('red') < text.index('green') < text.index('blue'), text[:200])
+    got = re.findall(r'\b(' + '|'.join(_STRIPE_COLOURS) + r')\b', text)
+    run.ok('answer_names_stripes_in_order', got == names,
+           f"expected {names} got {got} (reply: {text[:120]!r})")
+    digits = ''.join(re.findall(r'\d', text))
+    run.ok('answer_reads_rendered_code', digits == code, f'expected {code} got {digits!r}')
     run.ok('attachment_still_present_after_turn', Path(path).is_file())
     run.artifacts['image_reply'] = text
-    run.claims.append(G.Claim('named the stripes red, green, blue in order', 'image_reply', 'red'))
+    run.claims.append(G.Claim('named the stripes and read the code', 'image_reply', names[0]))
 
 
 def run_notify(ctx: Ctx, run: CellRun) -> None:
@@ -889,6 +942,12 @@ def run_hire(ctx: Ctx, run: CellRun) -> None:
 def run_stop_interrupt(ctx: Ctx, run: CellRun) -> None:
     a, b, e = ctx.mk('stop-interrupt', 1)
     exe, name = ctx.procs.make('slow' + ctx.run_id[:5].lower())
+    # Forward slashes: qwen's run_shell_command runs the line under bash even on
+    # Windows, where backslashes are escapes (a "C:\Users\..." path became
+    # "C:Users..." ->"executable was not found" -> the turn ended in seconds
+    # and there was nothing left to interrupt: run 0919125503). A drive-letter
+    # path with '/' works under bash, cmd and PowerShell alike.
+    exe = exe.replace('\\', '/')
     slow = f'{exe} -n 120 127.0.0.1' if _win() else f'{exe} 120'
     sid = ctx.api.dispatch(ctx.project, f'Run this exact shell command and wait for it to finish, then report: {slow}',
                            model=ctx.model, effort=ctx.effort)
@@ -904,6 +963,18 @@ def run_stop_interrupt(ctx: Ctx, run: CellRun) -> None:
     run.ok('interrupt_accepted_and_new_prompt_answered', code < 300 and e in ctx.reply_text(s), f'code={code}')
     hist = '\n'.join(s.get('log_lines') or [])
     run.ok('partial_history_retained', 'clayrune_decoy_slow' in hist or slow.split()[0] in hist, 'first prompt still in transcript')
+    # /agent/stop is idempotent: on a session with no live turn it answers
+    # {"already_stopped": true, "reason": "completed"} and leaves the status
+    # alone. A Mode A engine (qwen/gemini/codex) has no process between turns,
+    # so stopping AFTER the interrupt turn finished tests nothing there and the
+    # status stays "completed" (run 0919125503). Stop is only meaningful on a
+    # running turn, so start a second slow task and stop THAT.
+    ctx.api.send(ctx.project, sid, f'Run this exact shell command and wait for it to finish, then report: {slow}')
+    for _ in range(40):
+        ctx.sleep(3)
+        if ctx.procs.count_image(name):
+            break
+    run.ok('second_task_child_running_before_stop', ctx.procs.count_image(name) > 0, name)
     ctx.api.request('POST', f'/api/project/{ctx.project}/agent/stop', {'session_id': sid}, human=True)
     ctx.sleep(4)
     s = ctx.api.session(ctx.project, sid) or {}
@@ -1043,9 +1114,9 @@ def mk_cells() -> List[Cell]:
              'After a real restart of the disposable instance (own PID), a follow-up recalls the word; same native id or a lossless resume.',
              'Word recalled AND identity/history preserved.', run_restart_resume),
         Cell('image-paste', 'image-paste', 'live', [1], 200,
-             P('What are the three vertical colour stripes in this image, left to right? Reply with just the three colour names.\n\n[Screenshot: <uploaded path>]'),
-             'Upload persists on disk; the reply names red, green, blue in order (fixture is a generated 3-stripe PNG).',
-             'Upload ok AND correct ordered colours AND file still present.', run_image_paste),
+             P('This image has four vertical colour stripes above a row of four digits. Reply with exactly one line: the four stripe colour names left to right, then the four digits, all separated by commas.\n\n[Screenshot: <uploaded path>]'),
+             'Upload persists on disk; the reply names the four stripe colours in order AND the four rendered digits (fixture is a fresh random 4-stripe PNG with a rendered code each run; the truth is recorded in the cell artifacts).',
+             'Upload ok AND exact ordered colours AND exact digit code AND file still present.', run_image_paste),
         Cell('notify', 'notify', 'live', [1, 1], 200, P('Reply with exactly the word READY.', M + ' (child, dispatched with notify_session=<parent>)'),
              'Exactly one "[dispatched agent finished]" receipt in the parent after the instance was restarted between parent idle and child finish.',
              'receipts == 1 AND parent reached a terminal state.', run_notify),
@@ -1064,9 +1135,10 @@ def mk_cells() -> List[Cell]:
         Cell('hire', 'hire', 'live', [1], 200, P(M + ' (character global:live-persona, engine pinned to --vendor)'),
              'Hired agent resolves to the requested engine; session identity is the hired persona; conversation usable.',
              'All functional checks true; persona check applies.', run_hire),
-        Cell('stop-interrupt', 'stop-interrupt', 'live', [2, 1], 200,
-             P('Run this exact shell command and wait for it to finish, then report: <slow decoy, ~2 min>', M + ' (sent via interrupt)'),
-             'Interrupt answers the new prompt; earlier history retained; stop gives status stopped and leaves zero owned child processes.',
+        Cell('stop-interrupt', 'stop-interrupt', 'live', [2, 1, 1], 200,
+             P('Run this exact shell command and wait for it to finish, then report: <slow decoy, ~2 min>', M + ' (sent via interrupt)',
+               'Run this exact shell command and wait for it to finish, then report: <slow decoy, ~2 min> (stopped mid-run)'),
+             'Interrupt answers the new prompt; earlier history retained; a stop sent while a second slow task is running gives status stopped and leaves zero owned child processes.',
              'All functional checks true.', run_stop_interrupt),
         Cell('questions', 'questions', 'live', [2], 200,
              P('Use the mc:question protocol to ask me ONE multiple-choice question with options A and B: which do I prefer? Then stop and wait for my answer.',

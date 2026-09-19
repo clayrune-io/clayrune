@@ -3851,6 +3851,28 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # but its Session Log is a wall of past prompts, which Gemini read as a
     # live task list. The targeted read-floor below ("RELEVANT MEMORY") is
     # the memory mechanism for every provider: small, task-scoped, safe.
+    #
+    # BUT the read-floor corpus excludes the curated index by construction
+    # (`_memory_search`: "the agent already auto-loads it") — true only for
+    # Claude. So for every other provider a fact that lives in the curated
+    # part of MEMORY.md was unreachable: neither injected nor searchable
+    # (Qwen live pass 2026-09-19, memory cell: a fact appended via
+    # /memory/append never reached a new chat, which answered with a
+    # different cell's marker). Bridge it with the CURATED half only —
+    # `_mem_split` drops the managed Session Log, the "wall of past prompts"
+    # that caused the Gemini failure above. Bounded by index_byte_budget.
+    if not _is_claude and not incognito:
+        try:
+            from mc.memory import _mem_split as _mem_split_idx
+            _idx = _mem_split_idx(mem_path.read_text(encoding='utf-8', errors='replace'))[0].strip() \
+                if mem_path and mem_path.is_file() else ''
+        except Exception as e:
+            _log(f"[memory-index] {project.get('id')}: curated index read failed: {e}")
+            _idx = ''
+        if _idx:
+            parts.append(
+                "--- PROJECT MEMORY INDEX (curated notes; standing facts about "
+                "this project, NOT a task list) ---\n" + _idx)
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
