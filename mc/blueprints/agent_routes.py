@@ -97,6 +97,7 @@ from mc import allowance_state as _allowance_state
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
+import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
@@ -669,7 +670,8 @@ def _resolve_project_mcp_config(project):
         return None
 
 def _build_claude_flags(project=None, streaming=False, model_override=None,
-                        effort_override=None, max_turns_override=None):
+                        effort_override=None, max_turns_override=None,
+                        character_skills=None):
     """Build common Claude CLI flags from config, with optional per-project overrides.
     Delegates to ClaudeRuntime.build_command()[1:] — single source of truth.
     Returns flags only (no binary prefix), matching the legacy contract.
@@ -681,6 +683,12 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     `effort_override` is the same idea for reasoning effort, used by an agent
     type that pins one (docs/AGENT_TYPES_DESIGN.md §3). Kept a separate arg
     rather than read off `project` because the character is not the project.
+
+    `character_skills` is the persona's declared skill list. With
+    `agent_skill_scoping_enabled` on and a non-empty list it becomes a
+    `skillOverrides` block (mc/skill_scoping.py); otherwise nothing changes.
+    Every spawn/respawn/revive site must pass it, or that path silently reverts
+    to the full skill listing — see tests/test_skill_scoping.py.
     """
     model = model_override if model_override is not None else (
         (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
@@ -702,7 +710,30 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
         effort=effort,  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         mcp_config_json=_resolve_project_mcp_config(project) or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         partial_messages=bool(state.CONFIG.get('activity_states_enabled', False)),  # pyright: ignore[reportCallIssue]
+        skill_overrides=_skill_overrides_for(project, character_skills),  # pyright: ignore[reportCallIssue]
     )[1:]  # strip binary — _build_claude_flags() contract is flags-only
+
+
+def _skill_overrides_for(project, character_skills):
+    """`skillOverrides` for one Claude launch, or {} (flag off / nothing declared)."""
+    if not (character_skills and state.CONFIG.get(_skill_scoping.CONFIG_KEY, False)):
+        return {}
+    return _skill_scoping.skill_overrides(
+        (project or {}).get('project_path') or None, (project or {}).get('id'),
+        character_skills)
+
+
+def _session_skills(project, session):
+    """Declared skills of the persona a session runs, re-read from disk.
+
+    Same source `_fresh_context_for` uses, so a respawn, revive or rollover of
+    one conversation always resolves the same set the original launch did.
+    """
+    try:
+        return _session_character_parts(project, session)[2]
+    except Exception as e:
+        _log(f"[skill-scoping] could not resolve session skills: {e}", flush=True)
+        return []
 
 
 def _resolve_dispatch_model(project, prompt):
@@ -734,7 +765,8 @@ _classifier_pool = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-def _dispatch_with_routing(project, prompt, streaming=False, effort_override=None):
+def _dispatch_with_routing(project, prompt, streaming=False, effort_override=None,
+                           character_skills=None):
     """One-shot helper: resolve model + build flags.
 
     Returns (model, source, flags). Caller stamps session['model'] and
@@ -743,12 +775,13 @@ def _dispatch_with_routing(project, prompt, streaming=False, effort_override=Non
     """
     model, source = _resolve_dispatch_model(project, prompt)
     flags = _build_claude_flags(project, streaming=streaming, model_override=model,
-                                effort_override=effort_override)
+                                effort_override=effort_override,
+                                character_skills=character_skills)
     return model, source, flags
 
 
 def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=False,
-                                    effort_override=None):
+                                    effort_override=None, character_skills=None):
     """Same as `_dispatch_with_routing` but runs `context_builder` in parallel
     with the classifier when the router is on.
 
@@ -764,7 +797,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
     if not state.CONFIG.get('auto_model_enabled', False) or not prompt:
         context = context_builder() if context_builder else ''
         model, source, flags = _dispatch_with_routing(project, prompt, streaming=streaming,
-                                                      effort_override=effort_override)
+                                                      effort_override=effort_override,
+                                                      character_skills=character_skills)
         return model, source, flags, context, ''
 
     fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
@@ -781,7 +815,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
         model, source = fallback, 'fallback'
         _fallback_reason = type(_exc).__name__
     flags = _build_claude_flags(project, streaming=streaming, model_override=model,
-                                effort_override=effort_override)
+                                effort_override=effort_override,
+                                character_skills=character_skills)
     return model, source, flags, context, _fallback_reason
 
 
@@ -3257,7 +3292,7 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     ]
 
 
-def _skills_catalog_block(project):
+def _skills_catalog_block(project, character_skills=None):
     """Skill catalog for non-Claude agents (full-parity Stage 3).
 
     Claude Code auto-discovers skills from ~/.claude/skills/ and the project's
@@ -3279,9 +3314,18 @@ def _skills_catalog_block(project):
                and not s.get('shadowed_by_project')]
     if not visible:
         return ''
+    # Per-agent scoping (mc/skill_scoping.py): the same rule Claude gets as
+    # `skillOverrides`. Outside declared ∪ project-local a skill keeps its name
+    # and SKILL.md path but loses its description — still findable, cheaper.
+    full = None
+    if character_skills and state.CONFIG.get(_skill_scoping.CONFIG_KEY, False):
+        full = _skill_scoping.effective_full_set(character_skills, visible)
     lines = []
     for s in visible:
         desc = (s.get('description') or '').strip().replace('\n', ' ')
+        if full is not None and str(s.get('name') or '').lower() not in full:
+            lines.append(f"- {s.get('name')}\n  SKILL.md: {s.get('path')}")
+            continue
         lines.append(f"- {s.get('name')}: {desc}\n  SKILL.md: {s.get('path')}")
     return ("--- AVAILABLE SKILLS ---\n"
             "Reusable skills are available to you. When the current task "
@@ -3645,7 +3689,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
 
     # Stage 3 full-parity: non-Claude agents don't auto-discover skills —
     # inject the catalog so they can read + follow the relevant SKILL.md.
-    _skills_block = _skills_catalog_block(project)
+    _skills_block = _skills_catalog_block(project, character_skills)
     if _skills_block:
         parts.append(_skills_block)
 
@@ -4734,7 +4778,8 @@ def _auto_recover_failed_resume(session):
             _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
                    model_override=_continuation_model(session, p),
-                   effort_override=_continuation_effort(session)),
+                   effort_override=_continuation_effort(session),
+                   character_skills=_session_skills(p, session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -4774,7 +4819,8 @@ def _auto_recover_failed_resume(session):
             _sp_args, _sp_path = _sysprompt_file_args(context)
             cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p,
                    model_override=_continuation_model(session, p),
-                   effort_override=_continuation_effort(session)),
+                   effort_override=_continuation_effort(session),
+                   character_skills=_session_skills(p, session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -5282,7 +5328,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
                *_build_claude_flags(p, streaming=True, model_override=revive_model,
-                                    effort_override=revive_effort)]
+                                    effort_override=revive_effort,
+                                    character_skills=_revive_char_skills)]
         _sp_path = None
         if context:
             _sp_args, _sp_path = _sysprompt_file_args(context)
@@ -5388,7 +5435,8 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     _sp_args, _sp_path = _sysprompt_file_args(context)
     cmd = [_resolve_claude(), *resume_flags, '-p', revival_msg,
            *_build_claude_flags(p, model_override=revive_model,
-                                effort_override=revive_effort), *_sp_args]
+                                effort_override=revive_effort,
+                                character_skills=_revive_char_skills), *_sp_args]
     try:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -6648,7 +6696,8 @@ def _auto_dispatch_followup(session, message):
     _pin = _continuation_model(session, p)
     cmd = [_resolve_claude(), *resume_flags, '-p', message,
            *_build_claude_flags(p, model_override=_pin,
-                                effort_override=_continuation_effort(session)), *_sp_args]
+                                effort_override=_continuation_effort(session),
+                                character_skills=_session_skills(p, session)), *_sp_args]
     if _pin:
         session['model'] = _pin
         session['model_source'] = 'manual'
@@ -8221,7 +8270,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         routed_model, routed_source = '', 'resume'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
                                          model_override='', effort_override=_char_effort,
-                                         max_turns_override=max_turns_override)
+                                         max_turns_override=max_turns_override,
+                                         character_skills=_char_skills)
         context = _build_agent_context(
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
@@ -8237,7 +8287,8 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         base_flags = _build_claude_flags(p, streaming=use_streaming,
                                          model_override=model_override,
                                          effort_override=_char_effort,
-                                         max_turns_override=max_turns_override)
+                                         max_turns_override=max_turns_override,
+                                         character_skills=_char_skills)
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body,
                                        character_name=_char_agent_name,
@@ -8253,12 +8304,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     character_body=character_body, character_name=_char_agent_name,
                     session_id=_planned_sid, character_skills=_char_skills,
                     source=source),
-                streaming=use_streaming, effort_override=_char_effort))
+                streaming=use_streaming, effort_override=_char_effort,
+                character_skills=_char_skills))
         if max_turns_override is not None:
             base_flags = _build_claude_flags(
                 p, streaming=use_streaming, model_override=routed_model,
                 effort_override=_char_effort,
-                max_turns_override=max_turns_override)
+                max_turns_override=max_turns_override,
+                character_skills=_char_skills)
     if system_prompt_suffix:
         # Provider-neutral callers such as Hivemind may supply an additional
         # feature context block. Keep the authoritative project context first,
@@ -9587,7 +9640,8 @@ def agent_followup(project_id):
                 _pin = _continuation_model(existing, p)
                 cmd = [_resolve_claude(), *resume_flags,
                        *_build_claude_flags(p, streaming=True, model_override=_pin,
-                                            effort_override=_continuation_effort(existing))]
+                                            effort_override=_continuation_effort(existing),
+                                            character_skills=_session_skills(p, existing))]
                 if _pin:
                     existing['model'] = _pin
                     existing['model_source'] = 'manual'
@@ -9640,7 +9694,8 @@ def agent_followup(project_id):
                     _sticky_cmd = [_resolve_claude(), *_sticky_resume,
                                    *_build_claude_flags(p, streaming=True,
                                                         model_override=_sticky_pin,
-                                                        effort_override=_continuation_effort(existing))]
+                                                        effort_override=_continuation_effort(existing),
+                                                        character_skills=_session_skills(p, existing))]
                     if _sticky_pin:
                         existing['model'] = _sticky_pin
                         existing['model_source'] = 'manual'
@@ -9775,7 +9830,8 @@ def agent_followup(project_id):
             _sp_path = None
             cmd = [_resolve_claude(), *resume_flags,
                    *_build_claude_flags(p, streaming=True, model_override=new_model,
-                                        effort_override=_continuation_effort(mrs['existing']))]
+                                        effort_override=_continuation_effort(mrs['existing']),
+                                        character_skills=_session_skills(p, mrs['existing']))]
             if resume_flags:
                 _sp_args, _sp_path = _respawn_sysprompt_args(mrs['existing'], p, message)
             else:
@@ -9936,7 +9992,8 @@ def agent_followup(project_id):
             _pin = _continuation_model(existing, p)
             cmd = [_resolve_claude(), *resume_flags, '-p', claude_followup_msg,
                    *_build_claude_flags(p, model_override=_pin,
-                                        effort_override=_continuation_effort(existing))]
+                                        effort_override=_continuation_effort(existing),
+                                        character_skills=_session_skills(p, existing))]
             if _pin:
                 existing['model'] = _pin
                 existing['model_source'] = 'manual'
@@ -10281,7 +10338,8 @@ def agent_interrupt(project_id, *, _internal=None):
                 cmd = [_resolve_claude(), *resume_flags,
                        *_build_claude_flags(p, streaming=True,
                                             model_override=_continuation_model(session, p),
-                                            effort_override=_continuation_effort(session))]
+                                            effort_override=_continuation_effort(session),
+                                            character_skills=_session_skills(p, session))]
                 if resume_flags:
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
                     cmd.extend(_sp_args)
@@ -10336,7 +10394,8 @@ def agent_interrupt(project_id, *, _internal=None):
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
                     cmd = [_resolve_claude(), *resume_flags, '-p', *_prompt_arg,
                            *_build_claude_flags(p, model_override=_continuation_model(session, p),
-                                                effort_override=_continuation_effort(session)), *_sp_args]
+                                                effort_override=_continuation_effort(session),
+                                                character_skills=_session_skills(p, session)), *_sp_args]
                 else:
                     if not context:
                         context = _fresh_context_for(p, session, _ctx_task)
@@ -10344,7 +10403,8 @@ def agent_interrupt(project_id, *, _internal=None):
                     _sp_args, _sp_path = _sysprompt_file_args(context)
                     cmd = [_resolve_claude(), '-p', *_prompt_arg, *_build_claude_flags(p,
                            model_override=_continuation_model(session, p),
-                           effort_override=_continuation_effort(session)),
+                           effort_override=_continuation_effort(session),
+                           character_skills=_session_skills(p, session)),
                            *_sp_args]
 
                 proc = subprocess.Popen(

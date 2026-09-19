@@ -5444,6 +5444,16 @@
   .pe-peek-name {
     display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim);
   }
+  .persona-skill-row {
+    display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px;
+    max-height: 96px; overflow-y: auto;
+  }
+  .pe-skill {
+    padding: 2px 8px; font-size: 11px; cursor: pointer; background: none;
+    color: var(--text-dim); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .pe-skill:hover { border-color: var(--accent); }
+  .pe-skill.sel { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .pe-fig.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .persona-face-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .persona-face-row input {

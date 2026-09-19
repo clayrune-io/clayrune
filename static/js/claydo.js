@@ -1311,10 +1311,11 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
       <input id="pe-desc" type="text" value="${esc(rec.description || '')}">
       <label>Instructions <span class="claydo-save-hint">(the persona's system prompt)</span></label>
       <textarea id="pe-body" spellcheck="true" rows="10">${esc(rec.body || '')}</textarea>
-      <label>Skills <span class="claydo-save-hint">(comma-separated — which of the available skills are this one's own)</span></label>
+      <label>Skills <span class="claydo-save-hint">(comma-separated — this one's own toolkit, in every project; with agent skill scoping on, all other skills are listed by name only)</span></label>
       <input id="pe-skills" type="text" spellcheck="false"
         value="${esc((rec.skills || []).join(', '))}"
         placeholder="audit-doc, frontend-design">
+      <div id="pe-skill-chips" class="persona-skill-row"></div>
       <label>Engine <span class="claydo-save-hint">(optional — leave on Default and it behaves exactly as before)</span></label>
       <div class="persona-engine-row">
         <select id="pe-provider">${_peProviderOptions((rec.engine || {}).provider)}</select>
@@ -1445,6 +1446,39 @@ async function openPersonaEditor(projectId, scope, name, onDone) {
     // unrelated field.
     const sc = panel.querySelector('.pe-scroll');
     if (sc) sc.addEventListener('scroll', hidePeek);
+  })();
+
+  // Skill picker: one chip per installed global skill, toggling its name in the
+  // comma-separated field above (which stays the single source of truth, so a
+  // hand-typed name still saves). Built from /api/skills for the same reason the
+  // figure row reads /api/avatars — the picker and the install must not disagree.
+  (async () => {
+    let skills = [];
+    try {
+      const r = await fetch(API_BASE + '/api/skills');
+      skills = (await r.json()) || [];
+    } catch (e) { /* the text field still works */ }
+    const row = panel.querySelector('#pe-skill-chips');
+    const input = panel.querySelector('#pe-skills');
+    if (!row || !input || !skills.length) return;
+    const names = () => input.value.split(',').map((v) => v.trim().toLowerCase()).filter(Boolean);
+    const paint = () => {
+      const on = new Set(names());
+      row.querySelectorAll('.pe-skill').forEach((b) => b.classList.toggle('sel', on.has(b.dataset.skill)));
+    };
+    row.innerHTML = skills.filter((k) => k.scope === 'global').map((k) =>
+      `<button type="button" class="pe-skill" data-skill="${esc(k.name.toLowerCase())}"
+        title="${esc(k.description || '')}">${esc(k.name)}</button>`).join('');
+    row.querySelectorAll('.pe-skill').forEach((b) => {
+      b.onclick = () => {
+        const cur = names();
+        const n = b.dataset.skill;
+        input.value = (cur.includes(n) ? cur.filter((v) => v !== n) : [...cur, n]).join(', ');
+        paint();
+      };
+    });
+    input.addEventListener('input', paint);
+    paint();
   })();
 
   // A dirty check on the backdrop click. Ron lost an edit to exactly this: the
