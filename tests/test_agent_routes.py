@@ -389,6 +389,24 @@ def test_providers_endpoint_ok(client):
     assert isinstance(resp.get_json(), (list, dict))
 
 
+def test_providers_endpoint_reports_remote_login_and_probe_cost(client, monkeypatch):
+    """The unified provider row (walkthrough.js _renderProviderRow) is data
+    driven: "Sign in remotely" only where remote_login is true, and the Check
+    status tooltip discloses quota spend from capabilities.auth_probe_spends_quota
+    — which used to be on the dataclass but never serialised, so the client
+    could not see it."""
+    from mc import pty_backend
+    monkeypatch.setattr(pty_backend, 'pty_available', lambda: False)
+    providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}
+    assert providers['claude']['remote_login'] is True       # `claude auth login` pipes its URL
+    assert providers['gemini']['remote_login'] is False      # needs a PTY, none available
+    assert providers['gemini']['capabilities']['auth_probe_spends_quota'] is True
+    assert providers['claude']['capabilities']['auth_probe_spends_quota'] is False
+    monkeypatch.setattr(pty_backend, 'pty_available', lambda: True)
+    providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}
+    assert providers['gemini']['remote_login'] is True       # a real PTY covers every CLI
+
+
 def test_providers_endpoint_reports_allowance_exhausted(client, tmp_path):
     """VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: the chooser must show the SAME
     fact a dispatch call would refuse on — 'allowance_exhausted' comes off

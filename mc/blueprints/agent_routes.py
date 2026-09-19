@@ -1608,6 +1608,10 @@ def agent_providers():
                 'context_injection': caps.context_injection,
                 'context_file_name': caps.context_file_name,
                 'oneshot_supported': caps.oneshot_supported,
+                # Read by the unified provider row's "Check status" tooltip
+                # (walkthrough.js _renderProviderRow) — it was on the dataclass
+                # (MC-934) but never serialised, so the client could not see it.
+                'auth_probe_spends_quota': caps.auth_probe_spends_quota,
             }
         except Exception:
             caps_dict = {}
@@ -1629,9 +1633,17 @@ def agent_providers():
             quota_warnings = _recent_quota_failures(rt.name)
         except Exception:
             quota_warnings = {}
+        # Same test agent_auth_login_remote applies at click time: a captured-URL
+        # login (auth_login_argv) or, failing that, a real PTY. The unified
+        # provider row shows "Sign in remotely" only where this is true.
+        try:
+            remote_login = bool(rt.auth_login_argv(str(h.binary_path or rt.name)))                 or bool(pty_backend.pty_available())
+        except Exception:
+            remote_login = False
         out.append({
             'name': rt.name,
             'display_name': rt.display_name,
+            'remote_login': remote_login,
             'models': models,
             'installed': h.installed,
             'binary_path': str(h.binary_path) if h.binary_path else None,
