@@ -190,6 +190,18 @@ def format_resets_at(entry: dict) -> str:
         return str(resets_at)
 
 
+def resets_clause(entry: dict) -> str:
+    """'resets <time>' when a reset time is known, else 'reset time unknown'.
+
+    The callers used to write f"resets {format_resets_at(entry)}", and
+    format_resets_at's own fallback is 'reset time unknown' -- so every
+    exhaustion without a vendor-supplied reset read "resets reset time
+    unknown" (gemini live pass 2026-09-19, STOPPED-usage-limit.md)."""
+    if not (entry.get('resets_at_display') or entry.get('resets_at')):
+        return 'reset time unknown'
+    return f"resets {format_resets_at(entry)}"
+
+
 def _format_dt(dt: datetime) -> str:
     # Portable "Sep 24, 2026 7:58 AM" — %-d/%-I are glibc-only and %#d/%#I
     # are Windows-only; building it by hand works on both.
@@ -205,9 +217,13 @@ def refusal_message(vendor: str) -> str:
     entry = get(vendor)
     if not entry:
         return ''
-    limit = entry.get('limit_kind') or 'usage limit'
+    limit = entry.get('limit_kind') or ''
+    if limit in ('', 'unknown'):
+        # `record_exhaustion` stores 'unknown' for an unclassified limit;
+        # "(unknown)" told the user nothing and read like a missing field.
+        limit = 'usage limit'
     return (f"{vendor} is out of allowance ({limit}), "
-            f"resets {format_resets_at(entry)} — no fallback to another vendor")
+            f"{resets_clause(entry)} — no fallback to another vendor")
 
 
 def display_text(vendor: str) -> str:
@@ -216,7 +232,7 @@ def display_text(vendor: str) -> str:
     entry = get(vendor)
     if not entry:
         return ''
-    return f"Out of allowance, resets {format_resets_at(entry)}"
+    return f"Out of allowance, {resets_clause(entry)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────

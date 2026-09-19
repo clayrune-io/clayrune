@@ -3337,6 +3337,19 @@ class GeminiRuntime(AgentRuntime):
                          'status': msg.get('status') or ''},
                 raw=msg,
             )
+        if mtype == 'error':
+            # gemini-cli 0.59 JsonStreamEventType.ERROR: {"type":"error",
+            # "severity":"warning"|"error","message":...}. A notice the run
+            # continues past (safety block, loop detected, hook "Agent
+            # execution blocked", max turns), so WARN, not a terminal ERROR.
+            return AgentEvent(
+                type=EventType.WARN, provider='gemini',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={'text': str(msg.get('message') or ''),
+                         'severity': str(msg.get('severity') or 'warning')},
+                raw=msg,
+            )
         if mtype == 'result' and msg.get('status') == 'error':
             # The CLI's own reason for the failure (auth, quota, network) lives
             # ONLY here — msg.get('error', {}).get('message') — never on stderr
@@ -4080,6 +4093,24 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        # The CURRENT contiguous text run (deltas since the last non-text
+        # event). Written to `log_lines` as ONE element when the run ends,
+        # never one element per delta. Every consumer of `log_lines` treats
+        # an element as a whole line: the chat renders each as its own row
+        # (conversation.js `fullBuf`) and the live-pass driver joins them
+        # with '\n'. Measured 2026-09-19 (gemini-3.7-flash): a reply of
+        # exactly "CAE658" streamed as deltas "CA" + "E658" and was shown and
+        # graded as two lines, so the marker never appeared. Same shape as
+        # Claude's reader (one element per content block).
+        pending_run: List[str] = []
+
+        def _flush_run() -> None:
+            if not pending_run:
+                return
+            run_text = ''.join(pending_run)
+            pending_run.clear()
+            if run_text.strip():
+                session['log_lines'].append(run_text)
 
         def _cb(name: str, ev: AgentEvent) -> None:
             fn = cbs.get(name)
@@ -4111,19 +4142,37 @@ class GeminiRuntime(AgentRuntime):
                     continue
 
                 ev = self.parse_event(line, handle.mc_session_id)
+                if not (ev and ev.type == EventType.ASSISTANT_TEXT):
+                    # Any other event ends the text run: write it out first
+                    # so it lands before the tool/error/status line.
+                    _flush_run()
                 if ev and ev.type == EventType.ASSISTANT_TEXT:
                     _txt = ev.payload.get('text', line)
                     turn_text_parts.append(_txt)
                     if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
-                        # An MC Tool Protocol block has started — suppress the
-                        # raw block (and anything after it) from the live chat.
-                        # It is parsed and acted on at turn end. Any preamble
-                        # before the fence was streamed by earlier deltas.
+                        # An MC Tool Protocol block has started: suppress the
+                        # raw block (and anything after it) from the chat. It
+                        # is parsed and acted on at turn end. Keep the part of
+                        # this run before the fence (the fence can straddle
+                        # deltas, so cut the joined run, not just _txt).
                         _mc_suppressing = True
+                        run_text = ''.join(pending_run) + _txt
+                        cut = run_text.find('```mc:')
+                        pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                        _flush_run()
                     if not _mc_suppressing:
-                        session['log_lines'].append(_txt)
+                        pending_run.append(_txt)
                         session['last_output_time'] = _time.time()
                         _cb('on_assistant_text', ev)
+                elif ev and ev.type == EventType.WARN:
+                    # `{"type":"error","severity":...}` stream events: safety
+                    # blocks, loop detection, "Agent execution blocked" (a
+                    # hook denial), max turns. parse_event returned None for
+                    # them, so the CLI's own reason vanished from the chat.
+                    session['log_lines'].append(
+                        f"[gemini {ev.payload.get('severity') or 'warning'}] "
+                        f"{ev.payload.get('text', '')}")
+                    session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TOOL_USE:
                     blocks = ev.payload.get('blocks', [])
                     name = blocks[0].get('name', '') if blocks else ''
@@ -4172,7 +4221,18 @@ class GeminiRuntime(AgentRuntime):
                     _usage = ev.payload.get('usage')
                     if isinstance(_usage, dict):
                         session['usage'] = _usage
-                        _ctx = normalize_context_tokens(_usage)
+                        # NOT normalize_context_tokens(_usage): the CLI's
+                        # `stats` SUM every API request this process made
+                        # (gemini-cli 0.59 uiTelemetry.processApiResponse:
+                        # `tokens.prompt += usage.input_token_count`), so a
+                        # turn with one tool call re-sends the prompt twice
+                        # and reports ~2x the context actually held. Live
+                        # 2026-09-19: the guardrail turn read 80,253 against
+                        # a no-tool turn's 18,666. Context is the LAST
+                        # request's prompt, from the CLI's per-request record.
+                        _ctx = gemini_turn_context_tokens(
+                            session.get('provider_session_id') or ev.session_id or '',
+                            _usage)
                         if _ctx is not None:
                             session['context_tokens'] = _ctx
                     _allowance_state.clear_exhaustion('gemini')
@@ -4233,6 +4293,7 @@ class GeminiRuntime(AgentRuntime):
             # A question pauses the turn in 'idle' awaiting the user's reply.
             mc_res = {'blocks_found': False, 'paused': False}
             try:
+                _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
@@ -4567,6 +4628,90 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
     return handle
+
+
+def gemini_chat_files(provider_session_id: str,
+                      home: Optional[str] = None) -> List[Path]:
+    """The gemini CLI's own per-session chat record(s) for `provider_session_id`.
+
+    gemini-cli 0.59 ChatRecordingService appends JSONL to
+    `<GEMINI_CLI_HOME or ~>/.gemini/tmp/<project>/chats/
+    session-<YYYY-MM-DDTHH-MM>-<first 8 of session id>.jsonl`; a resume can
+    open a second file with the same suffix. Filtered on the metadata line's
+    full `sessionId` so an 8-char prefix collision cannot match another chat.
+    """
+    if not provider_session_id:
+        return []
+    root = Path(home or os.environ.get('GEMINI_CLI_HOME') or Path.home()) / '.gemini' / 'tmp'
+    out: List[Path] = []
+    try:
+        for f in root.glob(f'*/chats/session-*-{provider_session_id[:8]}.jsonl'):
+            try:
+                with open(f, encoding='utf-8', errors='replace') as fh:
+                    first = json.loads(fh.readline() or '{}')
+            except (OSError, ValueError):
+                continue
+            if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
+                out.append(f)
+    except OSError as e:
+        print(f'[runtime:gemini] chat file scan failed: {e}', flush=True)
+    return sorted(out, key=lambda x: x.stat().st_mtime)
+
+
+def gemini_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-API-request token records from a gemini chat JSONL, in order.
+
+    Each model response is a `{"type":"gemini", "id":..., "tokens":{"input",
+    "output","cached","thoughts","tool","total"}}` record, where `input` is
+    the request's promptTokenCount (cached tokens INCLUDED). The recorder
+    re-appends a message when it updates it, so records are de-duplicated by
+    `id`, the last copy winning, first-seen order kept."""
+    by_id: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'gemini':
+            continue
+        tok = rec.get('tokens')
+        mid = str(rec.get('id') or f'_anon{len(order)}')
+        if mid not in by_id:
+            order.append(mid)
+        if isinstance(tok, dict):
+            by_id[mid] = tok
+        else:
+            by_id.setdefault(mid, {})
+    return [by_id[m] for m in order if by_id.get(m)]
+
+
+def gemini_turn_context_tokens(provider_session_id: str,
+                               stats: Optional[Dict[str, Any]],
+                               home: Optional[str] = None) -> Optional[int]:
+    """Context size of a Gemini turn's LAST model request.
+
+    The stream-json `result.stats` is a per-process SUM over requests, so it
+    is only a per-request figure when the turn made exactly one request (no
+    tool calls). Preference: the CLI's own per-request record; else the stats
+    when `tool_calls == 0`; else None ('unknown stays unknown', so the
+    byte-based rollover backstop applies instead of an inflated number)."""
+    for f in reversed(gemini_chat_files(provider_session_id, home)):
+        try:
+            reqs = gemini_chat_request_tokens(f.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:gemini] chat file read failed: {e}', flush=True)
+            continue
+        if reqs:
+            v = reqs[-1].get('input')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(stats, dict) and stats.get('tool_calls') == 0:
+        return normalize_context_tokens(stats)
+    return None
 
 
 def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:

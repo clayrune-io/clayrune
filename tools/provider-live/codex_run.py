@@ -1109,6 +1109,23 @@ def read_native_transcript(ctx: Ctx, s: dict) -> str:
     if ctx.vendor == 'claude' and s.get('claude_session_id'):
         hits = list((Path(home) / '.claude' / 'projects').glob(f"*/{s['claude_session_id']}.jsonl"))
         return hits[0].read_text(encoding='utf-8', errors='replace') if hits else ''
+    if ctx.vendor == 'gemini' and s.get('provider_session_id'):
+        # gemini-cli's ChatRecordingService: <home>/.gemini/tmp/<project>/chats/
+        # session-<ts>-<sid[:8]>.jsonl (node's homedir() is the isolated
+        # USERPROFILE/HOME). A resume may open a second file with the same
+        # suffix; keep only files whose metadata line names THIS session.
+        sid = s['provider_session_id']
+        texts = []
+        for f in sorted((Path(home) / '.gemini' / 'tmp').glob(f'*/chats/session-*-{sid[:8]}.jsonl'),
+                        key=lambda x: x.stat().st_mtime):
+            text = f.read_text(encoding='utf-8', errors='replace')
+            try:
+                meta = json.loads(text.split('\n', 1)[0] or '{}')
+            except ValueError:
+                continue
+            if isinstance(meta, dict) and meta.get('sessionId') == sid:
+                texts.append(text)
+        return '\n'.join(texts)
     return ''
 
 

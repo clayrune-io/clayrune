@@ -160,10 +160,20 @@ def ingest_native_usage(vendor: str, jsonl_text: str, session_id: str) -> List[C
             total). Best evidence from Codex CLI 0.154 rollouts; NOT confirmed
             against a live paid run -- a shape mismatch yields no Calls
             (unavailable), never an invented number.
-    gemini/qwen: no verified per-call transcript shape -> [] (unavailable).
+    gemini: gemini-cli 0.59 chat record (`~/.gemini/tmp/<p>/chats/session-
+            *.jsonl`): one `{"type":"gemini","id":..,"tokens":{input,output,
+            cached,...}}` per API request, `input` = promptTokenCount with
+            cached INCLUDED. The recorder re-appends a message when it updates
+            it, so rows are de-duplicated by id (last copy wins). Shape read
+            from the CLI bundle and a real on-disk file (2026-09-19). This is
+            the only per-request source: the stream-json `result.stats` is a
+            SUM over every request in the process.
+    qwen: no verified per-call transcript shape -> [] (unavailable).
     """
     import json
     out: List[Call] = []
+    if vendor == 'gemini':
+        return _ingest_gemini_chat(jsonl_text, session_id)
     for raw in jsonl_text.splitlines():
         raw = raw.strip()
         if not raw:
@@ -191,6 +201,38 @@ def ingest_native_usage(vendor: str, jsonl_text: str, session_id: str) -> List[C
                     fresh = (inp - cached) if (inp is not None and cached is not None) else inp
                     out.append(Call(session_id, len(out), fresh, _i(u.get('output_tokens')),
                                     cached, None, MEASURED, 'codex-rollout'))
+    return out
+
+
+def _ingest_gemini_chat(jsonl_text: str, session_id: str) -> List[Call]:
+    import json
+    by_id: Dict[str, dict] = {}
+    order: List[str] = []
+    for raw in jsonl_text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'gemini':
+            continue
+        mid = str(rec.get('id') or f'_anon{len(order)}')
+        if mid not in by_id:
+            order.append(mid)
+            by_id[mid] = {}
+        if isinstance(rec.get('tokens'), dict):
+            by_id[mid] = rec['tokens']
+    out: List[Call] = []
+    for mid in order:
+        u = by_id[mid]
+        if not u:
+            continue
+        inp, cached = _i(u.get('input')), _i(u.get('cached'))
+        fresh = (inp - cached) if (inp is not None and cached is not None) else inp
+        out.append(Call(session_id, len(out), fresh, _i(u.get('output')), cached, None,
+                        MEASURED, 'gemini-chat'))
     return out
 
 
