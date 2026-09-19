@@ -49,6 +49,7 @@ data/negation_interrupt_log/
 # push_review.py reads it locally to grade precision before any promotion
 # past report mode.
 data/memory_push_log/
+data/midturn_rollover_log/
 # Chat-reducer archive of original (pre-summary) replies. The reducer is OFF
 # (decision 2026-06-12) but the archived originals are user data — keep on
 # disk, never publish.

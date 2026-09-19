@@ -101,6 +101,7 @@ import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b26
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
+import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
@@ -4261,6 +4262,7 @@ def _read_agent_stream(proc, session):
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
+                            _midturn.note_tool_use(session, block)
                             _coverage_note_tool(session, tool_name, tool_input)
                             # Track .md file edits for plan file detection
                             if tool_name in ('Write', 'Edit'):
@@ -4350,6 +4352,8 @@ def _read_agent_stream(proc, session):
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
                             _observe_memory_push_result(
                                 session, _tname, _extract_tool_result_text(_block))
+                        if _midturn.note_tool_results(session, msg['message'].get('content')):
+                            _maybe_midturn_roll(session)
                 elif msg_type == 'result':
                     # Capture session_id from result as fallback
                     if 'session_id' in msg:
@@ -4524,6 +4528,7 @@ def _read_agent_stream_b(proc, session):
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
+                            _midturn.note_tool_use(session, block)
                             _coverage_note_tool(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
@@ -4602,6 +4607,8 @@ def _read_agent_stream_b(proc, session):
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
                             _observe_memory_push_result(
                                 session, _tname, _extract_tool_result_text(_block))
+                        if _midturn.note_tool_results(session, msg['message'].get('content')):
+                            _maybe_midturn_roll(session)
                 elif msg_type == 'result':
                     if 'session_id' in msg:
                         _note_claude_sid(session, msg['session_id'])
@@ -10042,31 +10049,52 @@ def agent_stop(project_id):
 
 
 @bp.route('/api/project/<project_id>/agent/interrupt', methods=['POST'])
-def agent_interrupt(project_id):
+def agent_interrupt(project_id, *, _internal=None):
     """Atomic stop + immediate resume with a new prompt.
     Kills the current process and respawns with -r <session_id> in one operation.
-    This avoids the broken intermediate 'stopped' state."""
+    This avoids the broken intermediate 'stopped' state.
+
+    `_internal` (never set by Flask) lets the stream readers drive this same
+    path for a mid-turn rollover (mc/midturn_rollover.py) without a request:
+    a dict with `session_id`, `message`, `midturn_state`. In that mode the
+    return is a plain `(payload_dict, http_status)` instead of a Response.
+    `midturn_state` non-empty marks a Clayrune-initiated mid-task roll: the
+    state block rides in front of `message` in the fresh session's first
+    prompt, and the chat shows a system line instead of a fake user bubble.
+    """
+    def _ret(payload, status=200):
+        if _internal is not None:
+            return payload, status
+        return jsonify(payload) if status == 200 else (jsonify(payload), status)
+
     p = load_project(project_id)
     if not p:
-        return jsonify({'error': 'project not found'}), 404
+        return _ret({'error': 'project not found'}, 404)
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
-        return jsonify({'error': 'project_path not set'}), 400
+        return _ret({'error': 'project_path not set'}, 400)
 
-    data = request.get_json() or {}
-    session_id = data.get('session_id', '')
-    message = data.get('message', '').strip()
+    if _internal is None:
+        data = request.get_json() or {}
+        session_id = data.get('session_id', '')
+        message = data.get('message', '').strip()
+        midturn_state = ''
+    else:
+        data = {}
+        session_id = _internal.get('session_id', '')
+        message = (_internal.get('message') or '').strip()
+        midturn_state = _internal.get('midturn_state') or ''
     if not session_id:
-        return jsonify({'error': 'session_id required'}), 400
+        return _ret({'error': 'session_id required'}, 400)
     if not message:
-        return jsonify({'error': 'message required'}), 400
+        return _ret({'error': 'message required'}, 400)
 
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
-            return jsonify({'error': 'session not found'}), 404
+            return _ret({'error': 'session not found'}, 404)
         if session['status'] not in ('running', 'idle', 'error'):
-            return jsonify({'error': 'agent not active'}), 400
+            return _ret({'error': 'agent not active'}, 400)
 
         # ── Multi-provider interrupt ──────────────────────────────────────
         # Non-claude providers: kill via runtime.interrupt(), then re-dispatch
@@ -10109,7 +10137,7 @@ def agent_interrupt(project_id):
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
-            return jsonify({'ok': True, 'session_id': session_id})
+            return _ret({'ok': True, 'session_id': session_id})
 
         old_proc = session['proc']
         claude_sid = session.get('claude_session_id')
@@ -10126,7 +10154,9 @@ def agent_interrupt(project_id):
         # running turn with a new message. Friendlier than "Agent interrupted
         # by user" — the user already knows they interrupted; this is the
         # acknowledgement bubble.
-        session['log_lines'].append('[Got your message]')
+        session['log_lines'].append(
+            '[Context rolled over mid-task — continuing in a fresh session]'
+            if midturn_state else '[Got your message]')
         _rearm_notify_for_new_turn(session)
         session.pop('pending_followups', None)
         session.pop('_dispatching_followup', None)
@@ -10142,7 +10172,7 @@ def agent_interrupt(project_id):
 
         # Immediately set status to running for the new prompt
         user_label = state.CONFIG.get('user_name') or 'User'
-        if not session.pop('_send_already_logged', False):
+        if not midturn_state and not session.pop('_send_already_logged', False):
             session['log_lines'].append(f"\n> {user_label}: {message}\n")
         session['status'] = 'running'
         session['last_status_change_time'] = _time.time()
@@ -10169,6 +10199,7 @@ def agent_interrupt(project_id):
                     session['process_alive'] = False
                     session['last_status_change_time'] = _time.time()
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
                     return
             # Check transcript size
             resume_flags = []
@@ -10185,6 +10216,12 @@ def agent_interrupt(project_id):
                     session['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, session, message or '')
                     respawn_msg = f"{_handoff_text}\n\n{message}"
+                    if midturn_state:
+                        respawn_msg = (f"{_handoff_text}\n\n{midturn_state}"
+                                       f"\n\n{message}")
+                        # The old figure describes the process just killed; the
+                        # fresh one reports its own on its first model call.
+                        session['context_tokens'] = None
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
@@ -10220,6 +10257,7 @@ def agent_interrupt(project_id):
                     # New proc is now the authoritative one — clear the
                     # interrupt gate so its reader's writes are accepted.
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
 
                 threading.Thread(target=_read_agent_stream_b,
                                  args=(proc, session), daemon=True).start()
@@ -10268,6 +10306,7 @@ def agent_interrupt(project_id):
                     session['proc'] = proc
                     # New proc is now authoritative — clear the interrupt gate.
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
 
                 threading.Thread(target=_read_agent_stream,
                                  args=(proc, session), daemon=True).start()
@@ -10280,6 +10319,7 @@ def agent_interrupt(project_id):
             # Clear the interrupt gate on failure too — otherwise the session
             # stays permanently gated and no future reader can update status.
             session.pop('_interrupting', None)
+            session.pop('_mt_roll_requested', None)
             # Popen may have raised before sysprompt cleanup was wired — sweep.
             if _sp_path:
                 try:
@@ -10290,7 +10330,34 @@ def agent_interrupt(project_id):
     threading.Thread(target=_do_respawn, daemon=True).start()
 
     _log_agent_activity(project_id, f"Agent interrupted: {message[:100]}")
-    return jsonify({'ok': True, 'session_id': session_id})
+    return _ret({'ok': True, 'session_id': session_id})
+
+
+def _maybe_midturn_roll(session):
+    """Called by both Claude stream readers at a tool_result boundary. When
+    `midturn_rollover_enabled` is on and the live `context_tokens` has crossed
+    `context_rollover_tokens`, roll THIS session through the interrupt path:
+    same MC session_id, `_notify_session` untouched, handoff = transcript turns
+    + the mid-task state block. Never raises — the reader must survive it."""
+    try:
+        if not _midturn.should_roll(session, _context_tokens_over_threshold):
+            return
+        session['_mt_roll_requested'] = True
+        tokens = session.get('context_tokens')
+        project_id = session.get('project_id', '')
+        p = load_project(project_id) or {}
+        cwd = _session_cwd(session, p.get('project_path', ''))
+        state_block = _midturn.build_state_block(session, cwd)
+        _midturn.record_roll(session, tokens)
+        payload, status = agent_interrupt(project_id, _internal={
+            'session_id': session.get('session_id', ''),
+            'message': _midturn.ROLL_MESSAGE, 'midturn_state': state_block})
+        if status != 200:
+            session.pop('_mt_roll_requested', None)
+            _log(f"[midturn-rollover] interrupt refused ({status}): {payload}")
+    except Exception as e:
+        session.pop('_mt_roll_requested', None)
+        _log(f"[midturn-rollover] roll failed: {e}")
 
 
 @bp.route('/api/project/<project_id>/agent/session', methods=['DELETE', 'POST'])
