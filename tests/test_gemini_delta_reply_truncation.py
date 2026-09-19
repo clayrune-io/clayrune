@@ -81,11 +81,14 @@ class TestGeminiDeltaReplyReconstruction:
         assert deltas[0]['content'] == 'LIVE'
         assert deltas[1]['content'] == '2-OK-gemini'
 
-    def test_read_stream_logs_each_delta_as_its_own_line(self):
-        """`_read_stream` itself is correct — this pins that it is NOT the
-        bug, so a future fix does not "fix" the wrong function again."""
+    def test_read_stream_logs_one_line_per_text_run(self):
+        """Reversed 2026-09-19. This used to pin one `log_lines` element PER
+        DELTA as correct. It is not: the chat renders every element as its own
+        row and the live-pass driver joins elements with '\n', so the gemini
+        live pass saw "CAE658" arrive as "CA" / "E658" and failed. A contiguous
+        text run is now ONE element, like Claude's reader."""
         session = _drive_real_captured_stream()
-        assert session['log_lines'] == ['LIVE', '2-OK-gemini'], session['log_lines']
+        assert session['log_lines'] == ['LIVE2-OK-gemini'], session['log_lines']
 
     def test_collect_trailing_reply_text_reconstructs_the_full_reply(self):
         """The actual fix: reconstructing from log_lines must recover the

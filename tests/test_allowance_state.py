@@ -80,7 +80,7 @@ def test_refusal_message_names_vendor_limit_and_reset():
 
 def test_display_text_unknown_reset_time():
     al.record_exhaustion('qwen', limit_kind='unknown')
-    assert al.display_text('qwen') == 'Out of allowance, resets reset time unknown'
+    assert al.display_text('qwen') == 'Out of allowance, reset time unknown'
 
 
 # ── Codex: real captured event ──────────────────────────────────────────────

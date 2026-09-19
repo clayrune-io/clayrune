@@ -274,7 +274,7 @@ def test_bench_card_shows_out_of_allowance_for_its_own_provider(floor):
     al.record_exhaustion('qwen', limit_kind='daily')
 
     b = _get(c)['bench'][0]
-    assert b['allowance_exhausted'] == 'Out of allowance, resets reset time unknown'
+    assert b['allowance_exhausted'] == 'Out of allowance, reset time unknown'
 
 
 def test_a_broken_character_pool_costs_the_bench_not_the_board(floor):
