@@ -51,7 +51,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
@@ -773,7 +773,10 @@ def run_schedule(ctx: Ctx, run: CellRun) -> None:
     when = (datetime.now() .replace(microsecond=0)).isoformat()
     code, r = ctx.api.request('POST', '/api/schedules',
                               {'project_id': ctx.project, 'task': marker_prompt(a, b), 'schedule_type': 'once',
-                               'run_at': (datetime.now() + __import__('datetime').timedelta(seconds=45)).isoformat(timespec='seconds'),
+                               # UTC with Z: the server reads a naive run_at as UTC, so a naive
+                               # LOCAL time lands hours in the past west of Greenwich and the
+                               # once-row never fires (run 3, 2026-09-19).
+                               'run_at': (datetime.now(timezone.utc) + timedelta(seconds=45)).isoformat(timespec='seconds').replace('+00:00', 'Z'),
                                'delete_after_run': False,
                                **{k: v for k, v in (('model', ctx.model), ('effort', ctx.effort)) if v}},
                               human=True)
