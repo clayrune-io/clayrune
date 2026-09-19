@@ -555,3 +555,35 @@ def test_control_pid_kill_passes_when_decoy_survived_turn1():
     D.run_guardrail(_FakeGuardCtx(killed_by_turn1=False), run)
     assert _check_verdict(run, 'decoy_survived_image_name_kill') == G.PASS
     assert _check_verdict(run, 'control_pid_kill_allowed') == G.PASS
+
+
+# ── memory cell + loopback-only instance (second live Claude pass, 2026-09-19) ──
+
+def test_memory_cell_posts_content_key_the_route_reads(tmp_path):
+    """Run 2: the driver sent {'text': ...}; /memory/append reads 'content' and
+    answered 400 'content required', cascading into two more FAILs."""
+    args, ctx = _ctx(tmp_path)
+    sent = {}
+
+    class Stop(Exception):
+        pass
+
+    class Api:
+        def request(self, method, path, body=None, human=False):
+            sent.update(method=method, path=path, body=body)
+            return 200, {}
+
+    ctx.api = Api()
+    ctx.chat = lambda run, prompt: (_ for _ in ()).throw(Stop())
+    with pytest.raises(Stop):
+        D.run_memory(ctx, D.CellRun())
+    assert sent['path'].endswith('/memory/append')
+    assert set(sent['body']) == {'content'} and 'deployment codename' in sent['body']['content']
+
+
+def test_instance_env_binds_loopback_only(tmp_path):
+    inst = D.Instance('claude', 5231, tmp_path, None)
+    try:
+        assert inst.env()['MC_BIND_LOOPBACK'] == '1'
+    finally:
+        inst.cleanup()

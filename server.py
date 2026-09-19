@@ -2169,7 +2169,7 @@ def _check_port_conflict():
     def _try_bind():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            s.bind(('0.0.0.0', PORT))
+            s.bind((_bind_host_v4(), PORT))
             s.close()
             return True
         except OSError:
@@ -2899,6 +2899,40 @@ def _register_claude_runtime_hooks():
     _agent_runtime.register_mc_tool_hooks(sync_todos=_sync_todowrite_to_backlog)
 
 
+def _loopback_only():
+    """MC_BIND_LOOPBACK=1: listen on loopback only. Opt-in, for disposable test
+    instances (tools/provider-live) that must not be reachable from the LAN.
+    Unset/0 keeps the default all-interfaces bind that LAN, mobile-pairing and
+    tunnel clients depend on."""
+    return os.environ.get('MC_BIND_LOOPBACK', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _bind_host_v4():
+    return '127.0.0.1' if _loopback_only() else '0.0.0.0'
+
+
+def _serve_loopback(port):
+    """Loopback-only twin of _serve_dual_stack: `localhost` resolves to ::1
+    first, so keep BOTH loopback addresses listening (the ~200ms/request
+    Happy-Eyeballs tax that function's docstring describes applies here too).
+    ::1 gets its own socket + thread; 127.0.0.1 serves on the main thread. If
+    the host has no IPv6, 127.0.0.1 alone is served."""
+    import socket as _socket
+    import threading as _threading
+    from werkzeug.serving import make_server
+    try:
+        s6 = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+        s6.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        s6.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 1)
+        s6.bind(('::1', port))
+        s6.listen(128)
+        srv6 = make_server('::1', port, app, threaded=True, fd=s6.fileno())
+        _threading.Thread(target=srv6.serve_forever, daemon=True, name='serve-loopback-v6').start()
+    except OSError as e:
+        _log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+
+
 def _serve_dual_stack(port):
     """Serve on IPv4 *and* IPv6, from a single dual-stack socket.
 
@@ -2921,6 +2955,8 @@ def _serve_dual_stack(port):
     (IPv4 peers arrive as ::ffff:a.b.c.d) — and hand the fd to werkzeug. If the
     host has IPv6 disabled entirely, fall back to the old IPv4-only bind.
     """
+    if _loopback_only():
+        return _serve_loopback(port)
     import socket as _socket
     try:
         sock = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
