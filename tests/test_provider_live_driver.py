@@ -347,3 +347,151 @@ class TestCellStatus:
             requested_vendor='codex', requested_model='', observations=[{'provider': 'codex'}],
             claims=[], artifacts={}, event_lines=[])
         assert rep['verdict'] == G.FAIL
+
+
+# ── disposable-instance restart + native id (first live Claude pass, 2026-09-19) ─
+
+class _FakeProc:
+    def __init__(self, pid=4242):
+        self.pid, self.returncode, self.killed = pid, None, False
+
+    def poll(self):
+        return self.returncode
+
+    def wait(self, timeout=None):
+        self.returncode = 0
+        return 0
+
+    def terminate(self):
+        self.returncode = 0
+
+    def kill(self):
+        self.killed = True
+        self.returncode = 0
+
+
+def _inst(tmp_path, monkeypatch):
+    monkeypatch.setattr(D.time, 'sleep', lambda s: None)
+    monkeypatch.setattr(D.subprocess, 'run', lambda *a, **k: None)
+    inst = D.Instance('claude', 5231, tmp_path, None, register_url='http://127.0.0.1:1/x')
+    return inst
+
+
+def test_port_free_ignores_time_wait_and_sees_a_listener():
+    import socket
+    srv = socket.socket()
+    srv.bind(('127.0.0.1', 0))
+    srv.listen(1)
+    port = srv.getsockname()[1]
+    cli = socket.create_connection(('127.0.0.1', port))
+    conn, _ = srv.accept()
+    inst = D.Instance('claude', port, Path('.'), None)
+    try:
+        assert not inst.port_free(), 'a live listener must count as in use'
+        # server side closes first -> its end of the connection sits in TIME_WAIT
+        conn.close()
+        cli.close()
+        srv.close()
+        assert inst.port_free(), 'TIME_WAIT left by our own client must not count as in use'
+    finally:
+        inst.cleanup()
+
+
+def test_restart_waits_for_the_old_listener_to_release_the_port(tmp_path, monkeypatch):
+    inst = _inst(tmp_path, monkeypatch)
+    inst.proc = _FakeProc()
+    inst.log = None
+    busy = iter([False, False, False])          # port still held for three polls after the PID exits
+    monkeypatch.setattr(inst, 'port_free', lambda: next(busy, True))
+    monkeypatch.setattr(inst, 'listening', lambda: True)
+    launched = []
+    monkeypatch.setattr(D.subprocess, 'Popen', lambda *a, **k: launched.append(1) or _FakeProc(4243))
+    note = inst.restart()
+    assert launched == [1], 'start() must proceed once the port frees, not refuse on the first probe'
+    assert 'released' in note and inst.proc.pid == 4243
+    inst.cleanup()
+
+
+def test_start_gives_up_after_bounded_wait_when_port_never_frees(tmp_path, monkeypatch):
+    inst = _inst(tmp_path, monkeypatch)
+    clock = iter(range(0, 10_000, 5))
+    monkeypatch.setattr(D.time, 'time', lambda: next(clock))
+    monkeypatch.setattr(inst, 'port_free', lambda: False)
+    with pytest.raises(RuntimeError, match='still in use'):
+        inst.start()
+    inst.cleanup()
+
+
+def test_cell_error_recovers_a_clean_instance_for_the_next_cell(tmp_path, monkeypatch):
+    order, calls = [], []
+
+    def bad(ctx, run):
+        raise RuntimeError('port 5231 in use')
+    _mock_cells(monkeypatch, order, {'restart-resume': bad})
+    args, ctx = _ctx(tmp_path)
+
+    class Inst:
+        def recover(self):
+            calls.append(order[-1])
+            return 'pid 1 exited rc=0; port 5231 released'
+    ctx.inst = Inst()
+    code, results = D.run_all(args, ctx)
+    assert results['restart-resume'] == 'ERROR'
+    assert calls == ['restart-resume'], 'instance must be recovered once, right after the failing cell'
+    assert len(order) > order.index('restart-resume') + 1, 'later cells must still run'
+    assert 'port 5231 released' in (tmp_path / 'restart-resume.md').read_text(encoding='utf-8')
+
+
+def test_failed_recovery_is_recorded_not_raised(tmp_path, monkeypatch):
+    order = []
+
+    def bad(ctx, run):
+        raise RuntimeError('boom')
+    _mock_cells(monkeypatch, order, {'guardrail': bad})
+    args, ctx = _ctx(tmp_path)
+
+    class Inst:
+        def recover(self):
+            raise RuntimeError('still busy')
+    ctx.inst = Inst()
+    code, results = D.run_all(args, ctx)
+    assert results['guardrail'] == 'ERROR' and len(order) > 1
+    assert 'recovery FAILED' in (tmp_path / 'guardrail.md').read_text(encoding='utf-8')
+
+
+class TestNativeId:
+    def test_claude_reads_claude_session_id(self):
+        row = {'claude_session_id': 'c-1', 'provider_session_id': None}
+        assert D.native_id(row, 'claude') == 'c-1'
+
+    def test_other_vendors_read_provider_session_id(self):
+        assert D.native_id({'provider_session_id': 'p-1'}, 'codex') == 'p-1'
+
+    def test_falls_back_to_the_other_field_and_never_returns_none(self):
+        assert D.native_id({'claude_session_id': 'c-2'}, 'codex') == 'c-2'
+        assert D.native_id({}, 'claude') == '' and D.native_id(None, 'codex') == ''
+
+    def test_newchat_and_followup_pass_on_claude_status_rows(self, tmp_path):
+        args = D.parse(['--vendor', 'claude', '--model', 'm', '--journal-dir', str(tmp_path)])
+        rows = {'s1': {'session_id': 's1', 'claude_session_id': 'n1', 'log_lines': ['AAA']},
+                's2': {'session_id': 's2', 'claude_session_id': 'n2', 'log_lines': ['BBB']}}
+        order = iter(['s1', 's2'])
+
+        class A:
+            def dispatch(self, *a, **k):
+                return next(order)
+
+            def request(self, *a, **k):
+                return 200, [{'claude_session_id': 'n1'}, {'claude_session_id': 'n2'}]
+
+            def send(self, *a, **k):
+                return {}
+        ctx = D.Ctx(args, A(), None, None, tmp_path, 'RUN')
+        ctx.wait = lambda run, sid, *a, **k: rows[sid]
+        ctx.reply_text = lambda s: s['log_lines'][0]
+        ctx.mk = lambda cell, n: ('a', 'b', {1: 'AAA', 2: 'BBB'}[n])
+        run = D.CellRun()
+        D.run_newchat(ctx, run)
+        checks = {c['name']: c for c in [x if isinstance(x, dict) else x.__dict__ for x in run.checks]}
+        assert checks['distinct_native_ids']['verdict'] == 'PASS', checks['distinct_native_ids']
+        assert checks['both_rows_visible_in_rail']['verdict'] == 'PASS'
