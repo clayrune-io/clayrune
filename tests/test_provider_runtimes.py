@@ -864,6 +864,9 @@ class TestCodexRuntime:
         It verifies the actual JSONL format from the running binary.
         """
         import shutil
+        import os
+        if os.environ.get('MC_LIVE_CLI_TESTS') != '1':
+            pytest.skip('launches a real codex session; set MC_LIVE_CLI_TESTS=1')
         if not shutil.which('npx'):
             pytest.skip('npx not available on this machine')
 
