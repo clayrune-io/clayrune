@@ -719,7 +719,8 @@ def _scheduler_loop():
                                                                   trigger_id=sched_id,
                                                                   reuse_session_id=reuse_sid,
                                                                   provider_override=resume_provider,
-                                                                  character=sched.get('character') or '')
+                                                                  character=sched.get('character') or '',
+                                                                  **_schedule_engine_kwargs(sched))
                                     tag = ' (resumed)' if resume_id else ''
                                     _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
                             except Exception as e:
@@ -1112,6 +1113,26 @@ def _schedule_workflow_display(workflow_id):
             'enabled': wf.get('enabled', True), 'missing': False}
 
 
+def _schedule_engine_kwargs(sched):
+    """The schedule's engine pin as `_dispatch_agent_internal` kwargs.
+
+    Without this a scheduled run could not carry a model at all and silently
+    ran the project default (live pass 2026-09-19: 'claude-opus-5' where
+    'claude-sonnet-5' was wanted). An explicit pin wins over the character's
+    and project's default, including on a continued (resumed) run; a pin the
+    provider cannot honour raises ValueError in dispatch -- a loud failure,
+    never a substitution.
+    """
+    kw = {}
+    model = (sched.get('model') or '').strip()
+    effort = (sched.get('effort') or '').strip()
+    if model:
+        kw['model_override'] = model
+    if effort:
+        kw['effort_override'] = effort
+    return kw
+
+
 def _schedule_character_display(character, project):
     """{name, avatar, inherited} for whoever this schedule dispatches as.
 
@@ -1241,6 +1262,19 @@ def create_schedule_from_spec(data: dict):
         character, cerr = _validated_schedule_character(data.get('character'), pid)
         if cerr:
             return None, cerr
+    # Engine pin (model/effort). Same reasoning as `character`: a workflow's
+    # steps carry their own, so a workflow-targeted row may not set one.
+    model, effort = '', ''
+    if not workflow_id:
+        eerr = _wf.engine_field_errors(data, 'schedule')
+        if eerr:
+            return None, (jsonify({'error': '; '.join(eerr)}), 400)
+        model = (data.get('model') or '').strip()
+        effort = (data.get('effort') or '').strip()
+    elif (data.get('model') or data.get('effort')):
+        return None, (jsonify({
+            'error': 'model/effort cannot be set on a workflow-targeted '
+                     'schedule; pin them on the workflow steps'}), 400)
 
     sched = {
         'id': uuid.uuid4().hex[:8],
@@ -1252,6 +1286,9 @@ def create_schedule_from_spec(data: dict):
         # a manual dispatch does — a schedule should not be the one surface
         # where a project's persona silently stops applying.
         'character': character,
+        # Engine pin; '' inherits the project default, as a chat does.
+        'model': model,
+        'effort': effort,
         'description': (data.get('description') or '').strip(),
         'continue_session': bool(data.get('continue_session', True)),
         'schedule_type': stype,
@@ -1318,6 +1355,18 @@ def update_schedule(schedule_id):
         if cerr:
             return cerr
         sched['character'] = character
+
+    if 'model' in data or 'effort' in data:
+        if target_workflow_id and (data.get('model') or data.get('effort')):
+            return jsonify({
+                'error': 'model/effort cannot be set on a workflow-targeted '
+                         'schedule; pin them on the workflow steps'}), 400
+        eerr = _wf.engine_field_errors(data, 'schedule')
+        if eerr:
+            return jsonify({'error': '; '.join(eerr)}), 400
+        for key in ('model', 'effort'):
+            if key in data:
+                sched[key] = (data.get(key) or '').strip()
 
     for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
@@ -1409,7 +1458,8 @@ def schedule_run_now(schedule_id):
                                        trigger_id=schedule_id,
                                        reuse_session_id=reuse_sid,
                                        provider_override=resume_provider,
-                                       character=sched.get('character') or '')
+                                       character=sched.get('character') or '',
+                                       **_schedule_engine_kwargs(sched))
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code

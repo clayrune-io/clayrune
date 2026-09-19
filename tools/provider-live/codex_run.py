@@ -718,9 +718,13 @@ def run_notify(ctx: Ctx, run: CellRun) -> None:
 
 def run_workflow(ctx: Ctx, run: CellRun) -> None:
     (a1, b1, e1), (a2, b2, e2) = ctx.mk('workflow', 1), ctx.mk('workflow', 2)
+    # The requested engine must travel IN the request: without it each step ran
+    # the project default and the model check compared against a model the
+    # product was never asked for (run 0919101220).
+    pin = {k: v for k, v in (('model', ctx.model), ('effort', ctx.effort)) if v}
     doc = {'name': f'live-{ctx.run_id}', 'trigger': {'type': 'manual'},
-           'nodes': [{'name': 'first', 'type': 'agent', 'project_id': ctx.project, 'prompt': marker_prompt(a1, b1)},
-                     {'name': 'second', 'type': 'agent', 'project_id': ctx.project,
+           'nodes': [{'name': 'first', 'type': 'agent', 'project_id': ctx.project, 'prompt': marker_prompt(a1, b1), **pin},
+                     {'name': 'second', 'type': 'agent', 'project_id': ctx.project, **pin,
                       'prompt': f'The previous step said: {{{{prev.output}}}}. Reply with exactly that text, then a space, then {a2}{b2}.'}],
            'edges': [{'from': 'first', 'to': 'second'}]}
     code, r = ctx.api.request('POST', '/api/workflows', doc, human=True)
@@ -770,7 +774,9 @@ def run_schedule(ctx: Ctx, run: CellRun) -> None:
     code, r = ctx.api.request('POST', '/api/schedules',
                               {'project_id': ctx.project, 'task': marker_prompt(a, b), 'schedule_type': 'once',
                                'run_at': (datetime.now() + __import__('datetime').timedelta(seconds=45)).isoformat(timespec='seconds'),
-                               'delete_after_run': False}, human=True)
+                               'delete_after_run': False,
+                               **{k: v for k, v in (('model', ctx.model), ('effort', ctx.effort)) if v}},
+                              human=True)
     run.ok('schedule_created', code == 201, str(r)[:200])
     sched = r.get('id')
     fired = False
