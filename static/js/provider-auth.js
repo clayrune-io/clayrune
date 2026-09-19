@@ -326,7 +326,10 @@ async function settingsProviderSetEnv(provider, key, btnEl) {
                     : `Cleared ${key}.`, 6000);
     // Mask the input now that it's saved
     if (value) inp.value = '••••••••';
-    settingsProviderRefresh(provider);
+    // The row lives in both the first-run tour and Settings -> Providers;
+    // wtRefreshProviders re-probes and repaints whichever is showing.
+    if (typeof window.wtRefreshProviders === 'function') await window.wtRefreshProviders();
+    else settingsProviderRefresh(provider);
   } catch (e) {
     alert('Save failed: ' + e);
   } finally {
