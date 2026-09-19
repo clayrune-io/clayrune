@@ -78,7 +78,7 @@ def test_guard_command_leaves_a_no_space_interpreter_unquoted():
     # separate live Qwen regression that fix closes.
     cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert cmd == 'C:/no/spaces/python.exe C:\\no\\spaces\\process_guard.py'
+    assert cmd == 'C:/no/spaces/python.exe C:/no/spaces/process_guard.py'
     assert '"' not in cmd
 
 
@@ -108,14 +108,14 @@ def test_guard_command_leaves_a_no_space_script_unquoted():
     (correctly still blocked) via `run_shell_command` with no error."""
     cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert 'C:\\no\\spaces\\process_guard.py' in cmd
+    assert 'C:/no/spaces/process_guard.py' in cmd
     assert '"' not in cmd
 
 
 def test_guard_command_quotes_a_script_path_with_a_space():
     cmd = install_hooks.guard_command(Path('C:/Program Files/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert cmd.endswith('"C:\\Program Files\\process_guard.py"')
+    assert cmd.endswith('"C:/Program Files/process_guard.py"')
 
 
 def test_python_exe_override_is_used(tmp_path):
@@ -223,7 +223,7 @@ def test_cli_flags_are_wired(tmp_path):
     assert (clayrune_home / 'hooks' / 'gemini-settings.json').exists()
     data = _read(clayrune_home, 'gemini')
     command = data['hooks']['BeforeTool'][0]['hooks'][0]['command']
-    assert str(tmp_path / 'other_checkout' / 'mc' / 'process_guard.py') in command
+    assert (tmp_path / 'other_checkout' / 'mc' / 'process_guard.py').as_posix() in command
     assert 'C:/venv/python.exe' in command
 
 

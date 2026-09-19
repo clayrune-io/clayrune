@@ -4847,6 +4847,28 @@ def _inject_qwen_defaults_env(env: Dict[str, str]) -> Dict[str, str]:
     return env
 
 
+def _pin_qwen_windows_shell(env: Dict[str, str]) -> Dict[str, str]:
+    """Make a Qwen child resolve cmd.exe on Windows no matter how Clayrune
+    itself was launched. qwen-code 0.23.4's getShellConfiguration() picks
+    git-bash for BOTH its shell tool and its hooks whenever MSYSTEM starts
+    with MINGW/MSYS or TERM mentions msys/cygwin — i.e. whenever the server
+    was started from a git-bash prompt. Under bash, MSYS path conversion
+    rewrites Windows switches: live pass 2026-09-19, `taskkill /PID <n> /F`
+    ran as `taskkill 'C:/Program Files/Git/PID' ...` and failed. Blanked
+    (not deleted) because _mode_a_dispatch layers this env over os.environ.
+    A packaged or autostarted server has neither variable, so this only
+    makes a git-bash-launched dev server behave the same."""
+    if os.name != 'nt':
+        return env
+    msystem = env.get('MSYSTEM', os.environ.get('MSYSTEM', ''))
+    if msystem.startswith(('MINGW', 'MSYS')):
+        env['MSYSTEM'] = ''
+    term = env.get('TERM', os.environ.get('TERM', ''))
+    if 'msys' in term or 'cygwin' in term:
+        env['TERM'] = ''
+    return env
+
+
 def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
     """Best-effort, vendor-agnostic size of what ONE turn re-read/held as
     context — the signal `context_rollover_tokens` (docs/CONTEXT_ECONOMY_SPEC.md
@@ -6192,6 +6214,7 @@ class QwenRuntime(AgentRuntime):
             env[k] = v
         _inject_guardrail_env('qwen', env)
         _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
 
         handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -6243,6 +6266,7 @@ class QwenRuntime(AgentRuntime):
             env[k] = v
         _inject_guardrail_env('qwen', env)
         _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
