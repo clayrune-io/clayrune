@@ -168,12 +168,21 @@ def ingest_native_usage(vendor: str, jsonl_text: str, session_id: str) -> List[C
             from the CLI bundle and a real on-disk file (2026-09-19). This is
             the only per-request source: the stream-json `result.stats` is a
             SUM over every request in the process.
-    qwen: no verified per-call transcript shape -> [] (unavailable).
+    qwen  : qwen-code 0.23.4 chat recording (`~/.qwen/projects/<p>/chats/
+            <session id>.jsonl`): every API request, main conversation AND the
+            CLI's own side requests (auto-memory extractor), is a
+            `ui_telemetry` record whose uiEvent is `qwen-code.api_response`
+            with `input_token_count` (cached INCLUDED) and
+            `cached_content_token_count`; de-duplicated by `response_id`.
+            Measured live 2026-09-19. The stream `result.usage` is a SUM over
+            those requests, never a per-call figure.
     """
     import json
     out: List[Call] = []
     if vendor == 'gemini':
         return _ingest_gemini_chat(jsonl_text, session_id)
+    if vendor == 'qwen':
+        return _ingest_qwen_chat(jsonl_text, session_id)
     for raw in jsonl_text.splitlines():
         raw = raw.strip()
         if not raw:
@@ -233,6 +242,34 @@ def _ingest_gemini_chat(jsonl_text: str, session_id: str) -> List[Call]:
         fresh = (inp - cached) if (inp is not None and cached is not None) else inp
         out.append(Call(session_id, len(out), fresh, _i(u.get('output')), cached, None,
                         MEASURED, 'gemini-chat'))
+    return out
+
+
+def _ingest_qwen_chat(jsonl_text: str, session_id: str) -> List[Call]:
+    import json
+    seen = set()
+    out: List[Call] = []
+    for raw in jsonl_text.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('subtype') != 'ui_telemetry':
+            continue
+        ev = (rec.get('systemPayload') or {}).get('uiEvent') or {}
+        if not isinstance(ev, dict) or ev.get('event.name') != 'qwen-code.api_response':
+            continue
+        rid = ev.get('response_id') or f'_anon{len(out)}'
+        if rid in seen:
+            continue
+        seen.add(rid)
+        inp, cached = _i(ev.get('input_token_count')), _i(ev.get('cached_content_token_count'))
+        fresh = (inp - cached) if (inp is not None and cached is not None) else inp
+        out.append(Call(session_id, len(out), fresh, _i(ev.get('output_token_count')), cached, None,
+                        MEASURED, 'qwen-chat'))
     return out
 
 
