@@ -581,6 +581,51 @@ def test_memory_cell_posts_content_key_the_route_reads(tmp_path):
     assert set(sent['body']) == {'content'} and 'deployment codename' in sent['body']['content']
 
 
+def _write_qwen_settings(home, **prov):
+    d = home / '.qwen'
+    d.mkdir(parents=True)
+    (d / 'settings.json').write_text(json.dumps(
+        {'modelProviders': {'openai': prov}}), encoding='utf-8')
+
+
+def test_qwen_instance_env_carries_real_settings_over_stale_ambient(tmp_path, monkeypatch):
+    # First Qwen live pass 2026-09-19: the disposable HOME had no settings.json,
+    # so the instance inherited stale ambient OPENAI_* and 404'd on every turn.
+    real = tmp_path / 'real'
+    _write_qwen_settings(real, apiKey='sk-test-not-a-real-key-0000', baseUrl='https://good.example/v1',
+                         defaultModel='qwen3-coder-plus')
+    monkeypatch.setattr(D.Path, 'home', staticmethod(lambda: real))
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://stale.example')
+    monkeypatch.setenv('OPENAI_API_KEY', 'stale-key')
+    monkeypatch.setenv('OPENAI_MODEL', 'stale-model')
+    inst = D.Instance('qwen', 5231, tmp_path, None)
+    try:
+        env = inst.env()
+        assert env['OPENAI_API_KEY'] == 'sk-test-not-a-real-key-0000'
+        assert env['OPENAI_BASE_URL'] == 'https://good.example/v1'
+        assert env['OPENAI_MODEL'] == 'qwen3-coder-plus'
+        inst._seed_auth()  # the key must not be written anywhere in the isolated home
+        assert not any('sk-test-not-a-real-key-0000' in f.read_text(errors='ignore')
+                       for f in inst.home.rglob('*') if f.is_file())
+    finally:
+        inst.cleanup()
+
+
+def test_qwen_env_untouched_for_other_vendors_and_missing_key(tmp_path, monkeypatch):
+    real = tmp_path / 'real'
+    _write_qwen_settings(real, apiKey='sk-test-not-a-real-key-0000')
+    monkeypatch.setattr(D.Path, 'home', staticmethod(lambda: real))
+    monkeypatch.setenv('OPENAI_API_KEY', 'ambient')
+    other = D.Instance('codex', 5232, tmp_path, None)
+    try:
+        assert other.env()['OPENAI_API_KEY'] == 'ambient'
+    finally:
+        other.cleanup()
+    empty = tmp_path / 'empty'
+    empty.mkdir()
+    assert D.qwen_settings_env(empty) == {}
+
+
 def test_instance_env_binds_loopback_only(tmp_path):
     inst = D.Instance('claude', 5231, tmp_path, None)
     try:

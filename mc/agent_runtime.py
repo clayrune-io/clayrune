@@ -669,8 +669,35 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
             continue
         if _SEED_LINE_RE.match(stripped):
             continue
+        # A line with no letter or digit (a lone `]`, `}`, `)`) is the tail of
+        # a multi-line message, never a cause. Live 2026-09-19: a Qwen 404
+        # whose text was an HTML page wrapped in `[API Error: ... ]` left a
+        # bare `]` as the last physical line, so the chat read
+        # "Qwen Code error: ]".
+        if not any(c.isalnum() for c in stripped):
+            continue
         return stripped
     return None
+
+
+_HTML_DOC_RE = re.compile(r'<!doctype html|<html[\s>]', re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
+
+
+def _flatten_error_text(text: Any, limit: int = 600) -> str:
+    """One physical line for a CLI's error text.
+
+    `log_lines` entries are joined with newlines into the tail that
+    `_last_real_error_line` scans line by line, so an entry that itself spans
+    lines is cut apart and only its last fragment survives. A gateway 404
+    arrives as a whole HTML page; strip the markup (only when it is a page, so
+    `expected <int>` is left alone), collapse the whitespace, and cap it.
+    """
+    t = str(text)
+    if _HTML_DOC_RE.search(t):
+        t = _HTML_TAG_RE.sub(' ', t)
+    t = ' '.join(t.split())
+    return t if len(t) <= limit else t[:limit].rstrip() + '...'
 
 
 def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
@@ -5051,7 +5078,8 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 session['_allowance_exhausted'] = True
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
-                    f"[{runtime.name} error] {ev.payload.get('text', line)}")
+                    f"[{runtime.name} error] "
+                    f"{_flatten_error_text(ev.payload.get('text', line))}")
                 session['last_output_time'] = _time.time()
             else:
                 raw_text = (ev.payload.get('text') or
