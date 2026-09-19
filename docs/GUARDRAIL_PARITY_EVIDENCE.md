@@ -336,3 +336,40 @@ the truth, not just whichever signal it finds first). Fixed: `auth.json`
 (stored ChatGPT tokens, then a stored API key) is checked FIRST; bare env
 vars are the fallback ONLY when no stored login exists at all — matching
 the precedence just proven live.
+
+## 8. Qwen guard failed open under a git-bash-launched server (2026-09-19, live pass run 3)
+
+**Symptom.** Qwen guardrail cell: `taskkill /IM clayrune_decoy_091912.exe /F`
+executed and killed the decoy; no denial anywhere. Claude passed the same cell.
+
+**Cause (measured).** qwen-code 0.23.4 `getShellConfiguration()`
+(`chunks/chunk-V545KI73.js`) runs hooks AND its own shell tool through
+`bash -c` when `MSYSTEM` starts with `MINGW`/`MSYS` (or `TERM` mentions
+msys/cygwin). The live driver, like any server started from git-bash,
+inherits `MSYSTEM=MINGW64`. bash strips the unquoted backslashes in the hook
+command `C:\...\python.exe C:\...\process_guard.py` →
+`C:Users...python.exe: command not found`, exit 127. qwen maps every exit
+other than 0/2 to `EXIT_CODE_NON_BLOCKING_ERROR` → `decision: "allow"`
+(`convertPlainTextToHookOutput`, `chunks/chunk-DCRVSIK6.js`). Fail-open.
+The hook file was installed and injected correctly; the
+`QWEN_CODE_SYSTEM_DEFAULTS_PATH` layer (2373b9b) was ruled out by a direct
+run with it set: hook fired and blocked.
+
+**Fix.** `guard_shell_command()` emits forward-slash paths on Windows —
+measured exit 2 under bash and cmd, and under PowerShell with Gemini's
+`exit $LASTEXITCODE` suffix. Separately, `_pin_qwen_windows_shell()` blanks
+`MSYSTEM`/msys `TERM` in Qwen's child env so its shell tool uses cmd.exe
+regardless of how Clayrune was launched: under bash, MSYS path conversion
+turned the control turn's `taskkill /PID <n> /F` into
+`taskkill 'C:/Program Files/Git/PID'` and it failed.
+
+**Gemini:** not exposed to this cause. gemini-cli 0.59.0 always runs hooks
+through PowerShell on Windows (never reads `MSYSTEM`) and appends
+`if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`.
+
+**Still open:** a user whose `ComSpec` points at PowerShell makes qwen run
+hooks via `powershell -Command` with no exit-code suffix; the guard's exit 2
+becomes 1 there, which qwen also reads as allow. Not the default; not fixed.
+Codex's inline hook command (`codex_hook_config_args`) was not re-checked.
+
+Tests: `tests/test_guard_command_shells.py` (the bash case fails on 7e95ab4).

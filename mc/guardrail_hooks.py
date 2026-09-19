@@ -108,6 +108,13 @@ def launch_file_if_exists(vendor: str, clayrune_home_dir: Optional[Path] = None)
     return p if p.is_file() else None
 
 
+def _shell_neutral_path(p: str) -> str:
+    """A Windows path with `\\` turned into `/`, which bash, cmd.exe and
+    PowerShell all read as the same path (see guard_shell_command). Other
+    platforms' paths are returned unchanged."""
+    return p.replace('\\', '/') if os.name == 'nt' else p
+
+
 def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None) -> str:
     """The command string every vendor's hook config points at — the ONE
     place this is built, shared by `tools/guards/install_hooks.py` (writes
@@ -160,11 +167,25 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     embedded quote characters for either token — nothing left for a
     naive-relaunch shell to mis-parse. A script path WITH a space remains
     the same disclosed, untested gap the interpreter path already carries.
+
+    Qwen live pass run 3 (2026-09-19): paths are emitted with FORWARD
+    slashes. qwen-code 0.23.4's `getShellConfiguration()` (chunk-V545KI73.js)
+    runs hooks through `bash -c` whenever the CLI inherits `MSYSTEM=MINGW*`/
+    `MSYS*` (or a `TERM` containing msys/cygwin) — i.e. whenever Clayrune was
+    started from a git-bash prompt. bash reads each unquoted backslash as an
+    escape, so `C:\\Users\\...\\python.exe` became `C:Users...python.exe`,
+    the hook exited 127, and qwen maps any exit other than 0/2 to
+    EXIT_CODE_NON_BLOCKING_ERROR → `decision: "allow"`
+    (`convertPlainTextToHookOutput`, chunk-DCRVSIK6.js). The guard failed
+    OPEN: `taskkill /IM <decoy> /F` ran and killed the decoy. Forward
+    slashes mean the same path to bash, cmd.exe and PowerShell (measured:
+    guard exits 2 in bash and cmd; PowerShell exits 1 itself, and Gemini's
+    runner re-raises $LASTEXITCODE there).
     """
     guard_script = guard_script or (Path(__file__).resolve().parent / 'process_guard.py')
-    py = python_exe or sys.executable or 'python'
+    py = _shell_neutral_path(python_exe or sys.executable or 'python')
     py_token = f'"{py}"' if ' ' in py else py
-    script_str = str(guard_script)
+    script_str = _shell_neutral_path(str(guard_script))
     script_token = f'"{script_str}"' if ' ' in script_str else script_str
     return f'{py_token} {script_token}'
 
