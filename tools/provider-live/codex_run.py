@@ -790,6 +790,10 @@ def run_image_paste(ctx: Ctx, run: CellRun) -> None:
     run.ok('answer_reads_rendered_code', digits == code, f'expected {code} got {digits!r}')
     run.ok('attachment_still_present_after_turn', Path(path).is_file())
     run.artifacts['image_reply'] = text
+    # Who described the image (if anyone) is disclosed in the session log; record it
+    # so the cell shows which model saw the pixels, not just that the answer was right.
+    bridge_lines = [l for l in (s.get('log_lines') or []) if l.startswith('[Image ')]
+    run.steps.append('vision bridge log: ' + (' | '.join(bridge_lines) or '(no bridge line: model saw the image itself)'))
     run.claims.append(G.Claim('named the stripes and read the code', 'image_reply', names[0]))
 
 

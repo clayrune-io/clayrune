@@ -18,6 +18,7 @@ See docs/MULTI_PROVIDER_DESIGN.md for the full architectural design.
 
 from __future__ import annotations
 
+import base64
 import json
 import inspect
 import os
@@ -205,7 +206,16 @@ class ProviderCapabilities:
     # Brief-specified fields (CapabilityFlags members)
     emits_cost: bool = False
     emits_num_turns: bool = False
+    # True only when the runtime's DEFAULT model reads image files itself.
+    # Per-model truth comes from AgentRuntime.image_input_for(model) -- one
+    # runtime can front both a blind model (qwen3-coder-plus) and a sighted one
+    # (qwen3-vl-plus).
     image_input: bool = False
+    # True when an attached image reaches the agent one way or the other:
+    # natively (image_input) or, for a model that cannot see, as a described
+    # text block from the vision bridge (mc/vision_bridge.py). The composer
+    # gates paste / drop / attach on THIS, not image_input.
+    image_attach: bool = True
     context_window: Optional[int] = None
     # Context injection
     context_injection: Literal['flag', 'file', 'prepend', 'read-file'] = 'prepend'
@@ -963,6 +973,41 @@ class AgentRuntime(ABC):
 
         Returns None if the provider can't do a non-streaming call.
         Default: not supported.
+        """
+        return None
+
+    # ── Vision (model-level) ──────────────────────────────────────────────────
+    # (regex, has_vision) pairs, first match wins on the lower-cased model id;
+    # no match falls back to capabilities().image_input. A runtime overrides
+    # this when its catalog mixes sighted and blind models.
+    VISION_MODEL_PATTERNS: Tuple[Tuple[str, bool], ...] = ()
+
+    def image_input_for(self, model: str = '') -> bool:
+        """True when `model` (or the runtime default, if empty) can see images.
+
+        image_input alone is per-RUNTIME and cannot say "qwen3-coder-plus is
+        blind, qwen3-vl-plus is not". Every vision decision goes through here.
+        """
+        m = (model or '').strip().lower()
+        if m:
+            for pattern, sighted in self.VISION_MODEL_PATTERNS:
+                if re.search(pattern, m):
+                    return bool(sighted)
+        try:
+            return bool(self.capabilities().image_input)
+        except Exception:
+            return False
+
+    # Model this runtime uses when it is the one DESCRIBING an image for a
+    # blind agent (mc/vision_bridge.py). '' = this runtime is not a describer.
+    VISION_DESCRIBE_MODEL: str = ''
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Tool-free single call that shows the model ONE image and returns its
+        text. Must run inside the same isolation as oneshot(); a runtime that
+        cannot do that leaves this as None (= not a describer). On failure
+        returns None and leaves the reason in `last_error`.
         """
         return None
 
@@ -2693,6 +2738,68 @@ class ClaudeRuntime(AgentRuntime):
             self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
         return OneshotResult(text=(r.stdout or '').strip())
+
+    VISION_DESCRIBE_MODEL = 'claude-haiku-4-5-20251001'
+    _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
+                          '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                          '.webp': 'image/webp'}
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Claude ONE image through the tool-free stream-json transform
+        (same TRANSFORM_ISOLATION as oneshot): the image rides as a base64
+        content block on stdin, so the model needs no file tool to see it."""
+        self.last_error = ''
+        media = self._IMAGE_MEDIA_TYPES.get(Path(path).suffix.lower())
+        if not media:
+            self.last_error = f'unsupported image type: {Path(path).suffix or "(none)"}'
+            return None
+        try:
+            _authorize_text_transform(self, 'claude', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+            data = base64.b64encode(Path(path).read_bytes()).decode('ascii')
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        cmd = self._stream_argv(model=model or self.VISION_DESCRIBE_MODEL, max_turns=1)
+        payload = json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': media, 'data': data}},
+            {'type': 'text', 'text': prompt},
+        ]}}) + '\n'
+        try:
+            r = subprocess.run(
+                cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(Path.home()), text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)),
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        parts: List[str] = []
+        result_error = ''
+        for line in (r.stdout or '').splitlines():
+            ev = self.parse_event(line.strip())
+            if ev is None:
+                continue
+            if ev.type == EventType.TURN_END and ev.raw and ev.raw.get('is_error'):
+                result_error = str(ev.raw.get('result') or 'Claude could not complete this request')
+            if ev.type in (EventType.ASSISTANT_TEXT, EventType.THINKING, EventType.TOOL_USE):
+                for block in ev.payload.get('blocks', []):
+                    if isinstance(block, dict) and block.get('type') == 'text' and block.get('text'):
+                        parts.append(str(block['text']))
+        text = '\n'.join(parts).strip()
+        if r.returncode != 0 or result_error:
+            tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
+            self.last_error = result_error or f'rc={r.returncode}: {tail[:300]}'
+            return None
+        if not text:
+            self.last_error = 'empty description'
+            return None
+        return OneshotResult(text=text)
 
     def stream_text(self, *, prompt: str, system_prompt: str = '',
                     model: str = '', effort: str = '', max_turns: int = 1,
@@ -4507,6 +4614,48 @@ class GeminiRuntime(AgentRuntime):
         text = (r.stdout or '').strip()
         return OneshotResult(text=text, raw=None)
 
+    VISION_DESCRIBE_MODEL = 'gemini-flash-lite-latest'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Gemini ONE image via the CLI's `@<path>` inclusion, inside the
+        same deny-all-tools transform as oneshot(). `@path` is expanded by the
+        CLI before the model runs, so no model-side file tool is involved; the
+        image's own folder is the cwd because the CLI refuses an `@path`
+        outside its workspace root. Verified live 2026-09-19."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'gemini CLI not installed'
+            return None
+        try:
+            _authorize_text_transform(self, 'gemini', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        cmd = self._transform_argv(model=model or self.VISION_DESCRIBE_MODEL)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               input=f"{prompt}\n\n@{img}", cwd=str(img.parent),
+                               timeout=max(1, int(timeout)),
+                               encoding='utf-8', errors='replace',
+                               env=self._transform_env(),
+                               creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        text = (r.stdout or '').strip()
+        if r.returncode != 0 or not text:
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
+        return OneshotResult(text=text, raw=None)
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Mode-A dispatch helper (reused by Codex, OpenCode, Goose, Aider, Kiro)
@@ -5537,6 +5686,15 @@ class QwenRuntime(AgentRuntime):
 
     name = 'qwen'
     tool_free_transform_enforced = True
+    # Coder ids are blind whatever else their name says; VL / QVQ / Omni ids
+    # are the sighted line. Anything else (qwen3.7-plus, glm-*, kimi-* ...) is
+    # unverified, so it is treated as blind: the bridge then describes the image
+    # and a model that could have seen it merely gets a redundant description,
+    # which is the safe direction to be wrong in.
+    VISION_MODEL_PATTERNS = (
+        (r'coder', False),
+        (r'(^|[-/_.])(vl|qvq|omni)([-/_.]|$)', True),
+    )
     display_name = 'Qwen Code'
     # No fixed catalog: the CLI's own docs (bundled qc-helper auth.md) name
     # ids like qwen3-coder-plus / qwen3.7-plus / glm-5 / kimi-k2.5, but those
@@ -6075,30 +6233,18 @@ class QwenRuntime(AgentRuntime):
             # one-tool-call turn) — same semantics as Claude's, so
             # accumulate_result_turns's per-turn-sum logic applies unchanged.
             emits_num_turns=True,
-            # W4/MC-947 (2026-09-18), LIVE FINDING, NOT fully fixed — kept
-            # True on mechanism parity with Gemini (the read_file path, its
-            # workspace-boundary fix, and its own --include-directories
-            # widening all apply identically here), but live-verified this
-            # is an OVERCLAIM for the actual default model in use
-            # (qwen3-coder-plus, a code model with no vision). Two distinct
-            # findings, both reproduced:
-            #  1. Without being told to actually verify, the model FABRICATED
-            #     a plausible-looking description ("white text on a black
-            #     background... TEST IMAGE PROBE") that matched the FILENAME,
-            #     not the real image (drawn content: "PURPLE ELEPHANT" in
-            #     purple on white) — no read_file tool call even appears in
-            #     the turn's log_lines. Same fabricate-under-uncertainty
-            #     pattern flagged separately from W5's dispatcher testing.
-            #  2. Explicitly instructed to call read_file and not guess, it
-            #     DID call the tool and then honestly reported: "this model
-            #     doesn't support image input, and the read_file tool cannot
-            #     process this type of file."
-            # Gemini (gemini-flash-lite-latest), same mechanism, same test
-            # image, correctly read and described it both times. Whoever
-            # verifies a Qwen vision-capable model id should re-test and only
-            # then treat this flag as genuinely proven, not just mechanism-
-            # parity-true.
-            image_input=True,
+            # False: the runtime's DEFAULT model (qwen3-coder-plus, a code
+            # model) cannot see images. It was True on read_file mechanism
+            # parity with Gemini until live pass run 3 (2026-09-19): two
+            # DIFFERENT random fixtures both got "red, blue, green, yellow,
+            # 1, 2, 3, 4" back -- a fabricated answer, and W4/MC-947 had
+            # already caught it inventing a description from the FILENAME.
+            # Sighted ids (qwen3-vl-*, qvq, *-omni) are flipped back on per
+            # model by VISION_MODEL_PATTERNS / image_input_for(); a blind
+            # model's attachments go through the vision bridge instead
+            # (image_attach stays True).
+            image_input=False,
+            image_attach=True,
             context_window=None,
             # Prepended into the prompt text, same as GeminiRuntime — native
             # QWEN.md discovery reopened 2026-09-18 when `--bare` was
@@ -6412,6 +6558,55 @@ class QwenRuntime(AgentRuntime):
             if ev and ev.type == EventType.ASSISTANT_TEXT:
                 last_text = ev.payload.get('text', last_text)
         return OneshotResult(text=last_text or (r.stdout or '').strip())
+
+    VISION_DESCRIBE_MODEL = 'qwen3-vl-plus'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show a sighted Qwen model ONE image via the CLI's `@<path>`
+        inclusion inside the tool-free transform argv (`--max-tool-calls 0`,
+        `-e none`, no MCP). Same-vendor describer for the blind coder models.
+        Verified live 2026-09-19 with qwen3-vl-plus; the image's folder is the
+        cwd so the path is inside the CLI's workspace root."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'qwen CLI not installed'
+            return None
+        m = model or self.VISION_DESCRIBE_MODEL
+        try:
+            _authorize_text_transform(self, 'qwen', model=m, effort='', identity=None,
+                                      readiness=None, certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        env = os.environ.copy()
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        for k, v in self._settings_auth_env().items():
+            env[k] = v
+        try:
+            r = subprocess.run(
+                self._transform_argv(model=m), input=f"{prompt}\n\n@{img}",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(img.parent),
+                text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)), env=env,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        last_text = ''
+        for raw_line in (r.stdout or '').splitlines():
+            ev = self.parse_event(raw_line)
+            if ev and ev.type == EventType.ASSISTANT_TEXT:
+                last_text = ev.payload.get('text', last_text)
+        if r.returncode != 0 or not last_text.strip():
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
+        return OneshotResult(text=last_text.strip())
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
