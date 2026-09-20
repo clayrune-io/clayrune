@@ -632,3 +632,140 @@ def test_instance_env_binds_loopback_only(tmp_path):
         assert inst.env()['MC_BIND_LOOPBACK'] == '1'
     finally:
         inst.cleanup()
+
+
+# ── cross-vendor cells: the disposable instance must be signed in as the
+#    DESTINATION vendor too (2026-09-19) ──────────────────────────────────────
+#
+# Why these exist: cross-dispatch / mixed-workflow / handoff recorded SKIPPED in
+# every vendor's run, and `--cross-vendor` alone would not have fixed it. The
+# disposable home only ever received the vendor-under-test's credential, so the
+# destination vendor read `auth_status: not_logged_in` inside the very instance
+# being driven -- the cells would have failed on the environment, not on the
+# product.
+
+def _fake_home_with_creds(tmp_path, *vendors):
+    home = tmp_path / 'realhome'
+    for v in vendors:
+        f = home / D.AUTH_FILES[v]
+        f.parent.mkdir(parents=True, exist_ok=True)
+        f.write_text(json.dumps({'vendor': v}), encoding='utf-8')
+    return home
+
+
+def test_seed_auth_copies_every_destination_vendors_credential(tmp_path, monkeypatch):
+    monkeypatch.setattr(D.Path, 'home', staticmethod(
+        lambda: _fake_home_with_creds(tmp_path, 'claude', 'codex')))
+    inst = D.Instance('claude', 5231, tmp_path, None, also_sign_in=['codex', 'qwen'])
+    try:
+        missing = inst._seed_auth()
+        assert (inst.home / D.AUTH_FILES['claude']).is_file()
+        assert (inst.home / D.AUTH_FILES['codex']).is_file(), \
+            'destination vendor was never signed in inside the disposable instance'
+        assert missing == ['qwen'], missing
+    finally:
+        inst.cleanup()
+
+
+def test_seed_auth_without_cross_vendor_still_seeds_only_the_vendor_under_test(tmp_path, monkeypatch):
+    monkeypatch.setattr(D.Path, 'home', staticmethod(
+        lambda: _fake_home_with_creds(tmp_path, 'claude', 'codex')))
+    inst = D.Instance('claude', 5231, tmp_path, None)
+    try:
+        inst._seed_auth()
+        assert (inst.home / D.AUTH_FILES['claude']).is_file()
+        assert not (inst.home / D.AUTH_FILES['codex']).exists()
+    finally:
+        inst.cleanup()
+
+
+def test_qwen_env_applies_when_qwen_is_only_a_destination(tmp_path, monkeypatch):
+    real = tmp_path / 'real'
+    _write_qwen_settings(real, apiKey='sk-test-not-a-real-key-0000',
+                         baseUrl='https://good.example/v1')
+    monkeypatch.setattr(D.Path, 'home', staticmethod(lambda: real))
+    monkeypatch.setenv('OPENAI_BASE_URL', 'https://stale.example')
+    inst = D.Instance('claude', 5231, tmp_path, None, also_sign_in=['qwen'])
+    try:
+        assert inst.env()['OPENAI_BASE_URL'] == 'https://good.example/v1'
+    finally:
+        inst.cleanup()
+
+
+class _DestCtx:
+    """Minimal Ctx for preflight_destinations / usable_others."""
+
+    def __init__(self, rows, vendor='claude', dests=('codex', 'qwen'),
+                 env=None, missing=()):
+        self.vendor = vendor
+        self.notes = {}
+        self.args = type('A', (), {'cross_vendor': True, 'cross_dest': list(dests)})()
+        self.inst = type('I', (), {'env': lambda self: dict(env or {}),
+                                   'auth_file_missing': list(missing)})()
+        self.api = type('P', (), {'providers': lambda self, refresh=False: rows})()
+
+
+def test_unreachable_destination_is_named_not_silently_dispatched_to():
+    bad = D.preflight_destinations(_DestCtx([
+        {'name': 'codex', 'installed': False, 'auth_status': 'ok'},
+        {'name': 'qwen', 'installed': True, 'auth_status': 'ok'},
+    ]))
+    assert list(bad) == ['codex'] and 'not installed' in bad['codex']
+
+
+def test_destination_out_of_allowance_is_unrunnable_with_the_vendor_text():
+    bad = D.preflight_destinations(_DestCtx([
+        {'name': 'codex', 'installed': True, 'auth_status': 'ok',
+         'allowance_exhausted': 'codex: resets 3pm'},
+        {'name': 'qwen', 'installed': True, 'auth_status': 'ok'},
+    ]))
+    assert 'resets 3pm' in bad['codex']
+
+
+def test_env_authenticated_destination_is_attempted_despite_a_not_logged_in_probe():
+    # qwen signs in through settings.json, which the disposable home does not
+    # have -- the probe says not_logged_in while dispatch works. Refusing on the
+    # probe alone would skip a cell that can run.
+    ctx = _DestCtx([{'name': 'qwen', 'installed': True, 'auth_status': 'not_logged_in'}],
+                   dests=('qwen',), env={'DASHSCOPE_API_KEY': 'k'}, missing=['qwen'])
+    assert D.preflight_destinations(ctx) == {}
+
+
+def test_destination_with_neither_credential_file_nor_env_key_is_unrunnable():
+    ctx = _DestCtx([{'name': 'qwen', 'installed': True, 'auth_status': 'not_logged_in'}],
+                   dests=('qwen',), env={}, missing=['qwen'])
+    bad = D.preflight_destinations(ctx)
+    assert 'DASHSCOPE_API_KEY' in bad['qwen']
+
+
+def test_usable_others_records_a_reason_for_each_skipped_destination():
+    ctx = _DestCtx([])
+    ctx.notes['dest_unusable'] = {'codex': 'codex CLI not installed'}
+    run = D.CellRun()
+    assert D.usable_others(ctx, run) == ['qwen']
+    named = [c for c in run.checks if c['name'] == 'claude->codex_destination_reachable']
+    assert named and named[0]['verdict'] == G.UNVERIFIABLE
+    assert 'not installed' in named[0]['detail']
+
+
+def test_mixed_workflow_is_a_scripted_cell_not_a_blanket_unverifiable():
+    cell = next(c for c in D.CELLS if c.id == 'mixed-workflow')
+    assert cell.calls, 'mixed-workflow claimed to cost nothing: it was never run'
+    assert 'UNVERIFIABLE' not in cell.pass_rule
+
+
+def test_mixed_workflow_samples_each_step_session_not_just_its_final_doc():
+    """The workflow loop polls the RUN doc, so nothing else samples its steps.
+
+    Measured 2026-09-19 (docs/_journal/provider-live/mixedwf-claude-codex/):
+    all eight functional checks PASS, cell INCONCLUSIVE -- `rollover:
+    1 call(s) had no usage; cannot bound them`. calls_for() falls back to
+    run.samples for any session whose native transcript is unreadable, which
+    is every codex session, and this cell recorded none.
+    """
+    src = Path(D.__file__).read_text(encoding='utf-8')
+    body = src[src.index('def run_mixed_workflow('):src.index('def run_handoff(')]
+    assert 'run.samples.setdefault(' in body, (
+        'a step session with no sample is UNAVAILABLE usage, which downgrades '
+        'an all-PASS cell to INCONCLUSIVE')
+    assert "'context_tokens': sess.get('context_tokens')" in body

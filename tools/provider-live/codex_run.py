@@ -337,13 +337,24 @@ class Instance:
     """The disposable second Clayrune. Owns exactly one child PID."""
 
     def __init__(self, vendor: str, port: int, run_dir: Path, auth_file: Optional[Path],
-                 register_url: str = f'http://127.0.0.1:{PROD_PORT}/api/processes/register'):
+                 register_url: str = f'http://127.0.0.1:{PROD_PORT}/api/processes/register',
+                 also_sign_in: Optional[List[str]] = None):
         self.vendor, self.port, self.run_dir = vendor, port, run_dir
+        # Every vendor this instance must be SIGNED IN as. The disposable home
+        # starts empty, so a vendor whose credential is not copied in reads
+        # `auth_status: not_logged_in` there no matter how the real box is set
+        # up -- which is exactly why the three cross-vendor cells could never
+        # have passed even with --cross-vendor: the destination vendor was
+        # never authenticated in the instance being driven (measured: the qwen
+        # run's own providers entry shows `"auth_status": "not_logged_in"` for
+        # the vendors it was not seeding, docs/_journal/provider-live/qwen/).
+        self.vendors: List[str] = [vendor] + [v for v in (also_sign_in or []) if v != vendor]
         self.auth_file, self.register_url = auth_file, register_url
         self.home = Path(tempfile.mkdtemp(prefix='clayrune-live-home-'))
         self.data_dir = self.home / 'mc-data'
         self.proc: Optional[subprocess.Popen] = None
         self.pids: List[int] = []
+        self.auth_file_missing: List[str] = []
         self.log = None
 
     def env(self) -> Dict[str, str]:
@@ -352,16 +363,33 @@ class Instance:
                   'MC_DATA_DIR': str(self.data_dir), 'USERPROFILE': str(self.home),
                   'HOME': str(self.home), 'CODEX_HOME': str(self.home / '.codex'),
                   'PYTHONIOENCODING': 'utf-8'})
-        if self.vendor == 'qwen':
+        if 'qwen' in self.vendors:
+            # Keyed on the vendor LIST, not self.vendor: qwen as a cross-vendor
+            # DESTINATION needs the same DashScope env as qwen under test, or
+            # the child falls through to the ambient stale OPENAI_BASE_URL.
             e.update(qwen_settings_env())
         return e
 
-    def _seed_auth(self) -> None:
-        src = self.auth_file or (Path.home() / AUTH_FILES[self.vendor])
-        if src.is_file():
-            dst = self.home / src.relative_to(Path.home()) if not self.auth_file else self.home / AUTH_FILES[self.vendor]
+    def _seed_auth(self) -> List[str]:
+        """Copy each needed vendor's credential into the disposable home.
+
+        Returns the vendors whose credential FILE was not found, so a caller
+        can say which destination is unauthenticated instead of reporting its
+        cell as a product FAIL. A missing file is not always fatal: qwen signs
+        in through settings.json (see qwen_settings_env) and gemini through
+        GEMINI_API_KEY, both of which travel in the environment."""
+        missing: List[str] = []
+        for vendor in self.vendors:
+            # --auth-file overrides only the vendor under test.
+            src = (self.auth_file if (self.auth_file and vendor == self.vendor)
+                   else Path.home() / AUTH_FILES[vendor])
+            if not src.is_file():
+                missing.append(vendor)
+                continue
+            dst = self.home / AUTH_FILES[vendor]
             dst.parent.mkdir(parents=True, exist_ok=True)
             shutil.copyfile(src, dst)
+        return missing
 
     def port_free(self) -> bool:
         """Bindable now. A plain bind (no SO_REUSEADDR) is the test: it fails while
@@ -392,7 +420,7 @@ class Instance:
         if not self.wait_port_free():
             raise RuntimeError(f'port {self.port} still in use after 30s (not our own exited instance); refusing')
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self._seed_auth()
+        self.auth_file_missing = self._seed_auth()
         py = REPO_ROOT / '.venv' / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
         self.log = open(self.run_dir / 'instance.log', 'ab')
         self.proc = subprocess.Popen([str(py if py.exists() else sys.executable), 'server.py'],
@@ -1127,35 +1155,161 @@ def _others(ctx: Ctx) -> List[str]:
     return [v for v in (ctx.args.cross_dest or VENDORS) if v != ctx.vendor]
 
 
+def usable_others(ctx: Ctx, run: CellRun) -> List[str]:
+    """Destinations that can actually be dispatched to, recording the rest as
+    UNVERIFIABLE-with-a-reason.
+
+    An unreachable destination is a reportable finding about the environment,
+    never a silent omission and never a product FAIL -- so it gets a named
+    check carrying the exact reason, and the cell can still report on the
+    destinations it did reach."""
+    bad = ctx.notes.get('dest_unusable') or {}
+    for dest, why in bad.items():
+        run.checks.append(G.check(f'{ctx.vendor}->{dest}_destination_reachable',
+                                  G.UNVERIFIABLE, f'not run: {why}'))
+    return [d for d in _others(ctx) if d not in bad]
+
+
 def run_cross_dispatch(ctx: Ctx, run: CellRun) -> None:
-    for dest in _others(ctx):
+    for dest in usable_others(ctx, run):
         a, b, e = ctx.mk(f'cross-dispatch-{dest}', 1)
         psid, _ = ctx.chat(run, 'Reply with exactly the word READY.')
         csid = ctx.api.dispatch(ctx.project, marker_prompt(a, b), provider=dest, notify_session=psid, human=False)
         c = ctx.wait(run, csid)
-        run.ok(f'{ctx.vendor}->{dest}_child_answered', e in ctx.reply_text(c))
+        # The reply is recorded as an ARTIFACT, not just as a 120-char check
+        # detail: the first live run of this cell passed with "0 claim(s)"
+        # backing it, so nothing in the evidence file let a reader re-check
+        # the verdict against what the destination vendor actually said.
+        run.artifacts[f'cross_dispatch_{dest}_reply'] = ctx.reply_text(c)
+        run.claims.append(G.Claim(f'{dest} child answered the dispatch',
+                                  f'cross_dispatch_{dest}_reply', e))
+        run.ok(f'{ctx.vendor}->{dest}_child_answered', e in ctx.reply_text(c),
+               ctx.reply_text(c)[-200:])
         run.ok(f'{ctx.vendor}->{dest}_child_on_{dest}', c.get('provider') == dest, f"provider={c.get('provider')}")
         ctx.sleep(15)
         p = ctx.api.session(ctx.project, psid) or {}
-        run.ok(f'{ctx.vendor}->{dest}_parent_notified_once', '\n'.join(p.get('log_lines') or []).count('[dispatched agent finished]') == 1)
+        _recv = '\n'.join(p.get('log_lines') or []).count('[dispatched agent finished]')
+        run.artifacts[f'cross_dispatch_{dest}_parent_events'] = '\n'.join(
+            l for l in (p.get('log_lines') or []) if l.strip().startswith('['))
+        run.ok(f'{ctx.vendor}->{dest}_parent_notified_once', _recv == 1, f'receipts={_recv}')
 
 
 def run_mixed_workflow(ctx: Ctx, run: CellRun) -> None:
-    run.checks.append(G.check('mixed_workflow', G.UNVERIFIABLE,
-                              'W5 found mixed-vendor workflow authoring is human-only and a workflow step takes a '
-                              'character-pinned engine; the per-destination character set-up is left to the live look'))
+    """A two-step workflow whose steps run on DIFFERENT vendors.
+
+    W5's note ("authoring is human-only, a step takes a character-pinned
+    engine") described the AUTHORING UI, and was read as if it made the cell
+    unrunnable -- so the runner recorded UNVERIFIABLE and measured nothing in
+    every vendor's run. The engine pin is exactly what makes it runnable: a
+    workflow node carries `character`, and a character carries provider+model
+    (mc/characters.py ENGINE_KEYS). `mc/workflows.py:_dispatch_step` passes
+    `character` / `model_override` / `effort_override` but NO provider, so the
+    character IS the only way to put a step on a named vendor -- that is the
+    product's shape, not a gap in the test."""
+    dests = usable_others(ctx, run)
+    if not dests:
+        run.checks.append(G.check('mixed_workflow', G.UNVERIFIABLE,
+                                  'no reachable destination vendor: nothing to mix with'))
+        return
+    dest = dests[0]
+    a1, b1, e1 = ctx.mk('mixed-workflow', 1)
+    a2, b2, e2 = ctx.mk('mixed-workflow', 2)
+    chars = {}
+    for v in (ctx.vendor, dest):
+        name = f'live-step-{v}'
+        code, r = ctx.api.request('POST', '/api/characters',
+                                  {'name': name, 'description': f'live mixed-workflow step on {v}',
+                                   'body': 'You are a workflow step. Answer exactly as asked.',
+                                   'scope': 'global', 'provider': v,
+                                   'model': ctx.model if v == ctx.vendor else '',
+                                   'agent_name': f'Step-{v}'}, human=True)
+        run.ok(f'character_pinned_to_{v}', code in (200, 201, 409), str(r)[:160])
+        chars[v] = f'global:{name}'
+    doc = {'name': f'live-mixed-{ctx.run_id}', 'trigger': {'type': 'manual'},
+           'nodes': [{'name': 'first', 'type': 'agent', 'project_id': ctx.project,
+                      'character': chars[ctx.vendor], 'prompt': marker_prompt(a1, b1)},
+                     {'name': 'second', 'type': 'agent', 'project_id': ctx.project,
+                      'character': chars[dest],
+                      'prompt': 'The previous step said: {{prev.output}}. Reply with exactly '
+                                f'that text, then a space, then {a2}{b2}.'}],
+           'edges': [{'from': 'first', 'to': 'second'}]}
+    code, r = ctx.api.request('POST', '/api/workflows', doc, human=True)
+    run.ok('mixed_workflow_created', code == 200, str(r)[:200])
+    wf = (r.get('workflow') or {}).get('id')
+    if not wf:
+        return
+    code, r = ctx.api.request('POST', f'/api/workflows/{wf}/run', {}, human=True)
+    rid = (r.get('run') or {}).get('id')
+    run.ok('mixed_workflow_started', bool(rid), str(r)[:200])
+    if not rid:
+        return
+    deadline = time.time() + 900
+    run_doc: dict = {}
+    while time.time() < deadline:
+        code, run_doc = ctx.api.request('GET', f'/api/workflow-runs/{rid}', human=True)
+        for st in (run_doc.get('steps') or {}).values():
+            if st.get('session_id'):
+                ctx.track(run, st['session_id'])
+                sess = ctx.api.session(ctx.project, st['session_id'])
+                if sess:
+                    run.final[st['session_id']] = sess
+                    # SAMPLE, not just `final`. calls_for() derives an
+                    # ESTIMATED per-call count from run.samples whenever the
+                    # native transcript is unreadable -- which is every codex
+                    # session (measured: the handoff cell's codex call is
+                    # `estimated ... polled-status`). Recording only `final`
+                    # left the codex step with zero samples, so the cell read
+                    # UNVERIFIABLE on rollover and the whole run came back
+                    # INCONCLUSIVE with all eight functional checks PASS.
+                    # ctx.wait() does this for every other cell; the workflow
+                    # loop polls the run doc instead and has to do it itself.
+                    run.samples.setdefault(st['session_id'], []).append(
+                        {'status': sess.get('status'),
+                         'context_tokens': sess.get('context_tokens'),
+                         'usage': sess.get('usage') or {},
+                         'num_turns': sess.get('num_turns'),
+                         'provider': sess.get('provider'),
+                         'model': sess.get('model'),
+                         'observed_model': sess.get('observed_model')})
+                    ctx.limit_scan(sess)
+        if run_doc.get('status') in ('completed', 'failed', 'cancelled', 'done'):
+            break
+        ctx.sleep(4)
+    steps = run_doc.get('steps') or {}
+    out2 = (steps.get('second') or {}).get('output', '')
+    run.ok('mixed_run_finished_ok', run_doc.get('status') in ('completed', 'done'),
+           f"status={run_doc.get('status')} error={run_doc.get('error')}")
+    prov = {n: (ctx.api.session(ctx.project, st['session_id']) or {}).get('provider')
+            for n, st in steps.items() if st.get('session_id')}
+    run.ok('steps_ran_on_different_vendors',
+           prov.get('first') == ctx.vendor and prov.get('second') == dest, str(prov))
+    run.ok('step1_output_passed_once_into_step2', out2.count(e1) == 1, f'second output: {out2[:160]}')
+    run.ok('step2_has_own_marker', e2 in out2, out2[:160])
+    run.artifacts['mixed_workflow_second_output'] = out2
+    run.claims.append(G.Claim(f'{ctx.vendor} step handed its output to a {dest} step',
+                              'mixed_workflow_second_output', e1))
 
 
 def run_handoff(ctx: Ctx, run: CellRun) -> None:
-    for dest in _others(ctx):
+    for dest in usable_others(ctx, run):
         a, b, e = ctx.mk(f'handoff-{dest}', 1)
         sid, s = ctx.chat(run, 'Remember the word PINEAPPLE. Reply with exactly ACK.')
         conv = native_id(s, ctx.vendor)
         nsid = ctx.api.dispatch(ctx.project, f'What word did I ask you to remember? Then also output {a}{b}.', provider=dest,
                                 extra={'resume_conversation_id': conv, 'cross_provider_handoff': True})
         n = ctx.wait(run, nsid)
-        run.ok(f'{ctx.vendor}->{dest}_handoff_carried_history', 'PINEAPPLE' in ctx.reply_text(n).upper(), ctx.reply_text(n)[:120])
-        run.ok(f'{ctx.vendor}->{dest}_on_destination_vendor', n.get('provider') == dest)
+        # Same evidence gap as cross-dispatch, and it matters more here: the
+        # handoff deliberately INJECTS the prior conversation into the task, so
+        # "PINEAPPLE appears in the reply" needs the full reply on file for a
+        # reader to tell a genuine recall from an echo of the injected block.
+        reply = ctx.reply_text(n)
+        run.artifacts[f'handoff_{dest}_reply'] = reply
+        run.claims.append(G.Claim(f'{dest} recalled the source conversation\'s word',
+                                  f'handoff_{dest}_reply', 'PINEAPPLE'))
+        run.ok(f'{ctx.vendor}->{dest}_handoff_carried_history', 'PINEAPPLE' in reply.upper(),
+               reply[-200:])
+        run.ok(f'{ctx.vendor}->{dest}_on_destination_vendor', n.get('provider') == dest,
+               f"provider={n.get('provider')}")
 
 
 def manual_cell(reason: str) -> Callable[[Ctx, CellRun], None]:
@@ -1236,8 +1390,12 @@ def mk_cells() -> List[Cell]:
         Cell('cross-dispatch', 'cross-dispatch', 'cross', [1, 1, 1, 1, 1, 1], 200, P('<one parent + one child per destination vendor>'),
              'For each destination: child on that vendor answers; parent notified exactly once.', 'All functional checks true per destination.',
              run_cross_dispatch, other_vendor=True),
-        Cell('mixed-workflow', 'mixed-workflow', 'cross', [], 0, P('(not scripted: see runner note)'),
-             'A workflow whose steps run on different vendors.', 'Not machine-runnable yet: reported UNVERIFIABLE.', run_mixed_workflow, other_vendor=True),
+        Cell('mixed-workflow', 'mixed-workflow', 'cross', [1, 1], 200,
+             P('step first: ' + M + ' (character pinned to --vendor)',
+               'step second: The previous step said: {{prev.output}}. Reply with exactly that text, then a space, then <A2><B2>. (character pinned to the destination vendor)'),
+             'A workflow whose two steps run on different vendors; step 1 output reaches step 2 exactly once.',
+             'Both steps on their pinned vendor AND step 1 output passed once AND step 2 marker present.',
+             run_mixed_workflow, other_vendor=True),
         Cell('handoff', 'handoff', 'cross', [1, 1, 1, 1, 1, 1], 200, P('Remember the word PINEAPPLE. Reply with exactly ACK.', 'What word did I ask you to remember? (cross_provider_handoff to <dest>)'),
              'For each destination: a fresh conversation there carries the source conversation\'s history.', 'History word recalled on the destination vendor.',
              run_handoff, other_vendor=True),
@@ -1407,8 +1565,16 @@ def write_evidence(ctx: Ctx, cell: Cell, run: CellRun, status: str, token: dict,
     if align:
         L += ['', '## Alignment block']
         L += [f"- **{c['verdict']}** {c['name']}: {san(c['detail'])}" for c in align['checks']]
-        excerpt = next((t for t in [san(a) for a in run.artifacts.values()] if t), '')
-        L += ['', '### Transcript excerpt (voice is not machine-checked; read this)', '```', excerpt[:600], '```']
+        # EVERY artifact, named. A multi-destination cell has one reply per
+        # destination and the old `next(...)` printed exactly one of them, so
+        # the other destinations' verdicts rested on text nobody could read.
+        L += ['', '### Transcript excerpts (voice is not machine-checked; read these)']
+        for _k, _v in run.artifacts.items():
+            _t = san(_v)
+            if _t.strip():
+                L += [f'- `{_k}`:', '```', _t[:600], '```']
+        if not any(san(v).strip() for v in run.artifacts.values()):
+            L += ['```', '(no artifact recorded)', '```']
     # The tool-invocation lines a blocked-call verdict rests on. Printed
     # verbatim so the "was it attempted?" half of the pass rule is readable
     # rather than inferred from the verdict that used them.
@@ -1556,6 +1722,43 @@ def preflight(ctx: Ctx) -> None:
             raise RuntimeError(f'could not create the test project: {code} {r}')
 
 
+def preflight_destinations(ctx: Ctx) -> Dict[str, str]:
+    """Which cross-vendor DESTINATIONS the disposable instance can actually
+    reach, and why not for the rest.
+
+    Measured once, before any destination is dispatched to, so an
+    unauthenticated or uninstalled destination is reported as an UNRUNNABLE
+    destination rather than spending a parent turn and then failing a
+    `child_answered` check that was never about the product."""
+    if not ctx.args.cross_vendor:
+        return {}
+    rows = {p.get('name'): p for p in ctx.api.providers(refresh=True)}
+    bad: Dict[str, str] = {}
+    for dest in _others(ctx):
+        row = rows.get(dest) or {}
+        if not row:
+            bad[dest] = 'not reported by /api/agent/providers'
+        elif not row.get('installed'):
+            bad[dest] = f'{dest} CLI not installed'
+        elif row.get('auth_status') not in ('ok', 'logged_in', 'authenticated', 'signed_in'):
+            # A not-signed-in PROBE is not proof the dispatch will fail: qwen
+            # (and gemini) authenticate from the environment, and the probe
+            # reads the disposable home's settings.json, which does not exist.
+            # So only call it unusable when there is neither a seeded
+            # credential file NOR the vendor's env key -- otherwise attempt it
+            # and let the cell's own checks be the evidence.
+            env = getattr(ctx.inst, 'env', dict)() or {}
+            if not env.get(ENV_KEYS.get(dest, '')) and dest in (
+                    getattr(ctx.inst, 'auth_file_missing', None) or []):
+                bad[dest] = (f"not signed in: auth_status={row.get('auth_status')}; "
+                             f'no credential file to copy into the disposable home and no '
+                             f'{ENV_KEYS.get(dest, "API key")} in the environment')
+        elif row.get('allowance_exhausted'):
+            bad[dest] = f"out of allowance: {row['allowance_exhausted']}"
+    ctx.notes['dest_unusable'] = bad
+    return bad
+
+
 def main(argv=None) -> int:
     args = parse(argv)
     if args.dry_run:
@@ -1569,7 +1772,10 @@ def main(argv=None) -> int:
     run_id = datetime.now().strftime('%m%d%H%M%S')
     journal = Path(args.journal_dir)
     journal.mkdir(parents=True, exist_ok=True)
-    inst = Instance(args.vendor, args.port, journal, Path(args.auth_file) if args.auth_file else None)
+    dests = ([v for v in (args.cross_dest or VENDORS) if v != args.vendor]
+             if args.cross_vendor else [])
+    inst = Instance(args.vendor, args.port, journal, Path(args.auth_file) if args.auth_file else None,
+                    also_sign_in=dests)
     procs = Procs(inst.home / 'decoys')
     api = Api(args.port, args.vendor, cross_ok=args.cross_vendor)
     ctx = Ctx(args, api, inst, procs, journal, run_id)
@@ -1584,6 +1790,8 @@ def main(argv=None) -> int:
             (journal / 'STOPPED-usage-limit.md').write_text(f'# preflight: {args.vendor} already out of allowance\n\n`{sanitize(str(e))}`\n', encoding='utf-8')
             print(f'STOPPED at preflight: {e}')
             return 3
+        for dest, why in (preflight_destinations(ctx) or {}).items():
+            print(f'  ! cross-vendor destination {dest} is UNRUNNABLE: {why}')
         code, results = run_all(args, ctx)
         for k, v in results.items():
             print(f'{v:<22}{k}')
