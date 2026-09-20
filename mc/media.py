@@ -189,6 +189,16 @@ def list_media(project_id: str) -> list[dict]:
         if k in seen:
             continue
         seen.add(k)
+        # MC-956: tell the gallery up front whether the file is still there,
+        # rather than making it wait on 133 individual <img onerror> round
+        # trips before it knows which tiles to hide. The scratch dirs and
+        # per-agent worktrees these paths point at are torn down long after
+        # the index entry is written, so this is routine, not corruption.
+        if row.get('kind') == 'image':
+            try:
+                row = dict(row, missing=not Path(row.get('path', '')).is_file())
+            except OSError:
+                row = dict(row, missing=True)
         out.append(row)
         if len(out) >= MAX_ENTRIES:
             break

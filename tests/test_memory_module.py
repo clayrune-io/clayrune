@@ -409,12 +409,168 @@ def test_scribe_call_proceeds_when_claude_available(tmp_data_dir, monkeypatch):
     m = _mem(tmp_data_dir)
     monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: True)
 
-    class _FakeResult:
-        text = "a summary"
+    calls = []
 
-    class _FakeRuntime:
-        def oneshot(self, **kwargs):
-            return _FakeResult()
+    def transform(provider, **kwargs):
+        calls.append((provider, kwargs))
+        return "a summary"
 
-    monkeypatch.setattr(m._agent_runtime, "get_runtime", lambda name: _FakeRuntime())
+    # _scribe_call goes through the authorized transform seam, never a raw
+    # runtime.oneshot() (Fenn #1: zero bypass sites).
+    monkeypatch.setattr(m._agent_runtime, "run_text_transform", transform)
     assert m._scribe_call("haiku", "summarize", "body text") == "a summary"
+    assert calls[0][0] == "claude"
+    assert calls[0][1]["stdin_text"] == "body text"
+
+
+def test_scribe_call_folds_seam_timeout_into_runtime_error(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    monkeypatch.setattr(m._agent_runtime, "claude_oneshot_available", lambda: True)
+
+    def transform(provider, **kwargs):
+        raise TimeoutError("timeout after 180s")
+
+    monkeypatch.setattr(m._agent_runtime, "run_text_transform", transform)
+    with pytest.raises(RuntimeError, match="timeout after 180s"):
+        m._scribe_call("haiku", "summarize", "body text")
+
+
+# ── _session_too_large: must find dot/worktree-flattened transcripts ─────────
+# Regression: _session_transcript_path() used to delegate to
+# ClaudeRuntime._build_transcript_path(), which only builds the PRIMARY
+# encoded variant (no existence check). The CLI itself also flattens `_`
+# and `.` to `-` (see agent_runtime._encoded_dir_candidates), and worktree
+# sessions live under <project>/.clayrune/agents/<sid> — a dot-bearing path
+# on every isolated agent. So on any install whose project path contains
+# `_` or `.` (this one: "...\_claude\..."), the primary-only lookup always
+# missed and auto-fresh silently never fired. Fixed by delegating to
+# ClaudeRuntime.transcript_path() instead, which checks every encoded
+# variant plus the worktree glob.
+
+def test_session_too_large_finds_dot_flattened_worktree_transcript(tmp_data_dir, monkeypatch):
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 100  # bytes — small so a short fixture body trips it
+
+    # Real shape: a per-agent worktree under a dot-prefixed directory, exactly
+    # what per-agent worktree isolation (b264200a) actually runs sessions from.
+    worktree = str(tmp_data_dir / 'proj' / '.clayrune' / 'agents' / '0f7687efce3f')
+    session_id = '41ee10c4-7594-4e17-b92b-6308102c1750'
+
+    encoded = rt._encode_project_path(worktree)
+    assert encoded and '.' in encoded, 'expected the dot to survive the base encoding'
+
+    # Create ONLY the dot-flattened dir — what the CLI actually writes on disk.
+    cli_dir = fake_home / encoded.replace('.', '-')
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+    jsonl_file.write_text('{"type":"user"}' * 20)  # > 100 bytes
+    assert jsonl_file.stat().st_size > m._SESSION_SIZE_LIMIT
+
+    assert not (fake_home / encoded).exists(), 'base-encoded (unflattened) dir must NOT exist'
+
+    too_large, size = m._session_too_large(worktree, session_id)
+    assert too_large is True
+    assert size == jsonl_file.stat().st_size
+
+
+# ── _session_too_large / _transcript_image_bytes: base64 images must not
+# count toward the byte cap ──────────────────────────────────────────────────
+# Regression (2026-09-18): clayrune_website auto-freshed twice as "session
+# too large" at 6.4 MB and 9.9 MB — real context was only 123k/85k tokens.
+# 2.8 MB / 4.7 MB of each transcript was base64 image data (14 blobs each,
+# product-image work read back through a tool). _session_too_large counted
+# raw transcript bytes, so images tripped a rollover tokens never justified.
+# Fixture below reproduces the shape verified against the real transcript:
+# a tool_result content block nesting a type='image' block with a big
+# base64 `source.data` string, alongside a small amount of real text.
+
+def _fixture_transcript_with_images(path, *, num_images, image_b64_len, text_body):
+    import json as _json
+    lines = [_json.dumps({
+        'type': 'user',
+        'message': {'role': 'user', 'content': [{'type': 'text', 'text': text_body}]},
+    })]
+    for i in range(num_images):
+        lines.append(_json.dumps({
+            'type': 'user',
+            'message': {
+                'role': 'user',
+                'content': [{
+                    'type': 'tool_result',
+                    'tool_use_id': f'tool_{i}',
+                    'content': [{
+                        'type': 'image',
+                        'source': {'type': 'base64', 'media_type': 'image/png',
+                                   'data': 'A' * image_b64_len},
+                    }],
+                }],
+            },
+        }))
+    path.write_text('\n'.join(lines), encoding='utf-8')
+
+
+def test_session_too_large_excludes_base64_image_bytes(tmp_data_dir, monkeypatch):
+    """A transcript that is only over the byte cap because of base64 image
+    payloads must NOT be reported as too-large — the image bytes are
+    subtracted before comparing against _SESSION_SIZE_LIMIT."""
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 5 * 1024 * 1024  # real 5 MB default
+
+    project_path = str(tmp_data_dir / 'proj_images')
+    session_id = '8e5ff4a0-64b4-45d0-b0c9-99647758c04e'
+    encoded = rt._encode_project_path(project_path)
+    cli_dir = fake_home / encoded
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+
+    # 14 images of ~400 KB base64 each (~5.5 MB) + a small amount of real
+    # text — mirrors the measured 9.9 MB / 4.7 MB image / 85k-token transcript,
+    # scaled up slightly so raw size clears the 5 MB limit in this fixture too.
+    _fixture_transcript_with_images(
+        jsonl_file, num_images=14, image_b64_len=400_000, text_body='x' * 2000)
+
+    raw_size = jsonl_file.stat().st_size
+    assert raw_size > m._SESSION_SIZE_LIMIT, 'fixture must reproduce the raw-bytes false positive'
+
+    img_bytes = m._transcript_image_bytes(jsonl_file)
+    assert img_bytes == 14 * 400_000
+
+    too_large, size = m._session_too_large(project_path, session_id)
+    assert too_large is False, \
+        f'image bytes must be excluded: raw={raw_size} net={size} limit={m._SESSION_SIZE_LIMIT}'
+    assert size == raw_size - img_bytes
+
+
+def test_session_too_large_still_trips_on_real_text_bloat(tmp_data_dir, monkeypatch):
+    """Control: a transcript over the cap on genuine (non-image) text must
+    still trip — image-exclusion isn't a blanket size increase."""
+    m = _mem(tmp_data_dir)
+    from mc.agent_runtime import ClaudeRuntime
+
+    rt = ClaudeRuntime()
+    fake_home = tmp_data_dir / 'claude_home' / 'projects'
+    monkeypatch.setattr(m._agent_runtime, '_CLAUDE_HOME', fake_home)
+    m._SESSION_SIZE_LIMIT = 100  # bytes — small so a short fixture trips it
+
+    project_path = str(tmp_data_dir / 'proj_text')
+    session_id = 'aaaaaaaa-64b4-45d0-b0c9-99647758c04e'
+    encoded = rt._encode_project_path(project_path)
+    cli_dir = fake_home / encoded
+    cli_dir.mkdir(parents=True)
+    jsonl_file = cli_dir / f'{session_id}.jsonl'
+    _fixture_transcript_with_images(
+        jsonl_file, num_images=0, image_b64_len=0, text_body='x' * 500)
+
+    too_large, size = m._session_too_large(project_path, session_id)
+    assert too_large is True
+    assert size == jsonl_file.stat().st_size

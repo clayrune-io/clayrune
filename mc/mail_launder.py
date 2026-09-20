@@ -180,24 +180,38 @@ def launder_mail_digest(messages: List[Dict[str, Any]], *, query: str,
                  "toolless)", flush=True)
             return _launder_error('claude_unavailable',
                                    'claude is not installed or not signed in on this machine')
-        runtime = _agent_runtime.get_runtime('claude')
 
     thread_text = _format_thread(messages)
-    try:
-        result = runtime.oneshot(
-            prompt=_LAUNDER_INSTRUCTION,
-            model=model,
-            stdin_text=thread_text,
-            timeout=timeout,
-        )
-    except Exception as e:
-        return _launder_error('launder_call_raised', repr(e))
+    if runtime is None:
+        # Production path: the authorized transform seam, so this call runs
+        # under the TOOL_FREE_TRANSFORM profile (execution_policy) like every
+        # other transform. A refusal or failure there raises; it is never text.
+        import mc.agent_runtime as _agent_runtime
+        try:
+            text = _agent_runtime.run_text_transform(
+                'claude', prompt=_LAUNDER_INSTRUCTION, model=model,
+                stdin_text=thread_text, timeout=timeout)
+        except (RuntimeError, TimeoutError) as e:
+            return _launder_error('launder_call_failed', str(e))
+        except Exception as e:
+            return _launder_error('launder_call_raised', repr(e))
+    else:
+        try:
+            result = runtime.oneshot(
+                prompt=_LAUNDER_INSTRUCTION,
+                model=model,
+                stdin_text=thread_text,
+                timeout=timeout,
+            )
+        except Exception as e:
+            return _launder_error('launder_call_raised', repr(e))
 
-    if result is None:
-        why = getattr(runtime, 'last_error', '') or 'non-zero exit or timeout'
-        return _launder_error('launder_call_failed', why)
+        if result is None:
+            why = getattr(runtime, 'last_error', '') or 'non-zero exit or timeout'
+            return _launder_error('launder_call_failed', why)
+        text = result.text
 
-    data = _parse_digest_json(result.text)
+    data = _parse_digest_json(text)
     if data is None:
         return _launder_error('launder_parse_error', 'laundering call did not return valid JSON')
 

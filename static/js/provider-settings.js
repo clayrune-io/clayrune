@@ -1,7 +1,9 @@
 // ── Provider Settings section ─────────────────────────────────────────────
-// Renders the "Agent Provider" block inside _renderSettings(). One health
-// card per registered provider — claude included, so it no longer needs the
-// separate standalone "Claude Sign-in" section.
+// Renders the Providers category inside _renderSettings(). Every provider —
+// Claude included — is one row from the SAME component the first-run tour's
+// provider-choice step uses (walkthrough.js _renderProviderRow), so vendor
+// setup is reachable from Settings at any time (F1) and no vendor is
+// special-cased in how it looks.
 function _renderProviderSettings(cfg) {
   // Fall back to a synthetic claude entry if the providers endpoint hasn't
   // resolved — the Claude sign-in card must never silently disappear.
@@ -12,123 +14,32 @@ function _renderProviderSettings(cfg) {
   }
 
   const defProv = cfg.default_provider || 'claude';
-  const provOpts = provs.map(p =>
-    `<option value="${esc(p.name)}" ${defProv === p.name ? 'selected' : ''}>${esc(p.display_name)}</option>`
-  ).join('');
+  const rows = provs.map(p => window._renderProviderRow(p, {
+    mode: 'settings',
+    defaultName: defProv,
+    signInWhenOk: true,   // Settings keeps re-sign-in / account switching
+    keyEntry: true,       // API-key vendors get their key field in the row
+  })).join('');
 
-  const provRows = provs.map(p => {
-    const isClaude  = p.name === 'claude';
-    const installed = !!p.installed;
-    const authOk    = p.auth_status === 'ok';
-    const authNone  = p.auth_status === 'not_logged_in';
-    const authBad   = p.auth_status === 'invalid_api_key';
-    // MC-934: a key that EXISTS but has no quota left (or never did) must
-    // read distinctly from both "signed in" and "credentials invalid" — it
-    // is neither. Folded into health_check() server-side from a prior
-    // explicit probe (mc/agent_runtime.py GeminiRuntime.health_check), so
-    // this pill stays accurate across a reload, not just for one render.
-    const authQuota = p.auth_status === 'quota_exceeded';
-    const pillColor = !installed ? 'var(--text-faint)'
-                    : authOk     ? 'var(--green)'
-                    : authQuota  ? 'var(--red)'
-                    : authBad    ? 'var(--red)'
-                    : 'var(--amber)';
-    const pillText  = !installed ? 'not installed'
-                    : authOk     ? 'signed in'
-                    : authNone   ? 'not signed in'
-                    : authQuota  ? 'quota exceeded'
-                    : authBad    ? 'credentials invalid'
-                    : 'status unknown';
-    const version   = p.version ? ` · v${esc(p.version)}` : '';
-    // Providers whose auth_probe() spends a real metered API call (MC-934:
-    // Gemini's free tier is 20 calls/day) get a distinct action + cost
-    // disclosure instead of silently being lumped in with the cheap
-    // local-only "Refresh" every other provider gets.
-    const probeCostsQuota = !!(p.capabilities && p.capabilities.auth_probe_spends_quota);
-
-    // Install help: show install command for uninstalled providers
-    const installHint = !installed && p.install_hint
-      ? `<div class="settings-hint" style="margin-top:4px;font-family:monospace;font-size:11px;color:var(--accent)">${esc(p.install_hint)}</div>`
-      : '';
-
-    // Action area differs by provider:
-    //  • claude  → OAuth via the `/login` slash command in a terminal
-    //  • others  → API-key env var + optional terminal login
-    let actionBtns = '';
-    let authControls = '';
-    if (isClaude) {
-      actionBtns = `<div style="display:flex;gap:6px;flex-shrink:0">
-        <button class="btn-add" onclick="settingsClaudeLogin()">Sign in</button>
-        <button class="btn-add" style="background:var(--surface3);color:var(--text)" onclick="settingsRemoteLogin('claude',this)">Sign in remotely</button>
-        <button class="btn-add" style="background:var(--surface3);color:var(--text)" onclick="settingsClaudeAuthCheck()">Check</button>
-      </div>`;
-      authControls = `<div class="settings-hint" style="margin-top:6px" data-remote-login-anchor="claude">
-        Opens a terminal; type <code>/login</code> to finish sign-in. "Sign in remotely" works over the tunnel too.
-        <span id="claude-auth-status-line" style="display:inline-block;margin-left:6px"></span>
-      </div>`;
-    } else if (installed) {
-      const envKey = PROVIDER_AUTH_KEYS[p.name] || '';
-      const keyInput = envKey ? `
-        <div style="display:flex;gap:6px;align-items:center;margin-top:8px;flex-wrap:wrap">
-          <label style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</label>
-          <input id="settings-prov-key-${esc(p.name)}" type="password"
-                 class="settings-input" style="flex:1;min-width:160px"
-                 placeholder="${authOk ? '(saved — paste to replace)' : 'paste API key'}"
-                 autocomplete="off">
-          <button class="btn-add" onclick="settingsProviderSetEnv('${esc(p.name)}','${esc(envKey)}',this)">Save</button>
-        </div>` : '';
-      const loginBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px;margin-right:6px"
-                               onclick="settingsProviderTerminalLogin('${esc(p.name)}',this)">Launch terminal login</button>`;
-      const remoteLoginBtn = `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px;margin-right:6px"
-                               onclick="settingsRemoteLogin('${esc(p.name)}',this)">Sign in remotely</button>`;
-      // Cheap providers keep the old silent "Refresh" (local evidence only,
-      // safe to click freely). A provider whose probe spends real quota gets
-      // a labeled action instead, so clicking it is an informed choice, not
-      // a surprise line-item on tomorrow's "why did my key stop working".
-      const refreshBtn = probeCostsQuota
-        ? `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
-                   title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."
-                   onclick="settingsProviderAuthProbe('${esc(p.name)}',this)">Test key (uses quota)</button>`
-        : `<button class="btn-add" style="background:var(--surface3);color:var(--text);margin-top:8px"
-                  onclick="settingsProviderRefresh('${esc(p.name)}')">Refresh</button>`;
-      const statusLine = probeCostsQuota
-        ? `<div class="settings-hint" id="prov-auth-status-line-${esc(p.name)}" style="margin-top:6px"></div>`
-        : '';
-      authControls = keyInput + `<div data-remote-login-anchor="${esc(p.name)}">${loginBtn}${remoteLoginBtn}${refreshBtn}</div>${statusLine}`;
-    }
-
-    return `
-      <div class="settings-row" style="align-items:flex-start;flex-direction:column">
-        <div style="display:flex;width:100%;align-items:flex-start;gap:10px">
-          <div style="flex:1;min-width:0">
-            <div class="settings-label" style="display:flex;align-items:center;gap:8px">
-              ${esc(p.display_name)}
-              <span id="prov-auth-pill-${esc(p.name)}" style="font-size:10px;font-weight:600;padding:1px 7px;border-radius:10px;background:var(--surface3);color:${pillColor}">
-                <span id="prov-auth-pill-text-${esc(p.name)}">${pillText}</span>${version}
-              </span>
-            </div>
-            ${installHint}
-          </div>
-          ${actionBtns}
-        </div>
-        ${authControls}
-      </div>`;
-  }).join('');
-
-  // The global-default picker is noise when claude is the only provider.
-  const defaultRow = provs.length > 1 ? `
-      <div class="settings-row">
-        <div>
-          <div class="settings-label">Default provider</div>
-          <div class="settings-hint">Used for new chats; change it per chat in the composer.</div>
-        </div>
-        <select class="settings-select" onchange="saveSetting('default_provider',this.value)">${provOpts}</select>
-      </div>` : '';
-
+  // Section toolbar: batch install of the ticked not-installed rows (one
+  // terminal, prerequisite handled once — F7) and a forced re-probe of every
+  // vendor (F8).
+  const anyMissing = provs.some(p => !p.installed);
   return `
     <div class="settings-section" id="settings-providers-section">
-      ${defaultRow}
-      ${provRows}
+      <div style="display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:8px"><!-- not a .settings-row: keeps the section a search "custom-content" unit so vendor names match -->
+        <div>
+          <div class="settings-label">Vendors</div>
+          <div class="settings-hint">Install, sign in and pick the default for every vendor. The default is used for new chats; change it per chat in the composer.</div>
+        </div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          ${anyMissing ? `<button type="button" class="btn-add" id="settings-prov-install-selected"
+                  onclick="settingsInstallSelectedProviders(this)">Install selected</button>` : ''}
+          <button type="button" class="btn-add" style="background:var(--surface3);color:var(--text)"
+                  id="settings-prov-check-status" onclick="wtRefreshProviders()">Check setup status</button>
+        </div>
+      </div>
+      <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows}</div>
     </div>`;
 }
 
@@ -136,8 +47,8 @@ function _renderProviderSettings(cfg) {
 
 // ── Interop: re-expose for the cross-module caller. `_renderProviderSettings`
 //    is interpolated into _renderSettings() by settings-drill.js (module 6)
-//    at render time (runtime) — resolves the window prop. Its provider-action
-//    deps (settingsClaudeLogin / settingsClaudeAuthCheck / PROVIDER_AUTH_KEYS /
-//    settingsProvider*) are window props from module 17 (provider-auth.js);
-//    `_agentProviders` + `esc` are inline globals resolved at call time. ──
+//    at render time (runtime) — resolves the window prop. Its row component
+//    (`_renderProviderRow`) and handlers come from walkthrough.js /
+//    provider-auth.js as window props; `_agentProviders` is an inline global
+//    resolved at call time. ──
 window._renderProviderSettings = _renderProviderSettings;

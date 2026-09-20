@@ -29,9 +29,9 @@ internal static class ClayruneInstaller
     // Exit codes returned by installer/install.ps1. This is a CONTRACT — see
     // the "EXIT CODES" block at the top of that file. Keep them in sync.
     private const int RcOk           = 0;
-    private const int RcPrereq       = 1;  // Node / Claude CLI / runtime shell
+    private const int RcPrereq       = 1;  // explicit provider prerequisite
     private const int RcInstallStep  = 2;  // a [STEP n/5] failed
-    private const int RcNotLoggedIn  = 3;  // Claude CLI present but not authed
+    private const int RcNotLoggedIn  = 3;  // explicit Claude choice not authed
 
     // Held for the process lifetime — see AcquireSingleInstance().
     private static Mutex _instanceLock;
@@ -148,7 +148,10 @@ internal static class ClayruneInstaller
             // through a pointless OAuth login while the real failure was git
             // (clean-VM smoke test, 2026-07-23) — they logged in and hit the
             // identical error. Offer [L] only when login is plausibly the fix.
-            bool offerLogin = (rc == RcNotLoggedIn || rc == RcPrereq);
+            // Only install.ps1's explicit Claude auth branch returns 3. A
+            // generic prerequisite failure must never steer a Codex/Qwen/
+            // Gemini user into a Claude login window.
+            bool offerLogin = (rc == RcNotLoggedIn);
             switch (rc)
             {
                 case RcNotLoggedIn:
@@ -166,7 +169,7 @@ internal static class ClayruneInstaller
                     break;
                 case RcPrereq:
                     Console.WriteLine("  A prerequisite could not be installed (Node.js, Git, or the");
-                    Console.WriteLine("  Claude CLI). The output above says which one and how to");
+                    Console.WriteLine("  selected provider CLI). The output above says which one and how to");
                     Console.WriteLine("  install it by hand.");
                     Console.WriteLine();
                     Console.WriteLine("  If the output above says \"not authenticated\", pick L.");
@@ -176,7 +179,7 @@ internal static class ClayruneInstaller
                     Console.WriteLine("  The installer stopped with an unexpected error (exit code "
                                       + rc + ").");
                     Console.WriteLine("  The full output above shows what happened.");
-                    offerLogin = true;
+                    offerLogin = false;
                     break;
             }
             Console.WriteLine("============================================================");

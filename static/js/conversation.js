@@ -294,6 +294,10 @@ function resolveCharacterMeta(projectId, character) {
                  display_name: (rec && (rec.display_name || rec.name)) || name };
   if (rec && rec.engine) meta.engine = rec.engine;
   if (rec && rec.agent_name) meta.agent_name = rec.agent_name;
+  // Without this the optimistic new-chat row is the newest one for its
+  // persona, so _channelRoster picks it and the Channel row renders an
+  // empty face until the next /conversations poll replaces it.
+  if (rec && rec.avatar) meta.avatar = rec.avatar;
   return meta;
 }
 window.setComposerCharacter = setComposerCharacter;
@@ -343,13 +347,22 @@ function _composerProviderPicker(p) {
   const provs = (_agentProviders || []).filter(x => x.installed);
   if (provs.length <= 1) return '';
   const cur = _composerProvider(p);
+  // VENDOR_AGNOSTIC_PROGRAM.md §4: allowance is the ONLY reason an installed,
+  // signed-in agent may be refused, and it must be SHOWN, never silently
+  // rerouted — an <option> can't carry a colored badge, so the fact is
+  // spelled out in its own label text instead of a separate pill.
   const opts = provs.map(x =>
-    `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.display_name)}</option>`
+    `<option value="${esc(x.name)}" ${x.name === cur ? 'selected' : ''}>${esc(x.display_name)}${
+      x.allowance_exhausted ? ` — ${esc(x.allowance_exhausted)}` : ''}</option>`
   ).join('');
+  const curRec = provs.find(x => x.name === cur);
+  const warn = (curRec && curRec.allowance_exhausted)
+    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent ${window._allowanceRecheckBtn ? window._allowanceRecheckBtn(curRec.name) : ''}</div>`
+    : '';
   return `<div class="composer-provider-row">
     <span class="composer-provider-label">Agent</span>
     <select class="composer-provider-select" onchange="setComposerProvider('${esc(p.id)}',this.value)">${opts}</select>
-  </div>`;
+  </div>${warn}`;
 }
 
 function setComposerProvider(projectId, provider) {
@@ -1050,15 +1063,15 @@ function agentPanelHTML(p) {
   // below, the status line, and the §8 sheet — one source of truth.
   const _personName = noActiveTab ? _composerActiveCharName(p) : 'Claude';
   const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
-  const _attachInput = _pcaps.image_input ? `
+  const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
       onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
   // Desktop: ＋ on the LEFT opens the picker (mirrors the in-chat composer).
   // Mobile: keeps its 📎 to the right of the pill.
-  const _dispatchPlusBtn = _pcaps.image_input ? `
+  const _dispatchPlusBtn = _pcaps.image_attach ? `
     <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#43;</button>` : '';
-  const _attachBtn = _pcaps.image_input ? `
+  const _attachBtn = _pcaps.image_attach ? `
     <button class="btn-attach" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#128206;</button>` : '';
   const _dispatchMicBtn = micBtnHTML(`agent-task-${esc(p.id)}`);
@@ -1123,14 +1136,14 @@ function agentPanelHTML(p) {
     ondragover="handleAgentDragOver(event,this)"
     ondragenter="handleAgentDragOver(event,this)"
     ondragleave="handleAgentDragLeave(event,this)"
-    ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
+    ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
     <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
-      onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
+      onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
     ></textarea>
     ${mobileMode ? _attachBtn : ''}
     ${_dispatchMicBtn}
@@ -1346,15 +1359,15 @@ function agentPanelHTML(p) {
             </div>`
           : '';
     // The hidden file input is shared by both the desktop ＋ and the mobile 📎.
-    const _fuAttachInput = _pcaps.image_input ? `
+    const _fuAttachInput = _pcaps.image_attach ? `
             <input type="file" multiple id="agent-attach-input-fu_${esc(activeSessionId)}" class="agent-attach-input"
               onchange="handleAgentAttachPick(event,'fu_${esc(activeSessionId)}')">` : '';
     // Desktop 3-pane: a ＋ on the LEFT opens the picker (matches the PDF composer:
     // ＋ left, mic right). Mobile keeps its 📎 on the right of the pill.
-    const _fuPlusBtn = _pcaps.image_input ? `
+    const _fuPlusBtn = _pcaps.image_attach ? `
             <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#43;</button>` : '';
-    const _fuAttachBtn = _pcaps.image_input ? `
+    const _fuAttachBtn = _pcaps.image_attach ? `
             <button class="btn-attach" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#128206;</button>` : '';
     const _fuMicBtn = micBtnHTML(`agent-followup-${esc(activeSessionId)}`);
@@ -1365,14 +1378,14 @@ function agentPanelHTML(p) {
               ondragover="handleAgentDragOver(event,this)"
               ondragenter="handleAgentDragOver(event,this)"
               ondragleave="handleAgentDragLeave(event,this)"
-              ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
+              ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
             <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
-              onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
+              onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
             ${_fuMicBtn}
@@ -1517,7 +1530,13 @@ function agentPanelHTML(p) {
         ${_apkBadge}
         ${isActiveOrch ? '<span class="hm-orch-label">&#x2B21; Hivemind</span>' : ''}
         ${stopBtn}
-        ${_pcaps.emits_usage ? `<span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>` : ''}
+        <!-- Always rendered (not gated on _pcaps.emits_usage): the live
+             context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) is available
+             even for providers with no usage/cost telemetry, e.g. Gemini —
+             sessionMetricsHTML/contextCounterHTML decide the content per
+             field, and .token-badge:empty hides the wrapper when there's
+             truly nothing to show for this provider yet. -->
+        <span class="token-badge" id="session-metrics-${esc(activeSessionId)}">${activeSession ? sessionMetricsHTML(activeSession, _pcaps) : ''}</span>
         <span class="agent-activity" id="agent-activity-${esc(activeSessionId)}"></span>
         ${_pcaps.supports_plan_mode ? `<span id="plan-file-btn-${esc(activeSessionId)}">${planFileBtn}</span>` : ''}
         <button class="btn-popout btn-chat-search" onclick="openChatSearch('${esc(p.id)}','${esc(activeSessionId)}')" title="Find in this conversation (Ctrl/Cmd+F)">&#128269; Find</button>
@@ -1983,6 +2002,10 @@ function _userInitiatedConvos(projectId, includeHidden) {
       // log (rather than /conversations) would fail the character-carries-a-
       // human-pick override above and be dropped all over again.
       character: e.character || null,
+      // Same reasoning as `character` above (MC-938) — the fallback path in
+      // _convCharKey resolves off `identity` when `character` is unset, so
+      // dropping it here re-creates the same aged-out-persona loss.
+      identity: e.identity || null,
       // MC-946: same reasoning — an aged-out WORKER needs this to survive the
       // AGENT_SOURCES drop above, same as a persona needs `character`.
       spawned_by_session_id: e.spawned_by_session_id || '',
@@ -4820,6 +4843,8 @@ async function sendFollowup(projectId, sessionId) {
       providerSessionId: cachedForConvo.providerSessionId || '',
       provider: cachedForConvo.provider || 'claude',
       live: true,
+      character: cachedForConvo.character || null,
+      identity: cachedForConvo.identity || null,
     });
   }
 
@@ -5118,7 +5143,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch
@@ -5147,6 +5172,8 @@ async function fetchAgentStatus(projectId) {
           provider: s.provider || 'claude',
           live: ['running', 'idle', 'waiting'].includes(s.status),
           touch: false,
+          character: s.character || null,
+          identity: s.identity || null,
         });
       }
       // Question-form reconciliation (parity with _reconcileAgentBuffer). The

@@ -18,7 +18,9 @@ See docs/MULTI_PROVIDER_DESIGN.md for the full architectural design.
 
 from __future__ import annotations
 
+import base64
 import json
+import inspect
 import os
 import re
 import shutil
@@ -26,6 +28,7 @@ import subprocess
 import sys
 import threading
 import time as _time
+from datetime import datetime, timezone
 import urllib.error
 import urllib.request
 import uuid
@@ -33,7 +36,7 @@ from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
+from typing import Any, Callable, cast, Dict, Iterator, List, Literal, Optional, Tuple
 
 # Reused, not re-derived (UNATTENDED_AGENT_PERMISSIONS_AUDIT §4/§3c): the exact
 # set of trigger_types steward/fence.py already treats as "nobody is reading
@@ -41,6 +44,43 @@ from typing import Any, Callable, Dict, List, Literal, Optional, Tuple
 # nothing from mc/, so this is a one-way, cycle-free dependency (mirrors the
 # existing mc/blueprints/{scheduler,steward}_routes.py -> steward imports).
 from steward.fence import _UNATTENDED_TRIGGER_TYPES as _CODEX_UNATTENDED_TRIGGER_TYPES
+import hashlib
+import tempfile
+from datetime import timedelta
+from mc import allowance_state as _allowance_state
+from mc.execution_policy import (
+    Blocker, Capability, CapabilityClaim, Certification, ExecutionIdentity,
+    Profile, Readiness, RequestedEngine, Support, authorize_execution,
+    required_capabilities,
+)
+from mc.guardrail_hooks import launch_file_if_exists as _guardrail_launch_file
+from mc.guardrail_hooks import codex_hook_config_args as _guardrail_codex_hook_args
+
+# Per-vendor env var each CLI resolves fresh per invocation for a per-launch
+# settings override — verified additive with the user's own config (not a
+# replacement), docs/GUARDRAIL_PARITY_EVIDENCE.md §4. Claude/Codex use an
+# argv flag instead (`--settings`, `-c hooks=`), handled directly in their
+# own build_command().
+_GUARDRAIL_ENV_VAR = {
+    'gemini': 'GEMINI_CLI_SYSTEM_SETTINGS_PATH',
+    'qwen': 'QWEN_CODE_SYSTEM_SETTINGS_PATH',
+}
+
+
+def _inject_guardrail_env(vendor: str, env: Dict[str, str]) -> Dict[str, str]:
+    """Mutate `env` in place, adding the per-launch guardrail env var for
+    `vendor` if (a) it uses one and (b) tools/guards/install_hooks.py has
+    generated a file for it. No-op otherwise — see launch_file_if_exists's
+    docstring for why a not-yet-generated file must mean "add nothing."
+    Call at EVERY subprocess.Popen site for gemini/qwen (dispatch AND
+    write_followup are separate code paths, not a single shared launcher)."""
+    var = _GUARDRAIL_ENV_VAR.get(vendor)
+    if not var:
+        return env
+    path = _guardrail_launch_file(vendor)
+    if path:
+        env[var] = str(path)
+    return env
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -55,6 +95,35 @@ if sys.platform == 'win32':
 else:
     _POPEN_FLAGS = 0
     _STARTUPINFO = None
+
+
+class TransformFailure(RuntimeError):
+    """A text transform that produced no content. It is raised, never returned
+    as text: a failed or quota-exhausted call must not reach Scribe, the
+    Distiller, Claydo or a workflow as if it were the model's answer (Fenn #4).
+
+    `kind` is one of 'refused' (the adapter could not be authorized for the
+    tool-free profile), 'timeout', or 'failed' (non-zero exit, spawn failure,
+    error envelope). `detail` is the adapter's raw reason (rc + output tail),
+    kept verbatim so the allowance layer (VENDOR_AGNOSTIC_PROGRAM §4) can map
+    real exhaustion text to ALLOWANCE_EXHAUSTED without re-running anything.
+    Subclasses RuntimeError so every existing `except RuntimeError` still
+    treats it as a failure.
+    """
+
+    def __init__(self, provider: str, kind: str, detail: str = ''):
+        self.provider = provider
+        self.kind = kind
+        self.detail = detail
+        suffix = f': {detail}' if detail else ''
+        super().__init__(f"Provider '{provider}' text transform {kind}{suffix}")
+
+
+class TransformTimeout(TransformFailure, TimeoutError):
+    """Timed-out transform; still a TimeoutError for routes that map it to 504."""
+
+    def __init__(self, provider: str, detail: str = ''):
+        super().__init__(provider, 'timeout', detail)
 
 
 class CLINotInstalledError(RuntimeError):
@@ -89,6 +158,14 @@ class EventType(str, Enum):
     TURN_END = 'turn_end'
     USAGE = 'usage'
     RATE_LIMIT = 'rate_limit'
+    # A vendor's own signal that its usage allowance is exhausted (not merely
+    # a soft rate-limit warning — RATE_LIMIT covers the ordinary "allowed" /
+    # "allowed_warning" states too). VENDOR_AGNOSTIC_PROGRAM.md §4: normalized
+    # across vendors via mc.allowance_state.detect(), payload shape matches
+    # its return: {limit_kind, resets_at, resets_at_display, raw_ref,
+    # verified}. Never carries content a chat would render as the model's own
+    # answer — readers turn it into a distinct "[out of allowance]" line.
+    ALLOWANCE_EXHAUSTED = 'allowance_exhausted'
     AUTH_ERROR = 'auth_error'
     PLAN_REQUEST = 'plan_request'
     QUESTION = 'question'
@@ -129,7 +206,16 @@ class ProviderCapabilities:
     # Brief-specified fields (CapabilityFlags members)
     emits_cost: bool = False
     emits_num_turns: bool = False
+    # True only when the runtime's DEFAULT model reads image files itself.
+    # Per-model truth comes from AgentRuntime.image_input_for(model) -- one
+    # runtime can front both a blind model (qwen3-coder-plus) and a sighted one
+    # (qwen3-vl-plus).
     image_input: bool = False
+    # True when an attached image reaches the agent one way or the other:
+    # natively (image_input) or, for a model that cannot see, as a described
+    # text block from the vision bridge (mc/vision_bridge.py). The composer
+    # gates paste / drop / attach on THIS, not image_input.
+    image_attach: bool = True
     context_window: Optional[int] = None
     # Context injection
     context_injection: Literal['flag', 'file', 'prepend', 'read-file'] = 'prepend'
@@ -149,7 +235,8 @@ CapabilityFlags = ProviderCapabilities
 @dataclass
 class AuthState:
     status: Literal['ok', 'not_logged_in', 'invalid_api_key', 'unknown',
-                    'not_installed', 'quota_exceeded']
+                    'not_installed', 'quota_exceeded', 'unverified',
+                    'oauth_rejected']
     method: Optional[str] = None
     last_checked: str = ''
     error_text: Optional[str] = None
@@ -352,13 +439,21 @@ def is_nonuser_message(text: str) -> bool:
 # "Continue from where you left off." nudge) that are ordinary continuations,
 # not a retracted draft — only the prefix narrows to the hook-block shape this
 # exists to catch.
+#
+# The LIVE stream-json copy of the same turn has a different shape (captured
+# from Claude Code 2.1.274, tests/fixtures/stop_hook_live_stream.jsonl):
+# `isSynthetic:true` and NO `isMeta`, with `content` a list of text blocks.
+# Requiring `isMeta` alone meant the live readers never recognised it, and the
+# transcript fallback (stop_hook_precedes) loses the race whenever the resend
+# opens with a thinking block, which reaches disk seconds after stdout.
 STOP_HOOK_FEEDBACK_PREFIX = 'Stop hook feedback:'
 
 
 def is_stop_hook_feedback(raw_msg: Dict[str, Any]) -> bool:
     """True for a synthetic Stop-hook block/resend turn in a raw stream-json /
     transcript message dict (the same shape `parse_event()` receives)."""
-    if not isinstance(raw_msg, dict) or not raw_msg.get('isMeta'):
+    if not isinstance(raw_msg, dict) or not (
+            raw_msg.get('isMeta') or raw_msg.get('isSynthetic')):
         return False
     content = (raw_msg.get('message') or {}).get('content', '')
     if isinstance(content, list):
@@ -584,8 +679,80 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
             continue
         if _SEED_LINE_RE.match(stripped):
             continue
+        # A line with no letter or digit (a lone `]`, `}`, `)`) is the tail of
+        # a multi-line message, never a cause. Live 2026-09-19: a Qwen 404
+        # whose text was an HTML page wrapped in `[API Error: ... ]` left a
+        # bare `]` as the last physical line, so the chat read
+        # "Qwen Code error: ]".
+        if not any(c.isalnum() for c in stripped):
+            continue
         return stripped
     return None
+
+
+_HTML_DOC_RE = re.compile(r'<!doctype html|<html[\s>]', re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
+
+
+def _flatten_error_text(text: Any, limit: int = 600) -> str:
+    """One physical line for a CLI's error text.
+
+    `log_lines` entries are joined with newlines into the tail that
+    `_last_real_error_line` scans line by line, so an entry that itself spans
+    lines is cut apart and only its last fragment survives. A gateway 404
+    arrives as a whole HTML page; strip the markup (only when it is a page, so
+    `expected <int>` is left alone), collapse the whitespace, and cap it.
+    """
+    t = str(text)
+    if _HTML_DOC_RE.search(t):
+        t = _HTML_TAG_RE.sub(' ', t)
+    t = ' '.join(t.split())
+    return t if len(t) <= limit else t[:limit].rstrip() + '...'
+
+
+def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
+    """Reconstruct the final turn's full reply from `log_lines`.
+
+    Claude's block-based reader pushes ONE array element per complete
+    message/content-block (agent_routes.py's claude stream reader,
+    `_visible` appended whole), so the single last non-bracket line already
+    IS the entire reply. Every Mode-A provider instead pushes one element
+    PER STREAMED DELTA CHUNK — `GeminiRuntime._read_stream` appends each
+    `_txt` fragment separately (joined with `''` only in its own local
+    `turn_text_parts`, never back into `log_lines`), and the shared
+    `_mode_a_reader` (Codex/OpenCode/Goose/Aider/Kiro/Qwen) does the same.
+    Taking only the single last line therefore returns just the FINAL delta
+    and silently drops every earlier fragment of that reply.
+
+    Measured live 2026-09-18: a Gemini turn that replied exactly
+    "LIVE2-OK-gemini" streamed as two delta chunks and was persisted as
+    summary "-OK-gemini" — the entire leading chunk lost, not just its first
+    character.
+
+    Walks backward past trailing bracket/seed-line noise, then collects
+    every CONSECUTIVE real-content line and joins them in stream order
+    (mirroring the `''` join `_read_stream` uses for its own local buffer) —
+    a no-op for Claude's one-line-per-message shape, a full reconstruction
+    for delta-chunked providers.
+    """
+    collected: List[str] = []
+    for line in reversed(lines or []):
+        if not line or line.startswith('\n---'):
+            if collected:
+                break
+            continue
+        stripped = line.strip()
+        if stripped.startswith('['):
+            if collected:
+                break
+            continue
+        if _SEED_LINE_RE.match(stripped):
+            if collected:
+                break
+            continue
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -669,6 +836,15 @@ class AgentRuntime(ABC):
             return f"{self.ATTACHMENT_INSTRUCTION}\n\n{text}"
         return text
 
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Context held by a finished turn's LAST model request, for the
+        token rollover trigger. Default: the turn's usage dict normalized.
+        A runtime whose turn usage is a sum over several requests overrides
+        this (QwenRuntime), or the rollover fires on a phantom figure."""
+        return normalize_context_tokens(usage)
+
     # ── MC Tool Protocol (provider-agnostic emulated tools) ───────────────────
     def with_mc_tool_protocol(self, system_prompt: str) -> str:
         """Append the MC Tool Protocol instructions to a system prompt so a
@@ -702,6 +878,16 @@ class AgentRuntime(ABC):
     def health_check(self) -> HealthStatus:
         """Probe install + auth state. May spawn the binary with --version."""
         ...
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Ask the vendor, WITHOUT spending tokens, whether it is usable.
+
+        True = the vendor confirms usable (a stale exhaustion record may be
+        cleared); anything else must leave a record standing. None = no cheap
+        probe exists for this vendor or it did not answer — the default, and
+        deliberate: see mc/allowance_probe.py for why none is invented.
+        """
+        return None
 
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
@@ -800,6 +986,85 @@ class AgentRuntime(ABC):
         """
         return None
 
+    # ── Vision (model-level) ──────────────────────────────────────────────────
+    # (regex, has_vision) pairs, first match wins on the lower-cased model id;
+    # no match falls back to capabilities().image_input. A runtime overrides
+    # this when its catalog mixes sighted and blind models.
+    VISION_MODEL_PATTERNS: Tuple[Tuple[str, bool], ...] = ()
+
+    def image_input_for(self, model: str = '') -> bool:
+        """True when `model` (or the runtime default, if empty) can see images.
+
+        image_input alone is per-RUNTIME and cannot say "qwen3-coder-plus is
+        blind, qwen3-vl-plus is not". Every vision decision goes through here.
+        """
+        m = (model or '').strip().lower()
+        if m:
+            for pattern, sighted in self.VISION_MODEL_PATTERNS:
+                if re.search(pattern, m):
+                    return bool(sighted)
+        try:
+            return bool(self.capabilities().image_input)
+        except Exception:
+            return False
+
+    # Model this runtime uses when it is the one DESCRIBING an image for a
+    # blind agent (mc/vision_bridge.py). '' = this runtime is not a describer.
+    VISION_DESCRIBE_MODEL: str = ''
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Tool-free single call that shows the model ONE image and returns its
+        text. Must run inside the same isolation as oneshot(); a runtime that
+        cannot do that leaves this as None (= not a describer). On failure
+        returns None and leaves the reason in `last_error`.
+        """
+        return None
+
+    # A policy certificate describes an expected boundary; it cannot enforce
+    # one.  Adapters must opt in only after their command construction and
+    # transport have been independently verified to disable tools/MCP/hooks/
+    # plugins/config inheritance.  The conservative default is refusal.
+    tool_free_transform_enforced: bool = False
+
+    def stream_text(self, *, prompt: str, system_prompt: str = '',
+                    model: str = '', effort: str = '', max_turns: int = 1,
+                    stdin_text: Optional[str] = None,
+                    cwd: Optional[str] = None) -> Iterator[str]:
+        """Yield text produced by a short provider operation.
+
+        Providers with a native text stream override this boundary. The base
+        implementation deliberately yields one delta from ``oneshot`` so a
+        feature can preserve its streaming response contract even when the
+        selected provider only exposes a non-streaming transform.
+        """
+        kwargs: Dict[str, Any] = {
+            'prompt': prompt,
+            'system_prompt': system_prompt,
+            'model': model,
+            'max_turns': max_turns,
+            'stdin_text': stdin_text,
+            'cwd': cwd,
+        }
+        try:
+            params = inspect.signature(self.oneshot).parameters
+            accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                                 for p in params.values())
+        except (TypeError, ValueError):
+            params = {}
+            accepts_kwargs = False
+        if effort and ('effort' in params or accepts_kwargs):
+            kwargs['effort'] = effort
+        result = self.oneshot(**kwargs)
+        if result is None:
+            detail = str(getattr(self, 'last_error', '') or '').strip()
+            if detail.lower().startswith('timeout'):
+                raise TransformTimeout(self.name, detail)
+            raise TransformFailure(self.name, 'failed', detail)
+        text = str(getattr(result, 'text', '') or '')
+        if text:
+            yield text
+
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         """Translate a non-zero exit code + recent output into a user-friendly hint.
 
@@ -884,6 +1149,143 @@ def get_runtime(name: str) -> AgentRuntime:
     if name not in _RUNTIMES:
         raise KeyError(f"unknown runtime: {name!r}")
     return _RUNTIMES[name]
+
+
+def _argv_contains(argv: List[str], run: Tuple[str, ...]) -> bool:
+    """True if `run` appears in `argv` as one contiguous, in-order slice."""
+    n = len(run)
+    return n > 0 and any(tuple(argv[i:i + n]) == run
+                         for i in range(len(argv) - n + 1))
+
+
+def _authorize_text_transform(runtime: AgentRuntime, provider: str, *,
+                              model: str, effort: str,
+                              identity: Optional[ExecutionIdentity],
+                              readiness: Optional[Readiness],
+                              certification: Optional[Certification],
+                              blockers: tuple[Blocker, ...]) -> None:
+    """Authorize before either oneshot or streaming transform input delivery.
+
+    Every transform goes through execution_policy.authorize_execution with the
+    TOOL_FREE_TRANSFORM profile. A caller may supply its own evidence; when it
+    supplies none, the adapter's own `transform_evidence()` produces it. An
+    adapter without that method cannot prove it is tool-free, so it refuses.
+    """
+    if not getattr(runtime, 'tool_free_transform_enforced', False):
+        raise TransformFailure(
+            provider, 'refused',
+            'cannot enforce tool-free transforms; not yet certified for the '
+            'tool_free_transform profile, refusing input rather than risk a '
+            'substitution')
+    if identity is None and readiness is None and certification is None:
+        make = getattr(runtime, 'transform_evidence', None)
+        if not callable(make):
+            raise TransformFailure(
+                provider, 'refused', 'cannot prove a tool-free transform; refusing input')
+        identity, readiness, certification = cast(
+            Tuple[ExecutionIdentity, Readiness, Certification],
+            make(model=model or "", effort=effort or ""))
+    if identity is None or readiness is None or certification is None:
+        raise TransformFailure(
+            provider, 'refused', 'lacks fresh tool-free authorization')
+    try:
+        authorize_execution(
+            identity, Profile.TOOL_FREE_TRANSFORM, readiness=readiness,
+            certification=certification, blockers=blockers,
+            required=frozenset(), now=datetime.now(timezone.utc),
+        )
+    except Exception as exc:
+        raise TransformFailure(provider, 'refused', f'unauthorized: {exc}') from exc
+
+
+def run_text_transform(provider: str, *, prompt: str, system_prompt: str = '',
+                       model: str = '', effort: str = '',
+                       stdin_text: Optional[str] = None,
+                       cwd: Optional[str] = None,
+                       max_turns: int = 1,
+                       identity: Optional[ExecutionIdentity] = None,
+                       readiness: Optional[Readiness] = None,
+                       certification: Optional[Certification] = None,
+                       blockers: tuple[Blocker, ...] = (),
+                       timeout: Optional[int] = None) -> str:
+    """Run a provider-selected, non-interactive text transform.
+
+    Feature routes should not know a provider's executable or command-line
+    flags.  This small adapter is the common seam for Claydo/profile helpers,
+    summaries, and other short generated artifacts.  ``effort`` is forwarded
+    when the selected runtime advertises it in its oneshot signature (or via
+    ``**kwargs``); runtimes that do not support an effort control retain their
+    native behavior rather than silently selecting a Claude tier.
+
+    A failed/unsupported call raises ``TransformFailure`` (a RuntimeError;
+    ``TransformTimeout`` is also a TimeoutError) so the route can return its
+    existing provider-neutral error response. Failure is never content.  Returning
+    an empty successful answer is allowed: callers decide whether that output
+    is useful for their particular artifact.
+    """
+    runtime = get_runtime((provider or '').strip().lower())
+    _authorize_text_transform(runtime, provider, model=model, effort=effort,
+                              identity=identity, readiness=readiness,
+                              certification=certification, blockers=blockers)
+    fn = getattr(runtime, 'oneshot', None)
+    if not callable(fn):
+        raise RuntimeError(f"Provider '{provider}' does not support text transforms")
+
+    kwargs: Dict[str, Any] = {
+        'prompt': prompt,
+        'system_prompt': system_prompt,
+        'model': model,
+        'max_turns': max_turns,
+        'stdin_text': stdin_text,
+        'cwd': cwd,
+    }
+    try:
+        params = inspect.signature(fn).parameters
+        accepts_kwargs = any(p.kind == inspect.Parameter.VAR_KEYWORD
+                             for p in params.values())
+    except (TypeError, ValueError):
+        params = {}
+        accepts_kwargs = False
+    if effort and ('effort' in params or accepts_kwargs):
+        kwargs['effort'] = effort
+    if timeout is not None and ('timeout' in params or accepts_kwargs):
+        kwargs['timeout'] = timeout
+
+    result = fn(**kwargs)
+    if result is None:
+        detail = str(getattr(runtime, 'last_error', '') or '').strip()
+        if detail.lower().startswith('timeout'):
+            raise TransformTimeout(provider, detail)
+        raise TransformFailure(provider, 'failed', detail)
+    return str(getattr(result, 'text', '') or '')
+
+
+def stream_text_transform(provider: str, *, prompt: str,
+                          system_prompt: str = '', model: str = '',
+                          effort: str = '', stdin_text: Optional[str] = None,
+                          cwd: Optional[str] = None,
+                          max_turns: int = 1,
+                          identity: Optional[ExecutionIdentity] = None,
+                          readiness: Optional[Readiness] = None,
+                          certification: Optional[Certification] = None,
+                          blockers: tuple[Blocker, ...] = ()) -> Iterator[str]:
+    """Return a provider-neutral iterator for short text streaming.
+
+    The caller owns only the response protocol. Provider command construction,
+    parsing, timeout handling, and child cleanup stay inside the runtime. A
+    runtime without native streaming uses the base one-delta fallback.
+    """
+    runtime = get_runtime((provider or '').strip().lower())
+    _authorize_text_transform(runtime, provider, model=model, effort=effort,
+                              identity=identity, readiness=readiness,
+                              certification=certification, blockers=blockers)
+    fn = getattr(runtime, 'stream_text', None)
+    if not callable(fn):
+        raise RuntimeError(f"Provider '{provider}' does not support text streaming")
+    return cast(Iterator[str], fn(
+        prompt=prompt, system_prompt=system_prompt, model=model,
+        effort=effort, stdin_text=stdin_text, cwd=cwd,
+        max_turns=max_turns))
 
 
 def available_runtimes() -> List[AgentRuntime]:
@@ -1246,6 +1648,7 @@ class ClaudeRuntime(AgentRuntime):
     """
 
     name = 'claude'
+    tool_free_transform_enforced = True
     display_name = 'Claude Code'
     # Mirrors MC_MODEL_CHOICES in static/js/modal-manager.js (the Agent-settings
     # + chat-pill picker). Keep the two in step when a model ships or retires.
@@ -1353,7 +1756,8 @@ class ClaudeRuntime(AgentRuntime):
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
                       effort: str = '', mcp_config_json: str = '',
-                      partial_messages: bool = False) -> List[str]:
+                      partial_messages: bool = False,
+                      skill_overrides: Optional[Dict[str, str]] = None) -> List[str]:
         """Return [binary, *flags]. Equivalent to _build_claude_flags() in server.py.
 
         Config values are passed explicitly (not read from server.py CONFIG) so
@@ -1368,6 +1772,9 @@ class ClaudeRuntime(AgentRuntime):
                               in server.py). '' / empty → omit the flags entirely,
                               so the session inherits the full global+project fleet
                               exactly as before (default-off invariant).
+            skill_overrides = {skill: 'name-only'} from mc/skill_scoping.py. Empty /
+                              None → the `--settings` argument is byte-for-byte what it
+                              was (guardrail file alone, or absent).
 
         The returned list is [binary, '--print', '--verbose', ...] — callers extend
         with -p <task>, --append-system-prompt <ctx>, -r <csid>, etc.
@@ -1406,6 +1813,26 @@ class ClaudeRuntime(AgentRuntime):
         # to keep — e.g. engram). Empty string → no flags → full fleet, unchanged.
         if mcp_config_json and mcp_config_json.strip():
             cmd.extend(['--strict-mcp-config', '--mcp-config', mcp_config_json])
+        # Per-launch guardrail injection (W2 redesign, docs/GUARDRAIL_PARITY_EVIDENCE.md
+        # §4): `--settings <file>` loads ADDITIONAL settings for this invocation only —
+        # never touches ~/.claude/settings.json, and live-verified (2026-09-18) to be
+        # additive with whatever the user has configured for themselves, not a
+        # replacement. No-op when tools/guards/install_hooks.py hasn't generated the
+        # file yet (fresh install, boot still running) — see launch_file_if_exists's
+        # docstring for why that must mean "add nothing," not "add a broken path."
+        guardrail_settings = _guardrail_launch_file('claude')
+        # Per-agent skill scoping rides in the SAME file: `--settings` takes one
+        # value, so the overrides are merged into a content-addressed copy of the
+        # guardrail file instead of being a second flag. On any failure the
+        # unscoped guardrail file is used — scoping never costs the guard.
+        if skill_overrides:
+            from mc import skill_scoping as _skill_scoping
+            from mc.guardrail_hooks import hooks_dir as _hooks_dir
+            scoped = _skill_scoping.scoped_settings_path(
+                guardrail_settings, skill_overrides, _hooks_dir() / 'scoped')
+            guardrail_settings = scoped or guardrail_settings
+        if guardrail_settings:
+            cmd.extend(['--settings', str(guardrail_settings)])
         return cmd
 
     # ── JSONL event parser — lifted from _read_agent_stream in server.py ──────
@@ -1478,7 +1905,10 @@ class ClaudeRuntime(AgentRuntime):
                         'type': 'thinking',
                         'text': block.get('thinking') or block.get('text', ''),
                     })
-            # Primary type: determined by the first content block
+            # Primary type: determined by the first content block. Consumers
+            # that gate on TOOL_USE (the doc-write scanner, subagent tool
+            # counts) depend on this. A consumer that needs every text block
+            # must read payload['blocks'] itself -- see stream_text.
             primary_type = EventType.ASSISTANT_TEXT
             if blocks:
                 first_bt = blocks[0].get('type', 'text')
@@ -1543,6 +1973,16 @@ class ClaudeRuntime(AgentRuntime):
 
         if msg_type == 'rate_limit_event':
             ri = msg.get('rate_limit_info', {}) or {}
+            # A rejected/exceeded status is exhaustion, not a soft warning —
+            # give it its own normalized shape (mc.allowance_state.detect)
+            # instead of leaving callers to notice inside a RATE_LIMIT event.
+            _exhausted = _allowance_state.detect_from_claude_rate_limit_event(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='claude',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             return AgentEvent(
                 type=EventType.RATE_LIMIT, provider='claude',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -2130,10 +2570,100 @@ class ClaudeRuntime(AgentRuntime):
 
     # ── Oneshot — lifted from _scribe_call() in server.py ────────────────────
 
+    # The tool-free transform boundary, shared by oneshot() and stream_text().
+    # Verified live 2026-09-17 (claude 2.1.274) by reading the stream-json
+    # init event: tools=[], plugins=[], skills=[], and no hook_started events,
+    # with OAuth sign-in still working. The flags it replaced
+    # (`--allowedTools ''` + strict empty MCP) still loaded 34 tools, 4
+    # plugins and 72 skills and ran the user's SessionStart hooks.
+    # `--settings '{"disableAllHooks":true}'` was also measured and still
+    # loaded all 4 plugins, hence `--setting-sources ''`. Side effect: the
+    # user's settings.json (env, model) and the cwd CLAUDE.md are not loaded,
+    # so callers must pass everything the model needs explicitly.
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '--tools', '',
+        '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
+        '--setting-sources', '',
+        '--disable-slash-commands',
+    )
+    TRANSFORM_EVIDENCE_ID = 'claude-2.1.274-init-event-probe-2026-09-17'
+
+    @staticmethod
+    def _merge_oneshot_instruction(prompt: str, system_prompt: str,
+                                   cwd: Optional[str]) -> str:
+        """Prepend the brief. The isolated transform does NOT auto-load the cwd
+        CLAUDE.md (measured 2026-09-17), so a brief matching it must still be
+        sent -- skipping it silently dropped Claydo's project context."""
+        return ((system_prompt + '\n\n' + prompt).strip()
+                if system_prompt else prompt)
+
+    def _oneshot_argv(self, *, model: str = '', max_turns: int = 1,
+                      effort: str = '') -> List[str]:
+        cmd = [
+            self.resolve_binary_str(), '-p',
+            '--model', model or 'claude-haiku-4-5-20251001',
+            '--max-turns', str(max(1, int(max_turns))),
+            *self.TRANSFORM_ISOLATION,
+        ]
+        if effort:
+            cmd.extend(['--effort', str(effort)])
+        return cmd
+
+    def _stream_argv(self, *, model: str = '', max_turns: int = 1,
+                     effort: str = '') -> List[str]:
+        cmd = [
+            self.resolve_binary_str(), '--max-turns', str(max(1, int(max_turns))),
+            '--print', '--verbose', '--input-format', 'stream-json',
+            '--output-format', 'stream-json',
+            *self.TRANSFORM_ISOLATION,
+        ]
+        if model:
+            cmd.extend(['--model', model])
+        if effort:
+            cmd.extend(['--effort', str(effort)])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM).
+
+        Readiness reads the cached install/auth state (no spawn), with the same
+        "auth not known-bad" rule claude_oneshot_available() always used. The
+        certification is a self-check: every capability is SUPPORTED only if
+        BOTH argv builders actually carry TRANSFORM_ISOLATION -- the flag set
+        whose effect was measured live (TRANSFORM_EVIDENCE_ID). Drop a flag and
+        every transform refuses instead of running with tools.
+        """
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('claude', model or '', effort or '', 'default'),
+            'claude-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if claude_installed() else Support.UNSUPPORTED
+        try:
+            auth_ok = (self.auth_status() or {}).get('ok') is not False
+        except Exception as e:
+            print(f'[runtime:claude] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True  # an auth-check failure is not evidence claude is unusable
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        isolated = all(_argv_contains(argv, self.TRANSFORM_ISOLATION) for argv in (
+            self._oneshot_argv(model=model, effort=effort),
+            self._stream_argv(model=model, effort=effort)))
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM) | {Capability.EFFORT_SELECTION}
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
-                cwd: Optional[str] = None,
+                cwd: Optional[str] = None, effort: str = '',
                 timeout: int = 180) -> Optional[OneshotResult]:
         """Non-interactive claude -p call for Scribe / condense / Distiller.
 
@@ -2155,10 +2685,12 @@ class ClaudeRuntime(AgentRuntime):
         prose (rc=0 but no JSON). Removing the tools removes both the hazard and
         the failure mode — a validated 4/4 parse rate, up from 1/4.
 
-        So the sandbox below is load-bearing, not hygiene:
-          • `--allowedTools ''`  — no tools at all
-          • `--strict-mcp-config --mcp-config {}` — no MCP fleet (also stops
-            loading every server into every cheap call)
+        So the sandbox below is load-bearing, not hygiene (TRANSFORM_ISOLATION):
+          • `--tools ''` — an empty tool set. `--allowedTools ''` was NOT
+            that: measured 2026-09-17, it left 34 tools in the model's set
+          • `--strict-mcp-config --mcp-config {}` — no MCP fleet
+          • `--setting-sources ''` + `--disable-slash-commands` — no user
+            hooks, plugins or skills
           • NO `--dangerously-skip-permissions` — nothing to permit anyway
         Do not "restore" these flags to make some future caller work; if a
         caller needs tools, it is not a oneshot and belongs on the agent path.
@@ -2168,7 +2700,7 @@ class ClaudeRuntime(AgentRuntime):
         collapsed timeout / spawn-failure / non-zero-exit into an indistinguish-
         able None, which is why 78 extraction errors sat unexplained for weeks.
         """
-        instruction = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
+        instruction = self._merge_oneshot_instruction(prompt, system_prompt, cwd)
         body = stdin_text or ''
         if body:
             # Fence the transcript as DATA and RESTATE the instruction after it.
@@ -2189,13 +2721,7 @@ class ClaudeRuntime(AgentRuntime):
         else:
             stdin_payload = instruction
 
-        cmd = [
-            self.resolve_binary_str(), '-p',
-            '--model', model or 'claude-haiku-4-5-20251001',
-            '--max-turns', str(max(1, int(max_turns))),
-            '--allowedTools', '',
-            '--strict-mcp-config', '--mcp-config', '{"mcpServers":{}}',
-        ]
+        cmd = self._oneshot_argv(model=model, max_turns=max_turns, effort=effort)
         self.last_error = ''
         try:
             r = subprocess.run(
@@ -2222,6 +2748,159 @@ class ClaudeRuntime(AgentRuntime):
             self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
         return OneshotResult(text=(r.stdout or '').strip())
+
+    VISION_DESCRIBE_MODEL = 'claude-haiku-4-5-20251001'
+    _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
+                          '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                          '.webp': 'image/webp'}
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Claude ONE image through the tool-free stream-json transform
+        (same TRANSFORM_ISOLATION as oneshot): the image rides as a base64
+        content block on stdin, so the model needs no file tool to see it."""
+        self.last_error = ''
+        media = self._IMAGE_MEDIA_TYPES.get(Path(path).suffix.lower())
+        if not media:
+            self.last_error = f'unsupported image type: {Path(path).suffix or "(none)"}'
+            return None
+        try:
+            _authorize_text_transform(self, 'claude', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+            data = base64.b64encode(Path(path).read_bytes()).decode('ascii')
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        cmd = self._stream_argv(model=model or self.VISION_DESCRIBE_MODEL, max_turns=1)
+        payload = json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': media, 'data': data}},
+            {'type': 'text', 'text': prompt},
+        ]}}) + '\n'
+        try:
+            r = subprocess.run(
+                cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(Path.home()), text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)),
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        parts: List[str] = []
+        result_error = ''
+        for line in (r.stdout or '').splitlines():
+            ev = self.parse_event(line.strip())
+            if ev is None:
+                continue
+            if ev.type == EventType.TURN_END and ev.raw and ev.raw.get('is_error'):
+                result_error = str(ev.raw.get('result') or 'Claude could not complete this request')
+            if ev.type in (EventType.ASSISTANT_TEXT, EventType.THINKING, EventType.TOOL_USE):
+                for block in ev.payload.get('blocks', []):
+                    if isinstance(block, dict) and block.get('type') == 'text' and block.get('text'):
+                        parts.append(str(block['text']))
+        text = '\n'.join(parts).strip()
+        if r.returncode != 0 or result_error:
+            tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
+            self.last_error = result_error or f'rc={r.returncode}: {tail[:300]}'
+            return None
+        if not text:
+            self.last_error = 'empty description'
+            return None
+        return OneshotResult(text=text)
+
+    def stream_text(self, *, prompt: str, system_prompt: str = '',
+                    model: str = '', effort: str = '', max_turns: int = 1,
+                    stdin_text: Optional[str] = None,
+                    cwd: Optional[str] = None) -> Iterator[str]:
+        """Stream a short no-tools response through Claude's JSONL protocol.
+
+        Provider command construction, process lifecycle, parsing, incremental
+        assistant deltas, and disconnect cleanup remain adapter-owned.
+        """
+        instruction = self._merge_oneshot_instruction(prompt, system_prompt, cwd)
+        if stdin_text:
+            instruction = f'{instruction}\n\n{stdin_text}'
+        cmd = self._stream_argv(model=model, max_turns=max_turns, effort=effort)
+        stdin_payload = json.dumps({
+            'type': 'user',
+            'message': {'role': 'user', 'content': instruction},
+        }) + '\n'
+        proc = None
+        text_parts: List[str] = []
+        result_error = ''
+        try:
+            try:
+                proc = subprocess.Popen(
+                    cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE, cwd=cwd or str(Path.home()),
+                    text=True, encoding='utf-8', errors='replace',
+                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
+                )
+            except FileNotFoundError as e:
+                raise CLINotInstalledError(
+                    'Claude CLI not found on this server') from e
+            try:
+                assert proc.stdin is not None
+                proc.stdin.write(stdin_payload)
+                proc.stdin.flush()
+                proc.stdin.close()
+            except Exception as e:
+                raise RuntimeError(f'stdin write failed: {e}') from e
+
+            assert proc.stdout is not None
+            for raw in iter(proc.stdout.readline, ''):
+                line = raw.rstrip('\n')
+                if not line:
+                    continue
+                event = self.parse_event(line)
+                if event is None:
+                    continue
+                if event.type == EventType.TURN_END and event.raw:
+                    if event.raw.get('is_error'):
+                        errors = event.raw.get('errors') or []
+                        if not isinstance(errors, list):
+                            errors = [errors]
+                        result_error = '\n'.join(str(e) for e in errors if e)
+                        result_error = result_error or str(event.raw.get('result') or '')
+                        result_error = result_error or 'Claude could not complete this request'
+                # An assistant message is classified by its FIRST block, so a
+                # [thinking, text] message arrives as THINKING. Read the text
+                # blocks of every assistant-message event, never just the
+                # ASSISTANT_TEXT ones, or the answer after a thinking block is
+                # silently dropped (Fenn #2).
+                if event.type not in (EventType.ASSISTANT_TEXT,
+                                      EventType.THINKING, EventType.TOOL_USE):
+                    continue
+                for block in event.payload.get('blocks', []):
+                    if not isinstance(block, dict) or block.get('type') != 'text':
+                        continue
+                    text = str(block.get('text') or '')
+                    if text:
+                        text_parts.append(text)
+                        yield text
+
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired as e:
+                raise TransformTimeout('claude', 'Claude timed out while exiting') from e
+            if proc.returncode != 0 or result_error:
+                stderr = ''
+                try:
+                    stderr = (proc.stderr.read() if proc.stderr else '').strip()[:500]
+                except Exception as e:
+                    print(f'[runtime:claude-stream] reading CLI error output failed: {e}', flush=True)
+                raise TransformFailure('claude', 'failed',
+                                       result_error or stderr or ''.join(text_parts).strip()
+                                       or f'Claude exit {proc.returncode}')
+        finally:
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                except Exception as e:
+                    print(f'[runtime:claude-stream] stopping process failed: {e}', flush=True)
 
     # ── Health check ──────────────────────────────────────────────────────────
 
@@ -2489,6 +3168,7 @@ class GeminiRuntime(AgentRuntime):
     """
 
     name = 'gemini'
+    tool_free_transform_enforced = True
     display_name = 'Gemini CLI'
     # Verified 2026-08-31 against the LIVE API (ListModels + a real generateContent
     # call per id), NOT against the CLI's own constants. That distinction is the
@@ -2510,6 +3190,115 @@ class GeminiRuntime(AgentRuntime):
     ]
 
     _bin_cache: Optional[str] = None
+
+    # Certified tool-free (VENDOR_AGNOSTIC_PROGRAM §2/§8b W1). Measured live
+    # 2026-09-18 against gemini-cli 0.59.0: a fresh cwd + this box's REAL
+    # `~/.gemini/settings.json` (four live mcpServers: tradingview,
+    # sequential-thinking, mail, higgsfield) still ran an MCP-shaped
+    # `update_topic` tool call on a plain "say hi" — user-level config loads
+    # from an empty directory. `GEMINI_CLI_HOME` pointed at an isolated,
+    # never-populated directory removes that config entirely (no
+    # settings.json means no mcpServers to discover); `--policy` with a
+    # `toolName = "*"` + `mcpName = "*"` deny-all rule is the second layer,
+    # because the policy engine's own docs promise a `deny` rule EXCLUDES the
+    # tool from the model's option set, not just from execution. Live
+    # comparison of `stream-json` output with/without the policy: identical
+    # prompt, unrestricted run emits `tool_use`/`tool_result` events and
+    # `stats.tools.totalCalls: 2`; under this policy the same prompt emits
+    # zero tool events and `totalCalls: 0`. `--skip-trust` is required to run
+    # headless in a directory gemini hasn't seen before (a trust prompt, not
+    # a tool grant) and `-e none` drops extensions (none exist in the
+    # isolated home, kept for defense-in-depth against a future one).
+    TRANSFORM_EVIDENCE_ID = 'gemini-0.59.0-policy-denyall-probe-2026-09-18'
+    _TRANSFORM_POLICY_TOML = (
+        '[[rule]]\n'
+        'toolName = "*"\n'
+        'decision = "deny"\n'
+        'priority = 999\n'
+        'denyMessage = "tool_free_transform profile: no tools permitted"\n'
+        '\n'
+        '[[rule]]\n'
+        'toolName = "*"\n'
+        'mcpName = "*"\n'
+        'decision = "deny"\n'
+        'priority = 999\n'
+        'denyMessage = "tool_free_transform profile: no MCP tools permitted"\n'
+    )
+    _transform_home: Optional[str] = None
+    _transform_policy_file: Optional[str] = None
+
+    @classmethod
+    def _transform_home_dir(cls) -> str:
+        """Isolated GEMINI_CLI_HOME: never holds a settings.json, so there is
+        no mcpServers/extensions entry to discover regardless of what the
+        real `~/.gemini` carries on this machine."""
+        if cls._transform_home is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'gemini-home'
+            path.mkdir(parents=True, exist_ok=True)
+            cls._transform_home = str(path)
+        return cls._transform_home
+
+    @classmethod
+    def _transform_policy_path(cls) -> str:
+        """Materialize the deny-all policy TOML once, idempotently."""
+        if cls._transform_policy_file is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'gemini-tool-free.toml'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                if path.read_text(encoding='utf-8') != cls._TRANSFORM_POLICY_TOML:
+                    raise ValueError('stale')
+            except Exception:
+                path.write_text(cls._TRANSFORM_POLICY_TOML, encoding='utf-8')
+            cls._transform_policy_file = str(path)
+        return cls._transform_policy_file
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        bin_path = self.resolve_binary()
+        cmd = [str(bin_path) if bin_path else 'gemini',
+               '--skip-trust', '-e', 'none', '--policy', self._transform_policy_path()]
+        if model:
+            cmd.extend(['--model', model])
+        return cmd
+
+    def _transform_env(self) -> Dict[str, str]:
+        env = os.environ.copy()
+        env['GEMINI_CLI_HOME'] = self._transform_home_dir()
+        return env
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM). Same shape
+        as ClaudeRuntime.transform_evidence: a self-check that the argv this
+        adapter would actually spawn still carries every isolation flag, so a
+        dropped flag fails every transform closed instead of running with
+        tools. `effort` isn't a gemini concept — accepted for signature
+        parity, never forwarded."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            (self._TRANSFORM_POLICY_TOML + '|GEMINI_CLI_HOME-isolated').encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('gemini', model or '', effort or '', 'default'),
+            'gemini-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if self.resolve_binary() else Support.UNSUPPORTED
+        try:
+            auth_ok = (self.auth_status() or {}).get('ok') is not False
+        except Exception as e:
+            print(f'[runtime:gemini] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        argv = self._transform_argv(model=model)
+        isolated = (_argv_contains(argv, ('--skip-trust',))
+                   and _argv_contains(argv, ('-e', 'none'))
+                   and _argv_contains(argv, ('--policy', self._transform_policy_path())))
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
 
     def __init__(self) -> None:
         self._auth_cache: dict = {
@@ -2558,15 +3347,54 @@ class GeminiRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
-                      channels: str = '', remote_control: bool = False) -> List[str]:
+                      channels: str = '', remote_control: bool = False,
+                      resume_id: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'gemini',
-               '--output-format', 'stream-json', '--yolo']
+               '--output-format', 'stream-json', '--yolo',
+               # LIVE REGRESSION (2026-09-18): a fresh Gemini 0.59 install (no
+               # ~/.gemini/trustedFolders.json) refuses every headless launch —
+               # "Gemini CLI is not running in a trusted directory" — on EVERY
+               # dispatch, resume, followup and hivemind launch, not just
+               # first-run. Reproduced with the raw CLI, with and without the
+               # guardrail env var, so it is not this runtime's own doing.
+               # `--skip-trust` is the CLI's own documented answer ("Trust the
+               # current workspace for this session"); Clayrune already only
+               # launches Gemini inside project directories the user
+               # registered, so trusting them for this one process is not a
+               # new grant of anything the user didn't already choose.
+               '--skip-trust']
+        # --resume <id> continues gemini's OWN session by the id captured off
+        # its `init` envelope (`_read_stream`'s INIT branch, stashed onto
+        # `session['provider_session_id']`) — the same flag `write_followup`
+        # already appends for the LIVE in-memory path. Threading it through
+        # `build_command` itself (W4, MC-947) is what makes a COLD dispatch
+        # after a server restart able to resume too — previously
+        # `_COLD_RESUMABLE_PROVIDERS` excluded gemini specifically because
+        # this method had no resume_id parameter at all.
+        if resume_id:
+            cmd.extend(['--resume', resume_id])
+        # W4/MC-947 (2026-09-18), live-verified: `read_file`'s own
+        # `isWithinRoot` workspace check refuses a path outside the CLI's
+        # cwd/workspace root — reproduced live, a pasted-image attachment
+        # under Clayrune's `data/uploads/` (a DIFFERENT directory tree than
+        # any project whose root isn't an ancestor of it) made `read_file`
+        # error every time, and the agent then burned turns on
+        # `run_shell_command` trying to inspect the binary file itself
+        # instead of ever seeing the image. `--include-directories <dir>`
+        # is the CLI's own documented fix (`gemini --help`) — moving the
+        # SAME file one level inside the workspace root and re-running with
+        # this flag pointed at its real parent directory fixed it: the
+        # image loaded and the model correctly described its contents.
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -2594,12 +3422,17 @@ class GeminiRuntime(AgentRuntime):
         session_id = msg.get('session_id')
 
         # init envelope — emitted once at stream start; carries no agent
-        # output. Surfaced as INIT so the reader can consume it silently.
+        # output beyond its own session id and the resolved model (live-
+        # captured 2026-09-18: `{"type":"init",...,"model":"gemini-flash-
+        # lite-latest"}`). Surfaced as INIT so the reader can consume it
+        # silently and backfill `provider_session_id`/`observed_model` (W4,
+        # MC-947) the same way `_mode_a_reader`'s own INIT branch does for
+        # every other Mode-A provider.
         if mtype == 'init':
             return AgentEvent(
                 type=EventType.INIT, provider='gemini',
                 session_id=session_id, mc_session_id=mc_session_id,
-                timestamp=_now_iso(), payload={}, raw=msg,
+                timestamp=_now_iso(), payload={'model': msg.get('model')}, raw=msg,
             )
 
         # 'message' events carry a `role`. Gemini echoes the input prompt
@@ -2657,6 +3490,19 @@ class GeminiRuntime(AgentRuntime):
                          'status': msg.get('status') or ''},
                 raw=msg,
             )
+        if mtype == 'error':
+            # gemini-cli 0.59 JsonStreamEventType.ERROR: {"type":"error",
+            # "severity":"warning"|"error","message":...}. A notice the run
+            # continues past (safety block, loop detected, hook "Agent
+            # execution blocked", max turns), so WARN, not a terminal ERROR.
+            return AgentEvent(
+                type=EventType.WARN, provider='gemini',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={'text': str(msg.get('message') or ''),
+                         'severity': str(msg.get('severity') or 'warning')},
+                raw=msg,
+            )
         if mtype == 'result' and msg.get('status') == 'error':
             # The CLI's own reason for the failure (auth, quota, network) lives
             # ONLY here — msg.get('error', {}).get('message') — never on stderr
@@ -2668,6 +3514,13 @@ class GeminiRuntime(AgentRuntime):
             # fell back to a generic "exited with code N" guess.
             err = msg.get('error') or {}
             err_text = err.get('message') or msg.get('message') or 'Gemini reported an error with no message'
+            _exhausted = _allowance_state.detect('gemini', msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='gemini',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             return AgentEvent(
                 type=EventType.ERROR, provider='gemini',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -2699,6 +3552,18 @@ class GeminiRuntime(AgentRuntime):
              the short-lived access_token has expired, the CLI refreshes it.
              The active Google account is read from google_accounts.json for
              a friendlier label.
+          3. ~/.gemini/settings.json's security.auth.selectedType ==
+             'gemini-api-key' (F11, clean-VM run 2, 2026-09-18): the CLI's
+             OWN interactive "Use Gemini API key" prompt stores the key in
+             the OS keychain (keytar service 'gemini-cli-api-key') and never
+             writes it to this settings file or an env var — so neither
+             evidence source above sees it, and a user who signed in this
+             way was reported "not signed in" even though `gemini` itself
+             worked. We never read the key value (it isn't ours to read),
+             so this is local evidence only, exactly like the oauth case
+             above; auth_probe() verifies it live via the CLI binary itself
+             (the only thing that can reach the keychain) instead of the
+             direct HTTP call the env-var path gets.
 
         Returns (status, method, error_text) where status is one of
         'ok' | 'not_logged_in'.
@@ -2722,6 +3587,13 @@ class GeminiRuntime(AgentRuntime):
                         except Exception:
                             email = ''
                     return ('ok', f'oauth ({email})' if email else 'oauth', None)
+            settings_path = gdir / 'settings.json'
+            if settings_path.is_file():
+                settings = json.loads(settings_path.read_text(encoding='utf-8'))
+                selected = (((settings.get('security') or {}).get('auth') or {})
+                            .get('selectedType') or '')
+                if selected == 'gemini-api-key':
+                    return ('ok', 'keychain:gemini-api-key', None)
         except Exception:
             pass
         return ('not_logged_in', None,
@@ -2759,9 +3631,27 @@ class GeminiRuntime(AgentRuntime):
         # probe just proved the key can't serve a request (MC-934).
         with self._auth_lock:
             _cached = dict(self._auth_cache)
-        if auth_status == 'ok' and _cached.get('status') in ('quota_exceeded', 'invalid_api_key'):
+        if auth_status == 'ok' and _cached.get('status') in (
+                'quota_exceeded', 'invalid_api_key', 'oauth_rejected'):
             auth_status = _cached['status']
             auth_err = _cached.get('error_text')
+        elif (auth_status == 'ok' and (auth_method or '').startswith('oauth')
+              and not os.environ.get('GEMINI_API_KEY')):
+            # F9 (clean-VM run 2026-09-18): a cached oauth_creds.json only
+            # proves a credential was ONCE issued — it does NOT prove Google
+            # still honors it. Live-verified that day: Google now refuses
+            # personal-account OAuth for Gemini Code Assist ("This client is
+            # no longer supported... migrate to the Antigravity suite") while
+            # the file on disk looks perfectly valid. auth_probe() can't
+            # cheaply verify this path (it would mean spawning the full
+            # `gemini` CLI, not one HTTP call — see its docstring), so report
+            # honestly instead of a false green until either a live dispatch
+            # trips explain_exit_error()'s oauth_rejected detector below, or
+            # the user switches to GEMINI_API_KEY (which DOES get probed).
+            auth_status = 'unverified'
+            auth_err = ('Signed in with Google, but this cannot be verified '
+                        'without a real request. If Gemini refuses to run, '
+                        'set GEMINI_API_KEY in Provider Settings instead.')
         return HealthStatus(
             installed=True,
             binary_path=bin_path,
@@ -2793,7 +3683,11 @@ class GeminiRuntime(AgentRuntime):
             # apply_mc_tool_blocks. Honestly true: Gemini can ask the user.
             supports_ask_user_question=True,
             supports_streaming_text=True,
-            emits_usage=False,
+            # W4/MC-947 (2026-09-18): `_read_stream`'s TURN_END branch now
+            # stores the `result` event's `stats` object onto
+            # `session['usage']` — see that branch's comment. Genuinely True
+            # now, not an overclaim.
+            emits_usage=True,
             emits_rate_limit=False,
             emits_cost=False,
             emits_num_turns=False,
@@ -2906,6 +3800,50 @@ class GeminiRuntime(AgentRuntime):
                     'quota_id': None, 'quota_value': None, 'invalid_key': False,
                     'error_text': str(e)}
 
+    def _probe_gemini_cli_call(self, bin_path: Path, timeout: float = 25.0) -> dict:
+        """Spend one real, cheap `gemini` CLI call to verify a credential this
+        process cannot see directly (F11: a key the CLI's own "Use Gemini API
+        key" prompt stored in the OS keychain, service 'gemini-cli-api-key' —
+        never in an env var or a file this runtime reads). We never read or
+        log the key value; the CLI resolving it from its own keychain entry
+        is exactly the point of shelling out instead of hitting Google's API
+        directly the way `_probe_live_quota` does for an env-var key.
+
+        Runs from a scratch temp directory (never a real project) with tool
+        use and MCP disabled, so the only thing exercised is auth — same
+        `--allowed-mcp-server-names __clayrune_none__` sentinel QwenRuntime
+        uses to close the same class of leak. `--yolo` matches every other
+        headless gemini invocation this runtime makes (build_command); the
+        prompt itself asks for no tool use, so it should never be exercised.
+
+        Returns {'ok': bool, 'error_text': str|None}. Never raises.
+        """
+        cmd = [str(bin_path), '--output-format', 'stream-json', '--yolo',
+               '--skip-trust', '--allowed-mcp-server-names', '__clayrune_none__',
+               '--model', self._PROBE_MODEL, '-p',
+               'Reply with the single word OK. Do not use any tools.']
+        try:
+            with tempfile.TemporaryDirectory(prefix='clayrune-gemini-probe-') as td:
+                r = subprocess.run(cmd, capture_output=True, text=True,
+                                   timeout=timeout, cwd=td,
+                                   creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            return {'ok': False,
+                    'error_text': 'gemini CLI did not respond within the probe timeout'}
+        except Exception as e:
+            return {'ok': False, 'error_text': str(e)}
+        if r.returncode == 0:
+            return {'ok': True, 'error_text': None}
+        out = (r.stdout or '') + (r.stderr or '')
+        err_line = ''
+        for line in reversed(out.strip().splitlines()):
+            line = line.strip()
+            if line:
+                err_line = line
+                break
+        return {'ok': False,
+                'error_text': err_line or f'gemini exited with code {r.returncode}'}
+
     def auth_probe(self) -> dict:
         """Verify Gemini auth can actually serve a request — not just that a
         credential is present.
@@ -2927,6 +3865,14 @@ class GeminiRuntime(AgentRuntime):
         subprocess, not a single cheap call) rather than one HTTP request,
         which is out of scope here — local evidence is the best signal
         available for that path and is reported honestly as such.
+
+        A CLI-native API key (F11: `selectedType == 'gemini-api-key'`, the
+        key sitting in the OS keychain, invisible to this process and never
+        read) gets the CLI-spawn treatment the OAuth path above declines —
+        there is no key value to hit Google's HTTP API with directly, so
+        `_probe_gemini_cli_call` runs the `gemini` binary itself with a
+        trivial, tool-free prompt instead. Success -> 'ok'; failure surfaces
+        the CLI's own error text verbatim.
         """
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -2950,11 +3896,35 @@ class GeminiRuntime(AgentRuntime):
             return state
 
         api_key = os.environ.get('GEMINI_API_KEY')
+        if not api_key and (method or '').startswith('keychain'):
+            probe = self._probe_gemini_cli_call(bin_path)
+            if probe['ok']:
+                state = {
+                    'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                    'quota_status': 'unknown', 'tier': 'unknown', 'last_checked': _now_iso(),
+                }
+            else:
+                state = {
+                    'ok': False, 'status': 'unknown', 'method': method,
+                    'error_text': probe['error_text'], 'quota_status': 'unknown',
+                    'tier': 'unknown', 'last_checked': _now_iso(),
+                }
+            with self._auth_lock:
+                self._auth_cache.update(state)
+            return state
         if not api_key:
             # OAuth path — see docstring. Report what local evidence shows,
-            # honestly labeled 'unknown' rather than upgraded to a verified 'ok'.
+            # honestly labeled 'unverified' (F9, 2026-09-18) rather than
+            # upgraded to a verified 'ok': a cached oauth_creds.json proves a
+            # credential was issued, not that Google still honors it — a
+            # clean-VM run hit exactly this with Google's personal-account
+            # Gemini Code Assist OAuth already retired.
             state = {
-                'ok': True, 'status': 'ok', 'method': method, 'error_text': None,
+                'ok': False, 'status': 'unverified', 'method': method,
+                'error_text': ('Signed in with Google, but this cannot be '
+                              'verified without a real request. If Gemini '
+                              'refuses to run, set GEMINI_API_KEY in Provider '
+                              'Settings instead.'),
                 'quota_status': 'unknown', 'tier': 'unknown',
                 'last_checked': _now_iso(),
             }
@@ -3080,6 +4050,7 @@ class GeminiRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         bin_path = self.resolve_binary()
         if not bin_path:
@@ -3095,18 +4066,32 @@ class GeminiRuntime(AgentRuntime):
         slim_prompt = self.with_mc_tool_protocol(
             self._slim_system_prompt(system_prompt))
         task_text = self.with_attachment_hint(task)
-        # Label the boundary explicitly. Everything above is reference setup;
-        # the part below is the ONLY thing to act on. Without this a weaker
-        # model treats the whole context blob as a briefing and invents work.
-        full_prompt = (f"{slim_prompt}\n\n"
-                       f"=== THE USER'S MESSAGE — respond to THIS, and only "
-                       f"this; everything above is reference setup ===\n\n"
-                       f"{task_text}")
+        if resume_id:
+            # Cold resume (W4, MC-947): `resume_id` here is gemini's OWN
+            # session id, supplied by a caller reviving a dead conversation
+            # after a restart (`_revive_non_claude_from_agent_log`), now that
+            # gemini is in `_COLD_RESUMABLE_PROVIDERS`. `--resume` carries the
+            # full prior turn server-side (mirrors `write_followup`'s own
+            # resumed branch) — re-pasting the whole system prompt here would
+            # both waste tokens and duplicate context the resumed session
+            # already has.
+            full_prompt = f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n{task_text}"
+        else:
+            # Label the boundary explicitly. Everything above is reference
+            # setup; the part below is the ONLY thing to act on. Without this
+            # a weaker model treats the whole context blob as a briefing and
+            # invents work.
+            full_prompt = (f"{slim_prompt}\n\n"
+                           f"=== THE USER'S MESSAGE — respond to THIS, and only "
+                           f"this; everything above is reference setup ===\n\n"
+                           f"{task_text}")
 
-        cmd = self.build_command(model=model)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 extra_include_dirs=extra_include_dirs)
         env = os.environ.copy()
         if env_extra:
             env.update(env_extra)
+        _inject_guardrail_env('gemini', env)
 
         proc = subprocess.Popen(
             cmd,
@@ -3141,6 +4126,10 @@ class GeminiRuntime(AgentRuntime):
             'incognito': bool(incognito),
             '_dispatch_time': _time.time(),
             '_system_prompt': slim_prompt or '',
+            # Stashed so write_followup's per-turn respawn (Mode A has no
+            # persistent process) keeps the same widened workspace root —
+            # W4/MC-947, mirrors `_mcp_config_json` on QwenRuntime.
+            '_extra_include_dirs': list(extra_include_dirs or []),
         })
         _log_mcp_sync_result(session_dict['log_lines'], mcp_sync)
 
@@ -3168,8 +4157,31 @@ class GeminiRuntime(AgentRuntime):
         t.start()
         return handle
 
+    # F9 (clean-VM run 2026-09-18): Google's exact refusal text for personal
+    # Gemini Code Assist OAuth accounts. A live dispatch is the only place
+    # this can actually be OBSERVED (health_check() has no way to provoke
+    # it without spawning the CLI) — when it shows up here, stamp the cache
+    # so the NEXT health_check()/auth_status() call reports the real state
+    # instead of the false "signed in" a valid-looking oauth_creds.json
+    # would otherwise keep producing.
+    _OAUTH_REJECTED_PATTERNS = (
+        'no longer supported for gemini code assist',
+        'migrate to the antigravity',
+    )
+
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
+        if any(p in s for p in self._OAUTH_REJECTED_PATTERNS):
+            real_line = _last_real_error_line(log_tail) or (log_tail or '').strip()[:300]
+            with self._auth_lock:
+                self._auth_cache.update({
+                    'ok': False, 'status': 'oauth_rejected', 'method': 'oauth',
+                    'error_text': real_line or 'Google rejected this Gemini OAuth login.',
+                    'last_checked': _now_iso(),
+                })
+            return ("Google rejected this Gemini sign-in — personal-account "
+                    "OAuth for Gemini Code Assist has been retired. Set "
+                    "GEMINI_API_KEY in Settings → Agent Providers instead.")
         if 'command line is too long' in s:
             return ("Your prompt + project context was too large for Windows "
                     "to send to Gemini. This shouldn't happen anymore after "
@@ -3234,6 +4246,24 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        # The CURRENT contiguous text run (deltas since the last non-text
+        # event). Written to `log_lines` as ONE element when the run ends,
+        # never one element per delta. Every consumer of `log_lines` treats
+        # an element as a whole line: the chat renders each as its own row
+        # (conversation.js `fullBuf`) and the live-pass driver joins them
+        # with '\n'. Measured 2026-09-19 (gemini-3.7-flash): a reply of
+        # exactly "CAE658" streamed as deltas "CA" + "E658" and was shown and
+        # graded as two lines, so the marker never appeared. Same shape as
+        # Claude's reader (one element per content block).
+        pending_run: List[str] = []
+
+        def _flush_run() -> None:
+            if not pending_run:
+                return
+            run_text = ''.join(pending_run)
+            pending_run.clear()
+            if run_text.strip():
+                session['log_lines'].append(run_text)
 
         def _cb(name: str, ev: AgentEvent) -> None:
             fn = cbs.get(name)
@@ -3265,19 +4295,37 @@ class GeminiRuntime(AgentRuntime):
                     continue
 
                 ev = self.parse_event(line, handle.mc_session_id)
+                if not (ev and ev.type == EventType.ASSISTANT_TEXT):
+                    # Any other event ends the text run: write it out first
+                    # so it lands before the tool/error/status line.
+                    _flush_run()
                 if ev and ev.type == EventType.ASSISTANT_TEXT:
                     _txt = ev.payload.get('text', line)
                     turn_text_parts.append(_txt)
                     if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
-                        # An MC Tool Protocol block has started — suppress the
-                        # raw block (and anything after it) from the live chat.
-                        # It is parsed and acted on at turn end. Any preamble
-                        # before the fence was streamed by earlier deltas.
+                        # An MC Tool Protocol block has started: suppress the
+                        # raw block (and anything after it) from the chat. It
+                        # is parsed and acted on at turn end. Keep the part of
+                        # this run before the fence (the fence can straddle
+                        # deltas, so cut the joined run, not just _txt).
                         _mc_suppressing = True
+                        run_text = ''.join(pending_run) + _txt
+                        cut = run_text.find('```mc:')
+                        pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                        _flush_run()
                     if not _mc_suppressing:
-                        session['log_lines'].append(_txt)
+                        pending_run.append(_txt)
                         session['last_output_time'] = _time.time()
                         _cb('on_assistant_text', ev)
+                elif ev and ev.type == EventType.WARN:
+                    # `{"type":"error","severity":...}` stream events: safety
+                    # blocks, loop detection, "Agent execution blocked" (a
+                    # hook denial), max turns. parse_event returned None for
+                    # them, so the CLI's own reason vanished from the chat.
+                    session['log_lines'].append(
+                        f"[gemini {ev.payload.get('severity') or 'warning'}] "
+                        f"{ev.payload.get('text', '')}")
+                    session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TOOL_USE:
                     blocks = ev.payload.get('blocks', [])
                     name = blocks[0].get('name', '') if blocks else ''
@@ -3310,7 +4358,46 @@ class GeminiRuntime(AgentRuntime):
                         f"[tool: {nm} result{(' — ' + st) if st else ''}]")
                     session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TURN_END:
+                    # W4/MC-947 (2026-09-18): the payload always carried real
+                    # token counts (parse_event's TURN_END branch reads
+                    # `msg.get('stats')`, live-confirmed shape
+                    # `{"total_tokens":N,"input_tokens":N,"output_tokens":N,
+                    # ...}`) but nothing stored it — `emits_usage=False` was
+                    # an honest description of THIS bug, not of the CLI.
+                    # Mirrors `_mode_a_reader`'s own TURN_END branch (same
+                    # straight-overwrite-per-turn convention every other
+                    # Mode-A provider uses; Gemini respawns a process per
+                    # turn same as they do). `cost_usd`/`num_turns` stay
+                    # unset — parse_event hard-codes them None because the
+                    # CLI genuinely never emits either (emits_cost/
+                    # emits_num_turns are correctly False, unaffected).
+                    _usage = ev.payload.get('usage')
+                    if isinstance(_usage, dict):
+                        session['usage'] = _usage
+                        # NOT normalize_context_tokens(_usage): the CLI's
+                        # `stats` SUM every API request this process made
+                        # (gemini-cli 0.59 uiTelemetry.processApiResponse:
+                        # `tokens.prompt += usage.input_token_count`), so a
+                        # turn with one tool call re-sends the prompt twice
+                        # and reports ~2x the context actually held. Live
+                        # 2026-09-19: the guardrail turn read 80,253 against
+                        # a no-tool turn's 18,666. Context is the LAST
+                        # request's prompt, from the CLI's per-request record.
+                        _ctx = gemini_turn_context_tokens(
+                            session.get('provider_session_id') or ev.session_id or '',
+                            _usage)
+                        if _ctx is not None:
+                            session['context_tokens'] = _ctx
+                    _allowance_state.clear_exhaustion('gemini')
                     _cb('on_turn_end', ev)
+                elif ev and ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                    # Mirrors _mode_a_reader's own branch — a terminal
+                    # failure is never content (Fenn #4).
+                    _allowance_state.record_exhaustion('gemini', **ev.payload)
+                    session['log_lines'].append(
+                        f"[gemini] {_allowance_state.refusal_message('gemini')}")
+                    session['last_output_time'] = _time.time()
+                    session['_allowance_exhausted'] = True
                 elif ev and ev.type == EventType.ERROR:
                     # The CLI's own reason (quota, auth, network — see
                     # parse_event's 'result'+status=='error' branch) surfaced
@@ -3326,8 +4413,24 @@ class GeminiRuntime(AgentRuntime):
                     # which grabs whatever gemini session is newest in the
                     # project dir and, after prior runs, is a stale unrelated
                     # conversation that gets continued by mistake.
+                    #
+                    # Stashed under the GENERIC `provider_session_id` key (W4,
+                    # MC-947) — not a gemini-private `_gemini_session_id` —
+                    # because that is the field `_runtime_note_init`
+                    # (agent_routes.py) backfills onto the durable agent_log
+                    # row, and the one `_revive_non_claude_from_agent_log`
+                    # reads back on a cold dispatch after a server restart.
+                    # The private key never reached either: a finished Gemini
+                    # chat's own session id lived ONLY in the volatile
+                    # in-memory session dict, so `_COLD_RESUMABLE_PROVIDERS`
+                    # had to exclude gemini outright (see its own comment,
+                    # now updated) — there was nothing durable to resume BY.
                     if ev.session_id:
-                        session['_gemini_session_id'] = ev.session_id
+                        session['provider_session_id'] = ev.session_id
+                    native_model = ev.payload.get('model')
+                    if isinstance(native_model, str) and native_model:
+                        session['observed_model'] = native_model
+                    _cb('on_init', ev)
                 # USER_MESSAGE (the prompt echo) and unrecognized envelopes
                 # (ev is None) are consumed silently — no agent output.
         except Exception as e:
@@ -3343,6 +4446,7 @@ class GeminiRuntime(AgentRuntime):
             # A question pauses the turn in 'idle' awaiting the user's reply.
             mc_res = {'blocks_found': False, 'paused': False}
             try:
+                _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
@@ -3420,19 +4524,29 @@ class GeminiRuntime(AgentRuntime):
         # path re-pasted every turn (the token burn — Gemini has no prompt
         # cache). The ~1 KB MC Tool Protocol is re-sent so the agent never
         # loses the ability to ask questions deep into a conversation.
-        gemini_sid = session.get('_gemini_session_id')
+        # Generic `provider_session_id` (W4, MC-947) — not a gemini-private
+        # key — so the same id this dispatch/revive path writes and reads
+        # elsewhere (`_runtime_note_init`, `_revive_non_claude_from_agent_log`)
+        # is also what a LIVE followup resumes by; two separate fields for
+        # "gemini's own session id" was how a cold revive after a restart
+        # ended up with nothing to resume.
+        gemini_sid = session.get('provider_session_id')
         # Mode A respawns the CLI per turn, so --model has to be re-stated or
-        # the chat silently falls back to the CLI default from turn 2.
+        # the chat silently falls back to the CLI default from turn 2. Same
+        # story for the widened workspace root (W4/MC-947) — re-read the
+        # stash `dispatch()` left so an attachment on turn 2+ still resolves.
         _model = self.session_model(handle)
+        _include_dirs = session.get('_extra_include_dirs') or []
         if gemini_sid:
-            cmd = self.build_command(model=_model) + ['--resume', gemini_sid]
+            cmd = self.build_command(model=_model, resume_id=gemini_sid,
+                                     extra_include_dirs=_include_dirs)
             full_prompt = (f"{MC_TOOL_PROTOCOL_PROMPT}\n\n---\n\n"
                            f"{self.with_attachment_hint(message)}")
         else:
             # No id captured (session predates this fix, or init never landed)
             # — re-paste context rather than risk `latest` resuming the wrong
             # session. Costs tokens for this one turn but is always correct.
-            cmd = self.build_command(model=_model)
+            cmd = self.build_command(model=_model, extra_include_dirs=_include_dirs)
             session['_system_prompt'] = self.with_mc_tool_protocol(
                 self._slim_system_prompt(session.get('_system_prompt') or ''))
             full_prompt = _compose_respawn_prompt(
@@ -3447,6 +4561,7 @@ class GeminiRuntime(AgentRuntime):
             text=True,
             encoding='utf-8',
             errors='replace',
+            env=_inject_guardrail_env('gemini', os.environ.copy()),
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,
         )
@@ -3484,25 +4599,71 @@ class GeminiRuntime(AgentRuntime):
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None) -> Optional[OneshotResult]:
-        bin_path = self.resolve_binary()
-        if not bin_path:
+        """Every caller is a pure text transform (Scribe/condense/Distiller,
+        Claydo, character/voice generation) -- see TRANSFORM_EVIDENCE_ID's
+        comment for the live proof. `--skip-trust`/`-e none`/`--policy` and
+        the isolated `GEMINI_CLI_HOME` are load-bearing: dropping any of them
+        re-exposes this box's real `~/.gemini/settings.json` mcpServers and
+        the model's own filesystem tools to untrusted transform input."""
+        if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt) if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = [str(bin_path)]
-        if model:
-            cmd.extend(['--model', model])
+        cmd = self._transform_argv(model=model)
         try:
             r = subprocess.run(cmd, capture_output=True, text=True,
                                input=full,
                                cwd=cwd, timeout=180,
                                encoding='utf-8', errors='replace',
+                               env=self._transform_env(),
                                creationflags=_POPEN_FLAGS,
                                startupinfo=_STARTUPINFO)
         except Exception:
             return None
         text = (r.stdout or '').strip()
+        return OneshotResult(text=text, raw=None)
+
+    VISION_DESCRIBE_MODEL = 'gemini-flash-lite-latest'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Gemini ONE image via the CLI's `@<path>` inclusion, inside the
+        same deny-all-tools transform as oneshot(). `@path` is expanded by the
+        CLI before the model runs, so no model-side file tool is involved; the
+        image's own folder is the cwd because the CLI refuses an `@path`
+        outside its workspace root. Verified live 2026-09-19."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'gemini CLI not installed'
+            return None
+        try:
+            _authorize_text_transform(self, 'gemini', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        cmd = self._transform_argv(model=model or self.VISION_DESCRIBE_MODEL)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               input=f"{prompt}\n\n@{img}", cwd=str(img.parent),
+                               timeout=max(1, int(timeout)),
+                               encoding='utf-8', errors='replace',
+                               env=self._transform_env(),
+                               creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        text = (r.stdout or '').strip()
+        if r.returncode != 0 or not text:
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
         return OneshotResult(text=text, raw=None)
 
 
@@ -3664,6 +4825,243 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
     return handle
 
 
+def gemini_chat_files(provider_session_id: str,
+                      home: Optional[str] = None) -> List[Path]:
+    """The gemini CLI's own per-session chat record(s) for `provider_session_id`.
+
+    gemini-cli 0.59 ChatRecordingService appends JSONL to
+    `<GEMINI_CLI_HOME or ~>/.gemini/tmp/<project>/chats/
+    session-<YYYY-MM-DDTHH-MM>-<first 8 of session id>.jsonl`; a resume can
+    open a second file with the same suffix. Filtered on the metadata line's
+    full `sessionId` so an 8-char prefix collision cannot match another chat.
+    """
+    if not provider_session_id:
+        return []
+    root = Path(home or os.environ.get('GEMINI_CLI_HOME') or Path.home()) / '.gemini' / 'tmp'
+    out: List[Path] = []
+    try:
+        for f in root.glob(f'*/chats/session-*-{provider_session_id[:8]}.jsonl'):
+            try:
+                with open(f, encoding='utf-8', errors='replace') as fh:
+                    first = json.loads(fh.readline() or '{}')
+            except (OSError, ValueError):
+                continue
+            if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
+                out.append(f)
+    except OSError as e:
+        print(f'[runtime:gemini] chat file scan failed: {e}', flush=True)
+    return sorted(out, key=lambda x: x.stat().st_mtime)
+
+
+def gemini_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-API-request token records from a gemini chat JSONL, in order.
+
+    Each model response is a `{"type":"gemini", "id":..., "tokens":{"input",
+    "output","cached","thoughts","tool","total"}}` record, where `input` is
+    the request's promptTokenCount (cached tokens INCLUDED). The recorder
+    re-appends a message when it updates it, so records are de-duplicated by
+    `id`, the last copy winning, first-seen order kept."""
+    by_id: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'gemini':
+            continue
+        tok = rec.get('tokens')
+        mid = str(rec.get('id') or f'_anon{len(order)}')
+        if mid not in by_id:
+            order.append(mid)
+        if isinstance(tok, dict):
+            by_id[mid] = tok
+        else:
+            by_id.setdefault(mid, {})
+    return [by_id[m] for m in order if by_id.get(m)]
+
+
+def gemini_turn_context_tokens(provider_session_id: str,
+                               stats: Optional[Dict[str, Any]],
+                               home: Optional[str] = None) -> Optional[int]:
+    """Context size of a Gemini turn's LAST model request.
+
+    The stream-json `result.stats` is a per-process SUM over requests, so it
+    is only a per-request figure when the turn made exactly one request (no
+    tool calls). Preference: the CLI's own per-request record; else the stats
+    when `tool_calls == 0`; else None ('unknown stays unknown', so the
+    byte-based rollover backstop applies instead of an inflated number)."""
+    for f in reversed(gemini_chat_files(provider_session_id, home)):
+        try:
+            reqs = gemini_chat_request_tokens(f.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:gemini] chat file read failed: {e}', flush=True)
+            continue
+        if reqs:
+            v = reqs[-1].get('input')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(stats, dict) and stats.get('tool_calls') == 0:
+        return normalize_context_tokens(stats)
+    return None
+
+
+def qwen_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-request usage of the MAIN conversation from a qwen chat recording.
+
+    qwen-code 0.23.4 appends one `{"type":"assistant","usageMetadata":{
+    "promptTokenCount","candidatesTokenCount","cachedContentTokenCount",...}}`
+    record per model request of the conversation itself, with
+    `promptTokenCount` INCLUDING the cached part. Side requests the CLI makes
+    on its own (the managed auto-memory extractor) are logged only as
+    `ui_telemetry` and never as an `assistant` record, so they are not here.
+    Measured live 2026-09-19: a read_file turn wrote two records, 26,262 and
+    26,300, while the stream `result.usage` said input 52,562 (their sum)
+    and cache_read 43,850 (the two cached parts summed)."""
+    out: List[Dict[str, Any]] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'assistant':
+            continue
+        um = rec.get('usageMetadata')
+        if isinstance(um, dict) and um:
+            out.append(um)
+    return out
+
+
+def qwen_turn_context_tokens(transcript: Optional[Path],
+                             usage: Optional[Dict[str, Any]],
+                             num_turns: Any = None) -> Optional[int]:
+    """Context size of a Qwen turn's LAST model request.
+
+    The stream-json `result.usage` is NOT a per-request figure, for three
+    stacked reasons, all measured 2026-09-19 against qwen-code 0.23.4:
+      1. `input_tokens` sums every request of the turn (tool loops re-send
+         the whole prompt each time);
+      2. it also counts the background auto-memory extractor request
+         (39,733 = 27,274 main + 12,459 extractor on a one-word reply);
+      3. `input_tokens` already INCLUDES the cached part, so
+         `normalize_context_tokens` (input + cache_read) counted cached
+         tokens twice: that read_file turn came out at 96,412 against a real
+         last request of 26,300.
+    Preference: the chat recording's last main-conversation request; else
+    `input_tokens` alone when the turn was one request (`num_turns == 1`);
+    else None, so the byte backstop decides instead of an inflated number."""
+    if transcript is not None:
+        try:
+            reqs = qwen_chat_request_tokens(
+                transcript.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:qwen] chat recording read failed: {e}', flush=True)
+            reqs = []
+        if reqs:
+            v = reqs[-1].get('promptTokenCount')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(usage, dict) and num_turns == 1:
+        v = usage.get('input_tokens')
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+# Qwen settings DEFAULTS layer (lowest precedence: the user's own
+# ~/.qwen/settings.json still wins). `memory.enableManagedAutoMemory`
+# defaults to true in qwen-code 0.23.4, which runs a background model request
+# after EVERY turn that re-sends the conversation to extract "memories" into
+# qwen's own store: measured 12,459 extra input tokens on a one-word turn,
+# and a second memory system competing with Clayrune's. Off by default here;
+# a user who wants it sets it in their own settings.json.
+QWEN_SYSTEM_DEFAULTS: Dict[str, Any] = {'memory': {'enableManagedAutoMemory': False}}
+QWEN_DEFAULTS_ENV = 'QWEN_CODE_SYSTEM_DEFAULTS_PATH'
+
+
+def _inject_qwen_defaults_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Point `env` at Clayrune's qwen defaults file, writing it if needed.
+    Leaves a defaults path the user already set alone. A write failure is
+    logged and injects nothing (the CLI then runs on its own defaults)."""
+    if env.get(QWEN_DEFAULTS_ENV) or os.environ.get(QWEN_DEFAULTS_ENV):
+        return env
+    try:
+        from mc.guardrail_hooks import clayrune_home
+        path = clayrune_home() / 'qwen-system-defaults.json'
+        body = json.dumps(QWEN_SYSTEM_DEFAULTS, indent=2)
+        if not path.is_file() or path.read_text(encoding='utf-8') != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(body, encoding='utf-8')
+            os.replace(tmp, path)
+        env[QWEN_DEFAULTS_ENV] = str(path)
+    except Exception as e:
+        print(f'[runtime:qwen] writing system defaults failed: {e}', flush=True)
+    return env
+
+
+def _pin_qwen_windows_shell(env: Dict[str, str]) -> Dict[str, str]:
+    """Make a Qwen child resolve cmd.exe on Windows no matter how Clayrune
+    itself was launched. qwen-code 0.23.4's getShellConfiguration() picks
+    git-bash for BOTH its shell tool and its hooks whenever MSYSTEM starts
+    with MINGW/MSYS or TERM mentions msys/cygwin — i.e. whenever the server
+    was started from a git-bash prompt. Under bash, MSYS path conversion
+    rewrites Windows switches: live pass 2026-09-19, `taskkill /PID <n> /F`
+    ran as `taskkill 'C:/Program Files/Git/PID' ...` and failed. Blanked
+    (not deleted) because _mode_a_dispatch layers this env over os.environ.
+    A packaged or autostarted server has neither variable, so this only
+    makes a git-bash-launched dev server behave the same."""
+    if os.name != 'nt':
+        return env
+    msystem = env.get('MSYSTEM', os.environ.get('MSYSTEM', ''))
+    if msystem.startswith(('MINGW', 'MSYS')):
+        env['MSYSTEM'] = ''
+    term = env.get('TERM', os.environ.get('TERM', ''))
+    if 'msys' in term or 'cygwin' in term:
+        env['TERM'] = ''
+    return env
+
+
+def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
+    """Best-effort, vendor-agnostic size of what ONE turn re-read/held as
+    context — the signal `context_rollover_tokens` (docs/CONTEXT_ECONOMY_SPEC.md
+    §1/§2) triggers on. The ONE place per-turn usage dicts get reconciled into
+    a single number, so no call site needs its own per-vendor knowledge.
+
+    Claude's own formula (input_tokens + cache_read_input_tokens +
+    cache_creation_input_tokens) is tried first — cache fields are simply
+    absent (treated as 0) on providers with no prompt cache, so this also
+    correctly resolves to plain `input_tokens` for Gemini's
+    `{total_tokens, input_tokens, output_tokens}` shape (agent_runtime.py:4017,
+    "Gemini has no prompt cache") without a vendor branch. Falls back to
+    `total_tokens`/`prompt_tokens` only when that sum is 0 (fields absent
+    entirely, e.g. Qwen/Codex — shapes unverified as of 2026-09-18, see
+    CONTEXT_ECONOMY_SPEC.md §4 "Unverified this pass").
+
+    Returns None (never 0) when nothing usable is found — 'unknown stays
+    unknown' (VENDOR_AGNOSTIC_PROGRAM.md §4) so the caller falls back to the
+    byte-based backstop instead of a fabricated zero that would never trigger.
+    """
+    if not isinstance(usage, dict) or not usage:
+        return None
+    total = (int(usage.get('input_tokens') or 0)
+             + int(usage.get('cache_read_input_tokens') or 0)
+             + int(usage.get('cache_creation_input_tokens') or 0))
+    if total > 0:
+        return total
+    for key in ('total_tokens', 'prompt_tokens'):
+        v = usage.get(key)
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
 def accumulate_result_cost(session, msg, proc_cost):
     """Add one turn's spend, from a `result`-style dict, to session['cost_usd'].
 
@@ -3811,9 +5209,19 @@ def _format_tool_activity(name, inp):
 
 def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                    runtime: 'AgentRuntime') -> None:
-    """Generic stdout reader for Mode-A providers. Uses runtime.parse_event()."""
+    """Read Mode-A stdout, with an optional pre-format raw-record callback.
+
+    ``callbacks['on_raw_record']`` is an explicit composition seam for a
+    provider's full-fidelity decoder. It runs before ``parse_event`` and UI
+    formatting; absent that callback, behavior is unchanged. A callback
+    failure is observable and prevents this reader from reporting success.
+    """
     session = handle.session_dict
     cbs = handle.meta.get('callbacks', {})
+    raw_record = cbs.get('on_raw_record')
+    raw_eof = cbs.get('on_raw_eof')
+    raw_sequence = 0
+    capture_failed = False
 
     # MC Tool Protocol (mc:question / mc:todo — see with_mc_tool_protocol):
     # every Mode-A provider's system prompt tells it to use this fence
@@ -3845,6 +5253,19 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             line = raw_line.rstrip('\n\r')
             if not line:
                 continue
+            if raw_record and not capture_failed:
+                # Capture is deliberately isolated from transport draining:
+                # a failed durable write must not leave the provider blocked on
+                # a full stdout pipe. Later records are drained but are not
+                # represented as complete capture.
+                try:
+                    raw_record(line, raw_sequence, handle.mc_session_id, session)
+                except Exception as e:
+                    capture_failed = True
+                    session['_capture_error'] = str(e)
+                    session['capture_status'] = 'incomplete'
+                    session['log_lines'].append(f'[capture error: {e}]')
+                raw_sequence += 1
             ev = runtime.parse_event(line, handle.mc_session_id)
             if ev is None:
                 # None means "this runtime declined to surface it". For a line
@@ -3909,8 +5330,10 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                     session['provider_session_id'] = native_id
                 native_model = ev.payload.get('model')
                 if isinstance(native_model, str) and native_model:
-                    session['model'] = native_model
-                    session['agent_model'] = native_model
+                    # Observation is not user consent. In particular Qwen's
+                    # resolved INIT model must not become the next respawn's
+                    # requested --model or override an explicit native default.
+                    session['observed_model'] = native_model
                 _cb('on_init', ev)
             elif ev.type == EventType.TURN_END:
                 # Capture the token counters the turn reports. Without this a
@@ -3920,12 +5343,39 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
+                    _ctx = runtime.turn_context_tokens(handle, _usage, ev.payload)
+                    if _ctx is not None:
+                        session['context_tokens'] = _ctx
                 accumulate_result_cost(session, ev.payload, proc_cost)
                 accumulate_result_turns(session, ev.payload, proc_turns)
+                _allowance_state.clear_exhaustion(runtime.name)
                 _cb('on_turn_end', ev)
+            elif ev.type == EventType.ALLOWANCE_EXHAUSTED:
+                # A terminal failure is never content (Fenn #4): this is the
+                # normalized allowance shape, never the vendor's raw quota
+                # text appended as if it were the model's own line.
+                _allowance_state.record_exhaustion(runtime.name, **ev.payload)
+                session['log_lines'].append(
+                    f"[{runtime.name}] {_allowance_state.refusal_message(runtime.name)}")
+                session['last_output_time'] = _time.time()
+                # A session that died on allowance must read that way, not as
+                # a generic 'error' (VENDOR_AGNOSTIC_PROGRAM §4 item 4) — the
+                # Floor/chat read this flag to render "Out of allowance"
+                # instead of a red Blocked/Error pill.
+                session['_allowance_exhausted'] = True
+            elif ev.type == EventType.WARN:
+                # Advisory, not a failure: the run continues past it, so it
+                # must not carry the word "error" (a healthy codex turn read
+                # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
+                # Gemini reader's own WARN branch, which this one lacked.
+                session['log_lines'].append(
+                    f"[{runtime.name} {ev.payload.get('severity') or 'notice'}] "
+                    f"{_flatten_error_text(ev.payload.get('text', line))}")
+                session['last_output_time'] = _time.time()
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
-                    f"[{runtime.name} error] {ev.payload.get('text', line)}")
+                    f"[{runtime.name} error] "
+                    f"{_flatten_error_text(ev.payload.get('text', line))}")
                 session['last_output_time'] = _time.time()
             else:
                 raw_text = (ev.payload.get('text') or
@@ -3941,6 +5391,16 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
             rc = proc.wait()
         except Exception:
             rc = -1
+        if raw_eof:
+            try:
+                raw_eof(raw_sequence, rc, handle.mc_session_id, session)
+            except Exception as e:
+                capture_failed = True
+                session['_capture_error'] = str(e)
+                session['capture_status'] = 'incomplete'
+                session.setdefault('log_lines', []).append(f'[capture EOF error: {e}]')
+        if capture_failed:
+            session['capture_status'] = 'incomplete'
         # MC Tool Protocol: scan this turn's complete text for mc: blocks
         # (e.g. an emulated AskUserQuestion) and apply them before deciding
         # status — a question holds the turn in 'idle' awaiting the user's
@@ -3968,7 +5428,9 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 f'[mc-tool scan error: {e}]')
         if session.get('proc') is proc:
             if session.get('status') == 'running':
-                if mc_res['paused']:
+                if session.get('_capture_error'):
+                    session['status'] = 'error'
+                elif mc_res['paused']:
                     session['status'] = 'idle'
                 else:
                     session['status'] = 'completed' if rc == 0 else 'error'
@@ -4156,6 +5618,12 @@ def _codex_same_path(a: Optional[str], b: Optional[str]) -> bool:
     return ra == rb
 
 
+# Matches no real MCP server name (`assembleMcpServers()`/`getMcpServers()`
+# never emit one) — see QwenRuntime.build_command's docstring for why this
+# replaces `--bare` for closing the native project-`.mcp.json` leak.
+_QWEN_MCP_DENY_SENTINEL = '__clayrune_none__'
+
+
 class QwenRuntime(AgentRuntime):
     """Driver for Alibaba's `qwen` (Qwen Code) CLI — a gemini-cli fork.
 
@@ -4169,15 +5637,63 @@ class QwenRuntime(AgentRuntime):
     `parse_event` below mirrors `ClaudeRuntime.parse_event`, not
     `GeminiRuntime`'s or `CodexRuntime`'s.
 
-    `--bare` is load-bearing, not cosmetic: without it, a plain one-shot run
-    from this repo's root silently connected this project's OWN `.mcp.json`
-    (a "browser" MCP server with click/navigate/run_code_unsafe, a
-    "filesystem" MCP server with unrestricted read/write) and `.claude/`
-    skills/subagents catalog — none of which this runtime declares or
-    controls. `--bare` disables that native auto-discovery so a Qwen
-    session's real capability set matches what `capabilities()` declares,
-    the same posture Gemini/Codex take (their own catalogs are injected via
-    system-prompt text, not native discovery).
+    `--bare` USED to be load-bearing for exactly one reason: without it, a
+    plain one-shot run from this repo's root silently connected this
+    project's OWN `.mcp.json` (a "browser" MCP server with
+    click/navigate/run_code_unsafe, a "filesystem" MCP server with
+    unrestricted read/write) — none of which this runtime declares or
+    controls.
+
+    2026-09-18 [W2, Astra r1]: `--bare` ALSO unconditionally zeroes
+    `hooks`/`userHooks`/`disableAllHooks` (confirmed by reading
+    `@qwen-code/qwen-code`'s bundled config loader,
+    `chunk-QM2MRAG4.js`: `hooks: bareMode || safeMode ? void 0 : ...`,
+    `disableAllHooks: bareMode || safeMode ? true : ...`) — there is no
+    settings.json or CLI-flag channel that survives bare mode to pass a
+    hook config explicitly; `hooksConfig` is a `loadCliConfig()` library
+    parameter with no CLI-flag surface, confirmed by reading the same
+    chunk. So `--bare` and vendor-hook guardrail parity (`tools/guards/`)
+    are mutually exclusive — one of them has to go.
+
+    Replaced `--bare` with `--allowed-mcp-server-names __clayrune_none__`
+    instead: a sentinel name that matches no real server, so
+    `Config.getMcpServers()`'s `matchesAnyServerPattern` filter (confirmed
+    in `chunk-DCRVSIK6.js`) drops every entry `assembleMcpServers()` finds
+    — including a project's own `.mcp.json` — the same way `--bare` did,
+    but the filter runs in `Config`, entirely orthogonal to `hooks`, so
+    hooks now load. Live leak re-probe, this repo's real `.mcp.json`
+    (filesystem + browser servers), 2026-09-18:
+      - WITHOUT this flag (bare dropped, nothing else changed): `qwen
+        --output-format stream-json --yolo -p 'reply OK, no tools'` from
+        this repo's root emitted `"mcp_servers":[{"name":"filesystem",
+        "status":"connected"},{"name":"browser","status":"connected"}]`
+        in its `system`/`init` envelope, WITH `browser_run_code_unsafe`
+        in `tools` — the exact leak this docstring used to warn about,
+        reproduced live.
+      - WITH `--allowed-mcp-server-names __clayrune_none__` added, same
+        repo root, same command: `"mcp_servers":[]`, no `mcp__*` tools in
+        `tools`.
+    `supports_mcp=False` below still holds — this closes the leak, it
+    does not restore MCP support (that is W4's job: replace the sentinel
+    with Clayrune's actually-resolved server names).
+
+    Known, disclosed, NOT fixed by this change (out of scope for W2 —
+    flagged for whoever owns Qwen's W4 capability-bridge pass, since it
+    changes what every Qwen dispatch can do): dropping `--bare` also
+    re-enables native `QWEN.md` project-context discovery (redundant with
+    this runtime's own `context_injection='prepend'`, not a correctness
+    break) AND native skill/slash-command/subagent catalog discovery from
+    the user's real Qwen config — live-observed in the same probe: the
+    `system`/`init` envelope's `slash_commands`/`agents` arrays list this
+    box's real global skills and subagents (e.g. `mc-memory-search`,
+    `claude-code`, `codex`) even from a scratch cwd with no project
+    `.claude`/`.qwen` directory at all. `capabilities()` already declares
+    `supports_skills=True` on the theory that the catalog is
+    prompt-injected text a Qwen session can `read_file` open, same as
+    Gemini/Codex; this reopens a SECOND, native channel to the same
+    catalog as real invocable tools, which is a bigger capability change
+    than "hooks now fire" and deserves its own review before being called
+    intentional.
 
     Native Qwen OAuth was discontinued 2026-04-15 (bundled docs,
     qc-helper/docs/configuration/auth.md) — this runtime's auth story is
@@ -4188,6 +5704,16 @@ class QwenRuntime(AgentRuntime):
     """
 
     name = 'qwen'
+    tool_free_transform_enforced = True
+    # Coder ids are blind whatever else their name says; VL / QVQ / Omni ids
+    # are the sighted line. Anything else (qwen3.7-plus, glm-*, kimi-* ...) is
+    # unverified, so it is treated as blind: the bridge then describes the image
+    # and a model that could have seen it merely gets a redundant description,
+    # which is the safe direction to be wrong in.
+    VISION_MODEL_PATTERNS = (
+        (r'coder', False),
+        (r'(^|[-/_.])(vl|qvq|omni)([-/_.]|$)', True),
+    )
     display_name = 'Qwen Code'
     # No fixed catalog: the CLI's own docs (bundled qc-helper auth.md) name
     # ids like qwen3-coder-plus / qwen3.7-plus / glm-5 / kimi-k2.5, but those
@@ -4231,13 +5757,14 @@ class QwenRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '') -> List[str]:
+                      resume_id: str = '', mcp_config_json: str = '',
+                      extra_include_dirs: Optional[List[str]] = None) -> List[str]:
         """Return the qwen one-shot command.
 
         Flags verified live against qwen-code 0.23.4 (`qwen --help` plus real
@@ -4257,9 +5784,42 @@ class QwenRuntime(AgentRuntime):
                                          a headless dispatch with no TTY to
                                          approve from — mirrors GeminiRuntime's
                                          own `--yolo` for the same reason.
-          --bare                      -- disable native project-config
-                                         auto-discovery. LOAD-BEARING — see
-                                         class docstring.
+          --allowed-mcp-server-names  -- DEFAULT (no `mcp_config_json`): a
+                                         sentinel matching no real server,
+                                         closing the native project-
+                                         `.mcp.json` MCP leak `--bare` used
+                                         to close, WITHOUT `--bare`'s side
+                                         effect of also disabling hooks.
+                                         LOAD-BEARING — see class docstring
+                                         (2026-09-18, W2).
+          --mcp-config <json>          -- W4/MC-947 (2026-09-18): when the
+                                         caller supplies Clayrune's own
+                                         resolved per-project MCP set (the
+                                         SAME `_resolve_project_mcp_config`
+                                         JSON Claude's `--strict-mcp-config
+                                         --mcp-config` gets — see
+                                         `_build_claude_flags`), declare
+                                         those servers explicitly instead of
+                                         denying everything. Qwen has no
+                                         `--strict-mcp-config` flag (unlike
+                                         Claude), so `--mcp-config` alone
+                                         would MERGE with whatever native
+                                         discovery finds (this repo's own
+                                         `.mcp.json`, the user's real
+                                         `~/.qwen/settings.json`) — closing
+                                         that leak is `--allowed-mcp-server-
+                                         names` doing double duty here: set
+                                         to EXACTLY the declared servers'
+                                         names (not the deny-all sentinel),
+                                         it allowlists them through while
+                                         `matchesAnyServerPattern` (see class
+                                         docstring) drops everything else
+                                         `assembleMcpServers()` finds,
+                                         natively-discovered or not. An
+                                         explicitly EMPTY server set
+                                         (`{"mcpServers": {}}`) is the
+                                         existing deny-all behavior, just
+                                         reached the same way.
           --chat-recording             -- required for --resume to work at
                                          all (the CLI's own --help text
                                          states this); re-stated on every
@@ -4284,9 +5844,29 @@ class QwenRuntime(AgentRuntime):
         bin_path = self.resolve_binary()
         cmd = [str(bin_path) if bin_path else 'qwen',
                '--output-format', 'stream-json', '--include-partial-messages',
-               '--yolo', '--bare', '--chat-recording']
+               '--yolo', '--chat-recording']
+        allowed_names: List[str] = []
+        if mcp_config_json and mcp_config_json.strip():
+            try:
+                declared = json.loads(mcp_config_json).get('mcpServers') or {}
+                allowed_names = sorted(declared.keys())
+            except Exception:
+                # Malformed JSON must fail closed (deny-all), never fall
+                # through to native discovery — same contract as an empty
+                # declared set.
+                allowed_names = []
+            cmd.extend(['--mcp-config', mcp_config_json])
+        cmd.extend(['--allowed-mcp-server-names']
+                   + (allowed_names or [_QWEN_MCP_DENY_SENTINEL]))
         if resume_id:
             cmd.extend(['--resume', resume_id])
+        # W4/MC-947 — same `--include-directories` fix as Gemini's own
+        # build_command (qwen-code is a gemini-cli fork and shares the same
+        # `isWithinRoot` workspace-boundary check on its `read_file` tool;
+        # see Gemini's docstring for the live repro).
+        for d in (extra_include_dirs or []):
+            if d:
+                cmd.extend(['--include-directories', d])
         if model:
             cmd.extend(['--model', model])
         return cmd
@@ -4405,6 +5985,13 @@ class QwenRuntime(AgentRuntime):
                 err = msg.get('error') or {}
                 err_text = (err.get('message') or msg.get('result')
                            or 'Qwen Code reported an error with no message')
+                _exhausted = _allowance_state.detect('qwen', msg)
+                if _exhausted:
+                    return AgentEvent(
+                        type=EventType.ALLOWANCE_EXHAUSTED, provider='qwen',
+                        session_id=session_id, mc_session_id=mc_session_id,
+                        timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                    )
                 return AgentEvent(
                     type=EventType.ERROR, provider='qwen',
                     session_id=session_id, mc_session_id=mc_session_id,
@@ -4452,6 +6039,15 @@ class QwenRuntime(AgentRuntime):
             if candidate.is_file():
                 return candidate
         return None
+
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Last request's prompt, from this session's chat recording — see
+        `qwen_turn_context_tokens` for why `result.usage` cannot be used."""
+        sid = handle.session_dict.get('provider_session_id') or ''
+        path = self.transcript_path(handle.project_path, sid) if sid else None
+        return qwen_turn_context_tokens(path, usage, (turn or {}).get('num_turns'))
 
     def extract_chat_turns(self, path: Path) -> List[Tuple[str, str]]:
         """Rebuild the real user/assistant exchange from a `--chat-recording`
@@ -4527,14 +6123,21 @@ class QwenRuntime(AgentRuntime):
 
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
+        # settings.json (the CLI's own /auth screen) is checked FIRST, ahead
+        # of generic env vars — reordered 2026-09-18 (live regression, third
+        # fix on this branch) to match dispatch-time precedence: OPENAI_* are
+        # generic OpenAI-compatible names Codex reads too, so a stale value
+        # left in the Windows USER environment by another vendor's login
+        # must not be reported as "ok" for Qwen when settings.json holds the
+        # real, working DashScope credential. Before this fix, health_check
+        # showed green using a broken inherited key while every real
+        # dispatch 404'd — the exact mismatch Dave's fix (c) asks this
+        # function to stop hiding.
+        if self._settings_auth_env().get('OPENAI_API_KEY'):
+            return ('ok', 'settings.json security.auth')
         for env_var in ('DASHSCOPE_API_KEY', 'OPENAI_API_KEY', 'ANTHROPIC_API_KEY'):
             if os.environ.get(env_var):
                 return ('ok', f'env:{env_var}')
-        # What the CLI's own /auth screen writes. Checked BEFORE GEMINI_API_KEY
-        # so a real configured Qwen credential is never reported as the
-        # Google fallback (which health_check flags as not-really-Qwen).
-        if self._settings_auth_env().get('OPENAI_API_KEY'):
-            return ('ok', 'settings.json security.auth')
         if os.environ.get('GEMINI_API_KEY'):
             return ('ok', 'env:GEMINI_API_KEY')
         home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
@@ -4623,18 +6226,22 @@ class QwenRuntime(AgentRuntime):
             default_mode='A',
             # --resume <session_id>, live-verified cross-process continuity.
             supports_session_resume=True,
-            # --bare deliberately disables the native project MCP discovery
-            # this CLI otherwise performs (see class docstring) and no
-            # --mcp-config flag is wired here — declaring this True with
-            # nothing behind it would be the same overclaim CodexRuntime's
-            # own supports_plan_mode=False comment warns against.
-            supports_mcp=False,
+            # W4/MC-947 (2026-09-18): `dispatch()`/`build_command()` now
+            # accept `mcp_config_json` (the SAME per-project resolved set
+            # `_build_claude_flags` gives Claude) and pass it through
+            # `--mcp-config`, with `--allowed-mcp-server-names` doing double
+            # duty as the leak-closing allowlist (see build_command's
+            # docstring) instead of the old deny-everything sentinel. No
+            # caller wired = the sentinel path = the same deny-all behavior
+            # this flag used to describe honestly as False; now genuinely
+            # True end to end.
+            supports_mcp=True,
             # Catalog injected via system-prompt text, same as Gemini/Codex —
             # honestly true since qwen has a read_file tool to open it.
             supports_skills=True,
             supports_plan_mode=False,
             # Emulated via the mc:question fence (with_mc_tool_protocol) —
-            # no native ask-the-user tool is present in --bare mode.
+            # no native ask-the-user tool is present.
             supports_ask_user_question=True,
             supports_streaming_text=True,
             emits_usage=True,
@@ -4645,13 +6252,23 @@ class QwenRuntime(AgentRuntime):
             # one-tool-call turn) — same semantics as Claude's, so
             # accumulate_result_turns's per-turn-sum logic applies unchanged.
             emits_num_turns=True,
-            # read_file is a real tool call, not multimodal image input — but
-            # matches the same honest-true bar GeminiRuntime sets for its own
-            # file-based image reading.
-            image_input=True,
+            # False: the runtime's DEFAULT model (qwen3-coder-plus, a code
+            # model) cannot see images. It was True on read_file mechanism
+            # parity with Gemini until live pass run 3 (2026-09-19): two
+            # DIFFERENT random fixtures both got "red, blue, green, yellow,
+            # 1, 2, 3, 4" back -- a fabricated answer, and W4/MC-947 had
+            # already caught it inventing a description from the FILENAME.
+            # Sighted ids (qwen3-vl-*, qvq, *-omni) are flipped back on per
+            # model by VISION_MODEL_PATTERNS / image_input_for(); a blind
+            # model's attachments go through the vision bridge instead
+            # (image_attach stays True).
+            image_input=False,
+            image_attach=True,
             context_window=None,
-            # --bare disables native QWEN.md discovery, so context must be
-            # prepended into the prompt text instead, same as GeminiRuntime.
+            # Prepended into the prompt text, same as GeminiRuntime — native
+            # QWEN.md discovery reopened 2026-09-18 when `--bare` was
+            # dropped (see build_command's docstring) but this runtime's
+            # own injection is left as the declared, guaranteed channel.
             context_injection='prepend',
             context_file_name='QWEN.md',
             oneshot_supported=True,
@@ -4660,17 +6277,26 @@ class QwenRuntime(AgentRuntime):
     def _settings_auth_env(self) -> Dict[str, str]:
         """OPENAI_* env derived from ~/.qwen/settings.json.
 
-        LOAD-BEARING because of `--bare`: measured 2026-09-16, `--bare`
-        disables the CLI's settings-file loading along with project config,
-        so a user who configured their key the normal way (the CLI's own
-        /auth screen writes `security.auth` / `modelProviders.openai`) gets
-        "No auth type is selected" / "Missing API key" on every dispatch
-        while a plain interactive `qwen` works fine. Env vars are the ONE
-        channel that survives `--bare`, so read what the user configured and
-        pass it through.
+        LOAD-BEARING again as of 2026-09-18 (live regression, third fix on
+        this branch): `OPENAI_API_KEY`/`OPENAI_BASE_URL`/`OPENAI_MODEL` are
+        generic OpenAI-compatible names, not Qwen-specific ones — Codex reads
+        the exact same variables, so whichever vendor's login the user last
+        touched can leave stale values sitting in the Windows USER
+        environment. Measured live: Ron's real env held
+        `OPENAI_BASE_URL=https://aliyuncs.com` and
+        `OPENAI_MODEL=qwen-coder-plus-latest` from an earlier broken Qwen
+        login attempt, while his REAL, working config lived in
+        `~/.qwen/settings.json` (`dashscope-intl.aliyuncs.com`,
+        `qwen3-coder-plus`) — the CLI's own /auth screen writes there. The
+        broken global env silently outranked the correct per-vendor config
+        and every Qwen dispatch 404'd. This function returns what the user
+        configured FOR QWEN SPECIFICALLY; callers now OVERRIDE the inherited
+        process env with whatever key this returns, precisely because a
+        value here represents a deliberate, vendor-specific choice that must
+        beat an ambient global env var of the same generic name.
 
-        Returns {} when nothing is configured — the CLI's own fallbacks
-        (real env vars, gemini OAuth) then apply unchanged.
+        Returns {} when nothing is configured in settings.json — callers
+        then inherit the real process env unchanged, exactly as before.
         """
         home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                 or str(Path.home()))
@@ -4717,6 +6343,8 @@ class QwenRuntime(AgentRuntime):
                  session_dict: Optional[Dict[str, Any]] = None,
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
+                 mcp_config_json: str = '',
+                 extra_include_dirs: Optional[List[str]] = None,
                  **_extra) -> SessionHandle:
         if not self.resolve_binary():
             raise RuntimeError("qwen CLI not installed — run: npm install -g @qwen-code/qwen-code")
@@ -4731,7 +6359,9 @@ class QwenRuntime(AgentRuntime):
         # so `CodexRuntime`-parity resume worked for Codex but a cold Qwen
         # revive always silently started a brand-new thread with no history,
         # despite `build_command` already knowing how to build `--resume`.
-        cmd = self.build_command(model=model, resume_id=resume_id)
+        cmd = self.build_command(model=model, resume_id=resume_id,
+                                 mcp_config_json=mcp_config_json,
+                                 extra_include_dirs=extra_include_dirs)
         # MC Tool Protocol (mc:question) — same pattern as Codex/Gemini's own
         # dispatch(): the universal context block already tells the model to
         # use this fence, but nothing explains its shape without this.
@@ -4742,18 +6372,30 @@ class QwenRuntime(AgentRuntime):
 
         env = dict(env_extra or {})
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
-        # --bare drops settings.json; re-supply it as env. See
-        # _settings_auth_env(). Never overrides a real env var already set.
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring for the live regression this
+        # fixes (a stale global OPENAI_* from another vendor's login).
         for k, v in self._settings_auth_env().items():
-            if not os.environ.get(k):
-                env.setdefault(k, v)
+            env[k] = v
+        _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
 
-        return _mode_a_dispatch(
+        handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
             mc_sid, session_dict, incognito, env, callbacks,
             register_process, prompt_via_stdin=True,
             system_prompt=system_prompt,
         )
+        # Stashed so write_followup's per-turn respawn (Mode A has no
+        # persistent process) re-declares the SAME MCP set rather than
+        # silently reverting to deny-all on turn 2 — mirrors how
+        # `_system_prompt` is stashed for the same reason.
+        handle.session_dict['_mcp_config_json'] = mcp_config_json
+        # W4/MC-947 — same per-turn-respawn stash as _mcp_config_json above,
+        # for the widened workspace root (see build_command's docstring).
+        handle.session_dict['_extra_include_dirs'] = list(extra_include_dirs or [])
+        return handle
 
     def write_followup(self, handle: SessionHandle, message: str,
                        attachments: Optional[List[str]] = None) -> None:
@@ -4778,11 +6420,18 @@ class QwenRuntime(AgentRuntime):
         else:
             full_prompt = _compose_respawn_prompt(session, message)
         mc_sid = handle.mc_session_id
-        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id)
+        cmd = self.build_command(model=self.session_model(handle), resume_id=resume_id,
+                                 mcp_config_json=session.get('_mcp_config_json') or '',
+                                 extra_include_dirs=session.get('_extra_include_dirs') or [])
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
-            env.setdefault(k, v)
+            env[k] = v
+        _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -4817,20 +6466,100 @@ class QwenRuntime(AgentRuntime):
     def stop(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
 
+    # Certified tool-free (VENDOR_AGNOSTIC_PROGRAM §2/§8b W1). Measured live
+    # 2026-09-18 against qwen-code 0.23.4 (the binary this box's
+    # resolve_binary() actually picks, C:\...\AppData\Local\qwen-code\bin):
+    # `--core-tools ''` does NOT reduce the model's tool list to zero (yargs
+    # coerces the bare flag to a non-restrictive value) -- built-in tools
+    # (read_file, run_shell_command, ...) plus this CLI's own bundled
+    # "qc-helper" orchestration tools (get_goal, agent, skill, tool_search,
+    # ...) stayed visible even with `--bare -e none`. `--max-tool-calls 0` is
+    # the enforcement that actually matters: it is a hard runtime circuit
+    # breaker, not a visibility filter -- live-verified, a prompt engineered
+    # to force a tool call aborted the run with `FatalBudgetExceededError:
+    # Run aborted: tool-call budget of 0 exceeded; observed 1` (exit 55)
+    # rather than executing it. A normal transform prompt with no reason to
+    # call a tool completed cleanly with `stats.tools.totalCalls: 0` and the
+    # real answer text.
+    #
+    # `--bare` here is DELIBERATELY DIFFERENT from build_command()'s dispatch
+    # path: W2 [Astra r1] dropped `--bare` from dispatch because it also
+    # zeroes hooks/userHooks (`disableAllHooks`), which broke guardrail
+    # parity for a session that legitimately calls tools. A tool-free
+    # transform has no legitimate tool call to guard -- `--max-tool-calls 0`
+    # is the enforcement boundary regardless of what hooks would have done --
+    # so `--bare` staying on here is a strictly SAFER posture for this
+    # profile, not a stale carry-over: it also closes the native QWEN.md/
+    # skill/subagent catalog channel W2's docstring flags as still open on
+    # the dispatch path. Explicit empty `--mcp-config` is defense-in-depth
+    # alongside it; `-e none` drops extensions; `--core-tools ''` stays as
+    # best-effort surface reduction even though it isn't the enforcement
+    # boundary.
+    TRANSFORM_EVIDENCE_ID = 'qwen-0.23.4-max-tool-calls-probe-2026-09-18'
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '--bare', '--mcp-config', '{"mcpServers":{}}',
+        '-e', 'none', '--core-tools', '', '--max-tool-calls', '0',
+    )
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        bin_path = self.resolve_binary()
+        cmd = [str(bin_path) if bin_path else 'qwen',
+               '--output-format', 'stream-json', *self.TRANSFORM_ISOLATION]
+        if model:
+            cmd.extend(['--model', model])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Evidence for authorize_execution(TOOL_FREE_TRANSFORM); same
+        argv-self-check shape as Claude/Gemini. `effort` isn't a qwen
+        concept -- accepted for signature parity, never forwarded."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('qwen', model or '', effort or '', 'default'),
+            'qwen-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if self.resolve_binary() else Support.UNSUPPORTED
+        try:
+            auth_ok = self._qwen_auth_state()[0] == 'ok'
+        except Exception as e:
+            print(f'[runtime:qwen] auth_status for transform evidence failed: {e}', flush=True)
+            auth_ok = True
+        readiness = Readiness(identity, installed,
+                              Support.SUPPORTED if auth_ok else Support.UNSUPPORTED,
+                              now, now + timedelta(minutes=5))
+        isolated = _argv_contains(self._transform_argv(model=model), self.TRANSFORM_ISOLATION)
+        support = Support.SUPPORTED if isolated else Support.UNSUPPORTED
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, support) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
                 cwd: Optional[str] = None) -> Optional[OneshotResult]:
+        """Every caller is a pure text transform (Scribe/condense/Distiller,
+        Claydo, character/voice generation) -- see TRANSFORM_EVIDENCE_ID's
+        comment for the live proof. Runs the isolated `_transform_argv`, NOT
+        `build_command()` (that one is the dispatch/interactive shape:
+        `--yolo` auto-accepts tool calls and `--chat-recording` persists a
+        session neither of which a bounded, ephemeral transform wants)."""
         if not self.resolve_binary():
             return None
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = self.build_command(model=model)
+        cmd = self._transform_argv(model=model)
         env = os.environ.copy()
         env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        # A configured value WINS over the inherited process env — see
+        # _settings_auth_env()'s docstring.
         for k, v in self._settings_auth_env().items():
-            env.setdefault(k, v)
+            env[k] = v
         try:
             r = subprocess.run(
                 cmd, input=full,
@@ -4848,6 +6577,55 @@ class QwenRuntime(AgentRuntime):
             if ev and ev.type == EventType.ASSISTANT_TEXT:
                 last_text = ev.payload.get('text', last_text)
         return OneshotResult(text=last_text or (r.stdout or '').strip())
+
+    VISION_DESCRIBE_MODEL = 'qwen3-vl-plus'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show a sighted Qwen model ONE image via the CLI's `@<path>`
+        inclusion inside the tool-free transform argv (`--max-tool-calls 0`,
+        `-e none`, no MCP). Same-vendor describer for the blind coder models.
+        Verified live 2026-09-19 with qwen3-vl-plus; the image's folder is the
+        cwd so the path is inside the CLI's workspace root."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'qwen CLI not installed'
+            return None
+        m = model or self.VISION_DESCRIBE_MODEL
+        try:
+            _authorize_text_transform(self, 'qwen', model=m, effort='', identity=None,
+                                      readiness=None, certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        env = os.environ.copy()
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        for k, v in self._settings_auth_env().items():
+            env[k] = v
+        try:
+            r = subprocess.run(
+                self._transform_argv(model=m), input=f"{prompt}\n\n@{img}",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(img.parent),
+                text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)), env=env,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        last_text = ''
+        for raw_line in (r.stdout or '').splitlines():
+            ev = self.parse_event(raw_line)
+            if ev and ev.type == EventType.ASSISTANT_TEXT:
+                last_text = ev.payload.get('text', last_text)
+        if r.returncode != 0 or not last_text.strip():
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
+        return OneshotResult(text=last_text.strip())
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
@@ -4881,6 +6659,50 @@ class QwenRuntime(AgentRuntime):
         return None
 
 
+# Clayrune's effort vocabulary is claude's (`mc/characters.py` VALID_EFFORT:
+# low/medium/high/xhigh/max). Codex's own knob is the documented config.toml
+# field `model_reasoning_effort`, whose accepted set is minimal/low/medium/high
+# — so the two levels above `high` are CLAMPED rather than passed through: an
+# unrecognized value would be a config-parse death at launch (the same class of
+# failure the `-c hooks=<path>` regression was, 2026-09-18), and clamping is
+# the one behaviour that cannot make a dispatch worse than not asking at all.
+_CODEX_REASONING_EFFORT = {'low': 'low', 'medium': 'medium', 'high': 'high',
+                           'xhigh': 'high', 'max': 'high'}
+
+
+def codex_reasoning_effort(effort: str) -> str:
+    """The `model_reasoning_effort` value for a Clayrune effort, '' if none."""
+    return _CODEX_REASONING_EFFORT.get((effort or '').strip().lower(), '')
+
+
+# Codex emits some NOTICES on the SAME envelopes it uses for real failures,
+# and the turn then completes normally. MC rendered them as `[codex error]
+# ...`, so a healthy run read as a failed one. Measured live 2026-09-19
+# (docs/_journal/provider-live/claude-codex-handoff-verbatim/ and
+# .../xdispatch-claude-codex-qwen/): the hook-trust notice appeared TWICE,
+# prefixed `[codex error]`, in turns that went on to answer correctly.
+#
+# It travels as `item.completed` with `item.type == 'error'` (captured raw
+# from codex 0.151 stdout, see tests/test_codex_effort.py), NOT as the
+# top-level `{"type":"error"}` that carries 401s and disconnects. Both
+# branches consult this matcher because neither shape is documented as the
+# notice channel, so a future codex release could move it.
+#
+# Deliberately an EXACT-PHRASE allowlist, not a heuristic: the cost of calling
+# a real error a notice is silence on a failure, which is strictly worse than
+# the cosmetic bug being fixed. Only add a pattern after seeing the line in a
+# transcript whose turn SUCCEEDED.
+_CODEX_NOTICE_PATTERNS = (
+    re.compile(r'`?--dangerously-bypass-hook-trust`? is enabled', re.I),
+)
+
+
+def codex_error_is_notice(text: str) -> bool:
+    """True when a codex `error` event is an advisory the run continues past."""
+    t = str(text or '')
+    return any(rx.search(t) for rx in _CODEX_NOTICE_PATTERNS)
+
+
 class CodexRuntime(AgentRuntime):
     """Driver for OpenAI's `codex` CLI.
 
@@ -4897,6 +6719,16 @@ class CodexRuntime(AgentRuntime):
     """
 
     name = 'codex'
+    # Codex's CLI does not currently expose a certified no-tools transport.
+    # Keep this false until a canary proves the boundary; run_text_transform
+    # therefore refuses Codex before sensitive transform input is delivered.
+    # `_transform_argv`/`transform_evidence` below are prepared and offline-
+    # tested (VENDOR_AGNOSTIC_PROGRAM §8b W1 item 2) so the eventual flip is
+    # a one-line change, not a redesign; Codex is OUT of allowance until
+    # 2026-09-24, so nothing here has been run against the live API — only
+    # command construction and the architecture guard. Flip only after the
+    # §8b checklist's live pass.
+    tool_free_transform_enforced = False
     display_name = 'Codex CLI'
     # Verified 2026-08-31 against ~/.codex/models_cache.json from codex 0.151.
     # Internal/special-purpose entries (gpt-reserve, codex-auto-review) are not
@@ -4992,9 +6824,20 @@ class CodexRuntime(AgentRuntime):
             self._npx_fallback = True
             return None
 
-        self._bin_cache = ''
+        self._bin_cache = None  # never cache a miss (see GeminiRuntime)
         self._npx_fallback = False
         return None
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Codex's app-server answers `account/rateLimits/read` from the
+        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+        from mc import allowance_probe
+        if not self.resolve_binary():
+            return None  # never probe through the per-call npx download
+        kw = ({'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO}
+              if sys.platform == 'win32' else {})
+        return allowance_probe.codex_ordinary_usage_allowed(
+            self._cmd_prefix(), popen_kwargs=kw)
 
     def _cmd_prefix(self) -> List[str]:
         """Return [codex] if binary found, [npx, --yes, @openai/codex] otherwise."""
@@ -5008,7 +6851,7 @@ class CodexRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '',
+                      resume_id: str = '', effort: str = '',
                       unattended_sandbox: bool = False) -> List[str]:
         """Return the codex exec command for non-interactive use.
 
@@ -5062,6 +6905,35 @@ class CodexRuntime(AgentRuntime):
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
+        # Effort is REAL here, not decorative: `-c model_reasoning_effort=<level>`
+        # is a documented config.toml field, so the old session log line
+        # ("Requested effort is preserved, but effort control is not supported
+        # by this codex dispatch path") described a knob that simply was not
+        # wired. See codex_reasoning_effort() for why xhigh/max clamp to high.
+        _eff = codex_reasoning_effort(effort)
+        if _eff:
+            cmd.extend(['-c', f'model_reasoning_effort="{_eff}"'])
+        # Per-launch guardrail injection (W2 redesign,
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4). LIVE REGRESSION FIXED
+        # 2026-09-18: the first version passed `-c hooks='<path>'`, which
+        # killed every Codex launch instantly — `hooks` is a TOML *table*
+        # (`HooksToml` struct), not a file path; Codex died at config-parse
+        # time before ever reaching the API
+        # ("Error loading config.toml: invalid type: string ..., expected
+        # struct HooksToml"). Fixed: `codex_hook_config_args()` injects the
+        # hooks table INLINE via a dotted-path `-c hooks.PreToolUse=[...]`
+        # override — no file, so nothing can ever hold a copy of the user's
+        # own hooks (the first version's generated file did exactly that,
+        # copying a personal `codetalk.py` Stop hook into a Clayrune-owned
+        # file). `--dangerously-bypass-hook-trust` is the real CLI flag for
+        # the interactive-only hook-trust review — `-c bypass_hook_trust=true`
+        # (the first version's other broken half) is not a recognized
+        # config field at all. Verified with `--strict-config` (rejects any
+        # unrecognized field) via a real `codex exec` invocation, identical
+        # argv, that reached `usage_limit_exceeded` — past config parsing,
+        # into the real API — rather than a config error; see
+        # docs/GUARDRAIL_PARITY_EVIDENCE.md §4 for the exact commands.
+        cmd.extend(_guardrail_codex_hook_args())
         return cmd
 
     def parse_event(self, raw_line: str, mc_session_id: str = '') -> Optional[AgentEvent]:
@@ -5192,11 +7064,29 @@ class CodexRuntime(AgentRuntime):
                     raw=msg,
                 )
             if item_type == 'error':
+                _txt = item.get('message') or item.get('text') or str(item)
+                # MEASURED 2026-09-19 against codex 0.151, raw stdout:
+                #   {"type":"item.completed","item":{"id":"item_0",
+                #    "type":"error","message":"`--dangerously-bypass-hook-
+                #    trust` is enabled. ..."}}
+                # -- TWICE, before turn.started, on a turn that then answered
+                # normally. This is the envelope the hook-trust NOTICE
+                # actually uses; the top-level {"type":"error"} shape carries
+                # real failures (401s, disconnects). Both are checked because
+                # neither is documented as the notice channel.
+                if codex_error_is_notice(_txt):
+                    return AgentEvent(
+                        type=EventType.WARN, provider='codex',
+                        session_id=session_id, mc_session_id=mc_session_id,
+                        timestamp=_now_iso(),
+                        payload={'text': _txt, 'severity': 'notice'},
+                        raw=msg,
+                    )
                 return AgentEvent(
                     type=EventType.ERROR, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(),
-                    payload={'text': item.get('message') or item.get('text') or str(item)},
+                    payload={'text': _txt},
                     raw=msg,
                 )
             # ── codex 0.133 schema (content[] blocks) ───────────────────
@@ -5273,9 +7163,35 @@ class CodexRuntime(AgentRuntime):
                 raw=msg,
             )
         if etype in ('error', 'turn.failed'):
+            # A quota exhaustion arriving through this shape used to fall
+            # straight into the generic ERROR branch below, which flattens
+            # everything to free text. explain_exit_error() then pattern-
+            # matched that text for a hint and mis-fired: the real message
+            # ("...purchase more credits...chatgpt.com/codex/settings/usage
+            # ...") contains the substring "chatgpt", which its auth-hint
+            # check tests BEFORE its quota check — live-reproduced 2026-09-18
+            # 05:21:29 in data/logs/clayrune.log, one second after the real
+            # `usage_limit_exceeded` event, as "Codex isn't authenticated."
+            # Classifying it here, from the structured field, means it never
+            # reaches that text-matching hint chooser at all.
+            _exhausted = _allowance_state.detect_from_codex_message(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
             err_msg = (msg.get('message') or
                        (msg.get('error') or {}).get('message', '') or
                        str(msg))
+            if etype == 'error' and codex_error_is_notice(err_msg):
+                return AgentEvent(
+                    type=EventType.WARN, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': err_msg, 'severity': 'notice'},
+                    raw=msg,
+                )
             return AgentEvent(
                 type=EventType.ERROR, provider='codex',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -5283,6 +7199,22 @@ class CodexRuntime(AgentRuntime):
                 payload={'text': err_msg},
                 raw=msg,
             )
+        if etype == 'event_msg':
+            # The rollout file's OWN event schema (session_meta / event_msg /
+            # task_complete), distinct from `codex exec --json`'s translated
+            # thread.*/item.*/turn.* protocol handled above. Whether a
+            # session-level failure like usage_limit_exceeded is ever
+            # translated into that protocol, or passed through in this native
+            # shape, is unconfirmed without spending Codex allowance to find
+            # out — so both shapes are checked rather than assuming one.
+            _exhausted = _allowance_state.detect_from_codex_message(msg)
+            if _exhausted:
+                return AgentEvent(
+                    type=EventType.ALLOWANCE_EXHAUSTED, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(), payload=_exhausted, raw=msg,
+                )
+            return None
         return None
 
     def transcript_path(self, project_path: str, session_id: str) -> Optional[Path]:
@@ -5621,12 +7553,22 @@ class CodexRuntime(AgentRuntime):
         CODEX_API_KEY/OPENAI_API_KEY reported a fully signed-in install as
         'unknown', which the settings UI renders as needing authentication.
 
+        `auth.json` is checked BEFORE bare env vars — reordered 2026-09-18
+        (live regression, third fix on this branch, Dave's fix (c)): OPENAI_*
+        are generic OpenAI-compatible names Qwen reads too, so a Qwen/
+        DashScope key left in the environment made this report
+        'ok, env:OPENAI_API_KEY' even on a box logged into Codex via ChatGPT
+        OAuth. Live-verified 2026-09-18 (`codex exec`, real dispatch, real
+        `usage_limit_exceeded` response from chatgpt.com) that a stored
+        ChatGPT login is used REGARDLESS of OPENAI_API_KEY/OPENAI_BASE_URL/
+        OPENAI_MODEL being present in the environment — a broken env value
+        for a DIFFERENT vendor cannot hijack Codex's own login when one is
+        stored, so no env-stripping is needed for that case. This function
+        must report the credential that will actually be used, matching
+        that precedence, not just whichever it finds first.
+
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
-        if os.environ.get('CODEX_API_KEY'):
-            return ('ok', 'env:CODEX_API_KEY')
-        if os.environ.get('OPENAI_API_KEY'):
-            return ('ok', 'env:OPENAI_API_KEY')
         try:
             home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                     or str(Path.home()))
@@ -5634,21 +7576,35 @@ class CodexRuntime(AgentRuntime):
             if auth.is_file():
                 data = json.loads(auth.read_text(encoding='utf-8'))
                 if isinstance(data, dict):
-                    if data.get('OPENAI_API_KEY'):
-                        return ('ok', 'api key (auth.json)')
                     tok = data.get('tokens') or {}
                     if isinstance(tok, dict) and (tok.get('refresh_token')
                                                   or tok.get('access_token')):
                         return ('ok', 'chatgpt oauth')
+                    if data.get('OPENAI_API_KEY'):
+                        return ('ok', 'api key (auth.json)')
         except Exception as e:
             print(f"[codex] reading auth.json failed: {e}", flush=True)
+        # No stored login at all — an env var is the ONLY thing that could
+        # authenticate this dispatch, so (and only so) it is reported here.
+        if os.environ.get('CODEX_API_KEY'):
+            return ('ok', 'env:CODEX_API_KEY')
+        if os.environ.get('OPENAI_API_KEY'):
+            return ('ok', 'env:OPENAI_API_KEY')
         return ('not_logged_in', None)
 
     def health_check(self) -> HealthStatus:
         p = self.resolve_binary()
         is_npx = self._npx_fallback
-        installed = bool(p) or is_npx
-        if not installed:
+        # `installed` drives the first-run chooser / Settings provider card
+        # (F10, clean-VM run 2026-09-18): a machine with npm but no codex CLI
+        # at all showed "installed" / "not signed in" with an empty
+        # binary_path, because the npx fallback (a per-dispatch `npx --yes
+        # @openai/codex`, never a persistent install) counted as installed.
+        # `runnable` keeps the original "can we even probe --version"
+        # gate — npx is a real way to RUN codex, just not evidence it is
+        # installed, so dispatch still works unchanged via `_cmd_prefix()`.
+        runnable = bool(p) or is_npx
+        if not runnable:
             return HealthStatus(
                 installed=False, binary_path=None, version=None,
                 auth_state=AuthState(status='not_installed', last_checked=_now_iso()),
@@ -5663,7 +7619,7 @@ class CodexRuntime(AgentRuntime):
             version = raw.splitlines()[0] if raw else None
         except Exception as e:
             return HealthStatus(
-                installed=True, binary_path=p, version=None,
+                installed=bool(p), binary_path=p, version=None,
                 auth_state=AuthState(status='unknown', last_checked=_now_iso()),
                 diagnostic=str(e),
                 install_hint='npm install -g @openai/codex',
@@ -5671,7 +7627,7 @@ class CodexRuntime(AgentRuntime):
         auth_status, auth_method = self._codex_auth_state()
         has_key = auth_status == 'ok'
         return HealthStatus(
-            installed=True,
+            installed=bool(p),
             binary_path=p,
             version=version,
             auth_state=AuthState(
@@ -5702,7 +7658,19 @@ class CodexRuntime(AgentRuntime):
             # UI (static/js/conversation.js) that could never receive data.
             # Parity audit §2 "Plan detection / approval".
             supports_plan_mode=False,
-            supports_ask_user_question=False,
+            # W4/MC-947 (2026-09-18), OFFLINE proof (Codex out of allowance
+            # until Sep 24 — no prompt sent): `dispatch()` below calls
+            # `with_mc_tool_protocol(system_prompt)` (same call Qwen's own
+            # dispatch() makes) and, like Qwen, runs through the SHARED
+            # `_mode_a_reader` — the exact same `turn_text_parts` accumulate
+            # / `apply_mc_tool_blocks` turn-end scan every Mode-A provider
+            # gets, with no Codex-specific branch anywhere in that path.
+            # Live-verified for Qwen (identical mechanism): a real
+            # ```mc:question``` fence paused the turn (status -> idle,
+            # `pending_questions` populated), and a follow-up answer resumed
+            # the same session and completed correctly. Flip to True on code
+            # parity; re-verify live once Codex has allowance again.
+            supports_ask_user_question=True,
             supports_streaming_text=True,
             emits_usage=True,
             emits_rate_limit=False,
@@ -5735,6 +7703,7 @@ class CodexRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  unattended_sandbox_enabled: bool = True,
+                 effort: str = '',
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
             raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
@@ -5750,7 +7719,12 @@ class CodexRuntime(AgentRuntime):
         use_sandbox = codex_unattended_sandbox_decision(
             session_dict, unattended_sandbox_enabled)
         cmd = self.build_command(model=model, resume_id=resume_id or '',
-                                 unattended_sandbox=use_sandbox)
+                                 effort=effort, unattended_sandbox=use_sandbox)
+        if session_dict is not None:
+            # Same reason the sandbox posture is stashed rather than
+            # re-derived: write_followup only receives the handle, and a
+            # conversation's effort must not silently change mid-thread.
+            session_dict['_codex_effort'] = effort or ''
         # MC Tool Protocol (mc:question — parity audit item 4): the universal
         # context block already TELLS Codex to use this fence
         # (_build_agent_context); without appending the protocol text itself
@@ -5860,6 +7834,7 @@ class CodexRuntime(AgentRuntime):
         # missing-trigger_type case.
         cmd = self.build_command(
             model=self.session_model(handle), resume_id=resume_id,
+            effort=session.get('_codex_effort', '') or '',
             unattended_sandbox=session.get('_codex_unattended_sandbox', True))
         proc = subprocess.Popen(
             cmd,
@@ -5894,6 +7869,78 @@ class CodexRuntime(AgentRuntime):
     def stop(self, handle: SessionHandle) -> None:
         _mode_a_interrupt(handle)
 
+    # NOT YET CERTIFIED (tool_free_transform_enforced stays False -- see the
+    # class-level comment). `codex exec --help` (codex-cli 0.154.0, checked
+    # 2026-09-18, no prompt sent -- Codex is out of allowance until
+    # 2026-09-24) documents everything this needs offline:
+    #   -s read-only            -- sandbox policy for model-generated shell
+    #                              commands; the only one of the three
+    #                              (read-only/workspace-write/danger-full-access)
+    #                              that cannot write.
+    #   --ignore-user-config    -- does not load $CODEX_HOME/config.toml,
+    #                              which is where this box's real
+    #                              [mcp_servers.*] tables live (node_repl,
+    #                              mail, sequential-thinking, tradingview --
+    #                              verified present in ~/.codex/config.toml
+    #                              2026-09-18); auth still resolves via
+    #                              CODEX_HOME per the flag's own help text.
+    #   --skip-git-repo-check   -- the isolated transform cwd (below) is not
+    #                              a git repo.
+    #   --ephemeral             -- no session file persisted for a call that
+    #                              has nothing to resume.
+    # Explicitly NOT `--dangerously-bypass-approvals-and-sandbox` (this
+    # runtime's interactive/dispatch flag, matching skip-permissions on
+    # every other vendor per VENDOR_AGNOSTIC_PROGRAM §2 -- a transform is a
+    # different profile, not a weaker version of the same one).
+    TRANSFORM_EVIDENCE_ID = 'codex-0.154.0-offline-argv-2026-09-18-PENDING-LIVE-PROOF'
+    TRANSFORM_ISOLATION: Tuple[str, ...] = (
+        '-s', 'read-only', '--ignore-user-config', '--skip-git-repo-check', '--ephemeral',
+    )
+    _transform_cwd: Optional[str] = None
+
+    @classmethod
+    def _transform_cwd_dir(cls) -> str:
+        """Empty, never-a-git-repo cwd so `--skip-git-repo-check` isn't
+        masking a real repo, and so no per-project `[projects.'<path>']`
+        trust_level entry from this box's real config.toml (already bypassed
+        by --ignore-user-config) is even relevant."""
+        if cls._transform_cwd is None:
+            path = Path(tempfile.gettempdir()) / 'clayrune-transform-isolation' / 'codex-cwd'
+            path.mkdir(parents=True, exist_ok=True)
+            cls._transform_cwd = str(path)
+        return cls._transform_cwd
+
+    def _transform_argv(self, *, model: str = '') -> List[str]:
+        cmd = self._cmd_prefix() + ['exec', '--json', *self.TRANSFORM_ISOLATION]
+        if model:
+            cmd.extend(['-m', model])
+        return cmd
+
+    def transform_evidence(self, *, model: str = '', effort: str = ''
+                           ) -> Tuple[ExecutionIdentity, Readiness, Certification]:
+        """Offline argv-self-check only -- same shape as the other three
+        runtimes, but every capability claim stays UNSUPPORTED until a live
+        canary exists (there is deliberately no such canary yet: Codex is
+        out of allowance, and §8b bars exploring against paid time). This
+        method is unused while tool_free_transform_enforced is False; it
+        exists so flipping that flag later is a one-line change plus a live
+        proof, not a redesign."""
+        now = datetime.now(timezone.utc)
+        fingerprint = hashlib.sha256(
+            json.dumps(self.TRANSFORM_ISOLATION).encode('utf-8')).hexdigest()
+        identity = ExecutionIdentity(
+            RequestedEngine('codex', model or '', effort or '', 'default'),
+            'codex-cli', sys.platform, fingerprint)
+        installed = Support.SUPPORTED if (self.resolve_binary() or self._npx_fallback) else Support.UNSUPPORTED
+        readiness = Readiness(identity, installed, Support.UNVERIFIED,
+                              now, now + timedelta(minutes=5))
+        caps = required_capabilities(Profile.TOOL_FREE_TRANSFORM)
+        certification = Certification(
+            identity, Profile.TOOL_FREE_TRANSFORM,
+            tuple(CapabilityClaim(c, Support.UNVERIFIED) for c in sorted(caps, key=lambda c: c.value)),
+            self.TRANSFORM_EVIDENCE_ID, 'argv-self-check-offline-only', now, now + timedelta(minutes=5))
+        return identity, readiness, certification
+
     def oneshot(self, *, prompt: str, system_prompt: str = '',
                 model: str = '', max_turns: int = 1,
                 stdin_text: Optional[str] = None,
@@ -5903,30 +7950,62 @@ class CodexRuntime(AgentRuntime):
         full = (system_prompt + '\n\n' + prompt).strip() if system_prompt else prompt
         if stdin_text:
             full = f"{full}\n\n---\n\n{stdin_text}"
-        cmd = self._cmd_prefix() + ['exec', '--json',
-                                    '--dangerously-bypass-approvals-and-sandbox']
-        if model:
-            cmd.extend(['-m', model])
+        cmd = self._transform_argv(model=model)
+        self.last_error = ''
         try:
             r = subprocess.run(
                 cmd, input=full,
-                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL,
-                cwd=cwd or str(Path.home()),
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=cwd or self._transform_cwd_dir(),
                 text=True, encoding='utf-8', errors='replace',
                 timeout=180,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
-        except Exception:
+        except subprocess.TimeoutExpired:
+            self.last_error = 'timeout during Codex text transform'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e}'
+            return None
+        # stdout is a structured event stream; never classify answer content
+        # (for example, a perfectly valid answer mentioning "quota" or
+        # "429") as a terminal provider error.  Only a nonzero process exit is
+        # authoritative failure here; stderr is diagnostic context then.
+        tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
+        if r.returncode != 0:
+            self.last_error = f'rc={r.returncode}: {tail[:300]}'
             return None
         last_text = ''
         for raw_line in (r.stdout or '').splitlines():
             ev = self.parse_event(raw_line)
-            if ev and ev.type == EventType.ASSISTANT_TEXT:
+            # parse_event intentionally turns unstructured diagnostics into a
+            # readable ASSISTANT_TEXT for interactive rendering.  A oneshot
+            # transform must be stricter: accept only a genuine structured
+            # assistant event, never a raw error line or JSON fallback.
+            if (ev and ev.type == EventType.ASSISTANT_TEXT
+                    and isinstance(ev.raw, dict)):
                 last_text = ev.payload.get('text', last_text)
-        return OneshotResult(text=last_text or (r.stdout or '').strip())
+        if not last_text:
+            self.last_error = 'Codex returned no assistant text'
+            return None
+        return OneshotResult(text=last_text)
 
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
+        # Checked BEFORE the auth-hint match below on purpose: the real
+        # usage_limit_exceeded message ("...purchase more credits...
+        # chatgpt.com/codex/settings/usage...") contains "chatgpt", which
+        # used to hit the auth branch first and mislabel a quota exhaustion
+        # as "Codex isn't authenticated" — live-reproduced 2026-09-18
+        # 05:21:29 in data/logs/clayrune.log. By the time text reaches this
+        # method the structured `codex_error_info` field is already gone
+        # (parse_event's own ALLOWANCE_EXHAUSTED branch normally intercepts
+        # it first), so this stays a text match as a fallback net, not the
+        # primary detection.
+        if any(p in s for p in ('usage limit', 'usage_limit_exceeded',
+                                'quota', 'rate limit', '429',
+                                'too many requests')):
+            return "Codex is out of allowance. Wait for it to reset and try again."
         if any(p in s for p in ('not authenticated', 'invalid api key',
                                 'unauthorized', 'auth_error',
                                 'login required', 'chatgpt')):
@@ -5935,8 +8014,6 @@ class CodexRuntime(AgentRuntime):
         if any(p in s for p in ('enoent', 'command not found', 'no such file',
                                 'cannot find the path', "is not recognized")):
             return "Codex CLI not found. Run: npm install -g @openai/codex"
-        if any(p in s for p in ('quota', 'rate limit', '429', 'too many requests')):
-            return "Codex rate limit hit. Wait a minute and try again."
         if rc != 0:
             real_line = _last_real_error_line(log_tail)
             if real_line:
@@ -6001,7 +8078,7 @@ class OpenCodeRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -6353,7 +8430,7 @@ class GooseRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -6722,7 +8799,7 @@ class AiderRuntime(AgentRuntime):
                         break
                 except Exception:
                     pass
-        self._bin_cache = found or ''
+        self._bin_cache = found or None  # never cache a miss: the first-run chooser installs mid-session
         return Path(found) if found else None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,
@@ -7027,7 +9104,7 @@ class KiroRuntime(AgentRuntime):
                     return c
             except Exception:
                 pass
-        self._bin_cache = ''
+        self._bin_cache = None  # never cache a miss (see GeminiRuntime)
         return None
 
     def build_command(self, *, model: str = '', max_turns: int = 0,

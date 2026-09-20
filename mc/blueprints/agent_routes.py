@@ -50,8 +50,11 @@ _get_mem_write_lock or writes MEMORY.md.
 
 import concurrent.futures
 from mc import engine_selection
+from mc.runtime_attempt_owner import DispatchFacts
 import hashlib
+import inspect
 import json
+import math
 import os
 import re
 import shutil
@@ -63,9 +66,9 @@ import time as _time
 import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
-from flask import Blueprint, Response, jsonify, request
+from flask import Blueprint, Flask, Response, jsonify, request
 
 from mc import media as _media
 from mc import obs, state
@@ -90,15 +93,23 @@ from mc.state import (
 )
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
+from mc import allowance_state as _allowance_state
+from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
+import mc.skill_scoping as _skill_scoping  # per-agent skill scoping
 import mc.agent_worktree as _agent_worktree  # per-agent worktree isolation (b264200a)
 import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§9.6)
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
+import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
+from mc.delegation_delivery import (DeliveryStore, callback_payload,
+                                    DeliveryBlocked, DeliveryDeferred,
+                                    DeliveryUncertain, drain_once,
+                                    event_id_for_turn)
 
 # Cross-blueprint imports (the 1.4/1.5/1.11 precedent — defs, not wire
 # placeholders; called at request/stream time only, long after server.py has
@@ -152,9 +163,33 @@ _extract_transcript_telemetry: Callable[..., dict] = None  # type: ignore[assign
 # PID-ledger internals — the reaper family stays in server.py:
 _proc_identity: Callable[..., tuple] = None  # type: ignore[assignment]
 _persist_pid_ledger: Callable[[], None] = None  # type: ignore[assignment]
+_delivery_store: Optional[DeliveryStore] = None
+_delivery_path: Optional[Path] = None
+_delivery_started = False
+_delivery_lifecycle_lock = threading.RLock()
+_delivery_iteration_lock = threading.Lock()
+_delivery_thread: Optional[threading.Thread] = None
+_delivery_stop_event: Optional[threading.Event] = None
+_delivery_shutdown_requested = threading.Event()
+_delivery_stop_in_progress = False
+_delegation_app: Optional[Flask] = None
+_runtime_lifecycle_service = None
+_conversation_cutover = None
 
 
-def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
+def _assert_runtime_project_generation(project_id, generation, *, incognito=False):
+    """Validate a persisted runtime identity without waking disabled storage."""
+    if generation is not None and (type(generation) is not int or generation < 1):
+        raise ValueError('project_generation must be a positive integer')
+    if incognito or _runtime_lifecycle_service is None:
+        return 1 if generation is None else generation
+    if generation is None:
+        return _runtime_lifecycle_service.project_generation(
+            project_id, include_deleted=False)
+    return _runtime_lifecycle_service.assert_project_generation(project_id, generation)
+
+
+def _wire_unlocked(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          provider_env_path, claude_home, popen_flags, startupinfo,
          load_project_fn, save_project_fn, load_projects_fn,
          get_memory_path_fn, get_archive_path_fn, memory_search_fn,
@@ -164,7 +199,8 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
          recent_claude_transcripts_fn, session_too_large_fn,
          long_session_advisory_fn, resume_is_fragile_fn,
          encode_project_path_fn, extract_transcript_telemetry_fn,
-         proc_identity_fn, persist_pid_ledger_fn):
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None,
+         conversation_cutover=None):
     """Late-bind cross-family deps. Called once by server.py after the
     memory/scribe/condense machinery (which stays there) is defined."""
     global DATA_DIR, UPLOADS_DIR, _APP_DIR, PORT, SHARED_RULES_PATH
@@ -177,6 +213,16 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     global _recent_claude_transcripts, _session_too_large
     global _long_session_advisory, _resume_is_fragile, _encode_project_path
     global _extract_transcript_telemetry, _proc_identity, _persist_pid_ledger
+    global _delivery_store, _delivery_path, _delivery_started
+    global _delivery_thread, _delivery_stop_event, _delegation_app
+    global _delivery_stop_in_progress
+    global _runtime_lifecycle_service
+    global _conversation_cutover
+    with _delivery_lifecycle_lock:
+        if _delivery_thread is not None and _delivery_thread.is_alive():
+            raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
+        if _delivery_stop_in_progress:
+            raise RuntimeError('cannot rewire agent routes while delivery stop is in progress')
     DATA_DIR = data_dir
     UPLOADS_DIR = uploads_dir
     _APP_DIR = app_dir
@@ -208,11 +254,74 @@ def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
     _extract_transcript_telemetry = extract_transcript_telemetry_fn
     _proc_identity = proc_identity_fn
     _persist_pid_ledger = persist_pid_ledger_fn
+    # Sibling of data/projects: project JSON loading must never see delivery
+    # state. SQLite WAL also survives sender/receiver process restarts.
+    _delivery_path = Path(data_dir).parent / 'delegation_delivery.sqlite3'
+    _delivery_store = None
+    _delivery_started = False
+    _delivery_thread = None
+    _delivery_stop_event = None
+    _delivery_stop_in_progress = False
+    _delivery_shutdown_requested.clear()
+    _delegation_app = Flask('mc-delegation-delivery')
+    _runtime_lifecycle_service = runtime_lifecycle_service
+    _conversation_cutover = conversation_cutover
     # Moved module-level side effect (see the tombstone in the provider-env
     # section below): hydrate persisted provider env vars into os.environ now
     # that PROVIDER_ENV_PATH is bound. Runs during server.py module exec,
     # before app.run() and before any agent spawn — timing-equivalent.
     _hydrate_provider_env_into_os()
+
+
+def wire(*, data_dir, uploads_dir, app_dir, port, shared_rules_path,
+         provider_env_path, claude_home, popen_flags, startupinfo,
+         load_project_fn, save_project_fn, load_projects_fn,
+         get_memory_path_fn, get_archive_path_fn, memory_search_fn,
+         maybe_checkpoint_fn, write_session_memory_fn, dispatch_condense_fn,
+         should_condense_fn, get_condense_status_fn, scribe_call_fn,
+         find_transcript_file_fn, parse_transcript_messages_fn,
+         recent_claude_transcripts_fn, session_too_large_fn,
+         long_session_advisory_fn, resume_is_fragile_fn,
+         encode_project_path_fn, extract_transcript_telemetry_fn,
+         proc_identity_fn, persist_pid_ledger_fn, runtime_lifecycle_service=None,
+         conversation_cutover=None):
+    """Atomically bind agent dependencies and delivery ownership state.
+
+    The implementation retains its keyword-only binding surface in
+    ``_wire_unlocked``; this wrapper holds the lifecycle lock across the live
+    check and every mutation, so start/stop cannot observe a half-rewired run.
+    """
+    with _delivery_lifecycle_lock:
+        if _delivery_thread is not None and _delivery_thread.is_alive():
+            raise RuntimeError('cannot rewire agent routes while delivery loop is alive')
+        return _wire_unlocked(
+            data_dir=data_dir, uploads_dir=uploads_dir, app_dir=app_dir,
+            port=port, shared_rules_path=shared_rules_path,
+            provider_env_path=provider_env_path, claude_home=claude_home,
+            popen_flags=popen_flags, startupinfo=startupinfo,
+            load_project_fn=load_project_fn, save_project_fn=save_project_fn,
+            load_projects_fn=load_projects_fn,
+            get_memory_path_fn=get_memory_path_fn,
+            get_archive_path_fn=get_archive_path_fn,
+            memory_search_fn=memory_search_fn,
+            maybe_checkpoint_fn=maybe_checkpoint_fn,
+            write_session_memory_fn=write_session_memory_fn,
+            dispatch_condense_fn=dispatch_condense_fn,
+            should_condense_fn=should_condense_fn,
+            get_condense_status_fn=get_condense_status_fn,
+            scribe_call_fn=scribe_call_fn,
+            find_transcript_file_fn=find_transcript_file_fn,
+            parse_transcript_messages_fn=parse_transcript_messages_fn,
+            recent_claude_transcripts_fn=recent_claude_transcripts_fn,
+            session_too_large_fn=session_too_large_fn,
+            long_session_advisory_fn=long_session_advisory_fn,
+            resume_is_fragile_fn=resume_is_fragile_fn,
+            encode_project_path_fn=encode_project_path_fn,
+            extract_transcript_telemetry_fn=extract_transcript_telemetry_fn,
+            proc_identity_fn=proc_identity_fn,
+            persist_pid_ledger_fn=persist_pid_ledger_fn,
+            runtime_lifecycle_service=runtime_lifecycle_service,
+            conversation_cutover=conversation_cutover)
 
 # ── Claude CLI binary resolution ────────────────────────────────────────────
 # Delegates to ClaudeRuntime.resolve_binary_str() — single source of truth.
@@ -561,8 +670,46 @@ def _resolve_project_mcp_config(project):
              level='warn')
         return None
 
+def _runtime_mcp_config_json(project, provider_name):
+    """The MCP set a non-Claude runtime is given explicitly, as a JSON string.
+
+    Claude needs nothing when a project has not opted into trimming
+    (`_resolve_project_mcp_config` -> None): with no flags it loads the full
+    fleet itself. Qwen cannot. It only reaches servers named on its
+    `--allowed-mcp-server-names`, and '' meant the deny-all sentinel, so a
+    project that never touched trimming got NO MCP on Qwen while Claude and
+    Gemini (via `sync_to_gemini`) got every server. Live 2026-09-19: the
+    fixture server registered through POST /api/mcp, Claude and Gemini called
+    it, Qwen answered "MCP server 'clayrune_fixture' is not configured".
+
+    For qwen, None becomes the same set Gemini receives
+    (`mcp.collect_effective_servers_for_project`), and an opted-in set is
+    converted to that shape too: qwen-code is a gemini-cli fork and reads a
+    bare `url` as SSE (createTransport), so Claude's `{"type":"http","url"}`
+    would connect with the wrong transport. Other runtimes: unchanged."""
+    resolved = _resolve_project_mcp_config(project)
+    if provider_name != 'qwen':
+        return resolved or ''
+    try:
+        from mc import mcp as _mcp_mod
+        if resolved is None:
+            servers = _mcp_mod.collect_effective_servers_for_project(
+                (project or {}).get('project_path') or None)
+        else:
+            servers = {
+                name: _mcp_mod._to_gemini_config(_mcp_mod._infer_transport(cfg), cfg)
+                for name, cfg in (json.loads(resolved).get('mcpServers') or {}).items()
+                if isinstance(cfg, dict)}
+        return json.dumps({'mcpServers': servers})
+    except Exception as e:
+        _log(f"[mcp] qwen MCP set failed ({e!r}); dispatching with none",
+             level='warn')
+        return resolved or ''
+
+
 def _build_claude_flags(project=None, streaming=False, model_override=None,
-                        effort_override=None):
+                        effort_override=None, max_turns_override=None,
+                        character_skills=None):
     """Build common Claude CLI flags from config, with optional per-project overrides.
     Delegates to ClaudeRuntime.build_command()[1:] — single source of truth.
     Returns flags only (no binary prefix), matching the legacy contract.
@@ -574,16 +721,23 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     `effort_override` is the same idea for reasoning effort, used by an agent
     type that pins one (docs/AGENT_TYPES_DESIGN.md §3). Kept a separate arg
     rather than read off `project` because the character is not the project.
+
+    `character_skills` is the persona's declared skill list. With
+    `agent_skill_scoping_enabled` on and a non-empty list it becomes a
+    `skillOverrides` block (mc/skill_scoping.py); otherwise nothing changes.
+    Every spawn/respawn/revive site must pass it, or that path silently reverts
+    to the full skill listing — see tests/test_skill_scoping.py.
     """
     model = model_override if model_override is not None else (
         (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
     )
-    effort = (effort_override
-              or (project or {}).get('agent_effort', '')
-              or state.CONFIG.get('agent_effort', ''))
+    effort = (effort_override if effort_override is not None else
+              ((project or {}).get('agent_effort', '')
+               or state.CONFIG.get('agent_effort', '')))
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
-        max_turns=state.CONFIG.get('agent_max_turns', 0),
+        max_turns=(max_turns_override if max_turns_override is not None
+                   else state.CONFIG.get('agent_max_turns', 0)),
         streaming=streaming,
         perm_mode=state.CONFIG.get('agent_permission_mode', ''),
         channels=(project or {}).get('agent_channels', '') or state.CONFIG.get('agent_channels', ''),
@@ -594,7 +748,30 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
         effort=effort,  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         mcp_config_json=_resolve_project_mcp_config(project) or '',  # pyright: ignore[reportCallIssue]  # moved-verbatim typing debt (1.12)
         partial_messages=bool(state.CONFIG.get('activity_states_enabled', False)),  # pyright: ignore[reportCallIssue]
+        skill_overrides=_skill_overrides_for(project, character_skills),  # pyright: ignore[reportCallIssue]
     )[1:]  # strip binary — _build_claude_flags() contract is flags-only
+
+
+def _skill_overrides_for(project, character_skills):
+    """`skillOverrides` for one Claude launch, or {} (flag off / nothing declared)."""
+    if not (character_skills and state.CONFIG.get(_skill_scoping.CONFIG_KEY, False)):
+        return {}
+    return _skill_scoping.skill_overrides(
+        (project or {}).get('project_path') or None, (project or {}).get('id'),
+        character_skills)
+
+
+def _session_skills(project, session):
+    """Declared skills of the persona a session runs, re-read from disk.
+
+    Same source `_fresh_context_for` uses, so a respawn, revive or rollover of
+    one conversation always resolves the same set the original launch did.
+    """
+    try:
+        return _session_character_parts(project, session)[2]
+    except Exception as e:
+        _log(f"[skill-scoping] could not resolve session skills: {e}", flush=True)
+        return []
 
 
 def _resolve_dispatch_model(project, prompt):
@@ -626,7 +803,8 @@ _classifier_pool = concurrent.futures.ThreadPoolExecutor(
 )
 
 
-def _dispatch_with_routing(project, prompt, streaming=False, effort_override=None):
+def _dispatch_with_routing(project, prompt, streaming=False, effort_override=None,
+                           character_skills=None):
     """One-shot helper: resolve model + build flags.
 
     Returns (model, source, flags). Caller stamps session['model'] and
@@ -635,12 +813,13 @@ def _dispatch_with_routing(project, prompt, streaming=False, effort_override=Non
     """
     model, source = _resolve_dispatch_model(project, prompt)
     flags = _build_claude_flags(project, streaming=streaming, model_override=model,
-                                effort_override=effort_override)
+                                effort_override=effort_override,
+                                character_skills=character_skills)
     return model, source, flags
 
 
 def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=False,
-                                    effort_override=None):
+                                    effort_override=None, character_skills=None):
     """Same as `_dispatch_with_routing` but runs `context_builder` in parallel
     with the classifier when the router is on.
 
@@ -656,7 +835,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
     if not state.CONFIG.get('auto_model_enabled', False) or not prompt:
         context = context_builder() if context_builder else ''
         model, source, flags = _dispatch_with_routing(project, prompt, streaming=streaming,
-                                                      effort_override=effort_override)
+                                                      effort_override=effort_override,
+                                                      character_skills=character_skills)
         return model, source, flags, context, ''
 
     fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
@@ -673,7 +853,8 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
         model, source = fallback, 'fallback'
         _fallback_reason = type(_exc).__name__
     flags = _build_claude_flags(project, streaming=streaming, model_override=model,
-                                effort_override=effort_override)
+                                effort_override=effort_override,
+                                character_skills=character_skills)
     return model, source, flags, context, _fallback_reason
 
 
@@ -1394,6 +1575,36 @@ def _providers_in_use() -> set:
     return in_use
 
 
+def _merge_registry_path():
+    """Windows: append any PATH entries the registry has gained since this
+    process started. The first-run chooser installs Node and the vendor CLIs
+    while the server runs, and every child (claude.cmd/gemini.cmd call bare
+    `node`) inherits our PATH — so without this they fail until a restart
+    (clean-VM run, 2026-09-18). Additive only; never drops an entry."""
+    if sys.platform != 'win32':
+        return
+    try:
+        import winreg
+        fresh = []
+        for root, subkey in (
+                (winreg.HKEY_LOCAL_MACHINE,
+                 r'SYSTEM\CurrentControlSet\Control\Session Manager\Environment'),
+                (winreg.HKEY_CURRENT_USER, r'Environment')):
+            try:
+                with winreg.OpenKey(root, subkey) as key:
+                    val, _ = winreg.QueryValueEx(key, 'Path')
+                    fresh.extend(os.path.expandvars(x) for x in val.split(';') if x)
+            except OSError:
+                pass
+        cur = os.environ.get('PATH', '').split(os.pathsep)
+        have = {c.rstrip('\\').lower() for c in cur if c}
+        add = [f for f in fresh if f.rstrip('\\').lower() not in have]
+        if add:
+            os.environ['PATH'] = os.pathsep.join(cur + add)
+    except Exception as e:
+        _log(f'[providers] PATH refresh failed: {e}', flush=True)
+
+
 @bp.route('/api/agent/providers')
 def agent_providers():
     """List all registered agent runtimes (claude + alternatives) with their
@@ -1402,7 +1613,27 @@ def agent_providers():
 
     Returns: [{name, display_name, installed, version, install_hint,
                capabilities: {...}, default: bool, in_use: bool}]
+
+    ``?refresh=1`` forces a fresh AUTH probe for every runtime instead of
+    serving health_check()'s cached auth_state (F8, clean-VM run 2026-09-18):
+    Claude was signed in — `claude auth status` showed loggedIn:true — but
+    this endpoint kept reporting not_logged_in until the server restarted,
+    because health_check() only reads the in-memory `_claude_auth_state`
+    cache and nothing had re-probed it since the sign-in happened outside
+    Clayrune. `rt.auth_probe()` is the one call every runtime guarantees
+    actually re-checks (ClaudeRuntime runs `claude -p ok`; Gemini's spends a
+    live API call when a key is present). Gated behind an explicit query
+    param — never the default — because a probe can be a real subprocess or
+    spend quota, and this route is also hit on every page's boot-time
+    provider-catalog fetch.
     """
+    _merge_registry_path()
+    refresh = str(request.args.get('refresh', '')).strip().lower() in ('1', 'true', 'yes')
+    # ?model=<id>[&provider=<name>]: report whether THAT model can see images
+    # (`selected_model_image_input`). image_input alone is per-runtime, and one
+    # runtime can front both a blind and a sighted model.
+    sel_model = str(request.args.get('model', '')).strip()
+    sel_provider = str(request.args.get('provider', '')).strip().lower()
     out = []
     default_name = _agent_runtime.default_runtime_name()
     try:
@@ -1418,6 +1649,22 @@ def agent_providers():
                 auth_state=_agent_runtime.AuthState(status='unknown', last_checked=''),
                 install_hint='', diagnostic=str(e),
             )
+        if refresh:
+            try:
+                probe = rt.auth_probe() or {}
+                status = probe.get('status') or ('ok' if probe.get('ok') else 'unknown')
+                h = _agent_runtime.HealthStatus(
+                    installed=h.installed, binary_path=h.binary_path,
+                    version=h.version,
+                    auth_state=_agent_runtime.AuthState(
+                        status=status, method=probe.get('method'),
+                        error_text=probe.get('error_text'),
+                        last_checked=probe.get('last_checked') or h.auth_state.last_checked,
+                    ),
+                    install_hint=h.install_hint, diagnostic=h.diagnostic,
+                )
+            except Exception as e:
+                _log(f'[providers] refresh auth_probe failed for {rt.name}: {e}', flush=True)
         try:
             caps = rt.capabilities()
             caps_dict = {
@@ -1436,10 +1683,15 @@ def agent_providers():
                 'emits_num_turns': caps.emits_num_turns,
                 'emits_rate_limit': caps.emits_rate_limit,
                 'image_input': caps.image_input,
+                'image_attach': caps.image_attach,
                 'context_window': caps.context_window,
                 'context_injection': caps.context_injection,
                 'context_file_name': caps.context_file_name,
                 'oneshot_supported': caps.oneshot_supported,
+                # Read by the unified provider row's "Check status" tooltip
+                # (walkthrough.js _renderProviderRow) — it was on the dataclass
+                # (MC-934) but never serialised, so the client could not see it.
+                'auth_probe_spends_quota': caps.auth_probe_spends_quota,
             }
         except Exception:
             caps_dict = {}
@@ -1448,7 +1700,8 @@ def agent_providers():
         # picker rebuilds itself from this whenever the Agent picker changes.
         # Empty list = this CLI has no model flag → no picker.
         try:
-            models = [{'id': mid, 'label': label}
+            models = [{'id': mid, 'label': label,
+                       'image_input': rt.image_input_for(mid)}
                       for mid, label in rt.model_choices()]
         except Exception:
             models = []
@@ -1461,9 +1714,17 @@ def agent_providers():
             quota_warnings = _recent_quota_failures(rt.name)
         except Exception:
             quota_warnings = {}
+        # Same test agent_auth_login_remote applies at click time: a captured-URL
+        # login (auth_login_argv) or, failing that, a real PTY. The unified
+        # provider row shows "Sign in remotely" only where this is true.
+        try:
+            remote_login = bool(rt.auth_login_argv(str(h.binary_path or rt.name)))                 or bool(pty_backend.pty_available())
+        except Exception:
+            remote_login = False
         out.append({
             'name': rt.name,
             'display_name': rt.display_name,
+            'remote_login': remote_login,
             'models': models,
             'installed': h.installed,
             'binary_path': str(h.binary_path) if h.binary_path else None,
@@ -1473,6 +1734,15 @@ def agent_providers():
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
+            **({'selected_model': sel_model,
+                'selected_model_image_input': rt.image_input_for(sel_model)}
+               if sel_model and sel_provider in ('', rt.name) else {}),
+            # VENDOR_AGNOSTIC_PROGRAM.md §4: distinct from quota_warnings
+            # above (a per-model heuristic scraped from the log) — this is
+            # the normalized, per-vendor ALLOWANCE_EXHAUSTED state a dispatch
+            # call actually refuses on, so the chooser shows the SAME fact a
+            # click would hit, not a weaker warning.
+            'allowance_exhausted': _allowance_state.display_text(rt.name),
             'default': (rt.name == default_name),
             # Auth-alert gate (provider-auth.js): true if this provider is the
             # default, or pinned by some project/character. A provider nobody
@@ -1620,6 +1890,348 @@ def _install_command_required_binary(cmd: str) -> str:
     return parts[0] if parts else ''
 
 
+# Keep prerequisite onboarding deliberately narrow: only the known provider
+# packages may be composed here, and each prerequisite installer is a fixed,
+# platform-specific command. We never interpolate user input or credentials
+# into a shell command. The normal installer handles these prerequisites
+# before first launch; this is the in-app repair path for app bundles and
+# upgrades where npm/pip was not present when the UI was opened.
+_PROVIDER_NPM_PACKAGES = {
+    'claude': '@anthropic-ai/claude-code',
+    'codex': '@openai/codex',
+    'gemini': '@google/gemini-cli',
+    'qwen': '@qwen-code/qwen-code',
+}
+
+# Aider is the one CLI installed via pip rather than npm (agent_runtime.py's
+# AiderRuntime.health_check() install_hint). A clean machine has neither pip
+# nor a system Python on PATH just as reliably as it lacks Node/npm, so this
+# needs its own prerequisite bootstrap — same allowlist discipline as npm above.
+_PROVIDER_PIP_PACKAGES = {
+    'aider': 'aider-chat',
+}
+
+
+def _node_prereq_snippet() -> str:
+    """Shell snippet that installs Node/npm if missing, else no-ops.
+
+    Extracted out of `_provider_install_command` (F7, clean-VM run
+    2026-09-18) so `_provider_install_command_batch` can emit this segment
+    ONCE for a multi-vendor install instead of once per vendor — the original
+    bug: "Install selected" ran N single-provider commands in N separate
+    terminals, each with its OWN copy of this snippet, so two npm-based
+    vendors raced two concurrent `winget install` calls.
+    """
+    if sys.platform == 'win32':
+        # winget updates the machine after this shell starts. Explicitly add
+        # the stable Node/npm locations before invoking npm; inheriting the
+        # old PATH was the original fresh-PC failure.
+        # PATH goes first and winget runs only when npm is still missing:
+        # a second vendor's install re-ran winget, which exits non-zero on
+        # "already installed, no upgrade" and broke the && chain before npm
+        # (clean-VM run, 2026-09-18).
+        return ('set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+                '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+                '-e --silent --source winget '
+                '--accept-source-agreements --accept-package-agreements)')
+    # Reuse the versioned user-local nvm flow from install.sh. It works on
+    # clean macOS/Linux hosts without assuming Homebrew, sudo, or a distro
+    # Node version, and sources nvm again in this terminal before npm.
+    return ('curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh '
+            '| bash && export NVM_DIR="$HOME/.nvm" && '
+            '. "$NVM_DIR/nvm.sh" && nvm install 20')
+
+
+def _uv_prereq_snippet() -> str:
+    """Shell snippet that bootstraps `uv` if missing. See `_node_prereq_snippet`."""
+    if sys.platform == 'win32':
+        return ('powershell -ExecutionPolicy ByPass -c '
+                '"irm https://astral.sh/uv/install.ps1 | iex" '
+                '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%"')
+    return ('curl -LsSf https://astral.sh/uv/install.sh | sh '
+            '&& export PATH="$HOME/.local/bin:$PATH"')
+
+
+def _npm_major_version(npm_bin: str) -> Optional[int]:
+    """Parse the resolved `npm` binary's major version, or None if it can't
+    be determined — treated as "flag unsupported" (fail closed) rather than
+    risking an unrecognized flag on some npm we couldn't identify."""
+    try:
+        r = subprocess.run([npm_bin, '--version'], capture_output=True,
+                          text=True, timeout=10)
+        return int((r.stdout or '').strip().split('.', 1)[0])
+    except Exception:
+        return None
+
+
+def _npm_install_g_segment(package: str, *, npm_bin: Optional[str] = None) -> str:
+    """`npm install -g <package>`, adding `--allow-scripts=<package>` only for
+    npm >= 12 — the version that SKIPS an unapproved postinstall instead of
+    just warning about it (F12, clean-VM run 2, 2026-09-18:
+    @anthropic-ai/claude-code's `install.cjs` postinstall never ran during
+    the in-app install). Older npm ignores the flag with a harmless
+    deprecation warning ("Unknown cli config", verified locally on
+    11.13.0 — exit 0, script still ran), but we only add it on positive
+    version evidence rather than lean on that.
+
+    ``npm_bin`` is the ALREADY-RESOLVED npm on this machine, checked here
+    directly. When it's None (the bootstrap branch, where the composed shell
+    command installs Node/npm before this segment runs and no npm exists yet
+    in this process to query), the version check is embedded in the shell
+    snippet itself and evaluated against whatever npm the prerequisite step
+    just installed.
+    """
+    if npm_bin:
+        major = _npm_major_version(npm_bin)
+        if major is not None and major >= 12:
+            return f'npm install -g --allow-scripts={package} {package}'
+        return f'npm install -g {package}'
+    if sys.platform == 'win32':
+        return (f'for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+               f'(if %v GEQ 12 (npm install -g --allow-scripts={package} {package}) '
+               f'else (npm install -g {package}))')
+    return (f'NPMV=$(npm -v | cut -d. -f1); '
+           f'if [ "$NPMV" -ge 12 ]; then npm install -g --allow-scripts={package} {package}; '
+           f'else npm install -g {package}; fi')
+
+
+def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
+    """Return ``(command, prerequisite)`` for a provider install.
+
+    ``hint`` is trusted runtime metadata, but the composed fallback is only
+    emitted when it has the exact expected npm/pip shape for the requested,
+    allowlisted provider. Unknown provider hints fail closed.
+    """
+    required = _install_command_required_binary(hint)
+    if required == 'npm':
+        package = _PROVIDER_NPM_PACKAGES.get(name)
+        npm_bin = shutil.which('npm')
+        if npm_bin:
+            if package and hint.strip() == f'npm install -g {package}':
+                return _npm_install_g_segment(package, npm_bin=npm_bin), ''
+            return hint, ''
+        expected = f'npm install -g {package}' if package else ''
+        if not package or hint.strip() != expected:
+            return hint, 'unsupported'
+        return f'{_node_prereq_snippet()} && {_npm_install_g_segment(package)}', 'npm'
+    if required == 'pip':
+        if shutil.which('pip') or shutil.which('pip3'):
+            return hint, ''
+        package = _PROVIDER_PIP_PACKAGES.get(name)
+        expected = f'pip install {package}' if package else ''
+        # Exact match only — same discipline as the npm branch above. A
+        # startswith() check would let a hint like 'pip install aider-chat;
+        # curl evil' through on its shared prefix; AiderRuntime's hint has
+        # exactly two known-good literal forms, so allowlist both in full.
+        expected_with_alt = f'{expected}  # or: uv tool install {package}' if package else ''
+        if not package or hint.strip() not in (expected, expected_with_alt):
+            return hint, 'unsupported'
+        # Prefer an already-present uv over bootstrapping one.
+        if shutil.which('uv'):
+            return f'uv tool install {package}', ''
+        # Neither pip nor uv on PATH: bootstrap uv. Unlike pip, uv's installer
+        # needs no pre-existing Python — a standalone per-user binary, no
+        # admin — so it works on a machine that has never had Python at all.
+        return f'{_uv_prereq_snippet()} && uv tool install {package}', 'pip'
+    return hint, ''
+
+
+def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], bool]:
+    """Compose ONE shell command that installs every provider in ``names``
+    sequentially, running each platform prerequisite (Node/npm, or pip's uv
+    bootstrap) at most ONCE no matter how many selected vendors need it.
+
+    Returns ``(command, unsupported, prerequisite_added)`` — ``unsupported``
+    lists any name whose install_hint didn't match the allowlisted npm/pip
+    shape (same fail-closed discipline as `_provider_install_command`); those
+    names are just skipped from `command` rather than aborting the whole
+    batch. `command` is ``''`` when nothing in `names` was installable this
+    way. `prerequisite_added` mirrors the single-provider function's
+    `prerequisite` return: True when a Node/npm or uv bootstrap segment was
+    embedded, so the caller's PATH preflight (which would otherwise reject
+    a command whose first token is that bootstrap's own shell builtin, e.g.
+    Windows `set`) knows to skip itself exactly as it already does for the
+    single-provider route.
+
+    F7 (clean-VM run 2026-09-18): "Install selected" used to call
+    `_provider_install_command` once per selected vendor and open a
+    SEPARATE terminal for each — so ticking Claude + Gemini launched two
+    concurrent `winget install ... NodeJS` calls that raced each other. One
+    combined command in one terminal, with the prerequisite check run once
+    up front, removes the race without changing the single-provider path
+    (`_provider_install_command` itself, used by the unchanged
+    single-vendor `install-launch` route) at all.
+    """
+    npm_expected: List[str] = []
+    pip_packages: List[str] = []
+    unsupported: List[str] = []
+    needs_npm_prereq = False
+    needs_pip_prereq = False
+    npm_bin = shutil.which('npm')
+    have_npm = bool(npm_bin)
+    have_pip = bool(shutil.which('pip') or shutil.which('pip3'))
+    have_uv = bool(shutil.which('uv'))
+    for name in names:
+        try:
+            rt = _agent_runtime.get_runtime(name)
+            hint = rt.health_check().install_hint or ''
+        except Exception:
+            unsupported.append(name)
+            continue
+        if not hint:
+            unsupported.append(name)
+            continue
+        required = _install_command_required_binary(hint)
+        if required == 'npm':
+            package = _PROVIDER_NPM_PACKAGES.get(name)
+            expected = f'npm install -g {package}' if package else ''
+            if not package or hint.strip() != expected:
+                unsupported.append(name)
+                continue
+            npm_expected.append(_npm_install_g_segment(package, npm_bin=npm_bin))
+            if not have_npm:
+                needs_npm_prereq = True
+        elif required == 'pip':
+            package = _PROVIDER_PIP_PACKAGES.get(name)
+            expected = f'pip install {package}' if package else ''
+            expected_with_alt = f'{expected}  # or: uv tool install {package}' if package else ''
+            if not package or hint.strip() not in (expected, expected_with_alt):
+                unsupported.append(name)
+                continue
+            pip_packages.append(package)
+            if not have_pip:
+                needs_pip_prereq = True
+        else:
+            # Already runnable as-is (no prerequisite gap) — nothing to
+            # dedupe or batch; run it standalone in this same terminal.
+            npm_expected.append(hint)
+    segments: List[str] = []
+    if npm_expected:
+        if needs_npm_prereq:
+            segments.append(_node_prereq_snippet())
+        segments.extend(npm_expected)
+    if pip_packages:
+        if needs_pip_prereq:
+            segments.append(_uv_prereq_snippet())
+            segments.extend(f'uv tool install {p}' for p in pip_packages)
+        elif have_uv:
+            segments.extend(f'uv tool install {p}' for p in pip_packages)
+        else:
+            segments.extend(f'pip install {p}' for p in pip_packages)
+    prerequisite_added = needs_npm_prereq or needs_pip_prereq
+    return ' && '.join(segments), unsupported, prerequisite_added
+
+
+# ── PowerShell execution policy (F6, clean-VM run 2026-09-18) ────────────────
+#
+# npm installs each CLI as claude.cmd AND claude.ps1. On a clean Windows client
+# the default policy is Restricted, so typing `claude` / `gemini` in PowerShell
+# fails with a SecurityError while `claude.cmd` works. Ron's decision: during
+# the in-app vendor install set RemoteSigned at CurrentUser scope (no admin,
+# reversible, still blocks unsigned DOWNLOADED scripts) — but ONLY when the
+# effective policy is Restricted/Undefined, and never over a policy someone
+# chose on purpose (AllSigned, or anything set by Group Policy).
+
+# Scopes that persist across terminals. `Process` is left out on purpose: it
+# dies with the shell that set it, so it says nothing about what the user's
+# next terminal will do.
+_PS_POLICY_UNDO = 'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy Undefined'
+
+
+def _execution_policy_decision(scopes: dict) -> tuple[str, str]:
+    """Pure decision: ``(action, effective)`` for a ``Get-ExecutionPolicy -List``
+    result mapped scope -> policy name.
+
+    ``action`` is ``'set'`` (write RemoteSigned to CurrentUser), ``'left_alone'``
+    (a blocking policy someone chose that we must not override) or
+    ``'unchanged'`` (already permissive enough for the npm .ps1 shims).
+    """
+    def val(scope):
+        return str(scopes.get(scope) or 'Undefined').strip()
+
+    for gpo_scope in ('MachinePolicy', 'UserPolicy'):
+        gpo = val(gpo_scope)
+        if gpo.lower() != 'undefined':
+            # Group Policy wins over anything we could write; even a blocking
+            # one is the administrator's call, not ours.
+            blocking = gpo.lower() in ('restricted', 'allsigned')
+            return ('left_alone' if blocking else 'unchanged'), gpo
+    effective = next((val(s) for s in ('CurrentUser', 'LocalMachine')
+                      if val(s).lower() != 'undefined'), 'Undefined')
+    if effective.lower() in ('restricted', 'undefined'):
+        return 'set', effective
+    if effective.lower() == 'allsigned':
+        return 'left_alone', effective
+    return 'unchanged', effective
+
+
+def _read_powershell_execution_scopes() -> Optional[dict]:
+    """``Get-ExecutionPolicy -List`` as {scope: policy}, or None if it can't be read."""
+    try:
+        r = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             'Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }'],
+            capture_output=True, text=True, timeout=30)
+        out = {}
+        for line in (r.stdout or '').splitlines():
+            if '=' in line:
+                k, v = line.strip().split('=', 1)
+                out[k.strip()] = v.strip()
+        return out if r.returncode == 0 and out else None
+    except Exception as e:
+        _log(f"[provider-install] reading PowerShell execution policy failed: {e}", flush=True)
+        return None
+
+
+def _set_powershell_execution_policy_remotesigned() -> Optional[str]:
+    """Write RemoteSigned at CurrentUser scope. Returns None on success, else an error string."""
+    try:
+        r = subprocess.run(
+            ['powershell', '-NoProfile', '-NonInteractive', '-Command',
+             'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'],
+            capture_output=True, text=True, timeout=30)
+        if r.returncode != 0:
+            return (r.stderr or r.stdout or f'exit {r.returncode}').strip()[:300]
+        return None
+    except Exception as e:
+        return str(e)
+
+
+def _ensure_powershell_execution_policy() -> dict:
+    """Apply the F6 rule and report what happened; never raises.
+
+    Returns ``{'action', 'effective', 'message'}``. ``message`` is '' when there
+    is nothing worth telling the user (non-Windows, or policy already fine).
+    """
+    if sys.platform != 'win32':
+        return {'action': 'not_applicable', 'effective': None, 'message': ''}
+    try:
+        scopes = _read_powershell_execution_scopes()
+        if scopes is None:
+            return {'action': 'unknown', 'effective': None, 'message': ''}
+        action, effective = _execution_policy_decision(scopes)
+        if action == 'unchanged':
+            return {'action': action, 'effective': effective, 'message': ''}
+        if action == 'left_alone':
+            return {'action': action, 'effective': effective, 'message': (
+                f'PowerShell script policy is {effective} (set on purpose or by your '
+                'organization), so it was left alone. Typing claude/gemini in PowerShell '
+                'may be blocked; use Command Prompt or claude.cmd / gemini.cmd instead.')}
+        err = _set_powershell_execution_policy_remotesigned()
+        if err:
+            return {'action': 'failed', 'effective': effective, 'message': (
+                f'PowerShell script policy is {effective}, which blocks typing claude/gemini '
+                f'in PowerShell, and it could not be changed ({err}). Use Command Prompt, '
+                'or run: Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned')}
+        return {'action': 'set', 'effective': effective, 'message': (
+            f'PowerShell script policy was {effective}, which blocks typing claude/gemini '
+            'in PowerShell. Set it to RemoteSigned for your user account only (no admin). '
+            f'Undo with: {_PS_POLICY_UNDO}')}
+    except Exception as e:
+        _log(f"[provider-install] execution policy step failed: {e}", flush=True)
+        return {'action': 'unknown', 'effective': None, 'message': ''}
+
+
 @bp.route('/api/agent/provider/<name>/install-launch', methods=['POST'])
 def agent_provider_install_launch(name):
     """Run the SAME install command install.sh/install.ps1 use for this
@@ -1648,15 +2260,72 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False,
                         'error': f'no automatic install available for {name}',
                         'command': ''}), 200
-    required = _install_command_required_binary(hint)
-    if required and not shutil.which(required):
+    command, prerequisite = _provider_install_command(name, hint)
+    if prerequisite == 'unsupported':
+        return jsonify({'ok': False,
+                        'error': 'unsupported provider install command',
+                        'command': command}), 200
+    required = _install_command_required_binary(command)
+    if required and not shutil.which(required) and not prerequisite:
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
-                        'command': hint}), 200
-    err = _launch_terminal_for_binary(hint)
+                        'command': command}), 200
+    err = _launch_terminal_for_binary(command)
     if err:
-        return jsonify({'ok': False, 'error': err, 'command': hint}), 200
-    return jsonify({'ok': True, 'command': hint})
+        return jsonify({'ok': False, 'error': err, 'command': command}), 200
+    policy = (_ensure_powershell_execution_policy()
+              if name in _PROVIDER_NPM_PACKAGES else None)
+    return jsonify({'ok': True, 'command': command,
+                    'prerequisite': prerequisite or None,
+                    'execution_policy': policy})
+
+
+@bp.route('/api/agent/providers/install-launch', methods=['POST'])
+def agent_providers_install_launch_batch():
+    """Install several providers with ONE terminal (F7, clean-VM run
+    2026-09-18): the walkthrough's "Install selected" used to call the
+    single-provider route above once per vendor, each opening its OWN
+    terminal — ticking Claude + Gemini launched two concurrent
+    `winget install ... NodeJS` calls that raced each other.
+    `_provider_install_command_batch` composes one sequential command (Node/
+    npm or pip/uv bootstrapped at most once) and this launches it in a
+    single terminal.
+
+    Body: {"names": ["claude", "gemini", ...]}. Returns
+    {'ok': True, 'command', 'installed': [...], 'unsupported': [...]} once
+    the terminal is launched, or {'ok': False, 'error', 'command'} when it
+    can't start at all (same contract as the single-provider route) —
+    `unsupported` names still come back 200 so the caller can show them
+    without failing the whole batch.
+    """
+    body = request.get_json(silent=True) or {}
+    names = [str(n).strip().lower() for n in (body.get('names') or []) if str(n).strip()]
+    if not names:
+        return jsonify({'ok': False, 'error': 'no providers given', 'command': ''}), 200
+    # De-dupe while keeping the caller's order — a repeated name would just
+    # duplicate its install line in the composed command.
+    seen = set()
+    names = [n for n in names if not (n in seen or seen.add(n))]
+    command, unsupported, prereq_added = _provider_install_command_batch(names)
+    installed = [n for n in names if n not in unsupported]
+    if not command:
+        return jsonify({'ok': False,
+                        'error': 'no supported install command for the selected providers',
+                        'command': '', 'unsupported': unsupported}), 200
+    required = _install_command_required_binary(command)
+    if required and not shutil.which(required) and not prereq_added:
+        return jsonify({'ok': False,
+                        'error': f'{required} not found on PATH',
+                        'command': command, 'unsupported': unsupported}), 200
+    err = _launch_terminal_for_binary(command)
+    if err:
+        return jsonify({'ok': False, 'error': err, 'command': command,
+                        'unsupported': unsupported}), 200
+    policy = (_ensure_powershell_execution_policy()
+              if any(n in _PROVIDER_NPM_PACKAGES for n in installed) else None)
+    return jsonify({'ok': True, 'command': command,
+                    'installed': installed, 'unsupported': unsupported,
+                    'execution_policy': policy})
 
 
 def _auth_probe_cwd() -> str:
@@ -2105,6 +2774,62 @@ def agent_auth_login(provider):
     return jsonify({'ok': True})
 
 
+def _allowance_refusal(vendor, *, user_initiated):
+    """The refusal text for `vendor`, or '' if it may run.
+
+    A record is only as good as its evidence (one failed run), and nothing
+    else ever corrects it once the user buys more quota. So a USER-initiated
+    dispatch that would be refused first asks the vendor, token-free, whether
+    it is still out (AgentRuntime.probe_allowance) and drops a record the
+    vendor contradicts. A vendor with no cheap probe (Claude, Gemini, Qwen)
+    keeps refusing until the record's reset time or a successful run or the
+    user's explicit re-check — never a guess. The refusal itself is unchanged:
+    it names the vendor and never falls back to another one.
+    """
+    if user_initiated and _allowance_state.get(vendor):
+        try:
+            rt = _agent_runtime.get_runtime(vendor)
+            _allowance_state.heal(vendor, rt.probe_allowance)
+        except KeyError:
+            pass
+    return _allowance_state.refusal_message(vendor)
+
+
+@bp.route('/api/agent/<provider>/allowance/recheck', methods=['POST'])
+def agent_allowance_recheck(provider):
+    """"I topped up, try again": drop this vendor's out-of-allowance record.
+
+    The record is a claim from one failed run; buying more quota does not
+    contradict it anywhere, and dispatch refuses before it can run the
+    success that would clear it. This is the user telling Clayrune the
+    evidence is stale. If the vendor is genuinely still out, the next run
+    fails with the vendor's own limit and re-records it, so nothing is
+    hidden — the refusal comes back with fresh evidence.
+
+    Where the vendor has a token-free probe its answer is returned as
+    `probe` ('usable' | 'limited' | 'unavailable') so the UI can say what it
+    saw, but it does not veto the click: a 'limited' answer can coexist with
+    purchased credits.
+    """
+    try:
+        rt = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return jsonify({'error': f'unknown provider: {provider}'}), 404
+    had_record = _allowance_state.get(rt.name) is not None
+    probe = 'unavailable'
+    if had_record:
+        try:
+            answer = rt.probe_allowance()
+        except Exception as e:
+            _log(f"[allowance] {rt.name} probe raised: {e}", flush=True)
+            answer = None
+        probe = ('usable' if answer is True
+                 else 'limited' if answer is False else 'unavailable')
+    _allowance_state.clear_exhaustion(rt.name)
+    return jsonify({'ok': True, 'provider': rt.name, 'was_exhausted': had_record,
+                    'probe': probe})
+
+
 @bp.route('/api/agent/<provider>/auth-logout', methods=['POST'])
 def agent_auth_logout(provider):
     """Revoke / clear stored credentials for a provider."""
@@ -2428,6 +3153,11 @@ def _track_stop_hook_boundary(session, msg) -> None:
             session.pop('_sh_last_msg', None)
             return
         if mt == 'user':
+            if _agent_runtime.is_stop_hook_feedback(msg):
+                # The reader itself marks this boundary from the streamed
+                # feedback turn; no transcript check needed for the resend.
+                session.pop('_sh_last_msg', None)
+                return
             content = (msg.get('message') or {}).get('content')
             if isinstance(content, list) and any(
                     isinstance(b, dict) and b.get('type') == 'tool_result' for b in content):
@@ -2782,7 +3512,7 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
     ]
 
 
-def _skills_catalog_block(project):
+def _skills_catalog_block(project, character_skills=None):
     """Skill catalog for non-Claude agents (full-parity Stage 3).
 
     Claude Code auto-discovers skills from ~/.claude/skills/ and the project's
@@ -2804,9 +3534,18 @@ def _skills_catalog_block(project):
                and not s.get('shadowed_by_project')]
     if not visible:
         return ''
+    # Per-agent scoping (mc/skill_scoping.py): the same rule Claude gets as
+    # `skillOverrides`. Outside declared ∪ project-local a skill keeps its name
+    # and SKILL.md path but loses its description — still findable, cheaper.
+    full = None
+    if character_skills and state.CONFIG.get(_skill_scoping.CONFIG_KEY, False):
+        full = _skill_scoping.effective_full_set(character_skills, visible)
     lines = []
     for s in visible:
         desc = (s.get('description') or '').strip().replace('\n', ' ')
+        if full is not None and str(s.get('name') or '').lower() not in full:
+            lines.append(f"- {s.get('name')}\n  SKILL.md: {s.get('path')}")
+            continue
         lines.append(f"- {s.get('name')}: {desc}\n  SKILL.md: {s.get('path')}")
     return ("--- AVAILABLE SKILLS ---\n"
             "Reusable skills are available to you. When the current task "
@@ -3170,7 +3909,7 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
 
     # Stage 3 full-parity: non-Claude agents don't auto-discover skills —
     # inject the catalog so they can read + follow the relevant SKILL.md.
-    _skills_block = _skills_catalog_block(project)
+    _skills_block = _skills_catalog_block(project, character_skills)
     if _skills_block:
         parts.append(_skills_block)
 
@@ -3179,6 +3918,28 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # but its Session Log is a wall of past prompts, which Gemini read as a
     # live task list. The targeted read-floor below ("RELEVANT MEMORY") is
     # the memory mechanism for every provider: small, task-scoped, safe.
+    #
+    # BUT the read-floor corpus excludes the curated index by construction
+    # (`_memory_search`: "the agent already auto-loads it") — true only for
+    # Claude. So for every other provider a fact that lives in the curated
+    # part of MEMORY.md was unreachable: neither injected nor searchable
+    # (Qwen live pass 2026-09-19, memory cell: a fact appended via
+    # /memory/append never reached a new chat, which answered with a
+    # different cell's marker). Bridge it with the CURATED half only —
+    # `_mem_split` drops the managed Session Log, the "wall of past prompts"
+    # that caused the Gemini failure above. Bounded by index_byte_budget.
+    if not _is_claude and not incognito:
+        try:
+            from mc.memory import _mem_split as _mem_split_idx
+            _idx = _mem_split_idx(mem_path.read_text(encoding='utf-8', errors='replace'))[0].strip() \
+                if mem_path and mem_path.is_file() else ''
+        except Exception as e:
+            _log(f"[memory-index] {project.get('id')}: curated index read failed: {e}")
+            _idx = ''
+        if _idx:
+            parts.append(
+                "--- PROJECT MEMORY INDEX (curated notes; standing facts about "
+                "this project, NOT a task list) ---\n" + _idx)
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
@@ -3739,6 +4500,7 @@ def _read_agent_stream(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -3786,6 +4548,7 @@ def _read_agent_stream(proc, session):
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
+                            _midturn.note_tool_use(session, block)
                             _coverage_note_tool(session, tool_name, tool_input)
                             # Track .md file edits for plan file detection
                             if tool_name in ('Write', 'Edit'):
@@ -3875,6 +4638,8 @@ def _read_agent_stream(proc, session):
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
                             _observe_memory_push_result(
                                 session, _tname, _extract_tool_result_text(_block))
+                        if _midturn.note_tool_results(session, msg['message'].get('content')):
+                            _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
                     # Capture session_id from result as fallback
                     if 'session_id' in msg:
@@ -3942,6 +4707,7 @@ def _read_agent_stream(proc, session):
                 elif session['status'] == 'stopped':
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
+                _run_runtime_callbacks(session)
 
                 # Auto-dispatch pending follow-ups
                 pending = session.get('pending_followups', [])
@@ -4000,6 +4766,7 @@ def _read_agent_stream_b(proc, session):
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
                     # (the Mode-B AskUserQuestion proc.kill(), idle-eviction, or a
@@ -4047,6 +4814,7 @@ def _read_agent_stream_b(proc, session):
                             _observe_negation_interrupt(session, tool_name, tool_input)
                             _observe_memory_push_input(session, tool_name, tool_input)
                             _note_tool_use_id(session, tool_name, block.get('id'))
+                            _midturn.note_tool_use(session, block)
                             _coverage_note_tool(session, tool_name, tool_input)
                             if tool_name in ('Write', 'Edit'):
                                 fp = tool_input.get('file_path', '')
@@ -4125,6 +4893,8 @@ def _read_agent_stream_b(proc, session):
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
                             _observe_memory_push_result(
                                 session, _tname, _extract_tool_result_text(_block))
+                        if _midturn.note_tool_results(session, msg['message'].get('content')):
+                            _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
                     if 'session_id' in msg:
                         _note_claude_sid(session, msg['session_id'])
@@ -4206,6 +4976,7 @@ def _read_agent_stream_b(proc, session):
                 elif session['status'] == 'stopped':
                     pass  # User stopped — don't change status regardless of rc
                 _log_agent_completion(session)
+                _run_runtime_callbacks(session)
 
         # Auto-recover failed resume: if we tried to resume a prior session and
         # it died quickly without producing meaningful output, restart fresh.
@@ -4247,7 +5018,10 @@ def _auto_recover_failed_resume(session):
     try:
         if mode == 'B':
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True),
+            cmd = [_resolve_claude(), *_build_claude_flags(p, streaming=True,
+                   model_override=_continuation_model(session, p),
+                   effort_override=_continuation_effort(session),
+                   character_skills=_session_skills(p, session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
@@ -4285,7 +5059,10 @@ def _auto_recover_failed_resume(session):
         else:
             # Mode A
             _sp_args, _sp_path = _sysprompt_file_args(context)
-            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p),
+            cmd = [_resolve_claude(), '-p', fresh_task, *_build_claude_flags(p,
+                   model_override=_continuation_model(session, p),
+                   effort_override=_continuation_effort(session),
+                   character_skills=_session_skills(p, session)),
                    *_sp_args]
             proc = subprocess.Popen(
                 cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4470,8 +5247,22 @@ def _save_agent_log(project_id, log):
         log = log[:cap]
     write_json_atomic(filepath, log, indent=2, ensure_ascii=False)
 
+def _context_window_for(provider: str):
+    """The vendor's declared max context size (docs/CONTEXT_ECONOMY_SPEC.md
+    §1's `context_window` field), or None when the runtime doesn't declare
+    one (Gemini/Qwen/Codex today — RuntimeCapabilities.context_window
+    defaults to None). Never fabricated: the counter this feeds shows '—'
+    for the denominator too when unknown, not a guessed number.
+    """
+    try:
+        return _agent_runtime.get_runtime((provider or 'claude').lower()).capabilities().context_window
+    except Exception:
+        return None
+
+
 def _session_usage_payload(session: dict) -> dict:
-    """Build the usage/cost/turns slice of an SSE payload, gated on provider capabilities.
+    """Build the usage/cost/turns/context slice of an SSE payload, gated on
+    provider capabilities.
 
     Providers that don't emit cost or turns (e.g. Gemini) must NOT fabricate zeros —
     the frontend reads absence of the key as "this provider doesn't support it" and
@@ -4480,6 +5271,15 @@ def _session_usage_payload(session: dict) -> dict:
     Always includes 'usage' when emits_usage is True (it is the authoritative token
     counter).  cost_usd and num_turns are only included when their respective
     capability flags are set.
+
+    `context_tokens`/`context_window` are NOT capability-gated the same way:
+    unlike usage/cost/turns, `normalize_context_tokens` can resolve a figure
+    for a provider with emits_usage=False (Gemini's TURN_END usage/stats,
+    agent_runtime.py:4013-4018) — the live context counter (§5) must work
+    for every vendor, so these ride on whatever `session['context_tokens']`
+    actually holds, independent of the emits_usage flag. Always present as
+    keys (None, never a fabricated 0, when not yet known) so the frontend
+    doesn't have to special-case "key absent" vs "value unknown".
     """
     provider = (session.get('provider') or 'claude').lower()
     try:
@@ -4495,6 +5295,8 @@ def _session_usage_payload(session: dict) -> dict:
         out['cost_usd'] = session.get('cost_usd', 0)
     if caps.emits_num_turns:
         out['num_turns'] = session.get('num_turns', 0)
+    out['context_tokens'] = session.get('context_tokens')
+    out['context_window'] = _context_window_for(provider)
     # Refused tool calls. Not capability-gated on a flag of its own: only
     # runtimes that actually report denials ever populate it, and an empty list
     # is the honest answer for the rest (nothing was refused that we saw).
@@ -4635,10 +5437,23 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     entry = next((e for e in log if e.get('session_id') == session_id), None)
     if not entry:
         return None
+    revive_project_generation = entry.get('project_generation', 1)
+    _assert_runtime_project_generation(
+        project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
     claude_sid = entry.get('claude_session_id')
     if not claude_sid:
         return None
     revive_model = _continuation_model(entry, p)
+    revive_effort = _continuation_effort(entry)
+    revive_parent = (entry.get('spawned_by_session_id') or '').strip()
+    if revive_parent:
+        if _delivery_store is None:
+            raise RuntimeError('durable delegation store unavailable for revive')
+        revive_generation = _delivery_store.project_generation(project_id)
+        revive_turn = _delivery_store.allocate_turn(session_id)
+    else:
+        revive_generation = 1
+        revive_turn = int(entry.get('delegation_turn', 1))
 
     # Carry the completion callback across the revive. A revive builds a
     # brand-new session dict from scratch (below), so without this a session
@@ -4695,7 +5510,13 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         _log(f"[revive] {project_id}: could not recover the persona for "
              f"{claude_sid[:12]}: {e}")
 
-    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    # No live in-memory session survives a revive (that's the whole point of
+    # this path — the process/server restarted), so there's no per-turn
+    # context_tokens to read: the token trigger naturally sits out here and
+    # the byte-based backstop alone decides, same as before this trigger
+    # existed (docs/CONTEXT_ECONOMY_SPEC.md §2, "byte-based trigger ...
+    # independent of cost").
+    _af_reason, _af_detail = _auto_fresh_trigger(pp, claude_sid)
     resume_flags = []
     context = None
     revival_msg = message
@@ -4706,17 +5527,18 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # MC-925 "unnamed worker" framing and could claim the default agent_name.
     _revive_incognito = bool(entry.get('incognito'))
     _revive_source = entry.get('source') or ''
-    if too_large:
-        size_mb = size_bytes / (1024 * 1024)
+    if _af_reason:
         context = _build_agent_context(p, incognito=_revive_incognito, task=message or '',
                                        character_body=_revive_char_body,
                                        character_name=_revive_char_name,
                                        session_id=session_id,
                                        character_skills=_revive_char_skills,
                                        source=_revive_source)
-        revival_msg = (f"[Resuming a previous conversation that grew too large to "
-                       f"resume directly ({size_mb:.0f} MB). Start fresh but continue "
-                       f"the user's request below.]\n\n{message}")
+        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+            pp, 'claude', claude_sid, project_id, session_id,
+            reason=_af_reason, detail=_af_detail)
+        _log_agent_activity(project_id, _activity_line)
+        revival_msg = f"{_handoff_text}\n\n{message}"
     else:
         resume_flags = ['-r', claude_sid]
     if context is None:
@@ -4742,12 +5564,14 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # (about the agent's pre-restart reply) doesn't land on a one-sided chat.
     # Skipped when the transcript was too large to resume directly (we started
     # fresh, so there's no coherent -r history to show anyway).
-    history_lines = [] if too_large else _revive_history_lines(pp, claude_sid, user_label)
+    history_lines = [] if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
     seed_lines = history_lines + [revive_note, f"\n> {user_label}: {message}\n"]
 
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
-               *_build_claude_flags(p, streaming=True, model_override=revive_model)]
+               *_build_claude_flags(p, streaming=True, model_override=revive_model,
+                                    effort_override=revive_effort,
+                                    character_skills=_revive_char_skills)]
         _sp_path = None
         if context:
             _sp_args, _sp_path = _sysprompt_file_args(context)
@@ -4812,15 +5636,21 @@ def _revive_from_agent_log(project_id, session_id, message, p):
             # straight off this dict.
             'incognito': _revive_incognito,
             'source': _revive_source,
+            'trigger_type': entry.get('trigger_type', 'manual'),
+            'trigger_id': entry.get('trigger_id', ''),
             'provider': entry.get('provider') or 'claude',
             'model': revive_model,
             'agent_model': revive_model,
             'pinned_model': revive_model,
+            'requested_effort': revive_effort,
             'model_auto_requested': bool(entry.get('model_auto_requested')),
             # See the comment above `_revive_notify_session` at the top of
             # this function — carries the completion callback across the
             # revive instead of silently dropping it.
             '_notify_session': _revive_notify_session,
+            '_delegation_turn': revive_turn,
+            '_delivery_generation': revive_generation,
+            'project_generation': revive_project_generation,
             '_notify_workflow': _revive_notify_workflow,
         }
         with mgr.lock:
@@ -4846,7 +5676,9 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # Mode A
     _sp_args, _sp_path = _sysprompt_file_args(context)
     cmd = [_resolve_claude(), *resume_flags, '-p', revival_msg,
-           *_build_claude_flags(p, model_override=revive_model), *_sp_args]
+           *_build_claude_flags(p, model_override=revive_model,
+                                effort_override=revive_effort,
+                                character_skills=_revive_char_skills), *_sp_args]
     try:
         proc = subprocess.Popen(
             cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
@@ -4893,12 +5725,18 @@ def _revive_from_agent_log(project_id, session_id, message, p):
         'character': _revive_character,   # same reason as Mode B above
         'incognito': _revive_incognito,
         'source': _revive_source,
+        'trigger_type': entry.get('trigger_type', 'manual'),
+        'trigger_id': entry.get('trigger_id', ''),
         'provider': entry.get('provider') or 'claude',
         'model': revive_model,
         'agent_model': revive_model,
         'pinned_model': revive_model,
+        'requested_effort': revive_effort,
         'model_auto_requested': bool(entry.get('model_auto_requested')),
         '_notify_session': _revive_notify_session,   # see top-of-function comment
+        '_delegation_turn': revive_turn,
+        '_delivery_generation': revive_generation,
+        'project_generation': revive_project_generation,
         '_notify_workflow': _revive_notify_workflow,
     }
     with mgr.lock:
@@ -4914,35 +5752,48 @@ def _revive_from_agent_log(project_id, session_id, message, p):
 # `exec resume` command when called with no live in-memory session (as
 # opposed to only working from `write_followup`, which needs the session to
 # already be alive in `agent_sessions`). Live-verified 2026-09-16:
-#   codex — CodexRuntime.dispatch() passes resume_id straight into
-#           build_command()'s `exec resume <thread_id>` branch.
-#   qwen  — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
-#           build_command()'s `--resume <id>` branch the same way.
-# NOT in this set: gemini. `GeminiRuntime.capabilities().supports_session_
-# resume` reports True, but that flag describes the LIVE-session followup
-# path only (`write_followup` manually appends `--resume <gemini_sid>` from
-# `session['_gemini_session_id']`, a field that is never persisted to the
-# agent log) — `build_command()` has no `resume_id` parameter at all, so a
-# cold dispatch cannot resume a Gemini thread after a restart. Do not trust
-# `supports_session_resume` for this decision; it is provider-declared and
-# already wrong for Gemini.
-_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen'}
+#   codex  — CodexRuntime.dispatch() passes resume_id straight into
+#            build_command()'s `exec resume <thread_id>` branch.
+#   qwen   — QwenRuntime.dispatch() (fixed same day) now passes resume_id into
+#            build_command()'s `--resume <id>` branch the same way.
+#   gemini — added W4/MC-947 (2026-09-18). Previously excluded for two
+#            compounding reasons, both fixed: (1) `GeminiRuntime._read_stream`
+#            stashed its captured session id onto a private
+#            `session['_gemini_session_id']` field that nothing ever
+#            persisted to the agent log, so `provider_session_id` was always
+#            empty for a revived row; (2) `build_command()` had no
+#            `resume_id` parameter at all, so even a caller holding the id
+#            had no way to pass it through a COLD `dispatch()`. Both now
+#            match the codex/qwen shape: the id lands on the generic
+#            `provider_session_id` key (`_runtime_note_init` backfills it
+#            durably), and `build_command(resume_id=...)` appends
+#            `--resume <id>`. Gemini still has NO on-disk transcript file
+#            (`transcript_path()` returns None) — a revived row cannot be
+#            rendered with full prior-turn text the way codex/qwen rollouts
+#            can (see `reconstruct_dead_session`'s `_COLD_RESUMABLE_PROVIDERS`
+#            branch, which degrades gracefully when `transcript_path` is
+#            None) — but the resumed PROCESS itself genuinely continues the
+#            same conversation server-side, which is the property this set
+#            gates.
+_COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
 def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     """Continue (or, for a provider with no cold resume, restart) a dead
-    non-Claude conversation (MC-929; cold-resume support added 2026-09-16).
+    non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
+    extended to gemini W4/MC-947 2026-09-18).
 
-    For a provider in `_COLD_RESUMABLE_PROVIDERS` with a captured
-    `provider_session_id`, this IS a resume — the runtime's own `dispatch()`
-    threads `resume_id` into the provider CLI's native resume flag and the
-    conversation continues with its full prior history intact server-side.
-    Every other case (Gemini, or a codex/qwen row whose `provider_session_id`
-    capture failed) has nothing to reattach to and starts cold, with no prior
-    turns as context — it adopts the same MC session_id so the UI tab and
-    agent-log stay addressed to one conversation, but the process itself has
-    no memory of anything before this message. This is what makes the honest
-    trailing line `reconstruct_dead_session` writes for a non-cold-resumable
+    For a provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, gemini) with a
+    captured `provider_session_id`, this IS a resume — the runtime's own
+    `dispatch()` threads `resume_id` into the provider CLI's native resume
+    flag and the conversation continues with its full prior history intact
+    server-side. Every other case (a row whose `provider_session_id` capture
+    failed, predates this fix, or belongs to a provider outside that set) has
+    nothing to reattach to and starts cold, with no prior turns as context —
+    it adopts the same MC session_id so the UI tab and agent-log stay
+    addressed to one conversation, but the process itself has no memory of
+    anything before this message. This is what makes the honest trailing
+    line `reconstruct_dead_session` writes for a non-cold-resumable
     non-Claude history ("sending a message starts a brand-new session")
     actually true, instead of the reply just 404ing.
 
@@ -4959,6 +5810,13 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
         return None  # the Claude -r path owns this one
     provider = (entry.get('provider') or '').lower()
     if not provider or provider == 'claude':
+        return None
+    revive_project_generation = entry.get('project_generation', 1)
+    try:
+        _assert_runtime_project_generation(
+            project_id, revive_project_generation, incognito=bool(entry.get('incognito')))
+    except Exception as exc:
+        _log(f"[revive-non-claude] {project_id}: project generation refused: {exc}")
         return None
     # `character` must be a "scope:name" reference — see `_resolve_character`'s
     # docstring. The agent_log record stores scope and name as separate keys
@@ -4993,10 +5851,11 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
                                  incognito=bool(entry.get('incognito')),
                                  reuse_session_id=session_id,
                                  provider_override=provider,
+                                 effort_override=_continuation_effort(entry),
                                  model_override=(entry.get('pinned_model')
-                                                 or entry.get('agent_model')
-                                                 or entry.get('model') or ''),
+                                                 or _requested_model_snapshot(entry)),
                                  character=character_ref,
+                                 project_generation=revive_project_generation,
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
                                  notify_workflow=_revive_notify_workflow)
@@ -5006,6 +5865,95 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     return session_id
 
 
+def _revive_parent_for_delegation(project_id, session_id, message, p):
+    """Revive a missing parent only from exact saved native identity.
+
+    Claude uses the existing transcript-aware revival primitive; Codex/Qwen use
+    their provider runtime's native resume path. Neither branch fresh-dispatches.
+    """
+    try:
+        entries = [e for e in _load_agent_log(project_id)
+                   if e.get('session_id') == session_id]
+    except Exception as exc:
+        raise DeliveryBlocked(f'parent durable identity unavailable: {exc}')
+    if not entries:
+        raise DeliveryBlocked('parent has no durable identity record')
+    entry = sorted(entries, key=lambda e: e.get('ts', ''))[-1]
+    project_generation = entry.get('project_generation', 1)
+    try:
+        _assert_runtime_project_generation(project_id, project_generation,
+                                           incognito=bool(entry.get('incognito')))
+    except Exception as exc:
+        raise DeliveryBlocked(f'parent project generation is not current: {exc}')
+    status = (entry.get('status') or '').lower()
+    # 'interrupted' is NOT ambiguous here: it is written only by
+    # _reconcile_pending_agent_log_entries() at server boot, which flips a
+    # leftover 'in_progress' row "because at startup nothing is live yet, so
+    # any in_progress row is by definition orphaned" (server.py). By the time
+    # this function runs post-restart, that parent is definitely dead and
+    # safe to revive from its saved native identity -- the same as
+    # 'completed'/'idle'. Treating it as ambiguous parked every restart-leg
+    # delivery in DeliveryUncertain forever: a reviewed_resolution retry just
+    # replayed the same durable status and hit the same branch again.
+    if status in ('error', 'stopped', 'running', 'in_progress'):
+        raise DeliveryUncertain(f'parent durable outcome is ambiguous: {status}')
+    if status not in ('completed', 'idle', 'interrupted'):
+        raise DeliveryBlocked(f'parent durable status {status or "unknown"} is not revivable')
+    if entry.get('incognito'):
+        raise DeliveryBlocked('private parent cannot receive delegated completion')
+    provider = (entry.get('provider') or 'claude').strip().lower()
+    native_id = (entry.get('claude_session_id') or '').strip() if provider == 'claude' else (entry.get('provider_session_id') or '').strip()
+    if provider == 'claude':
+        if not native_id:
+            raise DeliveryBlocked('Claude parent has no saved native session identity')
+    elif provider not in _COLD_RESUMABLE_PROVIDERS or not native_id:
+        raise DeliveryBlocked('parent has no supported native resume identity')
+    # Requested identity wins; observed telemetry is diagnostic only. An
+    # explicitly present empty agent_model means native default and must remain
+    # empty rather than selecting telemetry or the current project default.
+    if 'agent_model' in entry:
+        model = entry.get('agent_model') or ''
+    else:
+        model = _requested_model_snapshot(entry)
+    model = model.strip()
+    if not model and 'agent_model' not in entry:
+        raise DeliveryBlocked('parent model identity is missing')
+    quota_block = _model_quota_blocked(provider, model)
+    if quota_block:
+        raise DeliveryBlocked(quota_block)
+    ch = entry.get('character') or {}
+    scope = (ch.get('scope') or 'global').strip().lower()
+    name = (ch.get('name') or '').strip()
+    character = f'{scope}:{name}' if scope in ('global', 'project') and name else ''
+    try:
+        if provider == 'claude':
+            revived = _revive_from_agent_log(project_id, session_id, message, p)
+            if not revived:
+                raise DeliveryBlocked('Claude parent could not be safely revived')
+        else:
+            _dispatch_agent_internal(project_id, message, resume_id=native_id,
+                                     incognito=False,
+                                     reuse_session_id=session_id,
+                                     provider_override=provider,
+                                     effort_override=_continuation_effort(entry),
+                                     model_override=model, character=character,
+                                     project_generation=project_generation,
+                                     preserve_model=True,
+                                     source=entry.get('source') or '',
+                                     trigger_type=entry.get('trigger_type') or 'manual',
+                                     trigger_id=entry.get('trigger_id') or '',
+                                     notify_session=entry.get('spawned_by_session_id') or '',
+                                     notify_workflow=({'run_id': entry['trigger_id'].split(':', 1)[0],
+                                                       'step': entry['trigger_id'].split(':', 1)[1]}
+                                                      if entry.get('trigger_type') == 'workflow'
+                                                      and ':' in (entry.get('trigger_id') or '') else None))
+    except Exception as exc:
+        raise DeliveryUncertain(f'parent revival outcome unknown: {exc}')
+    return {'revived': True, 'parent_session_id': session_id,
+            'provider': provider, 'model': model,
+            'effort': _continuation_effort(entry), 'native_id': native_id}
+
+
 def _accumulate_session_usage(session, turn_usage):
     """Merge a single turn's usage dict into the running session total.
 
@@ -5013,6 +5961,9 @@ def _accumulate_session_usage(session, turn_usage):
     carries only THAT turn's token counts, not a cumulative total. Overwriting
     session['usage'] discards all prior turns; instead we sum the numeric
     fields so the final value reflects the whole session.
+
+    `session['context_tokens']` is NOT set here: `result.usage` sums every
+    model call in the turn. See `_note_call_context_tokens`.
     """
     _INT_FIELDS = ('input_tokens', 'output_tokens',
                    'cache_read_input_tokens', 'cache_creation_input_tokens')
@@ -5025,6 +5976,23 @@ def _accumulate_session_usage(session, turn_usage):
         if k not in _INT_FIELDS:
             merged[k] = v
     session['usage'] = merged
+
+
+def _note_call_context_tokens(session, message, parent_tool_use_id=None):
+    """Record `session['context_tokens']` from ONE model call's usage.
+
+    Claude's `result.usage` is the SUM over every model call in the turn, not
+    the context size: measured 2026-09-18 with a 2-Read turn, the calls held
+    30.2k and 32.4k of context but `result` reported 62.5k (cache_read 17640 +
+    30165 = 47805). A tool-heavy turn would read as several times its real
+    size and roll far too early, so the Claude readers take the LAST
+    assistant message's usage instead. Streamed assistant events repeat the
+    same usage per content block, so overwriting is idempotent.
+    """
+    _ctx = _agent_runtime.normalize_context_tokens(message.get('usage'))
+    if _ctx is not None:
+        session['context_tokens'] = _ctx
+        _midturn.note_call_tokens(session, _ctx, parent_tool_use_id)
 
 
 def _note_claude_sid(session, sid):
@@ -5073,7 +6041,7 @@ def _note_claude_sid(session, sid):
     except Exception as ex:
         _log(f"[csid-backfill] {pid}: {ex}")
 
-def _log_agent_dispatch_pending(session, *, identity_only=False):
+def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
     """Write a placeholder agent_log row at dispatch time so trigger correlation
     survives a server restart that kills the session before _log_agent_completion
     can run.
@@ -5100,11 +6068,17 @@ def _log_agent_dispatch_pending(session, *, identity_only=False):
         'task': session.get('task', ''),
         'status': 'in_progress',
         'provider': session.get('provider') or 'claude',
-        'agent_model': session.get('model') or session.get('agent_model') or '',
+        'agent_model': _requested_model_snapshot(session),
         'pinned_model': session.get('pinned_model') or '',
+        'requested_effort': _continuation_effort(session),
+        'observed_model': session.get('observed_model') or '',
+        'effort_support': session.get('effort_support', 'supported' if (session.get('provider') or 'claude') == 'claude' else 'unsupported'),
         'model_auto_requested': bool(session.get('model_auto_requested')),
         'summary': '',
         'session_id': sid,
+        'delegation_turn': int(session.get('_delegation_turn', 1)),
+        'delivery_generation': int(session.get('_delivery_generation', 1)),
+        'project_generation': int(session.get('project_generation', 1)),
         'claude_session_id': session.get('claude_session_id') or '',
         'provider_session_id': session.get('provider_session_id') or '',
         'started_at': session.get('started_at', ''),
@@ -5155,6 +6129,8 @@ def _log_agent_dispatch_pending(session, *, identity_only=False):
         _update_agent_log(project_id, upsert)
     except Exception as e:
         _log(f"[dispatch-log] {project_id}: pending write failed: {e}")
+        if strict:
+            raise
 
 def _last_reply_text(session):
     """The child's last real assistant text, for the spawner callback.
@@ -5163,13 +6139,41 @@ def _last_reply_text(session):
     summary: skip MC status lines in [brackets] and the dispatcher's own
     "> user: task" seed, or the callback would hand the spawner back the very
     task it just sent (MC-935 hit exactly that on the agent_log summary).
+
+    Reconstructs every trailing real-content line (not just the last one) so
+    a delta-chunked Mode-A reply (Gemini/Qwen/Codex/...) is not truncated to
+    its FINAL streamed fragment (MC-947) — the same fix as
+    `_agent_runtime._collect_trailing_reply_text`, deliberately NOT a call to
+    that shared helper: `_log_agent_completion` calls this from its own
+    `finally` block as the safety-net wake when `_log_agent_completion_body`
+    (which DOES use the shared helper, and `_SEED_LINE_RE`) raised on the way
+    there — sharing the dependency would let one fault in `_SEED_LINE_RE`'s
+    matcher take down both the primary scan AND its own backstop
+    (test_a_raise_before_the_wake_still_wakes_the_workflow pins this).
     """
+    collected = []
     for line in reversed(session.get('log_lines') or []):
         t = (line or '').strip()
         if not t or t.startswith('[') or t.startswith('> '):
+            if collected:
+                break
             continue
-        return t
-    return ''
+        collected.append(line)
+    collected.reverse()
+    return ''.join(collected)
+
+
+def _allocate_delegation_turn(session):
+    """Reserve a child turn durably before any provider execution."""
+    if session.get('incognito') or not (session.get('_notify_session') or '').strip():
+        return int(session.get('_delegation_turn', 1))
+    if _delivery_store is None:
+        raise RuntimeError('durable delegation store unavailable')
+    session['_delivery_generation'] = _delivery_store.project_generation(
+        session.get('project_id', ''))
+    turn = _delivery_store.allocate_turn(session.get('session_id', ''))
+    session['_delegation_turn'] = turn
+    return turn
 
 
 def _maybe_notify_spawner(session, summary):
@@ -5203,16 +6207,38 @@ def _maybe_notify_spawner(session, summary):
     by at most one of the two, never both, but both are checked here so
     adding the workflow path cannot double-fire the existing spawner
     notification or vice versa.
+
+    DUPLICATE-NOTIFY FIX (found 2026-09-18, sessions 7a01a27211ea /
+    e0eb419b1686): both stream readers call `_log_agent_completion`
+    UNCONDITIONALLY in their `finally` exit-cleanup — including when the
+    process was intentionally killed right after an AskUserQuestion tool
+    call (`waiting_for_question=True`, status forced to 'idle' so the
+    guardian doesn't race in; see the AskUserQuestion branch above this
+    function). That kill is a PAUSE, not a finish: the child is waiting for
+    its answer and will resume via `-r` once one arrives. Before this guard,
+    every such pause fired a real, durably-enqueued "[dispatched agent
+    finished]" notification (a genuinely fresh `_delegation_turn`, so the SQL
+    dedup in mc/delegation_delivery.py — correctly idempotent per event_id —
+    had nothing to catch), and a child that asked 2-3 questions before truly
+    finishing told its spawner it was "done" 2-3 times over. The agent-log
+    completion ROW still gets written for a question-pause (tagged 'idle' —
+    see test_mc_question_pauses_the_turn_and_populates_pending_questions);
+    only the spawner/workflow WAKE is suppressed here, so a client watching
+    the conversation rail is unaffected.
     """
     if session.get('incognito'):
+        return
+    if session.get('waiting_for_question'):
         return
     notify_sid = (session.get('_notify_session') or '').strip()
     has_spawner = bool(notify_sid) and notify_sid != session.get('session_id')
     wf_wait = session.get('_notify_workflow') or None
     has_workflow = bool(wf_wait) and bool(wf_wait.get('run_id'))
     if has_spawner and not session.get('_notify_session_sent'):
-        session['_notify_session_sent'] = True
-        _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary)
+        # The durable enqueue is the latch. Do not mark sent before it commits:
+        # a crash in that window used to lose the only notification forever.
+        if _notify_agent_spawner(session.get('project_id', ''), notify_sid, session, summary) is not False:
+            session['_notify_session_sent'] = True
     if has_workflow and not session.get('_notify_workflow_sent'):
         session['_notify_workflow_sent'] = True
         _notify_workflow_step(wf_wait, session, summary)
@@ -5234,6 +6260,10 @@ def _rearm_notify_for_new_turn(session):
     permanent.
     """
     session.pop('_notify_session_sent', None)
+    _allocate_delegation_turn(session)
+    # Turn identity must be durable before provider execution begins; a cold
+    # revive can then reconstruct the same child/session turn without collision.
+    _log_agent_dispatch_pending(session, strict=True)
 
 
 def _notify_workflow_step(wf_wait, session, summary):
@@ -5268,41 +6298,259 @@ def _notify_agent_spawner(project_id, notify_sid, child, summary):
     Thread + localhost HTTP on purpose -- see the call site in
     _log_agent_completion for why we do not call the handler inline.
     """
-    def _send():
+    event_id = event_id_for_turn(
+        child.get('session_id', ''), child.get('_delegation_turn', 1))
+    payload = callback_payload(child, summary, event_id)
+    if _delivery_store is not None:
         try:
-            import urllib.request
-            # `character` is a DICT on a live session (name/scope/engine/
-            # avatar), not a string -- printing it raw dumped the whole record
-            # into the spawner's chat where a name belonged. Observed
-            # 2026-09-09 on the first real callback.
-            _char = child.get('character')
-            if isinstance(_char, dict):
-                who = (_char.get('agent_name') or _char.get('display_name')
-                       or _char.get('name') or 'agent')
-            else:
-                who = _char or child.get('provider') or 'agent'
-            status = child.get('status', 'unknown')
-            body = json.dumps({
-                'message': (
-                    f"[dispatched agent finished] {who} "
-                    f"(session {child.get('session_id', '')[:12]}) ended with "
-                    f"status={status}.\n\n"
-                    f"Task: {child.get('task', '')[:400]}\n\n"
-                    f"Its final message:\n{(summary or '')[:1500]}\n\n"
-                    "This is the callback you asked for at dispatch. Continue "
-                    "the work it was part of -- do not re-dispatch it."
-                ),
-                'session_id': notify_sid,
-            }).encode()
-            req = urllib.request.Request(
-                f'http://127.0.0.1:{PORT}/api/project/{project_id}/agent/send',
-                data=body, headers={'Content-Type': 'application/json'})
-            urllib.request.urlopen(req, timeout=30).read()
-            _log(f"[notify-spawner] delivered {child.get('session_id','')[:12]} -> {notify_sid[:12]}")
-        except Exception as e:
-            _log(f"[notify-spawner] delivery to {notify_sid[:12]} failed: {e}")
+            # Exact completion source is committed independently first, so a
+            # disk/SQLite fault during enqueue cannot be masked by the next
+            # turn overwriting the agent-log projection.
+            _delivery_store.record_completion_source(
+                event_id, project_id, notify_sid, payload)
+            return _delivery_store.enqueue(event_id, project_id, notify_sid, payload)
+        except Exception as exc:
+            # Completion logging must still commit its source-of-record row;
+            # startup recovery can rebuild this outbox event from that row.
+            _log(f'[delegation-delivery] enqueue failed for {event_id}: {exc}')
+            return False
 
-    threading.Thread(target=_send, daemon=True).start()
+    _log('[delegation-delivery] store not initialized; completion remains '
+         'eligible for retry at the next completion boundary')
+    return False
+
+
+def _deliver_outbox(row):
+    """Transport only: receiver acceptance, not parent processing."""
+    import urllib.request
+    raw = json.loads(row['payload'])
+    payload = raw['payload']
+    body = json.dumps({'event_id': row['event_id'],
+                       'parent_session_id': row['parent_session_id'],
+                       'payload': payload}).encode('utf-8')
+    req = urllib.request.Request(
+        f"http://127.0.0.1:{PORT}/api/project/{row['project_id']}/agent/delegation/inbox",
+        data=body, headers={'Content-Type': 'application/json'})
+    with urllib.request.urlopen(req, timeout=10) as response:
+        if not 200 <= response.status < 300:
+            raise RuntimeError(f'receiver returned HTTP {response.status}')
+
+
+def _process_inbox(row):
+    """Process an accepted receipt through the guarded parent handoff.
+
+    Failure leaves the inbox pending. It can therefore be quota-blocked or
+    parent-unavailable without causing a child relaunch or losing its result.
+    """
+    import urllib.request
+    raw = json.loads(row['payload'])
+    payload = raw['payload']
+    token = row.get('fence_token') or ''
+    if not _delivery_store or not token or not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+        raise DeliveryUncertain('inbox claim expired or was fenced before action')
+    # Revalidate before and after waiting for the manager lock. The second
+    # fenced check closes the expired-lease/stale-sender window.
+    manager = get_manager(row['project_id'])
+    with manager.lock:
+        if not _delivery_store.revalidate_claim('inbox', row['event_id'], token):
+            raise DeliveryUncertain('inbox claim expired while waiting for parent lock')
+        # Shutdown admission is separate from loop ownership. A timed-out
+        # stop may leave this caller waiting on the manager lock; once the
+        # process crosses cleanup admission, it must not begin a new parent
+        # handoff after that lock is released. A handoff already past this
+        # point remains an honest in-flight outcome.
+        if _delivery_shutdown_requested.is_set():
+            raise DeliveryDeferred('delivery shutdown admission is closed')
+        parent = agent_sessions.get(row['parent_session_id'])
+        if parent is None:
+            return _revive_parent_for_delegation(
+                row['project_id'], row['parent_session_id'], payload['message'],
+                (load_project(row['project_id']) if callable(load_project) else None) or {})
+        if parent.get('project_id') != row['project_id'] or parent.get('incognito'):
+            raise DeliveryBlocked('parent identity/privacy state changed; explicit recovery required')
+        if parent.get('status') == 'running':
+            raise DeliveryDeferred('parent is busy; completion remains pending')
+        if parent.get('status') not in ('idle', 'completed'):
+            raise DeliveryBlocked(f"parent status {parent.get('status', 'unknown')} cannot accept a delegated completion")
+        # Preserve the parent's existing provider/model/effort by addressing its
+        # live session. Never call the fresh-dispatch branch and never substitute a
+        # provider when the parent is unavailable.
+        quota_block = _model_quota_blocked(
+            parent.get('provider', 'claude'),
+            parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or '')
+        if quota_block:
+            raise DeliveryBlocked(quota_block)
+        if _delegation_app is None:
+            raise DeliveryBlocked('delegation request context is unavailable; explicit recovery required')
+        needs_write_ack = parent.get('mode') == 'B'
+        with _delegation_app.test_request_context(
+                json={'message': payload['message'],
+                      'session_id': row['parent_session_id'],
+                      '_durable_delivery_ack': needs_write_ack}):
+            try:
+                response = _delegation_app.make_response(
+                    agent_followup(row['project_id']))
+            except Exception as exc:
+                # The provider call may have happened before the exception was
+                # observed; it is never safe to replay this action implicitly.
+                raise DeliveryUncertain(f'guarded parent submission outcome unknown: {exc}')
+            status_code = getattr(response, 'status_code', 200)
+            body = response.get_json(silent=True) or {}
+            write_ack = body.get('stdin_write_ack')
+            if needs_write_ack and write_ack == 'failed':
+                raise DeliveryDeferred(body.get('error', 'parent stdin write failed'))
+            if needs_write_ack and write_ack != 'written':
+                # A timeout or process crash leaves the outcome unknowable;
+                # never replay implicitly across that boundary.
+                raise DeliveryUncertain('parent stdin write acknowledgment is unknown')
+            if status_code >= 500:
+                raise DeliveryUncertain(f'guarded parent submission returned HTTP {status_code}')
+            if status_code >= 400:
+                raise DeliveryBlocked(f'guarded parent submission rejected HTTP {status_code}')
+            if body.get('session_id') != row['parent_session_id']:
+                raise DeliveryUncertain('parent submission switched session identity')
+            if body.get('queued'):
+                raise DeliveryUncertain('parent submission entered an in-memory queue')
+            return {'http_status': status_code, 'parent_session_id': row['parent_session_id'],
+                    'stdin_write_ack': ('written' if needs_write_ack else 'legacy'),
+                    'provider': parent.get('provider', 'claude'),
+                    'model': parent.get('pinned_model') or parent.get('agent_model') or parent.get('model') or ''}
+
+
+def start_delegation_delivery(interval_s: float = 5.0):
+    """Start one owned, interruptible delivery loop.
+
+    Initialization and thread ownership are committed as one lifecycle state.
+    A failed init or thread start leaves the service retryable; a concurrent
+    caller cannot create a second loop while the retained thread is alive.
+    """
+    global _delivery_started, _delivery_store, _delivery_thread
+    global _delivery_stop_event, _delivery_stop_in_progress
+    try:
+        interval = float(interval_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('delivery interval must be finite and positive') from exc
+    if not math.isfinite(interval) or interval <= 0:
+        raise ValueError('delivery interval must be finite and positive')
+    with _delivery_lifecycle_lock:
+        if _delivery_stop_in_progress:
+            if _delivery_thread is not None and _delivery_thread.is_alive():
+                return _delivery_thread
+            return None
+        if _delivery_path is None:
+            return None
+        if _delivery_thread is not None:
+            if _delivery_thread.is_alive():
+                return _delivery_thread
+            _delivery_thread = None
+            _delivery_stop_event = None
+            _delivery_started = False
+        try:
+            store = DeliveryStore(_delivery_path)
+            store.reconcile()
+            # The agent log is the completion source of record if the process
+            # crashed after completion but before the SQLite enqueue committed.
+            for log_file in Path(DATA_DIR).glob('*_agent_log.json'):
+                try:
+                    project_id = log_file.name[:-len('_agent_log.json')]
+                    rows = json.loads(log_file.read_text(encoding='utf-8'))
+                    if isinstance(rows, list):
+                        store.recover_outbox(rows, project_id)
+                except Exception as exc:
+                    _log(f'[delegation-delivery] log recovery failed for {log_file.name}: {exc}')
+            stop_event = threading.Event()
+
+            def _loop(local_store=store, local_stop=stop_event):
+                while True:
+                    # The iteration gate closes the stop-before-new-drain race:
+                    # stop() sets the Event without taking this gate; a loop
+                    # that has not entered the gate sees the request before
+                    # admitting another drain. A drain already admitted is
+                    # allowed to finish and remains fenced/observable.
+                    with _delivery_iteration_lock:
+                        if local_stop.is_set():
+                            break
+                        try:
+                            drain_once(local_store, send_outbox=_deliver_outbox,
+                                       process_inbox=_process_inbox)
+                        except Exception as exc:
+                            _log(f'[delegation-delivery] drain failed: {exc}')
+                    if local_stop.wait(max(0.0, float(interval_s))):
+                        break
+
+            thread = threading.Thread(target=_loop, name='delegation-delivery', daemon=True)
+            # Retain ownership before start; if start raises, clear it below.
+            _delivery_store = store
+            _delivery_stop_event = stop_event
+            _delivery_thread = thread
+            _delivery_started = True
+            try:
+                _delivery_shutdown_requested.clear()
+                thread.start()
+            except Exception:
+                _delivery_shutdown_requested.set()
+                _delivery_store = None
+                _delivery_stop_event = None
+                _delivery_thread = None
+                _delivery_started = False
+                raise
+            return thread
+        except Exception:
+            # No partially initialized owner may block a later safe retry.
+            _delivery_started = False
+            if _delivery_thread is None or not _delivery_thread.is_alive():
+                _delivery_store = None
+                _delivery_stop_event = None
+                _delivery_thread = None
+            raise
+
+
+def stop_delegation_delivery(timeout_s: float = 5.0) -> dict[str, object]:
+    """Request delivery stop and boundedly join its retained thread.
+
+    The Event is set before joining. No lifecycle lock is held during join, so
+    an in-flight drain can finish without deadlocking stop. A timeout retains
+    ownership and reports the live thread; callers must not start a replacement
+    loop until a later stop observes termination.
+    """
+    global _delivery_thread, _delivery_stop_event, _delivery_store
+    global _delivery_started
+    global _delivery_stop_in_progress
+    try:
+        timeout = float(timeout_s)
+    except (TypeError, ValueError) as exc:
+        raise ValueError('stop timeout must be finite and nonnegative') from exc
+    if not math.isfinite(timeout) or timeout < 0:
+        raise ValueError('stop timeout must be finite and nonnegative')
+    with _delivery_lifecycle_lock:
+        thread = _delivery_thread
+        stop_event = _delivery_stop_event
+        if thread is None or stop_event is None:
+            _delivery_shutdown_requested.set()
+            _delivery_stop_in_progress = False
+        else:
+            _delivery_stop_in_progress = True
+        # Linearization point: snapshot the owner and close both admission
+        # channels while still holding the same lock start/wire mutate under.
+        _delivery_shutdown_requested.set()
+        if stop_event is not None:
+            stop_event.set()
+    if thread is None or stop_event is None:
+        return {'requested': False, 'joined': True, 'alive': False, 'timed_out': False}
+    if thread is threading.current_thread():
+        return {'requested': True, 'joined': False, 'alive': True,
+                'timed_out': True, 'self_join': True}
+    thread.join(timeout)
+    alive = thread.is_alive()
+    if not alive:
+        with _delivery_lifecycle_lock:
+            if _delivery_thread is thread:
+                _delivery_thread = None
+                _delivery_stop_event = None
+                _delivery_started = False
+                _delivery_stop_in_progress = False
+    return {'requested': True, 'joined': not alive, 'alive': alive,
+            'timed_out': alive, 'self_join': False}
 
 
 def _log_agent_completion(session):
@@ -5362,18 +6610,11 @@ def _log_agent_completion_body(session):
     # as "no execution data" — a silent failure that made it into durable
     # memory looking like an ordinary completion).
     lines = session.get('log_lines', [])
-    # Find the last substantial text (skip tool/status markers and the seed).
-    summary = ''
-    for line in reversed(lines):
-        if not line or line.startswith('\n---'):
-            continue
-        stripped = line.strip()
-        if stripped.startswith('['):
-            continue
-        if _agent_runtime._SEED_LINE_RE.match(stripped):
-            continue
-        summary = line
-        break
+    # Find the last substantial text (skip tool/status markers and the seed),
+    # reconstructing the FULL reply across every trailing delta chunk a
+    # Mode-A provider (Gemini/Qwen/Codex/...) logged as separate array
+    # entries — see `_collect_trailing_reply_text` (MC-947).
+    summary = _agent_runtime._collect_trailing_reply_text(lines)
     if not summary:
         # No real assistant text survived the turn. Say so explicitly rather
         # than substituting the last thing in log_lines — for exactly this
@@ -5447,6 +6688,18 @@ def _log_agent_completion_body(session):
         # rollout that transcript_path() can now locate has no id to locate it
         # BY once the in-memory session is gone (docs/research/CODEX_PARITY_AUDIT.md §0).
         'provider_session_id': session.get('provider_session_id', ''),
+        'delegation_turn': int(session.get('_delegation_turn', 1)),
+        'delivery_generation': int(session.get('_delivery_generation', 1)),
+        'project_generation': int(session.get('project_generation', 1)),
+        # Exact, untruncated recovery source. Legacy `summary` remains the UI
+        # preview; recovery refuses rows without this field.
+        'delegation_completion': (
+            callback_payload(session, summary, event_id_for_turn(
+                session.get('session_id', ''), int(session.get('_delegation_turn', 1))))
+            if (session.get('_notify_session') or '').strip()
+            and (session.get('_notify_session') or '').strip() != session.get('session_id', '')
+            else None
+        ),
         'started_at': session.get('started_at', ''),
         'usage': session.get('usage', {}),
         'cost_usd': session.get('cost_usd', 0),
@@ -5476,9 +6729,12 @@ def _log_agent_completion_body(session):
         # (used by the reconciler to distinguish first-boot baseline).
         'scribed': False,
         # Token telemetry from transcript (indicative; populated going forward).
-        'model': session.get('model') or session.get('agent_model') or _telemetry.get('model', ''),
-        'agent_model': session.get('model') or session.get('agent_model') or _telemetry.get('model', ''),
+        'model': _requested_model_snapshot(session),
+        'agent_model': _requested_model_snapshot(session),
         'pinned_model': session.get('pinned_model') or '',
+        'requested_effort': _continuation_effort(session),
+        'observed_model': session.get('observed_model') or _telemetry.get('model', ''),
+        'effort_support': session.get('effort_support', 'supported' if (session.get('provider') or 'claude') == 'claude' else 'unsupported'),
         'model_auto_requested': bool(session.get('model_auto_requested')),
         'input_tokens': _telemetry.get('input_tokens', 0),
         'output_tokens': _telemetry.get('output_tokens', 0),
@@ -5619,7 +6875,8 @@ def _runtime_note_init(_event, session):
         for row in rows:
             if row.get('session_id') == session.get('session_id'):
                 row['provider_session_id'] = session.get('provider_session_id') or ''
-                row['agent_model'] = session.get('model') or session.get('agent_model') or ''
+                row['observed_model'] = session.get('observed_model') or ''
+                row['agent_model'] = _requested_model_snapshot(session)
                 return
     _update_agent_log(session['project_id'], backfill)
 
@@ -5646,6 +6903,17 @@ _RUNTIME_CALLBACKS = {
 }
 
 
+def _run_runtime_callbacks(session, event=None):
+    """Run optional feature callbacks without affecting terminal handling."""
+    callback = (session.get('_runtime_callbacks') or {}).get('on_process_exit')
+    if not callback:
+        return
+    try:
+        callback(event, session)
+    except Exception as exc:
+        _log(f'[runtime-callback] on_process_exit failed: {exc}')
+
+
 def _auto_dispatch_followup(session, message):
     """Auto-dispatch a queued follow-up after the current task completes."""
     project_id = session.get('project_id')
@@ -5669,7 +6937,9 @@ def _auto_dispatch_followup(session, message):
     # pinned conversation would drop back to the project/global model).
     _pin = _continuation_model(session, p)
     cmd = [_resolve_claude(), *resume_flags, '-p', message,
-           *_build_claude_flags(p, model_override=_pin), *_sp_args]
+           *_build_claude_flags(p, model_override=_pin,
+                                effort_override=_continuation_effort(session),
+                                character_skills=_session_skills(p, session)), *_sp_args]
     if _pin:
         session['model'] = _pin
         session['model_source'] = 'manual'
@@ -5966,7 +7236,7 @@ def _apply_mobile_brief(message: str, request_data: dict) -> str:
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def _resolve_runtime_model(runtime, p, model_override=''):
+def _resolve_runtime_model(runtime, p, model_override='', provider_name=''):
     """Pick the model id to hand a non-claude runtime.
 
     An explicit per-chat pick (composer Model picker) wins and is passed
@@ -5978,8 +7248,11 @@ def _resolve_runtime_model(runtime, p, model_override=''):
     the old code forwarded it unconditionally — so a project pinned to Opus
     spawned `codex -m claude-opus-5`, which the CLI rejects outright.
     """
+    runtime_name = provider_name or getattr(runtime, 'name', '')
+    if not runtime_name:
+        raise ValueError('runtime provider identity is missing')
     model, _ = engine_selection.resolve_model(
-        runtime.name, state.CONFIG, p, override=model_override or None)
+        runtime_name, state.CONFIG, p, override=model_override or None)
     return model
 
 
@@ -5987,9 +7260,11 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           incognito=False, trigger_type='manual',
                           trigger_id='', reuse_session_id='',
                           display_task=None, character_meta=None,
-                          character_body='', model_override='',
+                          character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
-                          notify_session='', notify_workflow=None):
+                          notify_session='', notify_workflow=None,
+                          project_generation=1,
+                          lifecycle_bridge_factory=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
 
     `notify_session` / `notify_workflow` (MC-946 / MC-871): the completion
@@ -6025,7 +7300,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     project_id = p.get('id', '')
     # A native resume with no recorded model must retain the CLI's saved
     # thread configuration, rather than importing today's project default.
-    model = model_override if resume_id else _resolve_runtime_model(runtime, p, model_override)
+    model = model_override if resume_id else _resolve_runtime_model(
+        runtime, p, model_override, provider_name)
 
     mgr = get_manager(project_id)
     mgr.ensure_guardian()
@@ -6064,6 +7340,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             'trigger_id': trigger_id,
             'provider': provider_name,
             'agent_model': model,
+            'requested_effort': _requested_effort(
+                p, character_meta, override=effort_override,
+                prior=(_prior_conversation_settings(project_id, resume_id, provider_name)
+                       if resume_id else None)),
+            # Wired per provider, not blanket-'unsupported': codex honours
+            # `-c model_reasoning_effort=<level>` (CodexRuntime.build_command).
+            'effort_support': ('supported' if provider_name == 'codex' else 'unsupported'),
             'pinned_model': model_override or '',
             'character': character_meta,
             '_resume_id': resume_id,
@@ -6077,8 +7360,17 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # Completion callbacks -- see the docstring. Same keys as the
             # claude session dicts in _dispatch_agent_internal.
             '_notify_session': notify_session,
+            '_delegation_turn': 1,
             '_notify_workflow': notify_workflow,
+            'project_generation': project_generation,
         }
+        if session['requested_effort'] and session['effort_support'] != 'supported':
+            # Only say it when it is true. Claiming an effort is "preserved"
+            # while nothing consumes it reads as a working knob; for codex it
+            # now IS one, so the line would be a false negative.
+            session['log_lines'].append(
+                f"[Requested effort '{session['requested_effort']}' is recorded on this "
+                f"conversation, but {provider_name} has no effort control to apply it to.]")
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
             # never blank even if this turn's INIT event doesn't fire (e.g.
@@ -6088,7 +7380,8 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         agent_sessions[session_id] = session
         mgr.session_ids.add(session_id)
 
-    _log_agent_dispatch_pending(session)
+    _allocate_delegation_turn(session)
+    _log_agent_dispatch_pending(session, strict=bool((session.get('_notify_session') or '').strip()))
 
     # Build system_prompt blob (MEMORY/AGENT_RULES). `incognito=True` is
     # passed THROUGH to _build_agent_context, not used to skip the call
@@ -6142,10 +7435,82 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         _log(f"[dispatch] provider={provider_name} model={model!r} "
              f"(cmd unavailable: {e})")
 
-    try:
-        handle = runtime.dispatch(
+    bridge = None  # optional injected lifecycle bridge
+    callbacks = _RUNTIME_CALLBACKS
+    if lifecycle_bridge_factory is not None:
+        facts = DispatchFacts(project_id=project_id, project_path=pp,
+            mc_session_id=session_id, provider=provider_name, model=model,
+            effort=session.get('requested_effort'), resume_id=resume_id,
+            task=task, incognito=incognito,
+            dispatch_id=uuid.uuid4().hex,
+            provenance={'trigger_type': trigger_type, 'trigger_id': trigger_id,
+                        'source': source or ''})
+        try:
+            # Keep one-argument test/integration factories source-compatible;
+            # the startup-owned service accepts the keyword and enforces the
+            # generation fence before any provider launch.
+            try:
+                factory_params = inspect.signature(lifecycle_bridge_factory).parameters
+            except (TypeError, ValueError):
+                factory_params = {}
+            accepts_generation = (
+                'project_generation' in factory_params
+                or any(p.kind is inspect.Parameter.VAR_KEYWORD
+                       for p in factory_params.values()))
+            bridge = (lifecycle_bridge_factory(
+                facts, project_generation=project_generation)
+                      if accepts_generation else lifecycle_bridge_factory(facts))
+            if bridge is not None:
+                bridge.prepare(facts)
+        except Exception as e:
+            session['status'] = 'error'
+            session['process_alive'] = False
+            session.setdefault('_lifecycle_errors', []).append(str(e))
+            session['log_lines'].append(f'[{provider_name} dispatch failed: {e}]')
+            session['last_status_change_time'] = _time.time()
+            _persist_runtime_start_failure(session)
+            raise
+        if bridge is not None:
+            callbacks = dict(_RUNTIME_CALLBACKS)
+            prior_init = callbacks.get('on_init')
+            prior_exit = callbacks.get('on_process_exit')
+            def _bridge_init(event, bridged_session):
+                if prior_init:
+                    try:
+                        prior_init(event, bridged_session)
+                    except Exception as exc:
+                        bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                try:
+                    payload = getattr(event, 'payload', {}) or {}
+                    native_id = payload.get('session_id') or payload.get('thread_id')
+                    if not isinstance(native_id, str) or not native_id:
+                        raise RuntimeError('native identity missing from init')
+                    bridged_session['_lifecycle_native_source'] = runtime.transcript_path(
+                        pp, native_id)
+                    bridge.on_init(event, bridged_session)
+                except Exception as exc:
+                    bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+            def _bridge_exit(event, bridged_session):
+                if prior_exit:
+                    try:
+                        prior_exit(event, bridged_session)
+                    except Exception as exc:
+                        bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+                try:
+                    native_id = bridged_session.get('provider_session_id')
+                    native_source = runtime.transcript_path(pp, native_id) if native_id else None
+                    bridge.on_exit(event, bridged_session, native_source)
+                except Exception as exc:
+                    bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
+            callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
+
+    runtime_task = _bridge_images_for_blind_model(
+        task, session, provider=provider_name, model=model, project_path=pp)
+
+    def _spawn_runtime():
+        return runtime.dispatch(
             project_path=pp,
-            task=task,
+            task=runtime_task,
             system_prompt=system_prompt,
             resume_id=resume_id,
             mode='A',
@@ -6158,7 +7523,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # MC-930: the runtime owns its reader thread, so completion has to
             # be handed to it as a hook or no agent-log row is ever written for
             # this session. See _runtime_log_completion.
-            callbacks=_RUNTIME_CALLBACKS,
+            callbacks=callbacks,
             # UNATTENDED_AGENT_PERMISSIONS_AUDIT §4: only CodexRuntime.dispatch
             # declares/consumes this kwarg (every other runtime's dispatch()
             # has a **_extra catchall, so it's a no-op for them). CONFIG is
@@ -6167,7 +7532,36 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # Only CodexRuntime.dispatch declares this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op -- same seam shape
+            # as unattended_sandbox_enabled above.
+            effort=session.get('requested_effort') or '',
+            # W4/MC-947: Clayrune's own per-project MCP trim (same resolver
+            # Claude's `_build_claude_flags` uses), passed through so a
+            # runtime that opts in (currently only QwenRuntime.dispatch())
+            # can declare EXACTLY this set instead of a blanket deny-all or
+            # native ~/.qwen/settings.json discovery. Every other runtime's
+            # dispatch() has a **_extra catchall, so this is a no-op for
+            # them — same shape as unattended_sandbox_enabled above.
+            mcp_config_json=_runtime_mcp_config_json(p, provider_name),
+            # W4/MC-947: pasted/uploaded attachments live under
+            # UPLOADS_DIR (`data/uploads/`), a DIFFERENT directory tree
+            # than most projects' own roots. Gemini/Qwen's `read_file`
+            # tool refuses a path outside its workspace root
+            # (`isWithinRoot`, live-reproduced) — widening the workspace
+            # to include UPLOADS_DIR is what makes a pasted image actually
+            # reach the model instead of erroring. Only GeminiRuntime/
+            # QwenRuntime.dispatch() declare this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op for them.
+            extra_include_dirs=(
+                [str(UPLOADS_DIR)] if UPLOADS_DIR else []),
         )
+
+    try:
+        handle = bridge.launch(_spawn_runtime) if bridge is not None else _spawn_runtime()
+        if bridge is not None and (handle is None or not hasattr(handle, 'session_dict')
+                                   or not hasattr(handle, 'mc_session_id')):
+            raise TypeError('lifecycle bridge launch must return SessionHandle')
     except Exception as e:
         session['status'] = 'error'
         # A missing CLI can never succeed by retrying — trip the circuit
@@ -6346,6 +7740,29 @@ def _character_engine(character_meta, key):
     return v.strip() if isinstance(v, str) else ''
 
 
+def _requested_model_snapshot(session):
+    """Field presence preserves an intentional native-default request ('')."""
+    if 'model' in session:
+        return session['model'] or ''
+    return session.get('agent_model') or ''
+
+
+def _continuation_effort(session):
+    """An absent legacy snapshot means native default, never today's settings."""
+    return session.get('requested_effort', '') or ''
+
+
+def _requested_effort(project, character=None, override=None, prior=None):
+    """None means omitted; an explicit empty override selects native default."""
+    if override is not None:
+        return override
+    if prior is not None:
+        return _continuation_effort(prior)
+    return (_character_engine(character, 'effort')
+            or (project or {}).get('agent_effort', '')
+            or state.CONFIG.get('agent_effort', '') or '')
+
+
 def _continuation_model(session, project=None):
     """Keep a conversation's model unless its user explicitly chose defaults.
 
@@ -6354,8 +7771,9 @@ def _continuation_model(session, project=None):
     """
     if session.get('model_auto_requested'):
         return _resolve_dispatch_model(project, '')[0]
-    return (session.get('pinned_model') or session.get('model')
-            or session.get('agent_model') or '')
+    if 'agent_model' in session:
+        return session.get('pinned_model') or session.get('agent_model') or ''
+    return session.get('pinned_model') or _requested_model_snapshot(session)
 
 
 def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
@@ -6379,6 +7797,330 @@ def _prior_conversation_provider(project_id, resume_id, explicit_provider=''):
     return next(iter(owners), '')
 
 
+_HANDOFF_MAX_CHARS = 8000
+
+
+def _gemini_session_log_turns(project_id, native_id):
+    """Turn reader for Gemini handoff (W4/MC-947).
+
+    `GeminiRuntime.transcript_path()` correctly returns None — Gemini has no
+    native on-disk transcript store, unlike Claude's `.jsonl` or Codex/Qwen's
+    rollout files — so `_build_handoff_context` used to raise ValueError
+    outright for every Gemini-owned conversation. Under the vendor-agnostic
+    position (a per-provider capability gap is a bug to bridge, not a
+    documented limitation) that is fixed here with CLAYRUNE'S OWN per-session
+    turn log instead of a native file:
+
+    1. Prefer the LIVE in-memory session's `log_lines` (present for any
+       conversation that hasn't been purged) — reuses the exact seed-line
+       convention (`"> {user}: {message}"`, `_SEED_LINE_RE`) already used to
+       find turn boundaries elsewhere (`_collect_trailing_reply_text`). Each
+       seed line starts a new user turn; everything collected before the
+       next seed/bracket line is that turn's assistant reply.
+    2. Fall back to the durable agent_log's first row (`task`/`summary`) when
+       no live session is found. `task` is set once at dispatch and never
+       updated by a follow-up, so this ONLY reconstructs the conversation's
+       opening turn, not a full multi-turn history — the same durability
+       shape as Codex/Qwen's own rollout files eventually aging out, not a
+       new limitation.
+
+    Returns `[]`, never partial garbage, when nothing usable is found — the
+    caller must treat that identically to "no transcript" (SUBSTITUTION IS A
+    LIE): a shorter-than-expected handoff must be disclosed, not silently
+    substituted for the real thing.
+    """
+    live = next((s for s in agent_sessions.values()
+                if s.get('project_id') == project_id
+                and (s.get('provider') or '').lower() == 'gemini'
+                and s.get('provider_session_id') == native_id), None)
+    if live and live.get('log_lines'):
+        turns: List[Tuple[str, str]] = []
+        current_role = None
+        current_parts: List[str] = []
+
+        def _flush():
+            if current_role and current_parts:
+                text = ''.join(current_parts).strip()
+                if text:
+                    turns.append((current_role, text))
+
+        for line in live['log_lines']:
+            stripped = (line or '').strip()
+            if not stripped or stripped.startswith('['):
+                continue
+            m = _agent_runtime._SEED_LINE_RE.match(stripped)
+            if m:
+                # Flush whatever assistant text was accumulating, then the
+                # user turn is complete in this one line — never spans
+                # multiple log_lines entries the way a delta-chunked
+                # assistant reply does.
+                _flush()
+                turns.append(('user', stripped[m.end():]))
+                current_role = None
+                current_parts = []
+                continue
+            if current_role is None:
+                current_role = 'assistant'
+                current_parts = []
+            current_parts.append(line)
+        _flush()
+        if turns:
+            return turns
+    entries = [e for e in _load_agent_log(project_id)
+              if (e.get('provider') or '').lower() == 'gemini'
+              and e.get('provider_session_id') == native_id]
+    if not entries:
+        return []
+    entries.sort(key=lambda e: e.get('ts', ''))
+    first = entries[0]
+    turns = []
+    if first.get('task'):
+        turns.append(('user', first['task']))
+    if first.get('summary'):
+        turns.append(('assistant', first['summary']))
+    return turns
+
+
+def _build_handoff_context(project_path, owning_provider, native_id, project_id=''):
+    """Rebuild an owning provider's real turns for injection into a NEW
+    conversation on a different vendor (W5, 2026-09-18 — explicit,
+    opt-in cross-provider handoff; NOT a native resume).
+
+    Reads the owning provider's OWN transcript file via its existing
+    per-adapter reader (`ClaudeRuntime.parse_transcript_file` or the
+    `extract_chat_turns` sibling on Codex/Qwen) -- the same readers that
+    already back same-vendor reconstruction/read-floor. Returns
+    (context_text, meta) where meta reports what was actually included, so
+    the caller can be honest about it rather than silently proceeding with
+    less than it looks like (SUBSTITUTION IS A LIE).
+
+    Gemini has no native transcript store at all (`GeminiRuntime.
+    transcript_path` returns None unconditionally) — W4/MC-947 bridges that
+    with `_gemini_session_log_turns` (Clayrune's own per-session turn log)
+    instead of refusing handoff outright. Raises ValueError only when even
+    that reader finds nothing.
+    """
+    runtime = _agent_runtime.get_runtime(owning_provider)
+    tpath = runtime.transcript_path(project_path, native_id)
+    if (not tpath or not Path(tpath).is_file()) and owning_provider == 'gemini':
+        turns = _gemini_session_log_turns(project_id, native_id)
+        if not turns:
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': no transcript is "
+                f"available for this conversation (this vendor may have no "
+                f"native transcript store at all)")
+    elif not tpath or not Path(tpath).is_file():
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': no transcript is "
+            f"available for this conversation (this vendor may have no "
+            f"native transcript store at all)")
+    elif owning_provider == 'claude':
+        raw = runtime.parse_transcript_file(tpath)  # pyright: ignore[reportAttributeAccessIssue]
+        turns = [(m['role'], m['text']) for m in raw
+                 if m.get('role') in ('user', 'assistant') and m.get('text')]
+    else:
+        extract = getattr(runtime, 'extract_chat_turns', None)
+        if not callable(extract):
+            raise ValueError(
+                f"cannot hand off from '{owning_provider}': its adapter has "
+                f"no extract_chat_turns reader yet")
+        turns = cast(List[Tuple[str, str]], extract(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+    if not turns:
+        raise ValueError(
+            f"cannot hand off from '{owning_provider}': the transcript "
+            f"parsed to zero real turns")
+    total = len(turns)
+    kept = []
+    kept_chars = 0
+    for role, text in reversed(turns):
+        line = f"{'User' if role == 'user' else 'Assistant'}: {text}"
+        if kept_chars + len(line) > _HANDOFF_MAX_CHARS and kept:
+            break
+        kept.append(line)
+        kept_chars += len(line)
+    kept.reverse()
+    omitted = total - len(kept)
+    header = f"=== Prior conversation, started on {owning_provider}, handed off here ==="
+    if omitted:
+        header += f"\n[{omitted} earlier turn(s) omitted for length]"
+    body = '\n\n'.join(kept)
+    footer = "=== End of prior conversation. Continue from here, using the above as real context. ==="
+    context = f"{header}\n\n{body}\n\n{footer}"
+    return context, {'owning_provider': owning_provider, 'total_turns': total,
+                     'included_turns': len(kept), 'omitted_turns': omitted}
+
+
+def _live_context_tokens(project_id, claude_sid):
+    """The last per-turn `context_tokens` recorded for a still-live in-memory
+    session owning `claude_sid`, or None — mirrors the `agent_sessions` scan
+    `_prior_conversation_provider` already does. Used by auto-fresh call
+    sites (dispatch, revive) that only hold a durable claude_session_id, not
+    the live session dict itself, so the token trigger can still see it when
+    a live entry happens to exist.
+    """
+    if not claude_sid:
+        return None
+    for s in agent_sessions.values():
+        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_sid:
+            return s.get('context_tokens')
+    return None
+
+
+def _context_tokens_over_threshold(context_tokens):
+    """Token-based auto-fresh trigger (`context_rollover_tokens`, default
+    200000, 0 disables) — the live counterpart to `_session_too_large`'s
+    byte-based backstop. Either trigger may fire a rollover independently
+    (docs/CONTEXT_ECONOMY_SPEC.md §2). `context_tokens` is a live session's
+    last per-turn normalized figure (mc.agent_runtime.normalize_context_tokens,
+    set by `_accumulate_session_usage`/the Mode-A readers) — None when no
+    usage has been recorded yet (a revived/never-live session), which never
+    trips this trigger, matching "unknown stays unknown".
+    """
+    thr = int(state.CONFIG.get('context_rollover_tokens', 200000) or 0)
+    if thr <= 0:
+        return False
+    return isinstance(context_tokens, (int, float)) and context_tokens >= thr
+
+
+def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
+    """Unified auto-fresh decision. A KNOWN `context_tokens` figure is
+    authoritative and decides on its own — the byte check is a backstop
+    consulted only when tokens are unknown, never run alongside a known
+    token figure (fixed 2026-09-18: clayrune_website auto-freshed twice at
+    6.4 MB/9.9 MB transcripts whose real context was only 123k/85k tokens —
+    well under threshold — because the byte check ran independently of the
+    token result and tripped on base64 image blobs the token figure never
+    saw. `_session_too_large` itself now also excludes image bytes as a
+    second layer, see mc.memory._transcript_image_bytes, but the ordering
+    fix here is what stops it running at all when tokens already answered
+    the question).
+
+    Returns (reason, detail): reason is 'tokens' | 'bytes' | None; detail is
+    the context-tokens int when reason=='tokens', else the transcript
+    size_bytes int (0 when no rollover is warranted).
+    """
+    if context_tokens is not None:
+        if _context_tokens_over_threshold(context_tokens):
+            return 'tokens', int(context_tokens)
+        return None, 0
+    too_large, size_bytes = _session_too_large(pp, claude_sid)
+    if too_large:
+        return 'bytes', size_bytes
+    return None, 0
+
+
+def _bridge_images_for_blind_model(text, session, *, provider, model, project_path):
+    """Replace image markers in an outgoing prompt with described-text blocks
+    when the session's model cannot see (mc/vision_bridge.py). Never raises:
+    the turn must still run, and a bridge that crashed says so in the log
+    instead of leaving the agent believing it saw the image. The agent's own
+    provider and model are untouched -- this only rewrites the prompt text."""
+    try:
+        roots = [str(UPLOADS_DIR)] if UPLOADS_DIR else []
+        if project_path:
+            roots.append(str(project_path))
+        return _vision_bridge.bridge_prompt(
+            text, provider=provider, model=model or '',
+            log=session['log_lines'].append, allowed_roots=roots)
+    except Exception as e:
+        _log(f'[vision-bridge] failed: {e}', flush=True)
+        try:
+            session['log_lines'].append(f'[Image bridge failed, images were NOT described: {e}]')
+        except Exception:
+            pass
+        return text
+
+
+def _mode_a_token_rollover(pp, project_id, session_id, session, provider, message):
+    """Token rollover for a per-turn-respawn (non-Claude) session. Returns
+    the message to send: unchanged, or prefixed with the real handoff after
+    the native id is dropped so the runtime's `write_followup` starts a fresh
+    thread (every one that resumes keys on `provider_session_id`).
+
+    The non-Claude follow-up and interrupt branches used to return before
+    `_auto_fresh_trigger` was ever consulted, so no Qwen/Gemini/Codex chat
+    could roll over however large it grew (Qwen live pass 2026-09-19: a
+    session sat at a reported 233,881 with no rollover logged). Token trigger
+    only: the byte backstop (`_session_too_large`) reads a Claude transcript
+    and does not apply; an unknown figure never rolls ("unknown stays
+    unknown")."""
+    ctx = session.get('context_tokens')
+    native_id = session.get('provider_session_id') or ''
+    if not native_id or not _context_tokens_over_threshold(ctx):
+        return message
+    _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
+    handoff_text, log_line, activity_line = _auto_fresh_handoff(
+        pp, provider, native_id, project_id, session_id,
+        reason='tokens', detail=int(ctx))
+    _log_agent_activity(project_id, activity_line)
+    session.setdefault('log_lines', []).append(log_line)
+    session.pop('provider_session_id', None)
+    session.pop('context_tokens', None)
+    return f"{handoff_text}\n\n{message}"
+
+
+def _in_flight_children(project_id, session_id):
+    """Live sessions dispatched BY `session_id` (`_notify_session` points
+    back at it) that haven't finished yet — folded into the auto-fresh
+    handoff (§3) so a rollover doesn't silently orphan a child that will
+    later report back to this session_id. Safe across a roll because the MC
+    session_id is never replaced by auto-fresh — the session dict is mutated
+    in place (new `claude_session_id`, `proc`, etc.), so a child's
+    `_notify_session` still resolves after the fresh process starts.
+    """
+    out = []
+    for s in agent_sessions.values():
+        if s.get('project_id') != project_id:
+            continue
+        if (s.get('_notify_session') or '').strip() != session_id:
+            continue
+        if s.get('status') in ('done', 'error'):
+            continue
+        out.append({'session_id': s.get('session_id', ''),
+                    'task': (s.get('task') or '')[:200],
+                    'status': s.get('status', 'unknown')})
+    return out
+
+
+def _auto_fresh_handoff(pp, provider, claude_sid, project_id, session_id,
+                        *, reason, detail):
+    """Build the real rollover handoff (§3) that replaces the old one-sentence
+    'Continuing from a previous conversation ... too large to resume' prefix,
+    plus the log/activity lines auto-fresh call sites append.
+
+    Prefers `_build_handoff_context` (the owning provider's real turns,
+    W5). Falls back to a labeled one-liner — never a silently shorter
+    substitute (SUBSTITUTION IS A LIE) — when that raises (no transcript for
+    this provider/id, e.g. a `claude_sid` whose file was never flushed).
+
+    Returns (handoff_text, log_line, activity_line).
+    """
+    try:
+        handoff_text, _meta = _build_handoff_context(
+            pp, provider, claude_sid, project_id=project_id)
+    except ValueError as e:
+        handoff_text = (
+            f"[Continuing from a previous conversation (session {claude_sid}) "
+            f"that rolled to a fresh session. Real handoff unavailable: {e}. "
+            f"Start fresh but continue the user's request below.]")
+    children = _in_flight_children(project_id, session_id)
+    if children:
+        lines = '\n'.join(f"- {c['session_id']} ({c['status']}): {c['task']}"
+                          for c in children)
+        handoff_text += (
+            f"\n\n=== Still waiting on {len(children)} dispatched session(s) "
+            f"— do not re-dispatch these, they will notify back when done ===\n"
+            f"{lines}")
+    if reason == 'tokens':
+        log_line = f'[Session context is {detail // 1000}k tokens — starting fresh]'
+        activity_line = f"Auto-fresh: context {detail // 1000}k tokens"
+    else:
+        size_mb = detail / (1024 * 1024)
+        log_line = f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]'
+        activity_line = f"Auto-fresh: previous session too large ({size_mb:.0f} MB)"
+    return handoff_text, log_line, activity_line
+
+
 def _prior_conversation_settings(project_id, resume_id, provider=''):
     """Recover latest engine settings, keeping explicit clears authoritative."""
     rows = sorted([s for s in list(agent_sessions.values())
@@ -6392,8 +8134,8 @@ def _prior_conversation_settings(project_id, resume_id, provider=''):
         native_id = (row.get('claude_session_id') if owner == 'claude'
                      else row.get('provider_session_id'))
         if native_id == resume_id:
-            if (row.get('model_auto_requested') or row.get('pinned_model')
-                    or row.get('model') or row.get('agent_model')):
+            if ('requested_effort' in row or row.get('model_auto_requested') or row.get('pinned_model')
+                    or 'model' in row or 'agent_model' in row):
                 return row
     return {}
 
@@ -6402,7 +8144,7 @@ def _prior_conversation_model(project_id, resume_id, provider=''):
     row = _prior_conversation_settings(project_id, resume_id, provider)
     if row.get('model_auto_requested'):
         return ''
-    return row.get('pinned_model') or row.get('model') or row.get('agent_model') or ''
+    return row.get('pinned_model') or _requested_model_snapshot(row)
 
 
 def _model_provider_mismatch(provider_name, model):
@@ -6521,8 +8263,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              trigger_type='manual', trigger_id='',
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
-                             model_override='', strict_character=False,
-                             notify_session='', notify_workflow=None):
+                             model_override='', strict_character=False, effort_override=None,
+                             notify_session='', notify_workflow=None,
+                             preserve_model=False, project_generation=None,
+                             system_prompt_suffix='', housekeeping=False,
+                             cross_provider_handoff=False,
+                             runtime_callbacks=None, session_metadata=None,
+                             session_dict_override=None,
+                             max_turns_override=None):
     """Core dispatch logic shared by HTTP endpoint and scheduler.
 
     Returns session_id on success, raises ValueError on error.
@@ -6573,13 +8321,43 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     if p.get('_is_incognito_project') or project_id == INCOGNITO_PROJECT_ID:
         incognito = True
 
+    canonical_project_generation = _assert_runtime_project_generation(
+        project_id, project_generation, incognito=incognito)
+
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
         raise ValueError('project_path not set or invalid')
 
+    _handoff_meta = None
     if resume_id:
-        provider_override = _prior_conversation_provider(
-            project_id, resume_id, provider_override)
+        # Opt-in only (W5, 2026-09-18): every existing caller (UI resume, the
+        # scheduler, hivemind, workflow steps) leaves cross_provider_handoff
+        # False and gets EXACTLY the prior hard-refusal behaviour below,
+        # unchanged. Only an explicit ask that names both a resume id and a
+        # different provider, WITH this flag, gets a real handoff instead of
+        # the ValueError -- never a silent one; the difference is always the
+        # caller's own explicit request, and the result is a brand-new
+        # conversation (resume_id cleared) whose task carries clearly-labelled
+        # prior-conversation content, never a native cross-vendor resume.
+        _owning_provider = _prior_conversation_provider(project_id, resume_id, '')
+        if (cross_provider_handoff and provider_override
+                and _owning_provider
+                and _owning_provider.lower() != provider_override.strip().lower()):
+            _handoff_text, _handoff_meta = _build_handoff_context(
+                pp, _owning_provider, resume_id, project_id=project_id)
+            # Disclose the handoff in the USER-VISIBLE bubble too, not just the
+            # actual model input -- a human watching the UI must see that this
+            # turn carries injected prior-conversation content, not just the
+            # short text they typed (never silently substitute).
+            if display_task is None:
+                display_task = task
+            display_task = f"[Continued from {_owning_provider}] {display_task}"
+            task = f"{_handoff_text}\n\n{task}"
+            _handoff_meta['from_native_id'] = resume_id
+            resume_id = ''
+        else:
+            provider_override = _prior_conversation_provider(
+                project_id, resume_id, provider_override)
 
     # Resolve the per-chat character (persona) now, at spawn — the only point
     # a system prompt can be set. Immutable for this chat's lifetime; switching
@@ -6621,8 +8399,24 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # Per-call copy only: every context builder sees the effective owner,
     # without changing the project's saved default for other conversations.
     p = dict(p, provider=provider_name)
+    # VENDOR_AGNOSTIC_PROGRAM.md §4: allowance is the ONLY reason an
+    # installed, signed-in agent may be refused, and it must be shown, never
+    # silently rerouted — so this is a hard refusal here, not a warning, and
+    # there is no fallback provider substituted in its place. Single choke
+    # point: dispatch (the HTTP endpoint), the scheduler, hivemind and every
+    # workflow agent step all call this function (never each other's own
+    # copy of this check), so one refusal covers all four surfaces named in
+    # the brief. Follow-up has its own copy — see agent_followup, which does
+    # not re-resolve a provider (the session already has one).
+    # A user-initiated dispatch re-checks a standing record against the vendor
+    # first (see _allowance_refusal); unattended callers (scheduler, workflow,
+    # agent-to-agent) never spend a probe on a refusal nobody is waiting on.
+    _allowance_block = _allowance_refusal(
+        provider_name, user_initiated=(trigger_type == 'manual'))
+    if _allowance_block:
+        raise ValueError(_allowance_block)
     _resume_auto_requested = False
-    if resume_id and not model_override:
+    if resume_id and not model_override and not preserve_model:
         _resume_settings = _prior_conversation_settings(project_id, resume_id, provider_name)
         _resume_auto_requested = bool(_resume_settings.get('model_auto_requested'))
         if _resume_auto_requested and provider_name == 'claude':
@@ -6667,28 +8461,39 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          character_meta=character_meta,
                                          character_body=character_body,
                                          model_override=model_override,
+                                         effort_override=effort_override,
                                          resume_id=resume_id,
                                          source=source,
                                          notify_session=notify_session,
-                                         notify_workflow=notify_workflow)
+                                         notify_workflow=notify_workflow,
+                                         project_generation=canonical_project_generation,
+                                         lifecycle_bridge_factory=(
+                                             _runtime_lifecycle_service.bridge_factory
+                                             if _runtime_lifecycle_service is not None else None))
         except Exception as e:
             _log(f"[dispatch] runtime '{provider_name}' failed, no fallback: {e}")
             raise
 
     use_streaming = p.get('use_streaming_agent', state.CONFIG.get('use_streaming_agent', False))
 
-    # Check session transcript size — auto-start fresh if too large
+    # Check session transcript size / context weight — auto-start fresh if
+    # either trigger fires (docs/CONTEXT_ECONOMY_SPEC.md §2).
     original_resume = resume_id
+    _af_log_line = ''
     if resume_id:
-        too_large, size_bytes = _session_too_large(pp, resume_id)
-        if too_large:
-            size_mb = size_bytes / (1024 * 1024)
-            _log(f"[dispatch] Session {resume_id} transcript is {size_mb:.1f} MB — starting fresh")
-            _log_agent_activity(project_id,
-                                f"Auto-fresh: previous session too large ({size_mb:.0f} MB)")
-            # Prepend context about the previous session
-            task = (f"[Continuing from a previous conversation (session {resume_id}) that grew too large "
-                    f"to resume ({size_mb:.0f} MB). Start fresh but continue the user's request below.]\n\n{task}")
+        _af_reason, _af_detail = _auto_fresh_trigger(
+            pp, resume_id, _live_context_tokens(project_id, resume_id))
+        if _af_reason:
+            _log(f"[dispatch] Session {resume_id} rolling to fresh ({_af_reason}={_af_detail})")
+            # This dispatch call is spawning a NEW MC session, so `reuse_session_id`
+            # (when the caller supplied one) is the only stable id an in-flight
+            # child could already be pointed at -- the fresh session_id this call
+            # will generate below doesn't exist yet at this point in the function.
+            _handoff_text, _af_log_line, _activity_line = _auto_fresh_handoff(
+                pp, 'claude', resume_id, project_id, reuse_session_id or '',
+                reason=_af_reason, detail=_af_detail)
+            _log_agent_activity(project_id, _activity_line)
+            task = f"{_handoff_text}\n\n{task}"
             resume_id = ''
 
     # One live process per conversation (2026-09-14). Refused BEFORE a worktree
@@ -6762,7 +8567,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # itself, which is the user speaking about this one turn. (`_char_model`
     # itself, and its merge into `model_override`, happen earlier — before the
     # non-claude provider branch above, which returns before reaching here.)
-    _char_effort = _character_engine(character_meta, 'effort') or None
+    _char_effort = _requested_effort(
+        p, character_meta, override=effort_override, prior=(_prior_conversation_settings(
+            project_id, resume_id, provider_name) if resume_id else None))
     _char_agent_name = (character_meta or {}).get('agent_name') or ''
     _char_skills = (character_meta or {}).get('skills') or []
     if resume_id and not model_override:
@@ -6770,13 +8577,14 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # native resume restore it, rather than choosing today's defaults.
         routed_model, routed_source = '', 'resume'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
-                                         model_override='')
+                                         model_override='', effort_override=_char_effort,
+                                         max_turns_override=max_turns_override,
+                                         character_skills=_char_skills)
         context = _build_agent_context(
             p, incognito=incognito, task=task,
             character_body=character_body, character_name=_char_agent_name,
             session_id=_planned_sid, character_skills=_char_skills,
             source=source)
-        _sp_args, _sp_path = _sysprompt_file_args(context)
     elif model_override:
         # Composer "Model" picker, or the character's pinned model: an explicit
         # choice either way, so the auto-router is bypassed entirely. The
@@ -6786,14 +8594,15 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         routed_source = 'character' if model_override == _char_model else 'manual'
         base_flags = _build_claude_flags(p, streaming=use_streaming,
                                          model_override=model_override,
-                                         effort_override=_char_effort)
+                                         effort_override=_char_effort,
+                                         max_turns_override=max_turns_override,
+                                         character_skills=_char_skills)
         context = _build_agent_context(p, incognito=incognito, task=task,
                                        character_body=character_body,
                                        character_name=_char_agent_name,
                                        session_id=_planned_sid,
                                        character_skills=_char_skills,
                                        source=source)
-        _sp_args, _sp_path = _sysprompt_file_args(context)
     else:
         routed_model, routed_source, base_flags, context, _router_fallback_reason = (
             _dispatch_with_routing_parallel(
@@ -6803,8 +8612,22 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     character_body=character_body, character_name=_char_agent_name,
                     session_id=_planned_sid, character_skills=_char_skills,
                     source=source),
-                streaming=use_streaming, effort_override=_char_effort))
-        _sp_args, _sp_path = _sysprompt_file_args(context)
+                streaming=use_streaming, effort_override=_char_effort,
+                character_skills=_char_skills))
+        if max_turns_override is not None:
+            base_flags = _build_claude_flags(
+                p, streaming=use_streaming, model_override=routed_model,
+                effort_override=_char_effort,
+                max_turns_override=max_turns_override,
+                character_skills=_char_skills)
+    if system_prompt_suffix:
+        # Provider-neutral callers such as Hivemind may supply an additional
+        # feature context block. Keep the authoritative project context first,
+        # and let the runtime adapter deliver the combined prompt according to
+        # its provider's context-injection capability.
+        context = f"{context}\n\n{system_prompt_suffix}".strip()
+    _sp_args, _sp_path = _sysprompt_file_args(context)
+
     # Per-dispatch telemetry — best-effort; never raises. requested = the
     # model the user configured; chosen = what actually went to --model
     # (post-router). See docs/DISPATCH_AND_ROUTING_ANALYSIS.md §B.5.
@@ -6838,7 +8661,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     with mgr.lock:
         # Reuse the prior run's id (continued scheduled thread) unless that id is
         # somehow still a live session — never clobber a running session dict.
-        if reuse_session_id and reuse_session_id not in agent_sessions:
+        if reuse_session_id and (
+                reuse_session_id not in agent_sessions
+                or (session_dict_override is not None
+                    and agent_sessions.get(reuse_session_id) is session_dict_override)):
             session_id = reuse_session_id
         else:
             session_id = _fresh_sid
@@ -6854,6 +8680,35 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                     _log(f"[spawn-guard] sysprompt cleanup failed: {e}")
             raise ValueError(f"conversation {resume_id[:12]} is already running "
                              f"in another session")
+
+        # Durable identity must exist before the provider process starts.
+        _delivery_generation_reserved = (
+            _delivery_store.project_generation(project_id)
+            if (notify_session and not incognito) else 1)
+        _delegation_turn_reserved = (
+            _delivery_store.allocate_turn(session_id)
+            if (notify_session and not incognito) else 1)
+
+        # The dispatch record is durable before Popen. If Popen or the reader
+        # setup fails, reconciliation can see an in-progress launch and retain
+        # the unknown outcome instead of leaving an untracked child process.
+        if notify_session and not incognito:
+            _log_agent_dispatch_pending({
+                'project_id': project_id, 'session_id': session_id,
+                'task': task, 'provider': provider_name,
+                'model': routed_model, 'agent_model': routed_model,
+                'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
+                'incognito': False, 'source': source or '',
+                'trigger_type': trigger_type, 'trigger_id': trigger_id,
+                'character': character_meta,
+                'housekeeping': bool(housekeeping),
+                '_runtime_callbacks': dict(runtime_callbacks or {}),
+                '_notify_session': notify_session,
+                '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
+            }, strict=True)
 
         if use_streaming:
             # Mode B: persistent process with stream-json stdin
@@ -6915,6 +8770,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # session id here lets _log_agent_completion deliver the
                 # result into that chat.
                 '_notify_session': notify_session,
+                '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
                 # Workflow step callback (MC-871 Phase 1) -- see notify_session
                 # above for the sibling mechanism this generalises.
                 '_notify_workflow': notify_workflow,
@@ -6937,7 +8795,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
-                'agent_model': p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+                'agent_model': routed_model,
                 # Auto-router attribution — `model` is what actually got
                 # passed via --model (after override); `model_source` is
                 # 'manual' / 'auto' / 'fallback'. Frontend pill reads these.
@@ -6948,6 +8806,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # BYPASSES the auto-router for its whole life — until the user
                 # changes or clears it. Empty = follow project/global/auto.
                 'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
                 'model_auto_requested': _resume_auto_requested,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
@@ -6957,6 +8816,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # content keeps the resumed prefix cache-friendly.
                 '_system_prompt': context or '',
             }
+            if session_dict_override is not None:
+                session_dict_override.update(session)
+                session = session_dict_override
+            if session_metadata:
+                session.update(session_metadata)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
@@ -7029,6 +8893,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
                 '_notify_session': notify_session,  # MC-946, see Mode B note
+                '_delegation_turn': _delegation_turn_reserved,
+                '_delivery_generation': _delivery_generation_reserved,
+                'project_generation': canonical_project_generation,
                 '_notify_workflow': notify_workflow,  # MC-871 Phase 1, see Mode B note
                 'mode': 'A',
                 'last_output_time': _time.time(),
@@ -7047,7 +8914,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # (programmatic / agent self-dispatch). Lets the mobile
                 # conversations list route agent-initiated chats to the side flow.
                 'source': source or '',
-                'agent_model': p.get('agent_model', '') or state.CONFIG.get('agent_model', ''),
+                'agent_model': routed_model,
                 'model': routed_model,
                 'model_source': routed_source,
                 # Per-chat model PIN. An explicit choice (+New picker or the
@@ -7055,15 +8922,23 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # BYPASSES the auto-router for its whole life — until the user
                 # changes or clears it. Empty = follow project/global/auto.
                 'pinned_model': model_override or routed_model,
+                'requested_effort': _char_effort,
                 'model_auto_requested': _resume_auto_requested,
                 # Per-chat persona (Prompt Builder Phase 2): {name,scope,
                 # display_name} or None. Immutable; drives the header pill.
                 'character': character_meta,
+                'housekeeping': bool(housekeeping),
+                '_runtime_callbacks': dict(runtime_callbacks or {}),
                 # Spawn context stash — re-appended verbatim on every `-r`
                 # respawn (see _respawn_sysprompt_args). Byte-identical
                 # content keeps the resumed prefix cache-friendly.
                 '_system_prompt': context or '',
             }
+            if session_dict_override is not None:
+                session_dict_override.update(session)
+                session = session_dict_override
+            if session_metadata:
+                session.update(session_metadata)
             agent_sessions[session_id] = session
             mgr.session_ids.add(session_id)
 
@@ -7077,10 +8952,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
             if notice:
                 session['log_lines'].append(notice)
 
-        # Notify user if session was auto-started fresh due to transcript size
-        if original_resume and not resume_id:
-            session['log_lines'].append(
-                f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+        # Notify user if session was auto-started fresh (§2 — byte or token trigger)
+        if original_resume and not resume_id and _af_log_line:
+            session['log_lines'].append(_af_log_line)
 
     resume_label = f" (resuming {resume_id})" if resume_id else ""
     try:
@@ -7102,10 +8976,24 @@ def agent_dispatch(project_id):
     # An explicit model wins, including on resume. Omission restores the
     # conversation model rather than reapplying project defaults.
     model_override = (data.get('model') or '').strip()
+    effort_override = data.get('effort') if 'effort' in data else None
+    if effort_override is not None and (
+            not isinstance(effort_override, str)
+            or (effort_override and not _re_auth.fullmatch(r'[A-Za-z0-9_-]{1,32}', effort_override))):
+        return jsonify({'error': 'invalid effort'}), 400
+    # W5, 2026-09-18: an explicit, opt-in cross-provider handoff mints a
+    # BRAND-NEW conversation on the destination vendor (see
+    # `_build_handoff_context`/the `resume_id` branch in
+    # `_dispatch_agent_internal`) -- it is not a native resume, so it is a
+    # fresh persona pick like any other new chat, not "ignore it, this is a
+    # resume". `cross_provider_handoff` with no matching provider mismatch is
+    # a harmless no-op (falls through to the ordinary resume path below).
+    cross_provider_handoff = bool(data.get('cross_provider_handoff'))
     # Per-chat character/persona ("scope:name", e.g. "project:code-reviewer").
     # Only meaningful on a FRESH chat — a resume keeps the original spawn's
     # persona (claude -r can't change the system prompt), so ignore it there.
-    character = (data.get('character') or '').strip() if not resume_id else ''
+    character = ((data.get('character') or '').strip()
+                 if (not resume_id or cross_provider_handoff) else '')
     # Mobile brief replies: augmented version goes to the agent. The frontend's
     # local echo already shows the original task as the user's chat bubble.
     claude_task = _apply_mobile_brief(task, data)
@@ -7142,6 +9030,7 @@ def agent_dispatch(project_id):
                                               source=source,
                                               trigger_type=trigger_type,
                                               model_override=model_override,
+                                              effort_override=effort_override,
                                               # A fresh, explicit ask this turn
                                               # (character is '' on a resume,
                                               # above) — the one call site
@@ -7153,7 +9042,8 @@ def agent_dispatch(project_id):
                                               # at write time and must stay
                                               # best-effort; they don't set this.
                                               strict_character=True,
-                                              notify_session=notify_session)
+                                              notify_session=notify_session,
+                                              cross_provider_handoff=cross_provider_handoff)
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -7214,8 +9104,9 @@ def agent_set_model(project_id, session_id):
                 row.update({
                     'claude_session_id': session.get('claude_session_id') or row.get('claude_session_id', ''),
                     'model': session.get('model') or '',
-                    'agent_model': session.get('agent_model') or session.get('model') or '',
+                    'agent_model': _requested_model_snapshot(session),
                     'pinned_model': model,
+                    'requested_effort': _continuation_effort(session),
                     'model_auto_requested': not bool(model),
                     'character': session.get('character'),
                     'source': session.get('source', ''),
@@ -7469,6 +9360,109 @@ def agent_send(project_id):
     return resp
 
 
+@bp.route('/api/project/<project_id>/agent/delegation/inbox', methods=['POST'])
+def delegation_inbox(project_id):
+    """Durably accept a child completion before parent processing.
+
+    HTTP 202 means only that the immutable event is on disk. A parent that is
+    busy, missing, stopped, or quota-blocked leaves the inbox pending for the
+    reconciler; no child is ever relaunched from this path.
+    """
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    data = request.get_json(silent=True) or {}
+    event_id = (data.get('event_id') or '').strip()
+    parent_sid = (data.get('parent_session_id') or '').strip()
+    payload = data.get('payload')
+    if not event_id or not parent_sid or not isinstance(payload, dict):
+        return jsonify({'error': 'event_id, parent_session_id and payload required'}), 400
+    try:
+        created = _delivery_store.accept(event_id, project_id, parent_sid, payload)
+    except DeliveryBlocked as exc:
+        return jsonify({'error': str(exc)}), 410
+    except (TypeError, ValueError) as exc:
+        return jsonify({'error': str(exc)}), 400
+    return jsonify({'ok': True, 'accepted': created, 'event_id': event_id}), 202
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/status')
+def delegation_status(project_id):
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    event_id = (request.args.get('event_id') or '').strip()
+    if not event_id:
+        return jsonify({'error': 'event_id required'}), 400
+    rows = {name: _delivery_store.status(name, event_id, project_id)
+            for name in ('outbox', 'inbox')}
+    if not any(rows.values()):
+        return jsonify({'error': 'event not found'}), 404
+    return jsonify({'event_id': event_id, **rows})
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/status-list')
+def delegation_status_list(project_id):
+    """Read-only recovery and logical-payload advisory view.
+
+    Status is not a processing acknowledgement, and usage is telemetry only:
+    neither result delivery nor parent dispatch is gated by this read path.
+    """
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    try:
+        limit = int(request.args.get('limit', 50))
+        offset = int(request.args.get('offset', 0))
+        if limit < 1 or limit > 100 or offset < 0:
+            raise ValueError
+        result = _delivery_store.list_recovery_status(
+            project_id, limit=limit, offset=offset)
+        try:
+            usage = _delivery_store.payload_usage(project_id)
+            raw_threshold = state.CONFIG.get('delegation_payload_warning_bytes',
+                                             1024 ** 3)
+            if isinstance(raw_threshold, bool):
+                raise ValueError('invalid advisory threshold')
+            threshold = int(raw_threshold)
+            if threshold < 0:
+                raise ValueError('invalid advisory threshold')
+            usage.update({
+                'status': 'ok',
+                'warning_bytes': threshold,
+                # 0 disables warning only. Equality is intentionally warned.
+                'warning': bool(threshold and usage['payload_bytes'] >= threshold),
+            })
+        except Exception as exc:
+            _log(f'[delegation-status] usage read failed: {type(exc).__name__}',
+                 flush=True)
+            usage = {
+                'status': 'unknown',
+                'reason_code': 'usage_unavailable',
+                'reason': 'Payload usage is unavailable; warning state is unknown.',
+            }
+        result['usage'] = usage
+        return jsonify(result)
+    except (TypeError, ValueError):
+        return jsonify({'error': 'limit must be 1..100 and offset must be non-negative'}), 400
+
+
+@bp.route('/api/project/<project_id>/agent/delegation/retry', methods=['POST'])
+def delegation_retry(project_id):
+    if _delivery_store is None:
+        return jsonify({'error': 'delegation delivery unavailable'}), 503
+    data = request.get_json(silent=True) or {}
+    event_id = (data.get('event_id') or '').strip()
+    table = (data.get('table') or 'inbox').strip()
+    if not event_id or table not in ('outbox', 'inbox'):
+        return jsonify({'error': 'event_id and table (outbox|inbox) required'}), 400
+    if _delivery_store.status(table, event_id, project_id) is None:
+        return jsonify({'error': 'event not found'}), 404
+    try:
+        _delivery_store.retry(table, event_id, project_id,
+                              reviewed=bool(data.get('reviewed_resolution')))
+    except ValueError as exc:
+        return jsonify({'error': str(exc)}), 409
+    return jsonify({'ok': True, 'event_id': event_id, 'table': table})
+
+
 @bp.route('/api/project/<project_id>/agent/stream')
 def agent_stream(project_id):
     """SSE endpoint streaming agent output for a specific session."""
@@ -7493,6 +9487,7 @@ def agent_stream(project_id):
         # terminal states) is unaffected.
         last_emitted_status = None
         last_emitted_activity = None  # '' | 'thinking' | 'writing' | 'tool'
+        last_emitted_context_tokens = None  # int | None — see the `context` event below
         emitted_qids = set()  # per-stream: don't re-emit same question_id
         while True:
             session['_last_sse_poll_time'] = _time.time()
@@ -7556,6 +9551,21 @@ def agent_stream(project_id):
             if act != last_emitted_activity:
                 yield f"data: {json.dumps({'type': 'activity', 'state': act or ''})}\n\n"
                 last_emitted_activity = act
+
+            # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
+            # `session['context_tokens']` updates PER MODEL CALL, not just at
+            # turn end (_note_call_context_tokens fires on every streamed
+            # assistant message — several per turn on a tool-use-heavy
+            # Claude turn), so polling it here on the same 0.3s cadence as
+            # `activity` pushes the figure live during a turn instead of only
+            # at turn_complete/status. Emitted only on change, same as
+            # `activity` — a session that never got a figure (context_tokens
+            # stays None) never emits at all, matching "unknown stays unknown".
+            _ctx_now = session.get('context_tokens')
+            if _ctx_now != last_emitted_context_tokens:
+                _ctx_window = _context_window_for(session.get('provider') or 'claude')
+                yield f"data: {json.dumps({'type': 'context', 'context_tokens': _ctx_now, 'context_window': _ctx_window})}\n\n"
+                last_emitted_context_tokens = _ctx_now
 
             if is_mode_b:
                 # A session that is idle ONLY because it is blocked on an
@@ -7660,6 +9670,62 @@ def agent_followup(project_id):
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
 
+    # Durable delegation callers must not treat the enqueue of this writer
+    # thread as submission.  The normal interactive path remains fire-and-
+    # forget; the internal flag makes the caller wait for the real pipe write.
+    durable_ack = bool(data.get('_durable_delivery_ack'))
+
+    def _write_mode_b_stdin(content, sess, project, msg):
+        if durable_ack and sess.get('_stdin_write_uncertain'):
+            return {'ack': 'unknown', 'error': 'previous stdin write outcome requires review'}
+        result = {}
+        done = threading.Event()
+
+        def _writer():
+            write_started = False
+            try:
+                refresh = _memory_turn.refresh_for_turn(project, sess, msg)
+                out = (refresh['block'] + '\n\n' + content
+                       if refresh['block'] else content)
+                stdin_msg = json.dumps({
+                    "type": "user",
+                    "message": {"role": "user", "content": out}
+                }) + '\n'
+                lock = sess.get('stdin_lock')
+                if lock:
+                    lock.acquire()
+                try:
+                    write_started = True
+                    sess['proc'].stdin.write(stdin_msg)
+                    sess['proc'].stdin.flush()
+                finally:
+                    if lock:
+                        lock.release()
+            except Exception as exc:
+                result['error'] = str(exc)
+                result['ack'] = 'unknown' if write_started else 'failed'
+                if write_started:
+                    sess['_stdin_write_uncertain'] = True
+                sess['log_lines'].append(f'[stdin write error: {exc}]')
+                sess['status'] = 'error'
+                sess['last_status_change_time'] = _time.time()
+                sess['process_alive'] = False
+            else:
+                result['written'] = True
+            finally:
+                done.set()
+
+        threading.Thread(target=_writer, daemon=True).start()
+        if not durable_ack:
+            return None
+        if not done.wait(timeout=10.0):
+            sess['_stdin_write_uncertain'] = True
+            return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
+        if result.get('written'):
+            return {'ack': 'written'}
+        return {'ack': result.get('ack', 'failed'),
+                'error': result.get('error', 'stdin write failed')}
+
     # Pre-check: if session is gone from agent_sessions (server restart, tab close,
     # 24h purge), try reviving from agent_log via -r <claude_session_id>.
     # Roll back: set CONFIG['agent_revive_from_log'] = False.
@@ -7709,6 +9775,18 @@ def agent_followup(project_id):
         # Non-claude providers route through the runtime; their write_followup
         # owns process kill + respawn. We just append the user line and hand off.
         session_provider = (existing.get('provider') or 'claude').lower()
+        # VENDOR_AGNOSTIC_PROGRAM.md §4: same refusal as dispatch — a message
+        # into an exhausted vendor's process would just fail the same way
+        # again, so it is refused before the write, named and with no
+        # fallback, rather than left to _dispatch_agent_internal's own check
+        # (which never runs for a followup — the session already has a
+        # provider, nothing re-resolves one here).
+        _allowance_block = _allowance_refusal(session_provider,
+                                              user_initiated=True)
+        if _allowance_block:
+            return jsonify({'error': _allowance_block,
+                            'allowance_exhausted': True,
+                            'vendor': session_provider}), 409
         if session_provider != 'claude':
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):
@@ -7747,7 +9825,11 @@ def agent_followup(project_id):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
-                runtime.write_followup(handle, message)
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, existing, session_provider, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, existing, provider=session_provider,
+                    model=existing.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
@@ -7763,6 +9845,34 @@ def agent_followup(project_id):
                     existing['process_alive'] = False
                     existing['log_lines'].append(
                         f'[Process {proc.pid} found dead on followup — will respawn]')
+            # A LIVE process's follow-up used to go straight to stdin (below),
+            # so the size check only ever ran on respawn paths (dead process,
+            # dispatch, revive) — a long-running Mode B chat could sail past
+            # _SESSION_SIZE_LIMIT and never auto-fresh. Flip it "dead" here so
+            # it falls into the existing dead-process auto-fresh handoff just
+            # below: closes stdin, kills the old process, drops -r, and starts
+            # fresh automatically, no prompt (Ron, 2026-09-18). Also the first
+            # place the token trigger can fire (docs/CONTEXT_ECONOMY_SPEC.md
+            # §2) — `existing['context_tokens']` is this session's own last
+            # per-turn figure, always available here since the process is live.
+            # Detection only — do NOT build the handoff or log here. This just
+            # decides whether the still-alive process should be treated as
+            # dead; the dead-process branch immediately below re-evaluates
+            # `_auto_fresh_trigger` against the same (unchanged) claude_sid/
+            # context_tokens and is the ONE place that logs the roll. Building
+            # the handoff/activity-line here too used to log "Auto-fresh: …"
+            # twice, ~40ms apart, for a single roll (found 2026-09-18) —
+            # this branch's own handoff_text was even discarded (`_,`) since
+            # the dead-process branch below builds the real one anyway.
+            if existing.get('process_alive'):
+                _live_sid = existing.get('claude_session_id')
+                if _live_sid:
+                    _live_reason, _live_detail = _auto_fresh_trigger(
+                        pp, _live_sid, existing.get('context_tokens'))
+                    if _live_reason:
+                        _log(f"[followup] Live session {_live_sid} rolling to fresh "
+                             f"({_live_reason}={_live_detail}) — ending process")
+                        existing['process_alive'] = False
             if not existing.get('process_alive'):
                 # Process died (hard stop or crash) — respawn
                 claude_sid = existing.get('claude_session_id')
@@ -7797,17 +9907,18 @@ def agent_followup(project_id):
                 else:
                     # Normal session, OR a resume that already produced output
                     # (healthy — it just died later). Resume with -r to keep context.
-                    too_large, size_bytes = _session_too_large(pp, claude_sid)
-                    if too_large:
-                        size_mb = size_bytes / (1024 * 1024)
-                        _log(f"[followup] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                        _log_agent_activity(project_id,
-                                            f"Auto-fresh: session too large ({size_mb:.0f} MB)")
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                    _af_reason, _af_detail = _auto_fresh_trigger(
+                        pp, claude_sid, existing.get('context_tokens'))
+                    if _af_reason:
+                        _log(f"[followup] Session {claude_sid} rolling to fresh "
+                             f"({_af_reason}={_af_detail})")
+                        _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                            pp, 'claude', claude_sid, project_id, session_id,
+                            reason=_af_reason, detail=_af_detail)
+                        _log_agent_activity(project_id, _activity_line)
+                        existing['log_lines'].append(_log_line)
                         context = _fresh_context_for(p, existing, message or '')
-                        message = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                        message = f"{_handoff_text}\n\n{message}"
                     else:
                         resume_flags = ['-r', claude_sid]
                         _log(f"[followup] {project_id}: respawning Mode B with -r {claude_sid[:12]}")
@@ -7841,7 +9952,9 @@ def agent_followup(project_id):
                 # to the project/global default on the next crash-respawn).
                 _pin = _continuation_model(existing, p)
                 cmd = [_resolve_claude(), *resume_flags,
-                       *_build_claude_flags(p, streaming=True, model_override=_pin)]
+                       *_build_claude_flags(p, streaming=True, model_override=_pin,
+                                            effort_override=_continuation_effort(existing),
+                                            character_skills=_session_skills(p, existing))]
                 if _pin:
                     existing['model'] = _pin
                     existing['model_source'] = 'manual'
@@ -7893,7 +10006,9 @@ def agent_followup(project_id):
                     _sticky_pin = _continuation_model(existing, p)
                     _sticky_cmd = [_resolve_claude(), *_sticky_resume,
                                    *_build_claude_flags(p, streaming=True,
-                                                        model_override=_sticky_pin)]
+                                                        model_override=_sticky_pin,
+                                                        effort_override=_continuation_effort(existing),
+                                                        character_skills=_session_skills(p, existing))]
                     if _sticky_pin:
                         existing['model'] = _sticky_pin
                         existing['model_source'] = 'manual'
@@ -7963,37 +10078,18 @@ def agent_followup(project_id):
                     if _tail_text:
                         claude_content = _tail_text + '\n\n' + claude_content
 
-                    def _write_stdin(_content=claude_content, _sess=existing, _p=p, _msg=message):
-                        # MC-944 (§9.6): this is a direct write to an ALREADY-
-                        # LIVE process — no context rebuild happens on this
-                        # path, ever, which is exactly the B5 break ("the read
-                        # floor fires at fresh dispatch" and a session that
-                        # stays alive for days never sees it again). Recompute
-                        # the notes/positions blocks for THIS message and
-                        # prepend them, off mgr.lock like the write itself.
-                        _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
-                        _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
-                        stdin_msg = json.dumps({
-                            "type": "user",
-                            "message": {"role": "user", "content": _out}
-                        }) + '\n'
-                        lock = _sess.get('stdin_lock')
-                        if lock:
-                            lock.acquire()
-                        try:
-                            _sess['proc'].stdin.write(stdin_msg)
-                            _sess['proc'].stdin.flush()
-                        except Exception as e:
-                            _sess['log_lines'].append(f'[stdin write error: {e}]')
-                            _sess['status'] = 'error'
-                            _sess['last_status_change_time'] = _time.time()
-                            _sess['process_alive'] = False
-                        finally:
-                            if lock:
-                                lock.release()
-
-                    threading.Thread(target=_write_stdin, daemon=True).start()
+                    ack = _write_mode_b_stdin(claude_content, existing, p, message)
                     _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
+                    if durable_ack:
+                        if ack and ack.get('ack') == 'written':
+                            return jsonify({'ok': True, 'session_id': session_id,
+                                            'stdin_write_ack': 'written'})
+                        if ack and ack.get('ack') == 'failed':
+                            return jsonify({'ok': False, 'session_id': session_id,
+                                            'stdin_write_ack': 'failed',
+                                            'error': ack.get('error', 'stdin write failed')}), 503
+                        return jsonify({'ok': False, 'session_id': session_id,
+                                        'stdin_write_ack': 'unknown'}), 504
                     return jsonify({'ok': True, 'session_id': session_id})
 
         else:
@@ -8046,7 +10142,9 @@ def agent_followup(project_id):
             resume_flags = ['-r', claude_sid] if claude_sid else []
             _sp_path = None
             cmd = [_resolve_claude(), *resume_flags,
-                   *_build_claude_flags(p, streaming=True, model_override=new_model)]
+                   *_build_claude_flags(p, streaming=True, model_override=new_model,
+                                        effort_override=_continuation_effort(mrs['existing']),
+                                        character_skills=_session_skills(p, mrs['existing']))]
             if resume_flags:
                 _sp_args, _sp_path = _respawn_sysprompt_args(mrs['existing'], p, message)
             else:
@@ -8082,33 +10180,18 @@ def agent_followup(project_id):
             if _tail_text:
                 claude_content = _tail_text + '\n\n' + claude_content
 
-            def _write_stdin_routed(_content=claude_content, _sess=_rs_existing, _p=p, _msg=message):
-                # MC-944 (§9.6) — same rationale as the router-off direct
-                # write above: no context rebuild happens on this path, so
-                # recompute the notes/positions blocks for THIS message here.
-                _refresh = _memory_turn.refresh_for_turn(_p, _sess, _msg)
-                _out = (_refresh['block'] + '\n\n' + _content) if _refresh['block'] else _content
-                stdin_msg = json.dumps({
-                    "type": "user",
-                    "message": {"role": "user", "content": _out}
-                }) + '\n'
-                lock = _sess.get('stdin_lock')
-                if lock:
-                    lock.acquire()
-                try:
-                    _sess['proc'].stdin.write(stdin_msg)
-                    _sess['proc'].stdin.flush()
-                except Exception as e:
-                    _sess['log_lines'].append(f'[stdin write error: {e}]')
-                    _sess['status'] = 'error'
-                    _sess['last_status_change_time'] = _time.time()
-                    _sess['process_alive'] = False
-                finally:
-                    if lock:
-                        lock.release()
-
-            threading.Thread(target=_write_stdin_routed, daemon=True).start()
+            ack = _write_mode_b_stdin(claude_content, _rs_existing, p, message)
             _log_agent_activity(project_id, f"Agent follow-up: {message[:100]}")
+            if durable_ack:
+                if ack and ack.get('ack') == 'written':
+                    return jsonify({'ok': True, 'session_id': session_id,
+                                    'stdin_write_ack': 'written'})
+                if ack and ack.get('ack') == 'failed':
+                    return jsonify({'ok': False, 'session_id': session_id,
+                                    'stdin_write_ack': 'failed',
+                                    'error': ack.get('error', 'stdin write failed')}), 503
+                return jsonify({'ok': False, 'session_id': session_id,
+                                'stdin_write_ack': 'unknown'}), 504
             return jsonify({'ok': True, 'session_id': session_id})
 
     # Mode B respawn — spawn outside the lock to avoid blocking stop/other ops
@@ -8197,18 +10280,19 @@ def agent_followup(project_id):
         try:
             followup_msg = message
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    _log(f"[followup-A] Session {claude_sid} is {size_mb:.1f} MB — starting fresh")
-                    _log_agent_activity(project_id,
-                                        f"Auto-fresh: session too large ({size_mb:.0f} MB)")
+                _af_reason, _af_detail = _auto_fresh_trigger(
+                    pp, claude_sid, existing.get('context_tokens'))
+                if _af_reason:
+                    _log(f"[followup-A] Session {claude_sid} rolling to fresh "
+                         f"({_af_reason}={_af_detail})")
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
                     with get_manager(project_id).lock:
-                        existing['log_lines'].append(
-                            f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
+                        existing['log_lines'].append(_log_line)
                     context = _fresh_context_for(p, existing, message or '')
-                    followup_msg = (f"[Continuing from a previous conversation that grew too large "
-                                    f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                    followup_msg = f"{_handoff_text}\n\n{message}"
                     resume_flags = []
                 else:
                     resume_flags = ['-r', claude_sid]
@@ -8220,7 +10304,9 @@ def agent_followup(project_id):
             # Honor a per-chat model pin (Mode A rebuilds the command each turn).
             _pin = _continuation_model(existing, p)
             cmd = [_resolve_claude(), *resume_flags, '-p', claude_followup_msg,
-                   *_build_claude_flags(p, model_override=_pin)]
+                   *_build_claude_flags(p, model_override=_pin,
+                                        effort_override=_continuation_effort(existing),
+                                        character_skills=_session_skills(p, existing))]
             if _pin:
                 existing['model'] = _pin
                 existing['model_source'] = 'manual'
@@ -8334,31 +10420,68 @@ def agent_stop(project_id):
 
 
 @bp.route('/api/project/<project_id>/agent/interrupt', methods=['POST'])
-def agent_interrupt(project_id):
+def agent_interrupt(project_id, *, _internal=None):
     """Atomic stop + immediate resume with a new prompt.
     Kills the current process and respawns with -r <session_id> in one operation.
-    This avoids the broken intermediate 'stopped' state."""
+    This avoids the broken intermediate 'stopped' state.
+
+    `_internal` (never set by Flask) lets the stream readers drive this same
+    path for a mid-turn rollover (mc/midturn_rollover.py) without a request:
+    a dict with `session_id`, `message`, `midturn` (True), `proc` (the process
+    whose reader is asking), `tokens` and `build_state` (cwd -> state block).
+    In that mode the return is a plain `(payload_dict, http_status)` instead of
+    a Response. `midturn` marks a Clayrune-initiated mid-task roll: the fresh
+    branch is forced, the state block rides in front of `message` in the fresh
+    session's first prompt (built AFTER the old process is dead, so the git
+    state is settled), and the chat shows a system line instead of a fake user
+    bubble.
+    """
+    def _ret(payload, status=200):
+        if _internal is not None:
+            return payload, status
+        return jsonify(payload) if status == 200 else (jsonify(payload), status)
+
     p = load_project(project_id)
     if not p:
-        return jsonify({'error': 'project not found'}), 404
+        return _ret({'error': 'project not found'}, 404)
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
-        return jsonify({'error': 'project_path not set'}), 400
+        return _ret({'error': 'project_path not set'}, 400)
 
-    data = request.get_json() or {}
-    session_id = data.get('session_id', '')
-    message = data.get('message', '').strip()
+    if _internal is None:
+        data = request.get_json() or {}
+        session_id = data.get('session_id', '')
+        message = data.get('message', '').strip()
+        is_midturn = False
+    else:
+        data = {}
+        session_id = _internal.get('session_id', '')
+        message = (_internal.get('message') or '').strip()
+        is_midturn = bool(_internal.get('midturn'))
+    _mt = _internal or {}
     if not session_id:
-        return jsonify({'error': 'session_id required'}), 400
+        return _ret({'error': 'session_id required'}, 400)
     if not message:
-        return jsonify({'error': 'message required'}), 400
+        return _ret({'error': 'message required'}, 400)
 
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
-            return jsonify({'error': 'session not found'}), 404
+            return _ret({'error': 'session not found'}, 404)
         if session['status'] not in ('running', 'idle', 'error'):
-            return jsonify({'error': 'agent not active'}), 400
+            return _ret({'error': 'agent not active'}, 400)
+        if is_midturn:
+            # The reader decided to roll BEFORE it reached this lock. Anything
+            # that replaced or is replacing the process since (a user
+            # interrupt, stop+resume, guardian) has made that decision stale:
+            # rolling now would kill the NEW process and overwrite the newer
+            # turn with a handoff built from the old one.
+            if session.get('_interrupting') or (
+                    _mt.get('proc') is not None
+                    and session.get('proc') is not _mt.get('proc')):
+                return _ret({'error': 'roll superseded'}, 409)
+            if not session.get('claude_session_id'):
+                return _ret({'error': 'no claude session id to hand off from'}, 400)
 
         # ── Multi-provider interrupt ──────────────────────────────────────
         # Non-claude providers: kill via runtime.interrupt(), then re-dispatch
@@ -8395,13 +10518,17 @@ def agent_interrupt(project_id):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
-                runtime.write_followup(handle, message)
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, session, session_provider, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, session, provider=session_provider,
+                    model=session.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
             _log_agent_activity(project_id, f"Agent interrupt (provider={session_provider}): {message[:80]}")
-            return jsonify({'ok': True, 'session_id': session_id})
+            return _ret({'ok': True, 'session_id': session_id})
 
         old_proc = session['proc']
         claude_sid = session.get('claude_session_id')
@@ -8411,15 +10538,33 @@ def agent_interrupt(project_id):
         # all status / process_alive writes, eliminating the stale-status
         # flash that flipped the UI to "stopped" between kill and respawn.
         # Cleared by the respawn thread once the new proc replaces session['proc'].
+        #
+        # The flag goes up FIRST so the old reader (a different thread on the
+        # HTTP path) cannot deliver a turn-end notify while the rearm below
+        # clears the sent-latch - that would hand the spawner the old turn's
+        # reply under the new turn number and swallow the real one. The rearm
+        # writes the delegation DB and can raise; on a raise the flag is
+        # cleared again so the still-live old reader is not gated out of every
+        # status write (session stuck 'running', spawner never notified).
+        _unset = object()
+        _prior_interrupting = session.get('_interrupting', _unset)
         session['_interrupting'] = True
-
+        try:
+            _rearm_notify_for_new_turn(session)
+        except Exception:
+            if _prior_interrupting is _unset:
+                session.pop('_interrupting', None)
+            else:
+                session['_interrupting'] = _prior_interrupting
+            raise
         # Stop the current process
         # Shown in the chat as a system-style line when the user interrupts a
         # running turn with a new message. Friendlier than "Agent interrupted
         # by user" — the user already knows they interrupted; this is the
         # acknowledgement bubble.
-        session['log_lines'].append('[Got your message]')
-        _rearm_notify_for_new_turn(session)
+        session['log_lines'].append(
+            '[Context rolled over mid-task — continuing in a fresh session]'
+            if is_midturn else '[Got your message]')
         session.pop('pending_followups', None)
         session.pop('_dispatching_followup', None)
         session['waiting_for_plan_approval'] = False
@@ -8434,12 +10579,14 @@ def agent_interrupt(project_id):
 
         # Immediately set status to running for the new prompt
         user_label = state.CONFIG.get('user_name') or 'User'
-        if not session.pop('_send_already_logged', False):
+        if not is_midturn and not session.pop('_send_already_logged', False):
             session['log_lines'].append(f"\n> {user_label}: {message}\n")
         session['status'] = 'running'
         session['last_status_change_time'] = _time.time()
         session['last_output_time'] = _time.time()
         session['process_alive'] = True
+        if is_midturn:
+            _midturn.begin_roll(session)
 
     # Kill old process in background
     _kill_proc_background(old_proc)
@@ -8461,28 +10608,55 @@ def agent_interrupt(project_id):
                     session['process_alive'] = False
                     session['last_status_change_time'] = _time.time()
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
                     return
             # Check transcript size
             resume_flags = []
             context = None
             respawn_msg = message
+            # A mid-task roll is fresh by construction: the reader already
+            # judged the threshold, and re-asking here (tokens gone stale, or
+            # unknown -> the byte check) could resume instead and silently
+            # drop the state block.
+            _ctx_task = (session.get('task') or message) if is_midturn else (message or '')
+            midturn_state = ''
             if claude_sid:
-                too_large, size_bytes = _session_too_large(pp, claude_sid)
-                if too_large:
-                    size_mb = size_bytes / (1024 * 1024)
-                    session['log_lines'].append(
-                        f'[Session transcript too large ({size_mb:.0f} MB) — starting fresh]')
-                    context = _fresh_context_for(p, session, message or '')
-                    respawn_msg = (f"[Continuing from a previous conversation that grew too large "
-                                   f"to resume ({size_mb:.0f} MB). Start fresh.]\n\n{message}")
+                if is_midturn:
+                    _af_reason, _af_detail = 'tokens', int(_mt.get('tokens') or 0)
+                    midturn_state = _mt['build_state'](_session_cwd(session, pp))
+                else:
+                    _af_reason, _af_detail = _auto_fresh_trigger(
+                        pp, claude_sid, session.get('context_tokens'))
+                if _af_reason:
+                    _handoff_text, _log_line, _activity_line = _auto_fresh_handoff(
+                        pp, 'claude', claude_sid, project_id, session_id,
+                        reason=_af_reason, detail=_af_detail)
+                    _log_agent_activity(project_id, _activity_line)
+                    session['log_lines'].append(_log_line)
+                    # `_ctx_task`, not `message`: for a roll `message` is the
+                    # canned ROLL_MESSAGE, and `is_unattended_task` (steward
+                    # marker), the read-floor and the positions all key on the
+                    # task text. Rebuilding on the roll text made a steward
+                    # cycle an ATTENDED consumer of unattended-origin artifacts.
+                    context = _fresh_context_for(p, session, _ctx_task)
+                    respawn_msg = f"{_handoff_text}\n\n{message}"
+                    if is_midturn:
+                        respawn_msg = (f"{_handoff_text}\n\n{midturn_state}"
+                                       f"\n\n{message}")
+                        # The old figure describes the process just killed; the
+                        # fresh one reports its own on its first model call.
+                        session['context_tokens'] = None
                 else:
                     resume_flags = ['-r', claude_sid]
             else:
-                context = _fresh_context_for(p, session, message or '')
+                context = _fresh_context_for(p, session, _ctx_task)
 
             if is_mode_b:
                 cmd = [_resolve_claude(), *resume_flags,
-                       *_build_claude_flags(p, streaming=True)]
+                       *_build_claude_flags(p, streaming=True,
+                                            model_override=_continuation_model(session, p),
+                                            effort_override=_continuation_effort(session),
+                                            character_skills=_session_skills(p, session))]
                 if resume_flags:
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
                     cmd.extend(_sp_args)
@@ -8508,6 +10682,7 @@ def agent_interrupt(project_id):
                     # New proc is now the authoritative one — clear the
                     # interrupt gate so its reader's writes are accepted.
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
 
                 threading.Thread(target=_read_agent_stream_b,
                                  args=(proc, session), daemon=True).start()
@@ -8526,20 +10701,32 @@ def agent_interrupt(project_id):
             else:
                 # Mode A
                 claude_respawn_msg = _apply_mobile_brief(respawn_msg, data)
+                # A mid-task roll's prompt is the handoff + state block: task
+                # verbatim + 2 x 4 KB of git output + the transcript turns,
+                # well past cmd.exe's 8191-char cap (WinError 206 -> the old
+                # proc is already dead and the worker with it). It goes down
+                # stdin instead; `claude -p` with no prompt argument reads it.
+                _prompt_arg = [] if is_midturn else [claude_respawn_msg]
                 if resume_flags:
                     _sp_args, _sp_path = _respawn_sysprompt_args(session, p, respawn_msg)
-                    cmd = [_resolve_claude(), *resume_flags, '-p', claude_respawn_msg,
-                           *_build_claude_flags(p), *_sp_args]
+                    cmd = [_resolve_claude(), *resume_flags, '-p', *_prompt_arg,
+                           *_build_claude_flags(p, model_override=_continuation_model(session, p),
+                                                effort_override=_continuation_effort(session),
+                                                character_skills=_session_skills(p, session)), *_sp_args]
                 else:
                     if not context:
-                        context = _fresh_context_for(p, session, message or '')
+                        context = _fresh_context_for(p, session, _ctx_task)
                     session['_system_prompt'] = context
                     _sp_args, _sp_path = _sysprompt_file_args(context)
-                    cmd = [_resolve_claude(), '-p', claude_respawn_msg, *_build_claude_flags(p),
+                    cmd = [_resolve_claude(), '-p', *_prompt_arg, *_build_claude_flags(p,
+                           model_override=_continuation_model(session, p),
+                           effort_override=_continuation_effort(session),
+                           character_skills=_session_skills(p, session)),
                            *_sp_args]
 
                 proc = subprocess.Popen(
-                    cmd, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
+                    cmd, stdin=subprocess.PIPE if is_midturn else subprocess.DEVNULL,
+                    stdout=subprocess.PIPE,
                     stderr=subprocess.STDOUT, cwd=_session_cwd(session, pp),
                     text=True, encoding='utf-8', errors='replace',
                     creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
@@ -8553,9 +10740,17 @@ def agent_interrupt(project_id):
                     session['proc'] = proc
                     # New proc is now authoritative — clear the interrupt gate.
                     session.pop('_interrupting', None)
+                    session.pop('_mt_roll_requested', None)
 
                 threading.Thread(target=_read_agent_stream,
                                  args=(proc, session), daemon=True).start()
+                if is_midturn:
+                    # After the reader is draining stdout: a prompt larger than
+                    # the pipe buffer must not block against an unread pipe.
+                    try:
+                        proc.stdin.write(claude_respawn_msg)  # pyright: ignore[reportOptionalMemberAccess]
+                    finally:
+                        proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
 
         except Exception as e:
             session['log_lines'].append(f'[interrupt-resume error: {e}]')
@@ -8565,6 +10760,7 @@ def agent_interrupt(project_id):
             # Clear the interrupt gate on failure too — otherwise the session
             # stays permanently gated and no future reader can update status.
             session.pop('_interrupting', None)
+            session.pop('_mt_roll_requested', None)
             # Popen may have raised before sysprompt cleanup was wired — sweep.
             if _sp_path:
                 try:
@@ -8575,7 +10771,39 @@ def agent_interrupt(project_id):
     threading.Thread(target=_do_respawn, daemon=True).start()
 
     _log_agent_activity(project_id, f"Agent interrupted: {message[:100]}")
-    return jsonify({'ok': True, 'session_id': session_id})
+    return _ret({'ok': True, 'session_id': session_id})
+
+
+def _maybe_midturn_roll(session, proc=None):
+    """Called by both Claude stream readers at a tool_result boundary, with the
+    process whose reader is calling. When `midturn_rollover_enabled` is on and
+    the main conversation's context has crossed `context_rollover_tokens`,
+    roll THIS session through the interrupt path: same MC session_id,
+    `_notify_session` untouched, handoff = transcript turns + the mid-task
+    state block (built by the interrupt path after the old process is dead).
+    Never raises — the reader must survive it."""
+    try:
+        if not _midturn.should_roll(session, _context_tokens_over_threshold):
+            return
+        session['_mt_roll_requested'] = True
+        tokens = session.get('_mt_main_tokens')
+        project_id = session.get('project_id', '')
+        payload, status = agent_interrupt(project_id, _internal={
+            'session_id': session.get('session_id', ''),
+            'message': _midturn.ROLL_MESSAGE, 'midturn': True, 'proc': proc,
+            'tokens': tokens,
+            'build_state': lambda cwd: _midturn.build_state_block(session, cwd)})
+        if status == 200:
+            _midturn.record_roll(session, tokens)
+            return
+        session.pop('_mt_roll_requested', None)
+        if status != 409:  # 409 = a newer interrupt got there first: not a failure
+            session['_mt_roll_failures'] = session.get('_mt_roll_failures', 0) + 1
+        _log(f"[midturn-rollover] interrupt refused ({status}): {payload}")
+    except Exception as e:
+        session.pop('_mt_roll_requested', None)
+        session['_mt_roll_failures'] = session.get('_mt_roll_failures', 0) + 1
+        _log(f"[midturn-rollover] roll failed: {e}")
 
 
 @bp.route('/api/project/<project_id>/agent/session', methods=['DELETE', 'POST'])
@@ -8879,6 +11107,17 @@ def agent_status(project_id):
                 'usage': s.get('usage', {}),
                 'cost_usd': s.get('cost_usd', 0),
                 'num_turns': s.get('num_turns', 0),
+                # Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5):
+                # the SAME per-turn normalized figure the auto-fresh rollover
+                # trigger reads (_auto_fresh_trigger/_context_tokens_over_threshold)
+                # — this was previously set on the in-memory session dict
+                # (_note_call_context_tokens et al.) but never surfaced past
+                # that point, so /agent/status genuinely never returned it
+                # (not a null-vs-absent serializer bug — the key was simply
+                # missing). None (never a fabricated 0) when no usage has
+                # been recorded yet — "unknown stays unknown".
+                'context_tokens': s.get('context_tokens'),
+                'context_window': _context_window_for(s.get('provider') or 'claude'),
                 'mode': s.get('mode', 'A'),
                 'long_session_advisory': _long_session_advisory(s),
                 'process_alive': s.get('process_alive', False) if s.get('mode') == 'B' else (s['status'] in ('running',)),
@@ -8917,6 +11156,9 @@ def agent_status(project_id):
                 # Per-chat model pin (empty = follow default/auto). Drives the
                 # header pill's "pinned" state + the in-chat model switcher.
                 'pinned_model': s.get('pinned_model', ''),
+                'requested_effort': _continuation_effort(s),
+                'observed_model': s.get('observed_model') or '',
+                'effort_support': s.get('effort_support', 'supported' if (s.get('provider') or 'claude') == 'claude' else 'unsupported'),
                 # Per-chat persona {name,scope,display_name} or None → header pill.
                 'character': s.get('character'),
                 # Who the Channel roster (static/js/conversation.js) groups this
@@ -9014,6 +11256,18 @@ def _looks_like_claydo_entry(entry):
 def get_agent_log(project_id):
     log = _load_agent_log(project_id)
     log = [e for e in log if not _looks_like_claydo_entry(e)]
+    if _conversation_cutover is not None:
+        canonical = _conversation_cutover.agent_log(project_id)
+        if canonical:
+            # Canonical coverage of one conversation is not proof of coverage
+            # of the project's inventory. Keep legacy rows and their live/resume
+            # metadata until each consumer has a certified migration boundary.
+            seen = {e.get('session_id') for e in log if e.get('session_id')}
+            for row in canonical:
+                item = row.as_dict()
+                if item.get('session_id') not in seen:
+                    log.append(item)
+                    seen.add(item.get('session_id'))
     for entry in log:
         entry['ts_relative'] = time_ago(entry.get('ts'))
         entry['started_relative'] = time_ago(entry.get('started_at'))
@@ -9250,6 +11504,16 @@ def reconstruct_dead_session(project_id, session_id):
     # A live session should go through /agent/status, not here.
     if session_id in agent_sessions:
         return jsonify({'error': 'session is live'}), 409
+    if _conversation_cutover is not None:
+        canonical_lines = _conversation_cutover.display_lines(project_id, session_id)
+        if canonical_lines:
+            lines = list(canonical_lines)
+            lines.append('[— read-only history; send a message to resume this session —]')
+            return jsonify({
+                'session_id': session_id, 'claude_session_id': '',
+                'task': '', 'started_at': '', 'log_lines': lines,
+                'read_only': True, 'resumable': False, 'canonical': True,
+            })
     entries = [e for e in _load_agent_log(project_id) if e.get('session_id') == session_id]
     if not entries:
         return jsonify({'error': 'session not in agent log'}), 404
@@ -9464,24 +11728,50 @@ def delete_conversation(project_id, claude_session_id):
     the agent_log or already-written memory. Refuses a currently-live session
     (409) so we never yank a transcript out from under a running process.
     """
-    p = load_project(project_id)
-    if not p:
-        return jsonify({'error': 'project not found'}), 404
-    for s in agent_sessions.values():
-        if s.get('project_id') == project_id and s.get('claude_session_id') == claude_session_id:
-            return jsonify({'error': 'conversation is live — stop it first'}), 409
-    f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
-    if not f:
-        return jsonify({'error': 'transcript not found'}), 404
-    try:
-        src = Path(f)
-        dst = src.parent / (src.name + '.deleted')
-        if dst.exists():
-            dst.unlink()
-        src.rename(dst)
-    except Exception as e:
-        _log(f"[delete-conversation] failed for {claude_session_id}: {e}", flush=True)
-        return jsonify({'error': 'delete failed'}), 500
+    with get_manager(project_id).lock:
+        p = load_project(project_id)
+        if not p:
+            return jsonify({'error': 'project not found'}), 404
+        for live_session in agent_sessions.values():
+            if (live_session.get('project_id') == project_id and
+                    live_session.get('claude_session_id') == claude_session_id):
+                return jsonify({'error': 'conversation is live'}), 409
+        if (_conversation_cutover is not None
+                and _conversation_cutover.privacy_delete(project_id, claude_session_id)):
+            return jsonify({'ok': True, 'conversation_id': claude_session_id,
+                            'canonical': True})
+        f = _find_transcript_file(p.get('project_path', ''), claude_session_id)
+        if not f:
+            return jsonify({'error': 'transcript not found'}), 404
+        # The route receives native Claude identity; delivery uses MC identity.
+        # Revoke every matching alias before the transcript rename.
+        aliases = {claude_session_id}
+        for session in agent_sessions.values():
+            if session.get('project_id') == project_id and (session.get('claude_session_id') == claude_session_id or session.get('session_id') == claude_session_id):
+                aliases.update(filter(None, (session.get('session_id'), session.get('claude_session_id'))))
+        for entry in _load_agent_log(project_id):
+            if entry.get('claude_session_id') == claude_session_id or entry.get('session_id') == claude_session_id:
+                aliases.update(filter(None, (entry.get('session_id'), entry.get('claude_session_id'))))
+        if _delivery_store is not None:
+            for alias in aliases:
+                _delivery_store.revoke_session(project_id, alias)
+        lifecycle_revoked = ()
+        if _runtime_lifecycle_service is not None:
+            lifecycle_revoked = _runtime_lifecycle_service.revoke_conversations(
+                project_id, aliases)
+        try:
+            src = Path(f)
+            dst = src.parent / (src.name + '.deleted')
+            if dst.exists():
+                dst.unlink()
+            src.rename(dst)
+        except Exception as e:
+            _log(f"[delete-conversation] failed for {claude_session_id}: {e}", flush=True)
+            return jsonify({'error': 'delete failed after delivery revocation',
+                            'partial': True,
+                            'delivery_revoked': True,
+                            'lifecycle_revoked': bool(lifecycle_revoked),
+                            'recovery': 'retry conversation deletion; delivery will remain blocked'}), 500
     _log(f"[delete-conversation] {project_id} / {claude_session_id} → {dst.name}", flush=True)
     return jsonify({'ok': True, 'claude_session_id': claude_session_id})
 
@@ -9611,6 +11901,11 @@ def _search_project_transcripts(project, query, limit=50):
     JSON-parsed, so the whole project scans in ~scan-cost (benchmarked ~2s on a
     195 MB / 181-file project, sub-second elsewhere). Read-only, no locks.
     """
+    if _conversation_cutover is not None:
+        canonical = _conversation_cutover.search(
+            (project or {}).get('id', ''), query, limit=limit)
+        if canonical is not None:
+            return canonical
     pp = (project or {}).get('project_path', '')
     q = (query or '').strip()
     if not pp or len(q) < 2:
@@ -10049,11 +12344,14 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None):
             _conversation_character_display({'character': live.get('character')}, p)
             if live else None)
         _row_spawned = _row_spawned_by(latest, live)
-        # qwen (in `_COLD_RESUMABLE_PROVIDERS`) is cold-resumable exactly like
-        # Codex once we have a captured `provider_session_id` on the latest
-        # turn's log entry — `_revive_non_claude_from_agent_log` uses it the
-        # same way. Everything else (Gemini — MC-929, no transcript store at
-        # all) stays honestly readonly; see reconstruct_dead_session.
+        # Every provider in `_COLD_RESUMABLE_PROVIDERS` (codex, qwen, and
+        # gemini since W4/MC-947) is cold-resumable once we have a captured
+        # `provider_session_id` on the latest turn's log entry —
+        # `_revive_non_claude_from_agent_log` uses it the same way for all
+        # three. Gemini still renders read-only in `reconstruct_dead_session`
+        # (MC-929, no on-disk transcript store to replay prior turns FROM),
+        # but the live process a Resume click spawns genuinely continues the
+        # same conversation server-side.
         _psid = (latest.get('provider_session_id') or '').strip()
         _cold_resumable = provider in _COLD_RESUMABLE_PROVIDERS and bool(_psid)
         rows.append({
@@ -10110,6 +12408,10 @@ def get_project_conversations(project_id):
     p = load_project(project_id)
     if not p:
         return jsonify([])
+    canonical_rows = None
+    if _conversation_cutover is not None:
+        canonical_rows = _conversation_cutover.conversation_rows(
+            project_id, limit=limit)
     project_path = p.get('project_path', '')
 
     # Built BEFORE the transcript scan (not after, as it used to be) so the
@@ -10254,6 +12556,12 @@ def get_project_conversations(project_id):
     codex_rows, codex_covered_sids = _recent_codex_conversation_rows(project_id, p, limit)
     out.extend(codex_rows)
     out.extend(_non_claude_conversation_rows(project_id, p, limit, exclude_sids=codex_covered_sids))
+    if canonical_rows:
+        seen = {row.get('mc_session_id') for row in out if row.get('mc_session_id')}
+        for row in canonical_rows:
+            if row.get('mc_session_id') not in seen:
+                out.append(row)
+                seen.add(row.get('mc_session_id'))
     out.sort(key=lambda r: r['mtime'], reverse=True)
     # The final union-wide cut (ws001/D6): up to 3 independently-limited
     # sources compete for `limit` slots here, so a row that's actually LIVE

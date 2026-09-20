@@ -366,6 +366,66 @@ class TestSessionUsagePayload:
         assert 'cost_usd' in payload
         assert 'num_turns' in payload
 
+    # ── live context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) ───────────────
+    # Unlike usage/cost/num_turns, context_tokens/context_window are NOT
+    # capability-gated: normalize_context_tokens can resolve a figure for a
+    # provider with emits_usage=False (Gemini's TURN_END usage/stats), so the
+    # live counter must work for every vendor — these two keys are ALWAYS
+    # present, value None (never a fabricated 0) when not yet known.
+
+    def test_claude_session_carries_context_tokens_and_window(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+        monkeypatch.setenv('MC_PORT', '0')
+        if 'server' in sys.modules:
+            del sys.modules['server']
+        import server
+
+        session = {'provider': 'claude', 'context_tokens': 123_456}
+        payload = server._session_usage_payload(session)
+        assert payload['context_tokens'] == 123_456
+        assert payload['context_window'] == 200_000
+
+    def test_gemini_session_still_carries_context_tokens_despite_emits_usage_false(
+            self, tmp_path, monkeypatch):
+        """The whole point of the fix: Gemini has emits_usage=False but CAN
+        still report a context_tokens figure (TURN_END usage/stats) — the
+        counter must not be gated on the same flag usage/cost/turns are."""
+        monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+        monkeypatch.setenv('MC_PORT', '0')
+        if 'server' in sys.modules:
+            del sys.modules['server']
+        import server
+        import mc.agent_runtime as ar
+
+        orig = ar.get_runtime
+
+        def _mock(name):
+            if name == 'gemini':
+                return _build_mock_runtime('gemini', emits_usage=False,
+                                           emits_cost=False, emits_num_turns=False)
+            return orig(name)
+
+        monkeypatch.setattr(ar, 'get_runtime', _mock)
+        monkeypatch.setattr(server._agent_runtime, 'get_runtime', _mock)
+
+        session = {'provider': 'gemini', 'context_tokens': 55_000}
+        payload = server._session_usage_payload(session)
+        assert 'usage' not in payload  # still gated, unaffected
+        assert payload['context_tokens'] == 55_000
+        assert payload['context_window'] is None  # gemini declares none
+
+    def test_never_recorded_context_tokens_is_none_not_absent_or_zero(self, tmp_path, monkeypatch):
+        monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+        monkeypatch.setenv('MC_PORT', '0')
+        if 'server' in sys.modules:
+            del sys.modules['server']
+        import server
+
+        session = {'provider': 'claude'}
+        payload = server._session_usage_payload(session)
+        assert 'context_tokens' in payload
+        assert payload['context_tokens'] is None
+
 
 # ── SSE JSON payload structure test ──────────────────────────────────────────
 

@@ -47,12 +47,14 @@ EXPECTED_ROUTES = {
     '/api/agent/<provider>/auth-login-remote/code',
     '/api/agent/<provider>/auth-login-remote/status',
     '/api/agent/<provider>/auth-logout',
+    '/api/agent/<provider>/allowance/recheck',
     '/api/agent/<provider>/auth-probe',
     '/api/agent/<provider>/auth-status',
     '/api/agent/provider/<name>/auth',
     '/api/agent/provider/<name>/env',
     '/api/agent/provider/<name>/login-launch',
     '/api/agent/provider/<name>/install-launch',
+    '/api/agent/providers/install-launch',
     '/api/claude/auth-probe',
     '/api/claude/auth-status',
     '/api/claude/login-launch',
@@ -76,6 +78,10 @@ EXPECTED_ROUTES = {
     '/api/project/<project_id>/agent/status',
     '/api/project/<project_id>/agent/stop',
     '/api/project/<project_id>/agent/stream',
+    '/api/project/<project_id>/agent/delegation/inbox',
+    '/api/project/<project_id>/agent/delegation/retry',
+    '/api/project/<project_id>/agent/delegation/status',
+    '/api/project/<project_id>/agent/delegation/status-list',
     '/api/project/<project_id>/conversations',
     # Conversation redesign (2026-07-11): full-transcript fetch for the resume
     # preview, transcript repair, and cross-project chat search.
@@ -117,6 +123,18 @@ def client(tmp_path, monkeypatch):
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
+
+    # F6: the install-launch routes now touch the PowerShell execution policy
+    # on win32. No test may read or WRITE the real one (this box's, in CI or
+    # on Ron's machine) — default to "already RemoteSigned, nothing to do",
+    # and make any accidental write loud. F6 tests override both.
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: {'CurrentUser': 'RemoteSigned'})
+
+    def _no_real_policy_write():
+        raise AssertionError('test attempted to write the real execution policy')
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        _no_real_policy_write)
 
     # mc.state.agent_sessions is a shared object (blueprint imports it) —
     # snapshot, clear, restore IN PLACE; never rebind (split-brain).
@@ -161,12 +179,266 @@ def test_no_unexpected_agent_routes(client):
     assert not extra, f'unpinned routes under agent_routes blueprint: {sorted(extra)}'
 
 
+class _InstallHealth:
+    installed = False
+    binary_path = None
+    version = None
+    auth_state = None
+    install_hint = 'npm install -g @openai/codex'
+
+
+class _InstallRuntime:
+    def health_check(self):
+        return _InstallHealth()
+
+
+def test_install_launch_onboards_missing_node_before_provider(monkeypatch, client):
+    """Regression for the original fresh-machine failure: npm was absent,
+    so install-launch returned `npm not found` without opening anything.
+    The repair command is fixed/provider-scoped and is only tested with mocks.
+    """
+    from mc.blueprints import agent_routes as ar
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _InstallRuntime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    # Exact pre-fix behavior: the route stopped here and never opened an
+    # onboarding terminal. Keep the reproduction beside the regression so a
+    # future simplification cannot quietly restore the dead end.
+    legacy_required = ar._install_command_required_binary(_InstallHealth.install_hint)
+    assert legacy_required == 'npm'
+    assert not ar.shutil.which(legacy_required)
+
+    response = client.post('/api/agent/provider/codex/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] == 'npm'
+    assert calls == [
+        'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+        '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+        '-e --silent --source winget '
+        '--accept-source-agreements --accept-package-agreements) '
+        '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+        '(if %v GEQ 12 (npm install -g --allow-scripts=@openai/codex @openai/codex) '
+        'else (npm install -g @openai/codex))'
+    ]
+
+
+class _BatchInstallRuntime:
+    def __init__(self, hint):
+        self._hint = hint
+
+    def health_check(self):
+        h = _InstallHealth()
+        h.install_hint = self._hint
+        return h
+
+
+def test_install_launch_batch_runs_node_prereq_once(monkeypatch, client):
+    """F7 (clean-VM run 2026-09-18): "Install selected" used to call the
+    single-provider route once per vendor, each opening its OWN terminal —
+    ticking Claude + Gemini launched two concurrent `winget install ...
+    NodeJS` calls that raced each other. The batch route must compose ONE
+    terminal command with the Node/npm prerequisite embedded exactly ONCE,
+    even though both selected vendors need it.
+    """
+    from mc.blueprints import agent_routes as ar
+    runtimes = {
+        'codex': _BatchInstallRuntime('npm install -g @openai/codex'),
+        'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+    }
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/providers/install-launch',
+                           json={'names': ['codex', 'gemini']})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['unsupported'] == []
+    assert sorted(body['installed']) == ['codex', 'gemini']
+    assert len(calls) == 1, 'must open exactly one terminal for the whole batch'
+    command = calls[0]
+    # The node-install snippet appears exactly once, and both packages'
+    # install lines are chained after it in one sequential command.
+    assert command.count('winget install --id OpenJS.NodeJS.LTS') == 1
+    assert 'npm install -g @openai/codex' in command
+    assert 'npm install -g @google/gemini-cli' in command
+    assert command.index('winget install --id OpenJS.NodeJS.LTS') < command.index('npm install -g @openai/codex')
+
+
+def test_install_launch_batch_skips_unsupported_names(monkeypatch, client):
+    """An untrusted/malformed hint is skipped (reported in `unsupported`)
+    rather than aborting the whole batch — same fail-closed discipline as
+    the single-provider route's 'unsupported' rejection."""
+    from mc.blueprints import agent_routes as ar
+    runtimes = {
+        'codex': _BatchInstallRuntime('npm install -g @openai/codex'),
+        'evil': _BatchInstallRuntime('npm install -g @openai/codex; curl https://evil.invalid'),
+    }
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)  # npm present
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/providers/install-launch',
+                           json={'names': ['codex', 'evil']})
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['unsupported'] == ['evil']
+    assert body['installed'] == ['codex']
+    assert calls == ['npm install -g @openai/codex']
+
+
+def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, client):
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'npm install -g @openai/codex; curl https://evil.invalid'
+            return h
+
+    launched = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    response = client.post('/api/agent/provider/codex/install-launch')
+    assert response.status_code == 200
+    assert response.get_json()['ok'] is False
+    assert 'unsupported' in response.get_json()['error']
+    assert launched == []
+
+
+def test_install_launch_onboards_missing_pip_before_aider(monkeypatch, client):
+    """Fenn blocker #5, pip half: a clean machine has neither pip nor uv, and
+    Aider's install_hint requires pip. Before this fix the route returned
+    'pip not found on PATH' without opening anything, mirroring the original
+    npm/Node dead end above.
+    """
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat  # or: uv tool install aider-chat'
+            return h
+
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] == 'pip'
+    assert calls == [
+        'powershell -ExecutionPolicy ByPass -c "irm https://astral.sh/uv/install.ps1 | iex" '
+        '&& set "PATH=%USERPROFILE%\\.local\\bin;%PATH%" '
+        '&& uv tool install aider-chat'
+    ]
+
+
+def test_install_launch_prefers_existing_uv_over_bootstrap(monkeypatch, client):
+    """If uv is already on PATH (but pip is not), reuse it instead of
+    re-bootstrapping — same 'don't invent, don't repeat work' discipline as
+    the npm branch's "already have npm" short-circuit."""
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat  # or: uv tool install aider-chat'
+            return h
+
+    calls = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/uv' if name == 'uv' else None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    body = response.get_json()
+    assert body['ok'] is True
+    assert body['prerequisite'] is None
+    assert calls == ['uv tool install aider-chat']
+
+
+def test_install_launch_rejects_untrusted_hint_when_pip_missing(monkeypatch, client):
+    from mc.blueprints import agent_routes as ar
+
+    class Runtime:
+        def health_check(self):
+            h = _InstallHealth()
+            h.install_hint = 'pip install aider-chat; curl https://evil.invalid'
+            return h
+
+    launched = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    response = client.post('/api/agent/provider/aider/install-launch')
+    assert response.status_code == 200
+    assert response.get_json()['ok'] is False
+    assert 'unsupported' in response.get_json()['error']
+    assert launched == []
+
+
 # ── read-only loopback smokes — prove wire() bound the global deps ────────────
 
 def test_providers_endpoint_ok(client):
     resp = client.get('/api/agent/providers')
     assert resp.status_code == 200
     assert isinstance(resp.get_json(), (list, dict))
+
+
+def test_providers_endpoint_reports_remote_login_and_probe_cost(client, monkeypatch):
+    """The unified provider row (walkthrough.js _renderProviderRow) is data
+    driven: "Sign in remotely" only where remote_login is true, and the Check
+    status tooltip discloses quota spend from capabilities.auth_probe_spends_quota
+    — which used to be on the dataclass but never serialised, so the client
+    could not see it."""
+    from mc import pty_backend
+    monkeypatch.setattr(pty_backend, 'pty_available', lambda: False)
+    providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}
+    assert providers['claude']['remote_login'] is True       # `claude auth login` pipes its URL
+    assert providers['gemini']['remote_login'] is False      # needs a PTY, none available
+    assert providers['gemini']['capabilities']['auth_probe_spends_quota'] is True
+    assert providers['claude']['capabilities']['auth_probe_spends_quota'] is False
+    monkeypatch.setattr(pty_backend, 'pty_available', lambda: True)
+    providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}
+    assert providers['gemini']['remote_login'] is True       # a real PTY covers every CLI
+
+
+def test_providers_endpoint_reports_allowance_exhausted(client, tmp_path):
+    """VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: the chooser must show the SAME
+    fact a dispatch call would refuse on — 'allowance_exhausted' comes off
+    mc.allowance_state, not a second, drifting notion of quota exhaustion."""
+    from mc import allowance_state as al
+    al.wire(tmp_path / 'allowance_state.json')
+    try:
+        al.record_exhaustion('codex', limit_kind='usage_limit',
+                             resets_at_display='Sep 24, 2026 7:58 AM')
+        resp = client.get('/api/agent/providers')
+        assert resp.status_code == 200
+        providers = resp.get_json()['providers']
+        codex = next(p for p in providers if p['name'] == 'codex')
+        claude = next(p for p in providers if p['name'] == 'claude')
+        assert codex['allowance_exhausted'] == \
+            'Out of allowance, resets Sep 24, 2026 7:58 AM'
+        assert claude['allowance_exhausted'] == ''
+    finally:
+        al._STATE = {}
 
 
 def test_providers_endpoint_reports_in_use(client, monkeypatch):
@@ -186,6 +458,44 @@ def test_providers_endpoint_reports_in_use(client, monkeypatch):
     by_name = {p['name']: p for p in body['providers']}
     assert by_name['claude']['in_use'] is True   # unset default_provider → claude
     assert 'gemini' in by_name and by_name['gemini']['in_use'] is False
+
+
+def test_providers_endpoint_refresh_forces_auth_probe(client, monkeypatch):
+    """F8 (clean-VM run 2026-09-18): Claude was signed in — `claude auth
+    status` showed loggedIn:true — but /api/agent/providers kept reporting
+    not_logged_in until the server restarted, because health_check() only
+    reads the in-memory auth cache and nothing had re-probed it since the
+    sign-in happened outside Clayrune. `?refresh=1` (walkthrough.js
+    wtRefreshProviders, the "Check setup status" button) must call
+    auth_probe() — the one thing every runtime guarantees actually
+    re-checks — instead of serving health_check()'s cached auth_state.
+    """
+    from mc.blueprints import agent_routes as ar
+    rt = ar._agent_runtime.get_runtime('claude')
+    probe_calls = []
+
+    monkeypatch.setattr(rt, 'health_check', lambda: ar._agent_runtime.HealthStatus(
+        installed=True, binary_path=Path('/x/claude'), version='1.0',
+        auth_state=ar._agent_runtime.AuthState(status='not_logged_in', last_checked='t0'),
+    ))
+
+    def fake_auth_probe():
+        probe_calls.append(1)
+        return {'ok': True, 'status': 'ok', 'method': 'session',
+                'error_text': None, 'last_checked': 't1'}
+    monkeypatch.setattr(rt, 'auth_probe', fake_auth_probe)
+
+    resp = client.get('/api/agent/providers')
+    assert resp.status_code == 200
+    claude = next(p for p in resp.get_json()['providers'] if p['name'] == 'claude')
+    assert claude['auth_status'] == 'not_logged_in'
+    assert probe_calls == [], 'a plain GET must not spend a live probe'
+
+    resp2 = client.get('/api/agent/providers?refresh=1')
+    assert resp2.status_code == 200
+    claude2 = next(p for p in resp2.get_json()['providers'] if p['name'] == 'claude')
+    assert claude2['auth_status'] == 'ok'
+    assert probe_calls == [1]
 
 
 # ── _providers_in_use() — resolver precedence for the auth-banner gate ────────
@@ -330,6 +640,80 @@ def test_stream_exact_cursor_no_reset(client):
     finally:
         resp.close()
     assert evs[0].get('type') == 'turn_start'
+
+
+# ── live context counter (docs/CONTEXT_ECONOMY_SPEC.md §5) ───────────────────
+# Two gaps closed together: (1) GET /agent/status never returned
+# context_tokens at all (the key was absent, not null — a serializer
+# omission, not the field failing to be set on the live session dict), and
+# (2) nothing pushed the figure over SSE mid-turn, only at turn boundaries.
+
+def test_status_endpoint_returns_context_tokens_and_window(client):
+    """Regression: /agent/status previously omitted `context_tokens` and
+    `context_window` entirely — confirmed live against 3 running Claude
+    sessions that had recorded a figure internally but never surfaced it."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['ctx-status'] = {
+        'session_id': 'ctx-status', 'project_id': 'sse-test-proj', 'mode': 'B',
+        'status': 'idle', 'log_lines': [], 'provider': 'claude',
+        'context_tokens': 84213, 'task': 't', 'started_at': '',
+    }
+    resp = client.get('/api/project/sse-test-proj/agent/status')
+    assert resp.status_code == 200
+    row = next(s for s in resp.get_json()['sessions'] if s['session_id'] == 'ctx-status')
+    assert row['context_tokens'] == 84213
+    assert row['context_window'] == 200_000  # Claude's declared max
+
+
+def test_status_endpoint_context_tokens_none_not_zero_when_unknown(client):
+    """A session that never recorded a figure must report null, never a
+    fabricated 0 — 'unknown stays unknown' (VENDOR_AGNOSTIC_PROGRAM.md §4)."""
+    from mc import state as mc_state
+    mc_state.agent_sessions['ctx-unknown'] = {
+        'session_id': 'ctx-unknown', 'project_id': 'sse-test-proj', 'mode': 'B',
+        'status': 'idle', 'log_lines': [], 'provider': 'gemini',
+        'task': 't', 'started_at': '',
+    }
+    resp = client.get('/api/project/sse-test-proj/agent/status')
+    row = next(s for s in resp.get_json()['sessions'] if s['session_id'] == 'ctx-unknown')
+    assert row['context_tokens'] is None
+    assert row['context_window'] is None  # Gemini declares no context_window today
+
+
+def test_stream_emits_context_event_on_change(client):
+    """The SSE stream must push a `context` event carrying the SAME figure
+    the auto-fresh trigger reads (session['context_tokens']), independent of
+    turn_complete/status — the live-during-a-turn requirement."""
+    _seed_stream_session('sse-ctx', [])
+    from mc import state as mc_state
+    mc_state.agent_sessions['sse-ctx']['context_tokens'] = 84_000
+    mc_state.agent_sessions['sse-ctx']['provider'] = 'claude'
+    resp = client.get(
+        '/api/project/sse-test-proj/agent/stream?session=sse-ctx&since=0',
+        buffered=False)
+    try:
+        evs = _sse_events(resp, 2)
+    finally:
+        resp.close()
+    ctx_evs = [e for e in evs if e.get('type') == 'context']
+    assert ctx_evs, evs
+    assert ctx_evs[0]['context_tokens'] == 84_000
+    assert ctx_evs[0]['context_window'] == 200_000
+
+
+def test_stream_emits_no_context_event_when_never_recorded(client):
+    """A session with no context_tokens figure at all must not emit a
+    `context` event — never a fabricated 0/'—' push for a vendor/session
+    that simply has nothing to report yet."""
+    _seed_stream_session('sse-ctx-none', ['a'])
+    resp = client.get(
+        '/api/project/sse-test-proj/agent/stream?session=sse-ctx-none&since=0',
+        buffered=False)
+    try:
+        evs = _sse_events(resp, 2)  # output line 'a', then turn_start
+    finally:
+        resp.close()
+    assert not any(e.get('type') == 'context' for e in evs)
 
 
 # ── in-chat model switcher: POST /agent/<sid>/model (pin/clear) ───────────────
@@ -802,3 +1186,124 @@ def test_dispatch_route_missing_cli_returns_install_message_not_generic(client, 
     assert 'Install it with: npm install -g @openai/codex' in body['error']
     from mc import state as mc_state
     mc_state.agent_sessions.clear()
+
+
+# ── F6: PowerShell ExecutionPolicy during vendor install ─────────────────────
+
+def _scopes(**kw):
+    base = {'MachinePolicy': 'Undefined', 'UserPolicy': 'Undefined', 'Process': 'Undefined',
+            'CurrentUser': 'Undefined', 'LocalMachine': 'Undefined'}
+    base.update(kw)
+    return base
+
+
+@pytest.mark.parametrize('scopes,action,effective', [
+    # Clean Windows client: nothing defined anywhere -> Undefined -> fix it.
+    (_scopes(), 'set', 'Undefined'),
+    (_scopes(LocalMachine='Restricted'), 'set', 'Restricted'),
+    (_scopes(CurrentUser='Restricted'), 'set', 'Restricted'),
+    # CurrentUser outranks LocalMachine: a user-level RemoteSigned stands even
+    # over a Restricted machine default, and vice versa for a user AllSigned.
+    (_scopes(CurrentUser='RemoteSigned', LocalMachine='Restricted'), 'unchanged', 'RemoteSigned'),
+    (_scopes(CurrentUser='AllSigned', LocalMachine='RemoteSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(LocalMachine='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(LocalMachine='RemoteSigned'), 'unchanged', 'RemoteSigned'),
+    (_scopes(CurrentUser='Bypass'), 'unchanged', 'Bypass'),
+    (_scopes(LocalMachine='Unrestricted'), 'unchanged', 'Unrestricted'),
+    # Group Policy always wins and is never overridden, blocking or not.
+    (_scopes(MachinePolicy='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(MachinePolicy='Restricted', CurrentUser='Undefined'), 'left_alone', 'Restricted'),
+    (_scopes(UserPolicy='AllSigned'), 'left_alone', 'AllSigned'),
+    (_scopes(MachinePolicy='RemoteSigned', CurrentUser='Restricted'), 'unchanged', 'RemoteSigned'),
+    # A Process-scope value is per-shell and must not steer a persistent write.
+    (_scopes(Process='Bypass'), 'set', 'Undefined'),
+    (_scopes(Process='AllSigned'), 'set', 'Undefined'),
+    # Case/whitespace from the shell must not defeat the check.
+    (_scopes(CurrentUser=' restricted '), 'set', 'restricted'),
+])
+def test_execution_policy_decision(scopes, action, effective):
+    from mc.blueprints import agent_routes as ar
+    assert ar._execution_policy_decision(scopes) == (action, effective)
+
+
+def test_execution_policy_set_reports_and_writes_once(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    writes = []
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: _scopes(LocalMachine='Restricted'))
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: writes.append(1))
+    out = ar._ensure_powershell_execution_policy()
+    assert writes == [1]
+    assert out['action'] == 'set' and out['effective'] == 'Restricted'
+    assert 'RemoteSigned' in out['message'] and 'Restricted' in out['message']
+    assert 'Undo with' in out['message']
+
+
+@pytest.mark.parametrize('scopes,action', [
+    (_scopes(LocalMachine='AllSigned'), 'left_alone'),
+    (_scopes(MachinePolicy='AllSigned'), 'left_alone'),
+    (_scopes(LocalMachine='RemoteSigned'), 'unchanged'),
+])
+def test_execution_policy_never_writes_when_not_needed(monkeypatch, scopes, action):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: scopes)
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: pytest.fail('must not write'))
+    out = ar._ensure_powershell_execution_policy()
+    assert out['action'] == action
+    # Only a deliberate, blocking policy earns a UI message; an already-fine
+    # one stays silent.
+    assert bool(out['message']) == (action == 'left_alone')
+
+
+def test_execution_policy_write_failure_is_reported_not_raised(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: _scopes())
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: 'access denied')
+    out = ar._ensure_powershell_execution_policy()
+    assert out['action'] == 'failed'
+    assert 'access denied' in out['message']
+
+
+def test_execution_policy_unreadable_and_non_windows_do_nothing(monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes',
+                        lambda: pytest.fail('non-windows must not probe'))
+    monkeypatch.setattr(ar.sys, 'platform', 'linux')
+    assert ar._ensure_powershell_execution_policy()['action'] == 'not_applicable'
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar, '_read_powershell_execution_scopes', lambda: None)
+    monkeypatch.setattr(ar, '_set_powershell_execution_policy_remotesigned',
+                        lambda: pytest.fail('unreadable policy must not be written'))
+    assert ar._ensure_powershell_execution_policy() == {
+        'action': 'unknown', 'effective': None, 'message': ''}
+
+
+def test_install_launch_routes_surface_execution_policy(monkeypatch, client):
+    """Both install routes must set the policy AFTER the terminal launched and
+    return the message the UI shows; a failed launch must not touch it."""
+    from mc.blueprints import agent_routes as ar
+    runtimes = {'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli')}
+    order = []
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: order.append('launch'))
+    monkeypatch.setattr(ar, '_ensure_powershell_execution_policy',
+                        lambda: order.append('policy') or {
+                            'action': 'set', 'effective': 'Restricted', 'message': 'MSG'})
+    single = client.post('/api/agent/provider/gemini/install-launch').get_json()
+    batch = client.post('/api/agent/providers/install-launch',
+                        json={'names': ['gemini']}).get_json()
+    assert order == ['launch', 'policy', 'launch', 'policy']
+    assert single['execution_policy']['message'] == 'MSG'
+    assert batch['execution_policy']['message'] == 'MSG'
+
+    order.clear()
+    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: 'no terminal')
+    failed = client.post('/api/agent/provider/gemini/install-launch').get_json()
+    assert failed['ok'] is False and 'policy' not in order

@@ -144,6 +144,38 @@ def test_notify_fires_once_and_is_latched(monkeypatch):
     assert sess['_notify_session_sent'] is True
 
 
+def test_no_notify_while_waiting_for_question(monkeypatch):
+    """Regression, found 2026-09-18 (sessions 7a01a27211ea / e0eb419b1686):
+    both stream readers call `_log_agent_completion` UNCONDITIONALLY in their
+    exit-cleanup `finally` block, including when the process was killed right
+    after an AskUserQuestion tool call (`waiting_for_question=True`, status
+    forced to 'idle' so the guardian doesn't race in — see the AskUserQuestion
+    branch in _read_agent_stream_b). That kill is a PAUSE, not a finish: the
+    child is waiting for its answer and resumes via `-r` once one arrives.
+
+    Before the fix, every such pause fired a genuinely fresh, durably-enqueued
+    "[dispatched agent finished]" notification (a fresh `_delegation_turn`, so
+    the SQL dedup in mc/delegation_delivery.py — correctly idempotent per
+    event_id — had nothing to catch), and a child that asked 2-3 questions
+    before truly finishing told its spawner it was "done" 2-3 times over.
+    """
+    calls = []
+    monkeypatch.setattr(ar, '_notify_agent_spawner',
+                        lambda *a, **k: calls.append(a))
+    sess = {'project_id': 'p', 'session_id': 'child', '_notify_session': 'parent',
+            'status': 'idle', 'waiting_for_question': True,
+            'log_lines': ['let me check something first']}
+    ar._maybe_notify_spawner(sess, 'let me check something first')
+    assert calls == []
+    assert not sess.get('_notify_session_sent')
+
+    # Once the question is answered, waiting_for_question is cleared (see
+    # agent_followup) and a REAL completion must still notify normally.
+    sess['waiting_for_question'] = False
+    ar._maybe_notify_spawner(sess, 'all done, the answer is 4')
+    assert len(calls) == 1
+
+
 def test_last_reply_text_skips_status_lines_and_the_task_seed():
     """MC-935 in miniature: handing back the task instead of the answer."""
     sess = {'log_lines': [
@@ -202,7 +234,7 @@ def test_ordinary_session_has_no_spawner_field_set(monkeypatch, tmp_path):
     assert log[0]['spawned_by_session_id'] == ''
 
 
-def test_callback_names_the_agent_not_its_record(monkeypatch):
+def test_callback_names_the_agent_not_its_record(monkeypatch, tmp_path):
     """A live session's `character` is a dict, not a string.
 
     The first real callback (2026-09-09) opened with the entire character
@@ -210,25 +242,8 @@ def test_callback_names_the_agent_not_its_record(monkeypatch):
     """
     captured = {}
 
-    class _FakeThread:
-        def __init__(self, target=None, **kw):
-            self._t = target
-
-        def start(self):
-            self._t()
-
-    class _Resp:
-        def read(self):
-            return b''
-
-    def _fake_urlopen(req, timeout=None):
-        captured['body'] = req.data.decode()
-        return _Resp()
-
-    import urllib.request as u
-    # The sender runs on a thread; run it inline so the assertion is not a race.
-    monkeypatch.setattr(ar.threading, 'Thread', _FakeThread)
-    monkeypatch.setattr(u, 'urlopen', _fake_urlopen)
+    from mc.delegation_delivery import DeliveryStore
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delivery.db'))
 
     ar._notify_agent_spawner('p', 'parent', {
         'session_id': 'child',
@@ -236,5 +251,7 @@ def test_callback_names_the_agent_not_its_record(monkeypatch):
                       'engine': {'model': 'claude-sonnet-5'}},
         'status': 'completed', 'task': 't',
     }, '4')
-    assert 'Tobin' in captured.get('body', '')
-    assert 'claude-sonnet-5' not in captured.get('body', '')
+    row = ar._delivery_store.status('outbox', 'child:turn:1', 'p')
+    assert row is not None
+    assert 'Tobin' in row['payload']
+    assert 'claude-sonnet-5' not in row['payload']

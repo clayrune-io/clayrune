@@ -63,6 +63,24 @@ Plans — extends or organizes that loop.
 
 ---
 
+### First-run provider onboarding
+
+On a fresh install, Clayrune installs the control plane first. The first-run
+walkthrough then lists every supported vendor, including CLIs that are not yet
+installed. Select one or more vendors, choose an explicit default, and use
+**Install selected** for missing CLIs. Each selected vendor remains available
+for individual agents and chats.
+
+After an install terminal finishes, click **Check setup status**. An installed
+vendor may still show **not signed in**; use its **Sign in** button and check
+status again. **Next** stays disabled until every selected vendor is installed
+and signed in and one selected vendor is the default. You can skip the
+walkthrough and complete this later from Settings.
+
+The walkthrough also works on narrow/mobile screens. Provider setup opens the
+host terminal for package installation and authentication so progress and any
+required human prompts remain visible.
+
 ## Surfaces overview
 
 ### Dashboard
@@ -123,7 +141,7 @@ Click any tile to open it. Tab strip across the middle:
 |---|---|
 | **Agent** | Dispatch input + active agent session(s) — tab strip on desktop, drill-down list on mobile when there's >1 conversation |
 | **Backlog** | This project's task list (per-item priority, status, GitHub sync) |
-| **Agent Log** | Completed sessions (click any to view transcript or continue) |
+| **Agent Log** | Completed sessions (click any to view transcript or continue), plus the read-only **Delivery recovery** status list. Submitted means the parent handoff was accepted—not that the result was verified; uncertain items are not retried automatically. The list also shows a project-scoped logical delivery-payload usage advisory; it never blocks dispatch or completion. |
 | **Plans** | Plan files written by `ExitPlanMode` |
 | **Activity** | This project's chronological event log |
 
@@ -177,6 +195,13 @@ clearing a pin, for server-restart recovery. Different versions within the same
 model family count as a model change. When an older/native conversation has no
 recorded model, Clayrune leaves selection to native resume rather than inventing
 one from today's project settings.
+
+Requested and observed model identities are kept separately: a provider's
+reported alias/resolution does not replace the model requested for continuation.
+Claude effort is snapshotted alongside the request and reused after respawn or
+restart; an explicit empty effort keeps the native default. Other dispatch paths
+retain effort intent but show an unsupported-control notice until their effort
+handling is implemented and verified.
 
 Unknown providers and known mismatched provider/model pairs are rejected rather
 than silently retried through Claude. This also applies to Hivemind worker
@@ -281,7 +306,7 @@ every hivemind across every project is listed there.
    into a unified document.
 
 **Cards in the Hivemind view** show:
-- Status pill (active / paused / completed / **stale**)
+- Status pill (active / paused / completed / failed / **stale**)
 - Short ID hash (e.g. `#abc12345`) so multiple identically-titled
   hiveminds are distinguishable
 - Project badge (click to filter to that project)
@@ -289,6 +314,12 @@ every hivemind across every project is listed there.
   trunk down to colored workstream chips (✓ done, ● active, ⏳ blocked,
   ✖ failed, ○ pending)
 - Stats: workstreams / done / active / findings
+
+A run with failed workstreams is marked **failed**, not completed, and does not
+automatically run a success synthesis. Invalid engine selection is recorded as a
+worker failure. An uncertain launch remains blocked for reconciliation rather
+than repeatedly spawning another worker; failed prerequisites prevent dependent
+work from running. These checks do not yet provide provider-neutral quota recovery.
 
 **Stale heuristic**: if a hivemind is `active` but hasn't moved in over
 24 hours (e.g. server crashed, was killed), it's auto-marked **stale** with

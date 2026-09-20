@@ -77,6 +77,11 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setattr(ar, 'load_project', lambda pid: (
         {'id': pid, 'project_path': str(project_path)} if pid == 'proj1' else None))
     monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda project_path, limit=10, must_include_csids=None: [])
+    # This file exercises rollout parsing and routing seams only. Any provider
+    # process launch is a test failure, even if the child would exit quickly.
+    def _forbid_provider_launch(*args, **kwargs):
+        raise AssertionError('provider subprocess launch forbidden in Codex rail tests')
+    monkeypatch.setattr(ar.subprocess, 'Popen', _forbid_provider_launch)
     monkeypatch.setattr(agent_runtime_mod, '_CODEX_HOME', tmp_path / 'codex_sessions')
     # The read-through caches are module-level and keyed by absolute path —
     # a prior test in the same process could leave a stale entry that
@@ -153,6 +158,60 @@ def test_native_history_send_resumes_exact_codex_id(client, tmp_path, monkeypatc
 def _write_log(tmp_path, project_id, entries):
     (tmp_path / 'projects' / f'{project_id}_agent_log.json').write_text(
         json.dumps(entries), encoding='utf-8')
+
+
+def test_external_codex_transcript_viewer_without_mc_id(client, tmp_path):
+    http, project_path = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(project_path),
+                         [('user', 'external question'), ('assistant', 'saved answer')])
+    response = http.get(f'/api/project/proj1/transcript/{native_id}?provider=codex')
+    assert response.status_code == 200
+    data = response.get_json()
+    assert data['provider'] == 'codex'
+    assert data['messages'] == [{'role': 'user', 'text': 'external question'},
+                                {'role': 'assistant', 'text': 'saved answer'}]
+    assert 'session_id' not in data
+    assert http.get(f'/api/project/proj1/transcript/{native_id}?provider=bogus').status_code == 400
+    assert http.get('/api/project/proj1/transcript/*?provider=codex').status_code == 400
+
+
+def test_external_codex_viewer_rejects_other_project(client, tmp_path):
+    http, _ = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(tmp_path / 'other'),
+                         [('user', 'private question')])
+    assert http.get(f'/api/project/proj1/transcript/{native_id}?provider=codex').status_code == 404
+
+
+def test_native_history_send_resumes_exact_codex_id(client, tmp_path, monkeypatch):
+    from mc.blueprints import agent_routes as ar
+    http, project_path = client
+    native_id = '01a07d6e-cc73-7011-bb97-f2b08136fb87'
+    _write_codex_rollout(tmp_path / 'codex_sessions', native_id, str(project_path),
+                         [('user', 'old question'), ('assistant', 'old answer')])
+    calls = []
+    def dispatch(pid, message, **kwargs):
+        calls.append((pid, message, kwargs))
+        ar.agent_sessions['owned'] = {'project_id': pid, 'provider': 'codex',
+            'provider_session_id': native_id, 'status': 'idle', 'log_lines': ['new prompt']}
+        return 'owned'
+    monkeypatch.setattr(ar, '_dispatch_agent_internal', dispatch)
+    monkeypatch.setattr(ar, 'agent_followup', lambda pid: ar.jsonify({'ok': True, 'session_id': 'owned'}))
+    body = {'session_id': 'codex:proj1:' + native_id, 'provider': 'codex',
+            'provider_session_id': native_id, 'message': 'continue'}
+    response = http.post('/api/project/proj1/agent/send', json=body)
+    assert response.status_code == 200
+    assert response.get_json()['route'] == 'resume-native'
+    assert calls[0][2]['resume_id'] == native_id
+    assert calls[0][2]['provider_override'] == 'codex'
+    assert ar.agent_sessions['owned']['log_lines'][1] == 'old answer'
+    response = http.post('/api/project/proj1/agent/send', json=body)
+    assert response.status_code == 200
+    assert len(calls) == 1
+    body['provider_session_id'] = '00000000-0000-0000-0000-000000000000'
+    assert http.post('/api/project/proj1/agent/send', json=body).status_code == 404
+    assert len(calls) == 1
 
 
 def _codex_entry(session_id, provider_session_id, ts, task, summary):

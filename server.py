@@ -132,6 +132,9 @@ def _load_config():
         # overridden per-project via the arbitrary-key update_project path.
         'upload_quota_bytes': 0,
         'upload_max_file_bytes': 0,
+        # WARN-ONLY per-project logical delivery payload usage. 0 disables
+        # the advisory; it is never a dispatch/completion limit.
+        'delegation_payload_warning_bytes': 1024 ** 3,
         'log_level': 'info',  # P2-3: debug|info|warn|error gate for _log()
         # Scheduler master kill-switch. True = no schedule and no steward
         # dispatches, at any hour; only agents the user starts by hand run.
@@ -179,6 +182,24 @@ def _load_config():
         'keep_awake_poll_s': 20,
         'long_session_advisory_enabled': False,  # soft "restart long Mode-B session" nudge
         'long_session_advisory_turns': 25,      # num_turns threshold for that nudge
+        # Token-based auto-fresh (docs/CONTEXT_ECONOMY_SPEC.md §2) — a live
+        # session's last-recorded per-turn context_tokens (mc.agent_runtime.
+        # normalize_context_tokens) crossing this rolls it to a fresh session
+        # automatically, no prompt (Ron, 2026-09-18). 0 disables. The existing
+        # 5 MB _SESSION_SIZE_LIMIT byte check stays as an independent backstop
+        # -- either trigger can fire a rollover.
+        'context_rollover_tokens': 200000,
+        # Mid-turn rollover (mc/midturn_rollover.py): the check above only runs
+        # when a message ARRIVES, so a dispatched worker with one prompt and a
+        # long tool loop climbs past the threshold unchecked. ON = roll it at
+        # the next tool_result boundary (Claude streams only). Default OFF until
+        # reviewed; rolls are logged to data/midturn_rollover_log/.
+        'midturn_rollover_enabled': False,
+        # Per-agent skill scoping (mc/skill_scoping.py): an agent whose type
+        # declares `skills` gets those + the project's own skills at full
+        # description and every other installed skill name-only (still
+        # callable). Undeclared agents are untouched. Default OFF.
+        'agent_skill_scoping_enabled': False,
         # Idle-session eviction — reclaim a warm Mode B fleet (claude.exe + its
         # MCP servers) after long inactivity; the next message transparently
         # respawns it with `-r <csid>` (full context preserved). Default OFF;
@@ -854,6 +875,15 @@ _condense_apply = memory._condense_apply
 _run_structured_condense = memory._run_structured_condense
 _dispatch_condense = memory._dispatch_condense
 
+from mc.runtime_lifecycle_service import RuntimeLifecycleService
+_runtime_lifecycle_service = RuntimeLifecycleService(
+    db_path=(DATA_DIR.parent / 'conversation_lifecycle.sqlite3').resolve(),
+    enabled=False,
+    owner_id=f'server:{os.getpid()}',
+    authorize=lambda facts: None,
+    source_format=lambda facts: '',
+)
+
 _bp_projects.wire(
     data_dir=DATA_DIR,
     data_root=_DATA_ROOT,
@@ -867,6 +897,7 @@ _bp_projects.wire(
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
     app_dir=_APP_DIR,
+    runtime_lifecycle_service=_runtime_lifecycle_service,
 )
 app.register_blueprint(_bp_projects.bp)
 # Inbound shims — dispatch/scheduler/scribe/condense and the github/project
@@ -1542,6 +1573,9 @@ try:
         now_iso=now_iso,
         config_get=lambda k, d=None: CONFIG.get(k, d),
         get_per_project_semaphore=memory._get_checkpoint_sema,
+        text_transform=memory._provider_transform,
+        resolve_model=memory._model_for_provider,
+        load_agent_log=_bp_agent._load_agent_log,
     )
 except Exception as _distiller_reg_err:
     _log(f"[distiller] registration failed: {_distiller_reg_err!r} — "
@@ -1598,6 +1632,7 @@ _bp_agent.wire(
     extract_transcript_telemetry_fn=memory._extract_transcript_telemetry,
     proc_identity_fn=process_ledger._proc_identity,
     persist_pid_ledger_fn=process_ledger._persist_pid_ledger,
+    runtime_lifecycle_service=_runtime_lifecycle_service,
 )
 app.register_blueprint(_bp_agent.bp)
 # Inbound shims — stayer call sites keep their bare names: the reaper
@@ -1729,6 +1764,7 @@ _bp_hivemind.wire(
     clayrune_universal_capabilities_fn=_bp_agent._clayrune_universal_capabilities,
     clayrune_api_reference_fn=_bp_agent._clayrune_api_reference,
     clayrune_api_pointer_card_fn=_bp_agent._clayrune_api_pointer_card,
+    assert_runtime_project_generation_fn=_bp_agent._assert_runtime_project_generation,
     popen_flags=_POPEN_FLAGS,
     startupinfo=_STARTUPINFO,
 )
@@ -2083,7 +2119,21 @@ def _cleanup_browsers():
         except Exception:
             pass
 
+def _stop_delegation_delivery_at_shutdown():
+    result = _bp_agent.stop_delegation_delivery()
+    if result.get('timed_out'):
+        _log('[delegation-delivery] shutdown join timed out; in-flight '
+             'handoff remains owned and fenced', flush=True)
+    return result
+
+
 atexit.register(_cleanup_persistent_agents)
+# Register after persistent-agent cleanup so atexit's LIFO order stops the
+# delivery loop first. This prevents a late parent callback from entering agent
+# state while process cleanup has begun. stop_delegation_delivery performs a
+# bounded join; a timed-out in-flight handoff remains owned and fenced.
+atexit.register(_stop_delegation_delivery_at_shutdown)
+atexit.register(_runtime_lifecycle_service.stop)
 atexit.register(_cleanup_terminals)
 atexit.register(_cleanup_browsers)
 atexit.register(_scheduler_stop.set)
@@ -2119,7 +2169,7 @@ def _check_port_conflict():
     def _try_bind():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            s.bind(('0.0.0.0', PORT))
+            s.bind((_bind_host_v4(), PORT))
             s.close()
             return True
         except OSError:
@@ -2171,20 +2221,24 @@ def _check_port_conflict():
     def _port_free():
         return _try_bind() and _who_answers() is None
 
+    # Consume the restart marker up front, on EVERY path. It used to be popped
+    # only when the wait loop saw the port free up, so a restart whose port was
+    # already free left it in os.environ -- and every agent, test run and
+    # subprocess this server spawned inherited it. Measured 2026-09-17: an
+    # agent's pytest then sent test_port_conflict into this 15s wait loop and
+    # the full suite hung at ~62%.
+    restart_parent = os.environ.pop('MC_RESTART_FROM_PID', '')
+
     if _port_free():
         return  # Clean — port is free.
 
     # Restart re-exec window: the parent we just replaced may still be releasing
     # the socket. Poll briefly before treating this as a real conflict.
-    restart_parent = os.environ.get('MC_RESTART_FROM_PID', '')
     if restart_parent:
         deadline = _time.time() + 15.0
         while _time.time() < deadline:
             _time.sleep(0.3)
             if _port_free():
-                # Clean — clear the marker so a subsequent restart starts fresh
-                # and doesn't inherit a stale value.
-                os.environ.pop('MC_RESTART_FROM_PID', None)
                 _log(f"[port-conflict] dying parent (PID {restart_parent}) released port {PORT}; continuing.", flush=True)
                 return
         _log(f"[port-conflict] waited 15s for parent PID {restart_parent} to release port {PORT}; falling through to conflict check.", flush=True)
@@ -2599,6 +2653,14 @@ app.register_blueprint(_bp_system.bp)
 # agent_routes, which cross-imports it directly; no server.py caller remains.
 _update_check_loop = _bp_system._update_check_loop
 
+# ── Per-vendor allowance state (VENDOR_AGNOSTIC_PROGRAM.md §4) ──────────────
+# Same sibling-file placement as SYSTEM_STATUS_PATH above: a file next to
+# data/, never inside data/projects/ (DATA_DIR — load_projects() would treat
+# it as a malformed project).
+from mc import allowance_state as _allowance_state  # noqa: E402
+
+_allowance_state.wire(_DATA_ROOT / 'data' / 'allowance_state.json')
+
 # ── Terminal session endpoints ── extracted to
 # mc/blueprints/terminal_routes.py (1.8): the 5 /api/terminal/* routes +
 # /api/project/<id>/terminal/status, the reader/kill helpers, and the
@@ -2703,6 +2765,10 @@ def _claude_dispatch_hook(**kwargs):
     trigger_id = kwargs.get('trigger_id') or ''
     mc_session_id = kwargs.get('mc_session_id') or ''
 
+    # Preserve the full provider-neutral dispatch contract. Hivemind and
+    # other runtime callers must not lose model, effort, context, lifecycle
+    # callbacks or housekeeping metadata merely because Claude uses a server
+    # hook behind its AgentRuntime adapter.
     session_id = _dispatch_agent_internal(
         project_id, task,
         resume_id=resume_id,
@@ -2710,6 +2776,16 @@ def _claude_dispatch_hook(**kwargs):
         trigger_type=trigger_type,
         trigger_id=trigger_id,
         reuse_session_id=mc_session_id,
+        model_override=kwargs.get('model') or '',
+        effort_override=kwargs.get('effort'),
+        source=kwargs.get('source') or '',
+        project_generation=kwargs.get('project_generation'),
+        system_prompt_suffix=kwargs.get('system_prompt') or '',
+        housekeeping=bool(kwargs.get('housekeeping', False)),
+        runtime_callbacks=kwargs.get('callbacks') or {},
+        session_metadata=kwargs.get('session_metadata') or {},
+        session_dict_override=kwargs.get('session_dict'),
+        max_turns_override=kwargs.get('max_turns'),
     )
     session = agent_sessions.get(session_id, {})
     p = load_project(project_id) or {}
@@ -2823,6 +2899,40 @@ def _register_claude_runtime_hooks():
     _agent_runtime.register_mc_tool_hooks(sync_todos=_sync_todowrite_to_backlog)
 
 
+def _loopback_only():
+    """MC_BIND_LOOPBACK=1: listen on loopback only. Opt-in, for disposable test
+    instances (tools/provider-live) that must not be reachable from the LAN.
+    Unset/0 keeps the default all-interfaces bind that LAN, mobile-pairing and
+    tunnel clients depend on."""
+    return os.environ.get('MC_BIND_LOOPBACK', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _bind_host_v4():
+    return '127.0.0.1' if _loopback_only() else '0.0.0.0'
+
+
+def _serve_loopback(port):
+    """Loopback-only twin of _serve_dual_stack: `localhost` resolves to ::1
+    first, so keep BOTH loopback addresses listening (the ~200ms/request
+    Happy-Eyeballs tax that function's docstring describes applies here too).
+    ::1 gets its own socket + thread; 127.0.0.1 serves on the main thread. If
+    the host has no IPv6, 127.0.0.1 alone is served."""
+    import socket as _socket
+    import threading as _threading
+    from werkzeug.serving import make_server
+    try:
+        s6 = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+        s6.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        s6.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 1)
+        s6.bind(('::1', port))
+        s6.listen(128)
+        srv6 = make_server('::1', port, app, threaded=True, fd=s6.fileno())
+        _threading.Thread(target=srv6.serve_forever, daemon=True, name='serve-loopback-v6').start()
+    except OSError as e:
+        _log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+
+
 def _serve_dual_stack(port):
     """Serve on IPv4 *and* IPv6, from a single dual-stack socket.
 
@@ -2845,6 +2955,8 @@ def _serve_dual_stack(port):
     (IPv4 peers arrive as ::ffff:a.b.c.d) — and hand the fd to werkzeug. If the
     host has IPv6 disabled entirely, fall back to the old IPv4-only bind.
     """
+    if _loopback_only():
+        return _serve_loopback(port)
     import socket as _socket
     try:
         sock = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
@@ -2967,6 +3079,10 @@ def boot(check_port=True):
     # they don't show as forever-running in the Agent Log / Runs panels.
     # Cheap, synchronous; runs before backfill so the two helpers don't race.
     _boot_phase('reconcile pending agent_log', _reconcile_pending_agent_log_entries)
+    # Durable child-completion outbox/inbox reconciliation. Starts after the
+    # agent-log sweep and never launches a child; stale work is only retried as
+    # delivery/parent processing with bounded leases.
+    _boot_phase('delegation delivery', _bp_agent.start_delegation_delivery)
     # Workflow run restart adoption (MC-871 spec §Q5, fail-closed): a run whose
     # current step was 'running' when the server went down is checked against
     # the agent_log just reconciled above; confirmed-complete children advance
@@ -3026,7 +3142,75 @@ def boot(check_port=True):
             _qchan.start_poller(int(CONFIG.get('question_channel_poll_s', 120)))
         except Exception as e:
             _log(f"[question-channel] poller not started: {e}")
+    _boot_phase('guardrail hooks', _install_guardrail_hooks_on_boot)
     _log(f"[boot] ready to serve after {_time.time() - _BOOT_T0:.2f}s")
+
+
+def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> None:
+    """Generate Clayrune's PER-LAUNCH guardrail hook files (W2 redesign,
+    docs/VENDOR_AGNOSTIC_PROGRAM.md §3) under `~/.clayrune/hooks/` — never the
+    vendor CLI's own global config. Only for a vendor whose CLI
+    `health_check().installed` is true. `tools/guards/install_hooks.py` is a
+    standalone script (not a package under mc/), loaded here by file path
+    rather than moved — see that module's own docstring for the full
+    per-vendor injection design (flag/env var per vendor, verified additive
+    for Claude/Gemini/Qwen) and mc/guardrail_hooks.py for the generated file
+    locations every dispatch path reads at launch time.
+
+    `_APP_DIR` (this file's own `_resolve_dirs()`) and `sys.executable` are
+    passed explicitly rather than left to the installer's own defaults:
+    those defaults resolve relative to install_hooks.py's OWN location and
+    THIS process's own interpreter, which is correct when a human runs the
+    script by hand from a permanent checkout, but would bake a throwaway
+    worktree path if this ever ran from one. Unlike the superseded
+    global-config design, a broken path here just means the generated file
+    is wrong — dispatch paths check `guardrail_hooks.launch_file_if_exists`
+    and add no flag at all when generation hasn't produced a usable file, so
+    this never turns into every shell call failing closed. Best-effort: one
+    vendor's generation failure (e.g. a malformed real ~/.codex/hooks.json
+    for the codex merge) must not block boot; `generate_for_boot` already
+    isolates that per vendor, this is a second layer for the loader itself.
+
+    INSTANCE ISOLATION (added 2026-09-18): when `clayrune_home` is left at
+    its default (None) AND `MC_DATA_DIR` is set, this resolves to
+    `<MC_DATA_DIR>/.clayrune` instead of the real `~/.clayrune`. A second
+    server.py pointed at its own MC_DATA_DIR (exactly what
+    tests/conftest.py's `tmp_data_dir` fixture does, and what a manually
+    spun-up second instance does) used to regenerate the REAL
+    `~/.clayrune/hooks/{claude,gemini,qwen}-settings.json` on every boot —
+    once, that clobbered the LIVE server's guard with a path pointed at a
+    temp dir that was later deleted, which would have blocked every agent's
+    shell command. The one production call site (`boot()`, see
+    tests/test_guardrail_hooks_boot.py) still passes no override at all —
+    the default (None) is resolved by `mc.guardrail_hooks.clayrune_home()`,
+    NOT here: the readers call that same function, and resolving it on the
+    write side only (as this function did until 2026-09-19) wrote the file
+    under MC_DATA_DIR while every launch looked under ~/.clayrune and went
+    out unguarded. One rule, one place.
+    """
+    try:
+        import importlib.util
+        spec = importlib.util.spec_from_file_location(
+            'clayrune_install_hooks', _APP_DIR / 'tools' / 'guards' / 'install_hooks.py')
+        if spec is None or spec.loader is None:
+            raise ImportError('could not load tools/guards/install_hooks.py')
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+        installed = [name for name in mod.VENDOR_CONFIGS
+                     if _agent_runtime.get_runtime(name).health_check().installed]
+        results = mod.generate_for_boot(
+            clayrune_home=clayrune_home,
+            guard_script=_APP_DIR / 'mc' / 'process_guard.py',
+            python_exe=sys.executable,
+            installed_vendors=installed,
+        )
+        for r in results:
+            if r.get('error'):
+                _log(f"[guardrail-hooks] {r['vendor']}: not generated ({r['error']})")
+            elif r.get('changed'):
+                _log(f"[guardrail-hooks] {r['vendor']}: launch hook file written/updated at {r['path']}")
+    except Exception as e:
+        _log(f"[guardrail-hooks] startup generation failed: {e}")
 
 
 if __name__ == '__main__':

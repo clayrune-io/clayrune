@@ -7,6 +7,170 @@ with deterministic in-app provider setup, and equivalent safety outcomes across
 supported providers. The inventory is in
 `research/PROVIDER_DEFAULT_CLASH_AUDIT_2026-09-16.md`.
 
+## W0 stabilization (Bram, 2026-09-17) — plan: `docs/VENDOR_AGNOSTIC_PROGRAM.md`
+
+Taken over from Vector's unreviewed checkpoint `c14c2fd`. Baseline in a fresh
+process: branch 49 failed / 3835 passed; master 5 failed / 3271 passed.
+
+- **Transforms (Fenn #1).** Every text transform — Claydo, character and
+  profile generation, Scribe/condense/Distiller (`_scribe_call`) and mail
+  laundering — runs through `run_text_transform`, which calls
+  `authorize_execution(TOOL_FREE_TRANSFORM)`. Claude supplies its own evidence
+  (`ClaudeRuntime.transform_evidence`); Codex, Gemini and Qwen cannot prove
+  tool-freedom yet and refuse before spawning. Claude's isolation flags were
+  measured live: the old `--allowedTools ''` still loaded 34 tools, 4 plugins,
+  72 skills and ran SessionStart hooks; `TRANSFORM_ISOLATION` loads 0/0/0 with
+  no hooks. Side effect: the isolated CLI no longer auto-loads cwd CLAUDE.md,
+  so the brief is always sent. **Consequence to know:** a non-Claude session's
+  Scribe/condense summary now fails as `model_error` (master summarized it
+  through Claude). Certifying the other vendors' transform flags is W1.
+- **Claude [thinking, text] (Fenn #2).** First-block classification restored
+  (TOOL_USE consumers depend on it); `stream_text` reads text from every
+  assistant-message event.
+- **Delegation ack (Fenn #3).** c14c2fd dropped the stdin write on the
+  same-tier follow-up branch (every live Mode-B session with a model set), so
+  follow-ups were silently lost; restored, with behavioral tests.
+- **Typed failures (Fenn #4).** `TransformFailure(provider, kind, detail)` /
+  `TransformTimeout`; `detail` is the raw adapter reason for the allowance
+  layer (W3).
+- **Guard.** Allowlist keyed by function+count (line numbers had all drifted);
+  scans every `mc/*.py`; catches `rt = get_runtime('claude'); rt.oneshot()`.
+- **Dormant modules removed from the merge** (no production caller, DoD #4):
+  `codex_rollout_adapter`, `codex_rollout_capture`, `capture_ingress`,
+  `capture_replay`, `codex_capture`, `gemini_capture`, `claude_qwen_capture`,
+  `memory_publication`, `conversation_cutover`, `conversation_projection`, plus
+  their tests. Preserved at `archive/provider-neutral-canonical-dormant`
+  (includes the codex-cli 0.154 importer fix, 3e6c9ec). The None-guarded
+  injection seams (`agent_routes._conversation_cutover`,
+  `memory._canonical_scribe_reader`) stay so re-wiring is additive.
+- **Kept, with production callers:** `execution_policy` (transform seam),
+  `delegation_delivery` (agent/project routes), `runtime_attempt_owner`,
+  `runtime_lifecycle_service`, `conversation_store`, `execution_lifecycle`
+  (constructed in server.py, `enabled=False`, consulted by agent routes).
+- **Test hygiene.** `test_delegation_lifecycle` leaked a real `ar.wire()` into
+  16 later tests; the server leaked `MC_RESTART_FROM_PID` to every child,
+  which hung agent-run suites.
+- **Not W0:** installer / onboarding / Node prerequisites (Fenn #5) moved to W6.
+
+## Feature-branch continuation after independent review
+
+Resume checkpoint: Hivemind creation binds the current project generation, and
+worker/coordinator dispatch rejects missing or stale saved generations. Canonical
+display retains full captured tool text; Scribe's prompt budget is separate.
+Independent lifecycle/cutover/publication/Hivemind regression: 93 passed. These
+checks do not certify native capture or activate canonical startup composition.
+
+Development is isolated on `feat/provider-neutral-execution`. The changes in
+this section are not merged to the release branch and do not change the running
+installation. Detailed remaining contracts: `PROVIDER_EXECUTION_CONTRACT.md`.
+
+- F1: generic INIT stores observed model separately; Qwen observation never
+  replaces requested continuation settings. Persistence preserves explicit empty
+  model requests rather than filling them with transcript telemetry.
+- F7: requested effort is snapshotted, persisted and restored through Claude
+  hot/cold continuation. Explicit empty differs from omission. Non-Claude intent
+  is retained with an unsupported-control notice; no unsupported flags are sent.
+- F2: operational failures and model refusals leave checkpoint source spans
+  pending. Only deterministic thin-content skips acknowledge without a summary.
+  Failed cumulative reduction preserves prior knowledge; failed/empty/refused
+  map chunks reject the complete span instead of accepting a surviving subset.
+- F3, partial: all-failed/mixed-failed terminal workstreams produce failed run
+  status, never successful synthesis. Unsupported-engine spawn failures persist;
+  other launch exceptions block as uncertain. Post-spawn notification/persistence
+  failures do not relabel a live worker failed, and live session metadata is
+  reconciled before launching another worker. Failed prerequisites propagate.
+  Durable launch intent, concurrent spawn serialization, account-scoped quota,
+  restart reconciliation and domain deliverable acceptance remain open.
+
+No production server, provider call, clean-install certification, database
+migration or live journal activation has been performed in this worktree.
+
+Regression checkpoint: 715 selected offline tests pass after the review fixes,
+including real temporary memory-watermark writes and simulated Hivemind spawn,
+notification and persistence failures. This does not certify real CLI isolation.
+
+### Transactional boundary increment (offline)
+
+- Schema 2 stores immutable accepted input/provenance/engine alongside owner
+  epochs, attempts, settings revisions and versioned events in one transaction.
+  Explicit schema-1 migration creates a consistent backup; legacy mutation APIs
+  cannot bypass lifecycle-managed conversations.
+- A consumed `spawning` marker and guarded creation step prevent a retry after
+  an ambiguous post-spawn write failure. Tests cover concurrent launch callers,
+  takeover timing and state/event/commit failures with fake process creators.
+- Protocol-1 projections retain partial output, late evidence, scoped tool IDs,
+  queued original inputs and attempt outcomes. Real SQLite-to-projection tests
+  check history and structured Scribe provenance; no live Scribe writer changed.
+- Exact identity/profile-bound, expiring authorization records fail closed for
+  missing readiness/capabilities and account-scoped blockers. No real adapter
+  receives certification merely by passing these contract tests.
+
+Still open: enforcing transports and time bounds, byte-bounded capture/storage,
+native format decoders and source reconciliation, cross-store deletion/publication
+fencing, all consumer migrations, setup, capability certification and clean-VM
+proof. Existing UI event parsers intentionally discard data and cannot be reused
+as the full-fidelity canonical capture source.
+
+### Native capture and publication-read safety increment (offline)
+
+- Codex exec fixture families 0.133/0.151 and repository Claude/Qwen/Gemini record
+  fixtures now have pure decoders before UI formatting. Exact mixed text/tool
+  content, native IDs, exposed thinking and source identity are retained where
+  the fixture format supplies them. Unsupported shapes and missing identities
+  become explicit capture gaps, never fabricated native identities or success.
+- EOF records transport status separately from native completion. Unfinished
+  streams and missing native terminal results remain incomplete even after a
+  successful process exit. Replay bookkeeping is in memory, not a durable source
+  checkpoint; transports must retain decoded batches until persistence commits.
+- Multi-event source records commit atomically as evidence batches; stable IDs
+  make a retained batch retry idempotent. Fault tests reject partial inserts and
+  conflicting replays. Actual decoder-to-SQLite-to-projection tests cover three
+  providers without launching their CLIs.
+- Full captured-history snapshots support bounded payload-byte chunks even for
+  gapped sources. Large Unicode tool results round-trip without truncation;
+  delete/restore revokes old snapshots. These are store APIs, not live UI/export
+  endpoints, source-coverage claims or storage-quota enforcement.
+- Managed commits, split migration and structured condense now abort on an
+  unreadable existing SESSION_LOG.md instead of replacing it as empty. Read-only
+  display helpers remain best-effort but log failures. Optional topics-hook
+  typing now reflects its existing nullable contract.
+
+Validation checkpoint: **1,015 selected offline tests passed**, with one optional
+PySocks dependency warning; changed/new modules pass Pyright. No real provider
+capability, installer behavior or production cutover was tested by this run.
+
+The Gemini decoder is deliberately limited to repository fixture evidence: text
+without stable native message/finality semantics remains an observation plus an
+explicit gap, and tool results require native call ID, output, and known status.
+It does not certify a Gemini CLI version or activate runtime capture.
+
+Still missing from native capture: a complete version-pinned Gemini/other-provider
+decoder, Codex rollout and MCP/web/file-change formats, Qwen native recording import,
+typed partial/unknown-status tool results, durable source reconciliation,
+transport backpressure and all live reader wiring.
+
+A dormant receipt-aware publication kernel now provides durable intents,
+permanent receipts, explicit forward/abort recovery, bounded staged images, and
+hash-guarded multi-file publication. It is not yet a production memory writer:
+canonical cursor acknowledgment, archive batch identity, legacy writer adoption,
+and real cross-process locking still gate composition. Existing watermarks can
+be GC'd and cannot serve as permanent publication receipts. Canonical
+deletion/coverage checks must guard the idempotent materializer, not the outer
+model-calling Scribe wrapper. Lock order remains canonical writer transaction,
+then memory leaf lock, then publication lease; model calls and follow-up dispatch
+stay outside all three. See `MEMORY_PUBLICATION_CONTRACT.md`.
+
+### Memory model-transform seam (offline)
+
+Memory now has an injectable provider-neutral toolless transform helper backed by
+`agent_runtime.run_text_transform`. Scribe uses the session's explicit provider
+when one is present; checkpoint reduction/continuity use the provider carried by
+the authoritative session snapshot; structured condense uses only an explicitly
+project-owned provider. Records without those facts continue through the legacy
+`_scribe_call` compatibility hook. This increment does not change provider
+selection, remove the legacy Claude agent-condense path, or activate canonical
+memory publication.
+
 ## Architecture direction — replace coupling, not just individual failures
 
 The completion target is a provider-neutral execution boundary, not a count of
@@ -158,6 +322,26 @@ new modules pass Pyright with zero errors. Independent review identified and
 closed request/retry duplication, malformed-content loss and delayed-retry
 takeover risks. No real-provider run or production capture validation is claimed.
 
+### Canonical read/cutover seam (offline, default-off)
+
+`mc/conversation_cutover.py` now provides one explicit selection policy for the
+history rail, Agent Log, and Scribe consumers. It is disabled by default, never
+opens canonical state unless the caller supplies an enabled policy, and only
+selects canonical history for Scribe when both source coverage and the structured
+projection are complete. A partial/gapped canonical history remains inspectable,
+but falls back to the caller's legacy source when one exists; it is never
+mislabelled complete. The read-only Agent Log projection keeps requested engine
+metadata and observed native handles distinct and does not mutate legacy sidecars.
+
+`ConversationStore.read_history_snapshot()` adds the missing fixed-boundary read
+for gapped captured history. It applies the same privacy/high-water fence as a
+derivation snapshot without requiring a complete-coverage attestation. This
+remains default-off. Agent Log, read-only history, listing/search, privacy
+deletion, terminal Scribe, and checkpoint Scribe now accept an injected cutover
+reader, but startup does not compose one, so installed behavior is unchanged.
+Resume/export and native runtime capture remain open. See
+`docs/PROVIDER_CANONICAL_CUTOVER.md` for the remaining activation gates.
+
 ### Activation gate: migrate a whole conversation path
 
 Current live buffers are insufficient as the canonical input: Claude Mode B
@@ -187,10 +371,11 @@ conversation history remains distinct from inaccessible private vendor reasoning
   pairs are errors; inherited legacy foreign model defaults are omitted. Custom
   model IDs and Claude native tier aliases remain supported.
 - Ordinary dispatch and project runtime lookup use the resolver. Hivemind
-  workers validate before spawning; its existing Sonnet manifest defaults can
-  now be rejected on Codex rather than sent to an incompatible CLI. The
-  coordinator is still Claude-only: this is a fail-closed guard, not Hivemind
-  feature parity.
+  workers and the coordinator now dispatch through `AgentRuntime` for every
+  selected provider; the blueprint no longer owns a Claude subprocess or
+  stream reader. Existing Sonnet manifest defaults can still be rejected on
+  Codex rather than sent to an incompatible CLI. Native Claude hook argument
+  preservation and production startup wiring remain separately tested gates.
 - Context/skill delivery follows the effective conversation provider using a
   per-call project copy, without mutating saved project defaults.
 - Conversation provider ownership and recorded model choices survive native
@@ -260,6 +445,114 @@ Claude termination from the migrated installer. Process ownership, progress,
 cancellation and clean Windows/Linux/macOS validation are release gates.
 
 ## Remaining work
+
+### Delegation delivery increment
+
+Added durable completion sources/outbox/inbox, fenced retries, project-scoped
+status/recovery APIs and guarded saved-parent revival. Selected regression
+verification: **161 passed** including actual-dispatch fake-Codex integration
+and real Claude revival with a fake process. See
+`DELEGATION_DELIVERY_CONTRACT.md` for tested scope and remaining gates.
+
+This is feature-branch-only: live restart/provider validation, recovery-state UI,
+delivery-record retention/privacy policy and task-result acceptance are not
+certified by the offline test result. No production restart or merge occurred.
+
+Follow-up subsystem evidence: real HTTP sender/blueprint receiver with a
+disposable subprocess survives restart and records exactly one fake handoff
+across a second restart. Combined selection **164 passed**. This closes the
+subsystem HTTP harness step, not full-server startup or live-provider proof.
+
+### Broader provider-neutral work
+
+Durable fixture recovery increment: canonical schema 3 adds source bindings,
+staged spans and atomic evidence/cursor commits. Existing schema 1/2 databases
+require explicit backed-up migration; ordinary reads/writes never upgrade them.
+Current owner/privacy checks fence authoritative cursors, duplicate batches
+validate exact identities/content, and sealed sources reject later appends.
+The neutral replay controller verifies committed prefixes to rebuild decoder
+state, rejects partial tails/changed sources, and bypasses I/O for incognito.
+Requested-engine snapshots are recursively immutable canonical JSON.
+
+Parent independent recovery/ingress/lifecycle suite: 44 passed. Worker canonical
+suite: 248 passed; changed modules pyright clean. Replay streams frames but does
+not impose a hard per-line byte cap. EOF is an observation, not a coverage
+attestation. Revocation prevents access/replay, not physical SQLite/WAL erasure.
+Native source discovery/certification and production composition remain open.
+This supersedes earlier statements that fixture source-cursor recovery is absent.
+
+Canonical capture ingress increment: `mc/capture_ingress.py` composes an existing
+decoder, lifecycle token and ConversationStore without vendor-specific storage.
+An explicit Mode-A raw-record/EOF callback runs before UI formatting. Failed
+atomic batches are copied and retained for retry; new decoding is refused while
+pending. Capture failure does not stop stdout draining and is marked incomplete.
+The Codex fixture integration exercises reader -> decoder -> bridge -> SQLite.
+Parent: 61 capture tests passed; worker: 326 runtime regressions passed.
+
+This seam is NOT enabled by a production composition root. Native/MC identities
+in provenance are observations, not authenticated authority. Lifecycle token,
+requested-engine snapshot and privacy generation govern evidence writes. Durable
+raw-source cursor recovery remains open; UI/history/Scribe consumers are unchanged.
+
+Storage policy gate resolved as WARN ONLY: project-scoped logical payload byte/
+row aggregates and adjustable Settings advisory (1 GiB default, 0 disables the
+warning) are implemented. No dispatch blocking, result rejection, deletion or
+truncation is introduced. Usage remains intentionally uncapped; actual disk-full
+can still fail writes. This supersedes earlier open storage-budget gate notes.
+Worker: 208 tests, no skips. Parent: 43 focused Python tests plus registered
+browser checks for warning/unknown/disabled and layout. Not production activated.
+
+Isolated startup gate: real server boot/wire, automatic delivery-loop recovery,
+SQLite/HTTP and real dispatch with fake provider execution now pass 3 independent
+registered tests. Worker combined selection: 204 passed. Startup side-effect
+producers remain deliberately stubbed, and live-provider certification and
+storage budgets remain open. No production activation is implied.
+
+Delivery lifecycle gate closed offline: explicit retained loop ownership,
+interruptible stop, bounded join/timeout reporting, serialized start/stop/rewire,
+shutdown admission fencing and post-stop completion persistence. Worker combined
+selection: 201 passed; independent lifecycle/delivery selection: 33 passed.
+Full startup side-effect isolation and retention budgets remain open.
+
+Recovery visibility increment: Agent Log now lists pending/blocked/uncertain/
+recovery-required deliveries without payloads or raw errors. Read-only pagination,
+manual read refresh and request fencing are implemented. Parent independently
+verified registered real-module browser tests and 34 focused Python tests;
+worker reported the full dashboard smoke passing separately. No production
+activation, retry-action UI, or automatic task acceptance is claimed.
+
+Delivery privacy increment: project/session/event revocation and logical payload
+purge, pre-execution project-generation binding, same-ID recreation isolation,
+alias-aware conversation deletion and explicit partial-failure responses are
+offline-tested. Worker combined selection: **180 passed**; parent independent
+privacy/delivery selection: **31 passed**. No live activation. Physical SQLite/WAL
+sanitization, retention budgets and recovery-state UI are not covered by this gate.
+
+Capture conformance increment: shared replay/store tests assert exact Codex
+exec and Claude/Qwen-shaped fixture payloads, full requested engine settings,
+durable source binding, restart replay and owner/privacy refusal. Unsupported
+decoder construction precedes durable binding. Native rollout and Qwen recording
+certification remain open: stdout and durable files are distinct source formats.
+
+Codex rollout fixture increment: a decoder distinct from exec stdout now handles
+only repository-evidenced rollout envelopes. Unknown shapes produce durable gaps;
+custom raw input, opaque output, native call identity, explicit task completion,
+mid-tool restart and sealed-source refusal are covered offline. It is not wired
+to the production rollout locator, UI, Scribe, or provider activation.
+
+Codex rollout adapter increment: an explicit owner-supplied boundary validates
+the lifecycle token, full requested engine, privacy generation, native IDs,
+project cwd, numeric 0.153.x profile, source identity and incarnation before
+binding. Authorization and replay use one caller-owned descriptor. The adapter
+is still uncalled by production and neither certifies nor activates native capture.
+
+Runtime ownership foundation: `ConversationStore` schema v4 now holds immutable
+per-attempt launch facts and one-time native transcript/source facts. Claim plus
+facts and native lifecycle plus source binding are transactionally paired;
+uncertain launches cannot be blindly retried. The backed-up v3 migration has a
+14-test shape/fault/rollback matrix. `RuntimeAttemptOwner` is route-independent,
+so `_dispatch_via_runtime` still uses its legacy session authority until the next
+default-off integration gate.
 
 1. Provider-specific saved model/effort preferences and durable setup/readiness.
 2. Certified tool-free adapters and selected-provider Scribe/Claydo/helper calls.

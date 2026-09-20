@@ -372,6 +372,9 @@ def _run_revived(tmp_data_dir, monkeypatch, transcript_path, reader_name, stream
     monkeypatch.setattr(routes, '_transcript_tail_records',
                         lambda f: calls.append(str(f)) or real_tail(f))
     monkeypatch.setattr(routes, 'load_project', lambda pid: {'project_path': '/p'})
+    # Reader teardown runs the Scribe, which shells out to a real `claude -p`
+    # (haiku) unless stubbed; caught by the real-CLI guard in tests/conftest.py.
+    monkeypatch.setattr(routes, '_write_session_memory', lambda *a, **k: True)
     session = _new_session('p-revived')
     session['claude_session_id'] = 'sess-revived-fixture'
     proc = _FakeProc(stream if stream is not None else _revived_stream(_revived_records()))
@@ -430,3 +433,63 @@ def test_ordinary_tool_turn_never_reads_the_transcript(tmp_data_dir, monkeypatch
     ]
     lines, calls = _run_revived(tmp_data_dir, monkeypatch, _REVIVED, '_read_agent_stream_b', stream)
     assert calls == [] and '[stop-hook-redo]' not in lines
+
+
+# ── Live stream shape of Claude Code 2.1.274 (2026-09-18 regression) ─────────
+#
+# Captured from a real `claude -p --input-format stream-json --output-format
+# stream-json --include-partial-messages` run with a Stop hook that blocks once
+# (tests/fixtures/stop_hook_live_stream.jsonl, thinking signatures redacted).
+# The stream DOES carry the feedback turn, but NOT in the transcript's shape:
+# `isSynthetic: true`, no `isMeta`, and `content` a list of text blocks. So
+# is_stop_hook_feedback() missed it, and the transcript fallback missed it too
+# because the resend's first streamed message (a thinking block) is not on disk
+# until seconds later (measured >=5s), past _hook_blocked_before's 1s retry.
+# Dave's chat fe34d9f18c53 showed both drafts of two blocked replies that way.
+
+_LIVE_STREAM = Path(__file__).parent / 'fixtures' / 'stop_hook_live_stream.jsonl'
+
+
+def _live_stream_lines():
+    return [l for l in _LIVE_STREAM.read_text(encoding='utf-8').splitlines() if l.strip()]
+
+
+def test_is_stop_hook_feedback_on_real_streamed_turn():
+    user = next(json.loads(l) for l in _live_stream_lines() if json.loads(l)['type'] == 'user')
+    assert user.get('isSynthetic') is True and 'isMeta' not in user
+    assert is_stop_hook_feedback(user) is True
+
+
+def test_synthetic_turn_without_hook_prefix_is_not_feedback():
+    msg = {'type': 'user', 'isSynthetic': True,
+           'message': {'role': 'user', 'content': [{'type': 'text', 'text': 'Continue.'}]}}
+    assert is_stop_hook_feedback(msg) is False
+
+
+def _run_live(tmp_data_dir, monkeypatch, reader_name):
+    server = importlib.import_module("server")
+    importlib.reload(server)
+    routes = importlib.import_module('mc.blueprints.agent_routes')
+    # Live condition: the resend's record is not in the transcript yet.
+    monkeypatch.setattr(routes, '_hook_blocked_before', lambda session, uuid: False)
+    session = _new_session('p-live-stream')
+    session['claude_session_id'] = 'sess-live-stream-fixture'
+    proc = _FakeProc(_live_stream_lines())
+    session['proc'] = proc
+    getattr(routes, reader_name)(proc, session)
+    return session['log_lines']
+
+
+def _assert_live_collapsed(lines):
+    d = next(i for i, l in enumerate(lines) if l.startswith('The sea has captivated'))
+    f = next(i for i, l in enumerate(lines) if l.startswith('The sea is a vast'))
+    assert lines[d + 1:f] == ['[stop-hook-redo]'], lines
+    assert not any('Stop hook feedback' in l for l in lines)
+
+
+def test_live_stream_mode_b_collapses_resend(tmp_data_dir, monkeypatch):
+    _assert_live_collapsed(_run_live(tmp_data_dir, monkeypatch, '_read_agent_stream_b'))
+
+
+def test_live_stream_mode_a_collapses_resend(tmp_data_dir, monkeypatch):
+    _assert_live_collapsed(_run_live(tmp_data_dir, monkeypatch, '_read_agent_stream'))

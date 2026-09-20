@@ -326,7 +326,10 @@ async function settingsProviderSetEnv(provider, key, btnEl) {
                     : `Cleared ${key}.`, 6000);
     // Mask the input now that it's saved
     if (value) inp.value = '••••••••';
-    settingsProviderRefresh(provider);
+    // The row lives in both the first-run tour and Settings -> Providers;
+    // wtRefreshProviders re-probes and repaints whichever is showing.
+    if (typeof window.wtRefreshProviders === 'function') await window.wtRefreshProviders();
+    else settingsProviderRefresh(provider);
   } catch (e) {
     alert('Save failed: ' + e);
   } finally {
@@ -335,6 +338,7 @@ async function settingsProviderSetEnv(provider, key, btnEl) {
 }
 
 async function settingsProviderTerminalLogin(provider, btnEl) {
+  const prevLabel = btnEl ? btnEl.textContent : '';
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Launching...'; }
   try {
     const res = await fetch(API_BASE + `/api/agent/provider/${provider}/login-launch`,
@@ -344,12 +348,31 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
       alert('Failed to launch terminal: ' + (data.error || res.status));
       return;
     }
-    showToast(`A terminal opened with ${provider}. Complete sign-in there, then click Refresh.`, 12000);
+    // Claude's sign-in happens inside its REPL; the rest sign in on launch.
+    const how = provider === 'claude' ? 'Type /login in it' : 'Complete sign-in there';
+    showToast(`A terminal opened with ${provider}. ${how}, then click Check status.`, 12000);
   } catch (e) {
     alert('Launch failed: ' + e);
   } finally {
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Launch terminal login'; }
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = prevLabel || 'Sign in'; }
   }
+}
+
+// Provider rows (walkthrough.js _renderProviderRow) — Settings-side handlers.
+// Default: the tour's own save + refresh (applyDefaultProvider), then repaint
+// the Settings rows so the radio and every "in use" flag agree.
+async function settingsSetDefaultProvider(name) {
+  await applyDefaultProvider(name);
+  if (typeof window._renderSettings === 'function') window._renderSettings();
+}
+
+// Batch install of the ticked rows: ONE terminal, prerequisites handled once
+// (the tour's wtInstallSelectedProviders / F7 batch route).
+async function settingsInstallSelectedProviders(btnEl) {
+  const names = Array.from(document.querySelectorAll('#settings-providers-section .settings-prov-install-sel:checked'))
+    .map(cb => cb.value);
+  if (!names.length) { showToast('Tick the vendors you want to install first.', 4000); return; }
+  await wtInstallSelectedProviders(btnEl, names);
 }
 
 // ── Remote sign-in — MC-927 URL-surfacing fallback ─────────────────────────
@@ -552,6 +575,8 @@ window.settingsClaudeAuthCheck = settingsClaudeAuthCheck; // Provider Settings s
 window.PROVIDER_AUTH_KEYS = PROVIDER_AUTH_KEYS;   // read by inline _renderProviderSettings
 window.settingsProviderSetEnv = settingsProviderSetEnv;           // Provider Settings section onclick
 window.settingsProviderTerminalLogin = settingsProviderTerminalLogin; // Provider Settings section onclick
+window.settingsSetDefaultProvider = settingsSetDefaultProvider;       // provider row Default radio onchange (Settings)
+window.settingsInstallSelectedProviders = settingsInstallSelectedProviders; // Provider Settings toolbar onclick
 window.settingsProviderRefresh = settingsProviderRefresh;         // Provider Settings section onclick
 window.settingsProviderAuthProbe = settingsProviderAuthProbe;     // Provider Settings section onclick (MC-934)
 window.settingsRemoteLogin = settingsRemoteLogin;                 // Provider Settings section onclick

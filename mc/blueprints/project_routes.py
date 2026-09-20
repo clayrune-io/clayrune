@@ -43,7 +43,10 @@ from typing import Any, Callable
 
 from flask import Blueprint, abort, jsonify, request, send_file
 
+import mc.agent_runtime as _agent_runtime
+from mc import engine_selection
 from mc import state
+from mc.delegation_delivery import DeliveryStore
 from mc.atomic_json import write_json_atomic
 from mc.core import _log, file_type, now_iso, path_is_within, record_backlog_status_change, time_ago
 from mc.state import (
@@ -82,12 +85,13 @@ get_manager: Callable[[str], Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[[int], None] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
+_runtime_lifecycle_service: Any = None
 
 
 def wire(*, data_dir, data_root, uploads_dir, projects_base,
          shared_rules_path, get_memory_path_fn, resolve_claude_fn,
          get_manager_fn, unregister_process_fn, popen_flags, startupinfo,
-         app_dir=None):
+         app_dir=None, runtime_lifecycle_service=None):
     """Late-bind the path constants (they stay in server.py — many families
     still read them there) and the cross-family fns: _get_memory_path is
     shared with the Scribe/condense machinery, _resolve_claude + the Popen
@@ -98,7 +102,7 @@ def wire(*, data_dir, data_root, uploads_dir, projects_base,
     _refuse_project_path_in_install_dir always has a usable value."""
     global DATA_DIR, _DATA_ROOT, UPLOADS_DIR, PROJECTS_BASE, SHARED_RULES_PATH
     global _get_memory_path, _resolve_claude, get_manager, _unregister_process
-    global _POPEN_FLAGS, _STARTUPINFO, _APP_DIR
+    global _POPEN_FLAGS, _STARTUPINFO, _APP_DIR, _runtime_lifecycle_service
     DATA_DIR = data_dir
     _DATA_ROOT = data_root
     UPLOADS_DIR = uploads_dir
@@ -111,6 +115,7 @@ def wire(*, data_dir, data_root, uploads_dir, projects_base,
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
+    _runtime_lifecycle_service = runtime_lifecycle_service
 
 
 # ── Project-record store (load/save/list + attachment decoration) ────────────
@@ -544,7 +549,29 @@ def update_project(project_id):
         log.insert(0, {'ts': existing['last_updated'], 'msg': data['log_msg']})
         existing['activity_log'] = log[:20]
 
-    save_project(project_id, existing)
+    if is_new:
+        # Reopening is committed only after all project validation and the
+        # project record save succeed. Hold the delete/recreate guard across
+        # both mutations; historical event tombstones survive.
+        with get_manager(project_id).lock:
+            # Re-read under the shared guard: a concurrent creator may have
+            # committed while this request was validating. Only the first
+            # creator performs the generation transition.
+            if filepath.exists():
+                is_new = False
+                existing = json.loads(filepath.read_text(encoding='utf-8'))
+                existing.setdefault('backlog', [])
+                for k, v in data.items():
+                    if k not in ('log_msg', 'backlog'):
+                        existing[k] = v
+                existing['last_updated'] = now_iso()
+            save_project(project_id, existing)
+            if is_new:
+                DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').recreate_project(project_id)
+                if _runtime_lifecycle_service is not None:
+                    _runtime_lifecycle_service.recreate_project(project_id)
+    else:
+        save_project(project_id, existing)
 
     # Install the steward reversibility fence's PreToolUse hook on every NEW
     # project with a real path (2026-09-14, UNATTENDED_AGENT_PERMISSIONS_AUDIT
@@ -617,7 +644,7 @@ def set_conversation_pin(project_id):
 
 @bp.route('/api/project/<project_id>/generate_summary', methods=['POST'])
 def generate_project_summary(project_id):
-    """Use Claude to pick an emoji and write a one-line summary for the project."""
+    """Use the selected provider to generate an emoji and one-line summary."""
     p = load_project(project_id)
     if not p:
         return jsonify({'error': 'project not found'}), 404
@@ -644,29 +671,24 @@ def generate_project_summary(project_id):
         'Example: {"emoji":"\u26bd","summary":"Tracks soccer match results and ranks teams across league tables."}'
     )
 
-    model = state.CONFIG.get('condense_model', '') or 'haiku'
-    cmd = [_resolve_claude(), '-p', prompt, '--model', model, '--output-format', 'json',
-           '--dangerously-skip-permissions']
-
+    # Profile generation follows the project's selected provider through one
+    # toolless transform seam. Feature code never builds a provider CLI command.
+    resolved = engine_selection.resolve_engine(
+        state.CONFIG, p,
+        provider_override=body.get('provider') or '',
+        model_override=body.get('model') if 'model' in body else None,
+        legacy_default='claude',
+    )
     try:
-        result = subprocess.run(
-            cmd,
-            capture_output=True, text=True, encoding='utf-8', errors='replace',
-            timeout=30,
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
-        )
-    except subprocess.TimeoutExpired:
-        return jsonify({'error': 'generation timed out after 30s'}), 504
-    except FileNotFoundError:
-        return jsonify({'error': 'claude CLI not found'}), 500
-
-    if result.returncode != 0:
-        return jsonify({'error': f'claude exited {result.returncode}: {(result.stderr or result.stdout)[:200]}'}), 500
-
-    # Parse Claude CLI's JSON envelope -> model's JSON content
-    try:
-        envelope = json.loads(result.stdout)
-        content = (envelope.get('result') or '').strip()
+        model = (resolved.model if 'model' in body else (
+            (state.CONFIG.get('condense_model', '') or resolved.model)
+            if resolved.provider == 'claude'
+            else resolved.model))
+        content = _agent_runtime.run_text_transform(
+            resolved.provider, prompt=prompt, model=model,
+            effort=str(body.get('effort') or '').strip(),
+            cwd=p.get('project_path') or str(Path.home()),
+        ).strip()
         # Strip optional ```json fences if the model added them despite instructions
         if content.startswith('```'):
             lines = content.splitlines()
@@ -676,11 +698,13 @@ def generate_project_summary(project_id):
                 lines = lines[:-1]
             content = '\n'.join(lines).strip()
         data = json.loads(content)
-    except (json.JSONDecodeError, KeyError, AttributeError) as e:
-        return jsonify({
-            'error': f'could not parse model output: {e}',
-            'raw': (result.stdout or '')[:500],
-        }), 500
+    except (json.JSONDecodeError, KeyError, AttributeError, TypeError, ValueError) as e:
+        return jsonify({'error': f'could not parse model output: {e}'}), 500
+    except TimeoutError as e:
+        # Master answered a timed-out model call with 504; keep that contract.
+        return jsonify({'error': f'model call timed out: {e}'}), 504
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
 
     emoji = (data.get('emoji') or '').strip()
     summary = (data.get('summary') or '').strip()
@@ -704,6 +728,13 @@ def delete_project(project_id):
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
         return jsonify({'error': 'not found'}), 404
+
+    # Revoke before deletion side effects, under the same manager guard used by
+    # the parent handoff. Delayed senders then fail closed.
+    with get_manager(project_id).lock:
+        DeliveryStore(Path(DATA_DIR).parent / 'delegation_delivery.sqlite3').revoke_project(project_id)
+        if _runtime_lifecycle_service is not None:
+            _runtime_lifecycle_service.revoke_project(project_id)
 
     # Clean up attachment files
     p = load_project(project_id)

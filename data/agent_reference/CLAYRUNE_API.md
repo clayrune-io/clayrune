@@ -115,6 +115,21 @@ can drive a project's agent. Listed for completeness.
 
 ## History / transcripts / runs
 
+### Delegation delivery (feature-branch implementation)
+
+These endpoints require the durable delivery service initialized at startup;
+they return 503 when unavailable. They do not certify task-result acceptance.
+
+| Verb | Path | Purpose |
+|---|---|---|
+| POST | `/api/project/<project_id>/agent/delegation/inbox` | Accept an exact trusted outbox event: `event_id`, `parent_session_id`, `payload`. HTTP 202 means durable receipt only. |
+| GET | `/api/project/<project_id>/agent/delegation/status?event_id=...` | Project-scoped outbox/inbox state, error and submission evidence. |
+| GET | `/api/project/<project_id>/agent/delegation/status-list?limit=50&offset=0` | Read-only project-scoped recovery metadata plus `usage` advisory: aggregate UTF-8 `payload_bytes`/`row_count` and per-table `completion_sources`/`outbox`/`inbox` counts; `usage.status=unknown` on read failure. Never includes task/result payloads, and warning never gates delivery. |
+| POST | `/api/project/<project_id>/agent/delegation/retry` | Retry a retained event: `event_id`, `table` (`inbox` or `outbox`). Uncertain/recovery-required state requires `reviewed_resolution: true` after explicit review; never blindly replay potentially actionful work. |
+
+General live restart/provider validation remains a release gate. A `submitted`
+inbox entry means the continuation was handed off, not that it succeeded.
+
 | Verb | Path | Purpose |
 |---|---|---|
 | GET | `/api/project/<project_id>/agent/log` | Past run log (completion records + summaries). |

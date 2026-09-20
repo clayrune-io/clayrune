@@ -70,7 +70,12 @@ def model_provider_mismatch(provider: str, model: str) -> str:
     Runtime support takes precedence: multi-vendor runtimes can legitimately
     accept a model from another vendor. Catalogs are not a custom-model ban.
     """
-    runtime = agent_runtime.get_runtime(provider)
+    try:
+        runtime = agent_runtime.get_runtime(provider)
+    except KeyError:
+        # Provider resolution owns the unknown-provider error. This helper is
+        # only a cross-provider model check and stays non-throwing here.
+        return ''
     # Claude's native tier aliases overlap multi-provider catalogs (e.g.
     # Aider). Catalog membership alone must not reassign their ownership.
     if provider == 'claude' and model in ('haiku', 'sonnet', 'opus'):

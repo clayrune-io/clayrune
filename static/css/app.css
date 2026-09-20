@@ -3408,6 +3408,14 @@
     cursor: pointer; outline: none; transition: border-color 0.15s;
   }
   .composer-provider-select:hover { border-color: var(--text-dim); }
+  /* VENDOR_AGNOSTIC_PROGRAM.md §4 item 4 — same treatment as .fl-allowance
+     on the Floor, so "out of allowance" reads as one visual language
+     wherever it shows up. */
+  .composer-allowance-warn {
+    font-size: 11px; font-weight: 600; color: var(--red-text);
+    background: var(--red-dim); border-radius: 4px; padding: 3px 8px;
+    margin: -4px 0 8px; display: inline-block;
+  }
   /* Free-text model id, shown only when the Model picker is set to Custom… —
      the provider catalogs are a snapshot and these CLIs ship new ids often. */
   .composer-model-custom {
@@ -4894,6 +4902,15 @@
   }
   .agent-log-summary::-webkit-scrollbar { width: 4px; }
   .agent-log-summary::-webkit-scrollbar-thumb { background: var(--border2); border-radius: 2px; }
+  .delivery-status-usage {
+    margin: 8px 0; padding: 9px 11px; border-left: 3px solid var(--border2);
+    background: var(--surface2); color: var(--text-dim); font-size: 12px;
+    line-height: 1.45; overflow-wrap: anywhere;
+  }
+  .delivery-status-usage-warning {
+    border-left-color: var(--amber); color: var(--amber-text, var(--text));
+  }
+  .delivery-status-usage-unknown { border-left-color: var(--red); }
   .agent-log-ts {
     font-size: 11px; color: var(--text-faint); margin-top: 4px;
     font-family: 'JetBrains Mono', monospace;
@@ -5059,6 +5076,14 @@
   .fl-room-flag {
     font-size: 10px; font-weight: 700; letter-spacing: 0.4px; color: var(--amber);
     text-transform: uppercase;
+  }
+  /* VENDOR_AGNOSTIC_PROGRAM.md §4 item 4: the one refusal reason that is not
+     a bug — distinct from a generic error/blocked pill on purpose, since
+     nothing about the session is broken, it is only waiting on a reset. */
+  .fl-allowance {
+    display: inline-block; margin-top: 4px; font-size: 11px; font-weight: 600;
+    color: var(--red-text); background: var(--red-dim);
+    border-radius: 4px; padding: 2px 7px;
   }
 
   /* ── figures ──────────────────────────────────────────────────────────── */
@@ -5419,6 +5444,16 @@
   .pe-peek-name {
     display: block; margin-top: 5px; font-size: 11px; color: var(--text-dim);
   }
+  .persona-skill-row {
+    display: flex; flex-wrap: wrap; gap: 4px; margin: 4px 0 6px;
+    max-height: 96px; overflow-y: auto;
+  }
+  .pe-skill {
+    padding: 2px 8px; font-size: 11px; cursor: pointer; background: none;
+    color: var(--text-dim); border: 1px solid var(--border); border-radius: 10px;
+  }
+  .pe-skill:hover { border-color: var(--accent); }
+  .pe-skill.sel { border-color: var(--accent); color: var(--text); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .pe-fig.sel { border-color: var(--accent); background: color-mix(in srgb, var(--accent) 12%, transparent); }
   .persona-face-row { display: flex; align-items: center; gap: 4px; flex-wrap: wrap; }
   .persona-face-row input {
@@ -6544,6 +6579,12 @@
   .token-badge:empty { display: none; }
   }
   .token-badge .tb-cost { color: var(--green-text); }
+  /* Live context-size counter (docs/CONTEXT_ECONOMY_SPEC.md §5) — "84k / 200k"
+     against the rollover threshold. Default color is inherited (same as the
+     rest of the token-badge); ctx-warn/ctx-hot shift as the live figure
+     approaches the threshold auto-fresh rolls on. */
+  .token-badge .ctx-counter.ctx-warn { color: var(--amber-text); }
+  .token-badge .ctx-counter.ctx-hot { color: var(--red-text); font-weight: 600; }
   .agent-log-usage {
     font-family: 'JetBrains Mono', monospace; font-size: 11px;
     color: var(--text-faint); margin-top: 2px;

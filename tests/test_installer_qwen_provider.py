@@ -19,9 +19,8 @@ _PS1 = _ROOT / 'installer' / 'install.ps1'
 def test_install_sh_lists_qwen_as_a_provider_choice():
     text = _SH.read_text(encoding='utf-8')
     assert '_PROVIDER_CHOICES="claude codex gemini qwen"' in text
-    assert 'command -v qwen' in text
-    assert 'qwen)   label="Qwen Code" ;;' in text
-    assert 'claude|codex|gemini|qwen)' in text
+    assert 'Which AI do you work with?' not in text
+    assert '_detect_installed_providers' not in text
 
 
 def test_install_sh_maps_qwen_to_the_npm_package():
@@ -32,7 +31,8 @@ def test_install_sh_maps_qwen_to_the_npm_package():
 def test_install_ps1_lists_qwen_as_a_provider_choice():
     text = _PS1.read_text(encoding='utf-8')
     assert "$ProviderChoices = @('claude', 'codex', 'gemini', 'qwen')" in text
-    assert "qwen = 'Qwen Code'" in text
+    assert 'Which AI do you work with?' not in text
+    assert 'Get-InstalledProviders' not in text
 
 
 def test_install_ps1_maps_qwen_to_the_npm_package():

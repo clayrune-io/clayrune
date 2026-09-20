@@ -18,7 +18,7 @@
  * from THIS checkout (static/js served from ROOT, not the live server's own
  * copy) against a live MC instance's page shell, and screenshots the result.
  *
- * RUN: node stop-hook-draft-collapse.mjs   (needs MC on localhost:5199)
+ * RUN: node stop-hook-draft-collapse.mjs   (needs MC on localhost:5199, or set MC_SMOKE_BASE)
  */
 import { chromium } from 'playwright';
 import { existsSync, readFileSync, mkdirSync } from 'node:fs';
@@ -52,7 +52,9 @@ try {
     }
     return route.continue();
   });
-  await page.goto('http://localhost:5199/', { waitUntil: 'domcontentloaded' });
+  // MC_SMOKE_BASE points this at a second instance (own port + MC_DATA_DIR)
+  // instead of the operator's live server.
+  await page.goto(process.env.MC_SMOKE_BASE || 'http://localhost:5199/', { waitUntil: 'domcontentloaded' });
   const bridged = await page.waitForFunction(
     () => typeof window.appendAgentLine === 'function'
       && typeof window.collapseIntoDraftBlock === 'function',

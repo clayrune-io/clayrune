@@ -2,9 +2,9 @@
 
 Moved VERBATIM from server.py — FOUR source regions, 5 routes:
   • /api/guide/stream + /api/guide/ask — the "Ask Claydo" assistant, with its
-    subprocess glue (_claydo_cwd, _CLAYDO_NO_TOOLS_FLAGS,
-    _claydo_recent_changelog, _claydo_prepare_context). guide_stream is the
-    plan-flagged 156-line SSE generator — moved whole, NOT split.
+    context preparation (_claydo_cwd, _claydo_recent_changelog,
+    _claydo_prepare_context). Provider process details belong to AgentRuntime;
+    guide_stream only translates the provider-neutral stream into SSE.
   • /api/project/<id>/scribe-stats — Scribe telemetry READ (SPEC §8). Route
     only: the Scribe/condense/checkpoint machinery (_scribe_extract,
     _write_session_memory, _commit_managed_entry, _mem_* helpers, anything
@@ -28,14 +28,15 @@ alias, 1.7 precedent).
 """
 
 import json
-import subprocess
 from pathlib import Path
 from typing import Any, Callable
 
 from flask import Blueprint, Response, jsonify, request
 
 import mc.skills as _skills
+import mc.agent_runtime as _agent_runtime
 from mc import characters as _chars_mod
+from mc import engine_selection
 from mc import memory_fts as _mem_fts
 from mc import state
 from mc.core import now_iso, _log
@@ -47,37 +48,59 @@ load_project: Callable[[str], Any] = None  # type: ignore[assignment]
 save_project: Callable[..., Any] = None  # type: ignore[assignment]
 DATA_DIR: Path = None  # type: ignore[assignment]
 _memory_search: Callable[..., Any] = None  # type: ignore[assignment]
-_resolve_claude: Callable[[], str] = None  # type: ignore[assignment]
-_POPEN_FLAGS: int = 0
-_STARTUPINFO: Any = None
 _SERVER_DIR: Path = None  # type: ignore[assignment]
 
 
+def _guide_engine(data, project_id=None):
+    """Resolve the guide/workshop engine without embedding Claude tiers."""
+    project = load_project(project_id) if project_id else None
+    model_override = data.get('model') if 'model' in data else None
+    resolved = engine_selection.resolve_engine(
+        state.CONFIG, project,
+        provider_override=data.get('provider') or '',
+        model_override=model_override,
+        legacy_default='claude',
+    )
+    return resolved, str(data.get('effort') or '').strip()
+
+
+def _guide_runtime_answer(resolved, effort, prompt, cwd):
+    context_path = Path(cwd) / 'CLAUDE.md'
+    try:
+        system_prompt = context_path.read_text(encoding='utf-8') if context_path.exists() else ''
+    except OSError:
+        system_prompt = ''
+    return _agent_runtime.run_text_transform(
+        resolved.provider,
+        prompt=prompt,
+        system_prompt=system_prompt,
+        model=resolved.model,
+        effort=effort,
+        cwd=cwd,
+    )
+
+
 def wire(*, load_project_fn, save_project_fn, data_dir, memory_search_fn,
-         resolve_claude_fn, popen_flags, startupinfo, server_dir):
+         server_dir, **_legacy_runtime_kwargs):
     """Late-bind cross-family deps: load_project/save_project (projects
-    family, 1.11), _memory_search + _resolve_claude + the Popen platform
-    consts (dispatch/memory family, 1.12), DATA_DIR, and the server-dir
+    family, 1.11), _memory_search, DATA_DIR, and the server-dir
     anchor (server.py's Path(__file__).parent — repo root in dev, app dir
     frozen). Called once from server.py at import, BEFORE
     app.register_blueprint(bp)."""
     global load_project, save_project, DATA_DIR, _memory_search
-    global _resolve_claude, _POPEN_FLAGS, _STARTUPINFO, _SERVER_DIR
+    global _SERVER_DIR
     load_project = load_project_fn
     save_project = save_project_fn
     DATA_DIR = data_dir
     _memory_search = memory_search_fn
-    _resolve_claude = resolve_claude_fn
-    _POPEN_FLAGS = popen_flags
-    _STARTUPINFO = startupinfo
     _SERVER_DIR = server_dir
 
 
 
 # ── "Ask Claydo" guide assistant ────────────────────────────────────────────
 
-# Dedicated cwd for Claydo's claude subprocess. Without an explicit cwd, claude
-# would inherit the server's working directory (= the Mission Control project's
+# Dedicated cwd for Claydo's provider runtime. Without an explicit cwd, the
+# selected CLI would inherit the server's working directory (= this project's
 # project_path) and dump its session transcripts into
 # `~/.claude/projects/<encoded-mc-path>/`. The startup transcript-backfill then
 # scans that directory and synthesizes agent_log entries — so Claydo
@@ -102,20 +125,6 @@ def _claydo_cwd():
                 pass
     d.mkdir(parents=True, exist_ok=True)
     return str(d)
-
-
-# Hard-disable tools + MCP servers for Claydo's claude subprocess. Without
-# these, the model — having all the user's built-in tools (Grep, LSP, Read,
-# Bash…) and MCP servers (Gmail/Calendar/Drive/Uber) loaded — would reach
-# for tools on feature-lookup questions ("how do I use remote control?")
-# and trigger Grep/LSP. Those calls get denied by --print's dontAsk mode,
-# the model has no turns left to recover, and the subprocess exits 1 with
-# no usable text answer. Claydo answers strictly from CLAUDE.md anyway.
-_CLAYDO_NO_TOOLS_FLAGS = [
-    '--tools', '',
-    '--strict-mcp-config',
-    '--mcp-config', '{"mcpServers":{}}',
-]
 
 
 def _claydo_recent_changelog(max_entries=15):
@@ -359,126 +368,34 @@ def guide_stream():
     if len(full_question) > cap:
         full_question = full_question[-cap:]
 
-    # Send the question via stdin (JSONL stream-json input) instead of via
-    # `-p <full_question>`. On Windows, claude.cmd is invoked through cmd.exe
-    # which has an 8191-char command-line limit (much smaller than
-    # CreateProcess's 32K). An 8 KB question + flags + the cmd.exe wrapper
-    # blows past that — surfacing as "The command line is too long". stdin
-    # has no such limit. Command line stays well under 200 chars regardless
-    # of question length.
-    # --max-turns 2 (not 1): on questions that nudge the model toward a tool
-    # call, the tool-use attempt would count as turn 1 and `--max-turns 1`
-    # would exit before the model could fall back to a text answer. Tools
-    # are disabled below, so the model can't actually call anything; turn 2
-    # is purely a safety margin.
-    cmd = [_resolve_claude(),
-           '--max-turns', '2',
-           '--print', '--verbose',
-           '--input-format', 'stream-json',
-           '--output-format', 'stream-json',
-           *_CLAYDO_NO_TOOLS_FLAGS]
-    stdin_msg = json.dumps({
-        'type': 'user',
-        'message': {'role': 'user', 'content': full_question},
-    }) + '\n'
+    resolved, effort = _guide_engine(data, project_id)
 
+    # The runtime owns provider transport, command-length handling, no-tools
+    # enforcement, and process cleanup. The route owns only Claydo's SSE shape.
     def sse(payload):
         return f'data: {json.dumps(payload)}\n\n'
 
-    def generate():
-        proc = None
+    def generate_runtime():
         full_text_parts = []
-        result_error = ''
         try:
-            proc = subprocess.Popen(
-                cmd,
-                stdin=subprocess.PIPE,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE,
-                # The mode's sandbox dir — its CLAUDE.md is the brief the
-                # CLI auto-loads (ask = guide, builders = workshop briefs).
-                cwd=cwd,
-                text=True, encoding='utf-8', errors='replace',
-                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
-            )
-            try:
-                proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9): stdin=PIPE above
-                proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9)
-                proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9)
-            except Exception as e:
-                yield sse({'type': 'error', 'message': f'stdin write failed: {e}'})
-                return
-        except FileNotFoundError:
-            yield sse({'type': 'error', 'message': 'Claude CLI not found on this server'})
-            return
+            context_path = Path(cwd) / 'CLAUDE.md'
+            system_prompt = context_path.read_text(encoding='utf-8') if context_path.exists() else ''
+            for delta in _agent_runtime.stream_text_transform(
+                    resolved.provider, prompt=full_question,
+                    system_prompt=system_prompt, model=resolved.model,
+                    effort=effort, cwd=cwd, max_turns=2):
+                if delta:
+                    full_text_parts.append(delta)
+                    yield sse({'type': 'delta', 'text': delta})
+            yield sse({'type': 'done', 'answer': ''.join(full_text_parts).strip()})
+        except _agent_runtime.CLINotInstalledError:
+            yield sse({'type': 'error', 'message': 'Selected provider CLI not found on this server'})
+        except TimeoutError as e:
+            yield sse({'type': 'error', 'message': str(e)[:2000]})
         except Exception as e:
-            yield sse({'type': 'error', 'message': f'spawn failed: {e}'})
-            return
+            yield sse({'type': 'error', 'message': str(e)[:2000]})
 
-        try:
-            for raw in iter(proc.stdout.readline, ''):  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9): stdout=PIPE above
-                line = raw.rstrip('\n')
-                if not line:
-                    continue
-                try:
-                    obj = json.loads(line)
-                except Exception:
-                    continue
-                # CLI failures (quota, auth, invalid model) often live in
-                # stdout's result event, with no stderr at all.
-                if obj.get('type') == 'result' and obj.get('is_error'):
-                    errors = obj.get('errors') or []
-                    if not isinstance(errors, list):
-                        errors = [errors]
-                    result_error = '\n'.join(str(e) for e in errors if e)
-                    result_error = result_error or str(obj.get('result') or '')
-                    result_error = result_error or 'Claude could not complete this request'
-                # claude stream-json emits {type: "assistant", message: {role, content: [...]}}
-                # for assistant turns. Each content block can be {type: "text", text: "..."}.
-                if obj.get('type') == 'assistant':
-                    msg = obj.get('message', {}) or {}
-                    content = msg.get('content', []) or []
-                    if isinstance(content, list):
-                        for block in content:
-                            if isinstance(block, dict) and block.get('type') == 'text':
-                                t = str(block.get('text') or '')
-                                if t:
-                                    full_text_parts.append(t)
-                                    yield sse({'type': 'delta', 'text': t})
-                # Other events (system, successful result, user echo) do
-                # not carry additional assistant text.
-
-            proc.wait(timeout=5)
-            if proc.returncode != 0 or result_error:
-                err = ''
-                try:
-                    err = (proc.stderr.read() or '').strip()[:500]  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.9): stderr=PIPE above
-                except Exception as e:
-                    _log(f'[claydo] reading CLI error output failed: {e}')
-                message = (result_error or err or ''.join(full_text_parts).strip()
-                           or f'claude exit {proc.returncode}')
-                yield sse({'type': 'error', 'message': message[:2000]})
-                return
-            full_text = ''.join(full_text_parts).strip()
-            yield sse({'type': 'done', 'answer': full_text})
-        except GeneratorExit:
-            # Client disconnected (closed modal, asked new question, navigated
-            # away). Kill the subprocess so we don't keep burning tokens.
-            try:
-                proc.kill()
-            except Exception:
-                pass
-            raise
-        except Exception as e:
-            yield sse({'type': 'error', 'message': str(e)})
-        finally:
-            if proc and proc.poll() is None:
-                try:
-                    proc.kill()
-                except Exception:
-                    pass
-
-    return Response(generate(), mimetype='text/event-stream', headers={
+    return Response(generate_runtime(), mimetype='text/event-stream', headers={
         'Cache-Control': 'no-cache',
         'X-Accel-Buffering': 'no',  # disable nginx buffering if behind a proxy
     })
@@ -488,7 +405,7 @@ def guide_stream():
 def guide_ask():
     """Single-shot ask of the in-app Claydo guide assistant.
 
-    Spawns a claude session with `docs/USER_GUIDE.md` as system prompt, runs
+    Uses the selected provider with `docs/USER_GUIDE.md` as system prompt, runs
     the user's question (optionally with prior-turn context), returns the
     answer. No project context, no memory writes, no agent_log entry. Each
     call is fully independent — `history` is just prepended to the prompt.
@@ -535,61 +452,16 @@ def guide_ask():
     if len(full_question) > 8000:
         full_question = full_question[-8000:]
 
-    # See /api/guide/stream — Windows' cmd.exe wrapper around claude.cmd is
-    # capped at 8191 chars, so an 8 KB question pushed via -p triggers
-    # "command line too long". Send it through stdin (stream-json) instead.
-    # --max-turns 2 + no-tools flags: see the matching block in guide_stream.
-    cmd = [_resolve_claude(),
-           '--max-turns', '2',
-           '--print', '--verbose',
-           '--input-format', 'stream-json',
-           '--output-format', 'stream-json',
-           *_CLAYDO_NO_TOOLS_FLAGS]
-    stdin_msg = json.dumps({
-        'type': 'user',
-        'message': {'role': 'user', 'content': full_question},
-    }) + '\n'
+    resolved, effort = _guide_engine(data, data.get('project_id'))
     try:
-        result = subprocess.run(
-            cmd, capture_output=True, text=True,
-            cwd=_claydo_cwd(),
-            input=stdin_msg,
-            timeout=60, encoding='utf-8', errors='replace',
-            creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
-        )
-    except subprocess.TimeoutExpired:
+        answer = _guide_runtime_answer(resolved, effort, full_question, cwd)
+    except _agent_runtime.CLINotInstalledError:
+        return jsonify({'error': 'Selected provider CLI not found on this server'}), 500
+    except TimeoutError:
         return jsonify({'error': 'Claydo timed out (>60s)'}), 504
-    except FileNotFoundError:
-        return jsonify({'error': 'Claude CLI not found on this server'}), 500
     except Exception as e:
         return jsonify({'error': str(e)}), 500
-
-    if result.returncode != 0:
-        err = (result.stderr or 'claude failed').strip()[:500]
-        return jsonify({'error': err}), 500
-
-    # With --output-format stream-json, stdout is JSONL. Reassemble the
-    # assistant text from `assistant` events the same way the streaming
-    # endpoint does.
-    parts = []
-    for raw in (result.stdout or '').splitlines():
-        line = raw.strip()
-        if not line:
-            continue
-        try:
-            obj = json.loads(line)
-        except Exception:
-            continue
-        if obj.get('type') == 'assistant':
-            msg = obj.get('message', {}) or {}
-            for block in (msg.get('content') or []):
-                if isinstance(block, dict) and block.get('type') == 'text':
-                    t = str(block.get('text') or '')
-                    if t:
-                        parts.append(t)
-    return jsonify({'answer': ''.join(parts).strip()})
-
-
+    return jsonify({'answer': answer.strip()})
 # ── Scribe telemetry (SPEC §8) ───────────────────────────────────────────────
 
 @bp.route('/api/project/<project_id>/scribe-stats', methods=['GET'])

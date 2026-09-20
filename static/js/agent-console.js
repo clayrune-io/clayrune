@@ -521,6 +521,9 @@ function switchModalTab(projectId, tab) {
   modalActiveTab[projectId] = tab;
   if (tab === 'agent-log') {
     loadAgentLog(projectId);
+    // Agent Log is opened through this cross-module tab switch, not the old
+    // collapsible toggle. Fetch recovery state once for this explicit read.
+    window.loadDeliveryStatus?.(projectId);
     return;
   }
   if (tab === 'documents') {

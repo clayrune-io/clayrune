@@ -6,6 +6,275 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-19] — Per-agent skill scoping (off by default)
+
+- New `agent_skill_scoping_enabled` (default false). A character that declares
+  `skills` (frontmatter, edited in the persona editor, now with a chip picker)
+  gets those + the project's own `.claude/skills` at full description; every
+  other installed skill is listed name-only (still callable). Claude: a
+  `skillOverrides` block merged into the per-launch `--settings` file
+  (`mc/skill_scoping.py`), applied on dispatch, followup, respawn, revive and
+  rollover alike. Non-Claude: the same rule in `_skills_catalog_block`.
+  Characters with no declared skills are unchanged. Measured on Sonnet 5:
+  52,800 → 47,288 prompt tokens per turn (−5,512).
+
+## [2026-09-19] — Mid-turn context rollover (off by default)
+
+- The token rollover only ran when a message arrived, so a dispatched worker
+  (one prompt, hundreds of tool calls) grew to 325k tokens unchecked. New
+  `midturn_rollover_enabled` (default false): when a Claude session's context
+  crosses `context_rollover_tokens` it now rolls at the next tool-result
+  boundary, never mid tool call, through the existing interrupt path, so the
+  session id and the spawner callback survive.
+- The fresh session gets the original task verbatim, the branch, `git status`
+  and `git diff --stat`, the last 10 tool calls and any background jobs, on top
+  of the transcript handoff.
+- Every roll is appended to `data/midturn_rollover_log/<project>.jsonl`.
+  Other vendors report usage only at turn end and are not covered.
+- Review fixes: a roll rebuilds context from the ORIGINAL task (a steward
+  cycle stays an unattended consumer); a killed process's orphaned tool ids no
+  longer block later rolls; Mode A sends the roll prompt on stdin (was over the
+  cmd.exe 8191-char cap); git state is read after the old process is dead, and a
+  roll overtaken by a newer interrupt is dropped; `_interrupting` is set only
+  after the steps that can raise; re-rolls need 20k tokens of growth and stop
+  after 3 failed attempts; subagent usage no longer decides the parent's roll.
+  Known gap: a rolled process is killed before its `result` event, so its
+  pre-roll spend is not added to the session's `cost_usd`.
+
+## [2026-09-17l] — Stabilize the provider-neutral branch (W0)
+
+- Every text transform (Claydo, character and profile generation, Scribe,
+  condense, Distiller, mail laundering) is authorized as a tool-free transform
+  before it runs. Claude's transform calls now load no tools, plugins, skills or
+  hooks; the previous flags still loaded 34 tools. Codex, Gemini and Qwen
+  transforms refuse until their isolation is certified, so a non-Claude
+  session's memory summary reports a model error instead of running unsandboxed.
+- A failed or quota-exhausted transform raises a typed failure and is never
+  saved as content.
+- Follow-ups to a live chat whose model did not change were silently dropped on
+  this branch; they are written again.
+- Claude answers that follow a thinking block are no longer lost in Claydo.
+- Rollouts from codex-cli 0.154 import (offline fixture). The unused canonical
+  capture/cutover/publication modules were taken out of the merge and kept on
+  `archive/provider-neutral-canonical-dormant`; entries 17c/17e/17h/17i below
+  describe code that is not in this release.
+- Test and tooling hygiene: a leaked test wiring, a leaked restart marker that
+  hung agent-run suites, a line-number-pinned architecture guard, and smokes
+  that targeted the live server on :5199.
+
+## [2026-09-17k] — Preserve native callbacks before launch commits
+
+- Buffer lifecycle INIT and exit observations arriving during runtime dispatch,
+  then apply them in order after durable launch ownership commits. Callback
+  readers do not wait for the launch transaction; failed launches remain uncertain.
+- Reproduce the original lost-native-binding failure with synchronous and
+  reader-thread callbacks against temporary SQLite. Lifecycle activation remains
+  gated separately; this change does not enable the dormant service.
+
+## [2026-09-17j] — Move Claydo and Scribe transforms behind runtimes
+
+- Give provider runtimes a common short-text streaming boundary so Claydo keeps
+  incremental SSE output while its route no longer constructs or parses a
+  Claude process; runtimes without native streaming emit one safe delta.
+- Route Scribe, checkpoint reduction, continuity, and structured-condense model
+  calls through an authoritative provider context. Non-Claude checkpoints use
+  native session IDs and never inherit Claude tier names such as `haiku`.
+
+## [2026-09-17i] — Add dormant recoverable memory publication kernel
+
+- Add durable publication intents and receipts for multi-file memory updates,
+  with explicit forward/abort recovery, hash-guarded idempotency, staged image
+  verification, bounded storage, and fail-closed manifest validation.
+- Keep the kernel unwired until canonical cursor acknowledgment, every legacy
+  writer, archive identity, and cross-process locking pass their activation gates.
+
+## [2026-09-17h] — Preserve Gemini fixture evidence without guessing
+
+- Add a pure offline Gemini stream decoder for repository-observed event shapes.
+  Exact tool IDs, arguments, outputs, status, usage, and session observations are
+  retained; unknown message identity/finality and unsupported fields become gaps.
+- Keep runtime activation explicitly out of scope until a complete native stream
+  and CLI-version contract can be certified.
+
+## [2026-09-17g] — Route built-in model work through the selected provider
+
+- Add a provider-selected text-transform seam and use it for Claydo, project
+  summaries, character identity/voice/avatar helpers, and Hivemind orchestration.
+- Route Claude through that same seam for project summaries and character
+  artifacts, removing the last feature-owned Claude subprocess/Scribe branches
+  from those two consumers.
+- Preserve explicit provider/model/effort through Hivemind manifests and worker
+  sessions; Claude tier defaults are never injected into non-Claude providers.
+
+## [2026-09-17f] — Install Clayrune before choosing an AI provider
+
+- Make the normal Windows/macOS/Linux installer provider-neutral: install and
+  open Clayrune first, then use the first-run UI to choose, install, and log in
+  to a provider. No missing-Claude prompt appears for a Codex-first user.
+- Keep `CLAYRUNE_PROVIDER` as an explicit automation override and provision
+  only that provider; re-runs preserve an existing saved default.
+- Restrict the Windows wrapper's login remediation to the dedicated Claude-auth
+  exit code instead of offering Claude login after unrelated failures.
+
+## [2026-09-17e] — Default-off canonical conversation read seam (feature branch)
+
+- Add a fixed-boundary gapped-history reader and an explicit provider-neutral
+  cutover policy for canonical history, read-only Agent Log rows, and Scribe
+  projection. Canonical history is selected only after complete coverage and
+  projection checks; incomplete sources remain inspectable or fall back to the
+  richer legacy reader. Consumer hooks are dependency-injected but startup does
+  not compose them, so the feature stays inert; no provider reader, restart, or
+  operator transcript is touched.
+
+## [2026-09-17d] — Durable delegation delivery (feature branch)
+
+- Add a default-inert, provider-neutral runtime lifecycle bridge around the
+  existing runtime dispatch boundary. Immutable dispatch facts preserve exact
+  provider/model/effort/resume intent; injected owners can fence launch and
+  observe native init/exit without replacing or mutating global callbacks.
+  Factory, launch, transcript-resolution, and callback failures fail closed or
+  remain observable without retrying a provider launch.
+
+- Add the injected store-backed bridge composition object. It atomically owns
+  launch intent, rechecks caller-supplied authorization at the guarded spawn
+  boundary, binds native identity and transcript source together, preserves
+  exact resume/model/effort intent for restart reconstruction, and refuses to
+  infer terminal success before native binding or from ambiguous exit evidence.
+
+- Compose one startup-owned, default-disabled runtime lifecycle service at the
+  server-to-agent blueprint boundary. Its database is a sibling of
+  `data/projects`, disabled mode performs no I/O, per-dispatch identities keep
+  repeated/resumed turns distinct, native source format and launch authority
+  must be explicitly injected, and shutdown closes new lifecycle admission.
+
+- Route accepted project and conversation deletion through that same lifecycle
+  authority before filesystem cleanup. Native and Clayrune aliases are
+  privacy-fenced together, project tombstones also cover unseen callbacks, and
+  a prepared late launch cannot reach spawn afterward. Explicit project
+  recreation advances a durable generation so old authority cannot attach to
+  the replacement project.
+
+- Persist that canonical project generation in pending/completed Agent Log
+  records and require it across warm dispatch, cold provider revival, Claude
+  revival, and delegated-parent recovery. Legacy generation-one records remain
+  compatible; records missing/stale after recreation fail closed before launch.
+
+- Verify shared replay/store fixture conformance for Codex exec JSONL and
+  Claude/Qwen-shaped records: exact bodies, requested settings, source bindings,
+  replay and revocation fences. Reject unsupported decoders before durable
+  binding. Offline evidence only; no native rollout certification or activation.
+
+- Add a separate, bounded Codex rollout-envelope decoder for repository-backed
+  `session_meta`, `response_item`, and terminal-event shapes. Unsupported records
+  become explicit capture gaps, raw custom-tool inputs and opaque outputs remain
+  durable, replay is restart/idempotence fenced, and assistant text alone never
+  implies completion. The decoder remains offline and is not production-wired.
+
+- Add an explicit, default-unwired Codex rollout adapter requiring an authorized
+  lifecycle token, exact engine/privacy provenance, matching native metadata,
+  project path, CLI profile, source identity and incarnation. Metadata validation
+  and replay now share one open binary descriptor, preventing path replacement
+  between authorization and capture while retaining partial-tail recovery.
+
+- Add the store-backed runtime-attempt owner foundation and schema-v4 launch
+  facts. Attempt claim plus launch facts, and lifecycle native binding plus
+  transcript/source binding, are atomic. Explicit backed-up schema-3 migration
+  validates table/column/PK/index/FK shapes and rolls back cleanly on injected
+  backup or table-creation failure. Production route wiring remains disabled.
+
+- Add canonical schema-3 source/span recovery with explicit backed-up schema-1/2
+  migration, atomic evidence/cursor commits and strict replay conflicts. A neutral
+  fixture controller rebuilds decoder state from verified source prefixes;
+  partial tails and changed sources fail explicitly. Sealed EOF forbids further
+  appends without claiming complete coverage. Independent focused tests: 44;
+  worker canonical regression: 248. No live source activation or operator migration.
+
+- Add an opt-in provider-neutral capture ingress bridge and Mode-A raw-record/
+  EOF callbacks before lossy UI parsing. Retain failed evidence batches for
+  explicit retry, refuse decoder advancement while pending, and keep draining
+  transport after capture failure with explicit incomplete status. Independent
+  capture tests: 61 passing; worker runtime regressions: 326 passing. No live
+  capture activation or durable source-cursor recovery is claimed.
+
+- Add project-scoped logical delivery payload accounting to the read-only
+  recovery view. UTF-8 byte/row aggregates distinguish completion sources,
+  outbox and inbox; the 1 GiB default is a WARN-ONLY Settings advisory (`0`
+  disables it). It never gates dispatch/completion or changes retention, and
+  read failures are explicit unknown. Agent logs/native transcripts and
+  install-wide DB/WAL size are excluded.
+
+- Add isolated real-server startup/restart tests with automatic delivery-loop
+  recovery, lost-receipt deduplication, generation-3 cold revival through the
+  real dispatch path and shutdown admission fencing. External producers and
+  provider execution are faked; child paths/network/process launches are
+  constrained before boot. Independent registered run: 3 passing; worker
+  combined selection: 204 passing. This is not live-provider certification.
+
+- Own the delivery loop with an interruptible stop event and retained thread;
+  serialize start/stop/rewire, retain ownership on join timeout, fence waiting
+  parent handoffs during shutdown, and preserve final completion writes. Add
+  shutdown timeout logging and 18 lifecycle regressions. Combined worker
+  selection: 201 passing; independent lifecycle/delivery check: 33 passing.
+
+- Add a read-only Delivery recovery view in Agent Log with bounded, project-
+  scoped pagination, safe status reasons, visible read errors and stale-response
+  fencing. No automatic uncertain retries. Registered real-module browser tests
+  cover pagination and styled desktop/mobile overflow; 34 focused Python tests
+  pass. Full dashboard smoke passed separately; production remains unchanged.
+
+- Revoke delivery records on project/conversation deletion; preserve tab resume
+  and reject stale-generation results after project recreation. Report partial
+  deletion failures explicitly. Logical payload purge does not promise physical
+  WAL sanitization. Combined selected regressions: 180 passing; independent
+  privacy/delivery check: 31 passing. Still isolated, not production-activated.
+
+- Add real-loopback HTTP subprocess restart tests using the production sender
+  and receiver; verify persisted delivery and one fake parent handoff across
+  restart. Combined selected suite: 164 passing; full startup/native providers
+  remain outside this harness. Fix cold-parent project propagation at handoff.
+
+- Replace the best-effort completion sender with persisted per-turn sources,
+  outbox/inbox receipts, fenced claims and bounded retries.
+- Guard parent handoff and preserve saved conversation/model/effort and callback
+  lineage during supported cold revival; retain ambiguous outcomes for review.
+- Add project-scoped delivery status and explicit reviewed-retry endpoints.
+- Validate with 161 selected offline regressions, including SQLite-to-Flask-to-
+  fake-Codex recovery and real Claude revival with a fake process. Live restart
+  and provider validation remain release gates; no production activation.
+
+## [2026-09-17c] — Native capture adapters and strict memory reads (feature branch)
+
+- Decode fixture-supported Codex/Claude/Qwen records before lossy UI formatting;
+  preserve exact content and mark unknown/unfinished capture explicitly.
+- Commit multi-event capture batches atomically and expose bounded captured-
+  history payload chunks without requiring complete memory-source coverage.
+- Prevent managed writers from overwriting an unreadable session log as empty.
+- Validate the offline increment with 1,015 selected tests. Live transport,
+  consumer cutover and receipt-aware memory publication remain unactivated.
+
+## [2026-09-17b] — Transactional execution and conversation boundary (feature branch)
+
+- Add schema-2 lifecycle ownership, queued requests, immutable engine snapshots,
+  versioned events and explicit backed-up legacy migration.
+- Guard process-creation boundaries with a durable consumed-launch marker;
+  ambiguous creation or persistence failures require reconciliation, not retry.
+- Preserve partial and late conversation evidence, attempt-scoped tool results
+  and provenance in history and structured Scribe projections.
+- Add fail-closed identity/profile-bound authorization contracts. These are
+  offline-tested foundations, not live adapter certification or consumer cutover.
+
+## [2026-09-17] — Provider-hardening review corrections (feature branch)
+
+- Separate observed model telemetry from requested continuation settings;
+  preserve explicit native defaults and saved Claude effort across respawns.
+  Other provider dispatches retain effort intent with a visible unsupported notice.
+- Keep failed/refused checkpoint spans pending and reject incomplete map/reduce
+  coverage instead of acknowledging missing knowledge.
+- Record failed Hivemind outcomes honestly; preserve live worker ownership on
+  bookkeeping failures and prevent repeated unsupported/uncertain launches.
+- Refine the offline execution contract after independent review. These changes
+  are not live journal activation or a claim of full provider parity; migration,
+  safety certification and clean-environment validation remain required.
 ## [2026-09-17a] — Prevent duplicate streamed chat messages
 
 - Give every streamed agent-log line its authoritative server position so the

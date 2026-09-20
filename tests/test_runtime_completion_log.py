@@ -203,7 +203,11 @@ def test_completed_non_claude_session_writes_exactly_one_row(env):
     assert row['provider'] == 'fakeprov'
     assert row['claude_session_id'] == ''
     assert row['status'] == 'completed'
-    assert row['summary'] == 'Done.'
+    # Both lines are one turn's reply with no bracket/seed line between them,
+    # so the summary is their full join, not just the last fragment (MC-947 —
+    # see `_collect_trailing_reply_text`: a Mode-A provider that logs a reply
+    # as several log_lines entries must not have it truncated to the last one).
+    assert row['summary'] == 'Halloway here.Done.'
 
 
 # ── provider_session_id: captured, and now persisted (parity audit §0/item 2) ─
@@ -332,6 +336,10 @@ def test_claude_never_routes_through_the_runtime_hook(env, monkeypatch):
     monkeypatch.setattr(ar, '_dispatch_via_runtime',
                         lambda *a, **k: calls.append(k) or 'sid')
     monkeypatch.setattr(ar, '_resolve_character', lambda *a, **k: (None, ''))
+
+    def _no_real_cli(*a, **k):  # tests never spawn a real model
+        raise RuntimeError('real CLI spawn blocked in test')
+    monkeypatch.setattr(ar.subprocess, 'Popen', _no_real_cli)
     try:
         ar._dispatch_agent_internal('proj1', 'a claude task',
                                     provider_override='claude')

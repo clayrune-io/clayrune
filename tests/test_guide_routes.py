@@ -117,7 +117,6 @@ def client(tmp_path, monkeypatch):
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
     monkeypatch.setattr(gr, 'DATA_DIR', data_dir)
-    monkeypatch.setattr(gr, '_resolve_claude', lambda: 'claude-stub')
 
     # Project registry + memory-search stubs (both wired fns; the real ones
     # stay in server.py until 1.11/1.12).
@@ -138,8 +137,8 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setitem(mc_state.CONFIG, 'auto_workspace_base',
                         str(tmp_path / 'ws'))
 
-    # Recorder subprocess namespace — nothing real may spawn. Tests reshape
-    # behavior through the `holder` hooks.
+    # Runtime-boundary recorder — nothing real may spawn. Synthetic argv and
+    # stdin keep the old assertions focused on user-visible behavior.
     run_calls, popen_calls = [], []
     holder = {
         'run': lambda cmd, kw: types.SimpleNamespace(
@@ -147,12 +146,41 @@ def client(tmp_path, monkeypatch):
         'popen': lambda cmd, kw: FakeStreamProc(_stream_json('Hello from Claydo')),
     }
 
-    def _run(cmd, **kw):
+    def _guide_cmd(kwargs):
+        cmd = ['claude-stub', '--max-turns', '2', '--print', '--verbose',
+               '--input-format', 'stream-json', '--output-format', 'stream-json',
+               '--tools', '', '--strict-mcp-config', '--mcp-config',
+               '{"mcpServers":{}}']
+        if kwargs.get('model'):
+            cmd.extend(['--model', kwargs['model']])
+        if kwargs.get('effort'):
+            cmd.extend(['--effort', kwargs['effort']])
+        return cmd
+
+    def _run_transform(provider, **kwargs):
+        cmd = _guide_cmd(kwargs)
+        kw = {'input': json.dumps({
+            'type': 'user',
+            'message': {'role': 'user', 'content': kwargs.get('prompt', '')},
+        }), 'cwd': kwargs.get('cwd')}
         run_calls.append((cmd, kw))
         out = holder['run'](cmd, kw)
         if isinstance(out, BaseException):
+            if isinstance(out, real_subprocess.TimeoutExpired):
+                raise TimeoutError('Claydo timed out (>60s)')
+            if isinstance(out, FileNotFoundError):
+                raise gr._agent_runtime.CLINotInstalledError(str(out))
             raise out
-        return out
+        if getattr(out, 'returncode', 0) != 0:
+            raise RuntimeError((getattr(out, 'stderr', '') or 'provider failed').strip())
+        stdout = getattr(out, 'stdout', out)
+        return ''.join(
+            block.get('text', '')
+            for raw in str(stdout or '').splitlines()
+            for obj in [_json_obj(raw)]
+            if obj and obj.get('type') == 'assistant'
+            for block in (obj.get('message', {}) or {}).get('content', [])
+            if isinstance(block, dict) and block.get('type') == 'text')
 
     popen_procs = []
 
@@ -164,9 +192,41 @@ def client(tmp_path, monkeypatch):
         popen_procs.append(out)
         return out
 
-    monkeypatch.setattr(gr, 'subprocess', types.SimpleNamespace(
-        run=_run, Popen=_popen, PIPE=-1,
-        TimeoutExpired=real_subprocess.TimeoutExpired))
+    def _stream_transform(provider, **kwargs):
+        cmd = _guide_cmd(kwargs)
+        kw = {'cwd': kwargs.get('cwd')}
+        try:
+            proc = _popen(cmd, **kw)
+        except FileNotFoundError as e:
+            raise gr._agent_runtime.CLINotInstalledError(str(e)) from e
+        proc.stdin.write(json.dumps({'type': 'user', 'message': {
+            'role': 'user', 'content': kwargs.get('prompt', '')}}) + '\n')
+        parts = []
+        for raw in proc.stdout:
+            obj = _json_obj(raw)
+            if not obj:
+                continue
+            if obj.get('type') == 'result' and obj.get('is_error'):
+                errors = obj.get('errors') or [obj.get('result') or 'provider failed']
+                raise RuntimeError('\n'.join(str(e) for e in errors))
+            if obj.get('type') == 'assistant':
+                for block in (obj.get('message', {}) or {}).get('content', []):
+                    if isinstance(block, dict) and block.get('type') == 'text':
+                        text = str(block.get('text') or '')
+                        parts.append(text)
+                        yield text
+        if proc.returncode != 0:
+            raise RuntimeError((proc.stderr.read() or ''.join(parts) or
+                                'provider failed').strip())
+
+    def _json_obj(raw):
+        try:
+            return json.loads(raw)
+        except Exception:
+            return None
+
+    monkeypatch.setattr(gr._agent_runtime, 'run_text_transform', _run_transform)
+    monkeypatch.setattr(gr._agent_runtime, 'stream_text_transform', _stream_transform)
 
     server.app.config['TESTING'] = True
     c = server.app.test_client()
@@ -252,7 +312,7 @@ class TestGuideAsk:
         client.holder['run'] = lambda cmd, kw: FileNotFoundError('no claude')
         r = client.post('/api/guide/ask', json={'question': 'hi'})
         assert r.status_code == 500
-        assert r.get_json()['error'] == 'Claude CLI not found on this server'
+        assert r.get_json()['error'] == 'Selected provider CLI not found on this server'
 
 
 class TestGuideAskAuthReject:
@@ -298,7 +358,7 @@ class TestGuideStream:
         r = client.post('/api/guide/stream', json={'question': 'hi'})
         events = _sse_events(r.data)
         assert events == [{'type': 'error',
-                           'message': 'Claude CLI not found on this server'}]
+                           'message': 'Selected provider CLI not found on this server'}]
 
     def test_nonzero_exit_yields_sse_error_with_stderr(self, client):
         client.holder['popen'] = lambda cmd, kw: FakeStreamProc(

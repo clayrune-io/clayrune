@@ -30,6 +30,7 @@ On first run, a `config.json` file is created with defaults:
 | `use_streaming_agent` | Enable Mode B persistent agent process | `false` |
 | `user_name` | Your name (shown in agent context) | `""` |
 | `agent_name` | Agent display name | `""` |
+| `delegation_payload_warning_bytes` | WARN-ONLY logical delivery payload advisory per project; `0` disables the warning | `1073741824` (1 GiB) |
 
 You can also set the port via environment variable: `MC_PORT=8080 python server.py`
 

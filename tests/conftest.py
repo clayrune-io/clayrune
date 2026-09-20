@@ -47,7 +47,126 @@ import pytest
 # works. setdefault so an operator can still opt a run back in.
 os.environ.setdefault("MC_REMOTE_ENABLED", "0")
 
+# A server restart re-execs with MC_RESTART_FROM_PID set, and anything an older
+# server spawned (an agent shell running this suite) may still carry it. The
+# port-conflict guard reads it as "wait 15s for my parent to release the port",
+# so a stale value turns stranger-holder tests into long waits. Tests that need
+# it set it themselves with monkeypatch.
+os.environ.pop("MC_RESTART_FROM_PID", None)
+
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+
+# ── No test may launch a REAL model CLI ──────────────────────────────────────
+# Precedent: af7e0a3 (pytest spawned a real `claude auth login`). Measured
+# 2026-09-18: a daemon `_do_respawn` thread leaked out of a rollover test
+# (tests/test_midturn_rollover.py), outlived its monkeypatched subprocess.Popen,
+# and launched the real claude.exe with the production flag set
+# (--dangerously-skip-permissions) plus a handoff prompt on stdin — 5 of 10
+# runs. Patching `Popen.__init__` (not the module attribute) catches every route
+# in: subprocess.run/check_output, a Popen reference captured before a test
+# patched it, and threads that outlive their test. Tests that install a fake
+# `subprocess.Popen` never reach this. An attempt raises AND is recorded,
+# because the caller is often a daemon thread whose `except Exception` would
+# swallow the raise; the autouse fixture below turns every record into a test
+# failure and `pytest_sessionfinish` catches the ones that land after teardown.
+# MC_LIVE_CLI_TESTS=1 opts a run back in (the MC_LIVE_AUTH_TESTS precedent).
+_REAL_CLI_NAMES = frozenset({"claude", "codex", "gemini", "qwen"})
+_REAL_CLI_ATTEMPTS: list[str] = []
+
+
+class RealCliSpawnBlocked(Exception):
+    """A test tried to launch a real model CLI."""
+
+
+def _cli_argv0(args) -> str:
+    if isinstance(args, (str, bytes, os.PathLike)):
+        first = os.fsdecode(args).strip().split(None, 1)
+        first = first[0] if first else ""
+    else:
+        try:
+            first = os.fsdecode(args[0]) if args else ""
+        except (TypeError, IndexError):
+            first = ""
+    name = os.path.basename(first.strip("\"'")).lower()
+    return name.rsplit(".", 1)[0] if "." in name else name
+
+
+def _is_version_probe(args) -> bool:
+    """`<cli> --version` is the provider-detection probe (test_providers_endpoint_ok
+    runs it against every installed vendor). It starts no model session."""
+    if isinstance(args, (str, bytes, os.PathLike)):
+        parts = os.fsdecode(args).split()
+    else:
+        try:
+            parts = [os.fsdecode(a) for a in args]
+        except TypeError:
+            return False
+    return len(parts) == 2 and parts[1] in ("--version", "-v", "-V")
+
+
+def _install_real_cli_guard() -> None:
+    import subprocess
+    if getattr(subprocess.Popen.__init__, "_mc_cli_guard", False):
+        return
+    real_init = subprocess.Popen.__init__
+
+    def guarded_init(self, args, *a, **kw):
+        if (_cli_argv0(args) in _REAL_CLI_NAMES and not _is_version_probe(args)
+                and os.environ.get("MC_LIVE_CLI_TESTS") != "1"):
+            import threading
+            msg = (f"{os.environ.get('PYTEST_CURRENT_TEST', '-')} | thread "
+                   f"{threading.current_thread().name} | {str(args)[:200]}")
+            _REAL_CLI_ATTEMPTS.append(msg)
+            raise RealCliSpawnBlocked(
+                "a test tried to launch a real model CLI (blocked by "
+                f"tests/conftest.py; set MC_LIVE_CLI_TESTS=1 to allow): {msg}")
+        return real_init(self, args, *a, **kw)
+
+    guarded_init._mc_cli_guard = True
+    subprocess.Popen.__init__ = guarded_init
+
+
+_install_real_cli_guard()
+
+
+@pytest.fixture(autouse=True)
+def _no_real_cli_spawn():
+    """Fail the test that (or whose leaked thread) tried to launch a real CLI."""
+    before = len(_REAL_CLI_ATTEMPTS)
+    yield
+    new = _REAL_CLI_ATTEMPTS[before:]
+    if new:
+        raise AssertionError("real model CLI launch attempted:\n  " + "\n  ".join(new))
+
+
+@pytest.fixture(autouse=True)
+def _isolated_allowance_state():
+    """Importing server.py wires mc.allowance_state to the REAL
+    data/allowance_state.json, so a vendor that is genuinely out of quota on
+    the box running the suite (Codex, 2026-09-19) made unrelated dispatch
+    tests raise "out of allowance". Every test starts with empty, unwired
+    allowance state; a test that needs some sets it itself."""
+    # Imported lazily from sys.modules, never with `from mc import ...`: a
+    # fresh import inside a fixture broke subprocess handle inheritance under
+    # pytest capture on Windows (DuplicateHandle -> WinError 50, measured
+    # 2026-09-19 in test_system_update_frozen / test_uninstallers). If the
+    # module was never imported, no test can be reading its state anyway.
+    _as = sys.modules.get('mc.allowance_state')
+    if _as is None:
+        yield
+        return
+    saved = (_as.STATE_PATH, _as._STATE)
+    _as.STATE_PATH, _as._STATE = None, {}
+    yield
+    _as.STATE_PATH, _as._STATE = saved
+
+
+def pytest_sessionfinish(session, exitstatus):
+    # A leaked thread can fire after the last test's teardown; nothing else sees it.
+    if _REAL_CLI_ATTEMPTS and session.exitstatus == 0:
+        session.exitstatus = 1
+        print("\nreal model CLI launch attempted after test teardown:\n  "
+              + "\n  ".join(_REAL_CLI_ATTEMPTS))
 
 
 # Make the app modules importable when running `pytest` from anywhere.

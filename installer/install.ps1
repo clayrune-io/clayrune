@@ -4,25 +4,22 @@
 #   iwr https://clayrune.io/install.ps1 -useb | iex
 #
 # What this script does:
-#   1. Verifies Claude CLI is installed (or installs it via npm; falls back to
-#      winget Node.js + npm if npm is missing).
-#   2. Fetches the install prompt from clayrune.io.
-#   3. Discloses what is about to happen, with a short Ctrl-C abort window.
-#   4. Pipes the prompt into `claude --dangerously-skip-permissions`.
+#   1. Installs Clayrune itself (without requiring a provider CLI).
+#   2. Opens Clayrune's first-run provider picker.
+#   3. Installs/logs in to the provider the user selects, when needed.
 #
-# After authorization, Claude itself executes the install - clones the repo,
-# installs Python and Node deps, creates a Desktop / Start Menu shortcut,
-# and opens the app in the user's browser.
+# The bootstrap performs the deterministic install directly, creates a Desktop
+# / Start Menu shortcut, and opens the app in the user's browser. Provider
+# setup is intentionally deferred to the first-run UI unless explicitly pinned.
 #
 # Read the install prompt before running:
 #   iwr https://clayrune.io/install-prompt.md -useb | Select-Object -ExpandProperty Content
 #
 # Override URLs (for testing):
 #   $env:CLAYRUNE_PROMPT_URL = '...'
-#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window; also
-#                                    # skips the interactive provider prompt
-#   $env:CLAYRUNE_PROVIDER = '...'  # claude|codex|gemini - skip the "which AI
-#                                    # do you work with?" prompt
+#   $env:CLAYRUNE_NO_CONFIRM = '1'   # skip the 5-second abort window
+#   $env:CLAYRUNE_PROVIDER = '...'  # optional explicit provider override:
+#                                    # claude|codex|gemini|qwen
 #
 # EXIT CODES — a contract, not an accident. installer/win-exe/ClayruneInstaller.cs
 # maps these to the remediation menu it shows the user, so DO NOT reuse or
@@ -31,9 +28,9 @@
 # sent someone through a pointless OAuth login when the real failure was git.)
 #
 #   0  success
-#   1  a prerequisite could not be installed (Node.js / Claude CLI / runtime shell)
+#   1  an explicitly requested provider prerequisite could not be installed
 #   2  a deterministic install step failed — see the red "[STEP n/5] FAIL" line
-#   3  Claude CLI is installed but NOT AUTHENTICATED (this and only this = login)
+#   3  an explicitly requested Claude CLI is installed but NOT AUTHENTICATED
 
 $ErrorActionPreference = 'Stop'
 
@@ -221,7 +218,7 @@ function Setup-Node {
     # initialised yet) and it fails by EXIT CODE, not by throwing.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Node.js LTS via winget...'
-        $rc = Invoke-Native winget install --id OpenJS.NodeJS.LTS -e --silent `
+        $rc = Invoke-Native winget install --id OpenJS.NodeJS.LTS -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
@@ -337,7 +334,7 @@ function Setup-ClaudeRuntimeShell {
     # Attempt 1: winget. Fails by exit code, not by throwing - so check it.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Git for Windows via winget (also gives Claude its bash runtime)...'
-        $rc = Invoke-Native winget install --id Git.Git -e --silent `
+        $rc = Invoke-Native winget install --id Git.Git -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
@@ -538,70 +535,26 @@ function Exit-WithContact {
     [Environment]::Exit($Code)
 }
 
-# -- Which AI do you work with? ----------------------------------------------
-#
-# Asked ONCE, here, at install time -- not as an in-app popup an existing
-# user gets ambushed by on a routine dashboard refresh (Ron 2026-09-14).
-# Settings -> Default provider remains the place to change it later.
+# Optional provider override
+# Provider selection, CLI installation, and login belong to the first-run UI.
 $ProviderChoices = @('claude', 'codex', 'gemini', 'qwen')
-$ProviderLabels = @{ claude = 'Claude Code'; codex = 'OpenAI Codex'; gemini = 'Gemini'; qwen = 'Qwen Code' }
-
-function Get-InstalledProviders {
-    $found = @()
-    foreach ($p in $ProviderChoices) {
-        if (Get-Command $p -ErrorAction SilentlyContinue) { $found += $p }
-    }
-    return $found
-}
 
 $ChosenProvider = $env:CLAYRUNE_PROVIDER
+if ($ChosenProvider) { $ChosenProvider = $ChosenProvider.Trim().ToLower() }
 if ($ChosenProvider -and ($ProviderChoices -notcontains $ChosenProvider)) {
     Write-Host "CLAYRUNE_PROVIDER=$ChosenProvider is not one of: $($ProviderChoices -join ', ')" -ForegroundColor Red
     Exit-WithContact 1
 }
-if (-not $ChosenProvider) {
-    # @(...) is LOAD-BEARING: PowerShell unwraps a single-element array return
-    # to a bare scalar, so with exactly one CLI installed `$installedProvs`
-    # would be the STRING 'codex' and `$installedProvs[0]` would index its
-    # first CHARACTER ('c'), not the array's first element. Verified live -
-    # without this, a one-CLI machine silently defaulted to "c".
-    $installedProvs = @(Get-InstalledProviders)
-    $defaultProv = if ($installedProvs.Count -gt 0) { $installedProvs[0] } else { 'claude' }
-
-    # `iwr ... -useb | iex` still leaves Read-Host talking to the real
-    # console (unlike a POSIX pipe, PowerShell pipes objects, not stdin), so
-    # this works over the normal curl-equivalent install command. Only skip
-    # it when there is provably no one to ask: CLAYRUNE_NO_CONFIRM (already
-    # the "don't wait on me" signal) or genuinely redirected input (CI, a
-    # scheduled task, ClayruneInstaller.exe piping stdin).
-    if ($env:CLAYRUNE_NO_CONFIRM -or [Console]::IsInputRedirected) {
-        $ChosenProvider = $defaultProv
-        Write-Host "Non-interactive install: defaulting provider to $ChosenProvider (set CLAYRUNE_PROVIDER to override)."
-    } else {
-        Write-Host 'Which AI do you work with?' -ForegroundColor White
-        foreach ($p in $ProviderChoices) {
-            $mark = if ($p -eq $defaultProv) { ' (detected)' } else { '' }
-            Write-Host "  $($ProviderLabels[$p])$mark"
-        }
-        $ans = ''
-        try { $ans = Read-Host "Type one of [claude/codex/gemini/qwen], or press Enter for $defaultProv" } catch { $ans = '' }
-        $ans = ("$ans").Trim().ToLower()
-        if ([string]::IsNullOrWhiteSpace($ans)) {
-            $ChosenProvider = $defaultProv
-        } elseif ($ProviderChoices -contains $ans) {
-            $ChosenProvider = $ans
-        } else {
-            Write-Host "Unrecognized choice '$ans' - using $defaultProv." -ForegroundColor Yellow
-            $ChosenProvider = $defaultProv
-        }
-    }
-    Write-Host ''
+if ($ChosenProvider) {
+    Write-Host "OK Explicit provider: $ChosenProvider" -ForegroundColor Green
+} else {
+    Write-Host 'No provider selected yet. Clayrune will ask on first launch.' -ForegroundColor Cyan
 }
-Write-Host "OK Provider: $ChosenProvider" -ForegroundColor Green
 Write-Host ''
 
 # -- Step 0: Ensure Node 18+ is available -----------------------------------
 
+if ($ChosenProvider) {
 if (-not (Get-BoolResult (Setup-Node))) {
     Write-Host ''
     Write-Host 'Could not set up a working Node 18+ runtime automatically.' -ForegroundColor Red
@@ -779,6 +732,7 @@ if (-not $claudeAuthenticated) {
 Write-Host 'OK Authenticated' -ForegroundColor Green
 Write-Host ''
 } # ChosenProvider -ne 'claude' / -eq 'claude'
+} # explicit CLAYRUNE_PROVIDER preflight
 
 # -- Direct deterministic install (no Claude handoff) ----------------------
 #
@@ -1054,7 +1008,7 @@ $pythonExe = Find-Python311
 if (-not $pythonExe) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host '  Python 3.11+ not found. Installing via winget...' -ForegroundColor Yellow
-        $rc = Invoke-Native winget install --id Python.Python.3.12 -e --silent `
+        $rc = Invoke-Native winget install --id Python.Python.3.12 -e --silent --source winget `
             --accept-source-agreements --accept-package-agreements
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
@@ -1118,7 +1072,9 @@ if not cfg.get('default_provider'):
         json.dump(cfg, f, indent=2)
 '@
 try {
+if ($ChosenProvider) {
     & $venvPython -c $mergeScript $configPath $ChosenProvider
+}
 } catch {
     Write-Host "  (could not write default_provider into config.json: $_)" -ForegroundColor DarkGray
 }
@@ -1253,7 +1209,11 @@ Write-Host '  Clayrune is installed and running.' -ForegroundColor Green
 Write-Host '============================================================' -ForegroundColor Green
 Write-Host "  Open:     http://localhost:5199"
 Write-Host "  Location: $installDir"
-Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
+if ($ChosenProvider) {
+    Write-Host "  Provider: $ChosenProvider (change any time in Settings)"
+} else {
+    Write-Host '  Provider: choose one in Clayrune on first launch'
+}
 Write-Host '  Relaunch: double-click the Clayrune shortcut on your Desktop'
 Write-Host '            (also available in your Start Menu).'
 Write-Host '  Uninstall: choose Uninstall Clayrune from your Start Menu.'

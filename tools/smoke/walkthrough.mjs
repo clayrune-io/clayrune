@@ -51,16 +51,33 @@ const CLAYRUNE_PROJECT = {
   use_streaming_agent: true, roster: [],
 };
 
-// Two installed providers so the 'provider-choice' step's skip() guard
-// (skip when <=1 installed) actually clears — a claude-only machine (the
-// common case) would otherwise never exercise this step's own render path.
-const PROVIDERS_FIXTURE = {
-  providers: [
-    { name: 'claude', display_name: 'Claude Code', installed: true, in_use: true, default: true },
-    { name: 'codex', display_name: 'Codex', installed: true, in_use: false, default: false },
-  ],
-  default: 'claude',
-};
+// The default provider (claude) STARTS not signed in — skip() only clears
+// once the default is both installed and auth_status:'ok', so a fixture that
+// starts pre-signed-in never renders this step at all (Dave, 2026-09-18: a
+// "PASS" smoke that never showed "Which AI do you work with?" is a hollow
+// pass — the earlier fixture's auth_status:'ok' made every run skip past the
+// exact step F2/F8 exist to test). `providerAuthState` is mutated mid-tour —
+// once to exercise F2's gated-Next message, again to exercise F8's live
+// refresh — so /api/agent/providers must be read through this function, not
+// a frozen object, on every fetch.
+let providerAuthState = 'not_logged_in';
+function providersFixture() {
+  return {
+    providers: [
+      { name: 'claude', display_name: 'Claude Code', installed: true, in_use: true, default: true, auth_status: providerAuthState },
+      { name: 'codex', display_name: 'Codex', installed: true, in_use: false, default: false, auth_status: 'ok' },
+    ],
+    default: 'claude',
+  };
+}
+
+// The provider-choice step only auto-selects a vendor when `_globalConfig`
+// (from /api/config) already names a default — an empty '{}' fixture meant
+// NOTHING was ever pre-selected, so wtNext() blocked on "select at least one
+// vendor" regardless of auth_status. A fresh MC install always has some
+// default_provider (installer-set or the runtime's own fallback), so this
+// matches that, not just a smoke-only workaround.
+const CONFIG_FIXTURE = JSON.stringify({ default_provider: 'claude' });
 
 const ok = (m) => console.log('  ✓ ' + m);
 let bad = 0;
@@ -117,6 +134,49 @@ async function driveTour(page, viewportLabel, shotPaths) {
     const p = await shoot(page, shotName);
     if (p) shotPaths.push(p);
 
+    // The provider-choice step only ever renders when the default (claude)
+    // isn't signed in yet (see providerAuthState above) — exercise the two
+    // findings that step exists to fix instead of clicking straight through:
+    // F2 (a gated Next must name the blocking vendor + its exact state) and
+    // F8 ("Check setup status" must flip a live re-probe into the rendered
+    // state without a page reload).
+    if (step.title === 'Which AI do you work with?') {
+      await page.evaluate(() => window.wtNext());
+      await page.waitForTimeout(100);
+      const stillHere = await readStep(page);
+      const validation = await page.evaluate(() =>
+        (document.getElementById('wt-provider-validation') || {}).textContent || '');
+      if (stillHere && stillHere.title === step.title
+          && /claude code/i.test(validation) && /not signed in/i.test(validation)) {
+        ok(`[${viewportLabel}] F2: gated Next named the blocking vendor+state — "${validation}"`);
+      } else {
+        fail(`[${viewportLabel}] F2: gated Next didn't name vendor+state (advanced=${!stillHere || stillHere.title !== step.title}): "${validation}"`);
+      }
+
+      providerAuthState = 'ok'; // server-side sign-in happened outside Clayrune
+      await page.evaluate(() => window.wtRefreshProviders());
+      await page.waitForTimeout(150);
+      const claudeLabel = await page.evaluate(() => {
+        const row = [...document.querySelectorAll('#wt-overlay label')]
+          .find((l) => l.textContent.includes('Claude Code'));
+        const stateSpan = row && row.querySelectorAll('span')[1];
+        return stateSpan ? stateSpan.textContent : '';
+      });
+      if (claudeLabel === 'signed in') {
+        ok(`[${viewportLabel}] F8: Check setup status refreshed to "${claudeLabel}" without a reload`);
+      } else {
+        fail(`[${viewportLabel}] F8: Check setup status did not flip to signed in (got "${claudeLabel}")`);
+      }
+
+      await page.evaluate(() => window.wtNext());
+      await page.waitForTimeout(200);
+      const advanced = await readStep(page);
+      if (!advanced || advanced.title === step.title) {
+        fail(`[${viewportLabel}] Next stayed gated after Check setup status reported signed in`);
+      }
+      continue;
+    }
+
     await page.evaluate(() => window.wtNext());
     await page.waitForTimeout(200); // onEnter/onLeave + async fetches settle
   }
@@ -142,10 +202,10 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([CLAYRUNE_PROJECT]) });
-    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: CONFIG_FIXTURE });
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
-    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
+    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providersFixture()) });
     return route.abort();
   });
 
@@ -170,10 +230,10 @@ try {
     const hit = STATIC[path];
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([CLAYRUNE_PROJECT]) });
-    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: CONFIG_FIXTURE });
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
-    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
+    if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(providersFixture()) });
     return route.abort();
   });
   await pageMobile.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });

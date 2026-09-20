@@ -35,10 +35,12 @@ def env(tmp_path, monkeypatch):
     from mc import state as mc_state
     from mc import workflows as wf
     from mc.blueprints import agent_routes as ar
+    from mc.delegation_delivery import DeliveryStore
 
     data_dir = tmp_path / 'projects'
     data_dir.mkdir()
     monkeypatch.setattr(ar, 'DATA_DIR', data_dir)
+    monkeypatch.setattr(ar, '_delivery_store', DeliveryStore(tmp_path / 'delegation.db'))
 
     # The project's default provider is the fake non-claude runtime -- the
     # incident resolved codex from the character's engine pin, which lands on
@@ -112,9 +114,16 @@ def test_non_claude_child_reports_back_to_its_spawner(env):
     sid = env['ar']._dispatch_agent_internal(
         'proj1', 'task', notify_session='spawner00001')
     _finish_turn(env, sid, ['Vance here.', 'HPE leads.'])
+    # 'Vance here.' + 'HPE leads.' are two consecutive real-content log_lines
+    # from the SAME turn (no bracket/seed line between them) -- the spawner
+    # summary must be the full reply, not just its last fragment. Before the
+    # MC-947 fix (`_collect_trailing_reply_text`), `_last_reply_text` took
+    # only the single last log_lines entry, which is exactly the shape of the
+    # live bug: a Mode-A provider's multi-chunk reply logged as separate
+    # array elements got truncated to its final chunk.
     assert env['spawner_calls'] == [{
         'project_id': 'proj1', 'notify_sid': 'spawner00001',
-        'child': sid, 'summary': 'HPE leads.'}]
+        'child': sid, 'summary': 'Vance here.HPE leads.'}]
 
 
 def test_workflow_agent_step_on_non_claude_provider_advances_the_run(env):

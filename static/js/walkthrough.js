@@ -3,6 +3,9 @@
 let wtActive = false;
 let wtStep = 0;
 let wtDontShow = false;
+let wtSelectedProviders = new Set();
+let wtExplicitDefault = '';
+let wtProviderChoiceVisited = false;
 
 const WT_STEPS = [
   {
@@ -24,26 +27,24 @@ const WT_STEPS = [
       // report 2026-09-15: a 2-provider list with the 3rd silently missing).
       const provs = (_agentProviders || []).slice()
         .sort((a, b) => (b.installed ? 1 : 0) - (a.installed ? 1 : 0));
-      const cur = (_globalConfig && _globalConfig.default_provider) || 'claude';
-      return `Clayrune drives whichever coding agent you sign in with. Pick one — you can change this any time in Settings, or per-chat in the composer.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
-        provs.map(p => {
-          const state = _wtProviderState(p);
-          const installBtn = p.installed ? '' : `
-            <button type="button" class="btn-add" style="padding:2px 10px;font-size:11px;flex-shrink:0"
-              onclick="event.preventDefault();wtInstallProvider('${esc(p.name)}',this)">Install</button>`;
-          return `
-          <div>
-            <label style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
-              <input type="radio" name="wt-provider" value="${esc(p.name)}" ${cur === p.name ? 'checked' : ''}
-                onchange="wtSetDefaultProvider('${esc(p.name)}')"
-                style="width:15px;height:15px;accent-color:var(--accent)">
-              <span style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
-              <span style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
-              ${installBtn}
-            </label>
-            <div id="wt-install-msg-${esc(p.name)}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
-          </div>`;
-        }).join('') + `</div>`;
+      const cur = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider) || '';
+      if (!wtProviderChoiceVisited) {
+        if (cur) wtSelectedProviders.add(cur);
+        // Vendors already installed AND signed in need no setup — pre-tick
+        // them so the user only has to act on what's missing.
+        provs.forEach(p => { if (p.installed && p.auth_status === 'ok') wtSelectedProviders.add(p.name); });
+      }
+      wtProviderChoiceVisited = true;
+      return `Choose one or more vendors to set up. Pick one default; every selected vendor stays available per agent and per chat.<div style="margin-top:14px;display:flex;flex-direction:column;gap:8px;text-align:left">` +
+        provs.map(p => _renderProviderRow(p, {
+          mode: 'tour',
+          selected: wtSelectedProviders.has(p.name),
+          defaultName: cur,
+          keyEntry: true,   // clean-VM run 3 (C4): Qwen's only sign-in is a key, so the tour row needs the same key field Settings shows
+        })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
+          <button type="button" class="btn-add" onclick="wtInstallSelectedProviders(this)">Install selected</button>
+          <button type="button" class="btn-add" onclick="wtRefreshProviders()">Check setup status</button>
+        </div><div id="wt-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`;
     },
     target: null, pos: 'center',
     // Skip ONLY when the installer already wrote default_provider into
@@ -52,7 +53,16 @@ const WT_STEPS = [
     // step exists to avoid. Does NOT skip on "only one CLI installed" (or
     // zero) any more: that was exactly the fresh-Mac-.app case where nothing
     // is installed yet and the user still needs to see the install offer.
-    skip: () => !!(_globalConfig && _globalConfig.default_provider),
+    // A saved default alone is not enough: this step's own save writes it too,
+    // so after a reload a user who picked but never installed was skipped past
+    // the only install offer (clean-VM run, 2026-09-18). Skip only when that
+    // default is actually installed and signed in.
+    skip: () => {
+      if (wtProviderChoiceVisited) return false;
+      const d = _globalConfig && _globalConfig.default_provider;
+      const p = d && (_agentProviders || []).find(x => x.name === d);
+      return !!(p && p.installed && p.auth_status === 'ok');
+    },
   },
   {
     id: 'advanced-picker',
@@ -166,6 +176,15 @@ const WT_STEPS = [
 // Provider-choice step handler. Reuses the generic saveSetting() PUT that
 // Settings -> Default provider already calls — one write path, not two.
 async function wtSetDefaultProvider(name) {
+  if (!wtSelectedProviders.has(name)) return;
+  wtExplicitDefault = name;
+  await applyDefaultProvider(name);
+}
+
+// The save + refresh half of the above, shared with Settings -> Providers'
+// per-row "Set default" (provider-auth.js settingsSetDefaultProvider) so the
+// tour and Settings can't drift into two ways of changing the default.
+async function applyDefaultProvider(name) {
   await saveSetting('default_provider', name);
   // First-run follows the user's choice immediately. Refresh the provider
   // inventory (its `default`/`in_use` flags predate this click), then run the
@@ -176,14 +195,242 @@ async function wtSetDefaultProvider(name) {
   if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
 }
 
-// Per-provider state label for the provider-choice step — same three states
-// the Settings provider card already shows (provider-settings.js), so a user
-// who later opens Settings sees consistent language, not a second vocabulary.
+// F6 (clean-VM run 2026-09-18): the install route may have changed (or
+// deliberately left alone) the PowerShell script policy so typed claude/gemini
+// works; when it has something to say, show it verbatim next to the install
+// message rather than changing the user's machine silently.
+function _wtPolicyNote(data) {
+  const m = data && data.execution_policy && data.execution_policy.message;
+  return m ? ' ' + m : '';
+}
+
+function wtSelectProvider(name, selected) {
+  if (selected) wtSelectedProviders.add(name);
+  else wtSelectedProviders.delete(name);
+  if (wtActive) wtShow(wtStep);
+}
+
+// F7 (clean-VM run 2026-09-18): used to loop calling wtInstallProvider() per
+// vendor, and EACH call opened its OWN terminal — ticking Claude + Gemini
+// launched two concurrent `winget install ... NodeJS` calls that raced each
+// other. One batch request now runs every selected-but-uninstalled vendor
+// in a single terminal, with the Node/npm (or pip/uv) prerequisite handled
+// once — see agent_routes.py's _provider_install_command_batch.
+// `only`: Settings -> Providers passes its own checked rows; the tour omits it
+// and gets its wtSelectedProviders set.
+async function wtInstallSelectedProviders(button, only) {
+  const names = (_agentProviders || [])
+    .filter((p) => (only ? only.includes(p.name) : wtSelectedProviders.has(p.name)) && !p.installed)
+    .map((p) => p.name);
+  if (!names.length) return;
+  if (button) button.disabled = true;
+  const msgFor = (name) => document.getElementById(`wt-install-msg-${name}`);
+  try {
+    const res = await fetch(API_BASE + '/api/agent/providers/install-launch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ names }),
+    });
+    const data = await res.json().catch(() => ({}));
+    if (data.ok) {
+      for (const name of (data.installed || names)) {
+        const el = msgFor(name);
+        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".' + _wtPolicyNote(data);
+      }
+      for (const name of (data.unsupported || [])) {
+        const el = msgFor(name);
+        if (el) el.textContent = 'No automatic install available for this vendor — see its own Install button.';
+      }
+    } else if (data.command) {
+      for (const name of names) {
+        const el = msgFor(name);
+        if (el) el.textContent = `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`;
+      }
+    } else {
+      for (const name of names) {
+        const el = msgFor(name);
+        if (el) el.textContent = data.error || 'Could not start the install.';
+      }
+    }
+  } catch (e) {
+    for (const name of names) {
+      const el = msgFor(name);
+      if (el) el.textContent = 'Install failed: ' + e;
+    }
+  } finally {
+    if (button) button.disabled = false;
+  }
+}
+
+// Per-provider state label — ONE vocabulary for the tour and Settings ->
+// Providers (both render rows through _renderProviderRow below).
 function _wtProviderState(p) {
   if (!p.installed) return { label: 'not installed', color: 'var(--text-faint)' };
   if (p.auth_status === 'ok') return { label: 'signed in', color: 'var(--green)' };
   if (p.auth_status === 'not_logged_in') return { label: 'not signed in', color: 'var(--amber)' };
+  // F9 (clean-VM run 2026-09-18): a Gemini OAuth credential file can exist
+  // and still be dead — Google retired personal-account sign-in for Gemini
+  // Code Assist. Local evidence alone can't tell live vs. dead, so it's
+  // reported honestly instead of a false green "signed in".
+  if (p.auth_status === 'unverified') return { label: 'unverified', color: 'var(--amber)' };
+  if (p.auth_status === 'oauth_rejected') return { label: 'sign-in rejected', color: 'var(--amber)' };
+  // MC-934: a key that exists but has no quota left, or is refused, is
+  // neither "signed in" nor merely "not signed in".
+  if (p.auth_status === 'quota_exceeded') return { label: 'quota exceeded', color: 'var(--red)' };
+  if (p.auth_status === 'invalid_api_key') return { label: 'credentials invalid', color: 'var(--red)' };
   return { label: 'installed', color: 'var(--text-faint)' };
+}
+
+// THE provider row — one component for every vendor (Claude included), used
+// by the tour's provider-choice step and by Settings -> Providers, so both
+// surfaces and every vendor look and behave the same. Per-vendor differences
+// live only in what an action DOES (the server-side login flow, the optional
+// API-key field), never in the row's shape. Structure:
+//   .prov-row > label.prov-row-head (select box, name, state pill, Install)
+//             > .prov-row-actions   (Default radio, Sign in, Sign in remotely,
+//                                    Check status)
+//             > .prov-row-detail    (version / error text / install hint)
+//             > .prov-row-extra     (API-key entry, if the vendor takes one;
+//                                    opts.keyEntry — Settings and the tour)
+//             > #wt-install-msg-<name>
+// opts.mode 'tour'     — box = "set this vendor up"; actions only when selected
+//           'settings' — box = "batch-install this one" (uninstalled rows
+//                        only); actions for every installed vendor
+function _renderProviderRow(p, opts) {
+  const tour = opts.mode === 'tour';
+  const n = esc(p.name);
+  const state = _wtProviderState(p);
+  const installed = !!p.installed;
+  const authOk = p.auth_status === 'ok';
+  const isDefault = opts.defaultName === p.name;
+  const showActions = tour ? !!opts.selected : installed;
+  const box = tour
+    ? `<input type="checkbox" name="wt-provider" class="prov-row-select" value="${n}" ${opts.selected ? 'checked' : ''}
+         onchange="wtSelectProvider('${n}',this.checked)"
+         style="width:15px;height:15px;accent-color:var(--accent)">`
+    : (installed ? '' : `<input type="checkbox" class="prov-row-select settings-prov-install-sel" value="${n}"
+         aria-label="Select ${esc(p.display_name)} for batch install"
+         style="width:15px;height:15px;accent-color:var(--accent)">`);
+  const installBtn = installed ? '' : `
+              <button type="button" class="btn-add prov-install" style="padding:2px 10px;font-size:11px;flex-shrink:0"
+                onclick="event.preventDefault();wtInstallProvider('${n}',this)">Install</button>`;
+  const btnCss = 'padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)';
+  const costs = !!(p.capabilities && p.capabilities.auth_probe_spends_quota);
+  const defaultCtl = tour
+    ? `<label class="prov-default"><input type="radio" name="wt-provider-default" ${isDefault ? 'checked' : ''}
+         onchange="wtSetDefaultProvider('${n}')"> Default</label>`
+    : `<label class="prov-default"><input type="radio" name="prov-default" ${isDefault ? 'checked' : ''}
+         onchange="settingsSetDefaultProvider('${n}')"> Default</label>`;
+  const needSignIn = installed && (!authOk || opts.signInWhenOk);
+  const actions = !showActions ? '' : `<div class="prov-row-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
+              ${defaultCtl}
+              ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
+                onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}
+              ${needSignIn && p.remote_login ? `<button type="button" class="btn-add prov-sign-in-remote" style="${btnCss}"
+                onclick="settingsRemoteLogin('${n}',this)">Sign in remotely</button>` : ''}
+              ${installed ? `<button type="button" class="btn-add prov-check" style="${btnCss}"
+                ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."` : ''}
+                onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
+            </div>`;
+  // Out-of-allowance record: shown here with the way out. The record is one
+  // failed run's evidence and nothing else corrects it after a top-up, so the
+  // user can ask Clayrune to look again (mc/blueprints/agent_routes.py
+  // agent_allowance_recheck). Wording is a re-check, not an override — a vendor
+  // that is still out just refuses again on the next run.
+  const allowance = (installed && p.allowance_exhausted)
+    ? `<div class="prov-row-allowance" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px 0;font-size:11px;color:var(--amber)">
+              <span>${esc(p.allowance_exhausted)}</span>
+              ${_allowanceRecheckBtn(p.name)}
+            </div>` : '';
+  const bits = [];
+  if (installed && p.version) bits.push('v' + esc(p.version));
+  if (installed && !authOk && p.auth_error_text) bits.push(esc(String(p.auth_error_text).slice(0, 200)));
+  if (!installed && p.install_hint) bits.push(`<span style="font-family:monospace;color:var(--accent)">${esc(p.install_hint)}</span>`);
+  const detail = bits.length
+    ? `<div class="prov-row-detail" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0;word-break:break-word">${bits.join(' · ')}</div>` : '';
+  const envKey = (opts.keyEntry && installed && showActions && window.PROVIDER_AUTH_KEYS) ? window.PROVIDER_AUTH_KEYS[p.name] : '';
+  const extra = envKey ? `<div class="prov-row-extra" style="display:flex;gap:6px;align-items:center;flex-wrap:wrap;padding:6px 8px 0">
+              <span style="font-size:11px;color:var(--text-faint);min-width:130px">${esc(envKey)}</span>
+              <input id="settings-prov-key-${n}" type="password" class="settings-input" style="flex:1;min-width:140px"
+                placeholder="${authOk ? '(saved — paste to replace)' : 'paste API key'}" autocomplete="off">
+              <button type="button" class="btn-add" onclick="settingsProviderSetEnv('${n}','${esc(envKey)}',this)">Save</button>
+            </div>` : '';
+  return `
+          <div class="prov-row" data-provider="${n}">
+            <label class="prov-row-head" style="display:flex;align-items:center;gap:10px;cursor:pointer;padding:8px;border-radius:4px;background:var(--surface2)">
+              ${box}
+              <span class="prov-row-name" style="flex:1;font-weight:600;color:var(--text)">${esc(p.display_name)}</span>
+              <span class="prov-row-state" id="prov-auth-pill-${n}" style="font-size:11px;font-weight:600;color:${state.color}">${esc(state.label)}</span>
+              ${installBtn}
+            </label>
+            ${actions}
+            ${allowance}
+            ${detail}
+            ${extra}
+            <div id="wt-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
+          </div>`;
+}
+
+// "Re-check allowance" button — shared by the provider row and the composer's
+// out-of-allowance warning so both say the same thing.
+function _allowanceRecheckBtn(name) {
+  return `<button type="button" class="btn-add prov-allowance-recheck" style="padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)"
+    title="Topped up? This clears Clayrune's out-of-allowance note for this agent so the next run can try again. If it is still out, that run will say so."
+    onclick="providerAllowanceRecheck('${esc(name)}',this)">Re-check allowance</button>`;
+}
+
+async function providerAllowanceRecheck(name, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Checking…'; }
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${encodeURIComponent(name)}/allowance/recheck`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    const label = ((_agentProviders || []).find(x => x.name === name) || {}).display_name || name;
+    showToast(data.probe === 'usable'
+      ? `${label} reports allowance available — ready to run.`
+      : `${label} allowance re-checked. The next run will confirm; if it is still out, it will say so.`, 6000);
+    _agentProviders = null;
+    await _ensureAgentProviders();
+    _repaintProviderRows();
+    if (typeof refreshModal === 'function') refreshModal();
+  } catch (e) {
+    showToast('Allowance re-check failed: ' + e, 8000);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Re-check allowance'; }
+  }
+}
+
+// Per-row "Check status": re-probe ONE vendor (POST /api/agent/<p>/auth-probe —
+// the same route for every vendor, Claude's `claude -p ok` and Gemini's
+// quota-costing live call included; the tooltip discloses the cost), fold the
+// verdict into the cached provider list, and repaint whichever surface shows
+// the row.
+async function providerCheckStatus(name, btnEl) {
+  const msgEl = document.getElementById(`wt-install-msg-${name}`);
+  if (btnEl) btnEl.disabled = true;
+  if (msgEl) msgEl.textContent = 'Checking…';
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${name}/auth-probe`, { method: 'POST' });
+    const state = await res.json().catch(() => ({}));
+    const p = (_agentProviders || []).find(x => x.name === name);
+    if (p && res.ok) {
+      p.auth_status = state.status || (state.ok ? 'ok' : 'unknown');
+      p.auth_error_text = state.error_text || null;
+    }
+    _repaintProviderRows();
+  } catch (e) {
+    if (msgEl) msgEl.textContent = 'Check failed: ' + e;
+  } finally {
+    if (btnEl) btnEl.disabled = false;
+  }
+}
+
+// Repaint every surface that renders provider rows from the cached list. The
+// Settings rebuild keeps the drill-down position (module-scope view state).
+function _repaintProviderRows() {
+  if (wtActive) wtShow(wtStep);
+  if (document.getElementById('settings-providers-section') && typeof window._renderSettings === 'function') {
+    window._renderSettings();
+  }
 }
 
 // "Install" button on an uninstalled provider row. Launches the SAME command
@@ -201,7 +448,7 @@ async function wtInstallProvider(name, btnEl) {
                             { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (data.ok) {
-      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.';
+      if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.' + _wtPolicyNote(data);
       if (btnEl) {
         btnEl.textContent = 'Refresh';
         btnEl.disabled = false;
@@ -220,14 +467,18 @@ async function wtInstallProvider(name, btnEl) {
   }
 }
 
-// Re-fetch /api/agent/providers (bypassing the boot-time cache, same pattern
-// as settingsProviderRefresh in provider-auth.js) and re-render the CURRENT
-// walkthrough step so a just-installed CLI's state flips from "not installed"
-// without the user having to close and reopen the tour.
+// Re-fetch /api/agent/providers AND force every runtime to re-probe its auth
+// state (`_ensureAgentProviders(true)` → `?refresh=1`) rather than just
+// re-reading the server's cached health_check() result — a plain re-fetch
+// still returned stale not_logged_in for a provider signed in from OUTSIDE
+// Clayrune (F8, clean-VM run 2026-09-18: `claude auth status` showed
+// loggedIn:true, but this button kept the step blocked until a server
+// restart). Then re-render the CURRENT step so a just-installed/signed-in
+// CLI's state flips without the user having to close and reopen the tour.
 async function wtRefreshProviders() {
-  _agentProviders = null;
-  try { await _ensureAgentProviders(); } catch (e) { /* leave stale on failure */ }
-  if (wtActive) wtShow(wtStep);
+  try { await _ensureAgentProviders(true); } catch (e) { /* leave stale on failure */ }
+  // Settings -> Providers reuses this button + the install handlers above.
+  _repaintProviderRows();
 }
 
 // Build virtual demo elements for the walkthrough
@@ -643,7 +894,48 @@ function wtPositionCard(targetEl, cardEl, pos) {
   cardEl.style.top = top + 'px';
 }
 
-function wtNext() { if (wtStep < WT_STEPS.length - 1) wtShow(wtStep + 1); else wtEnd(); }
+// Human-readable reason a selected provider is blocking Next — F2 (clean-VM
+// run 2026-09-18): the old message was the step's own static hint repeated
+// verbatim, so clicking a gated Next looked like it did nothing. Naming the
+// exact vendor + exact problem gives the user something actionable instead.
+function _wtProviderBlockReason(p) {
+  if (!p.installed) return 'not installed';
+  switch (p.auth_status) {
+    case 'not_logged_in': return 'not signed in';
+    case 'invalid_api_key': return 'invalid API key';
+    case 'quota_exceeded': return 'quota exceeded';
+    case 'unverified': return 'sign-in unverified — see note below';
+    case 'oauth_rejected': return 'sign-in rejected by Google';
+    case 'unknown': return 'status unknown — click Check setup status';
+    default: return 'not signed in';
+  }
+}
+
+function wtNext() {
+  if (WT_STEPS[wtStep].id === 'provider-choice') {
+    const selected = (_agentProviders || []).filter(p => wtSelectedProviders.has(p.name));
+    const defaultProvider = wtExplicitDefault || (_globalConfig && _globalConfig.default_provider);
+    const problems = [];
+    if (!selected.length) {
+      problems.push('Select at least one vendor.');
+    } else {
+      if (!wtSelectedProviders.has(defaultProvider)) {
+        problems.push('Choose a default from your selected vendors.');
+      }
+      for (const p of selected) {
+        if (!p.installed || p.auth_status !== 'ok') {
+          problems.push(`${p.display_name || p.name}: ${_wtProviderBlockReason(p)}`);
+        }
+      }
+    }
+    if (problems.length) {
+      const el = document.getElementById('wt-provider-validation');
+      if (el) el.textContent = problems.join(' · ') + ' — or skip the tour and finish setup later.';
+      return;
+    }
+  }
+  if (wtStep < WT_STEPS.length - 1) wtShow(wtStep + 1); else wtEnd();
+}
 function wtBack() {
   let prev = wtStep - 1;
   while (prev > 0 && WT_STEPS[prev].skip && WT_STEPS[prev].skip()) prev--;
@@ -683,6 +975,13 @@ window.wtBack = wtBack; // interop: wt-card generated onclick (Back)
 window.wtSkip = wtSkip; // interop: wt-card generated onclick (Skip)
 window.wtEnd = wtEnd;   // interop: wt-card generated onclick (Get Started)
 window.wtSetDefaultProvider = wtSetDefaultProvider; // interop: provider-choice step's generated onchange
+window.wtSelectProvider = wtSelectProvider; // interop: provider selection checkboxes
+window.wtInstallSelectedProviders = wtInstallSelectedProviders; // interop: install selected button
+window._renderProviderRow = _renderProviderRow; // interop: Settings -> Providers (provider-settings.js) renders its rows with the tour's component
+window.providerCheckStatus = providerCheckStatus; // interop: per-row Check status button onclick
+window.providerAllowanceRecheck = providerAllowanceRecheck; // provider row + composer warning onclick
+window._allowanceRecheckBtn = _allowanceRecheckBtn; // composer warning (conversation.js)
+window.applyDefaultProvider = applyDefaultProvider; // interop: Settings -> Providers per-row Set default (provider-auth.js)
 window.wtInstallProvider = wtInstallProvider; // interop: provider-choice step's generated Install button onclick
 window.wtRefreshProviders = wtRefreshProviders; // interop: wtInstallProvider's generated Refresh button onclick
 // interop: the "Don't show this again" checkbox writes `wtDontShow=this.checked`

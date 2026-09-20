@@ -269,13 +269,18 @@ def test_projects_list_live_agent_priority(client):
 
 # ── POST /api/project/<id> ───────────────────────────────────────────────────
 
-def test_create_project_auto_workspace(client):
+def test_create_project_auto_workspace(client, monkeypatch):
+    from mc.blueprints import project_routes as pr
+    recreated = []
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        recreate_project=lambda project_id: recreated.append(project_id)))
     r = client.post('/api/project/newproj', json={'name': 'New'})
     assert r.status_code == 200
     rec = json.loads((client.data_dir / 'newproj.json').read_text(encoding='utf-8'))
     assert rec['name'] == 'New'
     ws = Path(rec['project_path'])
     assert ws.is_dir() and ws.name == 'newproj'
+    assert recreated == ['newproj']
 
 
 def test_create_project_auto_installs_fence_hook(client):
@@ -466,8 +471,26 @@ def test_existing_project_path_change_to_install_dir_still_refused(client, monke
 
 # ── generate_summary ─────────────────────────────────────────────────────────
 
-def test_generate_summary_happy(client):
+def _stub_transform(monkeypatch, result):
+    """generate_summary runs through the provider-neutral transform seam; a
+    test double there guarantees no real CLI is spawned."""
+    from mc.blueprints import project_routes as pr
+    calls = []
+
+    def transform(provider, **kw):
+        calls.append((provider, kw))
+        if isinstance(result, BaseException):
+            raise result
+        return result
+
+    monkeypatch.setattr(pr._agent_runtime, 'run_text_transform', transform)
+    return calls
+
+
+def test_generate_summary_happy(client, monkeypatch):
     _seed(client)
+    calls = _stub_transform(monkeypatch, json.dumps(
+        {'emoji': '⚙', 'summary': 'A test summary.'}))
     r = client.post('/api/project/tproj/generate_summary', json={})
     assert r.status_code == 200
     body = r.get_json()
@@ -475,17 +498,17 @@ def test_generate_summary_happy(client):
     assert body['summary'] == 'A test summary.'
     rec = json.loads((client.data_dir / 'tproj.json').read_text(encoding='utf-8'))
     assert rec['summary'] == 'A test summary.'
-    cmd, kw = client.run_calls[0]
-    assert cmd[0] == 'claude-stub' and '--output-format' in cmd
+    assert calls and calls[0][0] == 'claude'
+    assert client.run_calls == []          # no feature-owned subprocess
 
 
-def test_generate_summary_claude_missing_and_timeout(client):
+def test_generate_summary_claude_missing_and_timeout(client, monkeypatch):
+    from mc import agent_runtime
     _seed(client)
-    client.holder['run'] = lambda cmd, kw: FileNotFoundError('no claude')
+    _stub_transform(monkeypatch, agent_runtime.CLINotInstalledError('no claude'))
     assert client.post('/api/project/tproj/generate_summary',
                        json={}).status_code == 500
-    client.holder['run'] = lambda cmd, kw: real_subprocess.TimeoutExpired(
-        cmd='claude-stub', timeout=30)
+    _stub_transform(monkeypatch, TimeoutError('timeout after 30s'))
     assert client.post('/api/project/tproj/generate_summary',
                        json={}).status_code == 504
 
@@ -497,7 +520,7 @@ def test_generate_summary_unknown_project_404(client):
 
 # ── DELETE /api/project/<id> ─────────────────────────────────────────────────
 
-def test_delete_project_full_cleanup(client):
+def test_delete_project_full_cleanup(client, monkeypatch):
     att = client.uploads / 'tproj_it1_aa.png'
     att.write_bytes(b'png')
     _seed(client, backlog=[{'id': 'it1', 'text': 't', 'attachments': [
@@ -508,6 +531,10 @@ def test_delete_project_full_cleanup(client):
         'project_id': 'tproj', 'status': 'running', 'proc': proc}
     client.state.terminal_sessions['t1'] = {
         'project_id': 'tproj', 'status': 'running'}
+    revoked = []
+    from mc.blueprints import project_routes as pr
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id)))
 
     r = client.delete('/api/project/tproj')
     assert r.status_code == 200
@@ -518,10 +545,16 @@ def test_delete_project_full_cleanup(client):
     assert 's1' not in client.state.agent_sessions
     assert 't1' not in client.state.terminal_sessions
     assert client.killed_terms == [{'project_id': 'tproj', 'status': 'running'}]
+    assert revoked == ['tproj']
 
 
-def test_delete_project_404(client):
+def test_delete_project_404(client, monkeypatch):
+    from mc.blueprints import project_routes as pr
+    revoked = []
+    monkeypatch.setattr(pr, '_runtime_lifecycle_service', types.SimpleNamespace(
+        revoke_project=lambda project_id: revoked.append(project_id)))
     assert client.delete('/api/project/nope').status_code == 404
+    assert revoked == []
 
 
 # ── backlog CRUD ─────────────────────────────────────────────────────────────

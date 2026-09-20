@@ -514,7 +514,7 @@ class TestDispatchRejectsUnresolvableCharacter:
         ar = env['ar']
         monkeypatch.setattr(ar, 'load_project', lambda pid: self._project_gemini(env))
         monkeypatch.setattr(ar, '_dispatch_via_runtime', lambda *a, **kw: 'sidR')
-        monkeypatch.setattr(ar, '_prior_character', lambda pid, rid: 'global:phantom')
+        monkeypatch.setattr(ar, '_prior_character', lambda *args: 'global:phantom')
         sid = ar._dispatch_agent_internal(
             'tc', 'do a thing', resume_id='csid1', strict_character=True)
         assert sid == 'sidR'

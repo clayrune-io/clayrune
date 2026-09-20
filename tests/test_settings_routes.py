@@ -148,6 +148,28 @@ def test_update_config_happy_persists(ctx):
     assert saved['agent_name'] == 'Vector'
 
 
+def test_delegation_warning_setting_round_trips_and_rejects_invalid_values(ctx):
+    settings_source = (PROJECT_ROOT / 'static' / 'js' / 'settings-drill.js').read_text(encoding='utf-8')
+    assert "numInput('delegation_payload_warning_bytes'" in settings_source
+    assert "type=\"number\"" in settings_source
+    assert "saveSetting('${key}',parseInt(this.value)||0)" in settings_source
+    valid = ctx.client.put('/api/config', json={'delegation_payload_warning_bytes': 0})
+    assert valid.status_code == 200
+    assert valid.get_json()['updated'] == ['delegation_payload_warning_bytes']
+    saved = json.loads(ctx.config_path.read_text(encoding='utf-8'))
+    assert saved['delegation_payload_warning_bytes'] == 0
+    # Simulate reload from the persisted config and verify the GET projection.
+    ctx.state.CONFIG['delegation_payload_warning_bytes'] = saved['delegation_payload_warning_bytes']
+    assert ctx.client.get('/api/config').get_json()['delegation_payload_warning_bytes'] == 0
+    baseline = dict(ctx.state.CONFIG)
+    saved_baseline = ctx.config_path.read_text(encoding='utf-8')
+    for invalid in (-1, True, 1.5, float('nan'), float('inf')):
+        response = ctx.client.put('/api/config', json={'delegation_payload_warning_bytes': invalid})
+        assert response.status_code == 400, invalid
+        assert ctx.state.CONFIG == baseline
+        assert ctx.config_path.read_text(encoding='utf-8') == saved_baseline
+
+
 def test_update_config_cleans_the_agent_face(ctx):
     """`agent_avatar` is the one editable key with a SHAPE. Cleaned on write,
     not just where it is drawn — config.json is read by more than one surface,

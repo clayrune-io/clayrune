@@ -91,6 +91,23 @@ class TestBuildClaudeFlagsEquivalence:
     used to produce. Reference implementation copied from the pre-refactor
     version of server.py for cross-check."""
 
+    @pytest.fixture(autouse=True)
+    def _no_guardrail_file(self, monkeypatch):
+        # W2 appends `--settings <file>` only when the per-launch guardrail file
+        # exists on THIS machine's disk, so without pinning it these tests passed
+        # or failed depending on whether a prior run had generated
+        # ~/.clayrune/... (8 failures in isolation, 0 inside the full suite).
+        # The guardrail flag has its own test below.
+        monkeypatch.setattr(ar, "_guardrail_launch_file", lambda _p: None)
+
+    def test_guardrail_settings_appended_when_present(self, monkeypatch, tmp_path):
+        f = tmp_path / 'claude-guard.json'
+        f.write_text('{}', encoding='utf-8')
+        monkeypatch.setattr(ar, "_guardrail_launch_file",
+                            lambda p: f if p == 'claude' else None)
+        cmd = ar.ClaudeRuntime().build_command()
+        assert cmd[-2:] == ['--settings', str(f)]
+
     def _legacy_flags(self, *, model='', max_turns=0, streaming=False,
                       perm_mode='', channels='', remote_control=False):
         """Pre-refactor _build_claude_flags() logic reconstructed from git history."""
@@ -265,10 +282,15 @@ class TestScribeCallEquivalence:
         rt = _fresh_claude()
         calls, _ = self._capture_run_calls(rt, 'haiku', 'Summarize.', 'content')
         cmd = calls[0]['cmd']
-        assert '--allowedTools' in cmd
-        assert cmd[cmd.index('--allowedTools') + 1] == ''       # zero tools
+        # `--tools ''` empties the tool SET; `--allowedTools ''` did not
+        # (measured 2026-09-17: 34 tools still loaded). Hooks, plugins and
+        # skills are off via --setting-sources '' + --disable-slash-commands.
+        assert '--allowedTools' not in cmd
+        assert cmd[cmd.index('--tools') + 1] == ''              # zero tools
         assert '--strict-mcp-config' in cmd
         assert cmd[cmd.index('--mcp-config') + 1] == '{"mcpServers":{}}'
+        assert cmd[cmd.index('--setting-sources') + 1] == ''
+        assert '--disable-slash-commands' in cmd
 
     def test_oneshot_fences_the_transcript_as_data(self):
         """Recency wins in a long context: without a trailing restatement the
@@ -356,7 +378,8 @@ class TestScribeCallEquivalence:
 
                 def _other():
                     r = subprocess.run([sys.executable, '-c', 'print("foreign")'],
-                                       capture_output=True, text=True)
+                                       capture_output=True, text=True,
+                                       stdin=subprocess.DEVNULL)
                     foreign['out'] = (r.stdout or '').strip()
                     done.set()
 
@@ -471,7 +494,10 @@ class TestGeminiRuntimeSmoke:
         session_dict = {
             'session_id': 'fu_001', 'status': 'idle', 'log_lines': [],
             'project_id': 'test_proj',
-            '_gemini_session_id': 'sess-uuid-abc123',
+            # Generic `provider_session_id` (W4, MC-947) — not the old
+            # gemini-private `_gemini_session_id` key, which nothing durable
+            # ever read (see GeminiRuntime._read_stream's INIT branch).
+            'provider_session_id': 'sess-uuid-abc123',
             '_system_prompt': 'HEAVY STASHED CONTEXT ' * 500,
         }
         handle = ar.SessionHandle(

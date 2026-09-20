@@ -49,9 +49,12 @@ _data_root: Path | None = None        # data/projects/
 _skills_root: Path | None = None      # data/skills/
 _atomic_write_text = None             # server._atomic_write_text
 _scribe_call = None                   # server._scribe_call (cheap-model wrapper)
+_text_transform = None                # memory._provider_transform seam
+_resolve_model = None                 # memory._model_for_provider seam
 _scribe_render_transcript = None      # server._scribe_render_transcript
 _log = None                           # server._log
 _load_project = None
+_load_agent_log = None
 _save_project = None
 _now_iso = None
 _config_get = None                    # CONFIG.get-equivalent (callable: key, default)
@@ -61,22 +64,88 @@ _get_per_project_semaphore = None     # parent design BoundedSemaphore cap=2
 def register(*, data_root: Path, skills_root: Path,
              atomic_write_text, scribe_call, scribe_render_transcript,
              log, load_project, save_project, now_iso, config_get,
-             get_per_project_semaphore):
+             get_per_project_semaphore, text_transform=None,
+             resolve_model=None, load_agent_log=None):
     """Inject server helpers — called once at startup."""
     global _data_root, _skills_root, _atomic_write_text, _scribe_call
+    global _text_transform, _resolve_model
     global _scribe_render_transcript, _log, _load_project, _save_project
-    global _now_iso, _config_get, _get_per_project_semaphore
+    global _load_agent_log, _now_iso, _config_get, _get_per_project_semaphore
     _data_root = data_root
     _skills_root = skills_root
     _atomic_write_text = atomic_write_text
     _scribe_call = scribe_call
+    _text_transform = text_transform
+    _resolve_model = resolve_model
     _scribe_render_transcript = scribe_render_transcript
     _log = log
     _load_project = load_project
+    _load_agent_log = load_agent_log
     _save_project = save_project
     _now_iso = now_iso
     _config_get = config_get
     _get_per_project_semaphore = get_per_project_semaphore
+
+
+_CLAUDE_MODEL_ALIASES = frozenset({'haiku', 'sonnet', 'opus'})
+
+
+def _provider_model(provider: str | None, config_key: str = 'distiller_model',
+                    default: str = 'haiku') -> str:
+    """Resolve a transform model without forwarding Claude tiers abroad."""
+    provider = str(provider or '').strip().lower()
+    if _resolve_model is not None:
+        try:
+            return str(_resolve_model(config_key, provider, default=default) or '')
+        except Exception as e:
+            _structured_log(f'model_resolve_error:provider={provider}:err={e!r}')
+    if provider in ('', 'claude'):
+        configured = _cfg(config_key, '')
+        return str(configured or default)
+    # No compatibility oracle means no invented foreign model context.
+    return ''
+
+
+def _model_call(provider: str | None, project: dict, model: str,
+                instruction: str, body: str) -> str:
+    """Call the selected provider, retaining legacy calls without context."""
+    provider = str(provider or '').strip().lower()
+    if not provider:
+        if _scribe_call is None:
+            raise RuntimeError('distiller model hook unavailable')
+        return _scribe_call(model, instruction, body)
+    if _text_transform is None:
+        raise RuntimeError('provider transform unavailable')
+    return str(_text_transform(
+        provider, model, instruction, body,
+        cwd=project.get('project_path') or None, effort='') or '')
+
+
+def _authoritative_session_provider(project_id: str, sid: str) -> str | None:
+    """Return the provider stamped on this session's durable agent-log row.
+
+    Distiller runs after the live session may be gone.  It must not infer an
+    engine from a global default or from the transcript filename; absent or
+    malformed provenance therefore gates the model call.
+    """
+    if _load_agent_log is None:
+        return None
+    try:
+        rows = _load_agent_log(project_id) or []
+    except Exception as e:
+        _structured_log(
+            f'provider_context_unavailable:project_id={project_id}:sid={sid}:'
+            f'reason=agent_log_error:{type(e).__name__}')
+        return None
+    matches = [r for r in rows if r.get('session_id') == sid]
+    for row in matches:
+        provider = str(row.get('provider') or '').strip().lower()
+        if provider:
+            return provider
+    _structured_log(
+        f'provider_context_unavailable:project_id={project_id}:sid={sid}:'
+        'reason=missing_provider')
+    return None
 
 
 # ── Excluded sidecar suffixes (load-bearing — DATA_DIR pollution rule) ──────
@@ -840,8 +909,12 @@ def _distill_extract_and_aggregate_inner(project_id: str, sid: str,
             _increment_counter(project_id, TELEM_SEMAPHORE_SKIP)
             return
     try:
+        provider = _authoritative_session_provider(project_id, sid)
+        if not provider:
+            _increment_counter(project_id, 'skipped_provider_context')
+            return
         _do_extract_aggregate(project_id, project, sid, jsonl_path,
-                              unattended=unattended)
+                              unattended=unattended, provider=provider)
     finally:
         if sem is not None:
             try:
@@ -852,7 +925,8 @@ def _distill_extract_and_aggregate_inner(project_id: str, sid: str,
 
 def _do_extract_aggregate(project_id: str, project: dict,
                           sid: str, jsonl_path: str | None,
-                          unattended: bool = False) -> None:
+                          unattended: bool = False,
+                          provider: str | None = None) -> None:
     # Cost cap check — early return if today's budget already blown
     if not _within_cost_cap(project_id, project):
         _structured_log(f"do_skip_cost_cap:project_id={project_id}")
@@ -888,10 +962,15 @@ def _do_extract_aggregate(project_id: str, project: dict,
         transcript = transcript[-EXTRACTION_TAIL_CHARS:]
         _increment_counter(project_id, 'extraction_truncated')
     # Cheap-model extraction
-    model = _cfg('distiller_model', '') or 'haiku'
+    if not provider:
+        _structured_log(
+            f'do_skip_provider_context:project_id={project_id}:sid={sid}')
+        _increment_counter(project_id, 'skipped_provider_context')
+        return
+    model = _provider_model(provider)
     try:
-        raw = _scribe_call(model, _extraction_prompt(project_id, project),
-                           transcript)
+        raw = _model_call(provider, project, model,
+                          _extraction_prompt(project_id, project), transcript)
     except Exception as e:
         _increment_counter(project_id, 'extraction_error')
         # Carry the real reason (rc + stderr tail / timeout), not just the
@@ -922,7 +1001,8 @@ def _do_extract_aggregate(project_id: str, project: dict,
     candidates = _aggregate_per_project(project_id, project, new_signals)
     # Generate artifacts (cheap-model calls, no locks)
     for cand in candidates:
-        _generate_and_write_artifact(project_id, project, cand)
+        _generate_and_write_artifact(project_id, project, cand,
+                                     provider=provider)
     # Update per-project summary cache (D3 — Seat 1 Cond 5)
     _update_summary_cache(project_id)
     # Cross-project aggregation (inline, same daemon thread per D3)
@@ -1644,7 +1724,8 @@ def _authority_violation(body: str) -> str:
 # ── Per-kind artifact generation (§4.3, §4.4, §4.5) ──────────────────────────
 
 def _generate_and_write_artifact(project_id: str, project: dict,
-                                 candidate: dict) -> None:
+                                 candidate: dict,
+                                 *, provider: str | None = None) -> None:
     """Generate one artifact via cheap-model call + atomic write to
     _proposed/. Per §4.8 ordering: signal already committed (Option A);
     on success, write outbox marker (D7). All cheap-model calls are
@@ -1654,11 +1735,25 @@ def _generate_and_write_artifact(project_id: str, project: dict,
     kind = candidate['kind']
     try:
         if kind == 'skill':
-            body, target_path = _render_skill(project_id, project, candidate)
+            if provider:
+                body, target_path = _render_skill(
+                    project_id, project, candidate, provider=provider)
+            else:
+                body, target_path = _render_skill(project_id, project, candidate)
         elif kind == 'exploration':
-            body, target_path = _render_exploration(project_id, project, candidate)
+            if provider:
+                body, target_path = _render_exploration(
+                    project_id, project, candidate, provider=provider)
+            else:
+                body, target_path = _render_exploration(
+                    project_id, project, candidate)
         elif kind == 'preference':
-            body, target_path = _render_preference(project_id, project, candidate)
+            if provider:
+                body, target_path = _render_preference(
+                    project_id, project, candidate, provider=provider)
+            else:
+                body, target_path = _render_preference(
+                    project_id, project, candidate)
         else:
             return  # update kind reserved for future expansion
         if body is None or body.strip() == 'REFUSE':
@@ -1791,9 +1886,9 @@ def _is_refusal(out: str) -> bool:
 
 
 def _render_skill(project_id: str, project: dict,
-                  candidate: dict) -> tuple[str | None, Path]:
+                  candidate: dict, *, provider: str | None = None) -> tuple[str | None, Path]:
     """Render a SKILL.md proposal. Returns (body, target_path) or (None, _)."""
-    model = _cfg('distiller_model', '') or 'haiku'
+    model = _provider_model(provider)
     evidence_block = _build_evidence_block(candidate['evidence_signals'])
     instruction = _SKILL_PROMPT_PREAMBLE + "\n\n" + (
         "Aggregated evidence below; produce ONE coherent SKILL.md per the "
@@ -1811,7 +1906,7 @@ def _render_skill(project_id: str, project: dict,
         f"Evidence:\n{evidence_block}"
     )
     try:
-        out = _scribe_call(model, instruction, body_in)
+        out = _model_call(provider, project, model, instruction, body_in)
     except Exception:
         return None, Path()
     if _is_refusal(out):
@@ -1825,8 +1920,8 @@ def _render_skill(project_id: str, project: dict,
 
 
 def _render_exploration(project_id: str, project: dict,
-                        candidate: dict) -> tuple[str | None, Path]:
-    model = _cfg('distiller_model', '') or 'haiku'
+                        candidate: dict, *, provider: str | None = None) -> tuple[str | None, Path]:
+    model = _provider_model(provider)
     sig = candidate['evidence_signals'][0]
     instruction = _EXPLORATION_PROMPT_PREAMBLE
     body_in = (
@@ -1837,7 +1932,7 @@ def _render_exploration(project_id: str, project: dict,
         f"Tools used: {', '.join(sig.get('tools_used', []))}\n"
     )
     try:
-        out = _scribe_call(model, instruction, body_in)
+        out = _model_call(provider, project, model, instruction, body_in)
     except Exception:
         return None, Path()
     if _is_refusal(out):
@@ -1852,8 +1947,8 @@ def _render_exploration(project_id: str, project: dict,
 
 
 def _render_preference(project_id: str, project: dict,
-                       candidate: dict) -> tuple[str | None, Path]:
-    model = _cfg('distiller_model', '') or 'haiku'
+                       candidate: dict, *, provider: str | None = None) -> tuple[str | None, Path]:
+    model = _provider_model(provider)
     instruction = _PREFERENCE_PROMPT_PREAMBLE
     evid_lines = []
     for s in candidate['evidence_signals'][:10]:
@@ -1872,7 +1967,7 @@ def _render_preference(project_id: str, project: dict,
         "Evidence quotes:\n" + '\n'.join(evid_lines)
     )
     try:
-        out = _scribe_call(model, instruction, body_in)
+        out = _model_call(provider, project, model, instruction, body_in)
     except Exception:
         return None, Path()
     if _is_refusal(out):

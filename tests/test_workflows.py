@@ -1061,3 +1061,47 @@ def test_cancel_a_finished_or_missing_run(wf):
     assert r1.status_code == 409
     r2 = wf.client.post('/api/workflow-runs/run-nope/cancel', headers=UI_HEADERS)
     assert r2.status_code == 404
+
+
+# ── engine pin (model/effort) on an agent step ───────────────────────────────
+#
+# Live pass 2026-09-19 (run 0919101220, workflow cell): both steps asked for
+# 'claude-sonnet-5' and ran 'claude-opus-5'. A node had no model field and
+# _dispatch_step never passed one, so every step silently ran the project
+# default.
+
+def test_agent_step_model_pin_reaches_dispatch(wf):
+    first = _agent('first')
+    first.update(model='claude-sonnet-5', effort='low')
+    record = wf.m.create_workflow(_doc('pinned', [first]))
+    wf.m.start_run(record['id'])
+    call = wf.dispatch.calls[-1]
+    assert call.get('model_override') == 'claude-sonnet-5'
+    assert call.get('effort_override') == 'low'
+
+
+def test_unpinned_agent_step_sends_no_model(wf):
+    record = wf.m.create_workflow(_doc('plain', [_agent('first')]))
+    wf.m.start_run(record['id'])
+    assert not wf.dispatch.calls[-1].get('model_override')
+    assert wf.dispatch.calls[-1].get('effort_override') is None
+
+
+def test_malformed_step_model_is_refused_at_save(wf):
+    bad = _agent('first')
+    bad['model'] = '--dangerously-skip-permissions'
+    assert any('invalid model' in e for e in wf.m.validate_workflow(_doc('bad', [bad])))
+
+
+def test_unhonourable_pin_fails_the_step_loudly(wf, monkeypatch):
+    """Dispatch refuses an incoherent pin (ValueError); the run must FAIL
+    visibly, never fall back to a default model."""
+    def refuse(project_id, task, **kw):
+        raise ValueError("model 'gemini-3-pro' belongs to provider 'gemini', not 'claude'")
+    monkeypatch.setattr(wf.m, '_dispatch_agent_internal', refuse)
+    node = _agent('first')
+    node['model'] = 'gemini-3-pro'
+    record = wf.m.create_workflow(_doc('mismatch', [node]))
+    run = wf.m.start_run(record['id'])
+    assert run['status'] == 'failed'
+    assert 'gemini-3-pro' in (run.get('error') or '')

@@ -116,6 +116,28 @@ class TestGeminiRuntime:
         assert '--output-format' in cmd
         assert 'stream-json' in cmd
 
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it) — an agent that could not
+        see a pasted image then burned turns on `run_shell_command` trying
+        to inspect the binary file directly instead. `--include-directories`
+        is the CLI's own documented fix; live re-test with the SAME image
+        one level outside the dispatch cwd, plus this flag pointed at its
+        real parent directory, made `read_file` succeed and the model
+        correctly describe the image ("PURPLE ELEPHANT" in purple, matching
+        the actual drawn content, not a guess)."""
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
+
     def test_parse_event_empty(self):
         assert self.rt.parse_event('') is None
         assert self.rt.parse_event('\n') is None
@@ -149,13 +171,19 @@ class TestGeminiRuntime:
 
     def test_parse_event_result_error_surfaces_message(self):
         # MC-931: a `result` event with status=="error" carries the CLI's
-        # real reason (quota, auth, ...) in error.message. Before this fix
+        # real reason (quota, auth, ...) in error.message. Before that fix
         # it matched the generic 'result' branch and returned TURN_END with
         # only usage/cost — the error text was read by nothing and reached
         # neither the transcript nor explain_exit_error's tail scan, so a
         # real API error (e.g. "You have exhausted your daily quota on this
         # model.") was silently dropped and the user saw a generic
         # "exited with code 1" instead.
+        #
+        # VENDOR_AGNOSTIC_PROGRAM.md §4 (this real MC-931 text is quota, not
+        # a generic error): the event now classifies as ALLOWANCE_EXHAUSTED,
+        # one step further than MC-931's own fix — a dispatch call site can
+        # tell "out of allowance" apart from "auth/network failure" the same
+        # way for every vendor.
         line = json.dumps({
             'type': 'result', 'status': 'error',
             'error': {'type': 'Error',
@@ -164,8 +192,9 @@ class TestGeminiRuntime:
         })
         ev = self.rt.parse_event(line)
         assert ev is not None
-        assert ev.type == EventType.ERROR
-        assert 'exhausted your daily quota' in ev.payload['text']
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['verified'] is False
+        assert 'exhausted your daily quota' in ev.payload['raw_ref']
 
     def test_capabilities_mcp(self):
         assert self.rt.capabilities().supports_mcp is True
@@ -201,6 +230,18 @@ class TestGeminiRuntime:
         hint = self.rt.explain_exit_error(41, "")
         assert hint is not None
         assert "Common causes" in hint
+
+    def test_parse_event_non_quota_error_stays_generic_error(self):
+        """Contrast case for test_parse_event_result_error_surfaces_message
+        above: only quota-shaped text reclassifies as ALLOWANCE_EXHAUSTED."""
+        from mc.agent_runtime import EventType
+        line = json.dumps({
+            'type': 'result', 'status': 'error',
+            'error': {'message': 'network unreachable'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ERROR
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -354,6 +395,69 @@ class TestLastRealErrorLine:
             "the real error text"
         )
         assert agent_runtime._last_real_error_line(tail) == "the real error text"
+
+    def test_skips_punctuation_only_trailing_lines(self):
+        # Live 2026-09-19 (qwen, stale OPENAI_BASE_URL -> gateway 404): the
+        # error text was a multi-line HTML page wrapped in `[API Error: ... ]`,
+        # so the last physical line was a bare `]` and the chat read
+        # "Qwen Code error: ]".
+        tail = "the real error text\n]\n}\n)\n"
+        assert agent_runtime._last_real_error_line(tail) == "the real error text"
+        assert agent_runtime._last_real_error_line("]\n[qwen exited with code 1]") is None
+
+
+# Shape of the real qwen-code 0.23.4 `result` envelope captured 2026-09-19
+# (host names generic): is_error true, error.message is a whole HTML page
+# wrapped in `[API Error: 404 ... ]`, CRLF line breaks inside.
+_QWEN_404_HTML = (
+    '[API Error: 404 <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\r\n<html>\r\n'
+    '<head><title>404 Not Found</title></head>\r\n<body>\r\n'
+    '<center><h1>404 Not Found</h1></center>\r\n Sorry for the inconvenience.<br/>\r\n'
+    '<table>\r\n<tr>\r\n<td>URL:</td>\r\n'
+    '<td>https://example.invalid:28443/chat/completions</td>\r\n'
+    '</tr>\r\n</table>\r\n<hr/>Powered by Tengine<hr><center>tengine</center>\r\n'
+    '</body>\r\n</html>\r\n]')
+
+
+class TestQwenErrorReachesTheChat:
+    def _run_reader(self, stream_lines):
+        import io
+        import json as _json
+
+        class _Proc:
+            stdout = io.StringIO('\n'.join(_json.dumps(m) for m in stream_lines) + '\n')
+
+            def wait(self):
+                return 1
+        proc = _Proc()
+        session = {'log_lines': ['> Ron: hi'], 'proc': proc, 'status': 'running'}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='x', provider='qwen', mode='A', project_path='.',
+            project_id='p', session_dict=session)
+        agent_runtime._mode_a_reader(proc, handle, agent_runtime.QwenRuntime())
+        return session['log_lines']
+
+    def test_html_404_result_surfaces_status_and_url_not_a_bare_bracket(self):
+        lines = self._run_reader([{
+            'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+            'num_turns': 1, 'usage': {'input_tokens': 0, 'output_tokens': 0},
+            'error': {'message': _QWEN_404_HTML}}])
+        hint = lines[-1]
+        assert hint.startswith('[hint] Qwen Code error: ')
+        assert hint != '[hint] Qwen Code error: ]'
+        assert '404' in hint and 'Not Found' in hint
+        assert 'example.invalid:28443/chat/completions' in hint
+        assert '<' not in hint and '\n' not in hint and '\r' not in hint
+
+    def test_plain_error_text_is_left_intact(self):
+        lines = self._run_reader([{
+            'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+            'error': {'message': 'No auth type is selected. Use `--auth-type` <x>.'}}])
+        assert lines[-1].endswith('No auth type is selected. Use `--auth-type` <x>.')
+
+    def test_flatten_error_text_caps_length_and_keeps_non_html_angles(self):
+        assert agent_runtime._flatten_error_text('expected <int> got str') == 'expected <int> got str'
+        assert len(agent_runtime._flatten_error_text('x ' * 1000)) <= 603
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -610,6 +714,11 @@ class TestCodexRuntime:
         assert caps.emits_cost is False
         assert caps.context_injection == 'file'
         assert caps.context_file_name == 'AGENTS.md'
+        # W4/MC-947 (2026-09-18), offline proof (Codex out of allowance):
+        # dispatch() calls with_mc_tool_protocol() and runs through the
+        # SAME shared _mode_a_reader turn-end mc:question scan Qwen uses
+        # (live-verified there) — no Codex-specific divergence in that path.
+        assert caps.supports_ask_user_question is True
 
     def test_health_check_not_installed(self, monkeypatch):
         """When neither binary nor npx is found, installed=False.
@@ -687,6 +796,28 @@ class TestCodexRuntime:
                 stdout='codex-cli 0.153.0', stderr=''))
         monkeypatch.setattr(self.rt, '_codex_auth_state', lambda: ('not_logged_in', None))
         assert self.rt.health_check().auth_state.status == 'not_logged_in'
+
+    def test_health_check_npx_fallback_not_counted_as_installed(self, monkeypatch):
+        """F10 (clean-VM run 2026-09-18): a machine with npm but no codex CLI
+        at all showed installed=True / "not signed in" with an empty
+        binary_path in the first-run chooser, because the npx fallback (a
+        per-dispatch `npx --yes @openai/codex`, never a persistent install)
+        counted as installed. It must not: the chooser's Install button is
+        how a user notices codex was never actually installed. Dispatch is
+        unaffected — it calls _cmd_prefix()/resolve_binary() directly, not
+        this flag.
+        """
+        self.rt._bin_cache = '__npx__'
+        self.rt._npx_fallback = True
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=0,
+                stdout='codex-cli 0.153.0', stderr=''))
+        monkeypatch.setattr(self.rt, '_codex_auth_state', lambda: ('not_logged_in', None))
+        hs = self.rt.health_check()
+        assert hs.installed is False
+        assert hs.binary_path is None
 
     def test_npx_fallback_uses_absolute_path(self, monkeypatch):
         """npx is npx.cmd on Windows; CreateProcess can't launch it by bare name.
@@ -796,6 +927,9 @@ class TestCodexRuntime:
         It verifies the actual JSONL format from the running binary.
         """
         import shutil
+        import os
+        if os.environ.get('MC_LIVE_CLI_TESTS') != '1':
+            pytest.skip('launches a real codex session; set MC_LIVE_CLI_TESTS=1')
         if not shutil.which('npx'):
             pytest.skip('npx not available on this machine')
 
@@ -830,6 +964,62 @@ class TestCodexRuntime:
         assert msg.get('type') == 'thread.started', f'Expected thread.started, got: {msg}'
         assert 'thread_id' in msg, f'Expected thread_id in: {msg}'
 
+    # ── Allowance exhaustion (VENDOR_AGNOSTIC_PROGRAM.md §4) ────────────────
+    # CODEX_REAL_USAGE_LIMIT_EVENT is the REAL line captured 2026-09-18 from
+    # ~/.codex/sessions/2026/09/17/rollout-2026-09-17T22-19-23-01a0b2f4-*.jsonl
+    # (ordinal 82) — not an invented fixture.
+
+    CODEX_REAL_USAGE_LIMIT_EVENT = (
+        '{"timestamp":"2026-09-18T05:21:28.415Z","ordinal":82,"type":"event_msg",'
+        '"payload":{"type":"task_complete","turn_id":"01a0b2f4-81a1-7202-87ed-'
+        '35b5637c0e4c","last_agent_message":null,"error":{"message":"You\'ve hit '
+        'your usage limit. Visit https://chatgpt.com/codex/settings/usage to '
+        'purchase more credits or try again at Sep 24th, 2026 7:58 AM.",'
+        '"codex_error_info":"usage_limit_exceeded"},"started_at":1789708763,'
+        '"completed_at":1789708888,"duration_ms":124861,'
+        '"time_to_first_token_ms":5276}}'
+    )
+
+    def test_parse_event_real_captured_usage_limit_is_allowance_exhausted(self):
+        from mc.agent_runtime import EventType
+        ev = self.rt.parse_event(self.CODEX_REAL_USAGE_LIMIT_EVENT)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['limit_kind'] == 'usage_limit'
+        assert ev.payload['verified'] is True
+        assert ev.payload['resets_at_display'] == 'Sep 24th, 2026 7:58 AM'
+
+    def test_parse_event_usage_limit_dotted_error_shape_also_recognized(self):
+        """`codex exec --json`'s translated error/turn.failed shape, in case a
+        session-level failure is ever surfaced that way instead of as the
+        rollout's native event_msg/task_complete (unconfirmed either way
+        without spending Codex allowance — both shapes are handled)."""
+        from mc.agent_runtime import EventType
+        line = json.dumps({
+            'type': 'error',
+            'error': {'message': "try again at Sep 24th, 2026 7:58 AM.",
+                      'codex_error_info': 'usage_limit_exceeded'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+
+    def test_explain_exit_error_usage_limit_not_misread_as_auth_error(self):
+        """Regression: this exact text was live-misclassified 2026-09-18
+        05:21:29 in data/logs/clayrune.log as "Codex isn't authenticated" —
+        one second after the real usage_limit_exceeded event above — because
+        the real message contains "chatgpt" (in the settings URL) and the
+        auth-hint check used to run before the quota check. The structured
+        parse_event branch above now intercepts this before it ever reaches
+        free text, but explain_exit_error is fixed too as the fallback net."""
+        tail = ("[codex error] You've hit your usage limit. Visit "
+                "https://chatgpt.com/codex/settings/usage to purchase more "
+                "credits or try again at Sep 24th, 2026 7:58 AM.")
+        hint = self.rt.explain_exit_error(1, tail)
+        assert hint is not None
+        assert "isn't authenticated" not in hint
+        assert "allowance" in hint.lower()
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # QwenRuntime — qwen-code CLI, a gemini-cli fork whose --output-format
@@ -852,7 +1042,16 @@ class TestQwenRuntime:
         assert cmd[cmd.index('--output-format') + 1] == 'stream-json'
         assert '--include-partial-messages' in cmd
         assert '--yolo' in cmd
-        assert '--bare' in cmd
+        # --bare was dropped 2026-09-18 (W2): it also disabled hooks, with
+        # no CLI-flag channel to pass a hook config through bare mode.
+        # --allowed-mcp-server-names with a sentinel that matches no real
+        # server takes over closing the native-MCP leak --bare used to
+        # close (see QwenRuntime.build_command's docstring for the live
+        # leak re-probe against this repo's real .mcp.json).
+        assert '--bare' not in cmd
+        assert '--allowed-mcp-server-names' in cmd
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
         assert '--chat-recording' in cmd
         assert '--resume' not in cmd
 
@@ -874,6 +1073,75 @@ class TestQwenRuntime:
         # at all (the CLI's own --help text) — flags don't persist.
         assert '--chat-recording' in cmd
 
+    def test_build_command_with_extra_include_dirs(self):
+        """W4/MC-947, live-verified 2026-09-18: `read_file`'s own
+        `isWithinRoot` workspace check refused an attachment path outside
+        the project root (this repo's real `data/uploads/`, for any project
+        whose own root isn't an ancestor of it). `--include-directories`
+        widens the workspace; live re-test with the SAME image one level
+        outside the dispatch cwd, plus this flag pointed at its parent, made
+        `read_file` succeed and the model correctly describe the image."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(
+            extra_include_dirs=['C:/Users/levir/AppData/Local/Temp'])
+        assert '--include-directories' in cmd
+        idx = cmd.index('--include-directories')
+        assert cmd[idx + 1] == 'C:/Users/levir/AppData/Local/Temp'
+
+    def test_build_command_no_include_dirs_omits_the_flag(self):
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command()
+        assert '--include-directories' not in cmd
+
+    def test_build_command_with_explicit_mcp_config_allowlists_exactly_it(self):
+        """W4/MC-947, live-verified 2026-09-18 against real qwen-code 0.23.4
+        in this repo (a real .mcp.json declaring filesystem+browser): with
+        `--mcp-config` declaring only "filesystem" and `--allowed-mcp-server-
+        names filesystem`, the live session's `system`/`init` envelope
+        showed `mcp_servers: [{"name":"filesystem","status":"connected"}]`
+        and `mcp__filesystem__*` tools present — "browser" (real, in this
+        repo's own `.mcp.json`, but NOT in the declared set) never loaded.
+        Qwen has no --strict-mcp-config; --allowed-mcp-server-names is what
+        keeps native discovery from leaking anything not explicitly named."""
+        self.rt._bin_cache = 'qwen'
+        mcp_json = json.dumps({'mcpServers': {'filesystem': {'command': 'npx', 'args': []}}})
+        cmd = self.rt.build_command(mcp_config_json=mcp_json)
+        assert '--mcp-config' in cmd
+        idx = cmd.index('--mcp-config')
+        assert cmd[idx + 1] == mcp_json
+        assert '--allowed-mcp-server-names' in cmd
+        aidx = cmd.index('--allowed-mcp-server-names')
+        # Exactly one name — nothing else leaking through from elsewhere.
+        assert cmd[aidx + 1:] == ['filesystem']
+
+    def test_build_command_with_multiple_declared_servers(self):
+        self.rt._bin_cache = 'qwen'
+        mcp_json = json.dumps({'mcpServers': {
+            'zeta': {'command': 'x'}, 'alpha': {'command': 'y'}}})
+        cmd = self.rt.build_command(mcp_config_json=mcp_json)
+        aidx = cmd.index('--allowed-mcp-server-names')
+        # Sorted for determinism, not dict insertion order.
+        assert cmd[aidx + 1:aidx + 3] == ['alpha', 'zeta']
+
+    def test_build_command_with_empty_declared_set_falls_back_to_deny_all(self):
+        """An explicitly empty {"mcpServers": {}} (a project that opted in
+        but selected nothing) must still reach the deny-all sentinel, not an
+        empty --allowed-mcp-server-names (which could mean "no restriction"
+        to the CLI rather than "restrict to nothing")."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(mcp_config_json=json.dumps({'mcpServers': {}}))
+        assert '--mcp-config' in cmd
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
+
+    def test_build_command_with_malformed_mcp_json_fails_closed(self):
+        """Malformed input must never fall through to native discovery —
+        same deny-all contract as no config at all."""
+        self.rt._bin_cache = 'qwen'
+        cmd = self.rt.build_command(mcp_config_json='not valid json{{{')
+        idx = cmd.index('--allowed-mcp-server-names')
+        assert cmd[idx + 1] == agent_runtime._QWEN_MCP_DENY_SENTINEL
+
     def test_no_fixed_model_catalog(self):
         """Can't verify Alibaba Coding/Token-Plan model ids against a live
         call on this box (no DashScope credential) — empty catalog falls back
@@ -887,13 +1155,18 @@ class TestQwenRuntime:
 
         def _fake_mode_a_dispatch(*args, **kwargs):
             captured['kwargs'] = kwargs
-            return 'HANDLE'
+            # A real SessionHandle-shaped stand-in: dispatch() stashes
+            # `_mcp_config_json` onto `handle.session_dict` after this call
+            # returns (W4/MC-947), so the fake needs that attribute too.
+            return agent_runtime.SessionHandle(
+                mc_session_id='sid', provider='qwen', mode='A',
+                project_path='/p', project_id='', session_dict={})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake_mode_a_dispatch)
         self.rt._bin_cache = 'qwen'
         result = self.rt.dispatch(project_path='/p', task='do X',
                                   system_prompt='MEMORY STUFF', session_dict={})
-        assert result == 'HANDLE'
+        assert result.mc_session_id == 'sid'
         stashed = captured['kwargs']['system_prompt']
         assert agent_runtime.MC_TOOL_PROTOCOL_PROMPT in stashed
         assert 'MEMORY STUFF' in stashed
@@ -904,7 +1177,9 @@ class TestQwenRuntime:
         def _fake(runtime, cmd, full_prompt, project_path, project_id, task,
                  mc_sid, session_dict, incognito, env_extra, *rest, **kw):
             captured['env_extra'] = env_extra
-            return 'HANDLE'
+            return agent_runtime.SessionHandle(
+                mc_session_id='sid', provider='qwen', mode='A',
+                project_path='/p', project_id='', session_dict={})
 
         monkeypatch.setattr(agent_runtime, '_mode_a_dispatch', _fake)
         self.rt._bin_cache = 'qwen'
@@ -1008,6 +1283,20 @@ class TestQwenRuntime:
         assert ev.type == EventType.ERROR
         assert 'not found' in ev.payload['text']
 
+    def test_parse_event_quota_error_is_allowance_exhausted(self):
+        """VENDOR_AGNOSTIC_PROGRAM.md §4 — no real captured Qwen exhaustion
+        sample exists on this box; this is the same text-heuristic
+        agent_routes.py's own quota-log scraper already uses, explicitly
+        unverified (mc.allowance_state._generic_text_exhaustion)."""
+        line = json.dumps({
+            'type': 'result', 'is_error': True,
+            'error': {'message': '429 Resource has been exhausted (rate limit)'},
+        })
+        ev = self.rt.parse_event(line)
+        assert ev is not None
+        assert ev.type == EventType.ALLOWANCE_EXHAUSTED
+        assert ev.payload['verified'] is False
+
     def test_parse_event_non_json_fallback(self):
         """The 'Warning: running headless...' banner (when the suppression
         env var isn't honored for any reason) must degrade to plain text,
@@ -1028,7 +1317,14 @@ class TestQwenRuntime:
         assert status == 'not_logged_in'
         assert method is None
 
-    def test_auth_state_dashscope_env(self, monkeypatch):
+    def test_auth_state_dashscope_env(self, monkeypatch, tmp_path):
+        # Isolate USERPROFILE/HOME: _settings_auth_env() is checked FIRST as
+        # of 2026-09-18 (settings.json wins over a generic env var — see its
+        # docstring), so this test must not see this box's own REAL
+        # ~/.qwen/settings.json or it stops testing the env-var fallback
+        # path at all.
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
         monkeypatch.setenv('DASHSCOPE_API_KEY', 'sk-test')
         status, method = self.rt._qwen_auth_state()
         assert status == 'ok'
@@ -1117,7 +1413,11 @@ class TestQwenRuntime:
         assert caps.supports_mode_a is True
         assert caps.supports_mode_b is False
         assert caps.supports_session_resume is True
-        assert caps.supports_mcp is False
+        # W4/MC-947 (2026-09-18): dispatch()/build_command() now accept
+        # mcp_config_json and declare exactly that set via --mcp-config +
+        # --allowed-mcp-server-names — genuinely True, not the old
+        # deny-everything-only behavior. See TestQwenMcpConfigInjection.
+        assert caps.supports_mcp is True
         assert caps.oneshot_supported is True
 
     def test_explain_exit_error_known_libuv_crash(self):
@@ -1751,6 +2051,155 @@ def test_gemini_auth_state_not_logged_in(monkeypatch, tmp_path):
     assert status == 'not_logged_in'
     assert method is None
     assert err and 'GEMINI_API_KEY' in err
+
+
+def test_gemini_health_check_oauth_only_is_unverified(monkeypatch, tmp_path):
+    """F9 (clean-VM run 2026-09-18): a cached oauth_creds.json only proves a
+    credential was ONCE issued — Google now refuses personal-account OAuth
+    for Gemini Code Assist ("This client is no longer supported... migrate
+    to the Antigravity suite") while the file on disk still looks valid.
+    health_check() must not upgrade that local evidence to a verified 'ok'.
+    """
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'oauth_creds.json').write_text(
+        json.dumps({'access_token': 'a', 'refresh_token': 'r'}), encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()  # fresh instance — this test relies on a clean _auth_cache
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    monkeypatch.setattr(
+        agent_runtime.subprocess, 'run',
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a[0] if a else [], returncode=0, stdout='0.59.0', stderr=''))
+    hs = rt.health_check()
+    assert hs.auth_state.status == 'unverified'
+    assert 'GEMINI_API_KEY' in (hs.auth_state.error_text or '')
+
+
+def test_gemini_explain_exit_error_detects_oauth_rejection(monkeypatch):
+    """A real dispatch failure carrying Google's exact refusal text must
+    both explain itself to the user AND stamp the cache (F9) so the NEXT
+    health_check() reports oauth_rejected instead of a stale 'ok'/'unverified'."""
+    rt = GeminiRuntime()  # fresh instance — never share _auth_cache with other tests
+    log_tail = (
+        'FetchError: This client is no longer supported for Gemini Code '
+        'Assist for individuals. Please migrate to the Antigravity suite.'
+    )
+    msg = rt.explain_exit_error(1, log_tail)
+    assert msg and 'GEMINI_API_KEY' in msg
+    cached = rt.auth_status()
+    assert cached['status'] == 'oauth_rejected'
+    assert cached['ok'] is False
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# F11 (clean-VM run 2, 2026-09-18): a CLI-native "Use Gemini API key" login
+# stores the key in the OS keychain + ~/.gemini/settings.json's
+# security.auth.selectedType — invisible to both prior evidence sources
+# (env var, oauth_creds.json).
+# ─────────────────────────────────────────────────────────────────────────────
+
+
+def test_gemini_auth_state_keychain_api_key(monkeypatch, tmp_path):
+    """settings.json selectedType == 'gemini-api-key' (no oauth_creds.json,
+    no env var) must count as signed in, distinctly labeled from oauth."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    status, method, err = agent_runtime.get_runtime('gemini')._gemini_auth_state()
+    assert status == 'ok'
+    assert method == 'keychain:gemini-api-key'
+    assert err is None
+
+
+def test_gemini_health_check_keychain_api_key_is_ok_not_unverified(monkeypatch, tmp_path):
+    """Unlike the OAuth path (F9), a keychain-native API key must NOT be
+    downgraded to 'unverified' by health_check() — it gets the same local
+    trust as an env-var key; auth_probe() (not health_check) is where it
+    gets actually verified, via a real CLI call."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()  # fresh instance — clean _auth_cache
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    monkeypatch.setattr(
+        agent_runtime.subprocess, 'run',
+        lambda *a, **k: subprocess.CompletedProcess(
+            args=a[0] if a else [], returncode=0, stdout='0.59.0', stderr=''))
+    hs = rt.health_check()
+    assert hs.auth_state.status == 'ok'
+    assert hs.auth_state.method == 'keychain:gemini-api-key'
+
+
+def test_gemini_auth_probe_keychain_api_key_success(monkeypatch, tmp_path):
+    """auth_probe() must spend a real gemini CLI call for a keychain-native
+    key (never an HTTP call — there is no key value to send) and report ok
+    on success, never reading/logging the key itself."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append(cmd)
+        return subprocess.CompletedProcess(args=cmd, returncode=0, stdout='OK', stderr='')
+
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+    state = rt.auth_probe()
+    assert state['ok'] is True
+    assert state['status'] == 'ok'
+    assert state['method'] == 'keychain:gemini-api-key'
+    assert len(calls) == 1
+    cmd = calls[0]
+    assert '--allowed-mcp-server-names' in cmd and '__clayrune_none__' in cmd
+    assert '-p' in cmd
+
+
+def test_gemini_auth_probe_keychain_api_key_failure_surfaces_cli_error(monkeypatch, tmp_path):
+    """A dead/expired keychain key must surface the CLI's own error text,
+    not a generic failure."""
+    monkeypatch.delenv('GEMINI_API_KEY', raising=False)
+    gdir = tmp_path / '.gemini'
+    gdir.mkdir()
+    (gdir / 'settings.json').write_text(
+        json.dumps({'security': {'auth': {'selectedType': 'gemini-api-key'}}}),
+        encoding='utf-8')
+    monkeypatch.setenv('USERPROFILE', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path))
+    rt = GeminiRuntime()
+    rt._bin_cache = str(tmp_path / 'gemini')
+    (tmp_path / 'gemini').write_text('')
+
+    def fake_run(cmd, **kwargs):
+        return subprocess.CompletedProcess(
+            args=cmd, returncode=1, stdout='', stderr='Error: API key not valid')
+
+    monkeypatch.setattr(agent_runtime.subprocess, 'run', fake_run)
+    state = rt.auth_probe()
+    assert state['ok'] is False
+    assert 'API key not valid' in (state['error_text'] or '')
 
 
 # ─────────────────────────────────────────────────────────────────────────────

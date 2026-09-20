@@ -17,6 +17,13 @@
 
 let _mediaCache = { items: [], loaded: false, loading: false, projectId: null };
 let _mediaFilter = 'all';   // all | diagram | image
+// MC-956: on a project that has been running for months, a large slice of
+// recorded image paths point at scratch dirs and per-agent worktrees that
+// were cleaned up long after the media index recorded them — the file is
+// genuinely gone, not a bug. Hiding those tiles by default keeps the gallery
+// from reading as "mostly broken"; the toggle un-hides them for anyone who
+// wants to audit what's dead. Nothing is ever deleted from the index itself.
+let _mediaShowMissing = false;
 
 function openMediaSurface(projectId) {
   const pid = projectId || _mediaCache.projectId
@@ -48,7 +55,7 @@ function openMediaSurface(projectId) {
         <button class="modal-close" onclick="closeModalById('${modalId}')" title="Close">&#10005;</button>
       </div>
     </div>
-    <div id="media-body"></div>`;
+    <div id="media-body" class="modal-scroll-body"></div>`;
   win.appendChild(content);
   document.getElementById('modal-layer').appendChild(win);
   const z = nextModalZ++;
@@ -84,10 +91,19 @@ function _mediaRenderBody() {
           <button class="${_mediaFilter==='diagram'?'active':''}" onclick="setMediaFilter('diagram')">Diagrams</button>
           <button class="${_mediaFilter==='image'?'active':''}" onclick="setMediaFilter('image')">Images</button>
         </div>
+        <label id="media-missing-toggle" style="display:none;font-size:11px;color:var(--text-faint);align-items:center;gap:4px;cursor:pointer">
+          <input type="checkbox" ${_mediaShowMissing?'checked':''} onchange="setMediaShowMissing(this.checked)">
+          <span id="media-missing-label"></span>
+        </label>
         <span id="media-count" style="font-size:11px;color:var(--text-faint)"></span>
       </div>
       <div id="media-grid"></div>
     </div>`;
+  renderMedia();
+}
+
+function setMediaShowMissing(v) {
+  _mediaShowMissing = !!v;
   renderMedia();
 }
 
@@ -129,27 +145,48 @@ let _mediaRows = [];
 function renderMedia() {
   const grid = document.getElementById('media-grid');
   const countEl = document.getElementById('media-count');
+  const missingToggle = document.getElementById('media-missing-toggle');
+  const missingLabel = document.getElementById('media-missing-label');
   if (!grid) return;
 
   if (!_mediaCache.loaded) {
     grid.innerHTML = '<div style="padding:40px 12px;text-align:center;color:var(--text-faint);font-size:12px">Loading media…</div>';
     if (countEl) countEl.textContent = '';
+    if (missingToggle) missingToggle.style.display = 'none';
     return;
   }
 
-  const rows = _mediaCache.items.filter(m => _mediaFilter === 'all' || m.kind === _mediaFilter);
+  const byKind = _mediaCache.items.filter(m => _mediaFilter === 'all' || m.kind === _mediaFilter);
+  // MC-956: the server now tells us (mc/media.py list_media) whether an
+  // image's file still exists — most misses are scratch dirs and per-agent
+  // worktrees torn down long after they were indexed, not a bug. Hide those
+  // by default so the gallery doesn't read as "mostly broken"; the toggle
+  // reveals them for anyone auditing what's dead. Nothing is dropped from
+  // the underlying index — this is a view filter only.
+  const missingCount = byKind.filter(m => m.kind === 'image' && m.missing).length;
+  const rows = _mediaShowMissing ? byKind : byKind.filter(m => !(m.kind === 'image' && m.missing));
   _mediaRows = rows;
   if (countEl) countEl.textContent = rows.length ? `${rows.length} item${rows.length===1?'':'s'}` : '';
+  if (missingToggle) {
+    missingToggle.style.display = missingCount ? 'inline-flex' : 'none';
+    if (missingLabel) missingLabel.textContent = `Show missing (${missingCount})`;
+  }
 
   if (!rows.length) {
     // Say WHY it's empty. A blank grid on a project with months of history
     // otherwise reads as a bug rather than the forward-only design.
-    grid.innerHTML = `<div style="padding:36px 16px;text-align:center;color:var(--text-faint);font-size:12px;line-height:1.6">
-      ${_mediaCache.items.length
-        ? 'Nothing matches that filter.'
-        : 'No media yet.<br>Diagrams and images the agent produces from now on will collect here.<br>'
-          + '<span style="color:var(--text-faint);opacity:.75">Existing history isn\'t indexed — the gallery starts from today.</span>'}
-    </div>`;
+    let msg;
+    if (!_mediaCache.items.length) {
+      msg = 'No media yet.<br>Diagrams and images the agent produces from now on will collect here.<br>'
+        + '<span style="color:var(--text-faint);opacity:.75">Existing history isn\'t indexed — the gallery starts from today.</span>';
+    } else if (byKind.length && missingCount === byKind.length) {
+      msg = `All ${missingCount} match${missingCount===1?'':'es'} for this filter point at files that no longer exist `
+        + '(scratch dirs / agent worktrees cleaned up since they were recorded). '
+        + 'Check "Show missing" above to see them anyway.';
+    } else {
+      msg = 'Nothing matches that filter.';
+    }
+    grid.innerHTML = `<div style="padding:36px 16px;text-align:center;color:var(--text-faint);font-size:12px;line-height:1.6">${msg}</div>`;
     return;
   }
 
@@ -159,7 +196,7 @@ function renderMedia() {
     if (m.kind === 'image') {
       const src = API_BASE + '/api/serve-image?path=' + encodeURIComponent(m.path);
       const name = String(m.path).split(/[\\/]/).pop();
-      return `<div class="media-tile" onclick="_mediaOpen(${i})" title="${esc(m.path)}">
+      return `<div class="media-tile${m.missing ? ' media-dead' : ''}" onclick="_mediaOpen(${i})" title="${esc(m.path)}">
         <div class="media-thumb"><img src="${src}" alt="" loading="eager"
           onerror="this.closest('.media-tile').classList.add('media-dead')"></div>
         <div class="media-meta"><span class="media-name">${esc(name)}</span><span class="media-when">${esc(when)}</span></div>
@@ -194,4 +231,5 @@ window.loadMedia = loadMedia;
 window.renderMedia = renderMedia;
 window.setMediaFilter = setMediaFilter;
 window.setMediaProject = setMediaProject;
+window.setMediaShowMissing = setMediaShowMissing;
 window._mediaOpen = _mediaOpen;

@@ -926,3 +926,69 @@ def test_agent_caller_cannot_conjure_a_workflow_via_the_schedule_route(ctx):
     resp = ctx.client.post('/api/schedules', json={'workflow_id': 'wf-invented'})
     assert resp.status_code == 400
     assert ctx.wfm.list_workflows() == []
+
+
+# ── engine pin (model/effort) reaches dispatch ────────────────────────────────
+#
+# Live pass 2026-09-19 (run 0919101220, schedule cell): the run asked for
+# 'claude-sonnet-5' and the scheduled turn ran 'claude-opus-5'. A schedule row
+# had no model field and neither fire path passed one, so every scheduled run
+# silently took the project default. Both fire paths are pinned here.
+
+def test_loop_fire_passes_the_schedule_model_pin(ctx, monkeypatch):
+    _seed_schedules(ctx, [_due_cron_row(model='claude-sonnet-5', effort='low')])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert len(ctx.dispatch.calls) == 1
+    assert ctx.dispatch.calls[0].get('model_override') == 'claude-sonnet-5'
+    assert ctx.dispatch.calls[0].get('effort_override') == 'low'
+
+
+def test_run_now_passes_the_schedule_model_pin(ctx, monkeypatch):
+    _seed_schedules(ctx, [{'id': 's1', 'project_id': 'p1', 'task': 't',
+                           'continue_session': False, 'enabled': True,
+                           'model': 'claude-sonnet-5'}])
+    monkeypatch.setattr(ctx.sr, '_latest_session_id_for_schedule', lambda *a: '')
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 200, resp.get_json()
+    assert ctx.dispatch.calls[-1].get('model_override') == 'claude-sonnet-5'
+
+
+def test_unpinned_schedule_sends_no_model(ctx, monkeypatch):
+    """No pin must stay no pin, so dispatch applies the project default."""
+    _seed_schedules(ctx, [_due_cron_row()])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert not ctx.dispatch.calls[0].get('model_override')
+
+
+# ── run_at without a timezone is refused (live pass 2026-09-19) ───────────────
+# _compute_next_run reads a naive run_at as UTC. The live-pass driver sent its
+# LOCAL wall clock; west of Greenwich that is hours in the past, next_run came
+# out None, and the once-row sat enabled and never fired, with no error.
+
+def test_create_once_naive_run_at_400(ctx):
+    r = ctx.client.post('/api/schedules', json={
+        'project_id': 'p1', 'task': 't', 'schedule_type': 'once',
+        'run_at': '2099-01-01T10:00:00'})
+    assert r.status_code == 400
+    assert 'timezone' in r.get_json()['error']
+    assert not ctx.sched_path.exists() or json.loads(ctx.sched_path.read_text()) == []
+
+
+def test_create_once_zulu_and_offset_run_at_accepted(ctx):
+    for ra in ('2099-01-01T10:00:00Z', '2099-01-01T10:00:00-07:00', '2099-01-01T10:00:00.000Z'):
+        r = ctx.client.post('/api/schedules', json={
+            'project_id': 'p1', 'task': 't', 'schedule_type': 'once', 'run_at': ra})
+        assert r.status_code == 201, (ra, r.get_json())
+        assert r.get_json()['next_run']
+
+
+def test_update_naive_run_at_400_and_row_unchanged(ctx):
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': 'p1', 'task': 't', 'enabled': True,
+         'schedule_type': 'once', 'run_at': '2099-01-01T10:00:00Z',
+         'next_run': '2099-01-01T10:00:00Z'},
+    ])
+    r = ctx.client.put('/api/schedules/s1', json={'run_at': '2099-02-02T10:00:00'})
+    assert r.status_code == 400
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert saved[0]['run_at'] == '2099-01-01T10:00:00Z'
