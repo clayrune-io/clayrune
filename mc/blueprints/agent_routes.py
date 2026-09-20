@@ -7344,7 +7344,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                 p, character_meta, override=effort_override,
                 prior=(_prior_conversation_settings(project_id, resume_id, provider_name)
                        if resume_id else None)),
-            'effort_support': 'unsupported',  # intent only; runtime effort is not wired here
+            # Wired per provider, not blanket-'unsupported': codex honours
+            # `-c model_reasoning_effort=<level>` (CodexRuntime.build_command).
+            'effort_support': ('supported' if provider_name == 'codex' else 'unsupported'),
             'pinned_model': model_override or '',
             'character': character_meta,
             '_resume_id': resume_id,
@@ -7362,10 +7364,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             '_notify_workflow': notify_workflow,
             'project_generation': project_generation,
         }
-        if session['requested_effort']:
+        if session['requested_effort'] and session['effort_support'] != 'supported':
+            # Only say it when it is true. Claiming an effort is "preserved"
+            # while nothing consumes it reads as a working knob; for codex it
+            # now IS one, so the line would be a false negative.
             session['log_lines'].append(
-                f"[Requested effort '{session['requested_effort']}' is preserved, "
-                f"but effort control is not supported by this {provider_name} dispatch path.]")
+                f"[Requested effort '{session['requested_effort']}' is recorded on this "
+                f"conversation, but {provider_name} has no effort control to apply it to.]")
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
             # never blank even if this turn's INIT event doesn't fire (e.g.
@@ -7527,6 +7532,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # Only CodexRuntime.dispatch declares this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op -- same seam shape
+            # as unattended_sandbox_enabled above.
+            effort=session.get('requested_effort') or '',
             # W4/MC-947: Clayrune's own per-project MCP trim (same resolver
             # Claude's `_build_claude_flags` uses), passed through so a
             # runtime that opts in (currently only QwenRuntime.dispatch())

@@ -97,7 +97,7 @@ def test_non_claude_revival_carries_requested_effort_without_claiming_support(ar
     assert captured['effort_override'] == 'high'
 
 
-def test_non_claude_intent_is_visible_but_not_forwarded_as_supported(ar, monkeypatch, tmp_path):
+def _dispatch_capturing(ar, monkeypatch, tmp_path, provider_name):
     from threading import RLock
     captured = {}
     runtime = SimpleNamespace(build_command=lambda **kw: ['fake'],
@@ -108,13 +108,36 @@ def test_non_claude_intent_is_visible_but_not_forwarded_as_supported(ar, monkeyp
     monkeypatch.setattr(ar, '_resolve_runtime_model', lambda *a: 'requested-model')
     monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_log_agent_activity', lambda *a: None)
-    sid = ar._dispatch_via_runtime(_project(tmp_path), 'hello', provider_name='codex',
-                                   effort_override='high')
-    session = ar.agent_sessions[sid]
+    sid = ar._dispatch_via_runtime(_project(tmp_path), 'hello',
+                                   provider_name=provider_name, effort_override='high')
+    return ar.agent_sessions[sid], captured
+
+
+def test_codex_effort_is_forwarded_and_declared_supported(ar, monkeypatch, tmp_path):
+    """Codex honours `-c model_reasoning_effort=<level>` (2026-09-19).
+
+    This test previously asserted the opposite, because nothing consumed the
+    value: every codex dispatch logged "effort control is not supported by
+    this codex dispatch path" while the CLI had a documented config field for
+    it. The knob is wired in CodexRuntime.build_command now, so the old
+    assertion pinned a false statement to the user.
+    """
+    session, captured = _dispatch_capturing(ar, monkeypatch, tmp_path, 'codex')
+    assert session['requested_effort'] == 'high'
+    assert session['effort_support'] == 'supported'
+    assert captured.get('effort') == 'high', 'declared supported but never forwarded'
+    assert not any('not supported' in line for line in session['log_lines'])
+
+
+@pytest.mark.parametrize('provider_name', ['gemini', 'qwen'])
+def test_other_non_claude_intent_is_visible_but_not_claimed_as_working(
+        ar, monkeypatch, tmp_path, provider_name):
+    # The kwarg still crosses the seam (every runtime has a **_extra
+    # catchall), but the session must not TELL the user it is applied.
+    session, _ = _dispatch_capturing(ar, monkeypatch, tmp_path, provider_name)
     assert session['requested_effort'] == 'high'
     assert session['effort_support'] == 'unsupported'
-    assert any('not supported' in line for line in session['log_lines'])
-    assert 'effort' not in captured and 'effort_override' not in captured
+    assert any('no effort control' in line for line in session['log_lines'])
 
 
 @pytest.mark.parametrize('requested', [dict(model='', agent_model='stale-default'),

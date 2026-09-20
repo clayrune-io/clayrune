@@ -5363,6 +5363,15 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # Floor/chat read this flag to render "Out of allowance"
                 # instead of a red Blocked/Error pill.
                 session['_allowance_exhausted'] = True
+            elif ev.type == EventType.WARN:
+                # Advisory, not a failure: the run continues past it, so it
+                # must not carry the word "error" (a healthy codex turn read
+                # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
+                # Gemini reader's own WARN branch, which this one lacked.
+                session['log_lines'].append(
+                    f"[{runtime.name} {ev.payload.get('severity') or 'notice'}] "
+                    f"{_flatten_error_text(ev.payload.get('text', line))}")
+                session['last_output_time'] = _time.time()
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
                     f"[{runtime.name} error] "
@@ -6650,6 +6659,50 @@ class QwenRuntime(AgentRuntime):
         return None
 
 
+# Clayrune's effort vocabulary is claude's (`mc/characters.py` VALID_EFFORT:
+# low/medium/high/xhigh/max). Codex's own knob is the documented config.toml
+# field `model_reasoning_effort`, whose accepted set is minimal/low/medium/high
+# — so the two levels above `high` are CLAMPED rather than passed through: an
+# unrecognized value would be a config-parse death at launch (the same class of
+# failure the `-c hooks=<path>` regression was, 2026-09-18), and clamping is
+# the one behaviour that cannot make a dispatch worse than not asking at all.
+_CODEX_REASONING_EFFORT = {'low': 'low', 'medium': 'medium', 'high': 'high',
+                           'xhigh': 'high', 'max': 'high'}
+
+
+def codex_reasoning_effort(effort: str) -> str:
+    """The `model_reasoning_effort` value for a Clayrune effort, '' if none."""
+    return _CODEX_REASONING_EFFORT.get((effort or '').strip().lower(), '')
+
+
+# Codex emits some NOTICES on the SAME envelopes it uses for real failures,
+# and the turn then completes normally. MC rendered them as `[codex error]
+# ...`, so a healthy run read as a failed one. Measured live 2026-09-19
+# (docs/_journal/provider-live/claude-codex-handoff-verbatim/ and
+# .../xdispatch-claude-codex-qwen/): the hook-trust notice appeared TWICE,
+# prefixed `[codex error]`, in turns that went on to answer correctly.
+#
+# It travels as `item.completed` with `item.type == 'error'` (captured raw
+# from codex 0.151 stdout, see tests/test_codex_effort.py), NOT as the
+# top-level `{"type":"error"}` that carries 401s and disconnects. Both
+# branches consult this matcher because neither shape is documented as the
+# notice channel, so a future codex release could move it.
+#
+# Deliberately an EXACT-PHRASE allowlist, not a heuristic: the cost of calling
+# a real error a notice is silence on a failure, which is strictly worse than
+# the cosmetic bug being fixed. Only add a pattern after seeing the line in a
+# transcript whose turn SUCCEEDED.
+_CODEX_NOTICE_PATTERNS = (
+    re.compile(r'`?--dangerously-bypass-hook-trust`? is enabled', re.I),
+)
+
+
+def codex_error_is_notice(text: str) -> bool:
+    """True when a codex `error` event is an advisory the run continues past."""
+    t = str(text or '')
+    return any(rx.search(t) for rx in _CODEX_NOTICE_PATTERNS)
+
+
 class CodexRuntime(AgentRuntime):
     """Driver for OpenAI's `codex` CLI.
 
@@ -6798,7 +6851,7 @@ class CodexRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '',
+                      resume_id: str = '', effort: str = '',
                       unattended_sandbox: bool = False) -> List[str]:
         """Return the codex exec command for non-interactive use.
 
@@ -6852,6 +6905,14 @@ class CodexRuntime(AgentRuntime):
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
+        # Effort is REAL here, not decorative: `-c model_reasoning_effort=<level>`
+        # is a documented config.toml field, so the old session log line
+        # ("Requested effort is preserved, but effort control is not supported
+        # by this codex dispatch path") described a knob that simply was not
+        # wired. See codex_reasoning_effort() for why xhigh/max clamp to high.
+        _eff = codex_reasoning_effort(effort)
+        if _eff:
+            cmd.extend(['-c', f'model_reasoning_effort="{_eff}"'])
         # Per-launch guardrail injection (W2 redesign,
         # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4). LIVE REGRESSION FIXED
         # 2026-09-18: the first version passed `-c hooks='<path>'`, which
@@ -7003,11 +7064,29 @@ class CodexRuntime(AgentRuntime):
                     raw=msg,
                 )
             if item_type == 'error':
+                _txt = item.get('message') or item.get('text') or str(item)
+                # MEASURED 2026-09-19 against codex 0.151, raw stdout:
+                #   {"type":"item.completed","item":{"id":"item_0",
+                #    "type":"error","message":"`--dangerously-bypass-hook-
+                #    trust` is enabled. ..."}}
+                # -- TWICE, before turn.started, on a turn that then answered
+                # normally. This is the envelope the hook-trust NOTICE
+                # actually uses; the top-level {"type":"error"} shape carries
+                # real failures (401s, disconnects). Both are checked because
+                # neither is documented as the notice channel.
+                if codex_error_is_notice(_txt):
+                    return AgentEvent(
+                        type=EventType.WARN, provider='codex',
+                        session_id=session_id, mc_session_id=mc_session_id,
+                        timestamp=_now_iso(),
+                        payload={'text': _txt, 'severity': 'notice'},
+                        raw=msg,
+                    )
                 return AgentEvent(
                     type=EventType.ERROR, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(),
-                    payload={'text': item.get('message') or item.get('text') or str(item)},
+                    payload={'text': _txt},
                     raw=msg,
                 )
             # ── codex 0.133 schema (content[] blocks) ───────────────────
@@ -7105,6 +7184,14 @@ class CodexRuntime(AgentRuntime):
             err_msg = (msg.get('message') or
                        (msg.get('error') or {}).get('message', '') or
                        str(msg))
+            if etype == 'error' and codex_error_is_notice(err_msg):
+                return AgentEvent(
+                    type=EventType.WARN, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': err_msg, 'severity': 'notice'},
+                    raw=msg,
+                )
             return AgentEvent(
                 type=EventType.ERROR, provider='codex',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -7616,6 +7703,7 @@ class CodexRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  unattended_sandbox_enabled: bool = True,
+                 effort: str = '',
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
             raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
@@ -7631,7 +7719,12 @@ class CodexRuntime(AgentRuntime):
         use_sandbox = codex_unattended_sandbox_decision(
             session_dict, unattended_sandbox_enabled)
         cmd = self.build_command(model=model, resume_id=resume_id or '',
-                                 unattended_sandbox=use_sandbox)
+                                 effort=effort, unattended_sandbox=use_sandbox)
+        if session_dict is not None:
+            # Same reason the sandbox posture is stashed rather than
+            # re-derived: write_followup only receives the handle, and a
+            # conversation's effort must not silently change mid-thread.
+            session_dict['_codex_effort'] = effort or ''
         # MC Tool Protocol (mc:question — parity audit item 4): the universal
         # context block already TELLS Codex to use this fence
         # (_build_agent_context); without appending the protocol text itself
@@ -7741,6 +7834,7 @@ class CodexRuntime(AgentRuntime):
         # missing-trigger_type case.
         cmd = self.build_command(
             model=self.session_model(handle), resume_id=resume_id,
+            effort=session.get('_codex_effort', '') or '',
             unattended_sandbox=session.get('_codex_unattended_sandbox', True))
         proc = subprocess.Popen(
             cmd,
