@@ -2774,6 +2774,62 @@ def agent_auth_login(provider):
     return jsonify({'ok': True})
 
 
+def _allowance_refusal(vendor, *, user_initiated):
+    """The refusal text for `vendor`, or '' if it may run.
+
+    A record is only as good as its evidence (one failed run), and nothing
+    else ever corrects it once the user buys more quota. So a USER-initiated
+    dispatch that would be refused first asks the vendor, token-free, whether
+    it is still out (AgentRuntime.probe_allowance) and drops a record the
+    vendor contradicts. A vendor with no cheap probe (Claude, Gemini, Qwen)
+    keeps refusing until the record's reset time or a successful run or the
+    user's explicit re-check — never a guess. The refusal itself is unchanged:
+    it names the vendor and never falls back to another one.
+    """
+    if user_initiated and _allowance_state.get(vendor):
+        try:
+            rt = _agent_runtime.get_runtime(vendor)
+            _allowance_state.heal(vendor, rt.probe_allowance)
+        except KeyError:
+            pass
+    return _allowance_state.refusal_message(vendor)
+
+
+@bp.route('/api/agent/<provider>/allowance/recheck', methods=['POST'])
+def agent_allowance_recheck(provider):
+    """"I topped up, try again": drop this vendor's out-of-allowance record.
+
+    The record is a claim from one failed run; buying more quota does not
+    contradict it anywhere, and dispatch refuses before it can run the
+    success that would clear it. This is the user telling Clayrune the
+    evidence is stale. If the vendor is genuinely still out, the next run
+    fails with the vendor's own limit and re-records it, so nothing is
+    hidden — the refusal comes back with fresh evidence.
+
+    Where the vendor has a token-free probe its answer is returned as
+    `probe` ('usable' | 'limited' | 'unavailable') so the UI can say what it
+    saw, but it does not veto the click: a 'limited' answer can coexist with
+    purchased credits.
+    """
+    try:
+        rt = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return jsonify({'error': f'unknown provider: {provider}'}), 404
+    had_record = _allowance_state.get(rt.name) is not None
+    probe = 'unavailable'
+    if had_record:
+        try:
+            answer = rt.probe_allowance()
+        except Exception as e:
+            _log(f"[allowance] {rt.name} probe raised: {e}", flush=True)
+            answer = None
+        probe = ('usable' if answer is True
+                 else 'limited' if answer is False else 'unavailable')
+    _allowance_state.clear_exhaustion(rt.name)
+    return jsonify({'ok': True, 'provider': rt.name, 'was_exhausted': had_record,
+                    'probe': probe})
+
+
 @bp.route('/api/agent/<provider>/auth-logout', methods=['POST'])
 def agent_auth_logout(provider):
     """Revoke / clear stored credentials for a provider."""
@@ -8343,7 +8399,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # copy of this check), so one refusal covers all four surfaces named in
     # the brief. Follow-up has its own copy — see agent_followup, which does
     # not re-resolve a provider (the session already has one).
-    _allowance_block = _allowance_state.refusal_message(provider_name)
+    # A user-initiated dispatch re-checks a standing record against the vendor
+    # first (see _allowance_refusal); unattended callers (scheduler, workflow,
+    # agent-to-agent) never spend a probe on a refusal nobody is waiting on.
+    _allowance_block = _allowance_refusal(
+        provider_name, user_initiated=(trigger_type == 'manual'))
     if _allowance_block:
         raise ValueError(_allowance_block)
     _resume_auto_requested = False
@@ -9712,7 +9772,8 @@ def agent_followup(project_id):
         # fallback, rather than left to _dispatch_agent_internal's own check
         # (which never runs for a followup — the session already has a
         # provider, nothing re-resolves one here).
-        _allowance_block = _allowance_state.refusal_message(session_provider)
+        _allowance_block = _allowance_refusal(session_provider,
+                                              user_initiated=True)
         if _allowance_block:
             return jsonify({'error': _allowance_block,
                             'allowance_exhausted': True,

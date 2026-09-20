@@ -47,6 +47,7 @@ EXPECTED_ROUTES = {
     '/api/agent/<provider>/auth-login-remote/code',
     '/api/agent/<provider>/auth-login-remote/status',
     '/api/agent/<provider>/auth-logout',
+    '/api/agent/<provider>/allowance/recheck',
     '/api/agent/<provider>/auth-probe',
     '/api/agent/<provider>/auth-status',
     '/api/agent/provider/<name>/auth',

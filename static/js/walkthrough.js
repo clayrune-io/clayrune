@@ -332,6 +332,16 @@ function _renderProviderRow(p, opts) {
                 ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."` : ''}
                 onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
             </div>`;
+  // Out-of-allowance record: shown here with the way out. The record is one
+  // failed run's evidence and nothing else corrects it after a top-up, so the
+  // user can ask Clayrune to look again (mc/blueprints/agent_routes.py
+  // agent_allowance_recheck). Wording is a re-check, not an override — a vendor
+  // that is still out just refuses again on the next run.
+  const allowance = (installed && p.allowance_exhausted)
+    ? `<div class="prov-row-allowance" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px 0;font-size:11px;color:var(--amber)">
+              <span>${esc(p.allowance_exhausted)}</span>
+              ${_allowanceRecheckBtn(p.name)}
+            </div>` : '';
   const bits = [];
   if (installed && p.version) bits.push('v' + esc(p.version));
   if (installed && !authOk && p.auth_error_text) bits.push(esc(String(p.auth_error_text).slice(0, 200)));
@@ -354,10 +364,39 @@ function _renderProviderRow(p, opts) {
               ${installBtn}
             </label>
             ${actions}
+            ${allowance}
             ${detail}
             ${extra}
             <div id="wt-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
           </div>`;
+}
+
+// "Re-check allowance" button — shared by the provider row and the composer's
+// out-of-allowance warning so both say the same thing.
+function _allowanceRecheckBtn(name) {
+  return `<button type="button" class="btn-add prov-allowance-recheck" style="padding:2px 10px;font-size:11px;background:var(--surface3);color:var(--text)"
+    title="Topped up? This clears Clayrune's out-of-allowance note for this agent so the next run can try again. If it is still out, that run will say so."
+    onclick="providerAllowanceRecheck('${esc(name)}',this)">Re-check allowance</button>`;
+}
+
+async function providerAllowanceRecheck(name, btnEl) {
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Checking…'; }
+  try {
+    const res = await fetch(API_BASE + `/api/agent/${encodeURIComponent(name)}/allowance/recheck`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.error || ('HTTP ' + res.status));
+    const label = ((_agentProviders || []).find(x => x.name === name) || {}).display_name || name;
+    showToast(data.probe === 'usable'
+      ? `${label} reports allowance available — ready to run.`
+      : `${label} allowance re-checked. The next run will confirm; if it is still out, it will say so.`, 6000);
+    _agentProviders = null;
+    await _ensureAgentProviders();
+    _repaintProviderRows();
+    if (typeof refreshModal === 'function') refreshModal();
+  } catch (e) {
+    showToast('Allowance re-check failed: ' + e, 8000);
+    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Re-check allowance'; }
+  }
 }
 
 // Per-row "Check status": re-probe ONE vendor (POST /api/agent/<p>/auth-probe —
@@ -940,6 +979,8 @@ window.wtSelectProvider = wtSelectProvider; // interop: provider selection check
 window.wtInstallSelectedProviders = wtInstallSelectedProviders; // interop: install selected button
 window._renderProviderRow = _renderProviderRow; // interop: Settings -> Providers (provider-settings.js) renders its rows with the tour's component
 window.providerCheckStatus = providerCheckStatus; // interop: per-row Check status button onclick
+window.providerAllowanceRecheck = providerAllowanceRecheck; // provider row + composer warning onclick
+window._allowanceRecheckBtn = _allowanceRecheckBtn; // composer warning (conversation.js)
 window.applyDefaultProvider = applyDefaultProvider; // interop: Settings -> Providers per-row Set default (provider-auth.js)
 window.wtInstallProvider = wtInstallProvider; // interop: provider-choice step's generated Install button onclick
 window.wtRefreshProviders = wtRefreshProviders; // interop: wtInstallProvider's generated Refresh button onclick
