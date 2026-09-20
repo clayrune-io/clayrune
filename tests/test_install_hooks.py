@@ -8,6 +8,19 @@ import install_hooks  # noqa: E402
 from mc import guardrail_hooks as gh  # noqa: E402
 
 
+def _body(cmd: str) -> str:
+    """`cmd` with the Windows exit-code re-raise tail removed.
+
+    W6 (2026-09-19): `guard_command()` now ends with `gh._EXIT_CODE_SUFFIX` on
+    Windows so a PowerShell hook runner cannot collapse the guard's exit 2 into
+    a 1 (which Qwen and Codex both read as ALLOW — docs/GUARDRAIL_PARITY_EVIDENCE.md
+    §9). The QUOTING rules these tests pin are about the two path tokens and are
+    unchanged by that tail, so they assert against the body rather than loosening
+    `==` into a substring check.
+    """
+    return cmd[:-len(gh._EXIT_CODE_SUFFIX)] if gh._EXIT_CODE_SUFFIX else cmd
+
+
 def _read(clayrune_home: Path, vendor: str) -> dict:
     return json.loads(gh.launch_file_path(vendor, clayrune_home).read_text(encoding='utf-8'))
 
@@ -78,7 +91,7 @@ def test_guard_command_leaves_a_no_space_interpreter_unquoted():
     # separate live Qwen regression that fix closes.
     cmd = install_hooks.guard_command(Path('C:/no/spaces/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert cmd == 'C:/no/spaces/python.exe C:/no/spaces/process_guard.py'
+    assert _body(cmd) == 'C:/no/spaces/python.exe C:/no/spaces/process_guard.py'
     assert '"' not in cmd
 
 
@@ -115,7 +128,7 @@ def test_guard_command_leaves_a_no_space_script_unquoted():
 def test_guard_command_quotes_a_script_path_with_a_space():
     cmd = install_hooks.guard_command(Path('C:/Program Files/process_guard.py'),
                                        python_exe='C:/no/spaces/python.exe')
-    assert cmd.endswith('"C:/Program Files/process_guard.py"')
+    assert _body(cmd).endswith('"C:/Program Files/process_guard.py"')
 
 
 def test_python_exe_override_is_used(tmp_path):

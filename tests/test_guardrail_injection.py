@@ -109,7 +109,14 @@ class TestCodexHooksInjection:
         rt._bin_cache = 'codex'
         cmd = rt.build_command()
         joined = ' '.join(cmd)
-        assert 'hooks.PreToolUse=[{matcher="shell"' in joined
+        assert 'hooks.PreToolUse=[{hooks=[{type="command"' in joined
+        # W6 (2026-09-19): NO `matcher=`. `matcher="shell"` never matched -
+        # Codex 0.154.0 reports its shell tool as `Bash` (measured by a
+        # PreToolUse probe that dumped its own stdin), so the event never fired
+        # and the guard was absent from every Codex launch. Filtering is
+        # `process_guard.hook_main`'s job; a second filter here can only fail
+        # open. See docs/GUARDRAIL_PARITY_EVIDENCE.md section 9.
+        assert 'matcher=' not in joined
         assert 'clayrune-process-guard' in joined
         # Never the broken first-version shape (a bare path as the value).
         assert "hooks='" not in joined
@@ -124,26 +131,33 @@ class TestCodexHooksInjection:
         assert '--dangerously-bypass-hook-trust' in joined
 
     def test_injected_hooks_value_is_accepted_by_a_real_strict_config_parse(self):
-        """Live-verified 2026-09-18 against the real codex.exe (0.154.0, no
-        allowance): identical argv reached `usage_limit_exceeded` (past
-        config parsing, into the real API) under --strict-config, which
-        rejects any unrecognized field — see
-        docs/GUARDRAIL_PARITY_EVIDENCE.md §4 for the exact command. This
-        test pins the STRING SHAPE that was verified, so a future edit to
-        codex_hook_config_args() that drifts from it is caught here instead
-        of on Ron's live instance again."""
+        """Pins the STRING SHAPE a real `codex.exe` has accepted under
+        `--strict-config`, which rejects any unrecognized field - so a future
+        edit to codex_hook_config_args() that drifts from it is caught here
+        instead of on Ron's live instance again.
+
+        Verified twice, both against codex.exe 0.154.0:
+        - 2026-09-18, the `matcher="shell"` shape, out of allowance: identical
+          argv reached `usage_limit_exceeded`, i.e. past config parsing
+          (docs/GUARDRAIL_PARITY_EVIDENCE.md section 4).
+        - 2026-09-19, THIS shape (no matcher, exit-code suffix):
+          `codex exec --json --strict-config ... 'say hi'` returned rc 0 with
+          `turn.completed` - parsed, and the hook ran (section 9).
+        """
         from mc.guardrail_hooks import codex_hook_config_args
         args = codex_hook_config_args(Path('C:/repo/mc/process_guard.py'), python_exe='C:/py/python.exe')
         assert args[0] == '--dangerously-bypass-hook-trust'
         assert args[1] == '-c'
         value = args[2]
-        assert value.startswith('hooks.PreToolUse=[{matcher="shell",hooks=[{type="command",command="')
+        assert value.startswith('hooks.PreToolUse=[{hooks=[{type="command",command="')
         assert value.endswith('name="clayrune-process-guard"}]}]')
-        # No unescaped double quote inside the command string's own value —
+        # No unescaped double quote inside the command string's own value -
         # exactly the class of bug that broke Gemini (see
-        # guard_shell_command's docstring).
+        # guard_shell_command's docstring). Both path tokens are space-free
+        # here, so neither is quoted and the value is escape-clean end to end.
         inner = value.split('command=', 1)[1]
-        assert inner.startswith('"C:/py/python.exe \\"C:\\\\repo\\\\mc\\\\process_guard.py\\""')
+        assert inner.startswith('"C:/py/python.exe C:/repo/mc/process_guard.py')
+        assert chr(92) not in inner, inner
 
 
 class TestGeminiDispatchInjection:
