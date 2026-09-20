@@ -1063,15 +1063,15 @@ function agentPanelHTML(p) {
   // below, the status line, and the §8 sheet — one source of truth.
   const _personName = noActiveTab ? _composerActiveCharName(p) : 'Claude';
   const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
-  const _attachInput = _pcaps.image_input ? `
+  const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
       onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
   // Desktop: ＋ on the LEFT opens the picker (mirrors the in-chat composer).
   // Mobile: keeps its 📎 to the right of the pill.
-  const _dispatchPlusBtn = _pcaps.image_input ? `
+  const _dispatchPlusBtn = _pcaps.image_attach ? `
     <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#43;</button>` : '';
-  const _attachBtn = _pcaps.image_input ? `
+  const _attachBtn = _pcaps.image_attach ? `
     <button class="btn-attach" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#128206;</button>` : '';
   const _dispatchMicBtn = micBtnHTML(`agent-task-${esc(p.id)}`);
@@ -1136,14 +1136,14 @@ function agentPanelHTML(p) {
     ondragover="handleAgentDragOver(event,this)"
     ondragenter="handleAgentDragOver(event,this)"
     ondragleave="handleAgentDragLeave(event,this)"
-    ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
+    ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
     <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
-      onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
+      onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
     ></textarea>
     ${mobileMode ? _attachBtn : ''}
     ${_dispatchMicBtn}
@@ -1359,15 +1359,15 @@ function agentPanelHTML(p) {
             </div>`
           : '';
     // The hidden file input is shared by both the desktop ＋ and the mobile 📎.
-    const _fuAttachInput = _pcaps.image_input ? `
+    const _fuAttachInput = _pcaps.image_attach ? `
             <input type="file" multiple id="agent-attach-input-fu_${esc(activeSessionId)}" class="agent-attach-input"
               onchange="handleAgentAttachPick(event,'fu_${esc(activeSessionId)}')">` : '';
     // Desktop 3-pane: a ＋ on the LEFT opens the picker (matches the PDF composer:
     // ＋ left, mic right). Mobile keeps its 📎 on the right of the pill.
-    const _fuPlusBtn = _pcaps.image_input ? `
+    const _fuPlusBtn = _pcaps.image_attach ? `
             <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#43;</button>` : '';
-    const _fuAttachBtn = _pcaps.image_input ? `
+    const _fuAttachBtn = _pcaps.image_attach ? `
             <button class="btn-attach" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#128206;</button>` : '';
     const _fuMicBtn = micBtnHTML(`agent-followup-${esc(activeSessionId)}`);
@@ -1378,14 +1378,14 @@ function agentPanelHTML(p) {
               ondragover="handleAgentDragOver(event,this)"
               ondragenter="handleAgentDragOver(event,this)"
               ondragleave="handleAgentDragLeave(event,this)"
-              ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
+              ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
             <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
-              onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
+              onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
             ${_fuMicBtn}

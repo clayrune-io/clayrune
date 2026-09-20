@@ -94,6 +94,7 @@ from mc.state import (
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 from mc import allowance_state as _allowance_state
+from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
@@ -1628,6 +1629,11 @@ def agent_providers():
     """
     _merge_registry_path()
     refresh = str(request.args.get('refresh', '')).strip().lower() in ('1', 'true', 'yes')
+    # ?model=<id>[&provider=<name>]: report whether THAT model can see images
+    # (`selected_model_image_input`). image_input alone is per-runtime, and one
+    # runtime can front both a blind and a sighted model.
+    sel_model = str(request.args.get('model', '')).strip()
+    sel_provider = str(request.args.get('provider', '')).strip().lower()
     out = []
     default_name = _agent_runtime.default_runtime_name()
     try:
@@ -1677,6 +1683,7 @@ def agent_providers():
                 'emits_num_turns': caps.emits_num_turns,
                 'emits_rate_limit': caps.emits_rate_limit,
                 'image_input': caps.image_input,
+                'image_attach': caps.image_attach,
                 'context_window': caps.context_window,
                 'context_injection': caps.context_injection,
                 'context_file_name': caps.context_file_name,
@@ -1693,7 +1700,8 @@ def agent_providers():
         # picker rebuilds itself from this whenever the Agent picker changes.
         # Empty list = this CLI has no model flag → no picker.
         try:
-            models = [{'id': mid, 'label': label}
+            models = [{'id': mid, 'label': label,
+                       'image_input': rt.image_input_for(mid)}
                       for mid, label in rt.model_choices()]
         except Exception:
             models = []
@@ -1726,6 +1734,9 @@ def agent_providers():
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
+            **({'selected_model': sel_model,
+                'selected_model_image_input': rt.image_input_for(sel_model)}
+               if sel_model and sel_provider in ('', rt.name) else {}),
             # VENDOR_AGNOSTIC_PROGRAM.md §4: distinct from quota_warnings
             # above (a per-model heuristic scraped from the log) — this is
             # the normalized, per-vendor ALLOWANCE_EXHAUSTED state a dispatch
@@ -7432,10 +7443,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
+    runtime_task = _bridge_images_for_blind_model(
+        task, session, provider=provider_name, model=model, project_path=pp)
+
     def _spawn_runtime():
         return runtime.dispatch(
             project_path=pp,
-            task=task,
+            task=runtime_task,
             system_prompt=system_prompt,
             resume_id=resume_id,
             mode='A',
@@ -7928,6 +7942,28 @@ def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
     if too_large:
         return 'bytes', size_bytes
     return None, 0
+
+
+def _bridge_images_for_blind_model(text, session, *, provider, model, project_path):
+    """Replace image markers in an outgoing prompt with described-text blocks
+    when the session's model cannot see (mc/vision_bridge.py). Never raises:
+    the turn must still run, and a bridge that crashed says so in the log
+    instead of leaving the agent believing it saw the image. The agent's own
+    provider and model are untouched -- this only rewrites the prompt text."""
+    try:
+        roots = [str(UPLOADS_DIR)] if UPLOADS_DIR else []
+        if project_path:
+            roots.append(str(project_path))
+        return _vision_bridge.bridge_prompt(
+            text, provider=provider, model=model or '',
+            log=session['log_lines'].append, allowed_roots=roots)
+    except Exception as e:
+        _log(f'[vision-bridge] failed: {e}', flush=True)
+        try:
+            session['log_lines'].append(f'[Image bridge failed, images were NOT described: {e}]')
+        except Exception:
+            pass
+        return text
 
 
 def _mode_a_token_rollover(pp, project_id, session_id, session, provider, message):
@@ -9721,7 +9757,9 @@ def agent_followup(project_id):
                 )
                 message = _mode_a_token_rollover(
                     pp, project_id, session_id, existing, session_provider, message)
-                runtime.write_followup(handle, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, existing, provider=session_provider,
+                    model=existing.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
@@ -10412,7 +10450,9 @@ def agent_interrupt(project_id, *, _internal=None):
                 )
                 message = _mode_a_token_rollover(
                     pp, project_id, session_id, session, session_provider, message)
-                runtime.write_followup(handle, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, session, provider=session_provider,
+                    model=session.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'
