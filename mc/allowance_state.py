@@ -27,9 +27,10 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
@@ -123,6 +124,45 @@ def clear_exhaustion(vendor: str) -> None:
         if vendor in _STATE:
             del _STATE[vendor]
             _save()
+
+
+# Last probe attempt per vendor (monotonic seconds). Bounds how often a stream
+# of refused dispatches can spawn a probe subprocess; in-memory on purpose — a
+# restart re-probing once is harmless.
+_PROBE_MIN_INTERVAL_S = 30.0
+_LAST_PROBE: Dict[str, float] = {}
+
+
+def heal(vendor: str, probe: Callable[[], Optional[bool]]) -> bool:
+    """Re-check a standing exhaustion record against the vendor itself.
+
+    `probe` is the vendor's token-free allowance read (AgentRuntime
+    .probe_allowance). Clears the record and returns True ONLY when the probe
+    answers exactly True. False, None, an exception or a throttled call all
+    leave the record standing — a genuinely exhausted vendor keeps refusing,
+    and "could not tell" is never read as recovery. Throttled per vendor so
+    a burst of refused dispatches costs one probe, not one each.
+    """
+    vendor = (vendor or '').strip().lower()
+    if not vendor or get(vendor) is None:
+        return False
+    now = time.monotonic()
+    with _lock:
+        last = _LAST_PROBE.get(vendor)
+        if last is not None and now - last < _PROBE_MIN_INTERVAL_S:
+            return False
+        _LAST_PROBE[vendor] = now
+    try:
+        usable = probe()
+    except Exception as e:
+        _log(f"[allowance] {vendor} probe raised: {e}", flush=True)
+        return False
+    if usable is True:
+        _log(f"[allowance] {vendor} probe reports usable; clearing stale "
+             f"exhaustion record", flush=True)
+        clear_exhaustion(vendor)
+        return True
+    return False
 
 
 def _is_expired(entry: dict) -> bool:

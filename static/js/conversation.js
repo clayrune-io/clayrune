@@ -357,7 +357,7 @@ function _composerProviderPicker(p) {
   ).join('');
   const curRec = provs.find(x => x.name === cur);
   const warn = (curRec && curRec.allowance_exhausted)
-    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent</div>`
+    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent ${window._allowanceRecheckBtn ? window._allowanceRecheckBtn(curRec.name) : ''}</div>`
     : '';
   return `<div class="composer-provider-row">
     <span class="composer-provider-label">Agent</span>

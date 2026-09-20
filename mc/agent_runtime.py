@@ -879,6 +879,16 @@ class AgentRuntime(ABC):
         """Probe install + auth state. May spawn the binary with --version."""
         ...
 
+    def probe_allowance(self) -> Optional[bool]:
+        """Ask the vendor, WITHOUT spending tokens, whether it is usable.
+
+        True = the vendor confirms usable (a stale exhaustion record may be
+        cleared); anything else must leave a record standing. None = no cheap
+        probe exists for this vendor or it did not answer — the default, and
+        deliberate: see mc/allowance_probe.py for why none is invented.
+        """
+        return None
+
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
         """Return the CapabilityFlags for this provider."""
@@ -6764,6 +6774,17 @@ class CodexRuntime(AgentRuntime):
         self._bin_cache = None  # never cache a miss (see GeminiRuntime)
         self._npx_fallback = False
         return None
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Codex's app-server answers `account/rateLimits/read` from the
+        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+        from mc import allowance_probe
+        if not self.resolve_binary():
+            return None  # never probe through the per-call npx download
+        kw = ({'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO}
+              if sys.platform == 'win32' else {})
+        return allowance_probe.codex_ordinary_usage_allowed(
+            self._cmd_prefix(), popen_kwargs=kw)
 
     def _cmd_prefix(self) -> List[str]:
         """Return [codex] if binary found, [npx, --yes, @openai/codex] otherwise."""
