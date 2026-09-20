@@ -146,7 +146,15 @@ def _isolated_allowance_state():
     the box running the suite (Codex, 2026-09-19) made unrelated dispatch
     tests raise "out of allowance". Every test starts with empty, unwired
     allowance state; a test that needs some sets it itself."""
-    from mc import allowance_state as _as
+    # Imported lazily from sys.modules, never with `from mc import ...`: a
+    # fresh import inside a fixture broke subprocess handle inheritance under
+    # pytest capture on Windows (DuplicateHandle -> WinError 50, measured
+    # 2026-09-19 in test_system_update_frozen / test_uninstallers). If the
+    # module was never imported, no test can be reading its state anyway.
+    _as = sys.modules.get('mc.allowance_state')
+    if _as is None:
+        yield
+        return
     saved = (_as.STATE_PATH, _as._STATE)
     _as.STATE_PATH, _as._STATE = None, {}
     yield
