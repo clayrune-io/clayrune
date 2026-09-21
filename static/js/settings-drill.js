@@ -748,6 +748,10 @@ async function _renderSettings() {
         <div><div class="settings-label">Interface Tour</div><div class="settings-hint">Walk through the main features</div></div>
         <button class="btn-dispatch" onclick="closeModalById('__settings');startWalkthrough()">Take Tour</button>
       </div>
+      <div class="settings-row">
+        <div><div class="settings-label">First-run setup</div><div class="settings-hint">Agent connections and essentials — separate from the tour</div></div>
+        <button class="btn-dispatch" onclick="closeModalById('__settings');startFirstRun({rerun:true})">Run setup again</button>
+      </div>
     </div>
       </div>
     </div>`;

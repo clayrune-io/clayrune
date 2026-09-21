@@ -1,7 +1,7 @@
 // ── Provider Settings section ─────────────────────────────────────────────
 // Renders the Providers category inside _renderSettings(). Every provider —
-// Claude included — is one row from the SAME component the first-run tour's
-// provider-choice step uses (walkthrough.js _renderProviderRow), so vendor
+// Claude included — is one row from the SAME component first-run setup's Agent
+// connections step uses (provider-auth.js _renderProviderRow), so vendor
 // setup is reachable from Settings at any time (F1) and no vendor is
 // special-cased in how it looks.
 function _renderProviderSettings(cfg) {
@@ -36,7 +36,7 @@ function _renderProviderSettings(cfg) {
           ${anyMissing ? `<button type="button" class="btn-add" id="settings-prov-install-selected"
                   onclick="settingsInstallSelectedProviders(this)">Install selected</button>` : ''}
           <button type="button" class="btn-add" style="background:var(--surface3);color:var(--text)"
-                  id="settings-prov-check-status" onclick="wtRefreshProviders()">Check setup status</button>
+                  id="settings-prov-check-status" onclick="providerRefreshAll()">Check setup status</button>
         </div>
       </div>
       <div class="prov-rows" style="display:flex;flex-direction:column;gap:8px;margin-top:8px">${rows}</div>
@@ -48,7 +48,7 @@ function _renderProviderSettings(cfg) {
 // ── Interop: re-expose for the cross-module caller. `_renderProviderSettings`
 //    is interpolated into _renderSettings() by settings-drill.js (module 6)
 //    at render time (runtime) — resolves the window prop. Its row component
-//    (`_renderProviderRow`) and handlers come from walkthrough.js /
-//    provider-auth.js as window props; `_agentProviders` is an inline global
+//    (`_renderProviderRow`) and handlers come from provider-auth.js as
+//    window props; `_agentProviders` is an inline global
 //    resolved at call time. ──
 window._renderProviderSettings = _renderProviderSettings;

@@ -3399,13 +3399,15 @@ fetchProjects().then(async () => {
   // every 6h). Sets a sidebar dot on Settings and shows a one-time toast
   // when a new commit becomes available; respects dismiss + snooze.
   checkClayruneUpdateAvailable();
-  // Auto-start walkthrough on first run (zero REAL projects, never completed).
+  // Auto-start first-run SETUP (zero REAL projects, server says never set up —
+  // config.setup_completed, not a per-browser flag; see first-run.js). The
+  // guided tour is no longer auto-started: setup offers it as its last step.
   // Filter out the auto-created `_incognito` pseudo-project — it always exists
-  // even on fresh installs, so counting it would suppress the walkthrough on
-  // the exact users it's meant for.
+  // even on fresh installs, so counting it would suppress setup on the exact
+  // users it's meant for.
   const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p)).length;
-  if (realProjectCount === 0 && !localStorage.getItem('walkthrough_done')) {
-    setTimeout(() => startWalkthrough(), 600);
+  if (realProjectCount === 0 && firstRunNeeded()) {
+    setTimeout(() => startFirstRun(), 600);
   } else {
     // Existing install: no dialog, ever (Ron 2026-09-14 — the provider
     // question belongs at install time, installers ask it now). The one
@@ -3723,6 +3725,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>
+<script type="module" src="/static/js/first-run.js"></script>
 <script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/skills-panel.js"></script>
 <script type="module" src="/static/js/media.js"></script>

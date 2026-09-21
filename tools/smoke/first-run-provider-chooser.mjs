@@ -1,7 +1,8 @@
 #!/usr/bin/env node
 /**
- * First-run provider chooser (static/js/walkthrough.js's 'provider-choice'
- * step) at a genuinely fresh data dir: zero real projects, no
+ * First-run provider chooser (static/js/first-run.js's 'connections' step —
+ * moved out of the tour's 'provider-choice' step when setup was decoupled
+ * from the tour) at a genuinely fresh data dir: zero real projects, no
  * default_provider saved — the exact state a downloaded macOS .app is in,
  * since it never runs install.sh/install.ps1's own provider prompt (that
  * prompt only exists on the shell/PowerShell installer path).
@@ -27,8 +28,8 @@
  * AND set it as default — the pre-multi-select chooser design. Ron's
  * 2026-09-18 decision ("user should be able to choose more than one vendor
  * on initial installation") replaced that with a `<input type=checkbox
- * name="wt-provider">` per row (selection) plus a separate, only-rendered-
- * when-selected `<input type=radio name="wt-provider-default">` with NO
+ * name="setup-provider">` per row (selection) plus a separate, only-rendered-
+ * when-selected `<input type=radio name="setup-provider-default">` with NO
  * `value` attribute (it sets the default via its onchange handler, not its
  * value). The old selector `label querySelector('input[type=radio]')` found
  * either nothing (unselected rows have no radio at all) or a valueless
@@ -97,26 +98,26 @@ const fail = (m) => { console.error('  ✗ ' + m); bad++; };
 
 async function readProviderChoiceStep(page) {
   return page.evaluate(() => {
-    const overlay = document.getElementById('wt-overlay');
+    const overlay = document.getElementById('setup-overlay');
     if (!overlay) return null;
     const title = (overlay.querySelector('.wt-title') || {}).textContent || '';
     // Anchor on the selection checkbox itself — one per provider, guaranteed
     // unique by `value` — rather than a positional container selector. The
     // checkbox's `<label>` holds it + the display/state spans + an optional
-    // Install button; the label's parent `<div>` (walkthrough.js's per-
+    // Install button; the label's parent `<div>` (provider-auth.js's per-
     // provider wrapper) additionally holds the default radio + Sign in
     // button once the row is selected (both absent otherwise).
-    const rows = Array.from(overlay.querySelectorAll('input[type=checkbox][name="wt-provider"]')).map((cb) => {
+    const rows = Array.from(overlay.querySelectorAll('input[type=checkbox][name="setup-provider"]')).map((cb) => {
       const label = cb.closest('label');
       const row = label ? label.parentElement : cb.parentElement;
       const spans = label ? Array.from(label.querySelectorAll('span')) : [];
-      const defaultRadio = row.querySelector('input[type=radio][name="wt-provider-default"]');
+      const defaultRadio = row.querySelector('input[type=radio][name="setup-provider-default"]');
       return {
         name: cb.value,
         selected: cb.checked,
         displayText: (spans[0] || {}).textContent || '',
         stateText: (spans[1] || {}).textContent || '',
-        hasInstallBtn: !!(label && label.querySelector('button[onclick*="wtInstallProvider"]')),
+        hasInstallBtn: !!(label && label.querySelector('button[onclick*="providerInstall"]')),
         hasDefaultRadio: !!defaultRadio,
         defaultChecked: !!(defaultRadio && defaultRadio.checked),
         hasSignInBtn: !!row.querySelector('button[onclick*="settingsProviderTerminalLogin"]'),
@@ -143,7 +144,7 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     // Fresh install: only the onboarding project exists (realProjectCount === 0).
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([CLAYRUNE_PROJECT]) });
-    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' }); // no default_provider saved
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"setup_completed":false}' }); // no default_provider saved; setup never completed
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
@@ -156,23 +157,23 @@ try {
 
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 }).catch(() => {});
-  // Fresh install auto-starts the tour ~600ms after boot continuation.
-  await page.waitForSelector('#wt-overlay', { timeout: 5000 }).catch(() => {});
+  // Fresh install auto-starts first-run setup ~600ms after boot continuation.
+  await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
 
   const step0 = await readProviderChoiceStep(page);
   if (!step0) {
-    fail('walkthrough overlay never appeared on a fresh install (0 real projects, no default_provider)');
+    fail('setup overlay never appeared on a fresh install (0 real projects, setup_completed unset)');
   } else if (step0.title !== 'Which AI do you work with?') {
     // First step is 'welcome' — advance once.
-    await page.evaluate(() => window.wtNext());
+    await page.evaluate(() => window.setupNext());
     await page.waitForTimeout(200);
   }
 
   const step = await readProviderChoiceStep(page);
   if (!step || step.title !== 'Which AI do you work with?') {
-    fail(`provider-choice step did not render (got title: ${step && step.title})`);
+    fail(`connections step did not render (got title: ${step && step.title})`);
   } else {
-    ok('provider-choice step rendered on a fresh install with 2 CLIs installed (not just <=1)');
+    ok('connections step rendered on a fresh install with 2 CLIs installed (not just <=1)');
 
     const byName = Object.fromEntries(step.rows.map(r => [r.name, r]));
     if (!byName.gemini) fail('gemini (not installed) is MISSING from the chooser — the exact reported bug');
@@ -205,10 +206,10 @@ try {
 
     // Click gemini's Install button and confirm it hits the real endpoint.
     await page.evaluate(() => {
-      const overlay = document.getElementById('wt-overlay');
-      const cb = overlay.querySelector('input[type=checkbox][name="wt-provider"][value="gemini"]');
+      const overlay = document.getElementById('setup-overlay');
+      const cb = overlay.querySelector('input[type=checkbox][name="setup-provider"][value="gemini"]');
       const label = cb && cb.closest('label');
-      const btn = label && label.querySelector('button[onclick*="wtInstallProvider"]');
+      const btn = label && label.querySelector('button[onclick*="providerInstall"]');
       if (btn) btn.click();
     });
     await page.waitForTimeout(300);
@@ -222,9 +223,9 @@ try {
     // behavior Ron's 2026-09-18 decision requires, which this smoke's old
     // single-radio reads could never have exercised (a radio group allows
     // exactly one checked member by construction).
-    await page.locator('#wt-overlay input[name="wt-provider"][value="claude"]').check();
+    await page.locator('#setup-overlay input[name="setup-provider"][value="claude"]').check();
     await page.waitForTimeout(30);
-    await page.locator('#wt-overlay input[name="wt-provider-default"]').first().check();
+    await page.locator('#setup-overlay input[name="setup-provider-default"]').first().check();
     await page.waitForTimeout(30);
     const afterClaude = await readProviderChoiceStep(page);
     const claudeSolo = afterClaude.rows.find(r => r.name === 'claude');
@@ -232,7 +233,7 @@ try {
       fail(`claude should be selected+default after checking both, got: ${JSON.stringify(claudeSolo)}`);
     else ok('claude selected and set as default');
 
-    await page.locator('#wt-overlay input[name="wt-provider"][value="codex"]').check();
+    await page.locator('#setup-overlay input[name="setup-provider"][value="codex"]').check();
     await page.waitForTimeout(30);
     const afterSelect = await readProviderChoiceStep(page);
     const claudeAfter = afterSelect.rows.find(r => r.name === 'claude');
