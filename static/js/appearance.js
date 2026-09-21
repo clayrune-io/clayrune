@@ -269,6 +269,9 @@ window.setAccent = setAccent;
 window.setDensity = setDensity;
 window.setVoice = setVoice;
 window._bgCropInit = _bgCropInit;
+window._bgSaveFraming = _bgSaveFraming;  // interop: bg-framing-check smoke drives framing
+                                         // the same way a crop-box drag does, now that the
+                                         // setBgZoom/setBgPosX/setBgPosY sliders are gone.
 window._bgCropDragStart = _bgCropDragStart;
 window._bgCropWheel = _bgCropWheel;
 window.setBgMode = setBgMode;
