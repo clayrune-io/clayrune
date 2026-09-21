@@ -200,7 +200,11 @@ def check_one(cli, apply_updates=False):
         row['status'] = 'shadowed'
 
     if apply_updates and behind and cli.update_cmd:
-        rc, out = _run(cli.update_cmd, timeout=600)
+        # Resolve argv[0] (npm -> npm.cmd on Windows): a bare 'npm' raised
+        # FileNotFoundError here and every npm update silently failed.
+        cmd = list(cli.update_cmd)
+        cmd[0] = shutil.which(cmd[0]) or shutil.which(cmd[0] + '.cmd') or cmd[0]
+        rc, out = _run(cmd, timeout=600)
         after, _ = installed_version(cli.name)
         row['installed_after'] = after
         row['updated'] = (rc == 0 and _cmp(after, inst) > 0)
