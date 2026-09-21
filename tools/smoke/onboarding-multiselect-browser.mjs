@@ -40,14 +40,14 @@ function showToast(){} function showDesktop(){} function refreshSilent(){} funct
 async function saveSetting(k,v){_globalConfig[k]=v;}
 async function _ensureAgentProviders(){const r=await fetch('/api/agent/providers'); _agentProviders=await r.json();}
 const browserLoginCalls=[]; function stubTerminalLogin(name){browserLoginCalls.push(name);} window.browserLoginCalls=browserLoginCalls;
-</script><script src="/static/js/walkthrough.js"></script><script src="/static/js/provider-auth.js"></script><script>window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startWalkthrough();</script>`;
+</script><script src="/static/js/first-run.js"></script><script src="/static/js/provider-auth.js"></script><script>window.settingsProviderTerminalLogin=stubTerminalLogin;</script><script>startFirstRun();</script>`;
 
 let server, browserServer, browser, page;
 try {
   server = http.createServer((req, res) => {
     const path = decodeURIComponent((req.url || '').split('?')[0]);
     if (path === '/') { res.writeHead(200, {'content-type': 'text/html'}); return res.end(pageHTML); }
-    if (path === '/static/js/walkthrough.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/walkthrough.js'))); }
+    if (path === '/static/js/first-run.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/first-run.js'))); }
     if (path === '/static/js/provider-auth.js') { res.writeHead(200, {'content-type': 'text/javascript'}); return res.end(readFileSync(resolve(root, 'static/js/provider-auth.js'))); }
     if (path === '/static/css/app.css') { res.writeHead(200, {'content-type': 'text/css'}); return res.end(readFileSync(resolve(root, 'static/css/app.css'))); }
     if (path === '/api/agent/providers') { res.writeHead(200, {'content-type': 'application/json'}); return res.end(JSON.stringify(providers)); }
@@ -86,53 +86,53 @@ try {
   page = await browser.newPage({viewport: {width: 1280, height: 900}});
   const pageErrors = []; page.on('pageerror', e => pageErrors.push(String(e)));
   await page.goto(`http://127.0.0.1:${server.address().port}/`, {waitUntil: 'load'});
-  await page.getByRole('button', {name: 'Start Tour'}).click();
-  await page.waitForSelector('#wt-overlay input[name="wt-provider"]');
-  const checks = page.locator('#wt-overlay input[name="wt-provider"]');
-  await page.locator('#wt-overlay input[name="wt-provider"][value="codex"]').check();
-  await page.locator('#wt-overlay input[name="wt-provider"][value="claude"]').check();
-  await page.locator('#wt-overlay input[name="wt-provider-default"]').first().check();
+  await page.getByRole('button', {name: 'Get started'}).click();
+  await page.waitForSelector('#setup-overlay input[name="setup-provider"]');
+  const checks = page.locator('#setup-overlay input[name="setup-provider"]');
+  await page.locator('#setup-overlay input[name="setup-provider"][value="codex"]').check();
+  await page.locator('#setup-overlay input[name="setup-provider"][value="claude"]').check();
+  await page.locator('#setup-overlay input[name="setup-provider-default"]').first().check();
   await page.getByRole('button', {name: 'Next'}).click();
   // F2: the gate names every unfinished vendor and its exact problem.
-  const gate = await page.locator('#wt-provider-validation').innerText();
+  const gate = await page.locator('#setup-provider-validation').innerText();
   if (!gate.includes('Codex: not installed') || !gate.includes('Claude: not installed')) throw new Error(`incomplete selection advanced or gate did not name vendors: ${gate}`);
   await page.getByRole('button', {name: 'Install selected'}).click();
-  await page.waitForFunction(() => /PowerShell script policy/.test(document.getElementById('wt-install-msg-codex')?.textContent || ''));
+  await page.waitForFunction(() => /PowerShell script policy/.test(document.getElementById('prov-install-msg-codex')?.textContent || ''));
   // F6: the policy note the server returned is shown next to the install message.
-  const note = await page.locator('#wt-install-msg-claude').innerText();
+  const note = await page.locator('#prov-install-msg-claude').innerText();
   if (!note.includes('PowerShell script policy')) throw new Error(`policy note not shown: ${note}`);
-  await page.evaluate(() => wtRefreshProviders());
+  await page.evaluate(() => providerRefreshAll());
   await page.waitForTimeout(40);
   if (installCalls.length !== 2 || new Set(installCalls).size !== 2) throw new Error(`selected install calls incorrect: ${installCalls}`);
   if (singleInstallCalls.length) throw new Error(`per-vendor install route used instead of the batch: ${singleInstallCalls}`);
   const signIn = page.getByRole('button', {name: 'Sign in'}).first();
-  if (await signIn.count()) await page.evaluate(() => document.querySelector('#wt-overlay button[onclick^="settingsProviderTerminalLogin"]').click());
-  if (!(await page.evaluate(() => browserLoginCalls.length))) throw new Error(`sign-in action was not wired; body=${await page.locator('#wt-overlay').innerText()}`);
+  if (await signIn.count()) await page.evaluate(() => document.querySelector('#setup-overlay button[onclick^="settingsProviderTerminalLogin"]').click());
+  if (!(await page.evaluate(() => browserLoginCalls.length))) throw new Error(`sign-in action was not wired; body=${await page.locator('#setup-overlay').innerText()}`);
   providers.forEach(p => { if (p.name === 'codex' || p.name === 'claude') p.auth_status = 'ok'; });
-  await page.evaluate(() => wtRefreshProviders()); await page.waitForTimeout(40);
+  await page.evaluate(() => providerRefreshAll()); await page.waitForTimeout(40);
   await page.getByRole('button', {name: 'Next'}).click();
-  if (!(await page.locator('#wt-overlay .wt-title').innerText()).includes('Choose your level')) throw new Error('completed onboarding did not advance');
-  // Clean-VM run 3 (C4): Qwen's only sign-in is DASHSCOPE_API_KEY. The tour row
+  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('A few essentials')) throw new Error('completed onboarding did not advance');
+  // Clean-VM run 3 (C4): Qwen's only sign-in is DASHSCOPE_API_KEY. The setup row
   // must carry the SAME key field + save path Settings -> Providers uses, or a
   // user who picks Qwen can never get past the gate.
-  await page.evaluate(() => wtBack()); await page.waitForTimeout(30);
-  if (await page.locator('#wt-overlay #settings-prov-key-qwen').count()) throw new Error('key field shown for an unselected vendor');
-  await page.locator('#wt-overlay input[name="wt-provider"][value="qwen"]').check();
-  await page.locator('#wt-overlay input[name="wt-provider-default"]').first().waitFor();
+  await page.evaluate(() => setupBack()); await page.waitForTimeout(30);
+  if (await page.locator('#setup-overlay #settings-prov-key-qwen').count()) throw new Error('key field shown for an unselected vendor');
+  await page.locator('#setup-overlay input[name="setup-provider"][value="qwen"]').check();
+  await page.locator('#setup-overlay input[name="setup-provider-default"]').first().waitFor();
   await page.getByRole('button', {name: 'Next'}).click();
-  const qwenGate = await page.locator('#wt-provider-validation').innerText();
+  const qwenGate = await page.locator('#setup-provider-validation').innerText();
   if (!qwenGate.includes('Qwen Code: not signed in')) throw new Error(`gate did not name unsigned Qwen: ${qwenGate}`);
-  const keyBox = page.locator('#wt-overlay #settings-prov-key-qwen');
-  if (!(await keyBox.count())) throw new Error('tour Qwen row has no API-key field');
-  if (!(await page.locator('#wt-overlay .prov-row[data-provider="qwen"]').innerText()).includes('DASHSCOPE_API_KEY')) throw new Error('Qwen key field is not labelled DASHSCOPE_API_KEY');
+  const keyBox = page.locator('#setup-overlay #settings-prov-key-qwen');
+  if (!(await keyBox.count())) throw new Error('setup Qwen row has no API-key field');
+  if (!(await page.locator('#setup-overlay .prov-row[data-provider="qwen"]').innerText()).includes('DASHSCOPE_API_KEY')) throw new Error('Qwen key field is not labelled DASHSCOPE_API_KEY');
   await keyBox.fill('smoke-not-a-real-key');
-  await page.locator('#wt-overlay .prov-row[data-provider="qwen"] .prov-row-extra button').click();
-  await page.waitForFunction(() => /signed in/.test(document.querySelector('#wt-overlay .prov-row[data-provider="qwen"] .prov-row-state')?.textContent || ''));
+  await page.locator('#setup-overlay .prov-row[data-provider="qwen"] .prov-row-extra button').click();
+  await page.waitForFunction(() => /signed in/.test(document.querySelector('#setup-overlay .prov-row[data-provider="qwen"] .prov-row-state')?.textContent || ''));
   if (JSON.stringify(envCalls) !== JSON.stringify([{key: 'DASHSCOPE_API_KEY', hasValue: true}])) throw new Error(`key save did not use the Settings env route: ${JSON.stringify(envCalls)}`);
   await page.getByRole('button', {name: 'Next'}).click();
-  if (!(await page.locator('#wt-overlay .wt-title').innerText()).includes('Choose your level')) throw new Error('signing Qwen in from the tour did not clear the gate');
+  if (!(await page.locator('#setup-overlay .wt-title').innerText()).includes('A few essentials')) throw new Error('signing Qwen in from setup did not clear the gate');
   await page.setViewportSize({width: 390, height: 844});
-  await page.evaluate(() => wtBack()); await page.waitForTimeout(30);
+  await page.evaluate(() => setupBack()); await page.waitForTimeout(30);
   const overflow = await page.evaluate(() => ({scrollWidth: document.documentElement.scrollWidth, clientWidth: document.documentElement.clientWidth}));
   if (overflow.scrollWidth > overflow.clientWidth + 1) throw new Error(`mobile onboarding overflow: ${JSON.stringify(overflow)}`);
   if (pageErrors.length) throw new Error(pageErrors.join('; '));

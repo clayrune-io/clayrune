@@ -6913,6 +6913,12 @@
     left: 50% !important; top: 50% !important;
     transform: translate(-50%, -50%);
   }
+  /* First-run setup steps that carry forms (first-run.js): wider, and scrolls
+     inside the card instead of running off a short viewport. */
+  .wt-card.wt-card-wide {
+    max-width: 520px; width: calc(100vw - 32px);
+    max-height: calc(100vh - 32px); overflow-y: auto;
+  }
   .wt-title {
     font-size: 17px; font-weight: 700; color: var(--accent);
     margin-bottom: 10px; letter-spacing: 0.3px;

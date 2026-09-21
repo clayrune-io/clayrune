@@ -10,7 +10,7 @@
  * could not install, sign in or switch to another vendor. Settings also
  * special-cased Claude (its own buttons + status line) so no two vendors
  * looked alike. Both surfaces now render rows through
- * walkthrough.js _renderProviderRow.
+ * provider-auth.js _renderProviderRow.
  *
  * Pins, at desktop AND 390px:
  *   1. Settings -> Providers lists every provider, incl. an uninstalled one.
@@ -211,13 +211,13 @@ try {
 
   // ── wiring ─────────────────────────────────────────────────────────────
   await page.click('#settings-providers-section .prov-row[data-provider="qwen"] .prov-install');
-  await page.waitForFunction(() => document.getElementById('wt-install-msg-qwen')?.textContent.includes('terminal opened'));
+  await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.install.join() === 'qwen', 'Install -> POST provider/qwen/install-launch',
     `install calls: ${calls.install}`);
 
   await page.check('#settings-providers-section .prov-row[data-provider="qwen"] .settings-prov-install-sel');
   await page.click('#settings-prov-install-selected');
-  await page.waitForFunction(() => document.getElementById('wt-install-msg-qwen')?.textContent.includes('terminal opened'));
+  await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.batch.length === 1 && calls.batch[0].join() === 'qwen',
     'Install selected -> ONE batch request naming the ticked vendor',
     `batch calls: ${JSON.stringify(calls.batch)}`);
@@ -260,26 +260,26 @@ try {
   if (process.env.MC_SMOKE_SHOT) await page.waitForTimeout(900);
   if (process.env.MC_SMOKE_SHOT) await page.screenshot({ path: process.env.MC_SMOKE_SHOT.replace(/(\.\w+)?$/, '-390$1') });
 
-  // ── tour step: same row shape + pre-ticked ready vendors ───────────────
+  // ── setup step: same row shape + pre-ticked ready vendors ───────────────
   await page.setViewportSize({ width: 1000, height: 900 });
   await page.evaluate(() => window.closeModalById('__settings'));
   // No saved default (a first run) so the step is not skipped, then past Welcome.
-  await page.evaluate(async () => { _globalConfig.default_provider = ''; await _ensureAgentProviders(true); window.startWalkthrough(); });
-  await page.waitForSelector('#wt-overlay', { timeout: 5000 });
-  await page.evaluate(() => window.wtNext());
-  await page.waitForSelector('#wt-overlay input[name="wt-provider"]', { timeout: 5000 });
-  const tour = await page.evaluate(() => [...document.querySelectorAll('#wt-overlay .prov-row')].map(r => ({
+  await page.evaluate(async () => { _globalConfig.default_provider = ''; await _ensureAgentProviders(true); window.startFirstRun({rerun: true}); });
+  await page.waitForSelector('#setup-overlay', { timeout: 5000 });
+  await page.evaluate(() => window.setupNext());
+  await page.waitForSelector('#setup-overlay input[name="setup-provider"]', { timeout: 5000 });
+  const tour = await page.evaluate(() => [...document.querySelectorAll('#setup-overlay .prov-row')].map(r => ({
     name: r.dataset.provider,
-    ticked: r.querySelector('input[name="wt-provider"]').checked,
+    ticked: r.querySelector('input[name="setup-provider"]').checked,
     head: !!r.querySelector('label.prov-row-head'),
     state: r.querySelector('.prov-row-state').textContent,
   })));
   check(tour.length === providers.length && tour.every(r => r.head),
-    'tour step renders the shared row (same head/name/state skeleton) for every vendor',
-    `tour rows: ${JSON.stringify(tour)}`);
+    'setup step renders the shared row (same head/name/state skeleton) for every vendor',
+    `setup rows: ${JSON.stringify(tour)}`);
   const ticked = tour.filter(r => r.ticked).map(r => r.name).sort().join();
   check(ticked === 'claude,codex',
-    'tour pre-ticks vendors that are installed AND signed in (claude, codex), not the rest',
+    'setup pre-ticks vendors that are installed AND signed in (claude, codex), not the rest',
     `pre-ticked: ${ticked}`);
 
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')

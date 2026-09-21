@@ -134,49 +134,9 @@ async function driveTour(page, viewportLabel, shotPaths) {
     const p = await shoot(page, shotName);
     if (p) shotPaths.push(p);
 
-    // The provider-choice step only ever renders when the default (claude)
-    // isn't signed in yet (see providerAuthState above) — exercise the two
-    // findings that step exists to fix instead of clicking straight through:
-    // F2 (a gated Next must name the blocking vendor + its exact state) and
-    // F8 ("Check setup status" must flip a live re-probe into the rendered
-    // state without a page reload).
-    if (step.title === 'Which AI do you work with?') {
-      await page.evaluate(() => window.wtNext());
-      await page.waitForTimeout(100);
-      const stillHere = await readStep(page);
-      const validation = await page.evaluate(() =>
-        (document.getElementById('wt-provider-validation') || {}).textContent || '');
-      if (stillHere && stillHere.title === step.title
-          && /claude code/i.test(validation) && /not signed in/i.test(validation)) {
-        ok(`[${viewportLabel}] F2: gated Next named the blocking vendor+state — "${validation}"`);
-      } else {
-        fail(`[${viewportLabel}] F2: gated Next didn't name vendor+state (advanced=${!stillHere || stillHere.title !== step.title}): "${validation}"`);
-      }
-
-      providerAuthState = 'ok'; // server-side sign-in happened outside Clayrune
-      await page.evaluate(() => window.wtRefreshProviders());
-      await page.waitForTimeout(150);
-      const claudeLabel = await page.evaluate(() => {
-        const row = [...document.querySelectorAll('#wt-overlay label')]
-          .find((l) => l.textContent.includes('Claude Code'));
-        const stateSpan = row && row.querySelectorAll('span')[1];
-        return stateSpan ? stateSpan.textContent : '';
-      });
-      if (claudeLabel === 'signed in') {
-        ok(`[${viewportLabel}] F8: Check setup status refreshed to "${claudeLabel}" without a reload`);
-      } else {
-        fail(`[${viewportLabel}] F8: Check setup status did not flip to signed in (got "${claudeLabel}")`);
-      }
-
-      await page.evaluate(() => window.wtNext());
-      await page.waitForTimeout(200);
-      const advanced = await readStep(page);
-      if (!advanced || advanced.title === step.title) {
-        fail(`[${viewportLabel}] Next stayed gated after Check setup status reported signed in`);
-      }
-      continue;
-    }
-
+    // The provider step moved to first-run setup (first-run.js); the gated-Next
+    // naming (F2) and Check-setup-status refresh (F8) are pinned by the
+    // first-run-* and onboarding-multiselect* smokes.
     await page.evaluate(() => window.wtNext());
     await page.waitForTimeout(200); // onEnter/onLeave + async fetches settle
   }
