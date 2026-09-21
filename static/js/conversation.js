@@ -3753,13 +3753,37 @@ function splitPaneHTML(p, sid, isPrimary) {
   // ✕ closes THIS pane and keeps the other as the single view.
   const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
   const composeEnabled = (st === 'running' || st === 'completed' || st === 'stopped' || st === 'idle' || st === 'error');
+  // Attachments. sendFollowup already uploads from the `fu_<sid>` key for ANY
+  // pane, but this composer used to render none of the affordances that fill
+  // it — no drop zone, no ＋, and crucially no onpaste — so a conversation
+  // opened in split view silently swallowed Ctrl+V of an image while the same
+  // chat in the single pane accepted it (reported 2026-09-20). Mirror the
+  // single-pane composer; caps come from the pane's own session provider.
+  const _spCaps = _getProviderCaps(s.provider || p.provider || 'claude');
+  const _spKey = 'fu_' + sid;
+  const _spPreviews = renderAgentImagePreviews(_spKey);
+  const _spAttachInput = _spCaps.image_attach ? `
+        <input type="file" multiple id="agent-attach-input-${esc(_spKey)}" class="agent-attach-input"
+          onchange="handleAgentAttachPick(event,'${esc(_spKey)}')">` : '';
+  const _spPlusBtn = _spCaps.image_attach ? `
+        <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
+          onclick="triggerAgentAttach('${esc(_spKey)}')">&#43;</button>` : '';
   const compose = composeEnabled ? `
       <div class="agent-chat-separator"></div>
-      <div class="agent-chat-input"><div class="agent-chat-input-row">
+      <div class="agent-chat-input">
+        ${_spPreviews}
+        <div class="agent-chat-input-row agent-drop-zone"
+          ondragover="handleAgentDragOver(event,this)"
+          ondragenter="handleAgentDragOver(event,this)"
+          ondragleave="handleAgentDragLeave(event,this)"
+          ondrop="${_spCaps.image_attach ? `handleAgentDrop(event,'${esc(_spKey)}')` : 'event.preventDefault()'}">
+        ${_spAttachInput}
+        ${_spPlusBtn}
         <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
           placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
-          onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"></textarea>
+          onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
+          onpaste="${_spCaps.image_attach ? `handleAgentPaste(event,'${esc(_spKey)}')` : ''}"></textarea>
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
