@@ -2724,7 +2724,21 @@ def _claude_health_check_hook():
     import time as _t
     with _claude_auth_lock:
         state = dict(_claude_auth_state)
-    installed = bool(_resolve_claude() != 'claude' or shutil.which('claude'))
+    resolved = _resolve_claude()
+    installed = bool(resolved != 'claude' or shutil.which('claude'))
+    binary_path = Path(resolved) if installed else None
+    # Version probe — same uncached inline `--version` subprocess pattern
+    # GeminiRuntime/QwenRuntime/CodexRuntime.health_check() already use (none
+    # of them cache it either); must never raise or block the route.
+    version = None
+    if installed:
+        try:
+            r = subprocess.run([resolved, '--version'], capture_output=True, text=True,
+                                timeout=10, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+            raw = (r.stdout or r.stderr or '').strip()
+            version = raw.splitlines()[0] if raw else None
+        except Exception as e:
+            _log(f"[providers] claude --version probe failed: {e}", flush=True)
     # Derive the pill status from the real keys. The old code read state['state']
     # — a key that never exists in _claude_auth_state (ok/reason/last_error_text/
     # detected_at/last_probe_at), so the pill was permanently "status unknown".
@@ -2741,8 +2755,8 @@ def _claude_health_check_hook():
         status = 'unknown'
     return HealthStatus(
         installed=installed,
-        binary_path=None,
-        version=None,
+        binary_path=binary_path,
+        version=version,
         auth_state=AuthState(
             status=status,
             method=None,
