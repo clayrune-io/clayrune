@@ -6114,6 +6114,14 @@
     padding: 12px 16px; margin-bottom: 8px; display: flex; align-items: flex-start; gap: 12px;
   }
   .schedule-card.disabled { opacity: 0.5; }
+  /* A failed timer fire still shows the row (never deleted, per the
+     dispatch-visibility fix) — border it so it doesn't read as ordinary. */
+  .schedule-card.sched-failed { border-color: var(--red); }
+  .schedule-card-error {
+    font-size: 11px; color: var(--red-text); background: var(--red-dim);
+    border-radius: 4px; padding: 3px 6px; margin: 2px 0 4px;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
   .schedule-card-body { flex: 1; min-width: 0; }
   /* `color` is set inline from the project's own accent — the fallback here
      is what an uncoloured project gets, matching its tile. */
@@ -6407,6 +6415,11 @@
   .scal-detail-label {
     padding: 10px 16px 4px; font-size: 10px; font-weight: 700;
     text-transform: uppercase; letter-spacing: .05em; color: var(--text-faint);
+  }
+  .scal-detail-error {
+    margin: 0 16px 10px; padding: 6px 10px; border-radius: 6px;
+    font-size: 11px; color: var(--red-text); background: var(--red-dim);
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
   .scal-detail-task {
     flex: 1; min-height: 0; overflow-y: auto; margin: 0 16px 12px;
