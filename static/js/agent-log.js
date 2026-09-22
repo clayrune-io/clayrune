@@ -144,7 +144,15 @@ function agentLogPanelHTML(p) {
 
   return `<div class="card-section">
     ${renderDeliveryStatusHTML(p)}
-    <div class="section-title">Completed Sessions</div>
+    <div class="section-title">
+      <span>Completed Sessions</span>
+      <div class="modal-tab-search">
+        <input type="text" id="tab-search-agent-log-${esc(p.id)}" placeholder="Filter..."
+          value="${esc(modalSearchQuery[p.id] || '')}"
+          oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
+        >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+      </div>
+    </div>
     ${entriesHTML}
     ${moreBtn}
   </div>`;

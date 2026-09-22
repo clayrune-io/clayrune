@@ -1933,6 +1933,33 @@
   .settings-empty { padding: 30px 4px; color: var(--text-faint); font-size: 13px; text-align: center; }
   .settings-hidden { display: none !important; }
 
+  /* SEARCH + SORT TOOLBAR (MC-955) */
+  /* flex-wrap:wrap is the whole mobile story here — no separate breakpoint
+     needed, same approach as the All Backlog Items modal's toolbar row. */
+  .backlog-toolbar { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; margin-bottom: 10px; }
+  .backlog-toolbar .backlog-search {
+    position: relative; display: flex; align-items: center;
+    flex: 1 1 160px; min-width: 140px;
+  }
+  .backlog-toolbar .backlog-search input {
+    width: 100%; background: var(--bg); border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 11px;
+    padding: 5px 22px 5px 8px; border-radius: 4px; outline: none; box-sizing: border-box;
+    transition: border-color 0.15s;
+  }
+  .backlog-toolbar .backlog-search input:focus { border-color: var(--accent); color: var(--text); }
+  .backlog-toolbar .backlog-search input::placeholder { color: var(--text-faint); font-style: italic; }
+  .backlog-toolbar .backlog-search .search-clear {
+    position: absolute; right: 6px; color: var(--text-faint); cursor: pointer;
+    font-size: 12px; line-height: 1; padding: 2px; user-select: none;
+  }
+  .backlog-toolbar .backlog-search .search-clear:hover { color: var(--text); }
+  .backlog-sort-select {
+    background: var(--surface2); border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 11px; padding: 5px 6px; border-radius: 4px; outline: none;
+  }
+  .backlog-match-count { font-size: 10px; color: var(--text-faint); white-space: nowrap; }
+
   /* ADD FORM */
   /* Sits above .backlog-list now (see render-core.js) — needs its own bottom
      gap where the list's margin-bottom used to separate them. */
