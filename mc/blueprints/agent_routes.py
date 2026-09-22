@@ -122,7 +122,7 @@ from mc.blueprints.project_routes import (
 )
 from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 shim
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
-from mc.blueprints.terminal_routes import launch_pty_session    # MC-928
+from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -2270,14 +2270,15 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
                         'command': command}), 200
-    err = _launch_terminal_for_binary(command)
+    session_id, err = _launch_install_terminal(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command}), 200
     policy = (_ensure_powershell_execution_policy()
               if name in _PROVIDER_NPM_PACKAGES else None)
     return jsonify({'ok': True, 'command': command,
                     'prerequisite': prerequisite or None,
-                    'execution_policy': policy})
+                    'execution_policy': policy,
+                    'session_id': session_id, 'pty': False})
 
 
 @bp.route('/api/agent/providers/install-launch', methods=['POST'])
@@ -2317,7 +2318,7 @@ def agent_providers_install_launch_batch():
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
                         'command': command, 'unsupported': unsupported}), 200
-    err = _launch_terminal_for_binary(command)
+    session_id, err = _launch_install_terminal(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command,
                         'unsupported': unsupported}), 200
@@ -2325,7 +2326,8 @@ def agent_providers_install_launch_batch():
               if any(n in _PROVIDER_NPM_PACKAGES for n in installed) else None)
     return jsonify({'ok': True, 'command': command,
                     'installed': installed, 'unsupported': unsupported,
-                    'execution_policy': policy})
+                    'execution_policy': policy,
+                    'session_id': session_id, 'pty': False})
 
 
 def _auth_probe_cwd() -> str:
@@ -2462,7 +2464,22 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
     Returns None on success or an error string on failure. Callers return 500
     when this is non-None. A real TTY is required because provider CLIs like
     claude use /login which refuses to run inside a piped subprocess.
+
+    `bin_str` must be a single resolved binary path, not a compound shell
+    command. On win32 it gets hand-wrapped as `start "" cmd /k "\"{bin_str}\""`
+    below — a compound command (&&-chains, embedded quotes, a `for /f`
+    loop's own `"tokens=1 delims=."`) breaks that quote-wrap silently: cmd
+    mis-parses the nested quotes, the window never opens or dies instantly,
+    and Popen(shell=True) has already returned success by the time that
+    happens. This exact bug shipped in the provider-install path (verified
+    on a clean VM, 2026-09-22) before install was moved onto
+    `_launch_install_terminal`'s real terminal pop-out, which passes the
+    command straight to `subprocess.Popen(command, shell=True, ...)` with no
+    re-wrapping. Reject rather than silently mangle a second one.
     """
+    if any(ch in bin_str for ch in ('&', '|', '\n')) or bin_str.count('"') > 0:
+        return ('_launch_terminal_for_binary only runs a single binary path, '
+                f'not a compound shell command: {bin_str!r}')
     try:
         if sys.platform == 'win32':
             subprocess.Popen(
@@ -2485,6 +2502,30 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
         return None
     except Exception as e:
         return str(e)
+
+
+def _launch_install_terminal(command: str) -> tuple[Optional[str], Optional[str]]:
+    """Run a provider install command in CLAYRUNE'S OWN terminal pop-out
+    instead of a new OS window (F-install, clean-VM run 2026-09-22).
+
+    `_launch_terminal_for_binary` above opens an OS window on the HOST — the
+    same MC-927 problem the auth-login-remote flow (below) already solved for
+    interactive sign-in: over the tunnel, or when the server runs in a
+    different Windows session than the one someone is looking at (verified on
+    a real clean VM: server in SessionId 2 via SSH, console Session 1 has
+    nobody connected), that window opens somewhere nobody can see it — and
+    `_launch_terminal_for_binary`'s `subprocess.Popen('start ...', shell=True)`
+    returns as soon as the shell spawns, so a `start` that opened nothing
+    still reports success. An install command has no interactive TUI to draw
+    (unlike sign-in), so it needs no real PTY — `launch_pipe_session` (no
+    pywinpty dependency) is enough, same as the plain (non-`pty`) branch of
+    `/api/terminal/launch` already uses.
+
+    Returns (session_id, None) on success or (None, error) on failure — never
+    raises, so callers can turn a failure straight into {'ok': False, 'error'}
+    with the command still attached for the user to run by hand.
+    """
+    return launch_pipe_session('_provider_install', command)
 
 
 # ── Remote/captured login — MC-927 URL-surfacing fallback ───────────────────
