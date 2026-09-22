@@ -359,7 +359,12 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
     // the same surface openTerminalPopout always renders, with raw
     // keystrokes wired through for pty sessions (see terminal.js).
     if (data.pty && data.session_id) {
-      openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider);
+      // Pass isPty THROUGH. Without it the pop-out opens with
+      // disableStdin:true and no term.onData wiring (terminal.js:134,149),
+      // so the sign-in TUI renders but you cannot type into it — gemini's
+      // account picker needs arrow keys. Was missing on the old
+      // remote-login path; it matters now that this IS the Sign in path.
+      openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, true);
       showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
       return;
     }
