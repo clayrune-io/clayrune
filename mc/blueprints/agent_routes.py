@@ -2175,13 +2175,24 @@ def _execution_policy_decision(scopes: dict) -> tuple[str, str]:
     return 'unchanged', effective
 
 
+# Windows PowerShell 5.1 does NOT write a redirected pipe in UTF-8 — it uses the
+# OEM console codepage. MEASURED 2026-09-22 on Windows 11: asking it to emit a
+# U+00B7 MIDDLE DOT put the single byte 0xFA on the pipe, which is a valid
+# cp437/cp850 middle dot and an INVALID utf-8 start byte. So the utf-8 that is
+# right for every Node CLI we spawn is wrong here, and would turn a character
+# that currently survives into U+FFFD. `oem` is Python's Windows-only alias for
+# that console codepage; elsewhere `powershell` is not what we are talking to.
+_PS_ENCODING = 'oem' if os.name == 'nt' else 'utf-8'
+
+
 def _read_powershell_execution_scopes() -> Optional[dict]:
     """``Get-ExecutionPolicy -List`` as {scope: policy}, or None if it can't be read."""
     try:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+            capture_output=True, text=True, encoding=_PS_ENCODING, errors='replace',
+            timeout=30)
         out = {}
         for line in (r.stdout or '').splitlines():
             if '=' in line:
@@ -2199,7 +2210,8 @@ def _set_powershell_execution_policy_remotesigned() -> Optional[str]:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'],
-            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
+            capture_output=True, text=True, encoding=_PS_ENCODING, errors='replace',
+            timeout=30)
         if r.returncode != 0:
             return (r.stderr or r.stdout or f'exit {r.returncode}').strip()[:300]
         return None
