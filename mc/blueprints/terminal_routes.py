@@ -199,6 +199,62 @@ def launch_pty_session(project_id, command, cwd=None):
     return session_id, None
 
 
+def launch_pipe_session(project_id, command, cwd=None):
+    """In-process counterpart to terminal_launch()'s default pipe+shim branch
+    (mirrors launch_pty_session above) — no HTTP, no loopback gate, for
+    callers already running inside this server. Unlike launch_pty_session,
+    this needs no real-PTY backend (no pywinpty dependency), so it's the
+    right choice for a command that just needs to run and stream output —
+    e.g. agent_routes.py's provider install commands — rather than draw an
+    interactive TUI. Returns (session_id, None) on success or (None,
+    error_message) on failure — never raises.
+    """
+    session_id = uuid.uuid4().hex[:12]
+    existing_pypath = os.environ.get('PYTHONPATH', '')
+    shim_pypath = _TTY_SHIM_DIR + os.pathsep + existing_pypath if existing_pypath else _TTY_SHIM_DIR
+    env = {
+        **os.environ,
+        'PYTHONIOENCODING': 'utf-8',
+        'PYTHONUNBUFFERED': '1',
+        'MC_FORCE_TTY': '1',
+        'PYTHONPATH': shim_pypath,
+        'TERM': 'xterm-256color',
+        'COLUMNS': '120',
+        'LINES': '30',
+    }
+    try:
+        proc = subprocess.Popen(
+            command,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            cwd=cwd,
+            shell=True,
+            creationflags=_POPEN_FLAGS,
+            startupinfo=_STARTUPINFO,
+            env=env,
+        )
+    except Exception as e:
+        return None, f'Failed to launch: {e}'
+
+    session = {
+        'proc': proc,
+        'status': 'running',
+        'command': command,
+        'output_lines': [],
+        'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
+        'session_id': session_id,
+        'project_id': project_id,
+        'exit_code': None,
+    }
+    _register_process(proc, 'Terminal', 'terminal',
+                      session_id, project_id, command[:80])
+    with terminal_lock:
+        terminal_sessions[session_id] = session
+    threading.Thread(target=_read_terminal_stream, args=(proc, session), daemon=True).start()
+    return session_id, None
+
+
 def _kill_terminal_session(session):
     """Kill a terminal session's subprocess (pipe backend) or PTY child."""
     pty_sess = session.get('pty')
@@ -276,55 +332,9 @@ def terminal_launch():
                     asess['log_lines'].append(f'[terminal:{session_id}:{cmd_label}]')
         return jsonify({'ok': True, 'session_id': session_id, 'is_pty': True})
 
-    session_id = uuid.uuid4().hex[:12]
-    # TTY shim: inject sitecustomize.py via PYTHONPATH so child Python
-    # processes see isatty()=True and Rich emits ANSI color codes
-    existing_pypath = os.environ.get('PYTHONPATH', '')
-    shim_pypath = _TTY_SHIM_DIR + os.pathsep + existing_pypath if existing_pypath else _TTY_SHIM_DIR
-    env = {
-        **os.environ,
-        'PYTHONIOENCODING': 'utf-8',
-        'PYTHONUNBUFFERED': '1',
-        'MC_FORCE_TTY': '1',
-        'PYTHONPATH': shim_pypath,
-        'TERM': 'xterm-256color',
-        'COLUMNS': '120',
-        'LINES': '30',
-    }
-
-    try:
-        proc = subprocess.Popen(
-            command,
-            stdin=subprocess.PIPE,
-            stdout=subprocess.PIPE,
-            stderr=subprocess.STDOUT,
-            cwd=cwd,
-            shell=True,
-            creationflags=_POPEN_FLAGS,
-            startupinfo=_STARTUPINFO,
-            env=env,
-        )
-    except Exception as e:
-        return jsonify({'error': f'Failed to launch: {e}'}), 500
-
-    session = {
-        'proc': proc,
-        'status': 'running',
-        'command': command,
-        'output_lines': [],
-        'started_at': datetime.now(timezone.utc).strftime('%Y-%m-%dT%H:%M:%SZ'),
-        'session_id': session_id,
-        'project_id': project_id,
-        'exit_code': None,
-    }
-
-    _register_process(proc, 'Terminal', 'terminal',
-                      session_id, project_id, command[:80])
-
-    with terminal_lock:
-        terminal_sessions[session_id] = session
-
-    threading.Thread(target=_read_terminal_stream, args=(proc, session), daemon=True).start()
+    session_id, err = launch_pipe_session(project_id, command, cwd=cwd)
+    if err:
+        return jsonify({'error': err}), 500
 
     # Notify any active agent SSE streams for this project (only this project's sessions)
     mgr = get_manager(project_id)

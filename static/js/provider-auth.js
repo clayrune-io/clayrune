@@ -604,6 +604,13 @@ async function providerInstallSelected(button, only) {
     });
     const data = await res.json().catch(() => ({}));
     if (data.ok) {
+      // The install runs in Clayrune's own terminal pop-out (not an OS
+      // window) so progress is visible in the dashboard and over the
+      // tunnel/on a phone — see openTerminalPopout below and
+      // agent_routes.py's _launch_install_terminal.
+      if (data.session_id) {
+        openTerminalPopout(window.currentProjectId, data.session_id, data.command || 'install', data.pty);
+      }
       for (const name of (data.installed || names)) {
         const el = msgFor(name);
         if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".' + _providerPolicyNote(data);
@@ -806,11 +813,12 @@ function _repaintProviderRows() {
 
 // "Install" button on an uninstalled provider row. Launches the SAME command
 // the installers use (server resolves it from the runtime's own install_hint
-// — see agent_provider_install_launch) in a new OS terminal so the user can
-// watch it run, mirroring the existing "Launch terminal login" pattern
-// (provider-auth.js). Never invents its own command: {ok:false} always
-// carries the exact one to run by hand when the server can't launch it
-// itself (no npm/curl on PATH, no terminal emulator).
+// — see agent_provider_install_launch) in CLAYRUNE'S OWN terminal pop-out
+// (openTerminalPopout, terminal.js) so the user can watch it run from
+// wherever they're looking at the dashboard — including over the tunnel or
+// on a phone, where a new OS window on the host would be invisible. Never
+// invents its own command: {ok:false} always carries the exact one to run by
+// hand when the server can't launch it itself (no npm/curl on PATH).
 async function providerInstall(name, btnEl) {
   const msgEl = document.getElementById(`prov-install-msg-${name}`);
   if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Installing...'; }
@@ -819,6 +827,9 @@ async function providerInstall(name, btnEl) {
                             { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (data.ok) {
+      if (data.session_id) {
+        openTerminalPopout(window.currentProjectId, data.session_id, data.command || name, data.pty);
+      }
       if (msgEl) msgEl.textContent = 'A terminal opened to install it. Once it finishes, click Refresh.' + _providerPolicyNote(data);
       if (btnEl) {
         btnEl.textContent = 'Refresh';
