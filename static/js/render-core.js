@@ -85,17 +85,22 @@ function backlogSummary(p) {
 }
 
 // Derives the Backlog tab's list state — search query, sort mode, and the
-// resulting visible items — from the current UI state (modalSearchQuery,
+// resulting visible items — from the current UI state (backlogSearchQuery,
 // showDoneMap, per-project localStorage sort). Shared by the initial modal
 // render (modalContentHTML) and the lightweight search/sort re-render
 // (refreshBacklogList) so the two never compute two different orderings.
+// backlogSearchQuery is its OWN map, separate from modalSearchQuery (the
+// Agent Log/Documents/Activity "Filter..." box) — they used to share one map,
+// which broke ticket-key search on the next refresh (the query lived in
+// .backlog-num, not the .backlog-text that the other tabs' DOM-hiding filter
+// checks) and leaked an Agent Log filter into the backlog on tab switch.
 function backlogViewState(p) {
   const backlogLoaded = !!(p._backlogFull && Array.isArray(p.backlog));
   const backlog = backlogLoaded ? p.backlog : [];
   const openItems = backlog.filter(i => !BACKLOG_CLOSED.includes(i.status));
   const doneItems = backlog.filter(i => BACKLOG_CLOSED.includes(i.status));
   const showDone = showDoneMap[p.id] || false;
-  const query = (modalSearchQuery[p.id] || '').trim();
+  const query = (backlogSearchQuery[p.id] || '').trim();
   const searchActive = !!query;
   let sortMode = 'default';
   try { sortMode = localStorage.getItem(`mc_backlog_sort_${p.id}`) || 'default'; } catch (_) {}
@@ -946,7 +951,7 @@ function modalContentHTML(p) {
             <div class="backlog-search">
               <input type="text" id="backlog-search-${esc(p.id)}" placeholder="Search # or text..."
                 value="${esc(bvs.query)}"
-                oninput="modalSearchQuery['${esc(p.id)}']=this.value;refreshBacklogList('${esc(p.id)}')"
+                oninput="backlogSearchQuery['${esc(p.id)}']=this.value;refreshBacklogList('${esc(p.id)}')"
               >${bvs.query ? `<span class="search-clear" onclick="clearBacklogSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
             </div>
             <select class="backlog-sort-select" onchange="setBacklogSort('${esc(p.id)}',this.value)">
@@ -1136,7 +1141,7 @@ function setBacklogSort(projectId, mode) {
 }
 
 function clearBacklogSearch(projectId) {
-  modalSearchQuery[projectId] = '';
+  backlogSearchQuery[projectId] = '';
   refreshBacklogList(projectId);
   const el = _backlogModalEl(projectId);
   const input = el && el.querySelector('.backlog-search input');
