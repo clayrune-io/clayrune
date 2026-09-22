@@ -12,9 +12,9 @@
   back in remotely. Root cause: `_renderRemoteLoginBox` (`static/js/provider-auth.js`)
   places the captured OAuth link + paste-the-code input at
   `[data-remote-login-anchor="<provider>"]`. That attribute was emitted by the
-  OLD `provider-settings.js` row markup and was NOT carried over when the two
-  Sign in buttons merged into the unified `_renderProviderRow` earlier the same
-  day. The lookup found nothing, `if (!anchor) return` fired, and the flow died
+  OLD `provider-settings.js` row markup (added 2026-08-31, `86f0aa7`/MC-927) and
+  was NOT carried over by the F1 unified-row rewrite on 2026-09-18 (`4598846`).
+  So Claude's remote sign-in worked for 18 days and has been dead since. The lookup found nothing, `if (!anchor) return` fired, and the flow died
   in total silence — no box, no toast, no console error. On the host the CLI's
   own browser tab masked it; on a phone there is no tab, so Sign in did nothing.
 - The link is the ONLY way in from a device that cannot see the host's browser,

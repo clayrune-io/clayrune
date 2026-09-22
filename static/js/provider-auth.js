@@ -719,9 +719,9 @@ function _renderProviderRow(p, opts) {
   const needSignIn = installed && (!authOk || opts.signInWhenOk);
   // data-remote-login-anchor is LOAD-BEARING, not decoration: it is where
   // _renderRemoteLoginBox puts the captured OAuth link + paste-the-code box.
-  // The attribute used to live on the old provider-settings.js row markup and
-  // was dropped when the two Sign in buttons merged into this one row
-  // (2026-09-22), so the lookup silently found nothing and rendered nothing —
+  // The attribute lived on the old provider-settings.js row markup (86f0aa7,
+  // 2026-08-31) and was dropped by the F1 unified-row rewrite (4598846,
+  // 2026-09-18), so the lookup silently found nothing and rendered nothing —
   // Sign in became a dead button for anyone without a host browser, i.e.
   // everyone on the tunnel. Keep it on any row that can show a Sign in button.
   const actions = !showActions ? '' : `<div class="prov-row-actions" data-remote-login-anchor="${n}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
