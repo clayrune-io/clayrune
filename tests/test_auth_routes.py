@@ -550,6 +550,58 @@ class TestRemoteLogin:
         body = json.loads(resp.data)
         assert body == {'ok': False, 'remote_capable': False, 'error': 'boom'}
 
+    def test_auth_login_pty_extra_default_is_bare(self):
+        """Base AgentRuntime.auth_login_pty_extra is opt-in — a runtime that
+        doesn't override it (e.g. Claude, which uses the plain-pipe
+        auth_login_argv path instead) gets (None, None): bare binary, no
+        extra env, today's behaviour unchanged."""
+        rt = _ar.ClaudeRuntime.__new__(_ar.ClaudeRuntime)
+        assert rt.auth_login_pty_extra('/fake/claude') == (None, None)
+
+    def test_codex_auth_login_pty_extra(self):
+        rt = _ar.CodexRuntime.__new__(_ar.CodexRuntime)
+        assert rt.auth_login_pty_extra('/fake/codex') == (['login', '--device-auth'], None)
+
+    def test_gemini_auth_login_pty_extra(self):
+        rt = _ar.GeminiRuntime.__new__(_ar.GeminiRuntime)
+        assert rt.auth_login_pty_extra('/fake/gemini') == (None, {'NO_BROWSER': '1'})
+
+    def test_qwen_auth_login_pty_extra(self):
+        rt = _ar.QwenRuntime.__new__(_ar.QwenRuntime)
+        assert rt.auth_login_pty_extra('/fake/qwen') == (None, {'NO_BROWSER': '1'})
+
+    def test_remote_login_pty_passes_runtime_argv_and_env_extra(self):
+        """agent_auth_login_remote's PTY branch must forward the runtime's
+        auth_login_pty_extra() into launch_pty_session — this is what makes
+        `codex login --device-auth` / NO_BROWSER=1 actually reach the spawn
+        instead of the bare binary with no env."""
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.CodexRuntime, 'resolve_binary',
+                           return_value=Path('/fake/codex')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=('abc123', None)) as mock_launch:
+            resp = c.post('/api/agent/codex/auth-login-remote')
+        assert resp.status_code == 200
+        mock_launch.assert_called_once()
+        _, kwargs = mock_launch.call_args
+        assert kwargs['argv_extra'] == ['login', '--device-auth']
+        assert kwargs['env_extra'] is None
+
+    def test_remote_login_pty_passes_gemini_env_extra(self):
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                           return_value=Path('/fake/gemini')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=('abc123', None)) as mock_launch:
+            resp = c.post('/api/agent/gemini/auth-login-remote')
+        assert resp.status_code == 200
+        mock_launch.assert_called_once()
+        _, kwargs = mock_launch.call_args
+        assert kwargs['argv_extra'] is None
+        assert kwargs['env_extra'] == {'NO_BROWSER': '1'}
+
     @pytest.mark.skipif(not (_HAS_CLAUDE_CLI and _LIVE_AUTH_OK),
                         reason='needs claude CLI and MC_LIVE_AUTH_TESTS=1 '
                                '(spawns a real login, opens a browser tab)')
