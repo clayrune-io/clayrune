@@ -6,6 +6,27 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — codex/gemini/qwen sign-in works from a phone
+
+- The PTY sign-in branch launched the bare CLI binary with no env, so all three
+  used their default loopback-callback OAuth: the CLI opens a listener on the
+  HOST and auto-opens the HOST browser. A phone that completes consent gets
+  redirected to its OWN localhost and the sign-in dies. Only claude's
+  paste-a-code path (a separate piped-subprocess branch) ever worked remotely.
+- Measured per vendor, evidence in `docs/_journal/provider-remote-signin.md`:
+  codex gets `login --device-auth` (auth.openai.com/codex/device + a one-time
+  code, no listener at all); gemini and qwen get `NO_BROWSER=1`, which switches
+  gemini to `authWithUserCode()` and makes qwen actually PRINT the device code
+  it was already using. `BROWSER=` is a dead lever — both guard it with
+  `platform !== 'win32'`.
+- `launch_pty_session()` gained optional `argv_extra`/`env_extra`;
+  `AgentRuntime.auth_login_pty_extra()` is the per-runtime opt-in, defaulting to
+  `(None, None)` so unported runtimes are byte-for-byte unchanged.
+- The measuring run accidentally COMPLETED a `claude auth login` (host browser
+  was already signed in, so it auto-approved with stdin at EOF). Same account,
+  fresh token, nothing signed out — disclosed at the top of the journal. Same
+  hazard class as `af7e0a3`; a probe that can complete a sign-in is not a probe.
+
 ## [2026-09-22] — Sign in was a dead button over the tunnel
 
 - Ron, from his phone: this host logged out of Claude and he could not sign it
