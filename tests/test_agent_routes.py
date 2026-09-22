@@ -416,10 +416,12 @@ def test_providers_endpoint_ok(client):
 
 def test_providers_endpoint_reports_remote_login_and_probe_cost(client, monkeypatch):
     """The unified provider row (walkthrough.js _renderProviderRow) is data
-    driven: "Sign in remotely" only where remote_login is true, and the Check
-    status tooltip discloses quota spend from capabilities.auth_probe_spends_quota
-    — which used to be on the dataclass but never serialised, so the client
-    could not see it."""
+    driven: remote_login tells the single Sign in button (provider-auth.js
+    settingsProviderTerminalLogin) whether /auth-login-remote can handle this
+    vendor (URL-capture or a real PTY) before it falls back to the host
+    terminal window; the Check status tooltip discloses quota spend from
+    capabilities.auth_probe_spends_quota — which used to be on the dataclass
+    but never serialised, so the client could not see it."""
     from mc import pty_backend
     monkeypatch.setattr(pty_backend, 'pty_available', lambda: False)
     providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}

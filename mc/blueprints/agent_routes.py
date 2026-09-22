@@ -1864,6 +1864,9 @@ def agent_provider_login_launch(name):
     /api/claude/login-launch — needs a real TTY, not a piped subprocess.
 
     Preserved for backward compat; prefer /api/agent/<provider>/auth-login.
+    Callers should treat this as the last-resort fallback the frontend's
+    unified "Sign in" reaches only when /auth-login-remote reports
+    remote_capable:False — see `verified` below.
     """
     try:
         rt = _agent_runtime.get_runtime(name)
@@ -1875,7 +1878,14 @@ def agent_provider_login_launch(name):
     err = _launch_terminal_for_binary(str(bin_path))
     if err:
         return jsonify({'error': err}), 500
-    return jsonify({'ok': True})
+    # `_launch_terminal_for_binary`'s Popen(shell=True) returns as soon as the
+    # shell spawns — same defect class as the provider-install bug (2026-09-22,
+    # docs/_journal/provider-install-terminal-popout.md): it cannot confirm a
+    # window actually appeared, so `ok: True` alone would let a caller claim a
+    # terminal opened when nothing did. `verified: False` says plainly this is
+    # unconfirmed; `command` gives the caller something to show instead of a
+    # false claim.
+    return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
 
 
 def _install_command_required_binary(cmd: str) -> str:
@@ -2546,8 +2556,11 @@ def _launch_install_terminal(command: str) -> tuple[Optional[str], Optional[str]
 # hanging, because its account-picker is an interactive TUI that needs
 # raw-mode keyboard input to render in the first place. So this path is
 # opt-in per runtime via `auth_login_argv()` (agent_runtime.py); providers
-# that return None there keep the host-terminal button as their only option
-# until MC-928 (a real PTY for the pop-out) ships.
+# that return None there get MC-928's real-PTY pop-out instead when one is
+# available (pty_backend.pty_available()) — the frontend's single "Sign in"
+# button (settingsProviderTerminalLogin, provider-auth.js) tries this route
+# first and only falls back to the unverifiable host-terminal window
+# (_launch_terminal_for_binary) when this reports remote_capable:False.
 _captured_login_lock = threading.Lock()
 _captured_login_sessions: Dict[str, dict] = {}  # provider -> session dict
 
@@ -2818,7 +2831,9 @@ def agent_auth_login(provider):
     err = _launch_terminal_for_binary(str(bin_path))
     if err:
         return jsonify({'error': err}), 500
-    return jsonify({'ok': True})
+    # See agent_provider_login_launch above — same unverifiable OS-window
+    # launch, same honesty fields.
+    return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
 
 
 def _allowance_refusal(vendor, *, user_initiated):
