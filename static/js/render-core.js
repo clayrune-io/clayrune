@@ -921,7 +921,7 @@ function modalContentHTML(p) {
       <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
       <div class="modal-tab ${activeTab==='workflows'?'active':''}" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
-      ${(activeTab !== 'agent' && activeTab !== 'social' && activeTab !== 'backlog') ? `<div class="modal-tab-search">
+      ${(activeTab === 'workflows') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
           oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
@@ -1020,7 +1020,15 @@ function modalContentHTML(p) {
       <div class="modal-tab-content ${activeTab==='documents'?'active':''}" data-tab="documents">
         ${!tabOn('documents') ? '' : `
         <div class="card-section">
-          <div class="section-title">Documents</div>
+          <div class="section-title">
+            <span>Documents</span>
+            <div class="modal-tab-search">
+              <input type="text" id="tab-search-documents-${esc(p.id)}" placeholder="Filter..."
+                value="${esc(modalSearchQuery[p.id] || '')}"
+                oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
+              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+            </div>
+          </div>
           <div id="documents-toolbar-${esc(p.id)}" style="display:none"></div>
           <div id="documents-list-${esc(p.id)}"><div style="color:var(--text-faint);font-style:italic">Loading...</div></div>
         </div>`}
@@ -1028,7 +1036,15 @@ function modalContentHTML(p) {
       <div class="modal-tab-content ${activeTab==='activity'?'active':''}" data-tab="activity">
         ${!tabOn('activity') ? '' : `
         <div class="card-section">
-          <div class="section-title">Activity Log</div>
+          <div class="section-title">
+            <span>Activity Log</span>
+            <div class="modal-tab-search">
+              <input type="text" id="tab-search-activity-${esc(p.id)}" placeholder="Filter..."
+                value="${esc(modalSearchQuery[p.id] || '')}"
+                oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
+              >${modalSearchQuery[p.id] ? `<span class="search-clear" onclick="clearTabSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+            </div>
+          </div>
           <div class="log-entries">${logHTML || '<div style="color:var(--text-faint);font-style:italic">No activity yet</div>'}</div>
         </div>`}
       </div>
