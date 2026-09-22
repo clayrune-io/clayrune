@@ -2686,8 +2686,10 @@ def agent_auth_login_remote(provider):
     argv = rt.auth_login_argv(str(bin_path))
     if not argv:
         if pty_backend.pty_available():
+            pty_argv_extra, pty_env_extra = rt.auth_login_pty_extra(str(bin_path))
             session_id, err = launch_pty_session(
-                '_auth_probe', str(bin_path), cwd=_auth_probe_cwd())
+                '_auth_probe', str(bin_path), cwd=_auth_probe_cwd(),
+                argv_extra=pty_argv_extra, env_extra=pty_env_extra)
             if err:
                 return jsonify({'ok': False, 'remote_capable': False, 'error': err}), 200
             return jsonify({

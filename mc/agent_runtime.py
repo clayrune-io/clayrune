@@ -1132,6 +1132,19 @@ class AgentRuntime(ABC):
         """
         return None
 
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """Extra argv and env for a login flow launched in a real PTY —
+        used when auth_login_argv() returns None and the CLI falls to the
+        PTY pop-out instead (MC-928) rather than the plain-pipe URL capture.
+
+        Default: (None, None) — bare binary, no extra env, today's
+        behaviour, so a runtime that doesn't override this is untouched.
+        Override for a CLI whose loopback-callback OAuth can be switched to
+        a device-code / paste-a-code flow via a subcommand or env var — e.g.
+        `codex login --device-auth`, or NO_BROWSER=1 for gemini/qwen.
+        """
+        return None, None
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Registry
@@ -4667,6 +4680,15 @@ class GeminiRuntime(AgentRuntime):
             return None
         return OneshotResult(text=text, raw=None)
 
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """NO_BROWSER=1 switches `gemini`'s login to authWithUserCode() —
+        redirect_uri=https://codeassist.google.com/authcode, prints the URL
+        and reads the code back on stdin, instead of opening the host
+        browser against a loopback callback. Measured 2026-09-22; BROWSER=
+        is a dead lever here — gemini-cli guards it with `platform !==
+        'win32'`, so it has no effect on Windows."""
+        return None, {'NO_BROWSER': '1'}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Mode-A dispatch helper (reused by Codex, OpenCode, Goose, Aider, Kiro)
@@ -6674,6 +6696,16 @@ class QwenRuntime(AgentRuntime):
             return f"Qwen Code exited with code {rc}. Check auth and model name."
         return None
 
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """`qwen` is already RFC-8628 device-code underneath, but its
+        showFallbackMessage() (the device-code URL + code printout) only
+        fires when the browser is suppressed — unset, it silently opens the
+        host browser and prints nothing. NO_BROWSER=1 forces the fallback
+        path. Measured 2026-09-22; BROWSER= has no effect on Windows (same
+        `platform !== 'win32'` guard as gemini-cli, which qwen-code forked
+        from)."""
+        return None, {'NO_BROWSER': '1'}
+
 
 # Clayrune's effort vocabulary is claude's (`mc/characters.py` VALID_EFFORT:
 # low/medium/high/xhigh/max). Codex's own knob is the documented config.toml
@@ -8049,6 +8081,15 @@ class CodexRuntime(AgentRuntime):
                 return f"Codex error: {real_line}"
             return f"Codex exited with code {rc}. Check auth and model name."
         return None
+
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """`codex login --device-auth` — measured 2026-09-22: prints
+        https://auth.openai.com/codex/device plus a one-time code and polls;
+        no localhost listener at all, unlike the default `codex login` flow
+        (a loopback callback server the phone's own browser can't reach).
+        Both the URL and the code are read off the PTY pane, not scraped —
+        there's nothing here that fits the URL-box + paste-code UI."""
+        return ['login', '--device-auth'], None
 
 
 # ─────────────────────────────────────────────────────────────────────────────

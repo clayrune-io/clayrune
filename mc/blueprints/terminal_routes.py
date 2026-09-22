@@ -153,17 +153,30 @@ def _read_pty_stream(pty_sess, session):
                 session['output_lines'].append(f'\r\n[Process exited with code {rc}]')
 
 
-def launch_pty_session(project_id, command, cwd=None):
+def launch_pty_session(project_id, command, cwd=None, argv_extra=None, env_extra=None):
     """In-process counterpart to terminal_launch()'s pty branch — no HTTP, no
     loopback gate, for callers already running inside this server (the
     remote-login flow in agent_routes.py). Returns (session_id, None) on
     success or (None, error_message) on failure — never raises, so a caller
     building a JSON error response doesn't need its own try/except.
+
+    `argv_extra` (list[str] | None) appends args after `command` — e.g. a
+    provider's login subcommand (`login --device-auth`). `env_extra`
+    (dict[str,str] | None) is merged over the base env — e.g. NO_BROWSER=1
+    to suppress a CLI's host-browser auto-open. Both default to None, which
+    reproduces today's behaviour byte-for-byte: bare `command`, no extra env.
     """
     if not pty_backend.pty_available():
         return None, ('Real-PTY terminal sessions need pywinpty on Windows '
                        "('pip install pywinpty') — not installed.")
     session_id = uuid.uuid4().hex[:12]
+    if argv_extra:
+        # List form, not a hand-quoted string — pty_backend.spawn() already
+        # knows how to turn a list into a correctly-quoted argv per platform
+        # (subprocess.list2cmdline on Windows); duplicating that quoting
+        # here would just be a second place for it to drift out of sync.
+        base = list(command) if isinstance(command, (list, tuple)) else [command]
+        command = base + list(argv_extra)
     env = {
         **os.environ,
         'PYTHONIOENCODING': 'utf-8',
@@ -171,6 +184,7 @@ def launch_pty_session(project_id, command, cwd=None):
         'TERM': 'xterm-256color',
         'COLUMNS': '120',
         'LINES': '30',
+        **(env_extra or {}),
     }
     try:
         pty_sess = pty_backend.spawn(command, cwd=cwd, env=env, cols=120, rows=30)
