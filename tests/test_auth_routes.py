@@ -386,7 +386,15 @@ class TestAuthRoutes:
         assert 'error' in body
 
     def test_claude_login_launch_shim_calls_generic(self):
-        """POST /api/claude/login-launch delegates to agent_auth_login('claude')."""
+        """POST /api/claude/login-launch delegates to agent_auth_login('claude').
+
+        This is the unverifiable host-terminal fallback (2026-09-22 fix): the
+        frontend's single "Sign in" button only reaches it when
+        /auth-login-remote reports remote_capable:False. Popen(shell=True)
+        returns as soon as the shell spawns, so the route can never confirm a
+        window actually opened — it must say `verified: False` rather than a
+        bare `ok: True`, the same honesty contract as the provider-install
+        terminal fix (docs/_journal/provider-install-terminal-popout.md)."""
         c, _ = _get_flask_client()
         # Patch _launch_terminal_for_binary to avoid OS interaction.
         # It moved to the agent_routes blueprint (1.12); the login-launch route
@@ -397,7 +405,10 @@ class TestAuthRoutes:
                                return_value=Path('/fake/claude')):
                 resp = c.post('/api/claude/login-launch')
         assert resp.status_code == 200
-        assert json.loads(resp.data)['ok'] is True
+        body = json.loads(resp.data)
+        assert body['ok'] is True
+        assert body['verified'] is False
+        assert body['command'] == str(Path('/fake/claude'))
 
     def test_agent_auth_login_binary_missing_returns_400(self):
         """auth-login returns 400 when provider binary is not installed."""
@@ -406,6 +417,29 @@ class TestAuthRoutes:
             resp = c.post('/api/agent/gemini/auth-login')
         assert resp.status_code == 400
         assert 'error' in json.loads(resp.data)
+
+    def test_agent_provider_login_launch_reports_unverified(self):
+        """POST /api/agent/provider/<name>/login-launch is the OTHER
+        host-terminal route (legacy, kept for the `walkthrough` install flow)
+        that hits the same unverifiable Popen(shell=True) launcher — must
+        carry the same `verified: False` / `command` honesty fields as the
+        auth-login fallback above, not a bare `ok: True`."""
+        c, _ = _get_flask_client()
+        from mc.blueprints import agent_routes as _bp_agent
+        with patch.object(_bp_agent, '_launch_terminal_for_binary', return_value=None):
+            with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                               return_value=Path('/fake/gemini')):
+                resp = c.post('/api/agent/provider/gemini/login-launch')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body['ok'] is True
+        assert body['verified'] is False
+        assert body['command'] == str(Path('/fake/gemini'))
+
+    def test_agent_provider_login_launch_unknown_provider_404(self):
+        c, _ = _get_flask_client()
+        resp = c.post('/api/agent/provider/nonexistent/login-launch')
+        assert resp.status_code == 404
 
 
 # ── Remote/captured login — MC-927 URL-surfacing fallback ────────────────────

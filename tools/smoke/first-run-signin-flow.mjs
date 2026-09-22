@@ -22,6 +22,12 @@
  *   - GET  /api/agent/providers                        (controls the
  *     before/after auth_status the UI reads — real health_check() would
  *     require an actual completed login to observe a transition)
+ *   - POST /api/agent/<name>/auth-login-remote          (settingsProviderTerminalLogin
+ *     tries this FIRST now — 2026-09-22 unified Sign in button; the real
+ *     route would spawn a REAL piped `claude auth login`/etc subprocess for
+ *     providers with auth_login_argv, an equally real side effect to the
+ *     terminal below. Faked to always report remote_capable:false so every
+ *     click falls through to the login-launch fake exactly as before)
  *   - POST /api/agent/provider/<name>/login-launch      (would otherwise
  *     open a REAL OS terminal and invoke the real CLI's login flow)
  * Everything else — index.html, static/js/*.js, static/css/*.css, /api/config,
@@ -140,11 +146,19 @@ try {
     if (path === '/api/agent/providers' && req.method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers, default: providers.find((p) => p.default)?.name || '' }) });
     }
+    const remoteLoginMatch = path.match(/^\/api\/agent\/([^/]+)\/auth-login-remote$/);
+    if (remoteLoginMatch && req.method() === 'POST') {
+      // Always "not capable" here so every click falls through to the
+      // login-launch fake below, unchanged from before the unified button —
+      // never let this reach the real route (see file header).
+      return route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: false, remote_capable: false, error: 'faked for this smoke' }) });
+    }
     const loginLaunchMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/login-launch$/);
     if (loginLaunchMatch && req.method() === 'POST') {
       const name = loginLaunchMatch[1];
       loginLaunchCalls.push(name);
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, verified: false, command: name }) });
     }
     return route.continue(); // real server: index.html, static/js, static/css, /api/config, /api/projects, ...
   });

@@ -19,7 +19,10 @@
  *      Claude row is byte-identical to another vendor in the same state once
  *      name/label are normalised — the per-vendor difference is only what a
  *      button DOES.
- *   3. "Sign in remotely" appears exactly where the server says remote_login.
+ *   3. ONE "Sign in" button per installed row (no separate "Sign in
+ *      remotely" — Ron, 2026-09-22: two buttons that both mean "sign me in"
+ *      collapse to one; auth-login-remote decides internally whether to use
+ *      URL-capture, a PTY pop-out, or the host-window fallback).
  *   4. The buttons are wired: Install -> install-launch, Install selected ->
  *      the batch route (ONE request), Set default -> PUT default_provider,
  *      Check status -> that vendor's auth-probe, Check setup status ->
@@ -59,7 +62,7 @@ const providers = [
     remote_login: false, install_hint: 'npm install -g @qwen-code/qwen-code', capabilities: {}, default: false, in_use: false },
 ];
 let config = { default_provider: 'claude' };
-const calls = { install: [], batch: [], probe: [], put: [], refreshList: 0, login: [] };
+const calls = { install: [], batch: [], probe: [], put: [], refreshList: 0, login: [], remoteLogin: [] };
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 } });
@@ -112,7 +115,18 @@ await page.route('**/*', (route) => {
     return json({ ok: true, status: 'ok', last_checked: 'now' });
   }
   m = path.match(/^\/api\/agent\/provider\/([^/]+)\/login-launch$/);
-  if (m) { calls.login.push(m[1]); return json({ ok: true }); }
+  if (m) { calls.login.push(m[1]); return json({ ok: true, verified: false, command: m[1] }); }
+  // The unified Sign in button always tries this first; canned to mirror
+  // remote_login (true = capable via URL-capture/PTY, false = the caller
+  // must fall back to login-launch above — see agent_routes.py
+  // agent_auth_login_remote's real remote_capable:false branch).
+  m = path.match(/^\/api\/agent\/([^/]+)\/auth-login-remote$/);
+  if (m) {
+    calls.remoteLogin.push(m[1]);
+    const p = providers.find(x => x.name === m[1]);
+    if (p && p.remote_login) return json({ ok: true, remote_capable: true, status: 'url_ready', url: `https://example.test/${m[1]}` });
+    return json({ ok: false, remote_capable: false, error: `${m[1]} needs a real console to sign in.` });
+  }
   return route.abort();
 });
 
@@ -145,7 +159,6 @@ const readRows = () => page.evaluate(() => {
     actions: !!row.querySelector('.prov-row-actions'),
     def: !!row.querySelector('.prov-row-actions input[type=radio]'),
     signIn: !!row.querySelector('.prov-sign-in'),
-    remote: !!row.querySelector('.prov-sign-in-remote'),
     check: !!row.querySelector('.prov-check'),
     install: !!row.querySelector('.prov-install'),
     select: !!row.querySelector('.prov-row-select'),
@@ -169,9 +182,9 @@ const assertLayout = async (label) => {
   check(by.qwen.install && by.qwen.select && !by.qwen.check && by.qwen.state === 'not installed',
     `[${label}] uninstalled row: Install + batch tick-box, no Sign in/Check`,
     `[${label}] uninstalled row wrong: ${JSON.stringify(by.qwen)}`);
-  check(by.claude.remote && by.codex.remote && !by.gemini.remote,
-    `[${label}] Sign in remotely appears exactly where remote_login is true`,
-    `[${label}] remote-login buttons wrong: ${JSON.stringify(rows.map(r => [r.name, r.remote]))}`);
+  check(installed.every(r => !r.html.includes('prov-sign-in-remote')),
+    `[${label}] no separate "Sign in remotely" button — collapsed into the one Sign in button`,
+    `[${label}] a stray remote-login button remains: ${JSON.stringify(installed.filter(r => r.html.includes('prov-sign-in-remote')).map(r => r.name))}`);
   check(!by.claude.html.includes('prov-row-extra') && by.codex.html.includes('prov-row-extra')
         && by.gemini.html.includes('prov-row-extra'),
     `[${label}] the only per-vendor addition is the API-key field, on vendors that take a key (Claude signs in via OAuth)`,
@@ -225,8 +238,9 @@ try {
   await page.click('#settings-providers-section .prov-row[data-provider="gemini"] .prov-sign-in');
   await page.waitForFunction(() => true);
   await page.waitForTimeout(100);
-  check(calls.login.join() === 'gemini', 'Sign in -> POST provider/gemini/login-launch',
-    `login calls: ${calls.login}`);
+  check(calls.remoteLogin.join() === 'gemini' && calls.login.join() === 'gemini',
+    'Sign in -> tries auth-login-remote first, falls back to provider/gemini/login-launch when remote_capable:false',
+    `remoteLogin calls: ${calls.remoteLogin}, login calls: ${calls.login}`);
 
   await page.check('#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]');
   await page.waitForFunction(() => document.querySelector(

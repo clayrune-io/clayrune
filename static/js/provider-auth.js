@@ -336,22 +336,68 @@ async function settingsProviderSetEnv(provider, key, btnEl) {
   }
 }
 
+// ONE "Sign in" button for every vendor (Ron, 2026-09-22: two buttons that
+// both mean "sign me in" is exactly the redundant-UI case that gets merged).
+// Tries the verified paths first — MC-927 URL-capture, then MC-928's real-PTY
+// pop-out — and only drops to the unverifiable host-OS-window terminal
+// (_launch_terminal_for_binary, via /api/agent/provider/<p>/login-launch)
+// when the server says neither is available. That OS-window launch can't
+// confirm anything opened (Popen(shell=True) returns as soon as the shell
+// spawns — see docs/_journal/provider-install-terminal-popout.md for the
+// same defect class in the install path), so its response's `verified:false`
+// is shown honestly instead of the old unconditional "a terminal opened".
 async function settingsProviderTerminalLogin(provider, btnEl) {
   const prevLabel = btnEl ? btnEl.textContent : '';
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Launching...'; }
+  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Starting...'; }
   try {
-    const res = await fetch(API_BASE + `/api/agent/provider/${provider}/login-launch`,
-                            { method: 'POST' });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok || !data.ok) {
-      alert('Failed to launch terminal: ' + (data.error || res.status));
+    let data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote`,
+                                   { method: 'POST' })).json();
+
+    // MC-928: the CLI needs a real console (its login draws an interactive
+    // TUI, e.g. gemini's account picker) — the server gave us a real-PTY
+    // terminal session instead of a captured URL. Open the pop-out; it's
+    // the same surface openTerminalPopout always renders, with raw
+    // keystrokes wired through for pty sessions (see terminal.js).
+    if (data.pty && data.session_id) {
+      openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider);
+      showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
       return;
     }
-    // Claude's sign-in happens inside its REPL; the rest sign in on launch.
+
+    if (data.remote_capable !== false) {
+      // claude et al: the CLI pipes its OAuth URL over plain stdout.
+      let tries = 0;
+      while (data.status === 'waiting_url' && tries < 20) {
+        await new Promise(r => setTimeout(r, 750));
+        data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote/status`)).json();
+        tries++;
+      }
+      if (data.url) {
+        _renderRemoteLoginBox(provider, data.url);
+        return;
+      }
+      showToast(`${provider} didn't print a sign-in link in time — try Sign in again.`, 8000);
+      return;
+    }
+
+    // remote_capable === false: no real-PTY backend and this CLI can't pipe
+    // its login over stdout either. Last resort — the host OS-window
+    // terminal — with an honest report of whether we could confirm it opened.
+    const res = await fetch(API_BASE + `/api/agent/provider/${provider}/login-launch`,
+                            { method: 'POST' });
+    const launch = await res.json().catch(() => ({}));
+    if (!res.ok || !launch.ok) {
+      alert('Failed to launch terminal: ' + (launch.error || res.status));
+      return;
+    }
     const how = provider === 'claude' ? 'Type /login in it' : 'Complete sign-in there';
-    showToast(`A terminal opened with ${provider}. ${how}, then click Check status.`, 12000);
+    if (launch.verified === false) {
+      showToast(`Couldn't confirm a terminal opened for ${provider} — if you don't see one, run \`${launch.command || provider}\` yourself in a terminal, then click Check status.`, 14000);
+    } else {
+      showToast(`A terminal opened with ${provider}. ${how}, then click Check status.`, 12000);
+    }
   } catch (e) {
-    alert('Launch failed: ' + e);
+    alert('Sign-in failed: ' + e);
   } finally {
     if (btnEl) { btnEl.disabled = false; btnEl.textContent = prevLabel || 'Sign in'; }
   }
@@ -374,51 +420,11 @@ async function settingsInstallSelectedProviders(btnEl) {
   await providerInstallSelected(btnEl, names);
 }
 
-// ── Remote sign-in — MC-927 URL-surfacing fallback ─────────────────────────
-// "Launch terminal login" opens a window on the HOST; over the tunnel that's
-// invisible to whoever tapped the button from a phone. This path asks the
-// server to capture the CLI's OAuth URL from a piped subprocess instead (only
-// works where the CLI cooperates — see AgentRuntime.auth_login_argv; the
-// server tells us plainly via remote_capable:false when it doesn't, e.g.
-// gemini today) and renders it as a tappable link + browser-pane button +
-// a box to paste the code back.
-async function settingsRemoteLogin(provider, btnEl) {
-  if (btnEl) { btnEl.disabled = true; btnEl.textContent = 'Starting...'; }
-  try {
-    let data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote`,
-                                   { method: 'POST' })).json();
-    if (data.remote_capable === false) {
-      showToast(data.error || `Remote sign-in isn't available for ${provider} yet.`, 10000);
-      return;
-    }
-    // MC-928: the CLI needs a real console (its login draws an interactive
-    // TUI, e.g. gemini's account picker) — the server gave us a real-PTY
-    // terminal session instead of a captured URL. Open the pop-out; it's
-    // the same surface openTerminalPopout always renders, with raw
-    // keystrokes wired through for pty sessions (see terminal.js).
-    if (data.pty && data.session_id) {
-      openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider);
-      showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
-      return;
-    }
-    let tries = 0;
-    while (data.status === 'waiting_url' && tries < 20) {
-      await new Promise(r => setTimeout(r, 750));
-      data = await (await fetch(API_BASE + `/api/agent/${provider}/auth-login-remote/status`)).json();
-      tries++;
-    }
-    if (!data.url) {
-      showToast(`${provider} didn't print a sign-in link in time. Try "Launch terminal login" on the host instead.`, 10000);
-      return;
-    }
-    _renderRemoteLoginBox(provider, data.url);
-  } catch (e) {
-    showToast('Remote sign-in failed: ' + e, 8000);
-  } finally {
-    if (btnEl) { btnEl.disabled = false; btnEl.textContent = 'Sign in remotely'; }
-  }
-}
-
+// ── Remote sign-in box — MC-927 URL-surfacing fallback ─────────────────────
+// Rendered by settingsProviderTerminalLogin above when the server captured a
+// CLI's OAuth URL from a piped subprocess (only works where the CLI
+// cooperates — see AgentRuntime.auth_login_argv). Tappable link + browser-pane
+// button + a box to paste the code back.
 function _renderRemoteLoginBox(provider, url) {
   const hostId = `settings-remote-login-${provider}`;
   let box = document.getElementById(hostId);
@@ -665,8 +671,7 @@ function _providerStateLabel(p) {
 // live only in what an action DOES (the server-side login flow, the optional
 // API-key field), never in the row's shape. Structure:
 //   .prov-row > label.prov-row-head (select box, name, state pill, Install)
-//             > .prov-row-actions   (Default radio, Sign in, Sign in remotely,
-//                                    Check status)
+//             > .prov-row-actions   (Default radio, Sign in, Check status)
 //             > .prov-row-detail    (version / error text / install hint)
 //             > .prov-row-extra     (API-key entry, if the vendor takes one;
 //                                    opts.keyEntry — Settings and setup)
@@ -704,8 +709,6 @@ function _renderProviderRow(p, opts) {
               ${defaultCtl}
               ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
                 onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}
-              ${needSignIn && p.remote_login ? `<button type="button" class="btn-add prov-sign-in-remote" style="${btnCss}"
-                onclick="settingsRemoteLogin('${n}',this)">Sign in remotely</button>` : ''}
               ${installed ? `<button type="button" class="btn-add prov-check" style="${btnCss}"
                 ${costs ? `title="Spends one live API call against ${esc(p.display_name)} to verify the key can actually serve a request — counts against today's quota."` : ''}
                 onclick="providerCheckStatus('${n}',this)">Check status</button>` : ''}
@@ -903,5 +906,4 @@ window.settingsSetDefaultProvider = settingsSetDefaultProvider;       // provide
 window.settingsInstallSelectedProviders = settingsInstallSelectedProviders; // Provider Settings toolbar onclick
 window.settingsProviderRefresh = settingsProviderRefresh;         // Provider Settings section onclick
 window.settingsProviderAuthProbe = settingsProviderAuthProbe;     // Provider Settings section onclick (MC-934)
-window.settingsRemoteLogin = settingsRemoteLogin;                 // Provider Settings section onclick
 window.settingsRemoteLoginSubmitCode = settingsRemoteLoginSubmitCode; // remote-login box onclick
