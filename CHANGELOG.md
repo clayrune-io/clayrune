@@ -6,6 +6,25 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — Sign in was a dead button over the tunnel
+
+- Ron, from his phone: this host logged out of Claude and he could not sign it
+  back in remotely. Root cause: `_renderRemoteLoginBox` (`static/js/provider-auth.js`)
+  places the captured OAuth link + paste-the-code input at
+  `[data-remote-login-anchor="<provider>"]`. That attribute was emitted by the
+  OLD `provider-settings.js` row markup and was NOT carried over when the two
+  Sign in buttons merged into the unified `_renderProviderRow` earlier the same
+  day. The lookup found nothing, `if (!anchor) return` fired, and the flow died
+  in total silence — no box, no toast, no console error. On the host the CLI's
+  own browser tab masked it; on a phone there is no tab, so Sign in did nothing.
+- The link is the ONLY way in from a device that cannot see the host's browser,
+  so the box now also falls back to the `.prov-row` itself and, if even that is
+  missing, surfaces the URL in a prompt rather than returning silently.
+- `tools/smoke/settings-providers.mjs` gained the pin that was missing: click
+  Sign in on a row whose `auth-login-remote` returns a URL and assert the link,
+  the code input and the Submit wiring are in the DOM. Verified it fails on the
+  pre-fix code (`remote login box: null`) and passes after.
+
 ## [2026-09-22] — Providers panel mojibake: CLI output decoded as cp1252
 
 - MEASURED on a clean Windows 11 VM: the Claude row read

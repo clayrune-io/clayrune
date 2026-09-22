@@ -434,8 +434,15 @@ function _renderRemoteLoginBox(provider, url) {
   const hostId = `settings-remote-login-${provider}`;
   let box = document.getElementById(hostId);
   if (!box) {
-    const anchor = document.querySelector(`[data-remote-login-anchor="${provider}"]`);
-    if (!anchor) return;
+    // Fall back to the row itself, then fail LOUDLY. The one thing this must
+    // never do again is return silently: the URL is the only way to sign in
+    // from a device that cannot see the host's browser.
+    const anchor = document.querySelector(`[data-remote-login-anchor="${provider}"]`)
+                || document.querySelector(`.prov-row[data-provider="${provider}"]`);
+    if (!anchor) {
+      window.prompt(`Open this link on any device to sign in to ${provider}:`, url);
+      return;
+    }
     box = document.createElement('div');
     box.id = hostId;
     box.className = 'settings-hint';
@@ -710,7 +717,14 @@ function _renderProviderRow(p, opts) {
     : `<label class="prov-default"><input type="radio" name="prov-default" ${isDefault ? 'checked' : ''}
          onchange="settingsSetDefaultProvider('${n}')"> Default</label>`;
   const needSignIn = installed && (!authOk || opts.signInWhenOk);
-  const actions = !showActions ? '' : `<div class="prov-row-actions" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
+  // data-remote-login-anchor is LOAD-BEARING, not decoration: it is where
+  // _renderRemoteLoginBox puts the captured OAuth link + paste-the-code box.
+  // The attribute used to live on the old provider-settings.js row markup and
+  // was dropped when the two Sign in buttons merged into this one row
+  // (2026-09-22), so the lookup silently found nothing and rendered nothing —
+  // Sign in became a dead button for anyone without a host browser, i.e.
+  // everyone on the tunnel. Keep it on any row that can show a Sign in button.
+  const actions = !showActions ? '' : `<div class="prov-row-actions" data-remote-login-anchor="${n}" style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;padding:4px 8px">
               ${defaultCtl}
               ${needSignIn ? `<button type="button" class="btn-add prov-sign-in" style="${btnCss}"
                 onclick="settingsProviderTerminalLogin('${n}',this)">Sign in</button>` : ''}

@@ -242,6 +242,29 @@ try {
     'Sign in -> tries auth-login-remote first, falls back to provider/gemini/login-launch when remote_capable:false',
     `remoteLogin calls: ${calls.remoteLogin}, login calls: ${calls.login}`);
 
+  // THE REGRESSION THIS PINS (Ron, 2026-09-22, from his phone): when the CLI
+  // DOES hand back an OAuth URL, that URL is the only way to sign in from a
+  // device that cannot see the host's browser. _renderRemoteLoginBox placed it
+  // at [data-remote-login-anchor], an attribute the old provider-settings.js
+  // row emitted and the unified _renderProviderRow did not — so the lookup
+  // found nothing, `if (!anchor) return` fired, and Sign in was a dead button
+  // over the tunnel with no error anywhere. Assert the box, the link and the
+  // paste-the-code input actually land in the DOM.
+  await page.click('#settings-providers-section .prov-row[data-provider="codex"] .prov-sign-in');
+  await page.waitForTimeout(150);
+  const remoteBox = await page.evaluate(() => {
+    const b = document.getElementById('settings-remote-login-codex');
+    if (!b) return null;
+    const a = b.querySelector('a');
+    return { href: a && a.getAttribute('href'), code: !!b.querySelector('input'),
+             submit: /settingsRemoteLoginSubmitCode/.test(b.innerHTML),
+             visible: b.getBoundingClientRect().width > 0 };
+  });
+  check(remoteBox && remoteBox.href === 'https://example.test/codex' && remoteBox.code
+        && remoteBox.submit && remoteBox.visible,
+    'Sign in with a captured URL renders the link + paste-the-code box in the row',
+    `remote login box: ${JSON.stringify(remoteBox)}`);
+
   await page.check('#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]');
   await page.waitForFunction(() => document.querySelector(
     '#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]')?.checked);
