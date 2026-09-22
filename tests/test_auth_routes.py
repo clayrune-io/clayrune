@@ -638,6 +638,52 @@ class TestStructuredAuthDetection:
         st._claude_auth_state.update(ok=False, reason='invalid_api_key')
         assert server._claude_health_check_hook().auth_state.status == 'invalid_api_key'
 
+    def test_health_check_reports_version_and_binary_path_on_success(self):
+        """Claude was the only provider hardcoding version=None/binary_path=None
+        (agent_providers 'ver=(blank)' on a clean VM even though `claude` was
+        installed and on PATH). The hook must now resolve+probe like the other
+        runtimes do."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='/fake/claude.cmd'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = '/fake/claude.cmd'
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    mock_subprocess.run.return_value.stdout = '2.1.280 (Claude Code)\n'
+                    mock_subprocess.run.return_value.stderr = ''
+                    health = server._claude_health_check_hook()
+        assert health.installed is True
+        assert health.binary_path == Path('/fake/claude.cmd')
+        assert health.version == '2.1.280 (Claude Code)'
+
+    def test_health_check_version_degrades_to_none_without_raising(self):
+        """A failed/slow --version probe must not raise or block the route."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='/fake/claude.cmd'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = '/fake/claude.cmd'
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    mock_subprocess.run.side_effect = OSError('boom')
+                    health = server._claude_health_check_hook()
+        assert health.installed is True
+        assert health.binary_path == Path('/fake/claude.cmd')
+        assert health.version is None
+
+    def test_health_check_skips_version_probe_when_not_installed(self):
+        """Not installed -> no subprocess spawned, binary_path stays None."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='claude'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = None
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    health = server._claude_health_check_hook()
+        assert health.installed is False
+        assert health.binary_path is None
+        assert health.version is None
+        mock_subprocess.run.assert_not_called()
+
 
 # ── MC-934(b)(c) — quota-warning signal read from clayrune.log ────────────────
 # _recent_quota_failures parses the `[runtime-error] provider=... model=...
