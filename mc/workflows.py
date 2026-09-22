@@ -1277,7 +1277,7 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
             [sys.executable, str(mailer), '--subject',
              f"[Clayrune workflow] DECISION NEEDED: {workflow.get('name','')}",
              '--body', body],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
     except Exception as e:
         _log(f"[workflows] approval-gate email failed: {e}")
 
@@ -1335,7 +1335,7 @@ def _send_operator_notification(subject: str, body: str) -> tuple:
         import sys
         r = subprocess.run(
             [sys.executable, str(mailer), '--subject', subject, '--body', body],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
         return True, 'sent'

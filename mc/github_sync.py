@@ -126,7 +126,7 @@ def gh_run(args: list[str], timeout: int = 30) -> tuple[bool, object]:
         r = subprocess.run(
             cmd,
             capture_output=True,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
             timeout=timeout,
             creationflags=_POPEN_FLAGS,
             startupinfo=_STARTUPINFO,

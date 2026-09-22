@@ -218,7 +218,7 @@ def _send_email(subject: str, body: str, to: Optional[str], message_id: str) -> 
     if to:
         cmd += ["--to", to]
     try:
-        r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             _log(f"[question-channel] send failed rc={r.returncode}: "
                  f"{(r.stderr or r.stdout or '').strip()[:200]}", flush=True)

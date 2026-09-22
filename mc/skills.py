@@ -840,7 +840,7 @@ def git_clone_to_staging(url: str, ref: str | None = None, timeout: int = 60) ->
             cmd,
             capture_output=True,
             timeout=timeout,
-            text=True,
+            text=True, encoding='utf-8', errors='replace',
         )
     except FileNotFoundError:
         raise RuntimeError('git is not on PATH — install git or import the skill manually')

@@ -3074,7 +3074,7 @@ def _npm_global_bin_dirs() -> List[Path]:
     if npm:
         try:
             r = subprocess.run([npm, 'config', 'get', 'prefix'],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             prefix = (r.stdout or '').strip().splitlines()
             if prefix and prefix[0] and prefix[0] != 'undefined':
@@ -3614,7 +3614,7 @@ class GeminiRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             version = (r.stdout or r.stderr or '').strip().splitlines()[0] if (r.stdout or r.stderr) else None
         except Exception as e:
@@ -3825,7 +3825,7 @@ class GeminiRuntime(AgentRuntime):
                'Reply with the single word OK. Do not use any tools.']
         try:
             with tempfile.TemporaryDirectory(prefix='clayrune-gemini-probe-') as td:
-                r = subprocess.run(cmd, capture_output=True, text=True,
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
                                    timeout=timeout, cwd=td,
                                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
         except subprocess.TimeoutExpired:
@@ -6192,7 +6192,7 @@ class QwenRuntime(AgentRuntime):
             )
         version = None
         try:
-            r = subprocess.run([str(p), '--version'], capture_output=True, text=True,
+            r = subprocess.run([str(p), '--version'], capture_output=True, text=True, encoding='utf-8', errors='replace',
                                timeout=15, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -7642,7 +7642,7 @@ class CodexRuntime(AgentRuntime):
         version = None
         try:
             cmd = self._cmd_prefix() + ['--version']
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8256,7 +8256,7 @@ class OpenCodeRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8596,7 +8596,7 @@ class GooseRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8888,7 +8888,7 @@ class AiderRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -9226,7 +9226,7 @@ class KiroRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None

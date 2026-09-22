@@ -6,6 +6,26 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — Providers panel mojibake: CLI output decoded as cp1252
+
+- MEASURED on a clean Windows 11 VM: the Claude row read
+  "Not logged in Ã‚Â· Please run /login". The CLI emits UTF-8
+  (U+00B7, bytes `C2 B7`); `subprocess.run(..., text=True)` with no `encoding=`
+  decodes the child pipe with `locale.getpreferredencoding()` — cp1252 on a
+  default Windows box — so two characters came back where one was sent. The
+  Gemini row was clean only because its text is our own Python string.
+- Fixed at every text-mode spawn in the backend, not just the reported one:
+  `_run_claude_auth_probe` (`mc/blueprints/agent_routes.py`), the version and
+  auth probes for gemini/qwen/codex/opencode/goose/aider/kiro
+  (`mc/agent_runtime.py`), and the git/npm/netstat captures in `agent_worktree`,
+  `backup`, `github_sync`, `mcp_installer`, `process_guard`, `project_sync`,
+  `question_channel`, `skills`, `workflows` and `server.py`. All now pass
+  `encoding='utf-8', errors='replace'`.
+- Regression guard is structural: `tests/test_subprocess_text_encoding.py` walks
+  the AST of `mc/` + `server.py` and fails on any text-mode `subprocess` call
+  without an explicit `encoding=`. It plants a known offender to prove the
+  detector fires, and names the auth-probe call site explicitly.
+
 ## [2026-09-22] — Opus 5.5 in the model pickers
 
 - Added `claude-opus-5-5` ("Opus 5.5") to `ClaudeRuntime.MODEL_CHOICES`

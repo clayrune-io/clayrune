@@ -60,7 +60,7 @@ def clayrune_listener_pids() -> set[str]:
         ports.add(configured)
     try:
         result = subprocess.run(
-            ["netstat", "-ano"], capture_output=True, text=True,
+            ["netstat", "-ano"], capture_output=True, text=True, encoding='utf-8', errors='replace',
             timeout=5, check=False)
     except Exception:
         return set()

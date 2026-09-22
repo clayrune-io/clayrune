@@ -149,7 +149,7 @@ def _link_dir(link: Path, target: Path) -> bool:
                 return True
         if _IS_WINDOWS:
             r = subprocess.run(['cmd', '/c', 'mklink', '/J', str(link), str(target)],
-                               capture_output=True, text=True,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
                                creationflags=_sync._POPEN_FLAGS,
                                startupinfo=_sync._STARTUPINFO)
             return r.returncode == 0
@@ -212,7 +212,7 @@ def unlink_runtime(project: dict, wt: Path) -> None:
             if link.is_dir() and not link.is_symlink() and _IS_WINDOWS:
                 # Windows junction: rmdir unlinks without touching the target.
                 subprocess.run(['cmd', '/c', 'rmdir', str(link)],
-                               capture_output=True, text=True,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace',
                                creationflags=_sync._POPEN_FLAGS,
                                startupinfo=_sync._STARTUPINFO)
             elif link.is_symlink():

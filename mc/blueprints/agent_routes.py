@@ -1968,7 +1968,7 @@ def _npm_major_version(npm_bin: str) -> Optional[int]:
     risking an unrecognized flag on some npm we couldn't identify."""
     try:
         r = subprocess.run([npm_bin, '--version'], capture_output=True,
-                          text=True, timeout=10)
+                          text=True, encoding='utf-8', errors='replace', timeout=10)
         return int((r.stdout or '').strip().split('.', 1)[0])
     except Exception:
         return None
@@ -2181,7 +2181,7 @@ def _read_powershell_execution_scopes() -> Optional[dict]:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }'],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         out = {}
         for line in (r.stdout or '').splitlines():
             if '=' in line:
@@ -2199,7 +2199,7 @@ def _set_powershell_execution_policy_remotesigned() -> Optional[str]:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         if r.returncode != 0:
             return (r.stderr or r.stdout or f'exit {r.returncode}').strip()[:300]
         return None
@@ -2428,6 +2428,11 @@ def _run_claude_auth_probe() -> dict:
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=20,
+            # utf-8 explicitly: text=True alone decodes the child pipe with
+            # the Windows ANSI codepage, so the CLI's own UTF-8 error text
+            # ('Not logged in · Please run /login') reached the Providers
+            # panel as mojibake (seen on the clean VM, 2026-09-22).
+            encoding='utf-8', errors='replace',
             cwd=_auth_probe_cwd(),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )

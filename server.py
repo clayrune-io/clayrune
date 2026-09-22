@@ -2259,7 +2259,7 @@ def _check_port_conflict():
     if sys.platform == 'win32':
         try:
             result = subprocess.run(
-                ['netstat', '-ano'], capture_output=True, text=True, timeout=5)
+                ['netstat', '-ano'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             pids = set()
             for line in result.stdout.splitlines():
                 if f':{PORT}' in line and 'LISTENING' in line:
@@ -2275,7 +2275,7 @@ def _check_port_conflict():
                 try:
                     out = subprocess.run(
                         ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
-                        capture_output=True, text=True, timeout=5)
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
                     line = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ''
                     if line and ',' in line:
                         # CSV: "image","pid","sessionname","session#","memusage"
@@ -2733,7 +2733,7 @@ def _claude_health_check_hook():
     version = None
     if installed:
         try:
-            r = subprocess.run([resolved, '--version'], capture_output=True, text=True,
+            r = subprocess.run([resolved, '--version'], capture_output=True, text=True, encoding='utf-8', errors='replace',
                                 timeout=10, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
