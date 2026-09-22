@@ -688,12 +688,10 @@ function applyTabFilter(projectId) {
   const el = openModals.get(modalId).element;
   const activeTab = modalActiveTab[projectId] || 'agent';
 
-  if (activeTab === 'backlog') {
-    el.querySelectorAll('.backlog-item').forEach(item => {
-      const text = (item.querySelector('.backlog-text')?.textContent || '').toLowerCase();
-      item.style.display = (!query || text.includes(query)) ? '' : 'none';
-    });
-  } else if (activeTab === 'agent-log') {
+  // Backlog is NOT handled here — it has its own query map (backlogSearchQuery)
+  // and filters in the render itself (backlogViewState), not by hiding
+  // .backlog-item nodes after the fact. See render-core.js backlogViewState.
+  if (activeTab === 'agent-log') {
     el.querySelectorAll('.agent-log-entry').forEach(item => {
       const task = (item.querySelector('.agent-log-task')?.textContent || '').toLowerCase();
       const summary = (item.querySelector('.agent-log-summary')?.textContent || '').toLowerCase();

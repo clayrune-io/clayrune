@@ -923,7 +923,9 @@ const SOCIAL_DECIDED = ['approved', 'posted', 'rejected', 'needs_changes'];
 // Mirrors _ATTRIBUTION_LINE in project_routes.py — client-side copy is
 // display-only (the warning banner); the server is the actual guard.
 const SOCIAL_ATTRIBUTION_LINE = 'Written by me - Edited by Claude';
-let modalSearchQuery = {};  // projectId → search filter string
+let modalSearchQuery = {};  // projectId → search filter string (Agent Log/Documents/Activity "Filter..." box)
+let backlogSearchQuery = {};  // projectId → Backlog tab's own search query (separate map: switching
+                               // tabs must not leak an Agent Log filter into the backlog, and vice versa)
 let openAttPanels = new Set();
 let openNotesPanels = new Set();
 let openLinkPanels = new Set();
