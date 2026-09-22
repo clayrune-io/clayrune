@@ -2477,7 +2477,13 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
     command straight to `subprocess.Popen(command, shell=True, ...)` with no
     re-wrapping. Reject rather than silently mangle a second one.
     """
-    if any(ch in bin_str for ch in ('&', '|', '\n')) or bin_str.count('"') > 0:
+    # Narrowly: what actually breaks the quote-wrap is an embedded double
+    # quote or a newline, plus a chained compound command. A LONE `&` or `|`
+    # is safe - it sits inside the wrap's own quotes, and Windows folder
+    # names legitimately contain `&` (e.g. C:\Tools\A&B\claude.cmd), so
+    # rejecting it would refuse a sign-in that used to work.
+    if ('"' in bin_str or '\n' in bin_str
+            or '&&' in bin_str or '||' in bin_str):
         return ('_launch_terminal_for_binary only runs a single binary path, '
                 f'not a compound shell command: {bin_str!r}')
     try:

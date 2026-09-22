@@ -1598,3 +1598,20 @@ def test_launch_terminal_for_binary_rejects_compound_command(monkeypatch):
     # for the real callers: interactive claude/codex/etc sign-in).
     monkeypatch.setattr(ar.subprocess, 'Popen', lambda *a, **kw: None)
     assert ar._launch_terminal_for_binary(r'C:\Users\x\AppData\Roaming\npm\claude.cmd') is None
+
+
+def test_launch_terminal_for_binary_allows_ampersand_in_path(monkeypatch):
+    """The guard must not over-reject. A LONE `&` or `|` sits inside the
+    wrapper's own quotes and is harmless; Windows folder names legitimately
+    contain `&` (`C:\Tools\A&B\claude.cmd`). Rejecting those would refuse
+    an interactive sign-in that worked before the guard existed — a
+    regression traded for the bug it was meant to stop."""
+    from mc.blueprints import agent_routes as ar
+
+    seen = []
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar.subprocess, 'Popen',
+                        lambda cmd, **kw: seen.append(cmd))
+
+    assert ar._launch_terminal_for_binary(r'C:\Tools\A&B\claude.cmd') is None
+    assert len(seen) == 1 and r'A&B' in seen[0]
