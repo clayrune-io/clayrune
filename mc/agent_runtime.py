@@ -5368,10 +5368,25 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # must not carry the word "error" (a healthy codex turn read
                 # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
                 # Gemini reader's own WARN branch, which this one lacked.
-                session['log_lines'].append(
-                    f"[{runtime.name} {ev.payload.get('severity') or 'notice'}] "
-                    f"{_flatten_error_text(ev.payload.get('text', line))}")
-                session['last_output_time'] = _time.time()
+                _severity = ev.payload.get('severity') or 'notice'
+                _wtext = ev.payload.get('text', line)
+                _label = f"[{runtime.name} {_severity}] "
+                if (runtime.name == 'codex' and _severity == 'notice'
+                        and codex_error_is_notice(_wtext)):
+                    # Hook-trust bypass notice: fires every turn (required by
+                    # guardrail_hooks.py:318). Raw capture above keeps the
+                    # signal every occurrence; only the repeat CHAT line is
+                    # muted, once per mc_session_id, in-process (see
+                    # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
+                    if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
+                        _wtext = None
+                    else:
+                        _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
+                        _wtext = ('Codex hook-trust review bypassed so Clayrune '
+                                   'guardrail hooks can run (expected).')
+                if _wtext is not None:
+                    session['log_lines'].append(_label + _flatten_error_text(_wtext))
+                    session['last_output_time'] = _time.time()
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
                     f"[{runtime.name} error] "
@@ -6701,6 +6716,19 @@ def codex_error_is_notice(text: str) -> bool:
     """True when a codex `error` event is an advisory the run continues past."""
     t = str(text or '')
     return any(rx.search(t) for rx in _CODEX_NOTICE_PATTERNS)
+
+
+# The hook-trust notice fires once or twice on EVERY codex turn (it is a
+# side effect of the required --dangerously-bypass-hook-trust flag, see
+# guardrail_hooks.py:318) -- so repeating the raw vendor line in chat every
+# turn is noise for an expected, self-inflicted condition. Deduped per
+# mc_session_id, in-process only: NOT written under data/projects/ (DATA_DIR
+# pollution rule, CLAUDE.md) and intentionally lost on restart, same as any
+# other in-memory session state. The raw JSONL capture (`raw_record` in
+# `_mode_a_reader`) still records the WARN event verbatim every occurrence --
+# only the repeat CHAT line is muted, at the single chokepoint where a WARN
+# reaches `session['log_lines']` (mirrors _mode_a_reader's WARN branch).
+_CODEX_HOOK_TRUST_NOTICE_SHOWN: set = set()
 
 
 class CodexRuntime(AgentRuntime):
