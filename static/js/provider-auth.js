@@ -721,7 +721,12 @@ function _renderProviderRow(p, opts) {
               ${_allowanceRecheckBtn(p.name)}
             </div>` : '';
   const bits = [];
-  if (installed && p.version) bits.push('v' + esc(p.version));
+  // Only prefix 'v' when the runtime reports a bare number. Codex reports
+  // `codex-cli 0.155.1`, which rendered as `vcodex-cli 0.155.1` on the
+  // clean-VM Providers panel (2026-09-22).
+  if (installed && p.version) {
+    bits.push((/^\d/.test(String(p.version).trim()) ? 'v' : '') + esc(p.version));
+  }
   if (installed && !authOk && p.auth_error_text) bits.push(esc(String(p.auth_error_text).slice(0, 200)));
   if (!installed && p.install_hint) bits.push(`<span style="font-family:monospace;color:var(--accent)">${esc(p.install_hint)}</span>`);
   const detail = bits.length
