@@ -84,6 +84,42 @@ function backlogSummary(p) {
   };
 }
 
+// Derives the Backlog tab's list state — search query, sort mode, and the
+// resulting visible items — from the current UI state (modalSearchQuery,
+// showDoneMap, per-project localStorage sort). Shared by the initial modal
+// render (modalContentHTML) and the lightweight search/sort re-render
+// (refreshBacklogList) so the two never compute two different orderings.
+function backlogViewState(p) {
+  const backlogLoaded = !!(p._backlogFull && Array.isArray(p.backlog));
+  const backlog = backlogLoaded ? p.backlog : [];
+  const openItems = backlog.filter(i => !BACKLOG_CLOSED.includes(i.status));
+  const doneItems = backlog.filter(i => BACKLOG_CLOSED.includes(i.status));
+  const showDone = showDoneMap[p.id] || false;
+  const query = (modalSearchQuery[p.id] || '').trim();
+  const searchActive = !!query;
+  let sortMode = 'default';
+  try { sortMode = localStorage.getItem(`mc_backlog_sort_${p.id}`) || 'default'; } catch (_) {}
+  // Sort: in_progress agent items first, then other agent-open, then
+  // user-open, then done — the 'default' ordering when no ticket-# sort is
+  // selected.
+  const rank = it => {
+    if (BACKLOG_CLOSED.includes(it.status)) return 3;
+    if (it.agent_status === 'in_progress') return 0;
+    if ((it.source || '').startsWith('agent:')) return 1;
+    return 2;
+  };
+  // While searching, done items are searchable too — an old ticket number
+  // must be findable regardless of the showDone toggle.
+  const candidates = searchActive ? [...openItems, ...doneItems]
+    : [...openItems, ...(showDone ? doneItems : [])];
+  const numCmp = backlogNumComparator(sortMode);
+  const visibleItems = candidates
+    .filter(it => backlogItemMatchesQuery(it, query))
+    .slice()
+    .sort(numCmp || ((a, b) => rank(a) - rank(b)));
+  return { backlog, backlogLoaded, openItems, doneItems, showDone, query, searchActive, sortMode, visibleItems };
+}
+
 function computeLiveStatus(projectId) {
   let currentTask = 'Idle', currentTaskClass = 'idle';
   let nextAction = '\u2014', nextActionClass = '';
@@ -389,88 +425,12 @@ function tileHTML(p, slotIndex) {
   </div>`;
 }
 
-// ── Modal HTML (full detail view) ───────────────────────────────────────────
-
-function modalContentHTML(p) {
-  // NOTE: the header no longer carries a status pill / time-ago row. Live
-  // status is already shown by the conversation panel itself (COMPLETED /
-  // Stop / token counts), so the second header line was a duplicate that
-  // only cost vertical space. The tile / mobile row / list row still use
-  // friendlyStatus(p) — this is a modal-only removal.
-  const showDone = showDoneMap[p.id] || false;
-  // Items render only once the modal's own /backlog fetch has landed — the list
-  // payload carries counts, not bodies. `bl` is the count source either way, so
-  // the badges are correct during the brief pre-hydration window instead of
-  // flashing "0 open" and then filling in.
-  const backlogLoaded = !!(p._backlogFull && Array.isArray(p.backlog));
-  const backlog = backlogLoaded ? p.backlog : [];
-  // "Open" means NOT CLOSED. Filtering on status==='open' hid every item moved
-  // to in_progress or blocked — both documented, both settable via PATCH — so
-  // the work list dropped exactly the items being worked on, silently. Mirrors
-  // _BACKLOG_CLOSED in mc/blueprints/project_routes.py; keep the two in step.
-  const openItems = backlog.filter(i => !BACKLOG_CLOSED.includes(i.status));
-  const doneItems = backlog.filter(i => BACKLOG_CLOSED.includes(i.status));
-  const bl = backlogSummary(p);
-
-  const backlogBadge = bl.open
-    ? `<span class="backlog-badge">${bl.open} open</span>` : '';
-
-  // Same lazy-load shape as the backlog above: /api/projects only ships a
-  // pending count, the full queue arrives from GET .../social/queue on modal
-  // open (modal-manager.js).
-  const socialQueueLoaded = !!(p._socialQueueFull && Array.isArray(p.social_queue));
-  const socialQueue = socialQueueLoaded ? p.social_queue : [];
-  const socialPendingCount = socialQueueLoaded
-    ? socialQueue.filter(i => i.status === 'pending').length
-    : (p.social_pending_count || 0);
-  const socialBadge = socialPendingCount
-    ? `<span class="backlog-badge">${socialPendingCount} pending</span>` : '';
-
-  const modalLive = computeLiveStatus(p.id);
-  const currentTaskHTML = p.blocked
-    ? `<span class="summary-value blocked-text">${esc(p.blocked_reason||'Blocked')}</span>`
-    : `<span class="summary-value ${modalLive.currentTaskClass}">${esc(modalLive.currentTask)}</span>`;
-
-  // Migrate stale tab selections (memory/rules moved to three-dot menu;
-  // hivemind moved to global sidebar Hivemind view)
-  const validTabs = ['agent','backlog','social','agent-log','documents','activity','workflows'];
-  let activeTab = modalActiveTab[p.id] || 'agent';
-  if (!validTabs.includes(activeTab)) { activeTab = 'agent'; modalActiveTab[p.id] = 'agent'; }
-
-  // ⋮ menu "Advanced" group open-state (persisted, like the sidebar's Advanced).
-  const _advOpen = (() => { try { return localStorage.getItem('mc_modal_menu_advanced_open') === '1'; } catch (_) { return false; } })();
-
-  // ── Inactive tabs are not built ──────────────────────────────────────────
-  // Measured on mission_control (2026-08-06): the modal was 8,270 elements, of
-  // which 6,001 were the Agent Log tab and 630 the Backlog tab — ~84% behind a
-  // tab nobody was looking at. refreshModalById() rebuilds ALL of it via
-  // innerHTML on every SSE turn event and every poll tick (41–46 ms of blocked
-  // main thread, repeatedly). Every tab switch already re-renders the modal
-  // (switchModalTab → refreshModal), so building only the visible panel costs
-  // nothing and is invisible to the user.
-  //
-  // The `agent` panel is the exception: it is built unconditionally because it
-  // owns the LIVE streaming output nodes that refreshModalById works hard to
-  // carry across the innerHTML wipe. Dropping it while the user reads another
-  // tab would throw away in-flight stream state.
-  const tabOn = t => activeTab === t;
-
-  const logHTML = !tabOn('activity') ? '' : (p.activity_log||[]).slice(0,20).map(e => `
-    <div class="log-entry">
-      <span class="log-ts">${esc(e.ts_relative||e.ts||'')}</span>
-      <span class="log-msg">${esc(e.msg||'')}</span>
-    </div>`).join('');
-
-  // Sort: in_progress agent items first, then other agent-open, then user-open, then done
-  const rank = it => {
-    if (BACKLOG_CLOSED.includes(it.status)) return 3;
-    if (it.agent_status === 'in_progress') return 0;
-    if ((it.source || '').startsWith('agent:')) return 1;
-    return 2;
-  };
-  const visibleItems = !tabOn('backlog') ? []
-    : [...openItems, ...(showDone ? doneItems : [])].slice().sort((a,b) => rank(a) - rank(b));
-  const backlogItemsHTML = visibleItems.map(item => {
+// Renders the Backlog tab's item list HTML for an already-computed, already-
+// sorted `items` array. Factored out of modalContentHTML so a search
+// keystroke or sort change can refresh just `.backlog-list`
+// (refreshBacklogList, below) instead of rebuilding the whole modal.
+function backlogItemsListHTML(p, items, backlog, backlogLoaded) {
+  return items.map(item => {
     const isAgent = (item.source || '').startsWith('agent:');
     const isInProgress = item.agent_status === 'in_progress';
     // Counts come from the trimmed list payload (notes_count/attachments_count);
@@ -575,11 +535,85 @@ function modalContentHTML(p) {
           <button onclick="submitNote('${esc(p.id)}','${esc(item.id)}')">Add</button>
         </div>
       </div>
-    </div>`}).join('') || (backlogLoaded ? '' :
-      // Pre-hydration: an empty list here would read as "no backlog" on a
-      // project that has one. Only say that when the fetch has actually landed.
-      `<div class="backlog-loading" style="padding:18px 12px;text-align:center;`
-      + `color:var(--text-faint);font-size:12px">Loading backlog…</div>`);
+    </div>`;
+  }).join('') || (backlogLoaded ? '' :
+    // Pre-hydration: an empty list here would read as "no backlog" on a
+    // project that has one. Only say that when the fetch has actually landed.
+    `<div class="backlog-loading" style="padding:18px 12px;text-align:center;`
+    + `color:var(--text-faint);font-size:12px">Loading backlog…</div>`);
+}
+
+// ── Modal HTML (full detail view) ───────────────────────────────────────────
+
+function modalContentHTML(p) {
+  // NOTE: the header no longer carries a status pill / time-ago row. Live
+  // status is already shown by the conversation panel itself (COMPLETED /
+  // Stop / token counts), so the second header line was a duplicate that
+  // only cost vertical space. The tile / mobile row / list row still use
+  // friendlyStatus(p) — this is a modal-only removal.
+  // Items render only once the modal's own /backlog fetch has landed — the list
+  // payload carries counts, not bodies. `bl` is the count source either way, so
+  // the badges are correct during the brief pre-hydration window instead of
+  // flashing "0 open" and then filling in.
+  // "Open" means NOT CLOSED. Filtering on status==='open' hid every item moved
+  // to in_progress or blocked — both documented, both settable via PATCH — so
+  // the work list dropped exactly the items being worked on, silently. Mirrors
+  // _BACKLOG_CLOSED in mc/blueprints/project_routes.py; keep the two in step.
+  const bvs = backlogViewState(p);
+  const { showDone, backlogLoaded, backlog, doneItems } = bvs;
+  const bl = backlogSummary(p);
+
+  const backlogBadge = bl.open
+    ? `<span class="backlog-badge">${bl.open} open</span>` : '';
+
+  // Same lazy-load shape as the backlog above: /api/projects only ships a
+  // pending count, the full queue arrives from GET .../social/queue on modal
+  // open (modal-manager.js).
+  const socialQueueLoaded = !!(p._socialQueueFull && Array.isArray(p.social_queue));
+  const socialQueue = socialQueueLoaded ? p.social_queue : [];
+  const socialPendingCount = socialQueueLoaded
+    ? socialQueue.filter(i => i.status === 'pending').length
+    : (p.social_pending_count || 0);
+  const socialBadge = socialPendingCount
+    ? `<span class="backlog-badge">${socialPendingCount} pending</span>` : '';
+
+  const modalLive = computeLiveStatus(p.id);
+  const currentTaskHTML = p.blocked
+    ? `<span class="summary-value blocked-text">${esc(p.blocked_reason||'Blocked')}</span>`
+    : `<span class="summary-value ${modalLive.currentTaskClass}">${esc(modalLive.currentTask)}</span>`;
+
+  // Migrate stale tab selections (memory/rules moved to three-dot menu;
+  // hivemind moved to global sidebar Hivemind view)
+  const validTabs = ['agent','backlog','social','agent-log','documents','activity','workflows'];
+  let activeTab = modalActiveTab[p.id] || 'agent';
+  if (!validTabs.includes(activeTab)) { activeTab = 'agent'; modalActiveTab[p.id] = 'agent'; }
+
+  // ⋮ menu "Advanced" group open-state (persisted, like the sidebar's Advanced).
+  const _advOpen = (() => { try { return localStorage.getItem('mc_modal_menu_advanced_open') === '1'; } catch (_) { return false; } })();
+
+  // ── Inactive tabs are not built ──────────────────────────────────────────
+  // Measured on mission_control (2026-08-06): the modal was 8,270 elements, of
+  // which 6,001 were the Agent Log tab and 630 the Backlog tab — ~84% behind a
+  // tab nobody was looking at. refreshModalById() rebuilds ALL of it via
+  // innerHTML on every SSE turn event and every poll tick (41–46 ms of blocked
+  // main thread, repeatedly). Every tab switch already re-renders the modal
+  // (switchModalTab → refreshModal), so building only the visible panel costs
+  // nothing and is invisible to the user.
+  //
+  // The `agent` panel is the exception: it is built unconditionally because it
+  // owns the LIVE streaming output nodes that refreshModalById works hard to
+  // carry across the innerHTML wipe. Dropping it while the user reads another
+  // tab would throw away in-flight stream state.
+  const tabOn = t => activeTab === t;
+
+  const logHTML = !tabOn('activity') ? '' : (p.activity_log||[]).slice(0,20).map(e => `
+    <div class="log-entry">
+      <span class="log-ts">${esc(e.ts_relative||e.ts||'')}</span>
+      <span class="log-msg">${esc(e.msg||'')}</span>
+    </div>`).join('');
+
+  const visibleItems = !tabOn('backlog') ? [] : bvs.visibleItems;
+  const backlogItemsHTML = backlogItemsListHTML(p, visibleItems, backlog, backlogLoaded);
 
   // ── Social approvals queue — visual language borrowed straight from the
   // Backlog list above (same .backlog-item/.backlog-text/.status-badge
@@ -882,7 +916,7 @@ function modalContentHTML(p) {
       <div class="modal-tab ${activeTab==='documents'?'active':''}" onclick="switchModalTab('${esc(p.id)}','documents')">Documents</div>
       <div class="modal-tab ${activeTab==='activity'?'active':''}" onclick="switchModalTab('${esc(p.id)}','activity')">Activity</div>
       <div class="modal-tab ${activeTab==='workflows'?'active':''}" onclick="switchModalTab('${esc(p.id)}','workflows')">Workflows</div>
-      ${(activeTab !== 'agent' && activeTab !== 'social') ? `<div class="modal-tab-search">
+      ${(activeTab !== 'agent' && activeTab !== 'social' && activeTab !== 'backlog') ? `<div class="modal-tab-search">
         <input type="text" id="tab-search-${esc(p.id)}" placeholder="Filter..."
           value="${esc(modalSearchQuery[p.id] || '')}"
           oninput="modalSearchQuery['${esc(p.id)}']=this.value;applyTabFilter('${esc(p.id)}')"
@@ -898,6 +932,29 @@ function modalContentHTML(p) {
             <span>Backlog ${backlogBadge}</span>
             ${p.github_sync_enabled && p.github_repo ? `<button class="gh-sync-badge" id="gh-badge-${esc(p.id)}" onclick="githubSyncNow('${esc(p.id)}')" title="Sync with GitHub">&#x21BB; ${esc(p.github_repo)}</button>` : ''}
             ${undoBtn}${doneToggle}
+          </div>
+          <!-- Search matches key/num/text (backlogItemMatchesQuery, shared with
+               the All Backlog Items modal) and, while a query is typed, reaches
+               past showDone into closed items too — an old ticket number must
+               stay findable. Sort persists per project in localStorage. Both
+               controls drive refreshBacklogList(), which swaps only
+               .backlog-list rather than the whole modal, so the search input's
+               own focus/caret is never touched by a keystroke's own re-render;
+               the generic input-preserving pass in refreshModalById covers the
+               SSE/poll-driven full rebuilds. -->
+          <div class="backlog-toolbar">
+            <div class="backlog-search">
+              <input type="text" id="backlog-search-${esc(p.id)}" placeholder="Search # or text..."
+                value="${esc(bvs.query)}"
+                oninput="modalSearchQuery['${esc(p.id)}']=this.value;refreshBacklogList('${esc(p.id)}')"
+              >${bvs.query ? `<span class="search-clear" onclick="clearBacklogSearch('${esc(p.id)}')">&#x2715;</span>` : ''}
+            </div>
+            <select class="backlog-sort-select" onchange="setBacklogSort('${esc(p.id)}',this.value)">
+              <option value="default"${bvs.sortMode==='default'?' selected':''}>Default</option>
+              <option value="num_desc"${bvs.sortMode==='num_desc'?' selected':''}>Ticket # (newest first)</option>
+              <option value="num_asc"${bvs.sortMode==='num_asc'?' selected':''}>Ticket # (oldest first)</option>
+            </select>
+            <span class="backlog-match-count">${bvs.searchActive ? `${visibleItems.length} matching` : ''}</span>
           </div>
           <!-- Compose sits ABOVE the list. At the bottom it was unreachable
                without scrolling past every item, and that scroll pushed the
@@ -1026,6 +1083,66 @@ function listRowHTML(p) {
 }
 
 
+// ── Backlog tab search / sort (MC-955) ──────────────────────────────────────
+
+// Finds the open modal window element for a project, or null. Deliberately
+// not shared with agent-console.js's own findModalIdForProject — that
+// function is module-private there and cross-module bare calls in this
+// codebase go through explicit window.* re-exposure (see the interop block
+// below), which isn't worth it for a 4-line lookup used in only three places.
+function _backlogModalEl(projectId) {
+  for (const [modalId, entry] of openModals) {
+    if (entry.projectId === projectId && !modalId.startsWith('__')) return entry.element;
+  }
+  return null;
+}
+
+// Live-typing / sort-change refresh for the Backlog tab. Swaps only
+// `.backlog-list` and the match count — never the whole modal, so a search
+// keystroke doesn't blur the compose textarea, close the three-dot menu, or
+// repaint everything else for nothing. Because the search input itself is
+// never touched here, its focus/caret survive for free; the SSE/poll-driven
+// full rebuild (refreshModalById) still restores focus on it afterwards via
+// that function's own generic input-preservation pass, keyed by the input's
+// stable id.
+function refreshBacklogList(projectId) {
+  const el = _backlogModalEl(projectId);
+  if (!el) return;
+  const p = allProjects.find(x => x.id === projectId);
+  if (!p) return;
+  const bvs = backlogViewState(p);
+  const listEl = el.querySelector('.backlog-list');
+  if (listEl) listEl.innerHTML = backlogItemsListHTML(p, bvs.visibleItems, bvs.backlog, bvs.backlogLoaded);
+  const countEl = el.querySelector('.backlog-match-count');
+  if (countEl) countEl.textContent = bvs.searchActive ? `${bvs.visibleItems.length} matching` : '';
+  const searchDiv = el.querySelector('.backlog-search');
+  if (searchDiv) {
+    let clearBtn = searchDiv.querySelector('.search-clear');
+    if (bvs.query && !clearBtn) {
+      clearBtn = document.createElement('span');
+      clearBtn.className = 'search-clear';
+      clearBtn.innerHTML = '&#x2715;';
+      clearBtn.onclick = () => clearBacklogSearch(projectId);
+      searchDiv.appendChild(clearBtn);
+    } else if (!bvs.query && clearBtn) {
+      clearBtn.remove();
+    }
+  }
+}
+
+function setBacklogSort(projectId, mode) {
+  try { localStorage.setItem(`mc_backlog_sort_${projectId}`, mode); } catch (_) {}
+  refreshBacklogList(projectId);
+}
+
+function clearBacklogSearch(projectId) {
+  modalSearchQuery[projectId] = '';
+  refreshBacklogList(projectId);
+  const el = _backlogModalEl(projectId);
+  const input = el && el.querySelector('.backlog-search input');
+  if (input) { input.value = ''; input.focus(); }
+}
+
 // ── interop: window re-exposure for inline/generated/cross-module callers ──
 window.avatarHTML = avatarHTML;
 window.avatarIsFigure = avatarIsFigure;
@@ -1035,6 +1152,9 @@ window.avatarIsFigure = avatarIsFigure;
 window.avatarIsRenderable = avatarIsRenderable;
 window.avatarFigureName = avatarFigureName;
 window.backlogSummary = backlogSummary;
+window.refreshBacklogList = refreshBacklogList;
+window.setBacklogSort = setBacklogSort;
+window.clearBacklogSearch = clearBacklogSearch;
 window.socialProjectBadgeHTML = socialProjectBadgeHTML;
 window.computeLiveStatus = computeLiveStatus;
 window.friendlyStatus = friendlyStatus;

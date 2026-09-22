@@ -1,5 +1,10 @@
 // ── Cross-project Backlog View ──────────────────────────────────────────────
-let _allBacklogFilter = { status: 'open', search: '', priority: 'all' };
+// sort persists per-browser (not per-project — this view spans all projects).
+let _allBacklogFilter = { status: 'open', search: '', priority: 'all', sort: _ablLoadSort() };
+
+function _ablLoadSort() {
+  try { return localStorage.getItem('mc_all_backlog_sort') || 'default'; } catch (_) { return 'default'; }
+}
 
 // /api/projects ships backlog COUNTS, not items (it was 91% of that payload).
 // This view is the one surface that needs every project's items at once, so it
@@ -61,7 +66,7 @@ async function openAllBacklog() {
     </div>
     <div style="padding:4px 24px 20px 28px">
       <div style="display:flex;gap:8px;align-items:center;margin-bottom:12px;flex-wrap:wrap">
-        <input type="text" id="abl-search" placeholder="Search text..." value="${esc(_allBacklogFilter.search)}"
+        <input type="text" id="abl-search" placeholder="Search # or text..." value="${esc(_allBacklogFilter.search)}"
           style="flex:1;min-width:180px;padding:6px 10px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)"
           oninput="_allBacklogFilter.search=this.value;renderAllBacklog()">
         <select id="abl-status" style="padding:6px 8px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)"
@@ -76,6 +81,12 @@ async function openAllBacklog() {
           <option value="high"${_allBacklogFilter.priority==='high'?' selected':''}>High</option>
           <option value="normal"${_allBacklogFilter.priority==='normal'?' selected':''}>Normal</option>
           <option value="low"${_allBacklogFilter.priority==='low'?' selected':''}>Low</option>
+        </select>
+        <select id="abl-sort" style="padding:6px 8px;font-size:12px;background:var(--surface2);border:1px solid var(--border);border-radius:4px;color:var(--text)"
+          onchange="_allBacklogFilter.sort=this.value;try{localStorage.setItem('mc_all_backlog_sort',this.value)}catch(e){};renderAllBacklog()">
+          <option value="default"${_allBacklogFilter.sort==='default'?' selected':''}>Default</option>
+          <option value="num_desc"${_allBacklogFilter.sort==='num_desc'?' selected':''}>Ticket # (newest first)</option>
+          <option value="num_asc"${_allBacklogFilter.sort==='num_asc'?' selected':''}>Ticket # (oldest first)</option>
         </select>
         <span id="abl-count" style="font-size:11px;color:var(--text-faint)"></span>
       </div>
@@ -99,7 +110,6 @@ function renderAllBacklog() {
   const countEl = document.getElementById('abl-count');
   if (!container) return;
   const f = _allBacklogFilter;
-  const q = (f.search || '').trim().toLowerCase();
   const rows = [];
   for (const p of allProjects) {
     const items = p.backlog || [];
@@ -108,12 +118,14 @@ function renderAllBacklog() {
       if (f.status === 'open' && closed) continue;
       if (f.status === 'done' && !closed) continue;
       if (f.priority !== 'all' && (item.priority || 'normal') !== f.priority) continue;
-      if (q && !(item.text || '').toLowerCase().includes(q)) continue;
+      if (!backlogItemMatchesQuery(item, f.search)) continue;
       rows.push({ p, item });
     }
   }
   const prioRank = { high: 0, normal: 1, low: 2 };
+  const numCmp = backlogNumComparator(f.sort);
   rows.sort((a, b) => {
+    if (numCmp) return numCmp(a.item, b.item);
     const ad = BACKLOG_CLOSED.includes(a.item.status) ? 1 : 0;
     const bd = BACKLOG_CLOSED.includes(b.item.status) ? 1 : 0;
     if (ad !== bd) return ad - bd;

@@ -933,6 +933,36 @@ let openLinkPanels = new Set();
 // match neither 'open' nor 'done' — so those items rendered NOWHERE and were
 // counted nowhere. A new status now shows up by default instead of vanishing.
 const BACKLOG_CLOSED = ['done', 'wontdo'];
+// Free-text backlog search: matches a ticket's key, number, and body text
+// case-insensitively, so 'MC-955' / 'mc955' / '955' all resolve the same
+// item. Shared by the project Backlog tab (render-core.js) and the All
+// Backlog Items modal (cross-backlog.js) so the two can't drift apart —
+// declared here (classic script) rather than in either module so both can
+// reach it as a bare identifier, same as BACKLOG_CLOSED above.
+function backlogItemMatchesQuery(item, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return true;
+  const qNorm = q.replace(/[-\s]/g, '');
+  const key = (item.key || '').toLowerCase();
+  const keyNorm = key.replace(/[-\s]/g, '');
+  const num = item.num != null ? String(item.num) : '';
+  const text = (item.text || '').toLowerCase();
+  return key.includes(q) || (!!qNorm && keyNorm.includes(qNorm)) || num.includes(q) || text.includes(q);
+}
+// Ticket-number sort comparator shared by both backlog surfaces. Items
+// without a ticket number always sort last, in either direction. Returns
+// null for 'default' so callers fall back to their own default ordering.
+function backlogNumComparator(mode) {
+  if (mode !== 'num_asc' && mode !== 'num_desc') return null;
+  const dir = mode === 'num_asc' ? 1 : -1;
+  return (a, b) => {
+    const an = a.num, bn = b.num;
+    if (an == null && bn == null) return 0;
+    if (an == null) return 1;
+    if (bn == null) return -1;
+    return dir * (an - bn);
+  };
+}
 let undoStack = [];  // [{type, projectId, itemId, data, label}]
 let modalActiveTab = {};  // projectId → 'backlog' | 'agent' | 'agent-log' | 'activity'
 let textareaHeights = {}; // textarea id → height string (persists user resize across refreshes)
