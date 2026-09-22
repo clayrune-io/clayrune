@@ -6,6 +6,17 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — Opus 5.5 in the model pickers
+
+- Added `claude-opus-5-5` ("Opus 5.5") to `ClaudeRuntime.MODEL_CHOICES`
+  (`mc/agent_runtime.py`), `MC_MODEL_CHOICES` (`static/js/modal-manager.js`,
+  which the composer pill, Floor and workflow builder all read), and the global
+  Settings > Agent picker (`static/js/settings-drill.js`). Verified the id is
+  accepted by Claude Code 2.1.280 before adding it.
+- Same pass fixed drift in the Settings picker, which had never gained Fable 5.1.
+- Global default (`server.py` `agent_model`) and the auto-router's Opus tier
+  (`_AUTO_MODEL_VALID`) still point at `claude-opus-5` — unchanged deliberately.
+
 ## [2026-09-19] — Per-agent skill scoping (off by default)
 
 - New `agent_skill_scoping_enabled` (default false). A character that declares
