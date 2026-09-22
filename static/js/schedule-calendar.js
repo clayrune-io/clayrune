@@ -629,6 +629,13 @@ function scalOpenDetail(id) {
     : (s.next_run && typeof formatScheduleTime === 'function' ? formatScheduleTime(s.next_run)
        : (s.enabled ? 'calculating…' : 'disabled'));
   const lastRun = s.last_run && typeof timeAgoShort === 'function' ? timeAgoShort(s.last_run) : 'never';
+  // A timer fire that raised never produces an agent_log row, so the Runs
+  // panel has nothing to show for it -- this is the only place it surfaces.
+  const errorLine = s.last_error
+    ? `<div class="scal-detail-error" title="${esc(s.last_error)}">
+         &#9888; Failed ${s.last_error_at && typeof timeAgoShort === 'function' ? timeAgoShort(s.last_error_at) : ''}: ${esc(s.last_error)}
+       </div>`
+    : '';
   host.innerHTML = `
     <div class="scal-detail-back" onclick="scalCloseDetail()"></div>
     <div class="scal-detail" style="--scal-color:${_scalProjectColor(s.project_id)}">
@@ -644,6 +651,7 @@ function scalOpenDetail(id) {
         <span>Last: <b>${esc(lastRun)}</b></span>
         ${s.workflow_display ? '' : `<span>${s.continue_session === false ? 'Fresh session each run' : 'Continues prior session'}</span>`}
       </div>
+      ${errorLine}
       ${s.workflow_display
         ? `<div class="scal-detail-label">Workflow</div>
            <div class="scal-detail-task">${esc(s.workflow_display.name)}${

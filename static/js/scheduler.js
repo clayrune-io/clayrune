@@ -169,9 +169,16 @@ async function refreshScheduleList() {
     }
     container.innerHTML = schedules.map(s => {
       const enabledClass = s.enabled ? 'on' : '';
-      const cardClass = s.enabled ? '' : ' disabled';
+      const cardClass = (s.enabled ? '' : ' disabled') + (s.last_error ? ' sched-failed' : '');
       const desc = scheduleDescription(s);
       const lastRun = s.last_run ? timeAgoShort(s.last_run) : 'never';
+      // A timer fire that failed to dispatch never produces a run, so nothing
+      // else on this card would otherwise show it happened.
+      const errorLine = s.last_error
+        ? `<div class="schedule-card-error" title="${esc(s.last_error)}">
+             &#9888; Failed ${s.last_error_at && typeof timeAgoShort === 'function' ? timeAgoShort(s.last_error_at) : ''}: ${esc(s.last_error)}
+           </div>`
+        : '';
       const nextRun = _schedPaused && s.enabled
         ? 'paused'   // the master switch is on — a next-run time would be a lie
         : (s.next_run ? formatScheduleTime(s.next_run) : (s.enabled ? 'calculating...' : 'disabled'));
@@ -214,6 +221,7 @@ async function refreshScheduleList() {
               esc(s.project_name || s.project_id)}${agentPill}</div>
             ${descLine}
             ${targetLine}
+            ${errorLine}
             <div class="schedule-card-meta">
               <span>${desc}</span>
               <span>Last: ${lastRun}</span>

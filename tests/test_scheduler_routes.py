@@ -992,3 +992,116 @@ def test_update_naive_run_at_400_and_row_unchanged(ctx):
     assert r.status_code == 400
     saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
     assert saved[0]['run_at'] == '2099-01-01T10:00:00Z'
+
+
+# ── timer-path dispatch failure visibility ────────────────────────────────────
+#
+# Dave, reviewing 8298c8e: a scheduled run that fails to dispatch on the TIMER
+# path (not run-now, which already returns 400 to its caller) was invisible.
+# `except Exception as e: _log(...)` sent the failure only to the server log,
+# then the shared finalization ran anyway -- `last_run` got stamped as if the
+# fire had succeeded, and a `once` + `delete_after_run` row was deleted on its
+# own failure, erasing the only trace of it. These pin the fix: `last_run` now
+# means "last successful dispatch"; `last_error`/`last_error_at` record what
+# actually happened; a failed one-shot is parked (disabled), never deleted;
+# the next successful fire clears the error. All FAIL on the parent commit.
+
+def test_failed_timer_fire_records_error_not_last_run(ctx, monkeypatch):
+    ctx.sr._dispatch_agent_internal = _DispatchRecorder(raise_exc=RuntimeError('boom'))
+    monkeypatch.setattr(ctx.sr, '_log_agent_activity', lambda *a, **k: None)
+    _seed_schedules(ctx, [_due_cron_row()])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert 'last_run' not in rows[0], 'a failed dispatch must not read as a run'
+    assert rows[0]['last_error'] == 'boom'
+    assert rows[0].get('last_error_at')
+    # Cadence still advances to its normal next slot -- no immediate retry loop.
+    assert rows[0]['next_run'] != '2020-01-01T00:00:00Z'
+
+
+def test_failed_timer_fire_logs_to_project_activity(ctx, monkeypatch):
+    """The only other surface a failed timer fire reaches: no agent_log row
+    exists (dispatch never happened), so the schedule's own Runs panel has
+    nothing to show -- the project's Activity timeline is where this lands."""
+    ctx.sr._dispatch_agent_internal = _DispatchRecorder(raise_exc=RuntimeError('boom'))
+    calls = []
+    monkeypatch.setattr(ctx.sr, '_log_agent_activity',
+                        lambda pid, msg: calls.append((pid, msg)))
+    _seed_schedules(ctx, [_due_cron_row()])
+    _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert len(calls) == 1
+    assert calls[0][0] == 'p1'
+    assert 'FAILED' in calls[0][1] and 'boom' in calls[0][1]
+
+
+def test_failed_once_delete_after_run_is_not_deleted(ctx, monkeypatch):
+    ctx.sr._dispatch_agent_internal = _DispatchRecorder(raise_exc=RuntimeError('boom'))
+    monkeypatch.setattr(ctx.sr, '_log_agent_activity', lambda *a, **k: None)
+    _seed_schedules(ctx, [_due_cron_row(schedule_type='once',
+                                        run_at='2020-01-01T00:00:00Z',
+                                        cron_expr='', delete_after_run=True)])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert len(rows) == 1, 'a failed one-shot must not be deleted'
+    assert rows[0]['id'] == 's1'
+    assert rows[0]['last_error'] == 'boom'
+    # Parked, not left enabled to spin retrying the same due instant forever.
+    assert rows[0]['enabled'] is False
+
+
+def test_successful_once_delete_after_run_is_still_deleted(ctx, monkeypatch):
+    """Control: the pre-existing fire-and-forget behavior is unchanged when
+    dispatch actually succeeds."""
+    _seed_schedules(ctx, [_due_cron_row(schedule_type='once',
+                                        run_at='2020-01-01T00:00:00Z',
+                                        cron_expr='', delete_after_run=True)])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert rows == []
+
+
+def test_failed_workflow_timer_fire_records_error_not_deleted(ctx, monkeypatch):
+    """The workflow-invoking branch shares the same finalization block and had
+    the identical defect for its own bare `except Exception`."""
+    wf = _seed_workflow(ctx)
+    monkeypatch.setattr(ctx.wfm, 'start_run',
+                        lambda *a, **k: (_ for _ in ()).throw(Exception('workflow boom')))
+    _seed_schedules(ctx, [_due_workflow_row(wf['id'], schedule_type='once',
+                                            run_at='2020-01-01T00:00:00Z',
+                                            cron_expr='', delete_after_run=True)])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert len(rows) == 1
+    assert rows[0]['last_error'] == 'workflow boom'
+    assert rows[0]['enabled'] is False
+
+
+def test_next_success_clears_last_error(ctx, monkeypatch):
+    _seed_schedules(ctx, [_due_cron_row(last_error='old boom',
+                                        last_error_at='2020-01-01T00:00:00Z')])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert 'last_error' not in rows[0]
+    assert 'last_error_at' not in rows[0]
+    assert rows[0]['last_run']
+
+
+def test_allowance_refusal_message_is_surfaced_verbatim(ctx, monkeypatch):
+    """Standing position: vendor allowance exhaustion must be detected per
+    vendor and SHOWN, never a silent fallback. The refusal's own message is
+    what `_dispatch_agent_internal` raises -- pass it through unmodified."""
+    msg = 'codex allowance exhausted — resets in 4h'
+    ctx.sr._dispatch_agent_internal = _DispatchRecorder(raise_exc=ValueError(msg))
+    monkeypatch.setattr(ctx.sr, '_log_agent_activity', lambda *a, **k: None)
+    _seed_schedules(ctx, [_due_cron_row()])
+    rows = _run_one_loop_iteration(ctx, monkeypatch, paused=False)
+    assert rows[0]['last_error'] == msg
+
+
+def test_run_now_success_clears_stale_error(ctx):
+    """A stale error from a prior failed timer fire must not linger forever
+    once a manual Run Now (or a later successful timer fire) actually works."""
+    _seed_schedules(ctx, [
+        {'id': 's1', 'project_id': 'p1', 'task': 'fire me', 'continue_session': False,
+         'last_error': 'previous boom', 'last_error_at': '2020-01-01T00:00:00Z'},
+    ])
+    resp = ctx.client.post('/api/schedule/s1/run-now')
+    assert resp.status_code == 200
+    saved = json.loads(ctx.sched_path.read_text(encoding='utf-8'))
+    assert 'last_error' not in saved[0]
+    assert 'last_error_at' not in saved[0]
