@@ -2464,7 +2464,22 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
     Returns None on success or an error string on failure. Callers return 500
     when this is non-None. A real TTY is required because provider CLIs like
     claude use /login which refuses to run inside a piped subprocess.
+
+    `bin_str` must be a single resolved binary path, not a compound shell
+    command. On win32 it gets hand-wrapped as `start "" cmd /k "\"{bin_str}\""`
+    below — a compound command (&&-chains, embedded quotes, a `for /f`
+    loop's own `"tokens=1 delims=."`) breaks that quote-wrap silently: cmd
+    mis-parses the nested quotes, the window never opens or dies instantly,
+    and Popen(shell=True) has already returned success by the time that
+    happens. This exact bug shipped in the provider-install path (verified
+    on a clean VM, 2026-09-22) before install was moved onto
+    `_launch_install_terminal`'s real terminal pop-out, which passes the
+    command straight to `subprocess.Popen(command, shell=True, ...)` with no
+    re-wrapping. Reject rather than silently mangle a second one.
     """
+    if any(ch in bin_str for ch in ('&', '|', '\n')) or bin_str.count('"') > 0:
+        return ('_launch_terminal_for_binary only runs a single binary path, '
+                f'not a compound shell command: {bin_str!r}')
     try:
         if sys.platform == 'win32':
             subprocess.Popen(

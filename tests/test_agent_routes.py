@@ -1472,3 +1472,129 @@ def test_install_launch_batch_still_one_terminal_with_real_launcher(monkeypatch,
         mc_state.terminal_sessions.update(before_terms)
         mc_state.tracked_processes.clear()
         mc_state.tracked_processes.update(before_procs)
+
+
+# Root-cause correction, 2026-09-22 (verified on the real VM after the fix
+# above shipped): NOT session isolation — Session 2 is Ron's own console.
+# The real bug is QUOTING. The composed batch command below (captured
+# verbatim from the VM for claude+gemini, npm missing) embeds its own double
+# quotes (`set "PATH=..."`, `"tokens=1 delims=."`), && chains, parens and a
+# `for /f` loop's `%v` variable. `_launch_terminal_for_binary`'s
+# `start "" cmd /k "\"{bin_str}\""` wrapper was built for a single binary
+# path — nesting this string inside it produces unbalanced/mis-parsed
+# quotes, cmd dies instantly, and Popen(shell=True) has already returned
+# "success" by then (defect #1, unchanged). Routing install through
+# `_launch_install_terminal` -> `launch_pipe_session` sidesteps this because
+# `launch_pipe_session` hands the command to
+# `subprocess.Popen(command, shell=True, ...)` with NO re-wrapping — but
+# that needs its own pin, or a future refactor could reintroduce wrapping
+# and silently reopen this exact bug.
+_VERBATIM_COMPOUND_INSTALL_COMMAND = (
+    'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+    '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+    '-e --silent --source winget '
+    '--accept-source-agreements --accept-package-agreements) '
+    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    '(if %v GEQ 12 (npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code) '
+    'else (npm install -g @anthropic-ai/claude-code)) '
+    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    '(if %v GEQ 12 (npm install -g --allow-scripts=@google/gemini-cli @google/gemini-cli) '
+    'else (npm install -g @google/gemini-cli))'
+)
+
+
+def test_batch_install_command_matches_verbatim_vm_capture(monkeypatch):
+    """Pin `_provider_install_command_batch`'s real output for claude+gemini
+    with npm missing against the exact string captured on the VM, so the
+    compound-quoting fixture below is provably the real shape and not a
+    hand-typed approximation."""
+    from mc.blueprints import agent_routes as ar
+
+    runtimes = {
+        'claude': _BatchInstallRuntime('npm install -g @anthropic-ai/claude-code'),
+        'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+    }
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    command, unsupported, prereq_added = ar._provider_install_command_batch(
+        ['claude', 'gemini'])
+    assert command == _VERBATIM_COMPOUND_INSTALL_COMMAND
+    assert unsupported == []
+    assert prereq_added is True
+
+
+def test_install_launch_command_survives_intact_through_pipe_session(monkeypatch, client):
+    """Requirement (Ron, 2026-09-22): feed the verbatim compound command
+    through the real install launch path and assert it reaches Popen
+    byte-for-byte unmodified — not re-quoted, not re-wrapped in
+    `start "" cmd /k`. A test only checking 'a session id came back' would
+    not catch a quoting regression; this one would, because it fails loudly
+    if a future change routes install back through
+    `_launch_terminal_for_binary`'s wrapper or otherwise touches the string."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    from mc.blueprints import terminal_routes as tr
+
+    before_terms = dict(mc_state.terminal_sessions)
+    before_procs = dict(mc_state.tracked_processes)
+    mc_state.terminal_sessions.clear()
+    mc_state.tracked_processes.clear()
+    try:
+        runtimes = {
+            'claude': _BatchInstallRuntime('npm install -g @anthropic-ai/claude-code'),
+            'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+        }
+        popen_calls = []
+
+        def _popen(*a, **kw):
+            popen_calls.append(a)
+            return _FakeInstallProc()
+        monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+        monkeypatch.setattr(ar.shutil, 'which', lambda name: None)  # npm missing -> bootstrap path
+        monkeypatch.setattr(ar.sys, 'platform', 'win32')
+        monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
+            Popen=_popen, PIPE=-1, STDOUT=-2))
+
+        response = client.post('/api/agent/providers/install-launch',
+                               json={'names': ['claude', 'gemini']})
+        body = response.get_json()
+        assert body['ok'] is True, body
+        assert len(popen_calls) == 1
+        launched_command = popen_calls[0][0]
+        assert launched_command == _VERBATIM_COMPOUND_INSTALL_COMMAND, (
+            'the compound install command must reach Popen unmodified — got:\n'
+            f'{launched_command!r}')
+        # Not re-wrapped in the OS-window quote sandwich that broke this originally.
+        assert 'cmd /k' not in launched_command
+        assert not launched_command.startswith('start ')
+    finally:
+        mc_state.terminal_sessions.clear()
+        mc_state.terminal_sessions.update(before_terms)
+        mc_state.tracked_processes.clear()
+        mc_state.tracked_processes.update(before_procs)
+
+
+def test_launch_terminal_for_binary_rejects_compound_command(monkeypatch):
+    """Requirement (Ron, 2026-09-22): the OS-window path
+    (`_launch_terminal_for_binary`) is still used by the two interactive
+    sign-in callers with a single resolved binary path. It must reject a
+    compound shell command rather than silently producing the exact broken
+    `start "" cmd /k` quote-nesting this whole bug was. Confirms the guard
+    fires on the real captured fixture and returns an error string without
+    touching subprocess at all."""
+    from mc.blueprints import agent_routes as ar
+
+    def _boom(*a, **kw):
+        raise AssertionError('must not attempt to launch a rejected compound command')
+    monkeypatch.setattr(ar.subprocess, 'Popen', _boom)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+
+    err = ar._launch_terminal_for_binary(_VERBATIM_COMPOUND_INSTALL_COMMAND)
+    assert err is not None
+    assert 'compound' in err.lower()
+
+    # A genuine single binary path still launches normally (no regression
+    # for the real callers: interactive claude/codex/etc sign-in).
+    monkeypatch.setattr(ar.subprocess, 'Popen', lambda *a, **kw: None)
+    assert ar._launch_terminal_for_binary(r'C:\Users\x\AppData\Roaming\npm\claude.cmd') is None
