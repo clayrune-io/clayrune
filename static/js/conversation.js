@@ -154,6 +154,20 @@ function _composerCharacterPicker(p, resumeId) {
   </div>`;
 }
 
+// MC-967: the one place a provider id becomes a person-facing name — used
+// by both the +New composer (no session yet, provider is a pending pick)
+// and an already-active session (provider is fixed to what it started with).
+// Strips a trailing "CLI"/"Code" the same way for every vendor ("Claude
+// Code" -> "Claude", "Gemini CLI" -> "Gemini") so no single provider's raw
+// display_name is special-cased. Falls back to the neutral "Agent" — never
+// to a hard-coded vendor name — when nothing resolves.
+function _providerDisplayName(providerName) {
+  if (!providerName) return 'Agent';
+  const rec = (_agentProviders || []).find(x => x.name === providerName);
+  return ((rec && rec.display_name) || providerName || 'Agent')
+    .replace(/\s+(CLI|Code)$/i, '');
+}
+
 // Who the composer would actually dispatch to right now — the selected
 // persona, else the project default it would inherit, else the plain-agent
 // fallback. Drives the "What should <Name> work on?" headline and the
@@ -164,16 +178,21 @@ function _composerActiveCharName(p) {
   const list = characterCache[p.id] || [];
   const cur = pendingDispatchCharacter[p.id] || '';
   const key = cur || p.default_character || '';
-  if (!key) {
-    const provider = _composerProvider(p);
-    const rec = (_agentProviders || []).find(x => x.name === provider);
-    return ((rec && rec.display_name) || provider || 'Agent')
-      .replace(/\s+(CLI|Code)$/i, '');
-  }
+  if (!key) return _providerDisplayName(_composerProvider(p));
   const i = key.indexOf(':');
   const scope = key.slice(0, i), name = key.slice(i + 1);
   const rec = list.find(c => (c.scope || 'global') === scope && c.name === name);
   return (rec && (rec.agent_name || rec.display_name || rec.name)) || 'Agent';
+}
+
+// Same read for an already-active session (composer placeholder while
+// chatting, not just the +New screen): a session is bound to the provider/
+// persona it began with, never the composer's pending picks.
+function _activeSessionPersonName(session, p) {
+  const char = session && session.character;
+  if (char) return char.agent_name || char.display_name || char.name || 'Agent';
+  const provider = (session && session.provider) || (p && p.provider) || '';
+  return _providerDisplayName(provider);
 }
 
 // Ron, 2026-09-14 (phone screenshot): the persona picker was a tiny "…Change"
@@ -1061,7 +1080,7 @@ function agentPanelHTML(p) {
   // Front-and-center persona picker (Ron, 2026-09-14): who the headline names
   // and the placeholder addresses is the SAME read used by the face-card grid
   // below, the status line, and the §8 sheet — one source of truth.
-  const _personName = noActiveTab ? _composerActiveCharName(p) : 'Claude';
+  const _personName = noActiveTab ? _composerActiveCharName(p) : _activeSessionPersonName(activeSession, p);
   const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
   const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"

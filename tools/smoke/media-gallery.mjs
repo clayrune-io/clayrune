@@ -22,6 +22,19 @@
  *      missing tiles by default with a "Show missing (N)" toggle to reveal
  *      them. Nothing is ever removed from the underlying index.
  *
+ *  (c) diagram tiles rendered as a blank white thumbnail. Root cause:
+ *      `.media-thumb` is a row-flex centering box; `.mermaid-block` is
+ *      `display:block` with no width of its own, so as a flex item its
+ *      width is shrink-to-fit. mermaid.js strips the rendered <svg>'s
+ *      explicit width/height and replaces them with an inline
+ *      `style="max-width:100%;height:auto"` (`_resizeSvgForFit`) — a
+ *      percentage width can't participate in shrink-to-fit sizing, so it
+ *      resolves to 0px. Fixed by giving `.media-thumb-diagram .mermaid-block`
+ *      an explicit `width:100%` (app.css), breaking the circularity — the
+ *      only other place this class of bug is avoided is the chat
+ *      transcript's column-flex layout, where `align-self:stretch` already
+ *      supplies a definite width. Checked at desktop + 390px mobile.
+ *
  * HOW THIS RUNS — hermetic, not against the live :5199 server
  * -------------------------------------------------------------------------
  * This session's worktree and the running localhost:5199 process are two
@@ -31,7 +44,13 @@
  * Instead this loads THIS worktree's real static/index.html + static/**
  * straight off disk via Playwright request interception (same technique as
  * boot-smoke.mjs) and mocks only the API layer — so it exercises the exact
- * code in this branch, real DOM/CSS included.
+ * code in this branch, real DOM/CSS included. The (c) diagram check needs
+ * the real mermaid.js renderer, which the app loads on demand from
+ * cdn.jsdelivr.net (static/index.html's `ensureDiagramLibs`) — that host is
+ * passed through to the real network; everything else (including esm.sh,
+ * the optional Excalidraw upgrade bridge — deliberately left mocked so the
+ * diagram check always exercises mermaid.js's own renderer, see
+ * DIAGRAM_FIXTURE_ITEMS below) stays mocked/local.
  *
  * RUN: node media-gallery.mjs
  */
@@ -85,11 +104,36 @@ const MISSING_FIXTURE_ITEMS = [
   { kind: 'image', path: 'C:/fake/gone3.png', ts: 996, task: 'e', missing: true },
 ];
 
+// Real reproduction data for the (c) diagram-thumbnail check: same `source`
+// field mc/media.py emits for kind:'diagram'. The bug lives specifically in
+// mermaid.js's own renderer (_renderViaMermaid / _resizeSvgForFit strips the
+// rendered SVG's width/height in favor of a percentage style, which can't
+// resolve inside a shrink-to-fit flex item) — Excalidraw's bridge returns an
+// already explicitly-sized SVG and was never affected. esm.sh (the
+// Excalidraw bridge) is blocked below so every diagram here is forced onto
+// the mermaid fallback, deterministically exercising the broken path
+// regardless of which diagram types the live Excalidraw build happens to
+// support this week.
+const DIAGRAM_FIXTURE_ITEMS = [
+  { kind: 'diagram', source: 'graph TD\n  A[Start] --> B{Check}\n  B --> C[Done]', ts: 1500, task: 'flow' },
+];
+
 let mediaItems = scrollFixtureItems();
+
+// mermaid.js loads on demand from cdn.jsdelivr.net (static/index.html
+// ensureDiagramLibs) — let it hit the real network so the (c) diagram check
+// exercises the real renderer. esm.sh (the Excalidraw upgrade bridge) is
+// deliberately left mocked/aborted so the diagram check always exercises
+// mermaid.js's OWN renderer — the fallback path the bug actually lives in
+// (see DIAGRAM_FIXTURE_ITEMS above) — rather than depending on which
+// diagram types the live Excalidraw build supports.
+const PASSTHROUGH_HOSTS = ['cdn.jsdelivr.net'];
 
 function router(route) {
   const req = route.request();
-  const path = new URL(req.url()).pathname;
+  const url = new URL(req.url());
+  const path = url.pathname;
+  if (PASSTHROUGH_HOSTS.includes(url.hostname)) return route.continue();
   const json = (body, status = 200) => route.fulfill({ status, contentType: 'application/json; charset=utf-8', body: JSON.stringify(body) });
 
   if (path === '/api/projects') return json(PROJECTS);
@@ -217,6 +261,49 @@ try {
     : fail(`expected 5 tiles after revealing, saw ${revealed.tiles}`);
   revealed.dead === 3 ? ok('the 3 revealed missing tiles carry .media-dead ("file missing")')
     : fail(`expected 3 .media-dead tiles, saw ${revealed.dead}`);
+
+  // ── (c) diagram thumbnail isn't blank ───────────────────────────────────
+  // Real mermaid/excalidraw renderer (CDN passthrough above) — bounded poll
+  // since the ESM import + render is async and network-dependent.
+  mediaItems = DIAGRAM_FIXTURE_ITEMS;
+  await page.evaluate(() => window.loadMedia());
+  // data-rendered='1' is set SYNCHRONOUSLY when the render starts (see
+  // mermaid.js _renderAllMermaidPlaceholders) — data-renderer only lands
+  // once the async excalidraw/mermaid render actually finishes.
+  await page.waitForFunction(
+    () => !!document.querySelector('.media-tile-diagram .mermaid-block[data-renderer], .media-tile-diagram .mermaid-block .mermaid-error'),
+    { timeout: 20000 },
+  ).catch(() => {});
+
+  async function diagramState() {
+    return page.evaluate(() => {
+      const block = document.querySelector('.media-tile-diagram .mermaid-block');
+      const svg = block ? block.querySelector('svg') : null;
+      return {
+        rendered: block ? block.dataset.rendered : null,
+        renderer: block ? block.dataset.renderer : null,
+        hasError: block ? !!block.querySelector('.mermaid-error') : null,
+        svgW: svg ? svg.getBoundingClientRect().width : 0,
+        svgH: svg ? svg.getBoundingClientRect().height : 0,
+      };
+    });
+  }
+  const diagDesktop = await diagramState();
+  diagDesktop.hasError ? fail(`diagram rendered as an error block instead of an SVG (renderer=${diagDesktop.renderer})`)
+    : ok(`diagram rendered via ${diagDesktop.renderer}`);
+  diagDesktop.renderer === 'mermaid' ? ok('confirmed on the mermaid-fallback path (esm.sh/Excalidraw mocked out) — the actual buggy path')
+    : fail(`expected the mermaid fallback renderer, got "${diagDesktop.renderer}" — esm.sh block did not force the fallback`);
+  diagDesktop.svgW > 0 && diagDesktop.svgH > 0
+    ? ok(`desktop: diagram thumbnail has a real size (${diagDesktop.svgW.toFixed(0)}x${diagDesktop.svgH.toFixed(0)}px) — not the blank-white 0px collapse`)
+    : fail(`desktop: diagram thumbnail collapsed to ${diagDesktop.svgW}x${diagDesktop.svgH}px`);
+
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.waitForTimeout(300);
+  const diagMobile = await diagramState();
+  diagMobile.svgW > 0 && diagMobile.svgH > 0
+    ? ok(`390px: diagram thumbnail has a real size (${diagMobile.svgW.toFixed(0)}x${diagMobile.svgH.toFixed(0)}px)`)
+    : fail(`390px: diagram thumbnail collapsed to ${diagMobile.svgW}x${diagMobile.svgH}px`);
+  await page.setViewportSize({ width: 1280, height: 900 });
 
   const realErrors = pageErrors.filter(e => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   realErrors.length === 0 ? ok('no uncaught JS error throughout')
