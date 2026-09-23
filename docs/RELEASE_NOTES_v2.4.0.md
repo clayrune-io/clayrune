@@ -1,6 +1,6 @@
 # Clayrune v2.4.0
 
-305 commits since v2.3.0 (2026-09-14 to 2026-09-22).
+310 commits since v2.3.0 (2026-09-14 to 2026-09-22).
 
 ### New
 - **First-run setup is no longer tied to the tour.** You can configure agent connections, theme, conversation flow, connectivity and the LAN passcode without running the guided walkthrough, and skip the walkthrough without skipping setup. Settings gains "Run setup again" next to "Take Tour."
@@ -13,6 +13,7 @@
 - A throwaway diagnostic run could point at a temporary secrets store and still mint straight into your real OS keyring, orphaning every sealed vault entry. Fixed: a temp store no longer touches the real keyring, and a mismatched key is now detected and refused instead of silently accepted.
 
 ### Fixes
+- **Posts queued on the Desk no longer vanish.** Two parts of the app saving the same project at once could silently drop a newly queued draft; saves now happen one at a time, and the Desk's pending-drafts count reflects the drafts actually waiting.
 - **A dispatched agent no longer gets reported as failed once it has already started.** A slow save of the dispatch log (an antivirus or indexer briefly locking a file) used to bubble up as an error, so the same task could get dispatched twice.
 - **Resuming a long conversation no longer double-counts spend** on Claude CLI 2.1.277 and newer, which carries the session's cost total across a resume instead of restarting it at zero.
 - **Mobile chat regains full height** after the app is backgrounded or the screen is locked with the keyboard open, instead of staying stuck at keyboard height until you tap the transcript.
