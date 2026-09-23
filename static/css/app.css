@@ -3069,6 +3069,17 @@
   /* Let flex size the thread — override sizeAgentChat's (skipped) inline height. */
   .agent-3pane .agent-main .agent-chat { height: auto !important; flex: 1 1 auto; min-height: 0; }
   .agent-3pane .agent-main .agent-output { flex: 1 1 auto; min-height: 0; }
+  /* New-conversation empty state (Ron, 2026-09-22): .agent-main is
+     overflow:hidden with no internal scroll, so a short viewport (persona
+     grid taller than the pane) clipped the top rows with no way to scroll
+     back up. .compose-scroll/.compose-bottom (shared with mobile, below)
+     give the grid its own scroll region and pin the composer to the bottom;
+     the auto-margin child is the flexbox centering trick — it centers the
+     content when it fits, and collapses to 0 (top-anchored, scrollable) the
+     moment it overflows, instead of a plain centered flex box whose negative
+     overflow is unscrollable from the top. */
+  .agent-3pane .compose-scroll { display: flex; flex-direction: column; }
+  .agent-3pane .compose-scroll-inner { margin: auto 0; min-height: min-content; }
   /* Clearer section separation in the 3-pane thread (closer to the mockup): a
      distinct message panel, white agent bubbles, and a bordered composer. */
   .agent-3pane .agent-main .agent-chat { border: none; border-radius: 0; background: transparent; }
