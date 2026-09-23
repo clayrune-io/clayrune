@@ -1,5 +1,11 @@
 # The Desk — UI implementation brief
 
+> **Partly superseded 2026-09-22.** Ron set the release policy to
+> **per-campaign**. The per-post release rail (§3 Release, soft-lock, Schedule),
+> the Calendar tab (§5) and the Board's per-signal Draft buttons are replaced by
+> the three-surface flow in `docs/THE_DESK_SIMPLIFICATION_PLAN.md` §3. Ground
+> rule 5 now reads: no publishing outside a campaign Ron has approved.
+
 **For:** the local coding agent working in `mission-control`.
 **Companion to:** `docs/THE_DESK_SPEC.md` (v0 + field-scan corrections). That spec owns the four functions, the five stores, staffing, voices, platforms and the authority guard. **This brief owns only the surfaces** and never contradicts it — where it adds a UX rule, the rule is a presentation layer over a spec-defined mechanism.
 **Design reference:** `Simplified Dashboard.dc.html`, Turn 9 — frames **9a** Board · **9b** Queue (draft in review) · **9e** Ledger · **9c** phone Queue · **9d** rules.

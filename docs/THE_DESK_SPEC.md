@@ -72,9 +72,22 @@ absence is why the current tab is inert.
   left unsure whether something went out.
 - The Desk holds the account inventory: which platforms are connected, which are
   authenticated, which have gone stale.
-- Nothing publishes without an explicit human release. The Desk cannot widen its
-  own permission to post unattended — the learning-system authority guard
-  principle applies here verbatim.
+- **No publishing outside a campaign Ron has approved** (amended 2026-09-22,
+  Ron: release policy is per-campaign, "fully autonomous campaigns"). Ron
+  approves a campaign's plan and voice once; its posts then publish on the
+  cadence with no per-post tap, behind a kill switch (pause one campaign or the
+  whole Desk, instantly) and a published log. The approval is **bounded, never
+  open-ended**: it covers the voice(s), the platforms/accounts, a cadence
+  ceiling, an end date and/or a post cap, the source projects, and the spend
+  that follows from the cap. Narrowing any bound keeps the approval. Widening
+  one voids it until Ron approves again. Before approval a campaign is a plan
+  with sample posts Ron can edit, and that is the only per-post review left.
+  Detail: `docs/THE_DESK_SIMPLIFICATION_PLAN.md` §4.
+- The Desk cannot widen its own permission to post, and it cannot approve its
+  own campaign. Only Ron's approval does that. The learning-system authority
+  guard principle applies here verbatim.
+- *Superseded 2026-09-22:* "Nothing publishes without an explicit human
+  release" (per-post).
 
 **Corrected 2026-09-09 by the field scan** (`docs/research/SOCIAL_WORKSPACE_FIELD_SCAN.md`).
 The v0 draft of this spec assumed browser-pane automation for publishing. That
@@ -182,6 +195,10 @@ restart endpoints. Nothing in either module publishes; two tests assert that.
 - **The learning loop** — editing a draft body teaches that voice
   (`update_social_queue_item` → `desk.record_edit`). This is the differentiator
   the field scan could not verify in any surveyed product. Do not drop it.
+
+**Build order as of 2026-09-22:** `docs/THE_DESK_SIMPLIFICATION_PLAN.md`
+(an audit of the live Desk plus the collapsed three-surface flow, under
+per-campaign release). It supersedes the list below.
 
 **Still to build:** the Publishing office (§1 — Release actually posting to X and
 LinkedIn, with a receipt), the mentor's reply-reading through the browser pane,
@@ -317,8 +334,10 @@ on a slower clock than the drafting.
   one; this does not. Clayrune is free by standing decision.
 - **No analytics dashboard.** The ledger records outcomes to inform writing.
 - **No multi-brand, no team, no approval chain.** One voice, one veto.
-- **No publishing without explicit human release**, and no mechanism by which
-  the Desk grants itself one.
+- **No publishing outside a campaign Ron has approved** (amended 2026-09-22,
+  Ron; was "no publishing without explicit human release"). There is no
+  mechanism by which the Desk grants itself an approval, widens an approved
+  campaign's bounds, or keeps publishing after a widening edit.
 - **No engagement farming**, reply automation, pods, or astroturf. Posy's
   boundaries hold at the system level, not just in her prompt.
 - **It does not become a general campaign manager for other people's products.**
@@ -425,7 +444,11 @@ difference between working and being invisible.
 - **Reddit stays out**, now for a second and better reason than "different
   function": its API terms define commercial use against a product with a launch
   plan, and its anti-spam model shadowbans exactly this pattern silently.
-- **The approval gate is permanent.** Pinterest requires per-item human choice,
+- *(Superseded for per-post release 2026-09-22, Ron: the gate moved to the
+  campaign, and it was not removed. The platforms cited below are not v1
+  platforms. Whether X's and LinkedIn's terms allow scheduled posting under a
+  campaign-level approval is an open check in
+  `THE_DESK_SIMPLIFICATION_PLAN.md` §5.)* **The approval gate is permanent.** Pinterest requires per-item human choice,
   YouTube requires express consent, and Postiz's own agent documentation asks
   for a human in the loop. This was already a principle here; it is also a term
   of service. Design it as a feature rather than a stage to outgrow.
