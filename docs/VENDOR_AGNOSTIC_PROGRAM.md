@@ -166,6 +166,13 @@ when every item below is checked:
 7. The same cells are already green on Claude, Gemini and Qwen, so any Codex failure
    is Codex-specific, not a platform bug found on paid time.
 
+## 8c. Token hygiene (measured 2026-09-18)
+
+98% of the spend is cached context re-read on every step, so cost = context size x number of steps.
+Rules: a fresh builder session for each review round (never multi-round follow-ups on one
+session); Sonnet by default and Opus only for judgment work; tests never call a real model.
+Detail: docs/_journal/token-economy-2026-09-18.md.
+
 ## 9. Definition of done
 
 1. Full pytest is green on master, and every smoke is green, run from a clean worktree.

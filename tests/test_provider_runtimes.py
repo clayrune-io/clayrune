@@ -396,6 +396,69 @@ class TestLastRealErrorLine:
         )
         assert agent_runtime._last_real_error_line(tail) == "the real error text"
 
+    def test_skips_punctuation_only_trailing_lines(self):
+        # Live 2026-09-19 (qwen, stale OPENAI_BASE_URL -> gateway 404): the
+        # error text was a multi-line HTML page wrapped in `[API Error: ... ]`,
+        # so the last physical line was a bare `]` and the chat read
+        # "Qwen Code error: ]".
+        tail = "the real error text\n]\n}\n)\n"
+        assert agent_runtime._last_real_error_line(tail) == "the real error text"
+        assert agent_runtime._last_real_error_line("]\n[qwen exited with code 1]") is None
+
+
+# Shape of the real qwen-code 0.23.4 `result` envelope captured 2026-09-19
+# (host names generic): is_error true, error.message is a whole HTML page
+# wrapped in `[API Error: 404 ... ]`, CRLF line breaks inside.
+_QWEN_404_HTML = (
+    '[API Error: 404 <!DOCTYPE HTML PUBLIC "-//IETF//DTD HTML 2.0//EN">\r\n<html>\r\n'
+    '<head><title>404 Not Found</title></head>\r\n<body>\r\n'
+    '<center><h1>404 Not Found</h1></center>\r\n Sorry for the inconvenience.<br/>\r\n'
+    '<table>\r\n<tr>\r\n<td>URL:</td>\r\n'
+    '<td>https://example.invalid:28443/chat/completions</td>\r\n'
+    '</tr>\r\n</table>\r\n<hr/>Powered by Tengine<hr><center>tengine</center>\r\n'
+    '</body>\r\n</html>\r\n]')
+
+
+class TestQwenErrorReachesTheChat:
+    def _run_reader(self, stream_lines):
+        import io
+        import json as _json
+
+        class _Proc:
+            stdout = io.StringIO('\n'.join(_json.dumps(m) for m in stream_lines) + '\n')
+
+            def wait(self):
+                return 1
+        proc = _Proc()
+        session = {'log_lines': ['> Ron: hi'], 'proc': proc, 'status': 'running'}
+        handle = agent_runtime.SessionHandle(
+            mc_session_id='x', provider='qwen', mode='A', project_path='.',
+            project_id='p', session_dict=session)
+        agent_runtime._mode_a_reader(proc, handle, agent_runtime.QwenRuntime())
+        return session['log_lines']
+
+    def test_html_404_result_surfaces_status_and_url_not_a_bare_bracket(self):
+        lines = self._run_reader([{
+            'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+            'num_turns': 1, 'usage': {'input_tokens': 0, 'output_tokens': 0},
+            'error': {'message': _QWEN_404_HTML}}])
+        hint = lines[-1]
+        assert hint.startswith('[hint] Qwen Code error: ')
+        assert hint != '[hint] Qwen Code error: ]'
+        assert '404' in hint and 'Not Found' in hint
+        assert 'example.invalid:28443/chat/completions' in hint
+        assert '<' not in hint and '\n' not in hint and '\r' not in hint
+
+    def test_plain_error_text_is_left_intact(self):
+        lines = self._run_reader([{
+            'type': 'result', 'subtype': 'error_during_execution', 'is_error': True,
+            'error': {'message': 'No auth type is selected. Use `--auth-type` <x>.'}}])
+        assert lines[-1].endswith('No auth type is selected. Use `--auth-type` <x>.')
+
+    def test_flatten_error_text_caps_length_and_keeps_non_html_angles(self):
+        assert agent_runtime._flatten_error_text('expected <int> got str') == 'expected <int> got str'
+        assert len(agent_runtime._flatten_error_text('x ' * 1000)) <= 603
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # CodexRuntime

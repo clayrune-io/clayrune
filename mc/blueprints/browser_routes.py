@@ -746,6 +746,128 @@ def browser_stream():
                     headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 
+# CDP modifier bitfield (Input.dispatchKeyEvent / dispatchMouseEvent).
+_MODIFIER_BITS = {'alt': 1, 'ctrl': 2, 'control': 2, 'meta': 4, 'cmd': 4,
+                  'command': 4, 'shift': 8}
+
+# Windows virtual-key codes for named keys. Apps that bind shortcuts read
+# event.keyCode (Discord's keybinds do), and CDP leaves it 0 unless told.
+_NAMED_KEYCODES = {
+    'Enter': 13, 'Backspace': 8, 'Tab': 9, 'Escape': 27, 'Delete': 46,
+    'ArrowUp': 38, 'ArrowDown': 40, 'ArrowLeft': 37, 'ArrowRight': 39,
+    'Home': 36, 'End': 35, 'PageUp': 33, 'PageDown': 34, ' ': 32,
+    **{f'F{i}': 111 + i for i in range(1, 13)},
+}
+
+
+def _parse_modifiers(names, where):
+    mods = 0
+    for m in names:
+        bit = _MODIFIER_BITS.get(str(m).strip().lower())
+        if bit is None:
+            raise ValueError(f'unknown modifier {m!r} in {where}')
+        mods |= bit
+    return mods
+
+
+def _key_event_params(data):
+    """keyDown/keyUp params for one `type:key` request.
+
+    Before 2026-09-21 this sent only key/code/keyCode, so a modifier could
+    never be expressed: `Ctrl+K` arrived as a bare `k` (or as the literal key
+    name "Ctrl+K", which matches nothing) and `Alt+ArrowDown` as a bare
+    ArrowDown. Every shortcut an agent sent was silently a different key.
+    Accepts a combo string in `key` ("Ctrl+K", "Alt+ArrowDown"), a `modifiers`
+    list or CDP bitfield int, and/or ctrl/alt/shift/meta booleans."""
+    raw = str(data.get('key', ''))
+    parts = raw.split('+') if len(raw) > 1 and '+' in raw.strip('+') else [raw]
+    key = parts[-1]
+    mods = _parse_modifiers(parts[:-1], f'key {raw!r}')
+    given = data.get('modifiers', 0)
+    if isinstance(given, (list, tuple)):
+        mods |= _parse_modifiers(given, 'modifiers')
+    else:
+        mods |= int(given or 0)
+    for name, bit in (('alt', 1), ('ctrl', 2), ('meta', 4), ('shift', 8)):
+        if data.get(name):
+            mods |= bit
+    if len(key) == 1 and key.isalpha():
+        # With Ctrl/Alt/Meta held the page sees the lowercase letter; Shift
+        # alone upper-cases it.
+        key = key.upper() if mods == 8 else key.lower()
+    code = data.get('code') or ''
+    keycode = int(data.get('keyCode') or 0)
+    if len(key) == 1 and key.isalnum():
+        code = code or (f'Key{key.upper()}' if key.isalpha() else f'Digit{key}')
+        keycode = keycode or ord(key.upper())
+    else:
+        code = code or ('Space' if key == ' ' else key)
+        keycode = keycode or _NAMED_KEYCODES.get(key, 0)
+    params = {'key': key, 'code': code, 'windowsVirtualKeyCode': keycode,
+              'nativeVirtualKeyCode': keycode, 'modifiers': mods}
+    # A printable key with no command modifier must carry `text`, or keyDown
+    # fires but nothing is typed.
+    if len(key) == 1 and not (mods & 7):
+        params['text'] = key
+    return params
+
+
+def _input_commands(data):
+    """Translate one /api/browser/input request into the CDP commands to queue.
+
+    Pure (no session, no socket) so the translation is unit-testable, and the
+    live test in tests/test_browser_input_live.py drives a real Chromium with
+    exactly these commands."""
+    kind = data.get('type')
+    if kind == 'mouse':
+        # x,y are already in VIEW_W x VIEW_H page coords (pane scales them)
+        x, y = float(data['x']), float(data['y'])
+        button = data.get('button', 'left')
+        action = data.get('action') or 'click'
+        if action == 'click':
+            # One call, one whole click. The pane sends press and release as
+            # two requests; an agent sending a single `mouse` call got a 400
+            # for the missing `action`, or only a press, and nothing clicked.
+            n = int(data.get('clickCount', 1))
+            base = {'x': x, 'y': y, 'button': button, 'clickCount': n}
+            return [
+                ('Input.dispatchMouseEvent', {'type': 'mouseMoved', 'x': x, 'y': y,
+                                              'button': 'none', 'buttons': 0}),
+                ('Input.dispatchMouseEvent', {'type': 'mousePressed', 'buttons': 1, **base}),
+                ('Input.dispatchMouseEvent', {'type': 'mouseReleased', 'buttons': 0, **base}),
+            ]
+        if action not in ('mousePressed', 'mouseReleased', 'mouseMoved'):
+            raise ValueError(f'unknown mouse action: {action}')
+        return [('Input.dispatchMouseEvent', {
+            'type': action, 'x': x, 'y': y, 'button': button,
+            'clickCount': int(data.get('clickCount', 1)),
+            'buttons': int(data.get('buttons', 0)),
+        })]
+    if kind == 'wheel':
+        return [('Input.dispatchMouseEvent', {
+            'type': 'mouseWheel', 'x': float(data['x']), 'y': float(data['y']),
+            'deltaX': float(data.get('deltaX', 0)), 'deltaY': float(data.get('deltaY', 0)),
+        })]
+    if kind == 'text':
+        return [('Input.insertText', {'text': data.get('text', '')})]
+    if kind == 'key':
+        p = _key_event_params(data)
+        up = {k: v for k, v in p.items() if k != 'text'}
+        # keyDown (types the char) when there is text; rawKeyDown otherwise.
+        down = 'keyDown' if 'text' in p else 'rawKeyDown'
+        return [('Input.dispatchKeyEvent', {'type': down, **p}),
+                ('Input.dispatchKeyEvent', {'type': 'keyUp', **up})]
+    if kind == 'back':
+        # navigate history: use Page.goBack via CDP (needs the entry id) —
+        # simplest is JS history.back through Runtime.evaluate.
+        return [('Runtime.evaluate', {'expression': 'history.back()'})]
+    if kind == 'forward':
+        return [('Runtime.evaluate', {'expression': 'history.forward()'})]
+    if kind == 'reload':
+        return [('Page.reload', {})]
+    raise ValueError(f'unknown input type: {kind}')
+
+
 @bp.route('/api/browser/input', methods=['POST'])
 def browser_input():
     data = request.get_json(silent=True) or {}
@@ -756,43 +878,15 @@ def browser_input():
     q = session['cmd_queue']
     kind = data.get('type')
     try:
-        if kind == 'mouse':
-            # x,y are already in VIEW_W×VIEW_H page coords (pane scales them)
-            q.put(('Input.dispatchMouseEvent', {
-                'type': data['action'],  # mousePressed | mouseReleased | mouseMoved
-                'x': float(data['x']), 'y': float(data['y']),
-                'button': data.get('button', 'left'),
-                'clickCount': int(data.get('clickCount', 1)),
-                'buttons': int(data.get('buttons', 0)),
-            }))
-        elif kind == 'wheel':
-            q.put(('Input.dispatchMouseEvent', {
-                'type': 'mouseWheel', 'x': float(data['x']), 'y': float(data['y']),
-                'deltaX': float(data.get('deltaX', 0)), 'deltaY': float(data.get('deltaY', 0)),
-            }))
-        elif kind == 'text':
-            q.put(('Input.insertText', {'text': data.get('text', '')}))
-        elif kind == 'key':
-            base = {'key': data.get('key', ''), 'code': data.get('code', ''),
-                    'windowsVirtualKeyCode': int(data.get('keyCode', 0))}
-            q.put(('Input.dispatchKeyEvent', {'type': 'keyDown', **base}))
-            q.put(('Input.dispatchKeyEvent', {'type': 'keyUp', **base}))
-        elif kind == 'navigate':
+        if kind == 'navigate':
             url = (data.get('url') or '').strip()
             if url and not url.startswith(('http://', 'https://', 'about:')):
                 url = 'https://' + url
             session['url'] = url
             q.put(('Page.navigate', {'url': url}))
-        elif kind == 'back':
-            # navigate history: use Page.goBack via CDP (needs the entry id) —
-            # simplest is JS history.back through Runtime.evaluate.
-            q.put(('Runtime.evaluate', {'expression': 'history.back()'}))
-        elif kind == 'forward':
-            q.put(('Runtime.evaluate', {'expression': 'history.forward()'}))
-        elif kind == 'reload':
-            q.put(('Page.reload', {}))
         else:
-            return jsonify({'error': f'unknown input type: {kind}'}), 400
+            for cmd in _input_commands(data):
+                q.put(cmd)
     except (KeyError, ValueError, TypeError) as e:
         return jsonify({'error': f'bad input payload: {e}'}), 400
     return jsonify({'ok': True})

@@ -94,6 +94,10 @@ def _load_config():
         # never sees the picker keeps behaving exactly as before. Set by the
         # onboarding provider-choice step or Settings -> Default provider.
         'default_provider': '',
+        # Set true once first-run SETUP (Welcome -> Agent connections ->
+        # Essentials) has been completed or skipped. Gates the first-run flow;
+        # the guided tour is gated separately by localStorage `walkthrough_done`.
+        'setup_completed': False,
         # Flagship model for new installs (2026-07-27). '' would mean "whatever
         # the CLI defaults to", which drifts with the CLI and left fresh installs
         # on an older tier than the picker advertises. Only applies to configs
@@ -2169,7 +2173,7 @@ def _check_port_conflict():
     def _try_bind():
         s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
         try:
-            s.bind(('0.0.0.0', PORT))
+            s.bind((_bind_host_v4(), PORT))
             s.close()
             return True
         except OSError:
@@ -2255,7 +2259,7 @@ def _check_port_conflict():
     if sys.platform == 'win32':
         try:
             result = subprocess.run(
-                ['netstat', '-ano'], capture_output=True, text=True, timeout=5)
+                ['netstat', '-ano'], capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             pids = set()
             for line in result.stdout.splitlines():
                 if f':{PORT}' in line and 'LISTENING' in line:
@@ -2271,7 +2275,7 @@ def _check_port_conflict():
                 try:
                     out = subprocess.run(
                         ['tasklist', '/FI', f'PID eq {pid}', '/FO', 'CSV', '/NH'],
-                        capture_output=True, text=True, timeout=5)
+                        capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
                     line = out.stdout.strip().splitlines()[0] if out.stdout.strip() else ''
                     if line and ',' in line:
                         # CSV: "image","pid","sessionname","session#","memusage"
@@ -2720,7 +2724,21 @@ def _claude_health_check_hook():
     import time as _t
     with _claude_auth_lock:
         state = dict(_claude_auth_state)
-    installed = bool(_resolve_claude() != 'claude' or shutil.which('claude'))
+    resolved = _resolve_claude()
+    installed = bool(resolved != 'claude' or shutil.which('claude'))
+    binary_path = Path(resolved) if installed else None
+    # Version probe — same uncached inline `--version` subprocess pattern
+    # GeminiRuntime/QwenRuntime/CodexRuntime.health_check() already use (none
+    # of them cache it either); must never raise or block the route.
+    version = None
+    if installed:
+        try:
+            r = subprocess.run([resolved, '--version'], capture_output=True, text=True, encoding='utf-8', errors='replace',
+                                timeout=10, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+            raw = (r.stdout or r.stderr or '').strip()
+            version = raw.splitlines()[0] if raw else None
+        except Exception as e:
+            _log(f"[providers] claude --version probe failed: {e}", flush=True)
     # Derive the pill status from the real keys. The old code read state['state']
     # — a key that never exists in _claude_auth_state (ok/reason/last_error_text/
     # detected_at/last_probe_at), so the pill was permanently "status unknown".
@@ -2737,8 +2755,8 @@ def _claude_health_check_hook():
         status = 'unknown'
     return HealthStatus(
         installed=installed,
-        binary_path=None,
-        version=None,
+        binary_path=binary_path,
+        version=version,
         auth_state=AuthState(
             status=status,
             method=None,
@@ -2899,6 +2917,40 @@ def _register_claude_runtime_hooks():
     _agent_runtime.register_mc_tool_hooks(sync_todos=_sync_todowrite_to_backlog)
 
 
+def _loopback_only():
+    """MC_BIND_LOOPBACK=1: listen on loopback only. Opt-in, for disposable test
+    instances (tools/provider-live) that must not be reachable from the LAN.
+    Unset/0 keeps the default all-interfaces bind that LAN, mobile-pairing and
+    tunnel clients depend on."""
+    return os.environ.get('MC_BIND_LOOPBACK', '').strip().lower() in ('1', 'true', 'yes', 'on')
+
+
+def _bind_host_v4():
+    return '127.0.0.1' if _loopback_only() else '0.0.0.0'
+
+
+def _serve_loopback(port):
+    """Loopback-only twin of _serve_dual_stack: `localhost` resolves to ::1
+    first, so keep BOTH loopback addresses listening (the ~200ms/request
+    Happy-Eyeballs tax that function's docstring describes applies here too).
+    ::1 gets its own socket + thread; 127.0.0.1 serves on the main thread. If
+    the host has no IPv6, 127.0.0.1 alone is served."""
+    import socket as _socket
+    import threading as _threading
+    from werkzeug.serving import make_server
+    try:
+        s6 = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
+        s6.setsockopt(_socket.SOL_SOCKET, _socket.SO_REUSEADDR, 1)
+        s6.setsockopt(_socket.IPPROTO_IPV6, _socket.IPV6_V6ONLY, 1)
+        s6.bind(('::1', port))
+        s6.listen(128)
+        srv6 = make_server('::1', port, app, threaded=True, fd=s6.fileno())
+        _threading.Thread(target=srv6.serve_forever, daemon=True, name='serve-loopback-v6').start()
+    except OSError as e:
+        _log(f"[serve] ::1 bind unavailable ({e}); serving 127.0.0.1 only.")
+    app.run(host='127.0.0.1', port=port, debug=False, threaded=True)
+
+
 def _serve_dual_stack(port):
     """Serve on IPv4 *and* IPv6, from a single dual-stack socket.
 
@@ -2921,6 +2973,8 @@ def _serve_dual_stack(port):
     (IPv4 peers arrive as ::ffff:a.b.c.d) — and hand the fd to werkzeug. If the
     host has IPv6 disabled entirely, fall back to the old IPv4-only bind.
     """
+    if _loopback_only():
+        return _serve_loopback(port)
     import socket as _socket
     try:
         sock = _socket.socket(_socket.AF_INET6, _socket.SOCK_STREAM)
@@ -3146,12 +3200,12 @@ def _install_guardrail_hooks_on_boot(clayrune_home: Optional[Path] = None) -> No
     temp dir that was later deleted, which would have blocked every agent's
     shell command. The one production call site (`boot()`, see
     tests/test_guardrail_hooks_boot.py) still passes no override at all —
-    resolving that default here, rather than at the call site, keeps that
-    site a bare-name call (never silently redirectable) while still scoping
-    a test/second instance to its own data dir.
+    the default (None) is resolved by `mc.guardrail_hooks.clayrune_home()`,
+    NOT here: the readers call that same function, and resolving it on the
+    write side only (as this function did until 2026-09-19) wrote the file
+    under MC_DATA_DIR while every launch looked under ~/.clayrune and went
+    out unguarded. One rule, one place.
     """
-    if clayrune_home is None and os.environ.get('MC_DATA_DIR'):
-        clayrune_home = _DATA_ROOT / '.clayrune'
     try:
         import importlib.util
         spec = importlib.util.spec_from_file_location(

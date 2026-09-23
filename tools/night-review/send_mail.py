@@ -28,8 +28,10 @@ import argparse
 import json
 import os
 import smtplib
+import socket
 import ssl
 import sys
+import time
 from email.message import EmailMessage
 from email.utils import make_msgid
 from pathlib import Path
@@ -41,6 +43,32 @@ CONFIG_PATH = Path.home() / ".clayrune" / "night-mail.json"
 DEFAULT_TO = ""
 DEFAULT_HOST = "smtp.gmail.com"
 DEFAULT_PORT = 587
+
+
+# Waits between attempts when the host name will not resolve. 2026-09-22 the
+# nightly competitor pass lost its email to "[Errno 11002] getaddrinfo failed"
+# (WSATRY_AGAIN: the resolver got no usable answer) twice, two seconds apart,
+# while nslookup and a later Python run both resolved smtp.gmail.com fine.
+# nslookup asks the DNS server directly; getaddrinfo goes through the Windows
+# DNS Client cache, which briefly remembers a failed lookup, so an immediate
+# retry repeats the failure. Spacing retries out rides past a transient blip.
+# Only gaierror is retried: it fires before any connection exists, so no
+# message can have reached Gmail and a retry cannot send a duplicate.
+_RESOLVE_RETRY_WAITS = (10, 30, 90)
+
+
+def _smtp_connect(host: str, port: int, *, waits=_RESOLVE_RETRY_WAITS,
+                  sleep=time.sleep) -> smtplib.SMTP:
+    for wait in (*waits, None):
+        try:
+            return smtplib.SMTP(host, port, timeout=30)
+        except socket.gaierror as e:
+            if wait is None:
+                raise
+            print(f"[send_mail] cannot resolve {host} ({e}); retrying in {wait}s",
+                  file=sys.stderr, flush=True)
+            sleep(wait)
+    raise AssertionError("unreachable")
 
 
 def _load_config() -> dict:
@@ -244,7 +272,7 @@ def main() -> int:
 
     try:
         ctx = ssl.create_default_context()
-        with smtplib.SMTP(host, port, timeout=30) as smtp:
+        with _smtp_connect(host, port) as smtp:
             smtp.ehlo()
             smtp.starttls(context=ctx)
             smtp.ehlo()

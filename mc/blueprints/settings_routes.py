@@ -217,6 +217,12 @@ _CONFIG_EDITABLE_KEYS = {
     # mc.agent_runtime.default_runtime_name) — no respawn needed, it only
     # matters for the NEXT session/dispatch, never a live one.
     'default_provider',
+    # First-run SETUP completed (static/js/first-run.js). A property of the
+    # install — setup writes server state (providers, default_provider, the
+    # LAN passcode) — so it is config, not localStorage: a second browser or
+    # a phone must not re-run first-run on an install that is already set up.
+    # The guided TOUR keeps its own per-browser localStorage flag.
+    'setup_completed',
     # Dev-checkout opt-in (2026-09-14 update-blocked incident) — read live by
     # project_routes.update_project on every project-path save. Operator
     # knob like the rest of this set: an unattended agent must not be able to

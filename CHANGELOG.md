@@ -6,6 +6,138 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — Model-hierarchy resolver unification (backend, MC plan `model-hierarchy-simplification.md`)
+
+- ONE resolver: every spawn/respawn/revive/dispatch path (`_build_claude_flags`,
+  `_resolve_dispatch_model`, `_dispatch_with_routing_parallel`,
+  `_resolve_runtime_model`, `_requested_effort`) now calls
+  `mc/engine_selection.py` instead of reading `project.get('agent_model')` /
+  `state.CONFIG.get('agent_model')` directly. The old project-then-global-then-
+  hard-coded-`'sonnet'` fallback is gone — chat > agent type > project > global,
+  same chain `resolve_engine` already used for provider.
+- Three kinds of value at each level: empty inherits, `'tier:best'` /
+  `'tier:balanced'` / `'tier:fast'` tracks that tier, anything else is an exact
+  pin (unchanged, backward compatible). An empty/unset GLOBAL model resolves to
+  the CLI NATIVE default (`''` model, source `'native'`) — an upgraded install
+  that never saw the first-run model question must not start sending
+  `--model opus` (revised same day: an earlier draft of this change had empty
+  global default to `tier:best`; reverted before ship, per Ron 2026-09-22). An
+  explicit `tier:*` value at project or global still tracks that tier.
+  `engine_selection.classify_value` does the split; `resolve_model_full`/
+  `ResolvedEngine` carry the result plus a `tracking` field and a
+  `model_source`/`effort_source` label for each.
+- `AgentRuntime.latest_for(tier)` added per runtime. Claude maps tiers to the
+  CLI's own `opus`/`sonnet`/`haiku` aliases — VERIFIED live against this box's
+  CLI 2.1.280 by reading the `stream-json` init event's `model` field back:
+  `opus` → `claude-opus-5-5`, `sonnet` → `claude-sonnet-5`, `haiku` →
+  `claude-haiku-4-5-20251001`. Gemini reuses its own `-latest` catalog ids
+  (already self-updating). Codex has no such handle (`codex --help` doesn't
+  enumerate ids), so its three tiers are a hand-maintained pin of today's
+  catalog head, updated in the same edit as `MODEL_CHOICES`. Qwen has no
+  verified catalog to pick a head from, so tracking any tier there resolves to
+  the native default — same as any other runtime lacking `TIER_ALIASES`.
+- Resume re-resolves: an unpinned/auto conversation (`model_auto_requested`)
+  calls the SAME live resolver on every resume/respawn via `_continuation_model`
+  → `_resolve_dispatch_model`, so a newer tier head is picked up on the next
+  resume with no MC edit. A pinned chat (`pinned_model` set, `model_auto_requested`
+  False) is untouched by config changes — verified with a global tier flip
+  between two calls in the same test. Provider is never switched on resume
+  (unchanged — resume was already same-provider-only).
+- `is_stale_pin(provider, model)` added: true only for an EXACT pin sitting in
+  a runtime's recognized tier family (name-pattern match) whose catalog head has
+  since moved past it. Detection only — never rewrites a stored pin; migration
+  is a human call.
+- Auto-router unaffected: `_resolve_dispatch_model`'s classifier gate
+  (`auto_model_enabled`) and `_route_dispatch_model` are untouched, only their
+  fallback value now comes from the unified resolver.
+- Test fallout from the unification itself: several test suites faked
+  `agent_runtime.get_runtime()` with bare stand-ins (a `SimpleNamespace` or a
+  hand-rolled class) that implemented only `build_command`/`model_supported`.
+  Because `_build_claude_flags` and friends now route every inherited value
+  through `model_provider_mismatch` (which every real runtime already
+  satisfies), those stand-ins needed `model_supported`/`latest_for` added too
+  — fixed in `tests/test_continuation_model.py`, `test_effort_continuity.py`,
+  `test_agent_routes.py`, `test_hivemind_routes.py`,
+  `test_hivemind_worker_model_default.py`. One PRE-EXISTING test
+  (`test_auto_model_router.py::test_no_model_at_all_defaults_to_sonnet`)
+  encoded the retired hard-coded-`'sonnet'` behavior and is now
+  `test_no_model_at_all_tracks_best_tier`, asserting `'opus'`.
+- Scope: backend only, per the plan. `config.json`/project/character records
+  were not migrated — an existing exact-ID pin (e.g. project `claude-opus-5`)
+  keeps behaving exactly as it did before this change. Settings UI showing
+  "Opus 5.5 · tracking Best · from Global" is Marlow's follow-up spec.
+
+## [2026-09-22] — codex/gemini/qwen sign-in works from a phone
+
+- The PTY sign-in branch launched the bare CLI binary with no env, so all three
+  used their default loopback-callback OAuth: the CLI opens a listener on the
+  HOST and auto-opens the HOST browser. A phone that completes consent gets
+  redirected to its OWN localhost and the sign-in dies. Only claude's
+  paste-a-code path (a separate piped-subprocess branch) ever worked remotely.
+- Measured per vendor, evidence in `docs/_journal/provider-remote-signin.md`:
+  codex gets `login --device-auth` (auth.openai.com/codex/device + a one-time
+  code, no listener at all); gemini and qwen get `NO_BROWSER=1`, which switches
+  gemini to `authWithUserCode()` and makes qwen actually PRINT the device code
+  it was already using. `BROWSER=` is a dead lever — both guard it with
+  `platform !== 'win32'`.
+- `launch_pty_session()` gained optional `argv_extra`/`env_extra`;
+  `AgentRuntime.auth_login_pty_extra()` is the per-runtime opt-in, defaulting to
+  `(None, None)` so unported runtimes are byte-for-byte unchanged.
+- The measuring run accidentally COMPLETED a `claude auth login` (host browser
+  was already signed in, so it auto-approved with stdin at EOF). Same account,
+  fresh token, nothing signed out — disclosed at the top of the journal. Same
+  hazard class as `af7e0a3`; a probe that can complete a sign-in is not a probe.
+
+## [2026-09-22] — Sign in was a dead button over the tunnel
+
+- Ron, from his phone: this host logged out of Claude and he could not sign it
+  back in remotely. Root cause: `_renderRemoteLoginBox` (`static/js/provider-auth.js`)
+  places the captured OAuth link + paste-the-code input at
+  `[data-remote-login-anchor="<provider>"]`. That attribute was emitted by the
+  OLD `provider-settings.js` row markup (added 2026-08-31, `86f0aa7`/MC-927) and
+  was NOT carried over by the F1 unified-row rewrite on 2026-09-18 (`4598846`).
+  So Claude's remote sign-in worked for 18 days and has been dead since. The lookup found nothing, `if (!anchor) return` fired, and the flow died
+  in total silence — no box, no toast, no console error. On the host the CLI's
+  own browser tab masked it; on a phone there is no tab, so Sign in did nothing.
+- The link is the ONLY way in from a device that cannot see the host's browser,
+  so the box now also falls back to the `.prov-row` itself and, if even that is
+  missing, surfaces the URL in a prompt rather than returning silently.
+- `tools/smoke/settings-providers.mjs` gained the pin that was missing: click
+  Sign in on a row whose `auth-login-remote` returns a URL and assert the link,
+  the code input and the Submit wiring are in the DOM. Verified it fails on the
+  pre-fix code (`remote login box: null`) and passes after.
+
+## [2026-09-22] — Providers panel mojibake: CLI output decoded as cp1252
+
+- MEASURED on a clean Windows 11 VM: the Claude row read
+  "Not logged in Ã‚Â· Please run /login". The CLI emits UTF-8
+  (U+00B7, bytes `C2 B7`); `subprocess.run(..., text=True)` with no `encoding=`
+  decodes the child pipe with `locale.getpreferredencoding()` — cp1252 on a
+  default Windows box — so two characters came back where one was sent. The
+  Gemini row was clean only because its text is our own Python string.
+- Fixed at every text-mode spawn in the backend, not just the reported one:
+  `_run_claude_auth_probe` (`mc/blueprints/agent_routes.py`), the version and
+  auth probes for gemini/qwen/codex/opencode/goose/aider/kiro
+  (`mc/agent_runtime.py`), and the git/npm/netstat captures in `agent_worktree`,
+  `backup`, `github_sync`, `mcp_installer`, `process_guard`, `project_sync`,
+  `question_channel`, `skills`, `workflows` and `server.py`. All now pass
+  `encoding='utf-8', errors='replace'`.
+- Regression guard is structural: `tests/test_subprocess_text_encoding.py` walks
+  the AST of `mc/` + `server.py` and fails on any text-mode `subprocess` call
+  without an explicit `encoding=`. It plants a known offender to prove the
+  detector fires, and names the auth-probe call site explicitly.
+
+## [2026-09-22] — Opus 5.5 in the model pickers
+
+- Added `claude-opus-5-5` ("Opus 5.5") to `ClaudeRuntime.MODEL_CHOICES`
+  (`mc/agent_runtime.py`), `MC_MODEL_CHOICES` (`static/js/modal-manager.js`,
+  which the composer pill, Floor and workflow builder all read), and the global
+  Settings > Agent picker (`static/js/settings-drill.js`). Verified the id is
+  accepted by Claude Code 2.1.280 before adding it.
+- Same pass fixed drift in the Settings picker, which had never gained Fable 5.1.
+- Global default (`server.py` `agent_model`) and the auto-router's Opus tier
+  (`_AUTO_MODEL_VALID`) still point at `claude-opus-5` — unchanged deliberately.
+
 ## [2026-09-19] — Per-agent skill scoping (off by default)
 
 - New `agent_skill_scoping_enabled` (default false). A character that declares

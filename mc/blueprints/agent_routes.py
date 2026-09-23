@@ -94,6 +94,7 @@ from mc.state import (
 
 import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 from mc import allowance_state as _allowance_state
+from mc import vision_bridge as _vision_bridge  # describe images for models that cannot see
 import mc.distiller as _distiller          # exploration read-floor (registered by server.py)
 import mc.identity as _identity            # ws_005: shared no-persona identity fallback (Floor/Channel)
 import mc.skills as _skills                # _skills_catalog_block
@@ -121,7 +122,7 @@ from mc.blueprints.project_routes import (
 )
 from mc.blueprints.push_mobile import _handle_push_signal      # re-homed 1.2 shim
 from mc.blueprints.system_routes import _capture_system_init   # re-homed 1.6 shim
-from mc.blueprints.terminal_routes import launch_pty_session    # MC-928
+from mc.blueprints.terminal_routes import launch_pty_session, launch_pipe_session    # MC-928
 from mc import pty_backend
 
 bp = Blueprint('agent_routes', __name__)
@@ -669,6 +670,43 @@ def _resolve_project_mcp_config(project):
              level='warn')
         return None
 
+def _runtime_mcp_config_json(project, provider_name):
+    """The MCP set a non-Claude runtime is given explicitly, as a JSON string.
+
+    Claude needs nothing when a project has not opted into trimming
+    (`_resolve_project_mcp_config` -> None): with no flags it loads the full
+    fleet itself. Qwen cannot. It only reaches servers named on its
+    `--allowed-mcp-server-names`, and '' meant the deny-all sentinel, so a
+    project that never touched trimming got NO MCP on Qwen while Claude and
+    Gemini (via `sync_to_gemini`) got every server. Live 2026-09-19: the
+    fixture server registered through POST /api/mcp, Claude and Gemini called
+    it, Qwen answered "MCP server 'clayrune_fixture' is not configured".
+
+    For qwen, None becomes the same set Gemini receives
+    (`mcp.collect_effective_servers_for_project`), and an opted-in set is
+    converted to that shape too: qwen-code is a gemini-cli fork and reads a
+    bare `url` as SSE (createTransport), so Claude's `{"type":"http","url"}`
+    would connect with the wrong transport. Other runtimes: unchanged."""
+    resolved = _resolve_project_mcp_config(project)
+    if provider_name != 'qwen':
+        return resolved or ''
+    try:
+        from mc import mcp as _mcp_mod
+        if resolved is None:
+            servers = _mcp_mod.collect_effective_servers_for_project(
+                (project or {}).get('project_path') or None)
+        else:
+            servers = {
+                name: _mcp_mod._to_gemini_config(_mcp_mod._infer_transport(cfg), cfg)
+                for name, cfg in (json.loads(resolved).get('mcpServers') or {}).items()
+                if isinstance(cfg, dict)}
+        return json.dumps({'mcpServers': servers})
+    except Exception as e:
+        _log(f"[mcp] qwen MCP set failed ({e!r}); dispatching with none",
+             level='warn')
+        return resolved or ''
+
+
 def _build_claude_flags(project=None, streaming=False, model_override=None,
                         effort_override=None, max_turns_override=None,
                         character_skills=None):
@@ -690,12 +728,16 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     Every spawn/respawn/revive site must pass it, or that path silently reverts
     to the full skill listing — see tests/test_skill_scoping.py.
     """
-    model = model_override if model_override is not None else (
-        (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
-    )
-    effort = (effort_override if effort_override is not None else
-              ((project or {}).get('agent_effort', '')
-               or state.CONFIG.get('agent_effort', '')))
+    # ONE resolver (model-hierarchy-simplification, 2026-09-22): project >
+    # global, tier-aware ('tier:best' etc. resolve to the runtime's current
+    # tracking alias at spawn time; an empty global tracks 'best'). Chat- and
+    # character-level picks are already merged into `model_override` /
+    # `effort_override` by the caller before this point — see
+    # `_dispatch_agent_internal`'s `_char_model` merge and `_requested_effort`.
+    model, _model_source = engine_selection.resolve_model(
+        'claude', state.CONFIG, project, override=model_override)
+    effort, _effort_source = engine_selection.resolve_effort(
+        state.CONFIG, project, override=effort_override)
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=(max_turns_override if max_turns_override is not None
@@ -750,7 +792,7 @@ def _resolve_dispatch_model(project, prompt):
     Synchronous path. For parallel classification overlapping with
     `_build_agent_context`, use `_dispatch_with_routing_parallel`.
     """
-    fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
+    fallback, _source = engine_selection.resolve_model('claude', state.CONFIG, project)
     if not prompt or not state.CONFIG.get('auto_model_enabled', False):
         return fallback, 'manual'
     return _route_dispatch_model(prompt, fallback)
@@ -801,7 +843,7 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
                                                       character_skills=character_skills)
         return model, source, flags, context, ''
 
-    fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
+    fallback, _source = engine_selection.resolve_model('claude', state.CONFIG, project)
     fut = _classifier_pool.submit(_route_dispatch_model, prompt, fallback)
     context = context_builder() if context_builder else ''
     timeout = max(1, int(state.CONFIG.get('auto_model_classifier_timeout_secs', 8) or 8))
@@ -1591,6 +1633,11 @@ def agent_providers():
     """
     _merge_registry_path()
     refresh = str(request.args.get('refresh', '')).strip().lower() in ('1', 'true', 'yes')
+    # ?model=<id>[&provider=<name>]: report whether THAT model can see images
+    # (`selected_model_image_input`). image_input alone is per-runtime, and one
+    # runtime can front both a blind and a sighted model.
+    sel_model = str(request.args.get('model', '')).strip()
+    sel_provider = str(request.args.get('provider', '')).strip().lower()
     out = []
     default_name = _agent_runtime.default_runtime_name()
     try:
@@ -1640,6 +1687,7 @@ def agent_providers():
                 'emits_num_turns': caps.emits_num_turns,
                 'emits_rate_limit': caps.emits_rate_limit,
                 'image_input': caps.image_input,
+                'image_attach': caps.image_attach,
                 'context_window': caps.context_window,
                 'context_injection': caps.context_injection,
                 'context_file_name': caps.context_file_name,
@@ -1656,7 +1704,8 @@ def agent_providers():
         # picker rebuilds itself from this whenever the Agent picker changes.
         # Empty list = this CLI has no model flag → no picker.
         try:
-            models = [{'id': mid, 'label': label}
+            models = [{'id': mid, 'label': label,
+                       'image_input': rt.image_input_for(mid)}
                       for mid, label in rt.model_choices()]
         except Exception:
             models = []
@@ -1689,6 +1738,9 @@ def agent_providers():
             'auth_error_text': h.auth_state.error_text if h.auth_state else None,
             'capabilities': caps_dict,
             'quota_warnings': quota_warnings,
+            **({'selected_model': sel_model,
+                'selected_model_image_input': rt.image_input_for(sel_model)}
+               if sel_model and sel_provider in ('', rt.name) else {}),
             # VENDOR_AGNOSTIC_PROGRAM.md §4: distinct from quota_warnings
             # above (a per-model heuristic scraped from the log) — this is
             # the normalized, per-vendor ALLOWANCE_EXHAUSTED state a dispatch
@@ -1816,6 +1868,9 @@ def agent_provider_login_launch(name):
     /api/claude/login-launch — needs a real TTY, not a piped subprocess.
 
     Preserved for backward compat; prefer /api/agent/<provider>/auth-login.
+    Callers should treat this as the last-resort fallback the frontend's
+    unified "Sign in" reaches only when /auth-login-remote reports
+    remote_capable:False — see `verified` below.
     """
     try:
         rt = _agent_runtime.get_runtime(name)
@@ -1827,7 +1882,14 @@ def agent_provider_login_launch(name):
     err = _launch_terminal_for_binary(str(bin_path))
     if err:
         return jsonify({'error': err}), 500
-    return jsonify({'ok': True})
+    # `_launch_terminal_for_binary`'s Popen(shell=True) returns as soon as the
+    # shell spawns — same defect class as the provider-install bug (2026-09-22,
+    # docs/_journal/provider-install-terminal-popout.md): it cannot confirm a
+    # window actually appeared, so `ok: True` alone would let a caller claim a
+    # terminal opened when nothing did. `verified: False` says plainly this is
+    # unconfirmed; `command` gives the caller something to show instead of a
+    # false claim.
+    return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
 
 
 def _install_command_required_binary(cmd: str) -> str:
@@ -1910,7 +1972,7 @@ def _npm_major_version(npm_bin: str) -> Optional[int]:
     risking an unrecognized flag on some npm we couldn't identify."""
     try:
         r = subprocess.run([npm_bin, '--version'], capture_output=True,
-                          text=True, timeout=10)
+                          text=True, encoding='utf-8', errors='replace', timeout=10)
         return int((r.stdout or '').strip().split('.', 1)[0])
     except Exception:
         return None
@@ -2117,13 +2179,24 @@ def _execution_policy_decision(scopes: dict) -> tuple[str, str]:
     return 'unchanged', effective
 
 
+# Windows PowerShell 5.1 does NOT write a redirected pipe in UTF-8 — it uses the
+# OEM console codepage. MEASURED 2026-09-22 on Windows 11: asking it to emit a
+# U+00B7 MIDDLE DOT put the single byte 0xFA on the pipe, which is a valid
+# cp437/cp850 middle dot and an INVALID utf-8 start byte. So the utf-8 that is
+# right for every Node CLI we spawn is wrong here, and would turn a character
+# that currently survives into U+FFFD. `oem` is Python's Windows-only alias for
+# that console codepage; elsewhere `powershell` is not what we are talking to.
+_PS_ENCODING = 'oem' if os.name == 'nt' else 'utf-8'
+
+
 def _read_powershell_execution_scopes() -> Optional[dict]:
     """``Get-ExecutionPolicy -List`` as {scope: policy}, or None if it can't be read."""
     try:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Get-ExecutionPolicy -List | ForEach-Object { "$($_.Scope)=$($_.ExecutionPolicy)" }'],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding=_PS_ENCODING, errors='replace',
+            timeout=30)
         out = {}
         for line in (r.stdout or '').splitlines():
             if '=' in line:
@@ -2141,7 +2214,8 @@ def _set_powershell_execution_policy_remotesigned() -> Optional[str]:
         r = subprocess.run(
             ['powershell', '-NoProfile', '-NonInteractive', '-Command',
              'Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force'],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding=_PS_ENCODING, errors='replace',
+            timeout=30)
         if r.returncode != 0:
             return (r.stderr or r.stdout or f'exit {r.returncode}').strip()[:300]
         return None
@@ -2222,14 +2296,15 @@ def agent_provider_install_launch(name):
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
                         'command': command}), 200
-    err = _launch_terminal_for_binary(command)
+    session_id, err = _launch_install_terminal(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command}), 200
     policy = (_ensure_powershell_execution_policy()
               if name in _PROVIDER_NPM_PACKAGES else None)
     return jsonify({'ok': True, 'command': command,
                     'prerequisite': prerequisite or None,
-                    'execution_policy': policy})
+                    'execution_policy': policy,
+                    'session_id': session_id, 'pty': False})
 
 
 @bp.route('/api/agent/providers/install-launch', methods=['POST'])
@@ -2269,7 +2344,7 @@ def agent_providers_install_launch_batch():
         return jsonify({'ok': False,
                         'error': f'{required} not found on PATH',
                         'command': command, 'unsupported': unsupported}), 200
-    err = _launch_terminal_for_binary(command)
+    session_id, err = _launch_install_terminal(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command,
                         'unsupported': unsupported}), 200
@@ -2277,7 +2352,8 @@ def agent_providers_install_launch_batch():
               if any(n in _PROVIDER_NPM_PACKAGES for n in installed) else None)
     return jsonify({'ok': True, 'command': command,
                     'installed': installed, 'unsupported': unsupported,
-                    'execution_policy': policy})
+                    'execution_policy': policy,
+                    'session_id': session_id, 'pty': False})
 
 
 def _auth_probe_cwd() -> str:
@@ -2368,6 +2444,11 @@ def _run_claude_auth_probe() -> dict:
         result = subprocess.run(
             cmd,
             capture_output=True, text=True, timeout=20,
+            # utf-8 explicitly: text=True alone decodes the child pipe with
+            # the Windows ANSI codepage, so the CLI's own UTF-8 error text
+            # ('Not logged in · Please run /login') reached the Providers
+            # panel as mojibake (seen on the clean VM, 2026-09-22).
+            encoding='utf-8', errors='replace',
             cwd=_auth_probe_cwd(),
             creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
@@ -2414,7 +2495,28 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
     Returns None on success or an error string on failure. Callers return 500
     when this is non-None. A real TTY is required because provider CLIs like
     claude use /login which refuses to run inside a piped subprocess.
+
+    `bin_str` must be a single resolved binary path, not a compound shell
+    command. On win32 it gets hand-wrapped as `start "" cmd /k "\"{bin_str}\""`
+    below — a compound command (&&-chains, embedded quotes, a `for /f`
+    loop's own `"tokens=1 delims=."`) breaks that quote-wrap silently: cmd
+    mis-parses the nested quotes, the window never opens or dies instantly,
+    and Popen(shell=True) has already returned success by the time that
+    happens. This exact bug shipped in the provider-install path (verified
+    on a clean VM, 2026-09-22) before install was moved onto
+    `_launch_install_terminal`'s real terminal pop-out, which passes the
+    command straight to `subprocess.Popen(command, shell=True, ...)` with no
+    re-wrapping. Reject rather than silently mangle a second one.
     """
+    # Narrowly: what actually breaks the quote-wrap is an embedded double
+    # quote or a newline, plus a chained compound command. A LONE `&` or `|`
+    # is safe - it sits inside the wrap's own quotes, and Windows folder
+    # names legitimately contain `&` (e.g. C:\Tools\A&B\claude.cmd), so
+    # rejecting it would refuse a sign-in that used to work.
+    if ('"' in bin_str or '\n' in bin_str
+            or '&&' in bin_str or '||' in bin_str):
+        return ('_launch_terminal_for_binary only runs a single binary path, '
+                f'not a compound shell command: {bin_str!r}')
     try:
         if sys.platform == 'win32':
             subprocess.Popen(
@@ -2439,6 +2541,30 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
         return str(e)
 
 
+def _launch_install_terminal(command: str) -> tuple[Optional[str], Optional[str]]:
+    """Run a provider install command in CLAYRUNE'S OWN terminal pop-out
+    instead of a new OS window (F-install, clean-VM run 2026-09-22).
+
+    `_launch_terminal_for_binary` above opens an OS window on the HOST — the
+    same MC-927 problem the auth-login-remote flow (below) already solved for
+    interactive sign-in: over the tunnel, or when the server runs in a
+    different Windows session than the one someone is looking at (verified on
+    a real clean VM: server in SessionId 2 via SSH, console Session 1 has
+    nobody connected), that window opens somewhere nobody can see it — and
+    `_launch_terminal_for_binary`'s `subprocess.Popen('start ...', shell=True)`
+    returns as soon as the shell spawns, so a `start` that opened nothing
+    still reports success. An install command has no interactive TUI to draw
+    (unlike sign-in), so it needs no real PTY — `launch_pipe_session` (no
+    pywinpty dependency) is enough, same as the plain (non-`pty`) branch of
+    `/api/terminal/launch` already uses.
+
+    Returns (session_id, None) on success or (None, error) on failure — never
+    raises, so callers can turn a failure straight into {'ok': False, 'error'}
+    with the command still attached for the user to run by hand.
+    """
+    return launch_pipe_session('_provider_install', command)
+
+
 # ── Remote/captured login — MC-927 URL-surfacing fallback ───────────────────
 #
 # _launch_terminal_for_binary (above) opens a NEW OS TERMINAL WINDOW on the
@@ -2451,8 +2577,11 @@ def _launch_terminal_for_binary(bin_str: str) -> Optional[str]:
 # hanging, because its account-picker is an interactive TUI that needs
 # raw-mode keyboard input to render in the first place. So this path is
 # opt-in per runtime via `auth_login_argv()` (agent_runtime.py); providers
-# that return None there keep the host-terminal button as their only option
-# until MC-928 (a real PTY for the pop-out) ships.
+# that return None there get MC-928's real-PTY pop-out instead when one is
+# available (pty_backend.pty_available()) — the frontend's single "Sign in"
+# button (settingsProviderTerminalLogin, provider-auth.js) tries this route
+# first and only falls back to the unverifiable host-terminal window
+# (_launch_terminal_for_binary) when this reports remote_capable:False.
 _captured_login_lock = threading.Lock()
 _captured_login_sessions: Dict[str, dict] = {}  # provider -> session dict
 
@@ -2561,8 +2690,10 @@ def agent_auth_login_remote(provider):
     argv = rt.auth_login_argv(str(bin_path))
     if not argv:
         if pty_backend.pty_available():
+            pty_argv_extra, pty_env_extra = rt.auth_login_pty_extra(str(bin_path))
             session_id, err = launch_pty_session(
-                '_auth_probe', str(bin_path), cwd=_auth_probe_cwd())
+                '_auth_probe', str(bin_path), cwd=_auth_probe_cwd(),
+                argv_extra=pty_argv_extra, env_extra=pty_env_extra)
             if err:
                 return jsonify({'ok': False, 'remote_capable': False, 'error': err}), 200
             return jsonify({
@@ -2723,7 +2854,65 @@ def agent_auth_login(provider):
     err = _launch_terminal_for_binary(str(bin_path))
     if err:
         return jsonify({'error': err}), 500
-    return jsonify({'ok': True})
+    # See agent_provider_login_launch above — same unverifiable OS-window
+    # launch, same honesty fields.
+    return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
+
+
+def _allowance_refusal(vendor, *, user_initiated):
+    """The refusal text for `vendor`, or '' if it may run.
+
+    A record is only as good as its evidence (one failed run), and nothing
+    else ever corrects it once the user buys more quota. So a USER-initiated
+    dispatch that would be refused first asks the vendor, token-free, whether
+    it is still out (AgentRuntime.probe_allowance) and drops a record the
+    vendor contradicts. A vendor with no cheap probe (Claude, Gemini, Qwen)
+    keeps refusing until the record's reset time or a successful run or the
+    user's explicit re-check — never a guess. The refusal itself is unchanged:
+    it names the vendor and never falls back to another one.
+    """
+    if user_initiated and _allowance_state.get(vendor):
+        try:
+            rt = _agent_runtime.get_runtime(vendor)
+            _allowance_state.heal(vendor, rt.probe_allowance)
+        except KeyError:
+            pass
+    return _allowance_state.refusal_message(vendor)
+
+
+@bp.route('/api/agent/<provider>/allowance/recheck', methods=['POST'])
+def agent_allowance_recheck(provider):
+    """"I topped up, try again": drop this vendor's out-of-allowance record.
+
+    The record is a claim from one failed run; buying more quota does not
+    contradict it anywhere, and dispatch refuses before it can run the
+    success that would clear it. This is the user telling Clayrune the
+    evidence is stale. If the vendor is genuinely still out, the next run
+    fails with the vendor's own limit and re-records it, so nothing is
+    hidden — the refusal comes back with fresh evidence.
+
+    Where the vendor has a token-free probe its answer is returned as
+    `probe` ('usable' | 'limited' | 'unavailable') so the UI can say what it
+    saw, but it does not veto the click: a 'limited' answer can coexist with
+    purchased credits.
+    """
+    try:
+        rt = _agent_runtime.get_runtime(provider)
+    except KeyError:
+        return jsonify({'error': f'unknown provider: {provider}'}), 404
+    had_record = _allowance_state.get(rt.name) is not None
+    probe = 'unavailable'
+    if had_record:
+        try:
+            answer = rt.probe_allowance()
+        except Exception as e:
+            _log(f"[allowance] {rt.name} probe raised: {e}", flush=True)
+            answer = None
+        probe = ('usable' if answer is True
+                 else 'limited' if answer is False else 'unavailable')
+    _allowance_state.clear_exhaustion(rt.name)
+    return jsonify({'ok': True, 'provider': rt.name, 'was_exhausted': had_record,
+                    'probe': probe})
 
 
 @bp.route('/api/agent/<provider>/auth-logout', methods=['POST'])
@@ -3328,7 +3517,8 @@ def _clayrune_universal_capabilities(port: int | None = None) -> list[str]:
         f"{{\"session_id\":…}}. Then emit `[browser-attach:<session_id>]` on its "
         f"own line so the user sees what you're doing. Steer it with POST "
         f"/api/browser/input {{\"session_id\":…,\"type\":\"navigate|mouse|wheel|"
-        f"text|key|back|forward|reload\", …}}. POST /api/browser/selection "
+        f"text|key|back|forward|reload\", …}} (mouse with only x,y = one "
+        f"click; key accepts combos like \"Ctrl+K\"). POST /api/browser/selection "
         f"returns the page's selected text; GET /api/project/<pid>/browser/"
         f"status lists live sessions; POST /api/browser/stop ends one.\n"
         f"  • Sites you sign into: pass a profile name "
@@ -3814,6 +4004,28 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
     # but its Session Log is a wall of past prompts, which Gemini read as a
     # live task list. The targeted read-floor below ("RELEVANT MEMORY") is
     # the memory mechanism for every provider: small, task-scoped, safe.
+    #
+    # BUT the read-floor corpus excludes the curated index by construction
+    # (`_memory_search`: "the agent already auto-loads it") — true only for
+    # Claude. So for every other provider a fact that lives in the curated
+    # part of MEMORY.md was unreachable: neither injected nor searchable
+    # (Qwen live pass 2026-09-19, memory cell: a fact appended via
+    # /memory/append never reached a new chat, which answered with a
+    # different cell's marker). Bridge it with the CURATED half only —
+    # `_mem_split` drops the managed Session Log, the "wall of past prompts"
+    # that caused the Gemini failure above. Bounded by index_byte_budget.
+    if not _is_claude and not incognito:
+        try:
+            from mc.memory import _mem_split as _mem_split_idx
+            _idx = _mem_split_idx(mem_path.read_text(encoding='utf-8', errors='replace'))[0].strip() \
+                if mem_path and mem_path.is_file() else ''
+        except Exception as e:
+            _log(f"[memory-index] {project.get('id')}: curated index read failed: {e}")
+            _idx = ''
+        if _idx:
+            parts.append(
+                "--- PROJECT MEMORY INDEX (curated notes; standing facts about "
+                "this project, NOT a task list) ---\n" + _idx)
 
     # Pointer card, not the full 19.9 KB reference — see
     # `_CLAYRUNE_API_POINTER_CARD` for the measured numbers. The full text
@@ -7226,7 +7438,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                 p, character_meta, override=effort_override,
                 prior=(_prior_conversation_settings(project_id, resume_id, provider_name)
                        if resume_id else None)),
-            'effort_support': 'unsupported',  # intent only; runtime effort is not wired here
+            # Wired per provider, not blanket-'unsupported': codex honours
+            # `-c model_reasoning_effort=<level>` (CodexRuntime.build_command).
+            'effort_support': ('supported' if provider_name == 'codex' else 'unsupported'),
             'pinned_model': model_override or '',
             'character': character_meta,
             '_resume_id': resume_id,
@@ -7244,10 +7458,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             '_notify_workflow': notify_workflow,
             'project_generation': project_generation,
         }
-        if session['requested_effort']:
+        if session['requested_effort'] and session['effort_support'] != 'supported':
+            # Only say it when it is true. Claiming an effort is "preserved"
+            # while nothing consumes it reads as a working knob; for codex it
+            # now IS one, so the line would be a false negative.
             session['log_lines'].append(
-                f"[Requested effort '{session['requested_effort']}' is preserved, "
-                f"but effort control is not supported by this {provider_name} dispatch path.]")
+                f"[Requested effort '{session['requested_effort']}' is recorded on this "
+                f"conversation, but {provider_name} has no effort control to apply it to.]")
         if resume_id:
             # Seed provider_session_id with the id we're resuming so it is
             # never blank even if this turn's INIT event doesn't fire (e.g.
@@ -7381,10 +7598,13 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                     bridged_session.setdefault('_lifecycle_errors', []).append(str(exc))
             callbacks.update(on_init=_bridge_init, on_process_exit=_bridge_exit)
 
+    runtime_task = _bridge_images_for_blind_model(
+        task, session, provider=provider_name, model=model, project_path=pp)
+
     def _spawn_runtime():
         return runtime.dispatch(
             project_path=pp,
-            task=task,
+            task=runtime_task,
             system_prompt=system_prompt,
             resume_id=resume_id,
             mode='A',
@@ -7406,6 +7626,10 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # docstring), so the flag has to cross the seam as a plain bool.
             unattended_sandbox_enabled=bool(
                 state.CONFIG.get('codex_unattended_sandbox', True)),
+            # Only CodexRuntime.dispatch declares this kwarg; every other
+            # runtime's **_extra catchall makes it a no-op -- same seam shape
+            # as unattended_sandbox_enabled above.
+            effort=session.get('requested_effort') or '',
             # W4/MC-947: Clayrune's own per-project MCP trim (same resolver
             # Claude's `_build_claude_flags` uses), passed through so a
             # runtime that opts in (currently only QwenRuntime.dispatch())
@@ -7413,7 +7637,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # native ~/.qwen/settings.json discovery. Every other runtime's
             # dispatch() has a **_extra catchall, so this is a no-op for
             # them — same shape as unattended_sandbox_enabled above.
-            mcp_config_json=_resolve_project_mcp_config(p) or '',
+            mcp_config_json=_runtime_mcp_config_json(p, provider_name),
             # W4/MC-947: pasted/uploaded attachments live under
             # UPLOADS_DIR (`data/uploads/`), a DIFFERENT directory tree
             # than most projects' own roots. Gemini/Qwen's `read_file`
@@ -7628,9 +7852,11 @@ def _requested_effort(project, character=None, override=None, prior=None):
         return override
     if prior is not None:
         return _continuation_effort(prior)
-    return (_character_engine(character, 'effort')
-            or (project or {}).get('agent_effort', '')
-            or state.CONFIG.get('agent_effort', '') or '')
+    character_effort = _character_engine(character, 'effort')
+    if character_effort:
+        return character_effort
+    effort, _source = engine_selection.resolve_effort(state.CONFIG, project)
+    return effort
 
 
 def _continuation_model(session, project=None):
@@ -7877,6 +8103,56 @@ def _auto_fresh_trigger(pp, claude_sid, context_tokens=None):
     if too_large:
         return 'bytes', size_bytes
     return None, 0
+
+
+def _bridge_images_for_blind_model(text, session, *, provider, model, project_path):
+    """Replace image markers in an outgoing prompt with described-text blocks
+    when the session's model cannot see (mc/vision_bridge.py). Never raises:
+    the turn must still run, and a bridge that crashed says so in the log
+    instead of leaving the agent believing it saw the image. The agent's own
+    provider and model are untouched -- this only rewrites the prompt text."""
+    try:
+        roots = [str(UPLOADS_DIR)] if UPLOADS_DIR else []
+        if project_path:
+            roots.append(str(project_path))
+        return _vision_bridge.bridge_prompt(
+            text, provider=provider, model=model or '',
+            log=session['log_lines'].append, allowed_roots=roots)
+    except Exception as e:
+        _log(f'[vision-bridge] failed: {e}', flush=True)
+        try:
+            session['log_lines'].append(f'[Image bridge failed, images were NOT described: {e}]')
+        except Exception:
+            pass
+        return text
+
+
+def _mode_a_token_rollover(pp, project_id, session_id, session, provider, message):
+    """Token rollover for a per-turn-respawn (non-Claude) session. Returns
+    the message to send: unchanged, or prefixed with the real handoff after
+    the native id is dropped so the runtime's `write_followup` starts a fresh
+    thread (every one that resumes keys on `provider_session_id`).
+
+    The non-Claude follow-up and interrupt branches used to return before
+    `_auto_fresh_trigger` was ever consulted, so no Qwen/Gemini/Codex chat
+    could roll over however large it grew (Qwen live pass 2026-09-19: a
+    session sat at a reported 233,881 with no rollover logged). Token trigger
+    only: the byte backstop (`_session_too_large`) reads a Claude transcript
+    and does not apply; an unknown figure never rolls ("unknown stays
+    unknown")."""
+    ctx = session.get('context_tokens')
+    native_id = session.get('provider_session_id') or ''
+    if not native_id or not _context_tokens_over_threshold(ctx):
+        return message
+    _log(f"[followup] {provider} session {native_id} rolling to fresh (tokens={ctx})")
+    handoff_text, log_line, activity_line = _auto_fresh_handoff(
+        pp, provider, native_id, project_id, session_id,
+        reason='tokens', detail=int(ctx))
+    _log_agent_activity(project_id, activity_line)
+    session.setdefault('log_lines', []).append(log_line)
+    session.pop('provider_session_id', None)
+    session.pop('context_tokens', None)
+    return f"{handoff_text}\n\n{message}"
 
 
 def _in_flight_children(project_id, session_id):
@@ -8228,7 +8504,11 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # copy of this check), so one refusal covers all four surfaces named in
     # the brief. Follow-up has its own copy — see agent_followup, which does
     # not re-resolve a provider (the session already has one).
-    _allowance_block = _allowance_state.refusal_message(provider_name)
+    # A user-initiated dispatch re-checks a standing record against the vendor
+    # first (see _allowance_refusal); unattended callers (scheduler, workflow,
+    # agent-to-agent) never spend a probe on a refusal nobody is waiting on.
+    _allowance_block = _allowance_refusal(
+        provider_name, user_initiated=(trigger_type == 'manual'))
     if _allowance_block:
         raise ValueError(_allowance_block)
     _resume_auto_requested = False
@@ -9597,7 +9877,8 @@ def agent_followup(project_id):
         # fallback, rather than left to _dispatch_agent_internal's own check
         # (which never runs for a followup — the session already has a
         # provider, nothing re-resolves one here).
-        _allowance_block = _allowance_state.refusal_message(session_provider)
+        _allowance_block = _allowance_refusal(session_provider,
+                                              user_initiated=True)
         if _allowance_block:
             return jsonify({'error': _allowance_block,
                             'allowance_exhausted': True,
@@ -9640,7 +9921,11 @@ def agent_followup(project_id):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
-                runtime.write_followup(handle, message)
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, existing, session_provider, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, existing, provider=session_provider,
+                    model=existing.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 existing['log_lines'].append(f"[{session_provider} followup error: {e}]")
                 existing['status'] = 'error'
@@ -10329,7 +10614,11 @@ def agent_interrupt(project_id, *, _internal=None):
                     # growing.
                     meta={'callbacks': _RUNTIME_CALLBACKS},
                 )
-                runtime.write_followup(handle, message)
+                message = _mode_a_token_rollover(
+                    pp, project_id, session_id, session, session_provider, message)
+                runtime.write_followup(handle, _bridge_images_for_blind_model(
+                    message, session, provider=session_provider,
+                    model=session.get('agent_model') or '', project_path=pp))
             except Exception as e:
                 session['log_lines'].append(f"[{session_provider} interrupt error: {e}]")
                 session['status'] = 'error'

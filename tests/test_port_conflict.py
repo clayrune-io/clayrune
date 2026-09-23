@@ -361,3 +361,64 @@ def test_message_identifies_a_stranger_and_suggests_another_port(srv, logged, mo
     assert 'NOT Clayrune' in banner
     assert 'MC_PORT' in banner                          # the actionable fix
     assert 'Another Clayrune is already running' not in banner
+
+
+# ── MC_BIND_LOOPBACK: opt-in loopback-only bind (provider-live test instances) ──
+
+
+class _FakeServer:
+    def __init__(self, host):
+        self.host = host
+
+    def serve_forever(self):
+        pass
+
+
+@pytest.fixture
+def bound(srv, monkeypatch):
+    """Record what _serve_dual_stack binds instead of serving. Port 0, so the
+    real sockets it opens are ephemeral and never touch 5199."""
+    import werkzeug.serving
+    seen = {'make_server': [], 'run': []}
+    monkeypatch.setattr(werkzeug.serving, 'make_server',
+                        lambda host, port, app, **kw: seen['make_server'].append(host) or _FakeServer(host))
+    monkeypatch.setattr(srv.app, 'run', lambda **kw: seen['run'].append(kw['host']))
+    return seen
+
+
+def test_default_bind_is_unchanged_all_interfaces(srv, bound, monkeypatch):
+    monkeypatch.delenv('MC_BIND_LOOPBACK', raising=False)
+    assert srv._bind_host_v4() == '0.0.0.0'
+    srv._serve_dual_stack(0)
+    assert bound['make_server'] == ['::'] and bound['run'] == []
+
+
+@pytest.mark.parametrize('val', ['', '0', 'no'])
+def test_bind_loopback_falsy_values_keep_default(srv, monkeypatch, val):
+    monkeypatch.setenv('MC_BIND_LOOPBACK', val)
+    assert srv._bind_host_v4() == '0.0.0.0'
+
+
+def test_bind_loopback_serves_both_loopbacks_and_never_wildcard(srv, bound, monkeypatch):
+    monkeypatch.setenv('MC_BIND_LOOPBACK', '1')
+    assert srv._bind_host_v4() == '127.0.0.1'
+    srv._serve_dual_stack(0)
+    assert bound['run'] == ['127.0.0.1']
+    assert bound['make_server'] in (['::1'], []), 'v6 side may only be ::1 (or absent when IPv6 is off)'
+    assert '::' not in bound['make_server'] and '0.0.0.0' not in bound['run']
+
+
+def test_bind_loopback_probe_uses_loopback_and_is_not_blocked_by_wildcard_free_port(srv, monkeypatch):
+    """The startup port probe must bind the same address the server will."""
+    monkeypatch.setenv('MC_BIND_LOOPBACK', '1')
+    seen = []
+    real = socket.socket
+
+    class Spy(real):
+        def bind(self, addr):
+            seen.append(addr[0])
+            return super().bind(addr)
+    monkeypatch.setattr(socket, 'socket', Spy)
+    srv.PORT = 0
+    srv._check_port_conflict()
+    assert seen and seen[0] == '127.0.0.1', seen

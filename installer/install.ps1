@@ -51,18 +51,33 @@ function Refresh-Path {
 # looped forever. Route every native call through here: Write-Host goes to the
 # console only, never the pipeline, and we return the real exit code (a native
 # non-zero exit is NOT a terminating error, so try/catch cannot see it).
+#
+# ALSO LOAD-BEARING: the first parameter is named $Command, not $Exe.
+# PowerShell binds single-dash arguments to parameter names by PREFIX, so with
+# `[string]$Exe` the call
+#     Invoke-Native winget install --id Git.Git -e --silent --source winget
+# bound winget's `-e` (--exact) to `-Exe` and swallowed `--silent` as its
+# value. The function then tried to launch `--silent`, caught the
+# CommandNotFoundException, and returned -1. Measured on a clean Windows 11 VM
+# 2026-09-20: EVERY winget call in this file (Node, Python, Git x2) had been
+# dead since the helper was introduced, always silently taking the
+# direct-download fallback — including the `--source winget` pin added in
+# 6a9da6e, which never once executed. Double-dash arguments are never bound as
+# parameter names, so `--silent` / `--source` are safe; short flags are not.
+# Keep the name free of any single-dash winget/npm flag prefix, and pass
+# -Command/-Arguments explicitly at winget call sites.
 function Invoke-Native {
     param(
-        [Parameter(Mandatory = $true)][string]$Exe,
+        [Parameter(Mandatory = $true)][string]$Command,
         [Parameter(ValueFromRemainingArguments = $true)][string[]]$Arguments
     )
     $prev = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'   # stderr must not become a terminating error
     try {
-        & $Exe @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
+        & $Command @Arguments 2>&1 | ForEach-Object { Write-Host $_ }
         return $LASTEXITCODE
     } catch {
-        Write-Host "  ($Exe could not be launched: $_)" -ForegroundColor DarkGray
+        Write-Host "  ($Command could not be launched: $_)" -ForegroundColor DarkGray
         return -1
     } finally {
         $ErrorActionPreference = $prev
@@ -218,8 +233,10 @@ function Setup-Node {
     # initialised yet) and it fails by EXIT CODE, not by throwing.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Node.js LTS via winget...'
-        $rc = Invoke-Native winget install --id OpenJS.NodeJS.LTS -e --silent --source winget `
-            --accept-source-agreements --accept-package-agreements
+        $rc = Invoke-Native -Command winget -Arguments @(
+            'install', '--id', 'OpenJS.NodeJS.LTS', '-e', '--silent',
+            '--source', 'winget',
+            '--accept-source-agreements', '--accept-package-agreements')
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
         }
@@ -334,8 +351,10 @@ function Setup-ClaudeRuntimeShell {
     # Attempt 1: winget. Fails by exit code, not by throwing - so check it.
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host 'Installing Git for Windows via winget (also gives Claude its bash runtime)...'
-        $rc = Invoke-Native winget install --id Git.Git -e --silent --source winget `
-            --accept-source-agreements --accept-package-agreements
+        $rc = Invoke-Native -Command winget -Arguments @(
+            'install', '--id', 'Git.Git', '-e', '--silent',
+            '--source', 'winget',
+            '--accept-source-agreements', '--accept-package-agreements')
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
         }
@@ -780,6 +799,79 @@ Write-Host ''
 # data\settings.json, data\logs\, .venv\ - so it all survives untouched.
 # NEVER add `git clean` here: that WOULD delete it.
 $env:GIT_TERMINAL_PROMPT = '0'   # fail fast instead of popping a credential dialog
+
+# LOAD-BEARING: git is a CORE prerequisite, not a provider one.
+#
+# Until 2026-09-20 the only thing that installed Git for Windows was
+# Setup-ClaudeRuntimeShell, and that lives inside the `if ($ChosenProvider)`
+# preflight. Once provider choice moved to the first-run UI (e939ebd) the
+# default install picks no provider, skips that whole block, and then runs
+# `git clone` below against a box that has never had git. Measured on a clean
+# Windows 11 VM 2026-09-20: STEP 1/5 died with
+# "The term 'git' is not recognized", before the step's own FAIL message, so
+# the user got a CommandNotFoundException instead of the exit-code contract.
+# Every step from here needs git; ensure it BEFORE the first call, always.
+function Test-GitOnPath {
+    if (Get-Command git -ErrorAction SilentlyContinue) { return $true }
+    # Installed but not on PATH (per-user Inno install, or a winget MSI whose
+    # PATH edit this process never picked up) - add it for this session.
+    foreach ($cmd in @(
+            "$env:ProgramFiles\Git\cmd",
+            "${env:ProgramFiles(x86)}\Git\cmd",
+            "$env:LOCALAPPDATA\Programs\Git\cmd")) {
+        if (Test-Path (Join-Path $cmd 'git.exe')) {
+            $env:Path = "$cmd;$env:Path"
+            return $true
+        }
+    }
+    return $false
+}
+
+function Setup-Git {
+    if (Test-GitOnPath) { return $true }
+
+    Write-Host 'Clayrune needs git to install itself. Setting it up...' -ForegroundColor Yellow
+
+    # Attempt 1: winget. Fails by exit code, not by throwing - so check it.
+    # --source winget is required: without it a machine with a configured
+    # msstore source can resolve Git.Git to a Store listing and hang.
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        $rc = Invoke-Native -Command winget -Arguments @(
+            'install', '--id', 'Git.Git', '-e', '--silent',
+            '--source', 'winget',
+            '--accept-source-agreements', '--accept-package-agreements')
+        if ($rc -ne 0) {
+            Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
+        }
+        Refresh-Path
+        if (Test-GitOnPath) {
+            Write-Host 'OK git available' -ForegroundColor Green
+            Write-Host ''
+            return $true
+        }
+    } else {
+        Write-Host 'winget not available - using a direct download instead.' -ForegroundColor Yellow
+    }
+
+    # Attempt 2: the official installer, per-user, no admin needed.
+    if (Install-GitForWindows) {
+        if (Test-GitOnPath) {
+            Write-Host 'OK git available' -ForegroundColor Green
+            Write-Host ''
+            return $true
+        }
+    }
+    return $false
+}
+
+if (-not (Get-BoolResult (Setup-Git))) {
+    Write-Host ''
+    Write-Host '[STEP 1/5] FAIL could not install git' -ForegroundColor Red
+    Write-Host 'Install Git for Windows manually from https://git-scm.com/downloads/win'
+    Write-Host 'and re-run the installer.'
+    Exit-WithContact 2
+}
+
 function Repair-NonGitInstall {
     param([string]$Destination, [string]$Repository)
     # Clone first: network failure must leave the original folder untouched.
@@ -1008,8 +1100,10 @@ $pythonExe = Find-Python311
 if (-not $pythonExe) {
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Write-Host '  Python 3.11+ not found. Installing via winget...' -ForegroundColor Yellow
-        $rc = Invoke-Native winget install --id Python.Python.3.12 -e --silent --source winget `
-            --accept-source-agreements --accept-package-agreements
+        $rc = Invoke-Native -Command winget -Arguments @(
+            'install', '--id', 'Python.Python.3.12', '-e', '--silent',
+            '--source', 'winget',
+            '--accept-source-agreements', '--accept-package-agreements')
         if ($rc -ne 0) {
             Write-Host "  winget exited $rc - falling back to a direct download." -ForegroundColor Yellow
         }

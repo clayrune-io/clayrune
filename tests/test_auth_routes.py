@@ -386,7 +386,15 @@ class TestAuthRoutes:
         assert 'error' in body
 
     def test_claude_login_launch_shim_calls_generic(self):
-        """POST /api/claude/login-launch delegates to agent_auth_login('claude')."""
+        """POST /api/claude/login-launch delegates to agent_auth_login('claude').
+
+        This is the unverifiable host-terminal fallback (2026-09-22 fix): the
+        frontend's single "Sign in" button only reaches it when
+        /auth-login-remote reports remote_capable:False. Popen(shell=True)
+        returns as soon as the shell spawns, so the route can never confirm a
+        window actually opened — it must say `verified: False` rather than a
+        bare `ok: True`, the same honesty contract as the provider-install
+        terminal fix (docs/_journal/provider-install-terminal-popout.md)."""
         c, _ = _get_flask_client()
         # Patch _launch_terminal_for_binary to avoid OS interaction.
         # It moved to the agent_routes blueprint (1.12); the login-launch route
@@ -397,7 +405,10 @@ class TestAuthRoutes:
                                return_value=Path('/fake/claude')):
                 resp = c.post('/api/claude/login-launch')
         assert resp.status_code == 200
-        assert json.loads(resp.data)['ok'] is True
+        body = json.loads(resp.data)
+        assert body['ok'] is True
+        assert body['verified'] is False
+        assert body['command'] == str(Path('/fake/claude'))
 
     def test_agent_auth_login_binary_missing_returns_400(self):
         """auth-login returns 400 when provider binary is not installed."""
@@ -406,6 +417,29 @@ class TestAuthRoutes:
             resp = c.post('/api/agent/gemini/auth-login')
         assert resp.status_code == 400
         assert 'error' in json.loads(resp.data)
+
+    def test_agent_provider_login_launch_reports_unverified(self):
+        """POST /api/agent/provider/<name>/login-launch is the OTHER
+        host-terminal route (legacy, kept for the `walkthrough` install flow)
+        that hits the same unverifiable Popen(shell=True) launcher — must
+        carry the same `verified: False` / `command` honesty fields as the
+        auth-login fallback above, not a bare `ok: True`."""
+        c, _ = _get_flask_client()
+        from mc.blueprints import agent_routes as _bp_agent
+        with patch.object(_bp_agent, '_launch_terminal_for_binary', return_value=None):
+            with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                               return_value=Path('/fake/gemini')):
+                resp = c.post('/api/agent/provider/gemini/login-launch')
+        assert resp.status_code == 200
+        body = json.loads(resp.data)
+        assert body['ok'] is True
+        assert body['verified'] is False
+        assert body['command'] == str(Path('/fake/gemini'))
+
+    def test_agent_provider_login_launch_unknown_provider_404(self):
+        c, _ = _get_flask_client()
+        resp = c.post('/api/agent/provider/nonexistent/login-launch')
+        assert resp.status_code == 404
 
 
 # ── Remote/captured login — MC-927 URL-surfacing fallback ────────────────────
@@ -515,6 +549,58 @@ class TestRemoteLogin:
         assert resp.status_code == 200
         body = json.loads(resp.data)
         assert body == {'ok': False, 'remote_capable': False, 'error': 'boom'}
+
+    def test_auth_login_pty_extra_default_is_bare(self):
+        """Base AgentRuntime.auth_login_pty_extra is opt-in — a runtime that
+        doesn't override it (e.g. Claude, which uses the plain-pipe
+        auth_login_argv path instead) gets (None, None): bare binary, no
+        extra env, today's behaviour unchanged."""
+        rt = _ar.ClaudeRuntime.__new__(_ar.ClaudeRuntime)
+        assert rt.auth_login_pty_extra('/fake/claude') == (None, None)
+
+    def test_codex_auth_login_pty_extra(self):
+        rt = _ar.CodexRuntime.__new__(_ar.CodexRuntime)
+        assert rt.auth_login_pty_extra('/fake/codex') == (['login', '--device-auth'], None)
+
+    def test_gemini_auth_login_pty_extra(self):
+        rt = _ar.GeminiRuntime.__new__(_ar.GeminiRuntime)
+        assert rt.auth_login_pty_extra('/fake/gemini') == (None, {'NO_BROWSER': '1'})
+
+    def test_qwen_auth_login_pty_extra(self):
+        rt = _ar.QwenRuntime.__new__(_ar.QwenRuntime)
+        assert rt.auth_login_pty_extra('/fake/qwen') == (None, {'NO_BROWSER': '1'})
+
+    def test_remote_login_pty_passes_runtime_argv_and_env_extra(self):
+        """agent_auth_login_remote's PTY branch must forward the runtime's
+        auth_login_pty_extra() into launch_pty_session — this is what makes
+        `codex login --device-auth` / NO_BROWSER=1 actually reach the spawn
+        instead of the bare binary with no env."""
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.CodexRuntime, 'resolve_binary',
+                           return_value=Path('/fake/codex')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=('abc123', None)) as mock_launch:
+            resp = c.post('/api/agent/codex/auth-login-remote')
+        assert resp.status_code == 200
+        mock_launch.assert_called_once()
+        _, kwargs = mock_launch.call_args
+        assert kwargs['argv_extra'] == ['login', '--device-auth']
+        assert kwargs['env_extra'] is None
+
+    def test_remote_login_pty_passes_gemini_env_extra(self):
+        from mc.blueprints import agent_routes as ar
+        c, _ = _get_flask_client()
+        with patch.object(_ar.GeminiRuntime, 'resolve_binary',
+                           return_value=Path('/fake/gemini')), \
+             patch.object(ar.pty_backend, 'pty_available', return_value=True), \
+             patch.object(ar, 'launch_pty_session', return_value=('abc123', None)) as mock_launch:
+            resp = c.post('/api/agent/gemini/auth-login-remote')
+        assert resp.status_code == 200
+        mock_launch.assert_called_once()
+        _, kwargs = mock_launch.call_args
+        assert kwargs['argv_extra'] is None
+        assert kwargs['env_extra'] == {'NO_BROWSER': '1'}
 
     @pytest.mark.skipif(not (_HAS_CLAUDE_CLI and _LIVE_AUTH_OK),
                         reason='needs claude CLI and MC_LIVE_AUTH_TESTS=1 '
@@ -637,6 +723,52 @@ class TestStructuredAuthDetection:
         # failure surfaces the reason
         st._claude_auth_state.update(ok=False, reason='invalid_api_key')
         assert server._claude_health_check_hook().auth_state.status == 'invalid_api_key'
+
+    def test_health_check_reports_version_and_binary_path_on_success(self):
+        """Claude was the only provider hardcoding version=None/binary_path=None
+        (agent_providers 'ver=(blank)' on a clean VM even though `claude` was
+        installed and on PATH). The hook must now resolve+probe like the other
+        runtimes do."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='/fake/claude.cmd'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = '/fake/claude.cmd'
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    mock_subprocess.run.return_value.stdout = '2.1.280 (Claude Code)\n'
+                    mock_subprocess.run.return_value.stderr = ''
+                    health = server._claude_health_check_hook()
+        assert health.installed is True
+        assert health.binary_path == Path('/fake/claude.cmd')
+        assert health.version == '2.1.280 (Claude Code)'
+
+    def test_health_check_version_degrades_to_none_without_raising(self):
+        """A failed/slow --version probe must not raise or block the route."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='/fake/claude.cmd'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = '/fake/claude.cmd'
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    mock_subprocess.run.side_effect = OSError('boom')
+                    health = server._claude_health_check_hook()
+        assert health.installed is True
+        assert health.binary_path == Path('/fake/claude.cmd')
+        assert health.version is None
+
+    def test_health_check_skips_version_probe_when_not_installed(self):
+        """Not installed -> no subprocess spawned, binary_path stays None."""
+        import server
+        self._reset()
+        with patch.object(server, '_resolve_claude', return_value='claude'):
+            with patch.object(server, 'shutil') as mock_shutil:
+                mock_shutil.which.return_value = None
+                with patch.object(server, 'subprocess') as mock_subprocess:
+                    health = server._claude_health_check_hook()
+        assert health.installed is False
+        assert health.binary_path is None
+        assert health.version is None
+        mock_subprocess.run.assert_not_called()
 
 
 # ── MC-934(b)(c) — quota-warning signal read from clayrune.log ────────────────

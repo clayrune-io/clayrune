@@ -27,9 +27,10 @@ from __future__ import annotations
 import json
 import re
 import threading
+import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, Optional
+from typing import Callable, Dict, Optional
 
 from mc.atomic_json import write_json_atomic
 from mc.core import _log
@@ -125,6 +126,45 @@ def clear_exhaustion(vendor: str) -> None:
             _save()
 
 
+# Last probe attempt per vendor (monotonic seconds). Bounds how often a stream
+# of refused dispatches can spawn a probe subprocess; in-memory on purpose — a
+# restart re-probing once is harmless.
+_PROBE_MIN_INTERVAL_S = 30.0
+_LAST_PROBE: Dict[str, float] = {}
+
+
+def heal(vendor: str, probe: Callable[[], Optional[bool]]) -> bool:
+    """Re-check a standing exhaustion record against the vendor itself.
+
+    `probe` is the vendor's token-free allowance read (AgentRuntime
+    .probe_allowance). Clears the record and returns True ONLY when the probe
+    answers exactly True. False, None, an exception or a throttled call all
+    leave the record standing — a genuinely exhausted vendor keeps refusing,
+    and "could not tell" is never read as recovery. Throttled per vendor so
+    a burst of refused dispatches costs one probe, not one each.
+    """
+    vendor = (vendor or '').strip().lower()
+    if not vendor or get(vendor) is None:
+        return False
+    now = time.monotonic()
+    with _lock:
+        last = _LAST_PROBE.get(vendor)
+        if last is not None and now - last < _PROBE_MIN_INTERVAL_S:
+            return False
+        _LAST_PROBE[vendor] = now
+    try:
+        usable = probe()
+    except Exception as e:
+        _log(f"[allowance] {vendor} probe raised: {e}", flush=True)
+        return False
+    if usable is True:
+        _log(f"[allowance] {vendor} probe reports usable; clearing stale "
+             f"exhaustion record", flush=True)
+        clear_exhaustion(vendor)
+        return True
+    return False
+
+
 def _is_expired(entry: dict) -> bool:
     resets_at = entry.get('resets_at')
     if not resets_at:
@@ -190,6 +230,18 @@ def format_resets_at(entry: dict) -> str:
         return str(resets_at)
 
 
+def resets_clause(entry: dict) -> str:
+    """'resets <time>' when a reset time is known, else 'reset time unknown'.
+
+    The callers used to write f"resets {format_resets_at(entry)}", and
+    format_resets_at's own fallback is 'reset time unknown' -- so every
+    exhaustion without a vendor-supplied reset read "resets reset time
+    unknown" (gemini live pass 2026-09-19, STOPPED-usage-limit.md)."""
+    if not (entry.get('resets_at_display') or entry.get('resets_at')):
+        return 'reset time unknown'
+    return f"resets {format_resets_at(entry)}"
+
+
 def _format_dt(dt: datetime) -> str:
     # Portable "Sep 24, 2026 7:58 AM" — %-d/%-I are glibc-only and %#d/%#I
     # are Windows-only; building it by hand works on both.
@@ -205,9 +257,13 @@ def refusal_message(vendor: str) -> str:
     entry = get(vendor)
     if not entry:
         return ''
-    limit = entry.get('limit_kind') or 'usage limit'
+    limit = entry.get('limit_kind') or ''
+    if limit in ('', 'unknown'):
+        # `record_exhaustion` stores 'unknown' for an unclassified limit;
+        # "(unknown)" told the user nothing and read like a missing field.
+        limit = 'usage limit'
     return (f"{vendor} is out of allowance ({limit}), "
-            f"resets {format_resets_at(entry)} — no fallback to another vendor")
+            f"{resets_clause(entry)} — no fallback to another vendor")
 
 
 def display_text(vendor: str) -> str:
@@ -216,7 +272,7 @@ def display_text(vendor: str) -> str:
     entry = get(vendor)
     if not entry:
         return ''
-    return f"Out of allowance, resets {format_resets_at(entry)}"
+    return f"Out of allowance, {resets_clause(entry)}"
 
 
 # ─────────────────────────────────────────────────────────────────────────

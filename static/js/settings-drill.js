@@ -283,7 +283,9 @@ async function _renderSettings() {
   const modelOptions = [
     ['__auto__', 'Auto — pick per task'],
     ['', 'Default'],
+    ['claude-fable-5-1', 'Fable 5.1'],
     ['claude-fable-5', 'Fable 5'],
+    ['claude-opus-5-5', 'Opus 5.5'],
     ['claude-opus-5', 'Opus 5'],
     ['claude-sonnet-5', 'Sonnet 5'],
     ['claude-haiku-4-5-20251001', 'Haiku 4.5'],
@@ -747,6 +749,10 @@ async function _renderSettings() {
       <div class="settings-row">
         <div><div class="settings-label">Interface Tour</div><div class="settings-hint">Walk through the main features</div></div>
         <button class="btn-dispatch" onclick="closeModalById('__settings');startWalkthrough()">Take Tour</button>
+      </div>
+      <div class="settings-row">
+        <div><div class="settings-label">First-run setup</div><div class="settings-hint">Agent connections and essentials — separate from the tour</div></div>
+        <button class="btn-dispatch" onclick="closeModalById('__settings');startFirstRun({rerun:true})">Run setup again</button>
       </div>
     </div>
       </div>

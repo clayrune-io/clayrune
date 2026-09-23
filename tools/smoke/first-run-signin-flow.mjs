@@ -22,6 +22,12 @@
  *   - GET  /api/agent/providers                        (controls the
  *     before/after auth_status the UI reads — real health_check() would
  *     require an actual completed login to observe a transition)
+ *   - POST /api/agent/<name>/auth-login-remote          (settingsProviderTerminalLogin
+ *     tries this FIRST now — 2026-09-22 unified Sign in button; the real
+ *     route would spawn a REAL piped `claude auth login`/etc subprocess for
+ *     providers with auth_login_argv, an equally real side effect to the
+ *     terminal below. Faked to always report remote_capable:false so every
+ *     click falls through to the login-launch fake exactly as before)
  *   - POST /api/agent/provider/<name>/login-launch      (would otherwise
  *     open a REAL OS terminal and invoke the real CLI's login flow)
  * Everything else — index.html, static/js/*.js, static/css/*.css, /api/config,
@@ -44,7 +50,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, '..', '..');
 const PORT = Number(process.env.MC_SMOKE_PORT || 5311);
 // Unique per run, never reused: a prior run's saveSetting('default_provider',
-// ...) persists into config.json, which then makes the provider-choice step
+// ...) persists into config.json, which then makes the connections step
 // auto-skip on the NEXT run against the same dir (its own skip condition —
 // reproduced directly: title jumped straight to "Choose your level"). A
 // fixed dir + rmSync-before-run also hit Windows EPERM on a back-to-back
@@ -140,37 +146,46 @@ try {
     if (path === '/api/agent/providers' && req.method() === 'GET') {
       return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ providers, default: providers.find((p) => p.default)?.name || '' }) });
     }
+    const remoteLoginMatch = path.match(/^\/api\/agent\/([^/]+)\/auth-login-remote$/);
+    if (remoteLoginMatch && req.method() === 'POST') {
+      // Always "not capable" here so every click falls through to the
+      // login-launch fake below, unchanged from before the unified button —
+      // never let this reach the real route (see file header).
+      return route.fulfill({ status: 200, contentType: 'application/json',
+        body: JSON.stringify({ ok: false, remote_capable: false, error: 'faked for this smoke' }) });
+    }
     const loginLaunchMatch = path.match(/^\/api\/agent\/provider\/([^/]+)\/login-launch$/);
     if (loginLaunchMatch && req.method() === 'POST') {
       const name = loginLaunchMatch[1];
       loginLaunchCalls.push(name);
-      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true }) });
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, verified: false, command: name }) });
     }
     return route.continue(); // real server: index.html, static/js, static/css, /api/config, /api/projects, ...
   });
 
   await page.goto(origin + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 }).catch(() => {});
-  // Do NOT call startWalkthrough() here: a genuinely fresh install (0 real
-  // projects, no default_provider — exactly this fixture) auto-starts the
-  // tour itself ~600ms after boot continuation. Calling it manually AND
-  // letting the auto-start fire later reset wtStep back to 0 mid-flow — the
-  // "Welcome to Clayrune" regression this exact ordering produced when the
-  // clicks below landed after that second, unwanted startWalkthrough() call.
-  await page.waitForSelector('#wt-overlay', { timeout: 5000 });
-  let title = await page.locator('#wt-overlay .wt-title').innerText();
+  // Do NOT call startFirstRun() here: a genuinely fresh install (0 real
+  // projects, setup_completed unset, no default_provider — exactly this
+  // fixture) auto-starts first-run setup itself ~600ms after boot
+  // continuation. Calling it manually AND letting the auto-start fire later
+  // reset setupStep back to 0 mid-flow — the "Welcome to Clayrune" regression
+  // this exact ordering produced when the clicks below landed after that
+  // second, unwanted start call.
+  await page.waitForSelector('#setup-overlay', { timeout: 5000 });
+  let title = await page.locator('#setup-overlay .wt-title').innerText();
   if (title !== 'Which AI do you work with?') {
-    await page.evaluate(() => window.wtNext());
+    await page.evaluate(() => window.setupNext());
     await page.waitForTimeout(150);
-    title = await page.locator('#wt-overlay .wt-title').innerText();
+    title = await page.locator('#setup-overlay .wt-title').innerText();
   }
-  if (title !== 'Which AI do you work with?') throw new Error(`provider-choice step did not render (got: ${title})`);
-  ok('provider-choice step rendered against the real second instance');
+  if (title !== 'Which AI do you work with?') throw new Error(`connections step did not render (got: ${title})`);
+  ok('connections step rendered against the real second instance');
 
   async function readRows() {
     return page.evaluate(() => {
-      const overlay = document.getElementById('wt-overlay');
-      return Array.from(overlay.querySelectorAll('input[type=checkbox][name="wt-provider"]')).map((cb) => {
+      const overlay = document.getElementById('setup-overlay');
+      return Array.from(overlay.querySelectorAll('input[type=checkbox][name="setup-provider"]')).map((cb) => {
         const label = cb.closest('label');
         const row = label.parentElement;
         const spans = Array.from(label.querySelectorAll('span'));
@@ -185,9 +200,9 @@ try {
 
   // Select claude, gemini, qwen — NOT codex (detection-only per Dave's scope).
   for (const name of ['claude', 'gemini', 'qwen']) {
-    await page.locator(`#wt-overlay input[name="wt-provider"][value="${name}"]`).check();
+    await page.locator(`#setup-overlay input[name="setup-provider"][value="${name}"]`).check();
   }
-  await page.locator('#wt-overlay input[name="wt-provider-default"]').first().check(); // claude, first selected
+  await page.locator('#setup-overlay input[name="setup-provider-default"]').first().check(); // claude, first selected
   await page.waitForTimeout(50);
 
   const before = await readRows();
@@ -208,9 +223,9 @@ try {
   // tells the user to go complete.
   for (const name of ['claude', 'gemini', 'qwen']) {
     const clickResult = await page.evaluate((n) => {
-      const overlay = document.getElementById('wt-overlay');
+      const overlay = document.getElementById('setup-overlay');
       if (!overlay) return 'no-overlay';
-      const cb = overlay.querySelector(`input[type=checkbox][name="wt-provider"][value="${n}"]`);
+      const cb = overlay.querySelector(`input[type=checkbox][name="setup-provider"][value="${n}"]`);
       if (!cb) return 'no-checkbox';
       const label = cb.closest('label');
       if (!label) return 'no-label';
@@ -222,7 +237,7 @@ try {
     }, name);
     if (clickResult !== 'clicked') {
       const dump = await page.evaluate(() => {
-        const overlay = document.getElementById('wt-overlay');
+        const overlay = document.getElementById('setup-overlay');
         if (!overlay) return 'NO OVERLAY AT ALL';
         const title = (overlay.querySelector('.wt-title') || {}).textContent || '(no title)';
         const boxes = Array.from(overlay.querySelectorAll('input[type=checkbox]')).map((c) => `${c.name}=${c.value}`);
@@ -237,9 +252,9 @@ try {
     fail(`expected exactly one login-launch call per selected vendor (claude, gemini, qwen), got: ${JSON.stringify(loginLaunchCalls)}`);
   else ok(`each selected vendor's Sign in button called the real login-launch route once: ${loginLaunchCalls.join(', ')}`);
 
-  // "Check setup status" — the real wtRefreshProviders() the UI exposes —
+  // "Check setup status" — the real providerRefreshAll() the UI exposes —
   // re-fetches /api/agent/providers and must flip all three to "signed in".
-  await page.evaluate(() => window.wtRefreshProviders());
+  await page.evaluate(() => window.providerRefreshAll());
   await page.waitForTimeout(80);
   const after = await readRows();
   for (const name of ['claude', 'gemini', 'qwen']) {
@@ -255,11 +270,11 @@ try {
 
   // The whole point: Next must now unblock (default chosen, all three
   // selected vendors installed+signed-in).
-  await page.evaluate(() => window.wtNext());
+  await page.evaluate(() => window.setupNext());
   await page.waitForTimeout(100);
-  const nextTitle = await page.locator('#wt-overlay .wt-title').innerText().catch(() => '');
+  const nextTitle = await page.locator('#setup-overlay .wt-title').innerText().catch(() => '');
   if (nextTitle === 'Which AI do you work with?') fail('Next stayed blocked after all selected vendors signed in and a default chosen');
-  else ok(`Next unblocked and advanced past provider-choice (now: "${nextTitle}")`);
+  else ok(`Next unblocked and advanced past the connections step (now: "${nextTitle}")`);
 
   if (externalRequests.length) fail(`non-loopback network request(s) attempted — real OAuth/tunnel leak: ${externalRequests.join(', ')}`);
   else ok('zero non-loopback network requests (no real OAuth, no clayrune.io tunnel/enrollment call)');

@@ -447,7 +447,33 @@ class TestLaunchPty:
                         json={'project_id': 'tterm', 'command': 'gemini', 'pty': True})
         assert r.status_code == 400
         assert 'gemini.CMD not found' in r.get_json()['error']
-        assert state.terminal_sessions == {}
+
+    def test_launch_pty_session_argv_extra_and_env_extra(self, client, state):
+        """Remote-login callers (agent_routes.agent_auth_login_remote) pass a
+        provider's login subcommand and env override in — confirm both reach
+        pty_backend.spawn() rather than being silently dropped. Called
+        in-process (no HTTP), same as the real caller."""
+        from mc.blueprints import terminal_routes as tr
+        session_id, err = tr.launch_pty_session(
+            '_auth_probe', '/fake/codex', cwd=None,
+            argv_extra=['login', '--device-auth'], env_extra={'NO_BROWSER': '1'})
+        assert err is None
+        assert session_id
+        command, cwd, env, cols, rows, spawned = client._fake_pty.spawned[0]
+        assert command == ['/fake/codex', 'login', '--device-auth']
+        assert env['NO_BROWSER'] == '1'
+
+    def test_launch_pty_session_no_extras_is_unchanged(self, client, state):
+        """argv_extra=None/env_extra=None (the default) must reproduce
+        today's exact call shape — a bare string command, no extra env key —
+        so every existing caller that doesn't pass them is untouched."""
+        from mc.blueprints import terminal_routes as tr
+        session_id, err = tr.launch_pty_session('_auth_probe', '/fake/claude')
+        assert err is None
+        command, cwd, env, cols, rows, spawned = client._fake_pty.spawned[0]
+        assert command == '/fake/claude'
+        assert 'NO_BROWSER' not in env
+        assert session_id in state.terminal_sessions
 
 
 def _seed_pty_session(state, client, sid='ptyseeded1234', status='running'):

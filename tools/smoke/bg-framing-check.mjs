@@ -145,10 +145,16 @@ try {
     localStorage.setItem('mc_bg_image', url);
     localStorage.setItem('mc_bg_imgw', '400');
     localStorage.setItem('mc_bg_imgh', '400');
+    // Framing is driven by the crop-box editor since 3380a39 (it replaced the
+    // setBgZoom/setBgPosX/setBgPosY sliders, which this smoke went on calling
+    // and so failed on every run until 2026-09-20). Write the same three
+    // globals a drag writes, then persist + apply exactly as _bgCropDragEnd does.
     setBgMode('image');     // globals defined by the SPA
-    setBgZoom(150);
-    setBgPosX(20);
-    setBgPosY(80);
+    bgZoom = 150;
+    bgPosX = 20;
+    bgPosY = 80;
+    _bgSaveFraming();
+    applyDashboardBackground();
     return { size: document.body.style.backgroundSize, pos: document.body.style.backgroundPosition };
   });
 
@@ -172,24 +178,38 @@ try {
   resized === 'cover, 1200px 1200px' ? ok('background-size recomputed on resize (' + resized + ')')
     : fail('resize did not recompute: ' + resized);
 
-  // Live preview <img> reflects scale + object-position (open Settings → Appearance → Background).
-  const preview = await page.evaluate(() => {
-    if (typeof openSettings === 'function') openSettings();
-    if (typeof drillSettings === 'function') drillSettings('appearance');
-    // appearance is multi-section; jump straight to the Background sub-section if possible
-    if (typeof _settingsActiveCat !== 'undefined') {}
-    return null;
+  // The crop box mirrors zoom + focal point (Settings -> Appearance -> Background).
+  // 3380a39 replaced the old #mc-bg-preview-img with the drag-box editor, so the
+  // visible region is now the BOX: at viewport 800x800 on a 400x400 image with
+  // zoom 150, cover = 2, scale = 3, so the box spans 800/1200 = 66.7% of the
+  // displayed image and sits at (1 - 0.667) * 20% = 6.7% from its left edge.
+  await page.evaluate(async () => {
+    if (typeof openSettings === 'function') await openSettings();  // async: fetches config
   });
-  // The preview only exists once the Background detail pane renders; drive via the
-  // search view which flattens all panes into the DOM at once.
-  await page.evaluate(() => { if (typeof filterSettings === 'function') filterSettings('framing'); });
-  const pv = await page.$('#mc-bg-preview-img');
-  if (pv) {
-    const t = await pv.evaluate((el) => ({ tr: el.style.transform, op: el.style.objectPosition }));
-    /scale\(1\.5\)/.test(t.tr) ? ok('preview img transform mirrors zoom (' + t.tr + ')') : fail('preview transform wrong: ' + t.tr);
-    /20%\s+80%/.test(t.op) ? ok('preview img object-position mirrors focal point (' + t.op + ')') : fail('preview object-position wrong: ' + t.op);
+  await page.waitForSelector('#settings-body', { timeout: 8000 }).catch(() => {});
+  await page.evaluate(() => {
+    if (typeof drillSettings === 'function') drillSettings('appearance');
+    // The Background pane renders on the search view, which flattens every pane.
+    if (typeof filterSettings === 'function') filterSettings('framing');
+  });
+  await page.waitForSelector('#mc-crop-box', { timeout: 5000 }).catch(() => {});
+  await page.waitForTimeout(150);  // the box renders on the crop <img>'s onload
+  const box = await page.evaluate(() => {
+    const b = document.getElementById('mc-crop-box');
+    const i = document.getElementById('mc-crop-img');
+    if (!b || !i || !i.clientWidth) return null;
+    return { wFrac: parseFloat(b.style.width) / i.clientWidth,
+             leftFrac: parseFloat(b.style.left) / i.clientWidth };
+  });
+  if (!box) {
+    fail('crop box (#mc-crop-box) did not render');
   } else {
-    fail('preview img (#mc-bg-preview-img) did not render');
+    Math.abs(box.wFrac - 0.667) < 0.03
+      ? ok('crop box width mirrors zoom (' + box.wFrac.toFixed(3) + ' of the image)')
+      : fail('crop box width wrong: ' + box.wFrac);
+    Math.abs(box.leftFrac - 0.067) < 0.02
+      ? ok('crop box offset mirrors focal point (' + box.leftFrac.toFixed(3) + ')')
+      : fail('crop box offset wrong: ' + box.leftFrac);
   }
 
   exitCode = bad === 0 ? 0 : 1;

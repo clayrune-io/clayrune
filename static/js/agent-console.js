@@ -688,12 +688,10 @@ function applyTabFilter(projectId) {
   const el = openModals.get(modalId).element;
   const activeTab = modalActiveTab[projectId] || 'agent';
 
-  if (activeTab === 'backlog') {
-    el.querySelectorAll('.backlog-item').forEach(item => {
-      const text = (item.querySelector('.backlog-text')?.textContent || '').toLowerCase();
-      item.style.display = (!query || text.includes(query)) ? '' : 'none';
-    });
-  } else if (activeTab === 'agent-log') {
+  // Backlog is NOT handled here — it has its own query map (backlogSearchQuery)
+  // and filters in the render itself (backlogViewState), not by hiding
+  // .backlog-item nodes after the fact. See render-core.js backlogViewState.
+  if (activeTab === 'agent-log') {
     el.querySelectorAll('.agent-log-entry').forEach(item => {
       const task = (item.querySelector('.agent-log-task')?.textContent || '').toLowerCase();
       const summary = (item.querySelector('.agent-log-summary')?.textContent || '').toLowerCase();
@@ -704,10 +702,19 @@ function applyTabFilter(projectId) {
       const text = item.textContent.toLowerCase();
       item.style.display = (!query || text.includes(query)) ? '' : 'none';
     });
+  } else if (activeTab === 'documents') {
+    el.querySelectorAll('.plan-history-card').forEach(item => {
+      const text = item.textContent.toLowerCase();
+      item.style.display = (!query || text.includes(query)) ? '' : 'none';
+    });
   }
 
-  // Toggle clear button without full re-render
-  const searchDiv = el.querySelector('.modal-tab-search');
+  // Each of the three tabs above renders its OWN .modal-tab-search (own
+  // toolbar, own input id) instead of the one shared bar the tab switcher used
+  // to have — .modal-tab-content elements for inactive tabs stay in the DOM
+  // (just display:none), so an unscoped lookup here would silently grab
+  // whichever tab happens to render first rather than the one on screen.
+  const searchDiv = el.querySelector('.modal-tab-content.active .modal-tab-search');
   if (searchDiv) {
     let clearBtn = searchDiv.querySelector('.search-clear');
     if (query && !clearBtn) {
@@ -727,7 +734,7 @@ function clearTabSearch(projectId) {
   const modalId = findModalIdForProject(projectId);
   if (!modalId) return;
   const el = openModals.get(modalId).element;
-  const input = el.querySelector('.modal-tab-search input');
+  const input = el.querySelector('.modal-tab-content.active .modal-tab-search input');
   if (input) { input.value = ''; input.focus(); }
   applyTabFilter(projectId);
 }

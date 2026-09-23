@@ -111,7 +111,7 @@ def _run(cmd: list[str], cwd: str | None = None, timeout: int = 60,
     full_env = {**os.environ, **(env or {})}
     try:
         proc = subprocess.run(
-            cmd, cwd=cwd, capture_output=True, text=True, timeout=timeout,
+            cmd, cwd=cwd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=timeout,
             env=full_env, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
         )
     except FileNotFoundError as e:
@@ -825,7 +825,7 @@ def stream_install(install_dir: str, emit: Callable[[str], None]) -> int:
         try:
             proc = subprocess.Popen(
                 cmd, cwd=install_dir, stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT, text=True, bufsize=1,
+                stderr=subprocess.STDOUT, text=True, encoding='utf-8', errors='replace', bufsize=1,
                 creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO,
             )
         except FileNotFoundError:

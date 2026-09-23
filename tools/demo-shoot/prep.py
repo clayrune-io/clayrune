@@ -4,8 +4,9 @@
     python tools/demo-shoot/prep.py
 
 Brings up an ISOLATED Clayrune (its own port, its own MC_DATA_DIR) with fake
-projects, then starts three real Claude agents so the grid is genuinely live when
-you hit record. Nothing here can see or touch your real projects.
+projects, then starts six real Claude agents — one hired character per room —
+so the grid is genuinely live, with distinct faces, when you hit record.
+Nothing here can see or touch your real projects.
 
 Why a script and not a checklist: the agents finish in a couple of minutes, so
 they have to be started fresh for every take. Doing that by hand between takes is
@@ -24,6 +25,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent.parent
 PORT = 5200
+# Every demo dispatch is forced onto this, overriding any character pin.
+DEMO_MODEL = "claude-sonnet-5"
 BASE = f"http://localhost:{PORT}"
 DATA_DIR = ROOT / "_scratch" / "demo-inst2"
 REPOS = ROOT / "_scratch" / "demo2"
@@ -33,48 +36,92 @@ PROJECTS = [
     ("pathfinder", "Pathfinder", "API gateway"),
     ("lantern", "Lantern", "Mobile companion app"),
     ("almanac", "Almanac", "Weekly data digest"),
+    ("signalworks", "Signalworks", "Internal ops dashboard"),
+    ("brightleaf", "Brightleaf", "Growth analytics widget"),
 ]
 
-# Long, chatty tasks: they must still be streaming when the camera rolls.
-# Real work on throwaway repos — nothing here is staged.
-TAKE_TASKS = [
-    ("orchard",
-     "Add a responsive footer with social links. Narrate your work as you go: read "
-     "the existing files and describe what you find, explain your plan step by step, "
-     "then implement it in src/header.html and src/styles.css. Explain every edit."),
-    ("pathfinder",
-     "Add structured request-logging middleware to src/routes.js (method, path, status, "
-     "duration). Do NOT ask questions — make sensible choices and state them. Read the "
-     "file, describe it, discuss the trade-offs at length, then implement."),
-    ("lantern",
-     "Write a detailed plan for adding an offline cache to the feed. Discuss every "
-     "trade-off at length. Do not edit any files."),
-]
-
-# A second wave, dispatched under hired characters. Two reasons, both about what
-# the Floor looks like on camera: a character figure carries a NAME and a FACE
-# (the default agent's figure reads "unnamed" with no avatar), and putting a
-# second figure in a room that already has one is the only way to show that a
-# room holds a crew rather than a single session.
+# One hired character per room, one room per character — this is the whole fix
+# for the "same two faces on every card" shot. A character dispatch carries its
+# own name AND avatar (see `_figure_name`/`_figure_avatar` in floor_routes.py),
+# so there is no separate figure-naming step here the way the old default-agent
+# dispatch needed; naming it is what made every card read as the SAME face
+# ("Vector") no matter which project it sat in.
+#
+# Six distinct avatars, one per room, none reused — Ron's ask, verbatim: avatar
+# reads at LinkedIn thumbnail size even when the name doesn't.
+#
+# The lantern task is deliberately under-specified: builder's own character
+# ("the brief is a hypothesis... if the diagnosis is wrong, say so and stop")
+# is instructed to surface that as a real `mc:question` block instead of
+# guessing, so one card sits in NEEDS-YOU next to the others' WORKING — the
+# contrast Ron wants in the shot.
+#
+# Everything else needs to still be STREAMING two minutes in, on a repo of one
+# or two tiny files — so the lever isn't "discuss at length" (tried, and the
+# first take's agents still wrapped up inside 30 seconds: a short file makes a
+# short conclusion easy to reach no matter how the prompt is worded). The
+# lever that actually works is a hard, checkable word-count floor per section,
+# repeated in every non-lantern task below, plus a re-read instruction so each
+# session makes at least two tool calls instead of one.
+_LENGTH_FLOOR = (
+    " Word-count floor, not a suggestion: at least 150 words per numbered "
+    "section, full prose, no bullet-point shorthand. Read the file once, form "
+    "a view, then re-read it a second time checking your view against every "
+    "line before you write a word. If you notice yourself concluding early, "
+    "go back and deepen an earlier section instead of stopping — a 200-word "
+    "answer to this is a failed answer regardless of how correct it is."
+)
 CHARACTER_TASKS = [
     ("orchard", "global:ui-fixer",
-     "Review src/styles.css for responsive problems at narrow widths. Read the file, "
-     "describe at length what you find, and explain the fixes you would make. "
-     "Do not edit any files."),
+     "Review src/styles.css for responsive problems at narrow widths. Narrate a "
+     "thorough audit in exactly eight numbered sections, one per breakpoint: "
+     "320px, 375px, 414px, 480px, 600px, 768px, 1024px, 1280px. For each, "
+     "state what breaks, why, and the exact fix." + _LENGTH_FLOOR +
+     " Do not edit any files."),
     ("pathfinder", "global:code-reviewer",
-     "Review src/routes.js for correctness bugs and error-handling gaps. Read the file, "
-     "walk through each handler in detail, and explain what you would change and why. "
-     "Do not edit any files."),
+     "Review src/routes.js for correctness bugs and error-handling gaps. For "
+     "every handler, evaluate it in turn against each of these eight lenses, "
+     "one numbered section per lens: correctness, error handling, input "
+     "validation, security, performance, concurrency/race conditions, "
+     "testability, and naming/readability." + _LENGTH_FLOOR +
+     " Do not edit any files."),
+    ("lantern", "global:builder",
+     "Brief: \"Add an offline cache to the feed.\" This brief does not say what "
+     "should happen when the cache and the network disagree, which your own rules "
+     "say to treat as a reason to stop and ask rather than guess. Before reading "
+     "or touching anything, ask the user which policy to use — stale-while-revalidate "
+     "or cache-invalidates-on-reconnect — using exactly this block, verbatim, as "
+     "your entire response, then stop:\n\n"
+     "```mc:question\n"
+     "{\"questions\": [{\"header\": \"Offline cache policy\", \"question\": "
+     "\"When the cache and the network disagree, which should win?\", \"options\": "
+     "[{\"label\": \"Stale-while-revalidate\", \"description\": \"Show the cached "
+     "feed immediately, refresh in the background\"}, {\"label\": "
+     "\"Invalidate on reconnect\", \"description\": \"Hold the cached feed until "
+     "reconnect, then force a full refresh\"}], \"multiSelect\": false}]}\n"
+     "```"),
     ("almanac", "global:prd-writer",
-     "Write a short spec for adding week-over-week sparklines to the digest. Read "
-     "src/digest.py first, describe it, then lay out requirements and open questions "
-     "at length."),
+     "Write a spec for adding week-over-week sparklines to the digest. Read "
+     "src/digest.py in full first, then produce the spec as exactly ten numbered "
+     "sections: problem, background, users & personas, goals, non-goals, "
+     "functional requirements, non-functional requirements, data model, edge "
+     "cases, and a rollout plan." + _LENGTH_FLOOR),
+    ("signalworks", "global:security-privacy-auditor",
+     "Audit src/config.py and src/auth.py for what this dashboard exposes. "
+     "Report exactly six numbered findings, worst first. For each finding cover, "
+     "as its own labeled paragraph: what is wrong, a step-by-step walkthrough of "
+     "how it actually gets exploited, the blast radius if it is, the fix, and a "
+     "test you would add to catch a regression." + _LENGTH_FLOOR +
+     " Do not edit any files."),
+    ("brightleaf", "global:market-researcher",
+     "Read src/pricing.md in full — do not search the web, work from this file "
+     "only. Write a competitive positioning memo covering each of the three "
+     "competitor moves listed, one numbered section per competitor: how their "
+     "move pressures each of our three tiers specifically, which of our tiers is "
+     "most exposed and why, and a concrete numeric pricing response. Close with "
+     "a final numbered section ranking the three responses by urgency." +
+     _LENGTH_FLOOR),
 ]
-
-# The default agent's figure has no name of its own, so it renders as "unnamed".
-# Ron's real instance names it in config; the demo instance is built fresh every
-# time, so name it here or every take shows three anonymous figures.
-DEFAULT_FIGURE = {"name": "Vector", "avatar": "fig:scribe", "by": "self"}
 
 # Config for the isolated instance. Written before the FIRST start only — after
 # that the file is the instance's own state and we leave it alone.
@@ -169,7 +216,7 @@ def check_repos() -> None:
     `_scratch/` is gitignored, so a fresh clone — or a cleaned working tree —
     has no repos here. Without this check `reset_repos` silently skips them and
     the agents get dispatched into directories that do not exist, which surfaces
-    as three figures that die a few seconds after they appear. Better to stop.
+    as figures that die a few seconds after they appear. Better to stop.
     """
     missing = [pid for pid, _, _ in PROJECTS if not (REPOS / pid).is_dir()]
     if missing:
@@ -243,28 +290,17 @@ def reset_repos() -> None:
     print("  repos reset to baseline")
 
 
-def dispatch() -> None:
-    for pid, task in TAKE_TASKS:
-        try:
-            r = post(f"/api/project/{pid}/agent/dispatch", {"task": task})
-            sid = r.get("session_id")
-            print(f"  dispatched {pid:<11} {'ok' if r.get('ok') else 'FAILED'}")
-            # Name it immediately: the route only accepts a LIVE session id, so
-            # there is no later moment at which this is still possible.
-            if sid:
-                try:
-                    post(f"/api/floor/figure/{sid}/name", DEFAULT_FIGURE)
-                except Exception as e:
-                    print(f"  ! could not name figure for {pid}: {e}")
-        except Exception as e:
-            print(f"  ! dispatch {pid} failed: {e}")
-
-
 def dispatch_characters() -> None:
     for pid, character, task in CHARACTER_TASKS:
         try:
+            # Pin the model explicitly. A character's own `model:` front-matter
+            # otherwise wins, and prd-writer pins claude-fable-5 — which is how a
+            # demo seeded 680 Fable calls across 68 sessions on 2026-09-02/03
+            # before anyone noticed (the demo instance re-dispatched on a loop).
+            # The demo is a screenshot prop; it must never pick an expensive model.
             r = post(f"/api/project/{pid}/agent/dispatch",
-                     {"task": task, "character": character})
+                     {"task": task, "character": character,
+                      "model": DEMO_MODEL})
             name = character.split(":", 1)[-1]
             print(f"  dispatched {name:<16} -> {pid:<11} "
                   f"{'ok' if r.get('ok') else 'FAILED'}")
@@ -278,9 +314,7 @@ def main() -> None:
     start_instance()
     ensure_projects()
     reset_repos()
-    print("\n  starting three real agents …")
-    dispatch()
-    print("\n  adding hired characters (named figures, and a second one per room) …")
+    print("\n  dispatching one hired character per room …")
     dispatch_characters()
 
     print("\n  waiting for them to come up as IN PROGRESS …")
@@ -290,7 +324,7 @@ def main() -> None:
             with urllib.request.urlopen(f"{BASE}/api/projects", timeout=5) as r:
                 ps = json.loads(r.read().decode())
             live = [p["name"] for p in ps if p.get("live_agent")]
-            if len(live) >= 4:
+            if len(live) >= 6:
                 print(f"  LIVE: {', '.join(live)}")
                 break
         except Exception:

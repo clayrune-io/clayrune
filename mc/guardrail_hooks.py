@@ -43,6 +43,7 @@ rejects any unrecognized field: this shape has none.
 from __future__ import annotations
 
 import sys
+import os
 from pathlib import Path
 from typing import List, Optional
 
@@ -58,6 +59,25 @@ HOOK_NAME = 'clayrune-process-guard'
 
 
 def clayrune_home() -> Path:
+    """Where the hook files live — the ONE resolution both the boot-time
+    writer and every dispatch-time reader use.
+
+    `<MC_DATA_DIR>/.clayrune` when MC_DATA_DIR is set, else `~/.clayrune`.
+    This rule used to live only on the WRITE side (server.py's
+    `_install_guardrail_hooks_on_boot`, 889258e) while the readers
+    (`launch_file_if_exists`, called by every Claude/Gemini/Qwen launch) kept
+    resolving `~/.clayrune`. Under MC_DATA_DIR the file was written to one
+    dir and looked for in another, `launch_file_if_exists` returned None, and
+    every launch went out with NO guard — silently, since "missing" means
+    "don't inject" by design. Caught by the first live Claude pass
+    (2026-09-19, run 0919100639): `taskkill /IM <decoy>` killed the decoy and
+    the dispatch argv carried no `--settings`. The frozen app ALWAYS sets
+    MC_DATA_DIR (app.py `_start_flask`), so on merge this would have removed
+    the guard from every packaged install.
+    """
+    data_dir = os.environ.get('MC_DATA_DIR')
+    if data_dir:
+        return Path(data_dir) / '.clayrune'
     return Path.home() / '.clayrune'
 
 
@@ -86,6 +106,48 @@ def launch_file_if_exists(vendor: str, clayrune_home_dir: Optional[Path] = None)
     """
     p = launch_file_path(vendor, clayrune_home_dir)
     return p if p.is_file() else None
+
+
+def _shell_neutral_path(p: str) -> str:
+    """A Windows path with `\\` turned into `/`, which bash, cmd.exe and
+    PowerShell all read as the same path (see guard_shell_command). Other
+    platforms' paths are returned unchanged."""
+    return p.replace('\\', '/') if os.name == 'nt' else p
+
+
+# The one tail that makes a BLOCK verdict survive every shell a vendor CLI
+# may run the hook through on Windows. Empty off Windows, where every vendor
+# runs hooks through `bash -c` and a native exit code already propagates.
+#
+# Why it is needed (measured 2026-09-19, docs/GUARDRAIL_PARITY_EVIDENCE.md §9):
+# `powershell -Command "<native.exe>"` does NOT propagate the child's exit
+# code — it reports 1 for any non-zero. The guard's exit 2 became 1, and Qwen's
+# `convertPlainTextToHookOutput` maps every code other than 0/2 to
+# EXIT_CODE_NON_BLOCKING_ERROR -> `decision: "allow"`. Qwen picks PowerShell
+# whenever `ComSpec` ends in powershell.exe/pwsh.exe (`getShellConfiguration`,
+# chunk-V545KI73.js) and, unlike gemini-cli, appends NO exit-code re-raise of
+# its own. So the denial text was printed and the kill still ran.
+#
+# Why THIS string, in all three shells (all measured, both verdicts):
+#   PowerShell  `; exit $LASTEXITCODE` re-raises the guard's real code.  -> 2/0
+#   bash        `$LASTEXITCODE` is unset -> `exit` with no argument, which
+#               exits with the status of the last command, i.e. the guard's. -> 2/0
+#   cmd.exe     `;` is not a separator there; cmd hands the whole tail to the
+#               child as extra argv, and `process_guard.py` ignores argv
+#               entirely (`hook_main` reads only stdin).                  -> 2/0
+#
+# The SPACE before `;` is load-bearing for cmd.exe: without it the semicolon
+# stays glued to the script path in the child's argv (`...process_guard.py;`),
+# python can't open the file and exits 2 — a silent fail-CLOSED that blocks
+# every shell call, measured before the space was added.
+#
+# Gemini appends its own `; if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }`
+# after this one. Harmless: on Windows gemini-cli 0.59.0 runs hooks ONLY
+# through PowerShell (`getShellConfiguration`, chunk-S4PJ76PA.js — re-read
+# 2026-09-19, every branch returns shell "powershell"), where our `exit` fires
+# first. It would be a bash PARSE error if gemini ever picked bash on Windows;
+# it cannot, and that is asserted by a test.
+_EXIT_CODE_SUFFIX = ' ; exit $LASTEXITCODE' if os.name == 'nt' else ''
 
 
 def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optional[str] = None) -> str:
@@ -140,13 +202,34 @@ def guard_shell_command(guard_script: Optional[Path] = None, python_exe: Optiona
     embedded quote characters for either token — nothing left for a
     naive-relaunch shell to mis-parse. A script path WITH a space remains
     the same disclosed, untested gap the interpreter path already carries.
+
+    Qwen live pass run 3 (2026-09-19): paths are emitted with FORWARD
+    slashes. qwen-code 0.23.4's `getShellConfiguration()` (chunk-V545KI73.js)
+    runs hooks through `bash -c` whenever the CLI inherits `MSYSTEM=MINGW*`/
+    `MSYS*` (or a `TERM` containing msys/cygwin) — i.e. whenever Clayrune was
+    started from a git-bash prompt. bash reads each unquoted backslash as an
+    escape, so `C:\\Users\\...\\python.exe` became `C:Users...python.exe`,
+    the hook exited 127, and qwen maps any exit other than 0/2 to
+    EXIT_CODE_NON_BLOCKING_ERROR → `decision: "allow"`
+    (`convertPlainTextToHookOutput`, chunk-DCRVSIK6.js). The guard failed
+    OPEN: `taskkill /IM <decoy> /F` ran and killed the decoy. Forward
+    slashes mean the same path to bash, cmd.exe and PowerShell (measured:
+    guard exits 2 in bash and cmd; PowerShell exits 1 itself, and Gemini's
+    runner re-raises $LASTEXITCODE there).
+
+    W6 (2026-09-19): on Windows the command now ENDS with
+    ` ; exit $LASTEXITCODE` — `_EXIT_CODE_SUFFIX`, see its comment for the
+    measurements and for why every character of it (including the space
+    before the `;`) is load-bearing. Without it a `ComSpec` pointing at
+    PowerShell reproduced the §8 fail-open: the guard printed its denial and
+    PowerShell still exited 1, which Qwen maps to allow.
     """
     guard_script = guard_script or (Path(__file__).resolve().parent / 'process_guard.py')
-    py = python_exe or sys.executable or 'python'
+    py = _shell_neutral_path(python_exe or sys.executable or 'python')
     py_token = f'"{py}"' if ' ' in py else py
-    script_str = str(guard_script)
+    script_str = _shell_neutral_path(str(guard_script))
     script_token = f'"{script_str}"' if ' ' in script_str else script_str
-    return f'{py_token} {script_token}'
+    return f'{py_token} {script_token}{_EXIT_CODE_SUFFIX}'
 
 
 def _toml_basic_string(s: str) -> str:
@@ -192,24 +275,44 @@ def codex_hook_config_args(guard_script: Optional[Path] = None,
                                         avoid clobbering it — the dotted
                                         path makes that unnecessary.
 
-    Deliberately does NOT call `guard_shell_command()` — builds its own
-    unconditionally-quoted `"<py>" "<script>"` string inline instead. W4/
-    MC-947 (2026-09-18) made `guard_shell_command()` quote the script path
-    ONLY when it contains a space (fixing a real Qwen breakage — see that
-    function's docstring), but the byte-exact QUOTED shape this function
-    produces is the one actually live-verified against real `codex.exe`
-    (0.154.0) with `--strict-config` — Codex was out of allowance to re-
-    verify a changed shape at the time of that fix, so this stays pinned to
-    the proven bytes rather than silently drifting with an unrelated
-    vendor's fix. Re-verify live before ever pointing this at the shared
-    helper.
+    W6 (2026-09-19) — TWO measured defects fixed here, both of which made this
+    guard a no-op on every Codex launch since it shipped. Codex had allowance
+    on this box again, so both halves were reproduced and re-verified through
+    real `codex exec` turns, not inferred:
+
+    1. **NO MATCHER.** This used to carry `matcher="shell"`, taken from an
+       offline strings extraction of codex.exe (§1 of the evidence doc, which
+       said "Codex's shell tool is named `shell`"). It is not. A PreToolUse
+       probe hook that dumped its own stdin measured
+       `"tool_name": "Bash", "tool_input": {"command": ...},
+       "tool_use_id": "exec-..."` — Codex 0.154.0 reports its shell tool as
+       `Bash`. With `matcher="shell"` the event never fired at all: a live
+       `taskkill /IM <decoy> /F` turn printed `hook: SessionStart`,
+       `hook: UserPromptSubmit`, `hook: Stop` — and no `hook: PreToolUse`.
+       The matcher is now OMITTED rather than corrected to `"Bash"`. It was a
+       redundant SECOND filter on top of `process_guard.hook_main`, which
+       already returns 0 immediately for any `tool_name` outside
+       `_SHELL_TOOL_NAMES` — and the only behaviour a second filter can add
+       is a silent fail-open when it disagrees with reality, which is exactly
+       what it did. One filter, in the guard, where a vendor renaming its
+       tool to `shell`/`run_shell_command`/`PowerShell` is already covered.
+       Cost: the guard also runs (and instantly exits 0) on non-shell tool
+       calls.
+
+    2. **NO EXIT-CODE SUFFIX.** It now calls `guard_shell_command()`, the
+       shared builder, instead of hand-rolling `"<py>" "<script>"`. The same
+       probe measured Codex's hook parent process as
+       `powershell.exe -NoProfile -Command "<command>"` — the PowerShell
+       shell whose exit-code collapse `_EXIT_CODE_SUFFIX` exists to undo. The
+       old pinned-bytes shape carried no suffix, so even once the matcher
+       fired, the guard's exit 2 would have reached Codex as 1. The previous
+       docstring's instruction ("Re-verify live before ever pointing this at
+       the shared helper") is what was done: see the evidence doc §9 for the
+       before/after live runs.
     """
-    py = python_exe or sys.executable or 'python'
-    script = str(guard_script or (Path(__file__).resolve().parent / 'process_guard.py'))
-    py_token = f'"{py}"' if ' ' in py else py
-    command = f'{py_token} "{script}"'
+    command = guard_shell_command(guard_script=guard_script, python_exe=python_exe)
     hooks_value = (
-        'hooks.PreToolUse=[{matcher="shell",hooks=[{type="command",'
+        'hooks.PreToolUse=[{hooks=[{type="command",'
         f'command={_toml_basic_string(command)},name={_toml_basic_string(HOOK_NAME)}}}]}}]'
     )
     return ['--dangerously-bypass-hook-trust', '-c', hooks_value]

@@ -10,7 +10,7 @@
  * could not install, sign in or switch to another vendor. Settings also
  * special-cased Claude (its own buttons + status line) so no two vendors
  * looked alike. Both surfaces now render rows through
- * walkthrough.js _renderProviderRow.
+ * provider-auth.js _renderProviderRow.
  *
  * Pins, at desktop AND 390px:
  *   1. Settings -> Providers lists every provider, incl. an uninstalled one.
@@ -19,7 +19,10 @@
  *      Claude row is byte-identical to another vendor in the same state once
  *      name/label are normalised — the per-vendor difference is only what a
  *      button DOES.
- *   3. "Sign in remotely" appears exactly where the server says remote_login.
+ *   3. ONE "Sign in" button per installed row (no separate "Sign in
+ *      remotely" — Ron, 2026-09-22: two buttons that both mean "sign me in"
+ *      collapse to one; auth-login-remote decides internally whether to use
+ *      URL-capture, a PTY pop-out, or the host-window fallback).
  *   4. The buttons are wired: Install -> install-launch, Install selected ->
  *      the batch route (ONE request), Set default -> PUT default_provider,
  *      Check status -> that vendor's auth-probe, Check setup status ->
@@ -59,7 +62,7 @@ const providers = [
     remote_login: false, install_hint: 'npm install -g @qwen-code/qwen-code', capabilities: {}, default: false, in_use: false },
 ];
 let config = { default_provider: 'claude' };
-const calls = { install: [], batch: [], probe: [], put: [], refreshList: 0, login: [] };
+const calls = { install: [], batch: [], probe: [], put: [], refreshList: 0, login: [], remoteLogin: [] };
 
 const browser = await chromium.launch();
 const ctx = await browser.newContext({ viewport: { width: 1000, height: 900 } });
@@ -112,7 +115,18 @@ await page.route('**/*', (route) => {
     return json({ ok: true, status: 'ok', last_checked: 'now' });
   }
   m = path.match(/^\/api\/agent\/provider\/([^/]+)\/login-launch$/);
-  if (m) { calls.login.push(m[1]); return json({ ok: true }); }
+  if (m) { calls.login.push(m[1]); return json({ ok: true, verified: false, command: m[1] }); }
+  // The unified Sign in button always tries this first; canned to mirror
+  // remote_login (true = capable via URL-capture/PTY, false = the caller
+  // must fall back to login-launch above — see agent_routes.py
+  // agent_auth_login_remote's real remote_capable:false branch).
+  m = path.match(/^\/api\/agent\/([^/]+)\/auth-login-remote$/);
+  if (m) {
+    calls.remoteLogin.push(m[1]);
+    const p = providers.find(x => x.name === m[1]);
+    if (p && p.remote_login) return json({ ok: true, remote_capable: true, status: 'url_ready', url: `https://example.test/${m[1]}` });
+    return json({ ok: false, remote_capable: false, error: `${m[1]} needs a real console to sign in.` });
+  }
   return route.abort();
 });
 
@@ -145,7 +159,6 @@ const readRows = () => page.evaluate(() => {
     actions: !!row.querySelector('.prov-row-actions'),
     def: !!row.querySelector('.prov-row-actions input[type=radio]'),
     signIn: !!row.querySelector('.prov-sign-in'),
-    remote: !!row.querySelector('.prov-sign-in-remote'),
     check: !!row.querySelector('.prov-check'),
     install: !!row.querySelector('.prov-install'),
     select: !!row.querySelector('.prov-row-select'),
@@ -169,9 +182,9 @@ const assertLayout = async (label) => {
   check(by.qwen.install && by.qwen.select && !by.qwen.check && by.qwen.state === 'not installed',
     `[${label}] uninstalled row: Install + batch tick-box, no Sign in/Check`,
     `[${label}] uninstalled row wrong: ${JSON.stringify(by.qwen)}`);
-  check(by.claude.remote && by.codex.remote && !by.gemini.remote,
-    `[${label}] Sign in remotely appears exactly where remote_login is true`,
-    `[${label}] remote-login buttons wrong: ${JSON.stringify(rows.map(r => [r.name, r.remote]))}`);
+  check(installed.every(r => !r.html.includes('prov-sign-in-remote')),
+    `[${label}] no separate "Sign in remotely" button — collapsed into the one Sign in button`,
+    `[${label}] a stray remote-login button remains: ${JSON.stringify(installed.filter(r => r.html.includes('prov-sign-in-remote')).map(r => r.name))}`);
   check(!by.claude.html.includes('prov-row-extra') && by.codex.html.includes('prov-row-extra')
         && by.gemini.html.includes('prov-row-extra'),
     `[${label}] the only per-vendor addition is the API-key field, on vendors that take a key (Claude signs in via OAuth)`,
@@ -211,13 +224,13 @@ try {
 
   // ── wiring ─────────────────────────────────────────────────────────────
   await page.click('#settings-providers-section .prov-row[data-provider="qwen"] .prov-install');
-  await page.waitForFunction(() => document.getElementById('wt-install-msg-qwen')?.textContent.includes('terminal opened'));
+  await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.install.join() === 'qwen', 'Install -> POST provider/qwen/install-launch',
     `install calls: ${calls.install}`);
 
   await page.check('#settings-providers-section .prov-row[data-provider="qwen"] .settings-prov-install-sel');
   await page.click('#settings-prov-install-selected');
-  await page.waitForFunction(() => document.getElementById('wt-install-msg-qwen')?.textContent.includes('terminal opened'));
+  await page.waitForFunction(() => document.getElementById('prov-install-msg-qwen')?.textContent.includes('terminal opened'));
   check(calls.batch.length === 1 && calls.batch[0].join() === 'qwen',
     'Install selected -> ONE batch request naming the ticked vendor',
     `batch calls: ${JSON.stringify(calls.batch)}`);
@@ -225,8 +238,32 @@ try {
   await page.click('#settings-providers-section .prov-row[data-provider="gemini"] .prov-sign-in');
   await page.waitForFunction(() => true);
   await page.waitForTimeout(100);
-  check(calls.login.join() === 'gemini', 'Sign in -> POST provider/gemini/login-launch',
-    `login calls: ${calls.login}`);
+  check(calls.remoteLogin.join() === 'gemini' && calls.login.join() === 'gemini',
+    'Sign in -> tries auth-login-remote first, falls back to provider/gemini/login-launch when remote_capable:false',
+    `remoteLogin calls: ${calls.remoteLogin}, login calls: ${calls.login}`);
+
+  // THE REGRESSION THIS PINS (Ron, 2026-09-22, from his phone): when the CLI
+  // DOES hand back an OAuth URL, that URL is the only way to sign in from a
+  // device that cannot see the host's browser. _renderRemoteLoginBox placed it
+  // at [data-remote-login-anchor], an attribute the old provider-settings.js
+  // row emitted and the unified _renderProviderRow did not — so the lookup
+  // found nothing, `if (!anchor) return` fired, and Sign in was a dead button
+  // over the tunnel with no error anywhere. Assert the box, the link and the
+  // paste-the-code input actually land in the DOM.
+  await page.click('#settings-providers-section .prov-row[data-provider="codex"] .prov-sign-in');
+  await page.waitForTimeout(150);
+  const remoteBox = await page.evaluate(() => {
+    const b = document.getElementById('settings-remote-login-codex');
+    if (!b) return null;
+    const a = b.querySelector('a');
+    return { href: a && a.getAttribute('href'), code: !!b.querySelector('input'),
+             submit: /settingsRemoteLoginSubmitCode/.test(b.innerHTML),
+             visible: b.getBoundingClientRect().width > 0 };
+  });
+  check(remoteBox && remoteBox.href === 'https://example.test/codex' && remoteBox.code
+        && remoteBox.submit && remoteBox.visible,
+    'Sign in with a captured URL renders the link + paste-the-code box in the row',
+    `remote login box: ${JSON.stringify(remoteBox)}`);
 
   await page.check('#settings-providers-section .prov-row[data-provider="codex"] input[type=radio]');
   await page.waitForFunction(() => document.querySelector(
@@ -260,26 +297,26 @@ try {
   if (process.env.MC_SMOKE_SHOT) await page.waitForTimeout(900);
   if (process.env.MC_SMOKE_SHOT) await page.screenshot({ path: process.env.MC_SMOKE_SHOT.replace(/(\.\w+)?$/, '-390$1') });
 
-  // ── tour step: same row shape + pre-ticked ready vendors ───────────────
+  // ── setup step: same row shape + pre-ticked ready vendors ───────────────
   await page.setViewportSize({ width: 1000, height: 900 });
   await page.evaluate(() => window.closeModalById('__settings'));
   // No saved default (a first run) so the step is not skipped, then past Welcome.
-  await page.evaluate(async () => { _globalConfig.default_provider = ''; await _ensureAgentProviders(true); window.startWalkthrough(); });
-  await page.waitForSelector('#wt-overlay', { timeout: 5000 });
-  await page.evaluate(() => window.wtNext());
-  await page.waitForSelector('#wt-overlay input[name="wt-provider"]', { timeout: 5000 });
-  const tour = await page.evaluate(() => [...document.querySelectorAll('#wt-overlay .prov-row')].map(r => ({
+  await page.evaluate(async () => { _globalConfig.default_provider = ''; await _ensureAgentProviders(true); window.startFirstRun({rerun: true}); });
+  await page.waitForSelector('#setup-overlay', { timeout: 5000 });
+  await page.evaluate(() => window.setupNext());
+  await page.waitForSelector('#setup-overlay input[name="setup-provider"]', { timeout: 5000 });
+  const tour = await page.evaluate(() => [...document.querySelectorAll('#setup-overlay .prov-row')].map(r => ({
     name: r.dataset.provider,
-    ticked: r.querySelector('input[name="wt-provider"]').checked,
+    ticked: r.querySelector('input[name="setup-provider"]').checked,
     head: !!r.querySelector('label.prov-row-head'),
     state: r.querySelector('.prov-row-state').textContent,
   })));
   check(tour.length === providers.length && tour.every(r => r.head),
-    'tour step renders the shared row (same head/name/state skeleton) for every vendor',
-    `tour rows: ${JSON.stringify(tour)}`);
+    'setup step renders the shared row (same head/name/state skeleton) for every vendor',
+    `setup rows: ${JSON.stringify(tour)}`);
   const ticked = tour.filter(r => r.ticked).map(r => r.name).sort().join();
   check(ticked === 'claude,codex',
-    'tour pre-ticks vendors that are installed AND signed in (claude, codex), not the rest',
+    'setup pre-ticks vendors that are installed AND signed in (claude, codex), not the rest',
     `pre-ticked: ${ticked}`);
 
   pageErrors.length === 0 ? ok('no uncaught page errors throughout')

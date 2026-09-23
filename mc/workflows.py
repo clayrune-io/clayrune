@@ -119,6 +119,30 @@ WAIT_MODES = ('delay', 'until')
 # {{steps.NAME.output}}. Without `-` the slot never matched, so it was neither
 # validated nor filled, and apex_trader's email went out as the literal
 # placeholder text (run-20ca7b13, 2026-09-15).
+# A step or schedule may pin the engine it runs on. Same id shapes the chat
+# path accepts (agent_set_model / agent_dispatch): the value goes to the CLI's
+# --model/--effort argv, so a leading '-' or anything exotic is refused here,
+# at save time, instead of reaching a subprocess. Before these fields existed a
+# workflow step and a scheduled run could not ask for a model at all -- they
+# silently ran the project default, which the 2026-09-19 live pass recorded as
+# 'claude-opus-5' where 'claude-sonnet-5' was wanted (no_silent_vendor_model_change).
+_ENGINE_MODEL_RE = re.compile(r'[A-Za-z0-9._\[\]][A-Za-z0-9._\[\]-]{0,59}')
+_ENGINE_EFFORT_RE = re.compile(r'[A-Za-z0-9_][A-Za-z0-9_-]{0,31}')
+
+
+def engine_field_errors(obj: dict, label: str) -> list:
+    """Errors for an optional `model` / `effort` pin on `obj`; [] = valid.
+    Absent or '' means "inherit the project default", exactly as a chat does."""
+    errors: list = []
+    for key, rx in (('model', _ENGINE_MODEL_RE), ('effort', _ENGINE_EFFORT_RE)):
+        if key not in obj or obj.get(key) in (None, ''):
+            continue
+        val = obj.get(key)
+        if not isinstance(val, str) or not rx.fullmatch(val.strip()):
+            errors.append(f"{label}: invalid {key} {val!r}")
+    return errors
+
+
 _SLOT_RE = re.compile(r'\{\{\s*([a-zA-Z0-9_.\-]+)\s*\}\}')
 _WF_RESULT_RE = re.compile(r'```[ \t]*wf:result[ \t\r\n]*(.*?)```', re.DOTALL | re.IGNORECASE)
 
@@ -423,6 +447,7 @@ def validate_workflow(doc: dict) -> list:
                 errors.append(f"agent step '{name}' missing project_id")
             if not (node.get('prompt') or '').strip():
                 errors.append(f"agent step '{name}' missing prompt")
+            errors.extend(engine_field_errors(node, f"agent step '{name}'"))
             outcomes = node.get('outcomes') or []
             if RESERVED_WHEN in outcomes:
                 errors.append(f"agent step '{name}': '{RESERVED_WHEN}' is reserved, not a declared outcome")
@@ -1005,6 +1030,12 @@ def _dispatch_step(run: dict, node: dict) -> bool:
             node['project_id'], prompt,
             trigger_type='workflow', trigger_id=f"{run['id']}:{name}",
             character=node.get('character') or '',
+            # An explicit per-step pin wins over the character's and the
+            # project's default -- the same precedence a chat dispatch gets.
+            # A pin the provider cannot honour raises ValueError in dispatch,
+            # which fails this step visibly (below); it is never swapped.
+            model_override=(node.get('model') or '').strip(),
+            effort_override=(node.get('effort') or '').strip() or None,
             notify_workflow={'run_id': run['id'], 'step': name},
         )
     except Exception as e:
@@ -1246,7 +1277,7 @@ def _notify_approval_waiting(run: dict, workflow: dict, node: dict) -> None:
             [sys.executable, str(mailer), '--subject',
              f"[Clayrune workflow] DECISION NEEDED: {workflow.get('name','')}",
              '--body', body],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
     except Exception as e:
         _log(f"[workflows] approval-gate email failed: {e}")
 
@@ -1304,7 +1335,7 @@ def _send_operator_notification(subject: str, body: str) -> tuple:
         import sys
         r = subprocess.run(
             [sys.executable, str(mailer), '--subject', subject, '--body', body],
-            capture_output=True, text=True, timeout=60)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=60)
         if r.returncode != 0:
             return False, f'send_mail exited {r.returncode}: {(r.stderr or r.stdout or "").strip()[:200]}'
         return True, 'sent'

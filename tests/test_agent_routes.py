@@ -25,8 +25,11 @@ router-stats / recent-runs globs see a clean slate. agent_sessions (a mc.state
 object shared with the blueprint by import) is snapshot/cleared/restored in
 place — the 1.8 cross-test-pollution lesson.
 """
+import io
 import json
+import os
 import sys
+import types
 from pathlib import Path
 
 import pytest
@@ -47,6 +50,7 @@ EXPECTED_ROUTES = {
     '/api/agent/<provider>/auth-login-remote/code',
     '/api/agent/<provider>/auth-login-remote/status',
     '/api/agent/<provider>/auth-logout',
+    '/api/agent/<provider>/allowance/recheck',
     '/api/agent/<provider>/auth-probe',
     '/api/agent/<provider>/auth-status',
     '/api/agent/provider/<name>/auth',
@@ -201,7 +205,8 @@ def test_install_launch_onboards_missing_node_before_provider(monkeypatch, clien
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: _InstallRuntime())
     monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
     monkeypatch.setattr(ar.sys, 'platform', 'win32')
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-1', None))
 
     # Exact pre-fix behavior: the route stopped here and never opened an
     # onboarding terminal. Keep the reproduction beside the regression so a
@@ -215,6 +220,7 @@ def test_install_launch_onboards_missing_node_before_provider(monkeypatch, clien
     body = response.get_json()
     assert body['ok'] is True
     assert body['prerequisite'] == 'npm'
+    assert body['session_id'] == 'sess-1'
     assert calls == [
         'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
         '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
@@ -253,7 +259,8 @@ def test_install_launch_batch_runs_node_prereq_once(monkeypatch, client):
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
     monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
     monkeypatch.setattr(ar.sys, 'platform', 'win32')
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-1', None))
 
     response = client.post('/api/agent/providers/install-launch',
                            json={'names': ['codex', 'gemini']})
@@ -262,6 +269,7 @@ def test_install_launch_batch_runs_node_prereq_once(monkeypatch, client):
     assert body['ok'] is True
     assert body['unsupported'] == []
     assert sorted(body['installed']) == ['codex', 'gemini']
+    assert body['session_id'] == 'sess-1'
     assert len(calls) == 1, 'must open exactly one terminal for the whole batch'
     command = calls[0]
     # The node-install snippet appears exactly once, and both packages'
@@ -284,7 +292,8 @@ def test_install_launch_batch_skips_unsupported_names(monkeypatch, client):
     calls = []
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
     monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)  # npm present
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-1', None))
 
     response = client.post('/api/agent/providers/install-launch',
                            json={'names': ['codex', 'evil']})
@@ -308,7 +317,8 @@ def test_install_launch_rejects_untrusted_hint_when_npm_missing(monkeypatch, cli
     launched = []
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
     monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (launched.append(command) or None, 'unreachable'))
     response = client.post('/api/agent/provider/codex/install-launch')
     assert response.status_code == 200
     assert response.get_json()['ok'] is False
@@ -334,7 +344,8 @@ def test_install_launch_onboards_missing_pip_before_aider(monkeypatch, client):
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
     monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
     monkeypatch.setattr(ar.sys, 'platform', 'win32')
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-1', None))
 
     response = client.post('/api/agent/provider/aider/install-launch')
     assert response.status_code == 200
@@ -363,7 +374,8 @@ def test_install_launch_prefers_existing_uv_over_bootstrap(monkeypatch, client):
     calls = []
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
     monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/uv' if name == 'uv' else None)
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda command: calls.append(command))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (calls.append(command) or 'sess-1', None))
 
     response = client.post('/api/agent/provider/aider/install-launch')
     assert response.status_code == 200
@@ -385,7 +397,8 @@ def test_install_launch_rejects_untrusted_hint_when_pip_missing(monkeypatch, cli
     launched = []
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: Runtime())
     monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', launched.append)
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda command: (launched.append(command) or None, 'unreachable'))
     response = client.post('/api/agent/provider/aider/install-launch')
     assert response.status_code == 200
     assert response.get_json()['ok'] is False
@@ -403,10 +416,12 @@ def test_providers_endpoint_ok(client):
 
 def test_providers_endpoint_reports_remote_login_and_probe_cost(client, monkeypatch):
     """The unified provider row (walkthrough.js _renderProviderRow) is data
-    driven: "Sign in remotely" only where remote_login is true, and the Check
-    status tooltip discloses quota spend from capabilities.auth_probe_spends_quota
-    — which used to be on the dataclass but never serialised, so the client
-    could not see it."""
+    driven: remote_login tells the single Sign in button (provider-auth.js
+    settingsProviderTerminalLogin) whether /auth-login-remote can handle this
+    vendor (URL-capture or a real PTY) before it falls back to the host
+    terminal window; the Check status tooltip discloses quota spend from
+    capabilities.auth_probe_spends_quota — which used to be on the dataclass
+    but never serialised, so the client could not see it."""
     from mc import pty_backend
     monkeypatch.setattr(pty_backend, 'pty_available', lambda: False)
     providers = {p['name']: p for p in client.get('/api/agent/providers').get_json()['providers']}
@@ -778,6 +793,86 @@ def test_model_pin_session_not_found(client):
     assert r.status_code == 404
 
 
+# ── resume re-resolves a tracked tier; a pin never moves (model-hierarchy-
+# simplification, 2026-09-22) ───────────────────────────────────────────────
+# `_continuation_model` is the function `_dispatch_agent_internal`'s resume
+# branch calls (agent_routes.py ~8511) to decide what `--model` a resumed
+# conversation gets. An unpinned/auto conversation must re-run
+# engine_selection's tier lookup on every call — never memorize a snapshot —
+# so a new release is picked up the next time the chat is resumed. A pinned
+# conversation must ignore config changes entirely.
+#
+# `state.CONFIG` is the same process-wide singleton every other test file
+# reads (not reset by the `client` fixture, which only touches
+# agent_sessions/DATA_DIR) — a bare `.pop('agent_model', None)` teardown
+# DELETES whatever value was there before this test ran instead of restoring
+# it, permanently flipping later tests' config from "concrete pin" to
+# "absent -> tier:best" for the rest of the pytest session. Root-caused a
+# cross-file failure in tests/test_authorized_runtime_bridge.py (its
+# duck-typed FakeRuntime has no latest_for(), so the tier path it never used
+# to hit started raising AttributeError). Snapshot-and-restore the exact
+# prior value/absence, same as the `client` fixture already does for
+# agent_sessions.
+_MISSING = object()
+
+
+def _set_config(ar, **values):
+    """Set state.CONFIG keys, returning a restore() that undoes exactly this
+    call — even when a key was absent before, never leaving a stale value."""
+    originals = {k: ar.state.CONFIG.get(k, _MISSING) for k in values}
+    ar.state.CONFIG.update(values)
+
+    def restore():
+        for k, v in originals.items():
+            if v is _MISSING:
+                ar.state.CONFIG.pop(k, None)
+            else:
+                ar.state.CONFIG[k] = v
+    return restore
+
+
+def test_continuation_model_reresolves_tracked_tier_on_each_call(client):
+    from mc.blueprints import agent_routes as ar
+    session = {'model_auto_requested': True, 'agent_model': 'claude-opus-5-5'}
+    restore = _set_config(ar, agent_model='tier:best', auto_model_enabled=False)
+    try:
+        assert ar._continuation_model(session, {}) == 'opus'
+        # A new global tier choice takes effect on the VERY NEXT resume —
+        # nothing about the prior resolution is cached on the session.
+        ar.state.CONFIG['agent_model'] = 'tier:fast'
+        assert ar._continuation_model(session, {}) == 'haiku'
+    finally:
+        restore()
+
+
+def test_continuation_model_pinned_chat_never_moves(client):
+    from mc.blueprints import agent_routes as ar
+    session = {'model_auto_requested': False, 'pinned_model': 'claude-opus-5',
+               'agent_model': 'claude-opus-5'}
+    restore = _set_config(ar, agent_model='tier:best')
+    try:
+        # Global tracking changed underneath it; a pinned chat ignores it.
+        assert ar._continuation_model(session, {}) == 'claude-opus-5'
+        ar.state.CONFIG['agent_model'] = 'tier:fast'
+        assert ar._continuation_model(session, {}) == 'claude-opus-5'
+    finally:
+        restore()
+
+
+def test_resolve_dispatch_model_reresolves_tier_between_calls():
+    """The dispatch-time fallback (used by both fresh dispatch and the auto/
+    tracked resume branch) is a live lookup, not a cached value: a global
+    tier change is visible on the very next call, no restart required."""
+    from mc.blueprints import agent_routes as ar
+    restore = _set_config(ar, agent_model='tier:best', auto_model_enabled=False)
+    try:
+        assert ar._resolve_dispatch_model({}, '')[0] == 'opus'
+        ar.state.CONFIG['agent_model'] = 'tier:balanced'
+        assert ar._resolve_dispatch_model({}, '')[0] == 'sonnet'
+    finally:
+        restore()
+
+
 # ── Auth probe: "Reached max turns" must not be read as an auth failure ───────
 
 def _run_probe_with(monkeypatch, *, returncode, stdout='', stderr=''):
@@ -1015,6 +1110,12 @@ class _StubCodexRuntime:
     def model_supported(self, model):
         return False
 
+    def latest_for(self, tier):
+        """Stand-in for AgentRuntime.latest_for: these tests exercise
+        dispatch-flag plumbing, not model-hierarchy tier tracking, so an
+        empty tier head (native default) keeps them independent of it."""
+        return ''
+
     def __init__(self):
         self.dispatch_kwargs = None
 
@@ -1121,6 +1222,10 @@ class _StubMissingCLIRuntime:
 
     def model_supported(self, model):
         return False
+
+    def latest_for(self, tier):
+        """See _StubCodexRuntime.latest_for — same reasoning."""
+        return ''
 
     def build_command(self, **kwargs):
         return ['codex', 'exec']
@@ -1291,7 +1396,8 @@ def test_install_launch_routes_surface_execution_policy(monkeypatch, client):
     order = []
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
     monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: order.append('launch'))
+    monkeypatch.setattr(ar, '_launch_install_terminal',
+                        lambda c: (order.append('launch') or 'sess-1', None))
     monkeypatch.setattr(ar, '_ensure_powershell_execution_policy',
                         lambda: order.append('policy') or {
                             'action': 'set', 'effective': 'Restricted', 'message': 'MSG'})
@@ -1301,8 +1407,303 @@ def test_install_launch_routes_surface_execution_policy(monkeypatch, client):
     assert order == ['launch', 'policy', 'launch', 'policy']
     assert single['execution_policy']['message'] == 'MSG'
     assert batch['execution_policy']['message'] == 'MSG'
+    assert single['session_id'] == 'sess-1'
+    assert batch['session_id'] == 'sess-1'
 
     order.clear()
-    monkeypatch.setattr(ar, '_launch_terminal_for_binary', lambda c: 'no terminal')
+    monkeypatch.setattr(ar, '_launch_install_terminal', lambda c: (None, 'no terminal'))
     failed = client.post('/api/agent/provider/gemini/install-launch').get_json()
     assert failed['ok'] is False and 'policy' not in order
+
+
+class _FakeInstallProc:
+    """Minimal Popen stand-in for launch_pipe_session, real pipe so the
+    verbatim _read_terminal_stream reader thread runs end-to-end (same trick
+    test_terminal_routes.py's FakeProc uses). Closed immediately so the
+    reader observes EOF right away and the test doesn't hang on a real
+    child."""
+    _next_pid = 993000
+
+    def __init__(self):
+        r, w = os.pipe()
+        self.stdout = os.fdopen(r, 'rb')
+        self.stdin = io.BytesIO()
+        os.close(w)  # immediate EOF
+        _FakeInstallProc._next_pid += 1
+        self.pid = _FakeInstallProc._next_pid
+
+    def wait(self, timeout=None):
+        return 0
+
+    def poll(self):
+        return 0
+
+    def kill(self):
+        pass
+
+
+def test_install_launch_opens_a_real_terminal_session(monkeypatch, client):
+    """F-install (clean-VM run 2026-09-22): the original bug was FALSE
+    SUCCESS — `start cmd` returning as soon as the shell spawned, and no
+    window ever appearing (wrong Windows session / over the tunnel), while
+    the route still answered ok:true. This does NOT mock
+    `_launch_install_terminal` — it exercises the real
+    launch_pipe_session -> terminal_routes plumbing (only subprocess.Popen is
+    faked, same seam test_terminal_routes.py uses) and asserts a genuine
+    entry lands in mc.state.terminal_sessions, keyed by the session_id the
+    response hands back — the thing openTerminalPopout(session_id) actually
+    attaches to, not just a truthy flag.
+    """
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    from mc.blueprints import terminal_routes as tr
+
+    before_terms = dict(mc_state.terminal_sessions)
+    before_procs = dict(mc_state.tracked_processes)
+    mc_state.terminal_sessions.clear()
+    mc_state.tracked_processes.clear()
+    try:
+        runtimes = {'codex': _BatchInstallRuntime('npm install -g @openai/codex')}
+        monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+        monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)  # npm present
+        monkeypatch.setattr(ar, '_npm_major_version', lambda npm_bin: 12)
+        monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
+            Popen=lambda *a, **kw: _FakeInstallProc(), PIPE=-1, STDOUT=-2))
+
+        response = client.post('/api/agent/providers/install-launch',
+                               json={'names': ['codex']})
+        assert response.status_code == 200
+        body = response.get_json()
+        assert body['ok'] is True
+        sid = body['session_id']
+        assert sid and len(sid) == 12
+        assert body['pty'] is False
+        assert sid in mc_state.terminal_sessions
+        session = mc_state.terminal_sessions[sid]
+        assert session['command'] == \
+            'npm install -g --allow-scripts=@openai/codex @openai/codex'
+        assert bool(session.get('is_pty')) is False
+    finally:
+        mc_state.terminal_sessions.clear()
+        mc_state.terminal_sessions.update(before_terms)
+        mc_state.tracked_processes.clear()
+        mc_state.tracked_processes.update(before_procs)
+
+
+def test_install_launch_failure_returns_ok_false_with_command(monkeypatch, client):
+    """Requirement: a launch that genuinely could not start must return
+    ok:false with a usable `command` for the user to run by hand — never
+    report success for a window nobody can see. Exercises the real
+    launch_pipe_session failure path (Popen raising), not a mocked seam."""
+    from mc.blueprints import agent_routes as ar
+    from mc.blueprints import terminal_routes as tr
+
+    def _boom(*a, **kw):
+        raise OSError('no such file or directory')
+    monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
+        Popen=_boom, PIPE=-1, STDOUT=-2))
+
+    runtimes = {'codex': _BatchInstallRuntime('npm install -g @openai/codex')}
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: '/x/' + name)
+    monkeypatch.setattr(ar, '_npm_major_version', lambda npm_bin: 12)
+
+    single = client.post('/api/agent/provider/codex/install-launch').get_json()
+    assert single['ok'] is False
+    assert single['command'] == 'npm install -g --allow-scripts=@openai/codex @openai/codex'
+    assert 'session_id' not in single
+
+    batch = client.post('/api/agent/providers/install-launch',
+                        json={'names': ['codex']}).get_json()
+    assert batch['ok'] is False
+    assert batch['command'] == 'npm install -g --allow-scripts=@openai/codex @openai/codex'
+    assert batch['unsupported'] == []
+    assert 'session_id' not in batch
+
+
+def test_install_launch_batch_still_one_terminal_with_real_launcher(monkeypatch, client):
+    """F7's one-terminal/one-prereq property must survive routing through the
+    real _launch_install_terminal -> launch_pipe_session path, not just the
+    mocked '_launch_terminal_for_binary' seam the property was originally
+    proven against."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    from mc.blueprints import terminal_routes as tr
+
+    before_terms = dict(mc_state.terminal_sessions)
+    before_procs = dict(mc_state.tracked_processes)
+    mc_state.terminal_sessions.clear()
+    mc_state.tracked_processes.clear()
+    try:
+        runtimes = {
+            'codex': _BatchInstallRuntime('npm install -g @openai/codex'),
+            'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+        }
+        popen_calls = []
+
+        def _popen(*a, **kw):
+            popen_calls.append(a)
+            return _FakeInstallProc()
+        monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+        monkeypatch.setattr(ar.shutil, 'which', lambda name: None if name == 'npm' else '/x/' + name)
+        monkeypatch.setattr(ar.sys, 'platform', 'win32')
+        monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
+            Popen=_popen, PIPE=-1, STDOUT=-2))
+
+        response = client.post('/api/agent/providers/install-launch',
+                               json={'names': ['codex', 'gemini']})
+        body = response.get_json()
+        assert body['ok'] is True
+        assert len(popen_calls) == 1, 'must spawn exactly one process for the whole batch'
+        command = popen_calls[0][0]
+        assert command.count('winget install --id OpenJS.NodeJS.LTS') == 1
+        assert 'npm install -g @openai/codex' in command
+        assert 'npm install -g @google/gemini-cli' in command
+    finally:
+        mc_state.terminal_sessions.clear()
+        mc_state.terminal_sessions.update(before_terms)
+        mc_state.tracked_processes.clear()
+        mc_state.tracked_processes.update(before_procs)
+
+
+# Root-cause correction, 2026-09-22 (verified on the real VM after the fix
+# above shipped): NOT session isolation — Session 2 is Ron's own console.
+# The real bug is QUOTING. The composed batch command below (captured
+# verbatim from the VM for claude+gemini, npm missing) embeds its own double
+# quotes (`set "PATH=..."`, `"tokens=1 delims=."`), && chains, parens and a
+# `for /f` loop's `%v` variable. `_launch_terminal_for_binary`'s
+# `start "" cmd /k "\"{bin_str}\""` wrapper was built for a single binary
+# path — nesting this string inside it produces unbalanced/mis-parsed
+# quotes, cmd dies instantly, and Popen(shell=True) has already returned
+# "success" by then (defect #1, unchanged). Routing install through
+# `_launch_install_terminal` -> `launch_pipe_session` sidesteps this because
+# `launch_pipe_session` hands the command to
+# `subprocess.Popen(command, shell=True, ...)` with NO re-wrapping — but
+# that needs its own pin, or a future refactor could reintroduce wrapping
+# and silently reopen this exact bug.
+_VERBATIM_COMPOUND_INSTALL_COMMAND = (
+    'set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
+    '&& (where npm >nul 2>&1 || winget install --id OpenJS.NodeJS.LTS '
+    '-e --silent --source winget '
+    '--accept-source-agreements --accept-package-agreements) '
+    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    '(if %v GEQ 12 (npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code) '
+    'else (npm install -g @anthropic-ai/claude-code)) '
+    '&& for /f "tokens=1 delims=." %v in (\'npm -v\') do '
+    '(if %v GEQ 12 (npm install -g --allow-scripts=@google/gemini-cli @google/gemini-cli) '
+    'else (npm install -g @google/gemini-cli))'
+)
+
+
+def test_batch_install_command_matches_verbatim_vm_capture(monkeypatch):
+    """Pin `_provider_install_command_batch`'s real output for claude+gemini
+    with npm missing against the exact string captured on the VM, so the
+    compound-quoting fixture below is provably the real shape and not a
+    hand-typed approximation."""
+    from mc.blueprints import agent_routes as ar
+
+    runtimes = {
+        'claude': _BatchInstallRuntime('npm install -g @anthropic-ai/claude-code'),
+        'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+    }
+    monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+    monkeypatch.setattr(ar.shutil, 'which', lambda name: None)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    command, unsupported, prereq_added = ar._provider_install_command_batch(
+        ['claude', 'gemini'])
+    assert command == _VERBATIM_COMPOUND_INSTALL_COMMAND
+    assert unsupported == []
+    assert prereq_added is True
+
+
+def test_install_launch_command_survives_intact_through_pipe_session(monkeypatch, client):
+    """Requirement (Ron, 2026-09-22): feed the verbatim compound command
+    through the real install launch path and assert it reaches Popen
+    byte-for-byte unmodified — not re-quoted, not re-wrapped in
+    `start "" cmd /k`. A test only checking 'a session id came back' would
+    not catch a quoting regression; this one would, because it fails loudly
+    if a future change routes install back through
+    `_launch_terminal_for_binary`'s wrapper or otherwise touches the string."""
+    from mc import state as mc_state
+    from mc.blueprints import agent_routes as ar
+    from mc.blueprints import terminal_routes as tr
+
+    before_terms = dict(mc_state.terminal_sessions)
+    before_procs = dict(mc_state.tracked_processes)
+    mc_state.terminal_sessions.clear()
+    mc_state.tracked_processes.clear()
+    try:
+        runtimes = {
+            'claude': _BatchInstallRuntime('npm install -g @anthropic-ai/claude-code'),
+            'gemini': _BatchInstallRuntime('npm install -g @google/gemini-cli'),
+        }
+        popen_calls = []
+
+        def _popen(*a, **kw):
+            popen_calls.append(a)
+            return _FakeInstallProc()
+        monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda name: runtimes[name])
+        monkeypatch.setattr(ar.shutil, 'which', lambda name: None)  # npm missing -> bootstrap path
+        monkeypatch.setattr(ar.sys, 'platform', 'win32')
+        monkeypatch.setattr(tr, 'subprocess', types.SimpleNamespace(
+            Popen=_popen, PIPE=-1, STDOUT=-2))
+
+        response = client.post('/api/agent/providers/install-launch',
+                               json={'names': ['claude', 'gemini']})
+        body = response.get_json()
+        assert body['ok'] is True, body
+        assert len(popen_calls) == 1
+        launched_command = popen_calls[0][0]
+        assert launched_command == _VERBATIM_COMPOUND_INSTALL_COMMAND, (
+            'the compound install command must reach Popen unmodified — got:\n'
+            f'{launched_command!r}')
+        # Not re-wrapped in the OS-window quote sandwich that broke this originally.
+        assert 'cmd /k' not in launched_command
+        assert not launched_command.startswith('start ')
+    finally:
+        mc_state.terminal_sessions.clear()
+        mc_state.terminal_sessions.update(before_terms)
+        mc_state.tracked_processes.clear()
+        mc_state.tracked_processes.update(before_procs)
+
+
+def test_launch_terminal_for_binary_rejects_compound_command(monkeypatch):
+    """Requirement (Ron, 2026-09-22): the OS-window path
+    (`_launch_terminal_for_binary`) is still used by the two interactive
+    sign-in callers with a single resolved binary path. It must reject a
+    compound shell command rather than silently producing the exact broken
+    `start "" cmd /k` quote-nesting this whole bug was. Confirms the guard
+    fires on the real captured fixture and returns an error string without
+    touching subprocess at all."""
+    from mc.blueprints import agent_routes as ar
+
+    def _boom(*a, **kw):
+        raise AssertionError('must not attempt to launch a rejected compound command')
+    monkeypatch.setattr(ar.subprocess, 'Popen', _boom)
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+
+    err = ar._launch_terminal_for_binary(_VERBATIM_COMPOUND_INSTALL_COMMAND)
+    assert err is not None
+    assert 'compound' in err.lower()
+
+    # A genuine single binary path still launches normally (no regression
+    # for the real callers: interactive claude/codex/etc sign-in).
+    monkeypatch.setattr(ar.subprocess, 'Popen', lambda *a, **kw: None)
+    assert ar._launch_terminal_for_binary(r'C:\Users\x\AppData\Roaming\npm\claude.cmd') is None
+
+
+def test_launch_terminal_for_binary_allows_ampersand_in_path(monkeypatch):
+    """The guard must not over-reject. A LONE `&` or `|` sits inside the
+    wrapper's own quotes and is harmless; Windows folder names legitimately
+    contain `&` (`C:\Tools\A&B\claude.cmd`). Rejecting those would refuse
+    an interactive sign-in that worked before the guard existed — a
+    regression traded for the bug it was meant to stop."""
+    from mc.blueprints import agent_routes as ar
+
+    seen = []
+    monkeypatch.setattr(ar.sys, 'platform', 'win32')
+    monkeypatch.setattr(ar.subprocess, 'Popen',
+                        lambda cmd, **kw: seen.append(cmd))
+
+    assert ar._launch_terminal_for_binary(r'C:\Tools\A&B\claude.cmd') is None
+    assert len(seen) == 1 and r'A&B' in seen[0]

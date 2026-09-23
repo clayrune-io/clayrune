@@ -15,8 +15,15 @@ from tests.test_revive_notify_carry import ar, _project
 
 
 @pytest.fixture(autouse=True)
-def _isolated_allowance_state(tmp_path):
+def _isolated_allowance_state(tmp_path, monkeypatch):
     al.wire(tmp_path / 'allowance_state.json')
+    # A user-initiated refusal re-probes the vendor first
+    # (agent_routes._allowance_refusal); these tests are about the refusal
+    # itself, so the vendor answers "cannot tell" instead of spawning a CLI.
+    from mc import agent_runtime
+    for rt in agent_runtime._RUNTIMES.values():
+        monkeypatch.setattr(rt, 'probe_allowance', lambda: None)
+    al._LAST_PROBE.clear()
     yield
     al._STATE = {}
 

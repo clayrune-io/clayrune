@@ -232,7 +232,7 @@ def _clayrune_version() -> str:
     try:
         out = subprocess.run(
             ['git', 'describe', '--tags', '--always', '--dirty'],
-            cwd=str(REPO_ROOT), capture_output=True, text=True, timeout=5)
+            cwd=str(REPO_ROOT), capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
         v = out.stdout.strip()
         if v:
             return v
@@ -273,7 +273,7 @@ def _git_info(path: Path) -> tuple[Optional[str], Optional[str]]:
     def _run(args):
         try:
             r = subprocess.run(['git', '-C', str(path)] + args,
-                               capture_output=True, text=True, timeout=5)
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=5)
             return r.stdout.strip() if r.returncode == 0 else None
         except Exception:
             return None
@@ -286,7 +286,7 @@ def _untracked_not_ignored(path: Path) -> Optional[list[str]]:
     try:
         r = subprocess.run(
             ['git', '-C', str(path), 'ls-files', '--others', '--exclude-standard'],
-            capture_output=True, text=True, timeout=30)
+            capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30)
         if r.returncode != 0:
             return None
         return [ln for ln in r.stdout.splitlines() if ln]

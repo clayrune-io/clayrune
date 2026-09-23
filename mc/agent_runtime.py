@@ -18,6 +18,7 @@ See docs/MULTI_PROVIDER_DESIGN.md for the full architectural design.
 
 from __future__ import annotations
 
+import base64
 import json
 import inspect
 import os
@@ -205,7 +206,16 @@ class ProviderCapabilities:
     # Brief-specified fields (CapabilityFlags members)
     emits_cost: bool = False
     emits_num_turns: bool = False
+    # True only when the runtime's DEFAULT model reads image files itself.
+    # Per-model truth comes from AgentRuntime.image_input_for(model) -- one
+    # runtime can front both a blind model (qwen3-coder-plus) and a sighted one
+    # (qwen3-vl-plus).
     image_input: bool = False
+    # True when an attached image reaches the agent one way or the other:
+    # natively (image_input) or, for a model that cannot see, as a described
+    # text block from the vision bridge (mc/vision_bridge.py). The composer
+    # gates paste / drop / attach on THIS, not image_input.
+    image_attach: bool = True
     context_window: Optional[int] = None
     # Context injection
     context_injection: Literal['flag', 'file', 'prepend', 'read-file'] = 'prepend'
@@ -669,8 +679,35 @@ def _last_real_error_line(log_tail: str) -> Optional[str]:
             continue
         if _SEED_LINE_RE.match(stripped):
             continue
+        # A line with no letter or digit (a lone `]`, `}`, `)`) is the tail of
+        # a multi-line message, never a cause. Live 2026-09-19: a Qwen 404
+        # whose text was an HTML page wrapped in `[API Error: ... ]` left a
+        # bare `]` as the last physical line, so the chat read
+        # "Qwen Code error: ]".
+        if not any(c.isalnum() for c in stripped):
+            continue
         return stripped
     return None
+
+
+_HTML_DOC_RE = re.compile(r'<!doctype html|<html[\s>]', re.IGNORECASE)
+_HTML_TAG_RE = re.compile(r'<[^>]*>')
+
+
+def _flatten_error_text(text: Any, limit: int = 600) -> str:
+    """One physical line for a CLI's error text.
+
+    `log_lines` entries are joined with newlines into the tail that
+    `_last_real_error_line` scans line by line, so an entry that itself spans
+    lines is cut apart and only its last fragment survives. A gateway 404
+    arrives as a whole HTML page; strip the markup (only when it is a page, so
+    `expected <int>` is left alone), collapse the whitespace, and cap it.
+    """
+    t = str(text)
+    if _HTML_DOC_RE.search(t):
+        t = _HTML_TAG_RE.sub(' ', t)
+    t = ' '.join(t.split())
+    return t if len(t) <= limit else t[:limit].rstrip() + '...'
 
 
 def _collect_trailing_reply_text(lines: Optional[List[str]]) -> str:
@@ -745,6 +782,50 @@ class AgentRuntime(ABC):
         whose catalog is dynamic (read from config, probed from the CLI)."""
         return list(self.MODEL_CHOICES)
 
+    # ── Tier tracking (model-hierarchy-simplification, 2026-09-22) ───────────
+    # A config value of 'tier:best'/'tier:balanced'/'tier:fast' asks to TRACK
+    # that tier rather than pin an exact id — see mc/engine_selection.py. Each
+    # runtime maps the three tiers to whatever its own catalog offers as
+    # "resolves to the newest automatically"; TIER_ALIASES holds that mapping.
+    # Empty (the base default) means this runtime has no such handle — Qwen's
+    # MODEL_CHOICES is empty for the same reason (no verified catalog to pick
+    # a head from), so tracking any tier there resolves to the native default.
+    TIER_ALIASES: Dict[str, str] = {}
+
+    def latest_for(self, tier: str) -> str:
+        """The value to pass as --model to TRACK `tier` at spawn time.
+
+        Deliberately the CLI's own always-resolves-to-newest handle (an alias
+        or a `-latest`-style catalog id) rather than a concrete model id MC
+        would have to keep updated by hand — that hand-updating is exactly the
+        staleness bug this feature replaces. '' means no such handle exists
+        for this provider/tier; caller falls back to native default.
+        """
+        return self.TIER_ALIASES.get(tier, '')
+
+    def tier_family(self, model: str) -> str:
+        """Which tier `model` currently occupies, or '' when unknown.
+
+        Used only for is_stale_pin() / display — never for spawn resolution.
+        Base default is '' (no family signal): overridden only where a
+        runtime's catalog groups ids by a reliable name pattern.
+        """
+        return ''
+
+    def catalog_head_for(self, tier: str) -> str:
+        """The newest CONCRETE catalog id currently occupying `tier`.
+
+        Distinct from latest_for(): that returns a dynamic, self-updating
+        handle for spawning; this returns today's static snapshot for
+        comparing against a stored exact pin (is_stale_pin). Relies on
+        model_choices() being ordered newest-first within each family, same
+        assumption the catalogs already document for themselves.
+        """
+        for model_id, _label in self.model_choices():
+            if self.tier_family(model_id) == tier:
+                return model_id
+        return ''
+
     def model_supported(self, model: str) -> bool:
         """True when `model` is one this provider is known to accept.
 
@@ -799,6 +880,15 @@ class AgentRuntime(ABC):
             return f"{self.ATTACHMENT_INSTRUCTION}\n\n{text}"
         return text
 
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Context held by a finished turn's LAST model request, for the
+        token rollover trigger. Default: the turn's usage dict normalized.
+        A runtime whose turn usage is a sum over several requests overrides
+        this (QwenRuntime), or the rollover fires on a phantom figure."""
+        return normalize_context_tokens(usage)
+
     # ── MC Tool Protocol (provider-agnostic emulated tools) ───────────────────
     def with_mc_tool_protocol(self, system_prompt: str) -> str:
         """Append the MC Tool Protocol instructions to a system prompt so a
@@ -832,6 +922,16 @@ class AgentRuntime(ABC):
     def health_check(self) -> HealthStatus:
         """Probe install + auth state. May spawn the binary with --version."""
         ...
+
+    def probe_allowance(self) -> Optional[bool]:
+        """Ask the vendor, WITHOUT spending tokens, whether it is usable.
+
+        True = the vendor confirms usable (a stale exhaustion record may be
+        cleared); anything else must leave a record standing. None = no cheap
+        probe exists for this vendor or it did not answer — the default, and
+        deliberate: see mc/allowance_probe.py for why none is invented.
+        """
+        return None
 
     @abstractmethod
     def capabilities(self) -> ProviderCapabilities:
@@ -927,6 +1027,41 @@ class AgentRuntime(ABC):
 
         Returns None if the provider can't do a non-streaming call.
         Default: not supported.
+        """
+        return None
+
+    # ── Vision (model-level) ──────────────────────────────────────────────────
+    # (regex, has_vision) pairs, first match wins on the lower-cased model id;
+    # no match falls back to capabilities().image_input. A runtime overrides
+    # this when its catalog mixes sighted and blind models.
+    VISION_MODEL_PATTERNS: Tuple[Tuple[str, bool], ...] = ()
+
+    def image_input_for(self, model: str = '') -> bool:
+        """True when `model` (or the runtime default, if empty) can see images.
+
+        image_input alone is per-RUNTIME and cannot say "qwen3-coder-plus is
+        blind, qwen3-vl-plus is not". Every vision decision goes through here.
+        """
+        m = (model or '').strip().lower()
+        if m:
+            for pattern, sighted in self.VISION_MODEL_PATTERNS:
+                if re.search(pattern, m):
+                    return bool(sighted)
+        try:
+            return bool(self.capabilities().image_input)
+        except Exception:
+            return False
+
+    # Model this runtime uses when it is the one DESCRIBING an image for a
+    # blind agent (mc/vision_bridge.py). '' = this runtime is not a describer.
+    VISION_DESCRIBE_MODEL: str = ''
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Tool-free single call that shows the model ONE image and returns its
+        text. Must run inside the same isolation as oneshot(); a runtime that
+        cannot do that leaves this as None (= not a describer). On failure
+        returns None and leaves the reason in `last_error`.
         """
         return None
 
@@ -1040,6 +1175,19 @@ class AgentRuntime(ABC):
         stdin for the code — without one.
         """
         return None
+
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """Extra argv and env for a login flow launched in a real PTY —
+        used when auth_login_argv() returns None and the CLI falls to the
+        PTY pop-out instead (MC-928) rather than the plain-pipe URL capture.
+
+        Default: (None, None) — bare binary, no extra env, today's
+        behaviour, so a runtime that doesn't override this is untouched.
+        Override for a CLI whose loopback-callback OAuth can be switched to
+        a device-code / paste-a-code flow via a subcommand or env var — e.g.
+        `codex login --device-auth`, or NO_BROWSER=1 for gemini/qwen.
+        """
+        return None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -1565,9 +1713,35 @@ class ClaudeRuntime(AgentRuntime):
         ('claude-fable-5-1', 'Fable 5.1'),
         ('claude-fable-5', 'Fable 5'),
         ('claude-sonnet-5', 'Sonnet 5'),
+        ('claude-opus-5-5', 'Opus 5.5'),
         ('claude-opus-5', 'Opus 5'),
         ('claude-haiku-4-5-20251001', 'Haiku 4.5'),
     ]
+
+    # Verified LIVE 2026-09-22 against this box's claude CLI: spawned
+    # `--model <alias> -p "say hi" --output-format stream-json` for each of
+    # the three and read the `system`/`init` event's own `model` field back
+    # (not assumed) —
+    #   --model opus   -> claude-opus-5-5
+    #   --model sonnet -> claude-sonnet-5
+    #   --model haiku  -> claude-haiku-4-5-20251001
+    # Storing the ALIAS here (not the concrete id) is the point: the CLI
+    # re-resolves it to its own newest match on every spawn, so a future
+    # Opus release is picked up automatically with no MC edit required.
+    TIER_ALIASES = {'best': 'opus', 'balanced': 'sonnet', 'fast': 'haiku'}
+
+    def tier_family(self, model: str) -> str:
+        """Name-pattern match against MODEL_CHOICES' own naming (opus/sonnet/
+        haiku) — Fable ids intentionally return '' (a separate line, not a
+        tier), so a Fable pin is never flagged stale by is_stale_pin()."""
+        low = (model or '').lower()
+        if 'opus' in low:
+            return 'best'
+        if 'sonnet' in low:
+            return 'balanced'
+        if 'haiku' in low:
+            return 'fast'
+        return ''
 
     # Why the last oneshot() returned None (rc + stderr tail / timeout / spawn
     # failure). Callers raise/log it instead of an anonymous "call failed".
@@ -2658,6 +2832,68 @@ class ClaudeRuntime(AgentRuntime):
             return None
         return OneshotResult(text=(r.stdout or '').strip())
 
+    VISION_DESCRIBE_MODEL = 'claude-haiku-4-5-20251001'
+    _IMAGE_MEDIA_TYPES = {'.png': 'image/png', '.jpg': 'image/jpeg',
+                          '.jpeg': 'image/jpeg', '.gif': 'image/gif',
+                          '.webp': 'image/webp'}
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Claude ONE image through the tool-free stream-json transform
+        (same TRANSFORM_ISOLATION as oneshot): the image rides as a base64
+        content block on stdin, so the model needs no file tool to see it."""
+        self.last_error = ''
+        media = self._IMAGE_MEDIA_TYPES.get(Path(path).suffix.lower())
+        if not media:
+            self.last_error = f'unsupported image type: {Path(path).suffix or "(none)"}'
+            return None
+        try:
+            _authorize_text_transform(self, 'claude', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+            data = base64.b64encode(Path(path).read_bytes()).decode('ascii')
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        cmd = self._stream_argv(model=model or self.VISION_DESCRIBE_MODEL, max_turns=1)
+        payload = json.dumps({'type': 'user', 'message': {'role': 'user', 'content': [
+            {'type': 'image', 'source': {'type': 'base64', 'media_type': media, 'data': data}},
+            {'type': 'text', 'text': prompt},
+        ]}}) + '\n'
+        try:
+            r = subprocess.run(
+                cmd, input=payload, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                cwd=str(Path.home()), text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)),
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        parts: List[str] = []
+        result_error = ''
+        for line in (r.stdout or '').splitlines():
+            ev = self.parse_event(line.strip())
+            if ev is None:
+                continue
+            if ev.type == EventType.TURN_END and ev.raw and ev.raw.get('is_error'):
+                result_error = str(ev.raw.get('result') or 'Claude could not complete this request')
+            if ev.type in (EventType.ASSISTANT_TEXT, EventType.THINKING, EventType.TOOL_USE):
+                for block in ev.payload.get('blocks', []):
+                    if isinstance(block, dict) and block.get('type') == 'text' and block.get('text'):
+                        parts.append(str(block['text']))
+        text = '\n'.join(parts).strip()
+        if r.returncode != 0 or result_error:
+            tail = ((r.stderr or '') + (r.stdout or '')).strip().replace('\n', ' ')
+            self.last_error = result_error or f'rc={r.returncode}: {tail[:300]}'
+            return None
+        if not text:
+            self.last_error = 'empty description'
+            return None
+        return OneshotResult(text=text)
+
     def stream_text(self, *, prompt: str, system_prompt: str = '',
                     model: str = '', effort: str = '', max_turns: int = 1,
                     stdin_text: Optional[str] = None,
@@ -2920,7 +3156,7 @@ def _npm_global_bin_dirs() -> List[Path]:
     if npm:
         try:
             r = subprocess.run([npm, 'config', 'get', 'prefix'],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             prefix = (r.stdout or '').strip().splitlines()
             if prefix and prefix[0] and prefix[0] != 'undefined':
@@ -3035,6 +3271,27 @@ class GeminiRuntime(AgentRuntime):
         ('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (Preview)'),
         ('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'),
     ]
+
+    # The `-latest` ids above ARE gemini's own self-updating handles (the
+    # comment on MODEL_CHOICES already treats them as the ones that "cannot
+    # go stale") — reused directly rather than inventing a second alias
+    # layer. Family sizing (pro=highest capability, flash=mainline,
+    # flash-lite=cheapest/fastest) maps onto best/balanced/fast.
+    TIER_ALIASES = {
+        'best': 'gemini-pro-latest',
+        'balanced': 'gemini-flash-latest',
+        'fast': 'gemini-flash-lite-latest',
+    }
+
+    def tier_family(self, model: str) -> str:
+        low = (model or '').lower()
+        if 'flash-lite' in low:
+            return 'fast'
+        if 'pro' in low:
+            return 'best'
+        if 'flash' in low:
+            return 'balanced'
+        return ''
 
     _bin_cache: Optional[str] = None
 
@@ -3337,6 +3594,19 @@ class GeminiRuntime(AgentRuntime):
                          'status': msg.get('status') or ''},
                 raw=msg,
             )
+        if mtype == 'error':
+            # gemini-cli 0.59 JsonStreamEventType.ERROR: {"type":"error",
+            # "severity":"warning"|"error","message":...}. A notice the run
+            # continues past (safety block, loop detected, hook "Agent
+            # execution blocked", max turns), so WARN, not a terminal ERROR.
+            return AgentEvent(
+                type=EventType.WARN, provider='gemini',
+                session_id=session_id, mc_session_id=mc_session_id,
+                timestamp=_now_iso(),
+                payload={'text': str(msg.get('message') or ''),
+                         'severity': str(msg.get('severity') or 'warning')},
+                raw=msg,
+            )
         if mtype == 'result' and msg.get('status') == 'error':
             # The CLI's own reason for the failure (auth, quota, network) lives
             # ONLY here — msg.get('error', {}).get('message') — never on stderr
@@ -3447,7 +3717,7 @@ class GeminiRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             version = (r.stdout or r.stderr or '').strip().splitlines()[0] if (r.stdout or r.stderr) else None
         except Exception as e:
@@ -3658,7 +3928,7 @@ class GeminiRuntime(AgentRuntime):
                'Reply with the single word OK. Do not use any tools.']
         try:
             with tempfile.TemporaryDirectory(prefix='clayrune-gemini-probe-') as td:
-                r = subprocess.run(cmd, capture_output=True, text=True,
+                r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace',
                                    timeout=timeout, cwd=td,
                                    creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
         except subprocess.TimeoutExpired:
@@ -4080,6 +4350,24 @@ class GeminiRuntime(AgentRuntime):
         # chat — it streams faster than a turn-end cleanup could remove it.
         turn_text_parts: List[str] = []
         _mc_suppressing = False
+        # The CURRENT contiguous text run (deltas since the last non-text
+        # event). Written to `log_lines` as ONE element when the run ends,
+        # never one element per delta. Every consumer of `log_lines` treats
+        # an element as a whole line: the chat renders each as its own row
+        # (conversation.js `fullBuf`) and the live-pass driver joins them
+        # with '\n'. Measured 2026-09-19 (gemini-3.7-flash): a reply of
+        # exactly "CAE658" streamed as deltas "CA" + "E658" and was shown and
+        # graded as two lines, so the marker never appeared. Same shape as
+        # Claude's reader (one element per content block).
+        pending_run: List[str] = []
+
+        def _flush_run() -> None:
+            if not pending_run:
+                return
+            run_text = ''.join(pending_run)
+            pending_run.clear()
+            if run_text.strip():
+                session['log_lines'].append(run_text)
 
         def _cb(name: str, ev: AgentEvent) -> None:
             fn = cbs.get(name)
@@ -4111,19 +4399,37 @@ class GeminiRuntime(AgentRuntime):
                     continue
 
                 ev = self.parse_event(line, handle.mc_session_id)
+                if not (ev and ev.type == EventType.ASSISTANT_TEXT):
+                    # Any other event ends the text run: write it out first
+                    # so it lands before the tool/error/status line.
+                    _flush_run()
                 if ev and ev.type == EventType.ASSISTANT_TEXT:
                     _txt = ev.payload.get('text', line)
                     turn_text_parts.append(_txt)
                     if not _mc_suppressing and '```mc:' in ''.join(turn_text_parts):
-                        # An MC Tool Protocol block has started — suppress the
-                        # raw block (and anything after it) from the live chat.
-                        # It is parsed and acted on at turn end. Any preamble
-                        # before the fence was streamed by earlier deltas.
+                        # An MC Tool Protocol block has started: suppress the
+                        # raw block (and anything after it) from the chat. It
+                        # is parsed and acted on at turn end. Keep the part of
+                        # this run before the fence (the fence can straddle
+                        # deltas, so cut the joined run, not just _txt).
                         _mc_suppressing = True
+                        run_text = ''.join(pending_run) + _txt
+                        cut = run_text.find('```mc:')
+                        pending_run[:] = [run_text[:cut] if cut >= 0 else ''.join(pending_run)]
+                        _flush_run()
                     if not _mc_suppressing:
-                        session['log_lines'].append(_txt)
+                        pending_run.append(_txt)
                         session['last_output_time'] = _time.time()
                         _cb('on_assistant_text', ev)
+                elif ev and ev.type == EventType.WARN:
+                    # `{"type":"error","severity":...}` stream events: safety
+                    # blocks, loop detection, "Agent execution blocked" (a
+                    # hook denial), max turns. parse_event returned None for
+                    # them, so the CLI's own reason vanished from the chat.
+                    session['log_lines'].append(
+                        f"[gemini {ev.payload.get('severity') or 'warning'}] "
+                        f"{ev.payload.get('text', '')}")
+                    session['last_output_time'] = _time.time()
                 elif ev and ev.type == EventType.TOOL_USE:
                     blocks = ev.payload.get('blocks', [])
                     name = blocks[0].get('name', '') if blocks else ''
@@ -4172,7 +4478,18 @@ class GeminiRuntime(AgentRuntime):
                     _usage = ev.payload.get('usage')
                     if isinstance(_usage, dict):
                         session['usage'] = _usage
-                        _ctx = normalize_context_tokens(_usage)
+                        # NOT normalize_context_tokens(_usage): the CLI's
+                        # `stats` SUM every API request this process made
+                        # (gemini-cli 0.59 uiTelemetry.processApiResponse:
+                        # `tokens.prompt += usage.input_token_count`), so a
+                        # turn with one tool call re-sends the prompt twice
+                        # and reports ~2x the context actually held. Live
+                        # 2026-09-19: the guardrail turn read 80,253 against
+                        # a no-tool turn's 18,666. Context is the LAST
+                        # request's prompt, from the CLI's per-request record.
+                        _ctx = gemini_turn_context_tokens(
+                            session.get('provider_session_id') or ev.session_id or '',
+                            _usage)
                         if _ctx is not None:
                             session['context_tokens'] = _ctx
                     _allowance_state.clear_exhaustion('gemini')
@@ -4233,6 +4550,7 @@ class GeminiRuntime(AgentRuntime):
             # A question pauses the turn in 'idle' awaiting the user's reply.
             mc_res = {'blocks_found': False, 'paused': False}
             try:
+                _flush_run()  # a run cut off by EOF / a stream error still lands
                 turn_text = ''.join(turn_text_parts)
                 mc_res = self.apply_mc_tool_blocks(session, turn_text)
                 if _mc_suppressing and not mc_res['blocks_found']:
@@ -4410,6 +4728,57 @@ class GeminiRuntime(AgentRuntime):
         text = (r.stdout or '').strip()
         return OneshotResult(text=text, raw=None)
 
+    VISION_DESCRIBE_MODEL = 'gemini-flash-lite-latest'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show Gemini ONE image via the CLI's `@<path>` inclusion, inside the
+        same deny-all-tools transform as oneshot(). `@path` is expanded by the
+        CLI before the model runs, so no model-side file tool is involved; the
+        image's own folder is the cwd because the CLI refuses an `@path`
+        outside its workspace root. Verified live 2026-09-19."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'gemini CLI not installed'
+            return None
+        try:
+            _authorize_text_transform(self, 'gemini', model=model or self.VISION_DESCRIBE_MODEL,
+                                      effort='', identity=None, readiness=None,
+                                      certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        cmd = self._transform_argv(model=model or self.VISION_DESCRIBE_MODEL)
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True,
+                               input=f"{prompt}\n\n@{img}", cwd=str(img.parent),
+                               timeout=max(1, int(timeout)),
+                               encoding='utf-8', errors='replace',
+                               env=self._transform_env(),
+                               creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        text = (r.stdout or '').strip()
+        if r.returncode != 0 or not text:
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
+        return OneshotResult(text=text, raw=None)
+
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """NO_BROWSER=1 switches `gemini`'s login to authWithUserCode() —
+        redirect_uri=https://codeassist.google.com/authcode, prints the URL
+        and reads the code back on stdin, instead of opening the host
+        browser against a loopback callback. Measured 2026-09-22; BROWSER=
+        is a dead lever here — gemini-cli guards it with `platform !==
+        'win32'`, so it has no effect on Windows."""
+        return None, {'NO_BROWSER': '1'}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Shared Mode-A dispatch helper (reused by Codex, OpenCode, Goose, Aider, Kiro)
@@ -4567,6 +4936,209 @@ def _mode_a_dispatch(runtime: 'AgentRuntime',
                          name=f'{runtime.name}-reader-{mc_session_id[:8]}')
     t.start()
     return handle
+
+
+def gemini_chat_files(provider_session_id: str,
+                      home: Optional[str] = None) -> List[Path]:
+    """The gemini CLI's own per-session chat record(s) for `provider_session_id`.
+
+    gemini-cli 0.59 ChatRecordingService appends JSONL to
+    `<GEMINI_CLI_HOME or ~>/.gemini/tmp/<project>/chats/
+    session-<YYYY-MM-DDTHH-MM>-<first 8 of session id>.jsonl`; a resume can
+    open a second file with the same suffix. Filtered on the metadata line's
+    full `sessionId` so an 8-char prefix collision cannot match another chat.
+    """
+    if not provider_session_id:
+        return []
+    root = Path(home or os.environ.get('GEMINI_CLI_HOME') or Path.home()) / '.gemini' / 'tmp'
+    out: List[Path] = []
+    try:
+        for f in root.glob(f'*/chats/session-*-{provider_session_id[:8]}.jsonl'):
+            try:
+                with open(f, encoding='utf-8', errors='replace') as fh:
+                    first = json.loads(fh.readline() or '{}')
+            except (OSError, ValueError):
+                continue
+            if isinstance(first, dict) and first.get('sessionId') == provider_session_id:
+                out.append(f)
+    except OSError as e:
+        print(f'[runtime:gemini] chat file scan failed: {e}', flush=True)
+    return sorted(out, key=lambda x: x.stat().st_mtime)
+
+
+def gemini_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-API-request token records from a gemini chat JSONL, in order.
+
+    Each model response is a `{"type":"gemini", "id":..., "tokens":{"input",
+    "output","cached","thoughts","tool","total"}}` record, where `input` is
+    the request's promptTokenCount (cached tokens INCLUDED). The recorder
+    re-appends a message when it updates it, so records are de-duplicated by
+    `id`, the last copy winning, first-seen order kept."""
+    by_id: Dict[str, Dict[str, Any]] = {}
+    order: List[str] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'gemini':
+            continue
+        tok = rec.get('tokens')
+        mid = str(rec.get('id') or f'_anon{len(order)}')
+        if mid not in by_id:
+            order.append(mid)
+        if isinstance(tok, dict):
+            by_id[mid] = tok
+        else:
+            by_id.setdefault(mid, {})
+    return [by_id[m] for m in order if by_id.get(m)]
+
+
+def gemini_turn_context_tokens(provider_session_id: str,
+                               stats: Optional[Dict[str, Any]],
+                               home: Optional[str] = None) -> Optional[int]:
+    """Context size of a Gemini turn's LAST model request.
+
+    The stream-json `result.stats` is a per-process SUM over requests, so it
+    is only a per-request figure when the turn made exactly one request (no
+    tool calls). Preference: the CLI's own per-request record; else the stats
+    when `tool_calls == 0`; else None ('unknown stays unknown', so the
+    byte-based rollover backstop applies instead of an inflated number)."""
+    for f in reversed(gemini_chat_files(provider_session_id, home)):
+        try:
+            reqs = gemini_chat_request_tokens(f.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:gemini] chat file read failed: {e}', flush=True)
+            continue
+        if reqs:
+            v = reqs[-1].get('input')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(stats, dict) and stats.get('tool_calls') == 0:
+        return normalize_context_tokens(stats)
+    return None
+
+
+def qwen_chat_request_tokens(jsonl_text: str) -> List[Dict[str, Any]]:
+    """Per-request usage of the MAIN conversation from a qwen chat recording.
+
+    qwen-code 0.23.4 appends one `{"type":"assistant","usageMetadata":{
+    "promptTokenCount","candidatesTokenCount","cachedContentTokenCount",...}}`
+    record per model request of the conversation itself, with
+    `promptTokenCount` INCLUDING the cached part. Side requests the CLI makes
+    on its own (the managed auto-memory extractor) are logged only as
+    `ui_telemetry` and never as an `assistant` record, so they are not here.
+    Measured live 2026-09-19: a read_file turn wrote two records, 26,262 and
+    26,300, while the stream `result.usage` said input 52,562 (their sum)
+    and cache_read 43,850 (the two cached parts summed)."""
+    out: List[Dict[str, Any]] = []
+    for raw in (jsonl_text or '').splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+        try:
+            rec = json.loads(raw)
+        except ValueError:
+            continue
+        if not isinstance(rec, dict) or rec.get('type') != 'assistant':
+            continue
+        um = rec.get('usageMetadata')
+        if isinstance(um, dict) and um:
+            out.append(um)
+    return out
+
+
+def qwen_turn_context_tokens(transcript: Optional[Path],
+                             usage: Optional[Dict[str, Any]],
+                             num_turns: Any = None) -> Optional[int]:
+    """Context size of a Qwen turn's LAST model request.
+
+    The stream-json `result.usage` is NOT a per-request figure, for three
+    stacked reasons, all measured 2026-09-19 against qwen-code 0.23.4:
+      1. `input_tokens` sums every request of the turn (tool loops re-send
+         the whole prompt each time);
+      2. it also counts the background auto-memory extractor request
+         (39,733 = 27,274 main + 12,459 extractor on a one-word reply);
+      3. `input_tokens` already INCLUDES the cached part, so
+         `normalize_context_tokens` (input + cache_read) counted cached
+         tokens twice: that read_file turn came out at 96,412 against a real
+         last request of 26,300.
+    Preference: the chat recording's last main-conversation request; else
+    `input_tokens` alone when the turn was one request (`num_turns == 1`);
+    else None, so the byte backstop decides instead of an inflated number."""
+    if transcript is not None:
+        try:
+            reqs = qwen_chat_request_tokens(
+                transcript.read_text(encoding='utf-8', errors='replace'))
+        except OSError as e:
+            print(f'[runtime:qwen] chat recording read failed: {e}', flush=True)
+            reqs = []
+        if reqs:
+            v = reqs[-1].get('promptTokenCount')
+            if isinstance(v, (int, float)) and v > 0:
+                return int(v)
+    if isinstance(usage, dict) and num_turns == 1:
+        v = usage.get('input_tokens')
+        if isinstance(v, (int, float)) and v > 0:
+            return int(v)
+    return None
+
+
+# Qwen settings DEFAULTS layer (lowest precedence: the user's own
+# ~/.qwen/settings.json still wins). `memory.enableManagedAutoMemory`
+# defaults to true in qwen-code 0.23.4, which runs a background model request
+# after EVERY turn that re-sends the conversation to extract "memories" into
+# qwen's own store: measured 12,459 extra input tokens on a one-word turn,
+# and a second memory system competing with Clayrune's. Off by default here;
+# a user who wants it sets it in their own settings.json.
+QWEN_SYSTEM_DEFAULTS: Dict[str, Any] = {'memory': {'enableManagedAutoMemory': False}}
+QWEN_DEFAULTS_ENV = 'QWEN_CODE_SYSTEM_DEFAULTS_PATH'
+
+
+def _inject_qwen_defaults_env(env: Dict[str, str]) -> Dict[str, str]:
+    """Point `env` at Clayrune's qwen defaults file, writing it if needed.
+    Leaves a defaults path the user already set alone. A write failure is
+    logged and injects nothing (the CLI then runs on its own defaults)."""
+    if env.get(QWEN_DEFAULTS_ENV) or os.environ.get(QWEN_DEFAULTS_ENV):
+        return env
+    try:
+        from mc.guardrail_hooks import clayrune_home
+        path = clayrune_home() / 'qwen-system-defaults.json'
+        body = json.dumps(QWEN_SYSTEM_DEFAULTS, indent=2)
+        if not path.is_file() or path.read_text(encoding='utf-8') != body:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            tmp = path.with_suffix('.tmp')
+            tmp.write_text(body, encoding='utf-8')
+            os.replace(tmp, path)
+        env[QWEN_DEFAULTS_ENV] = str(path)
+    except Exception as e:
+        print(f'[runtime:qwen] writing system defaults failed: {e}', flush=True)
+    return env
+
+
+def _pin_qwen_windows_shell(env: Dict[str, str]) -> Dict[str, str]:
+    """Make a Qwen child resolve cmd.exe on Windows no matter how Clayrune
+    itself was launched. qwen-code 0.23.4's getShellConfiguration() picks
+    git-bash for BOTH its shell tool and its hooks whenever MSYSTEM starts
+    with MINGW/MSYS or TERM mentions msys/cygwin — i.e. whenever the server
+    was started from a git-bash prompt. Under bash, MSYS path conversion
+    rewrites Windows switches: live pass 2026-09-19, `taskkill /PID <n> /F`
+    ran as `taskkill 'C:/Program Files/Git/PID' ...` and failed. Blanked
+    (not deleted) because _mode_a_dispatch layers this env over os.environ.
+    A packaged or autostarted server has neither variable, so this only
+    makes a git-bash-launched dev server behave the same."""
+    if os.name != 'nt':
+        return env
+    msystem = env.get('MSYSTEM', os.environ.get('MSYSTEM', ''))
+    if msystem.startswith(('MINGW', 'MSYS')):
+        env['MSYSTEM'] = ''
+    term = env.get('TERM', os.environ.get('TERM', ''))
+    if 'msys' in term or 'cygwin' in term:
+        env['TERM'] = ''
+    return env
 
 
 def normalize_context_tokens(usage: Optional[Dict[str, Any]]) -> Optional[int]:
@@ -5018,7 +5590,7 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 _usage = ev.payload.get('usage')
                 if isinstance(_usage, dict):
                     session['usage'] = _usage
-                    _ctx = normalize_context_tokens(_usage)
+                    _ctx = runtime.turn_context_tokens(handle, _usage, ev.payload)
                     if _ctx is not None:
                         session['context_tokens'] = _ctx
                 accumulate_result_cost(session, ev.payload, proc_cost)
@@ -5038,9 +5610,34 @@ def _mode_a_reader(proc: subprocess.Popen, handle: SessionHandle,
                 # Floor/chat read this flag to render "Out of allowance"
                 # instead of a red Blocked/Error pill.
                 session['_allowance_exhausted'] = True
+            elif ev.type == EventType.WARN:
+                # Advisory, not a failure: the run continues past it, so it
+                # must not carry the word "error" (a healthy codex turn read
+                # as a failed one -- see _CODEX_NOTICE_PATTERNS). Mirrors the
+                # Gemini reader's own WARN branch, which this one lacked.
+                _severity = ev.payload.get('severity') or 'notice'
+                _wtext = ev.payload.get('text', line)
+                _label = f"[{runtime.name} {_severity}] "
+                if (runtime.name == 'codex' and _severity == 'notice'
+                        and codex_error_is_notice(_wtext)):
+                    # Hook-trust bypass notice: fires every turn (required by
+                    # guardrail_hooks.py:318). Raw capture above keeps the
+                    # signal every occurrence; only the repeat CHAT line is
+                    # muted, once per mc_session_id, in-process (see
+                    # _CODEX_HOOK_TRUST_NOTICE_SHOWN, DATA_DIR pollution rule).
+                    if handle.mc_session_id in _CODEX_HOOK_TRUST_NOTICE_SHOWN:
+                        _wtext = None
+                    else:
+                        _CODEX_HOOK_TRUST_NOTICE_SHOWN.add(handle.mc_session_id)
+                        _wtext = ('Codex hook-trust review bypassed so Clayrune '
+                                   'guardrail hooks can run (expected).')
+                if _wtext is not None:
+                    session['log_lines'].append(_label + _flatten_error_text(_wtext))
+                    session['last_output_time'] = _time.time()
             elif ev.type in (EventType.ERROR, EventType.AUTH_ERROR):
                 session['log_lines'].append(
-                    f"[{runtime.name} error] {ev.payload.get('text', line)}")
+                    f"[{runtime.name} error] "
+                    f"{_flatten_error_text(ev.payload.get('text', line))}")
                 session['last_output_time'] = _time.time()
             else:
                 raw_text = (ev.payload.get('text') or
@@ -5370,6 +5967,15 @@ class QwenRuntime(AgentRuntime):
 
     name = 'qwen'
     tool_free_transform_enforced = True
+    # Coder ids are blind whatever else their name says; VL / QVQ / Omni ids
+    # are the sighted line. Anything else (qwen3.7-plus, glm-*, kimi-* ...) is
+    # unverified, so it is treated as blind: the bridge then describes the image
+    # and a model that could have seen it merely gets a redundant description,
+    # which is the safe direction to be wrong in.
+    VISION_MODEL_PATTERNS = (
+        (r'coder', False),
+        (r'(^|[-/_.])(vl|qvq|omni)([-/_.]|$)', True),
+    )
     display_name = 'Qwen Code'
     # No fixed catalog: the CLI's own docs (bundled qc-helper auth.md) name
     # ids like qwen3-coder-plus / qwen3.7-plus / glm-5 / kimi-k2.5, but those
@@ -5696,6 +6302,15 @@ class QwenRuntime(AgentRuntime):
                 return candidate
         return None
 
+    def turn_context_tokens(self, handle: 'SessionHandle',
+                            usage: Dict[str, Any],
+                            turn: Optional[Dict[str, Any]] = None) -> Optional[int]:
+        """Last request's prompt, from this session's chat recording — see
+        `qwen_turn_context_tokens` for why `result.usage` cannot be used."""
+        sid = handle.session_dict.get('provider_session_id') or ''
+        path = self.transcript_path(handle.project_path, sid) if sid else None
+        return qwen_turn_context_tokens(path, usage, (turn or {}).get('num_turns'))
+
     def extract_chat_turns(self, path: Path) -> List[Tuple[str, str]]:
         """Rebuild the real user/assistant exchange from a `--chat-recording`
         file, for chat display (dead-session reconstruction sibling to
@@ -5823,7 +6438,7 @@ class QwenRuntime(AgentRuntime):
             )
         version = None
         try:
-            r = subprocess.run([str(p), '--version'], capture_output=True, text=True,
+            r = subprocess.run([str(p), '--version'], capture_output=True, text=True, encoding='utf-8', errors='replace',
                                timeout=15, creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -5899,30 +6514,18 @@ class QwenRuntime(AgentRuntime):
             # one-tool-call turn) — same semantics as Claude's, so
             # accumulate_result_turns's per-turn-sum logic applies unchanged.
             emits_num_turns=True,
-            # W4/MC-947 (2026-09-18), LIVE FINDING, NOT fully fixed — kept
-            # True on mechanism parity with Gemini (the read_file path, its
-            # workspace-boundary fix, and its own --include-directories
-            # widening all apply identically here), but live-verified this
-            # is an OVERCLAIM for the actual default model in use
-            # (qwen3-coder-plus, a code model with no vision). Two distinct
-            # findings, both reproduced:
-            #  1. Without being told to actually verify, the model FABRICATED
-            #     a plausible-looking description ("white text on a black
-            #     background... TEST IMAGE PROBE") that matched the FILENAME,
-            #     not the real image (drawn content: "PURPLE ELEPHANT" in
-            #     purple on white) — no read_file tool call even appears in
-            #     the turn's log_lines. Same fabricate-under-uncertainty
-            #     pattern flagged separately from W5's dispatcher testing.
-            #  2. Explicitly instructed to call read_file and not guess, it
-            #     DID call the tool and then honestly reported: "this model
-            #     doesn't support image input, and the read_file tool cannot
-            #     process this type of file."
-            # Gemini (gemini-flash-lite-latest), same mechanism, same test
-            # image, correctly read and described it both times. Whoever
-            # verifies a Qwen vision-capable model id should re-test and only
-            # then treat this flag as genuinely proven, not just mechanism-
-            # parity-true.
-            image_input=True,
+            # False: the runtime's DEFAULT model (qwen3-coder-plus, a code
+            # model) cannot see images. It was True on read_file mechanism
+            # parity with Gemini until live pass run 3 (2026-09-19): two
+            # DIFFERENT random fixtures both got "red, blue, green, yellow,
+            # 1, 2, 3, 4" back -- a fabricated answer, and W4/MC-947 had
+            # already caught it inventing a description from the FILENAME.
+            # Sighted ids (qwen3-vl-*, qvq, *-omni) are flipped back on per
+            # model by VISION_MODEL_PATTERNS / image_input_for(); a blind
+            # model's attachments go through the vision bridge instead
+            # (image_attach stays True).
+            image_input=False,
+            image_attach=True,
             context_window=None,
             # Prepended into the prompt text, same as GeminiRuntime — native
             # QWEN.md discovery reopened 2026-09-18 when `--bare` was
@@ -6037,6 +6640,8 @@ class QwenRuntime(AgentRuntime):
         for k, v in self._settings_auth_env().items():
             env[k] = v
         _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
 
         handle = _mode_a_dispatch(
             self, cmd, full_prompt, project_path, project_id, task,
@@ -6087,6 +6692,8 @@ class QwenRuntime(AgentRuntime):
         for k, v in self._settings_auth_env().items():
             env[k] = v
         _inject_guardrail_env('qwen', env)
+        _inject_qwen_defaults_env(env)
+        _pin_qwen_windows_shell(env)
         proc = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -6233,6 +6840,55 @@ class QwenRuntime(AgentRuntime):
                 last_text = ev.payload.get('text', last_text)
         return OneshotResult(text=last_text or (r.stdout or '').strip())
 
+    VISION_DESCRIBE_MODEL = 'qwen3-vl-plus'
+
+    def describe_image(self, path: str, *, prompt: str, model: str = '',
+                       timeout: int = 120) -> Optional[OneshotResult]:
+        """Show a sighted Qwen model ONE image via the CLI's `@<path>`
+        inclusion inside the tool-free transform argv (`--max-tool-calls 0`,
+        `-e none`, no MCP). Same-vendor describer for the blind coder models.
+        Verified live 2026-09-19 with qwen3-vl-plus; the image's folder is the
+        cwd so the path is inside the CLI's workspace root."""
+        self.last_error = ''
+        if not self.resolve_binary():
+            self.last_error = 'qwen CLI not installed'
+            return None
+        m = model or self.VISION_DESCRIBE_MODEL
+        try:
+            _authorize_text_transform(self, 'qwen', model=m, effort='', identity=None,
+                                      readiness=None, certification=None, blockers=())
+        except Exception as e:
+            self.last_error = f'{type(e).__name__}: {e}'
+            return None
+        img = Path(path)
+        env = os.environ.copy()
+        env['QWEN_CODE_SUPPRESS_YOLO_WARNING'] = '1'
+        for k, v in self._settings_auth_env().items():
+            env[k] = v
+        try:
+            r = subprocess.run(
+                self._transform_argv(model=m), input=f"{prompt}\n\n@{img}",
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, cwd=str(img.parent),
+                text=True, encoding='utf-8', errors='replace',
+                timeout=max(1, int(timeout)), env=env,
+                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
+        except subprocess.TimeoutExpired:
+            self.last_error = f'timeout after {timeout}s'
+            return None
+        except Exception as e:
+            self.last_error = f'spawn failed: {e!r}'
+            return None
+        last_text = ''
+        for raw_line in (r.stdout or '').splitlines():
+            ev = self.parse_event(raw_line)
+            if ev and ev.type == EventType.ASSISTANT_TEXT:
+                last_text = ev.payload.get('text', last_text)
+        if r.returncode != 0 or not last_text.strip():
+            tail = (r.stderr or '').strip().replace('\n', ' ')
+            self.last_error = f'rc={r.returncode}: {tail[-300:]}' if r.returncode != 0 else 'empty description'
+            return None
+        return OneshotResult(text=last_text.strip())
+
     def explain_exit_error(self, rc: int, log_tail: str) -> Optional[str]:
         s = (log_tail or '').lower()
         if any(p in s for p in ('not authenticated', 'invalid api key', 'unauthorized',
@@ -6263,6 +6919,73 @@ class QwenRuntime(AgentRuntime):
                 return f"Qwen Code error: {real_line}"
             return f"Qwen Code exited with code {rc}. Check auth and model name."
         return None
+
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """`qwen` is already RFC-8628 device-code underneath, but its
+        showFallbackMessage() (the device-code URL + code printout) only
+        fires when the browser is suppressed — unset, it silently opens the
+        host browser and prints nothing. NO_BROWSER=1 forces the fallback
+        path. Measured 2026-09-22; BROWSER= has no effect on Windows (same
+        `platform !== 'win32'` guard as gemini-cli, which qwen-code forked
+        from)."""
+        return None, {'NO_BROWSER': '1'}
+
+
+# Clayrune's effort vocabulary is claude's (`mc/characters.py` VALID_EFFORT:
+# low/medium/high/xhigh/max). Codex's own knob is the documented config.toml
+# field `model_reasoning_effort`, whose accepted set is minimal/low/medium/high
+# — so the two levels above `high` are CLAMPED rather than passed through: an
+# unrecognized value would be a config-parse death at launch (the same class of
+# failure the `-c hooks=<path>` regression was, 2026-09-18), and clamping is
+# the one behaviour that cannot make a dispatch worse than not asking at all.
+_CODEX_REASONING_EFFORT = {'low': 'low', 'medium': 'medium', 'high': 'high',
+                           'xhigh': 'high', 'max': 'high'}
+
+
+def codex_reasoning_effort(effort: str) -> str:
+    """The `model_reasoning_effort` value for a Clayrune effort, '' if none."""
+    return _CODEX_REASONING_EFFORT.get((effort or '').strip().lower(), '')
+
+
+# Codex emits some NOTICES on the SAME envelopes it uses for real failures,
+# and the turn then completes normally. MC rendered them as `[codex error]
+# ...`, so a healthy run read as a failed one. Measured live 2026-09-19
+# (docs/_journal/provider-live/claude-codex-handoff-verbatim/ and
+# .../xdispatch-claude-codex-qwen/): the hook-trust notice appeared TWICE,
+# prefixed `[codex error]`, in turns that went on to answer correctly.
+#
+# It travels as `item.completed` with `item.type == 'error'` (captured raw
+# from codex 0.151 stdout, see tests/test_codex_effort.py), NOT as the
+# top-level `{"type":"error"}` that carries 401s and disconnects. Both
+# branches consult this matcher because neither shape is documented as the
+# notice channel, so a future codex release could move it.
+#
+# Deliberately an EXACT-PHRASE allowlist, not a heuristic: the cost of calling
+# a real error a notice is silence on a failure, which is strictly worse than
+# the cosmetic bug being fixed. Only add a pattern after seeing the line in a
+# transcript whose turn SUCCEEDED.
+_CODEX_NOTICE_PATTERNS = (
+    re.compile(r'`?--dangerously-bypass-hook-trust`? is enabled', re.I),
+)
+
+
+def codex_error_is_notice(text: str) -> bool:
+    """True when a codex `error` event is an advisory the run continues past."""
+    t = str(text or '')
+    return any(rx.search(t) for rx in _CODEX_NOTICE_PATTERNS)
+
+
+# The hook-trust notice fires once or twice on EVERY codex turn (it is a
+# side effect of the required --dangerously-bypass-hook-trust flag, see
+# guardrail_hooks.py:318) -- so repeating the raw vendor line in chat every
+# turn is noise for an expected, self-inflicted condition. Deduped per
+# mc_session_id, in-process only: NOT written under data/projects/ (DATA_DIR
+# pollution rule, CLAUDE.md) and intentionally lost on restart, same as any
+# other in-memory session state. The raw JSONL capture (`raw_record` in
+# `_mode_a_reader`) still records the WARN event verbatim every occurrence --
+# only the repeat CHAT line is muted, at the single chokepoint where a WARN
+# reaches `session['log_lines']` (mirrors _mode_a_reader's WARN branch).
+_CODEX_HOOK_TRUST_NOTICE_SHOWN: set = set()
 
 
 class CodexRuntime(AgentRuntime):
@@ -6309,6 +7032,28 @@ class CodexRuntime(AgentRuntime):
         ('gpt-5.4', 'GPT-5.4'),
         ('gpt-5.4-mini', 'GPT-5.4 Mini'),
     ]
+
+    # Codex has no gemini-style `-latest` / claude-style bare-alias handle —
+    # `codex --help` doesn't enumerate ids at all (see MODEL_CHOICES comment
+    # above), so there is nothing dynamic to point at. latest_for() here is a
+    # static pin of TODAY's head per tier, picked from this hand-maintained,
+    # newest-first list: 'best' = the list's own head (gpt-6-astra, the
+    # current flagship); 'fast' = the one `-mini` entry (the deliberately
+    # cheap/fast variant); 'balanced' = the next entry after the flagship
+    # still in the CURRENT generation (gpt-5.6-sol) rather than a prior
+    # generation's flagship. Whoever updates MODEL_CHOICES for a new release
+    # must update this mapping in the same edit, same as the catalog itself.
+    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-5.6-sol', 'fast': 'gpt-5.4-mini'}
+
+    def tier_family(self, model: str) -> str:
+        """Only the three curated tier heads are recognized — Codex ids don't
+        share a reliable size-coded naming pattern (sol/terra/luna are
+        variants, not tiers), so guessing family membership from the string
+        for arbitrary ids would produce false "stale pin" positives."""
+        for tier, head in self.TIER_ALIASES.items():
+            if model == head:
+                return tier
+        return ''
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
@@ -6390,6 +7135,17 @@ class CodexRuntime(AgentRuntime):
         self._npx_fallback = False
         return None
 
+    def probe_allowance(self) -> Optional[bool]:
+        """Codex's app-server answers `account/rateLimits/read` from the
+        account backend with no turn and no tokens (mc/allowance_probe.py)."""
+        from mc import allowance_probe
+        if not self.resolve_binary():
+            return None  # never probe through the per-call npx download
+        kw = ({'creationflags': _POPEN_FLAGS, 'startupinfo': _STARTUPINFO}
+              if sys.platform == 'win32' else {})
+        return allowance_probe.codex_ordinary_usage_allowed(
+            self._cmd_prefix(), popen_kwargs=kw)
+
     def _cmd_prefix(self) -> List[str]:
         """Return [codex] if binary found, [npx, --yes, @openai/codex] otherwise."""
         p = self.resolve_binary()
@@ -6402,7 +7158,7 @@ class CodexRuntime(AgentRuntime):
     def build_command(self, *, model: str = '', max_turns: int = 0,
                       streaming: bool = False, perm_mode: str = '',
                       channels: str = '', remote_control: bool = False,
-                      resume_id: str = '',
+                      resume_id: str = '', effort: str = '',
                       unattended_sandbox: bool = False) -> List[str]:
         """Return the codex exec command for non-interactive use.
 
@@ -6456,6 +7212,14 @@ class CodexRuntime(AgentRuntime):
             cmd = prefix + ['exec', '--json'] + sandbox_flags
         if model:
             cmd.extend(['-m', model])
+        # Effort is REAL here, not decorative: `-c model_reasoning_effort=<level>`
+        # is a documented config.toml field, so the old session log line
+        # ("Requested effort is preserved, but effort control is not supported
+        # by this codex dispatch path") described a knob that simply was not
+        # wired. See codex_reasoning_effort() for why xhigh/max clamp to high.
+        _eff = codex_reasoning_effort(effort)
+        if _eff:
+            cmd.extend(['-c', f'model_reasoning_effort="{_eff}"'])
         # Per-launch guardrail injection (W2 redesign,
         # docs/GUARDRAIL_PARITY_EVIDENCE.md §1/§4). LIVE REGRESSION FIXED
         # 2026-09-18: the first version passed `-c hooks='<path>'`, which
@@ -6607,11 +7371,29 @@ class CodexRuntime(AgentRuntime):
                     raw=msg,
                 )
             if item_type == 'error':
+                _txt = item.get('message') or item.get('text') or str(item)
+                # MEASURED 2026-09-19 against codex 0.151, raw stdout:
+                #   {"type":"item.completed","item":{"id":"item_0",
+                #    "type":"error","message":"`--dangerously-bypass-hook-
+                #    trust` is enabled. ..."}}
+                # -- TWICE, before turn.started, on a turn that then answered
+                # normally. This is the envelope the hook-trust NOTICE
+                # actually uses; the top-level {"type":"error"} shape carries
+                # real failures (401s, disconnects). Both are checked because
+                # neither is documented as the notice channel.
+                if codex_error_is_notice(_txt):
+                    return AgentEvent(
+                        type=EventType.WARN, provider='codex',
+                        session_id=session_id, mc_session_id=mc_session_id,
+                        timestamp=_now_iso(),
+                        payload={'text': _txt, 'severity': 'notice'},
+                        raw=msg,
+                    )
                 return AgentEvent(
                     type=EventType.ERROR, provider='codex',
                     session_id=session_id, mc_session_id=mc_session_id,
                     timestamp=_now_iso(),
-                    payload={'text': item.get('message') or item.get('text') or str(item)},
+                    payload={'text': _txt},
                     raw=msg,
                 )
             # ── codex 0.133 schema (content[] blocks) ───────────────────
@@ -6709,6 +7491,14 @@ class CodexRuntime(AgentRuntime):
             err_msg = (msg.get('message') or
                        (msg.get('error') or {}).get('message', '') or
                        str(msg))
+            if etype == 'error' and codex_error_is_notice(err_msg):
+                return AgentEvent(
+                    type=EventType.WARN, provider='codex',
+                    session_id=session_id, mc_session_id=mc_session_id,
+                    timestamp=_now_iso(),
+                    payload={'text': err_msg, 'severity': 'notice'},
+                    raw=msg,
+                )
             return AgentEvent(
                 type=EventType.ERROR, provider='codex',
                 session_id=session_id, mc_session_id=mc_session_id,
@@ -7130,7 +7920,7 @@ class CodexRuntime(AgentRuntime):
         version = None
         try:
             cmd = self._cmd_prefix() + ['--version']
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=30,
+            r = subprocess.run(cmd, capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=30,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -7220,6 +8010,7 @@ class CodexRuntime(AgentRuntime):
                  project_id: str = '',
                  register_process: Optional[Callable] = None,
                  unattended_sandbox_enabled: bool = True,
+                 effort: str = '',
                  **_extra) -> SessionHandle:
         if not self.resolve_binary() and not self._npx_fallback:
             raise CLINotInstalledError("codex CLI not installed — run: npm install -g @openai/codex")
@@ -7235,7 +8026,12 @@ class CodexRuntime(AgentRuntime):
         use_sandbox = codex_unattended_sandbox_decision(
             session_dict, unattended_sandbox_enabled)
         cmd = self.build_command(model=model, resume_id=resume_id or '',
-                                 unattended_sandbox=use_sandbox)
+                                 effort=effort, unattended_sandbox=use_sandbox)
+        if session_dict is not None:
+            # Same reason the sandbox posture is stashed rather than
+            # re-derived: write_followup only receives the handle, and a
+            # conversation's effort must not silently change mid-thread.
+            session_dict['_codex_effort'] = effort or ''
         # MC Tool Protocol (mc:question — parity audit item 4): the universal
         # context block already TELLS Codex to use this fence
         # (_build_agent_context); without appending the protocol text itself
@@ -7345,6 +8141,7 @@ class CodexRuntime(AgentRuntime):
         # missing-trigger_type case.
         cmd = self.build_command(
             model=self.session_model(handle), resume_id=resume_id,
+            effort=session.get('_codex_effort', '') or '',
             unattended_sandbox=session.get('_codex_unattended_sandbox', True))
         proc = subprocess.Popen(
             cmd,
@@ -7530,6 +8327,15 @@ class CodexRuntime(AgentRuntime):
                 return f"Codex error: {real_line}"
             return f"Codex exited with code {rc}. Check auth and model name."
         return None
+
+    def auth_login_pty_extra(self, bin_str: str) -> Tuple[Optional[List[str]], Optional[Dict[str, str]]]:
+        """`codex login --device-auth` — measured 2026-09-22: prints
+        https://auth.openai.com/codex/device plus a one-time code and polls;
+        no localhost listener at all, unlike the default `codex login` flow
+        (a loopback callback server the phone's own browser can't reach).
+        Both the URL and the code are read off the PTY pane, not scraped —
+        there's nothing here that fits the URL-box + paste-code UI."""
+        return ['login', '--device-auth'], None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -7737,7 +8543,7 @@ class OpenCodeRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8077,7 +8883,7 @@ class GooseRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8369,7 +9175,7 @@ class AiderRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=15,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=15,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None
@@ -8707,7 +9513,7 @@ class KiroRuntime(AgentRuntime):
         version = None
         try:
             r = subprocess.run([str(bin_path), '--version'],
-                               capture_output=True, text=True, timeout=10,
+                               capture_output=True, text=True, encoding='utf-8', errors='replace', timeout=10,
                                creationflags=_POPEN_FLAGS, startupinfo=_STARTUPINFO)
             raw = (r.stdout or r.stderr or '').strip()
             version = raw.splitlines()[0] if raw else None

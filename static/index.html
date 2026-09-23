@@ -905,7 +905,7 @@ const _CLAUDE_DEFAULT_CAPS = {
   default_mode: 'B', supports_session_resume: true, supports_mcp: true,
   supports_skills: true, supports_plan_mode: true, supports_ask_user_question: true,
   supports_streaming_text: true, emits_usage: true, emits_cost: true,
-  emits_num_turns: true, emits_rate_limit: true, image_input: true,
+  emits_num_turns: true, emits_rate_limit: true, image_input: true, image_attach: true,
   context_window: null, context_injection: 'flag', context_file_name: 'CLAUDE.md',
   oneshot_supported: true,
 };
@@ -923,7 +923,9 @@ const SOCIAL_DECIDED = ['approved', 'posted', 'rejected', 'needs_changes'];
 // Mirrors _ATTRIBUTION_LINE in project_routes.py — client-side copy is
 // display-only (the warning banner); the server is the actual guard.
 const SOCIAL_ATTRIBUTION_LINE = 'Written by me - Edited by Claude';
-let modalSearchQuery = {};  // projectId → search filter string
+let modalSearchQuery = {};  // projectId → search filter string (Agent Log/Documents/Activity "Filter..." box)
+let backlogSearchQuery = {};  // projectId → Backlog tab's own search query (separate map: switching
+                               // tabs must not leak an Agent Log filter into the backlog, and vice versa)
 let openAttPanels = new Set();
 let openNotesPanels = new Set();
 let openLinkPanels = new Set();
@@ -933,6 +935,36 @@ let openLinkPanels = new Set();
 // match neither 'open' nor 'done' — so those items rendered NOWHERE and were
 // counted nowhere. A new status now shows up by default instead of vanishing.
 const BACKLOG_CLOSED = ['done', 'wontdo'];
+// Free-text backlog search: matches a ticket's key, number, and body text
+// case-insensitively, so 'MC-955' / 'mc955' / '955' all resolve the same
+// item. Shared by the project Backlog tab (render-core.js) and the All
+// Backlog Items modal (cross-backlog.js) so the two can't drift apart —
+// declared here (classic script) rather than in either module so both can
+// reach it as a bare identifier, same as BACKLOG_CLOSED above.
+function backlogItemMatchesQuery(item, query) {
+  const q = (query || '').trim().toLowerCase();
+  if (!q) return true;
+  const qNorm = q.replace(/[-\s]/g, '');
+  const key = (item.key || '').toLowerCase();
+  const keyNorm = key.replace(/[-\s]/g, '');
+  const num = item.num != null ? String(item.num) : '';
+  const text = (item.text || '').toLowerCase();
+  return key.includes(q) || (!!qNorm && keyNorm.includes(qNorm)) || num.includes(q) || text.includes(q);
+}
+// Ticket-number sort comparator shared by both backlog surfaces. Items
+// without a ticket number always sort last, in either direction. Returns
+// null for 'default' so callers fall back to their own default ordering.
+function backlogNumComparator(mode) {
+  if (mode !== 'num_asc' && mode !== 'num_desc') return null;
+  const dir = mode === 'num_asc' ? 1 : -1;
+  return (a, b) => {
+    const an = a.num, bn = b.num;
+    if (an == null && bn == null) return 0;
+    if (an == null) return 1;
+    if (bn == null) return -1;
+    return dir * (an - bn);
+  };
+}
 let undoStack = [];  // [{type, projectId, itemId, data, label}]
 let modalActiveTab = {};  // projectId → 'backlog' | 'agent' | 'agent-log' | 'activity'
 let textareaHeights = {}; // textarea id → height string (persists user resize across refreshes)
@@ -3399,13 +3431,15 @@ fetchProjects().then(async () => {
   // every 6h). Sets a sidebar dot on Settings and shows a one-time toast
   // when a new commit becomes available; respects dismiss + snooze.
   checkClayruneUpdateAvailable();
-  // Auto-start walkthrough on first run (zero REAL projects, never completed).
+  // Auto-start first-run SETUP (zero REAL projects, server says never set up —
+  // config.setup_completed, not a per-browser flag; see first-run.js). The
+  // guided tour is no longer auto-started: setup offers it as its last step.
   // Filter out the auto-created `_incognito` pseudo-project — it always exists
-  // even on fresh installs, so counting it would suppress the walkthrough on
-  // the exact users it's meant for.
+  // even on fresh installs, so counting it would suppress setup on the exact
+  // users it's meant for.
   const realProjectCount = allProjects.filter(p => !isIncognitoProject(p) && !isStewardWorkspace(p) && !isOnboardingProject(p)).length;
-  if (realProjectCount === 0 && !localStorage.getItem('walkthrough_done')) {
-    setTimeout(() => startWalkthrough(), 600);
+  if (realProjectCount === 0 && firstRunNeeded()) {
+    setTimeout(() => startFirstRun(), 600);
   } else {
     // Existing install: no dialog, ever (Ron 2026-09-14 — the provider
     // question belongs at install time, installers ask it now). The one
@@ -3723,6 +3757,7 @@ window.addEventListener('beforeunload', () => {
 <script type="module" src="/static/js/claydo.js"></script>
 <script type="module" src="/static/js/mobile-pairing.js"></script>
 <script type="module" src="/static/js/walkthrough.js"></script>
+<script type="module" src="/static/js/first-run.js"></script>
 <script type="module" src="/static/js/team-card.js"></script>
 <script type="module" src="/static/js/skills-panel.js"></script>
 <script type="module" src="/static/js/media.js"></script>

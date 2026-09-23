@@ -86,6 +86,12 @@ class FakeRuntime:
 
     def model_choices(self):
         return []
+
+    def latest_for(self, tier):
+        """No tier catalog for this fake vendor — native default, same as
+        AgentRuntime's own base-class fallback (mc/agent_runtime.py)."""
+        return ''
+
     def __init__(self):
         self.dispatch_calls = []
 

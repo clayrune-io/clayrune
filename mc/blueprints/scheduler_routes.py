@@ -615,6 +615,16 @@ def _scheduler_loop():
                         sched['next_run'] = _compute_next_run(sched)
                         changed = True
                         continue
+                    # Tracks whether THIS fire actually dispatched, across both
+                    # branches below — the shared finalization block right after
+                    # them used to stamp last_run and run the once+delete_after_run
+                    # cleanup unconditionally, so a dispatch that raised still read
+                    # as a successful run and a one-shot fire-and-forget schedule
+                    # vanished on its own failure with zero trace anywhere. See
+                    # MC dispatch-visibility fix, mc/CHANGELOG or the schedule's
+                    # own last_error/last_error_at for what actually happened.
+                    dispatch_ok = True
+                    dispatch_err = None
                     workflow_id = sched.get('workflow_id', '')
                     if workflow_id:
                         # MC-871 Q4: a workflow is a thing a schedule invokes —
@@ -624,7 +634,10 @@ def _scheduler_loop():
                         # workflow (RuntimeError) guards; a fire that hits any
                         # of them is skipped and logged, exactly the shape the
                         # busy/steward skips just above already use — never a
-                        # silently dropped tick.
+                        # silently dropped tick. Those three are deliberate SKIPS
+                        # (existing behaviour, still advance last_run/next_run
+                        # normally) and stay out of dispatch_ok; only the bare
+                        # Exception below is an actual dispatch failure.
                         try:
                             run = _wf.start_run(workflow_id, trigger_type='schedule')
                             _log(f"[scheduler] Started workflow run {run.get('id')} "
@@ -638,6 +651,8 @@ def _scheduler_loop():
                         except ValueError as e:
                             _log(f"[scheduler] Skipped for schedule {sched.get('id')}: {e}")
                         except Exception as e:
+                            dispatch_ok = False
+                            dispatch_err = str(e)
                             _log(f"[scheduler] Failed to start workflow run for "
                                  f"schedule {sched.get('id')}: {e}")
                     else:
@@ -719,20 +734,46 @@ def _scheduler_loop():
                                                                   trigger_id=sched_id,
                                                                   reuse_session_id=reuse_sid,
                                                                   provider_override=resume_provider,
-                                                                  character=sched.get('character') or '')
+                                                                  character=sched.get('character') or '',
+                                                                  **_schedule_engine_kwargs(sched))
                                     tag = ' (resumed)' if resume_id else ''
                                     _log(f"[scheduler] Dispatched{tag} for {pid}: {task[:60]} -> session {sid}")
                             except Exception as e:
+                                dispatch_ok = False
+                                dispatch_err = str(e)
                                 _log(f"[scheduler] Failed to dispatch for {pid}: {e}")
-                    sched['last_run'] = now_iso()
+                                # Same "needs you" surface a manual dispatch failure
+                                # already lands on (project timeline / Activity tab) —
+                                # a timer refusal is no less worth seeing there. This
+                                # is the only place a failed timer fire becomes visible
+                                # outside the server log: no agent_log row exists (the
+                                # dispatch never happened) so the schedule's own Runs
+                                # panel has nothing to show either.
+                                _log_agent_activity(
+                                    pid, f"Scheduled run FAILED: {task[:80]} — {e}")
+                    if dispatch_ok:
+                        sched['last_run'] = now_iso()
+                        sched.pop('last_error', None)
+                        sched.pop('last_error_at', None)
+                    else:
+                        sched['last_error'] = dispatch_err
+                        sched['last_error_at'] = now_iso()
                     if sched.get('schedule_type') == 'once':
-                        if sched.get('delete_after_run'):
+                        if dispatch_ok and sched.get('delete_after_run'):
                             # Fire-and-forget: drop the row so it doesn't linger
                             # as a disabled entry. The run itself is still logged
                             # in agent_log (trigger_id=sched_id), so no history
                             # is lost.
                             to_delete.append(sched.get('id'))
                         else:
+                            # Either a normal one-shot completion (park it,
+                            # disabled, same as always) or a FAILED one-shot —
+                            # which must never be deleted (delete_after_run or
+                            # not) and must never retry on its own: `next_run`
+                            # is already unrecomputable once `run_at` is past,
+                            # so disabling is what keeps the card from reading
+                            # "calculating…" forever. Ron retries it by hand via
+                            # Run Now once he's read last_error.
                             sched['enabled'] = False
                             sched['next_run'] = None
                     else:
@@ -1112,6 +1153,26 @@ def _schedule_workflow_display(workflow_id):
             'enabled': wf.get('enabled', True), 'missing': False}
 
 
+def _schedule_engine_kwargs(sched):
+    """The schedule's engine pin as `_dispatch_agent_internal` kwargs.
+
+    Without this a scheduled run could not carry a model at all and silently
+    ran the project default (live pass 2026-09-19: 'claude-opus-5' where
+    'claude-sonnet-5' was wanted). An explicit pin wins over the character's
+    and project's default, including on a continued (resumed) run; a pin the
+    provider cannot honour raises ValueError in dispatch -- a loud failure,
+    never a substitution.
+    """
+    kw = {}
+    model = (sched.get('model') or '').strip()
+    effort = (sched.get('effort') or '').strip()
+    if model:
+        kw['model_override'] = model
+    if effort:
+        kw['effort_override'] = effort
+    return kw
+
+
 def _schedule_character_display(character, project):
     """{name, avatar, inherited} for whoever this schedule dispatches as.
 
@@ -1196,6 +1257,29 @@ def _validated_schedule_character(character, project_id):
     return f'{scope}:{name}', None
 
 
+def _run_at_error(run_at):
+    """Error text for a `run_at` without an explicit timezone; None = fine.
+
+    `_compute_next_run` reads a naive run_at as UTC. A caller that meant its
+    own wall clock (the 2026-09-19 live-pass driver did) lands hours in the
+    past west of Greenwich, next_run comes out None, and the once-row sits
+    enabled and never fires -- no error anywhere. The UI always sends
+    toISOString() (Z), so refusing naive values costs it nothing.
+    """
+    if not run_at:
+        return None
+    if not isinstance(run_at, str):
+        return 'run_at must be an ISO 8601 string'
+    try:
+        dt = datetime.fromisoformat(run_at.strip().replace('Z', '+00:00'))
+    except ValueError:
+        return f'run_at is not ISO 8601: {run_at!r}'
+    if dt.tzinfo is None:
+        return (f'run_at {run_at!r} has no timezone; send UTC with Z '
+                '(e.g. 2026-09-19T17:30:00Z) or an explicit offset')
+    return None
+
+
 def create_schedule_from_spec(data: dict):
     """THE schedule-create path. Returns (sched, None) or (None, (resp, code)).
 
@@ -1213,6 +1297,9 @@ def create_schedule_from_spec(data: dict):
     task = (data.get('task') or '').strip()
     workflow_id = (data.get('workflow_id') or '').strip()
     stype = data.get('schedule_type', 'daily')
+    rerr = _run_at_error(data.get('run_at'))
+    if rerr:
+        return None, (jsonify({'error': rerr}), 400)
     # MC-871 Q4: a schedule invokes EITHER a raw task OR a workflow, never
     # both and never neither -- a row that could mean two things is a row
     # that fires as whichever branch happened to be checked first.
@@ -1241,6 +1328,19 @@ def create_schedule_from_spec(data: dict):
         character, cerr = _validated_schedule_character(data.get('character'), pid)
         if cerr:
             return None, cerr
+    # Engine pin (model/effort). Same reasoning as `character`: a workflow's
+    # steps carry their own, so a workflow-targeted row may not set one.
+    model, effort = '', ''
+    if not workflow_id:
+        eerr = _wf.engine_field_errors(data, 'schedule')
+        if eerr:
+            return None, (jsonify({'error': '; '.join(eerr)}), 400)
+        model = (data.get('model') or '').strip()
+        effort = (data.get('effort') or '').strip()
+    elif (data.get('model') or data.get('effort')):
+        return None, (jsonify({
+            'error': 'model/effort cannot be set on a workflow-targeted '
+                     'schedule; pin them on the workflow steps'}), 400)
 
     sched = {
         'id': uuid.uuid4().hex[:8],
@@ -1252,6 +1352,9 @@ def create_schedule_from_spec(data: dict):
         # a manual dispatch does — a schedule should not be the one surface
         # where a project's persona silently stops applying.
         'character': character,
+        # Engine pin; '' inherits the project default, as a chat does.
+        'model': model,
+        'effort': effort,
         'description': (data.get('description') or '').strip(),
         'continue_session': bool(data.get('continue_session', True)),
         'schedule_type': stype,
@@ -1319,6 +1422,23 @@ def update_schedule(schedule_id):
             return cerr
         sched['character'] = character
 
+    if 'model' in data or 'effort' in data:
+        if target_workflow_id and (data.get('model') or data.get('effort')):
+            return jsonify({
+                'error': 'model/effort cannot be set on a workflow-targeted '
+                         'schedule; pin them on the workflow steps'}), 400
+        eerr = _wf.engine_field_errors(data, 'schedule')
+        if eerr:
+            return jsonify({'error': '; '.join(eerr)}), 400
+        for key in ('model', 'effort'):
+            if key in data:
+                sched[key] = (data.get(key) or '').strip()
+
+    if 'run_at' in data:
+        rerr = _run_at_error(data.get('run_at'))
+        if rerr:
+            return jsonify({'error': rerr}), 400
+
     for key in ('project_id', 'task', 'workflow_id', 'description', 'continue_session',
                 'schedule_type', 'time', 'days',
                 'interval_minutes', 'enabled', 'run_at', 'cron_expr',
@@ -1368,6 +1488,8 @@ def schedule_run_now(schedule_id):
         except ValueError as e:
             return jsonify({'error': str(e)}), 400
         sched['last_run'] = now_iso()
+        sched.pop('last_error', None)
+        sched.pop('last_error_at', None)
         _save_schedules(schedules)
         return jsonify({'ok': True, 'run': run})
     pid = sched.get('project_id', '')
@@ -1390,6 +1512,8 @@ def schedule_run_now(schedule_id):
                                     'error': 'previous run still active'}), 409
                 if outcome in ('appended', 'revived'):
                     sched['last_run'] = now_iso()
+                    sched.pop('last_error', None)
+                    sched.pop('last_error_at', None)
                     _save_schedules(schedules)
                     return jsonify({'ok': True, 'session_id': prev_sid,
                                     'continued': outcome})
@@ -1409,7 +1533,8 @@ def schedule_run_now(schedule_id):
                                        trigger_id=schedule_id,
                                        reuse_session_id=reuse_sid,
                                        provider_override=resume_provider,
-                                       character=sched.get('character') or '')
+                                       character=sched.get('character') or '',
+                                       **_schedule_engine_kwargs(sched))
     except ValueError as e:
         code = 404 if 'not found' in str(e) else 400
         return jsonify({'error': str(e)}), code
@@ -1418,6 +1543,8 @@ def schedule_run_now(schedule_id):
     except Exception as e:
         return jsonify({'error': f'dispatch failed: {e}'}), 500
     sched['last_run'] = now_iso()
+    sched.pop('last_error', None)
+    sched.pop('last_error_at', None)
     _save_schedules(schedules)
     return jsonify({'ok': True, 'session_id': sid, 'resumed': bool(resume_id)})
 

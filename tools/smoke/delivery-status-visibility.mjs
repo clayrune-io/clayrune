@@ -30,7 +30,8 @@ const rows = Array.from({length: 26}, (_, i) => ({
 const pageHTML = `<!doctype html><head><link rel="stylesheet" href="/static/css/app.css"></head><body><main class="modal-window" data-modal-id="p"><div id="app"></div></main><script>
 let modalActiveTab = {}; let agentLogCache = {}; let pendingResumeId = {};
 let agentStatusCache = {}; let continueInputOpen = {}; let API_BASE = '';
-let activeProjectId = 'p';
+let activeProjectId = 'p'; let modalSearchQuery = {};
+function applyTabFilter(){} function clearTabSearch(){}
 function esc(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;')}
 function _getProviderCaps(){return {emits_usage:false,emits_num_turns:false,emits_cost:false,supports_session_resume:false}}
 function _providerBadge(){return ''} function getDefaultResumeId(){return ''}

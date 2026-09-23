@@ -357,7 +357,7 @@ function _composerProviderPicker(p) {
   ).join('');
   const curRec = provs.find(x => x.name === cur);
   const warn = (curRec && curRec.allowance_exhausted)
-    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent</div>`
+    ? `<div class="composer-allowance-warn">${esc(curRec.allowance_exhausted)} — dispatch will be refused, no fallback to another agent ${window._allowanceRecheckBtn ? window._allowanceRecheckBtn(curRec.name) : ''}</div>`
     : '';
   return `<div class="composer-provider-row">
     <span class="composer-provider-label">Agent</span>
@@ -1063,15 +1063,15 @@ function agentPanelHTML(p) {
   // below, the status line, and the §8 sheet — one source of truth.
   const _personName = noActiveTab ? _composerActiveCharName(p) : 'Claude';
   const _dispatchPlaceholder = incOn ? 'Incognito — not saved to memory...' : `Describe a task for ${esc(_personName)}...`;
-  const _attachInput = _pcaps.image_input ? `
+  const _attachInput = _pcaps.image_attach ? `
     <input type="file" multiple id="agent-attach-input-${esc(p.id)}" class="agent-attach-input"
       onchange="handleAgentAttachPick(event,'${esc(p.id)}')">` : '';
   // Desktop: ＋ on the LEFT opens the picker (mirrors the in-chat composer).
   // Mobile: keeps its 📎 to the right of the pill.
-  const _dispatchPlusBtn = _pcaps.image_input ? `
+  const _dispatchPlusBtn = _pcaps.image_attach ? `
     <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#43;</button>` : '';
-  const _attachBtn = _pcaps.image_input ? `
+  const _attachBtn = _pcaps.image_attach ? `
     <button class="btn-attach" type="button" title="Attach files or take a photo"
       onclick="triggerAgentAttach('${esc(p.id)}')">&#128206;</button>` : '';
   const _dispatchMicBtn = micBtnHTML(`agent-task-${esc(p.id)}`);
@@ -1136,14 +1136,14 @@ function agentPanelHTML(p) {
     ondragover="handleAgentDragOver(event,this)"
     ondragenter="handleAgentDragOver(event,this)"
     ondragleave="handleAgentDragLeave(event,this)"
-    ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
+    ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'${esc(p.id)}')` : 'event.preventDefault()'}">
     ${_attachInput}
     ${mobileMode ? '' : _dispatchPlusBtn}
     <textarea spellcheck="true" class="agent-task-input" id="agent-task-${esc(p.id)}" rows="1"
       data-project="${esc(p.id)}"
       placeholder="${_dispatchPlaceholder}"
       onkeydown="handleInputEnter(event,()=>dispatchAgent('${esc(p.id)}'),'${esc(p.id)}')"
-      onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
+      onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'${esc(p.id)}')` : ''}"
     ></textarea>
     ${mobileMode ? _attachBtn : ''}
     ${_dispatchMicBtn}
@@ -1359,15 +1359,15 @@ function agentPanelHTML(p) {
             </div>`
           : '';
     // The hidden file input is shared by both the desktop ＋ and the mobile 📎.
-    const _fuAttachInput = _pcaps.image_input ? `
+    const _fuAttachInput = _pcaps.image_attach ? `
             <input type="file" multiple id="agent-attach-input-fu_${esc(activeSessionId)}" class="agent-attach-input"
               onchange="handleAgentAttachPick(event,'fu_${esc(activeSessionId)}')">` : '';
     // Desktop 3-pane: a ＋ on the LEFT opens the picker (matches the PDF composer:
     // ＋ left, mic right). Mobile keeps its 📎 on the right of the pill.
-    const _fuPlusBtn = _pcaps.image_input ? `
+    const _fuPlusBtn = _pcaps.image_attach ? `
             <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#43;</button>` : '';
-    const _fuAttachBtn = _pcaps.image_input ? `
+    const _fuAttachBtn = _pcaps.image_attach ? `
             <button class="btn-attach" type="button" title="Attach files or take a photo"
               onclick="triggerAgentAttach('fu_${esc(activeSessionId)}')">&#128206;</button>` : '';
     const _fuMicBtn = micBtnHTML(`agent-followup-${esc(activeSessionId)}`);
@@ -1378,14 +1378,14 @@ function agentPanelHTML(p) {
               ondragover="handleAgentDragOver(event,this)"
               ondragenter="handleAgentDragOver(event,this)"
               ondragleave="handleAgentDragLeave(event,this)"
-              ondrop="${_pcaps.image_input ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
+              ondrop="${_pcaps.image_attach ? `handleAgentDrop(event,'fu_${esc(activeSessionId)}')` : 'event.preventDefault()'}">
             ${_fuAttachInput}
             ${mobileMode ? '' : _fuPlusBtn}
             <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(activeSessionId)}" rows="1"
               data-project="${esc(p.id)}"
               placeholder="${st === 'error' ? 'Type to continue from where it stopped...' : st === 'stopped' ? 'Type to resume conversation...' : st === 'running' ? 'Interrupt and redirect agent... (Enter to send)' : 'Send follow-up...'}"
               onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(activeSessionId)}'),'${esc(p.id)}')"
-              onpaste="${_pcaps.image_input ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
+              onpaste="${_pcaps.image_attach ? `handleAgentPaste(event,'fu_${esc(activeSessionId)}')` : ''}"
             ></textarea>
             ${mobileMode ? _fuAttachBtn : ''}
             ${_fuMicBtn}
@@ -3753,13 +3753,37 @@ function splitPaneHTML(p, sid, isPrimary) {
   // ✕ closes THIS pane and keeps the other as the single view.
   const closeBtn = `<button class="agent-split-close" onclick="closeSplitPane('${esc(p.id)}','${esc(sid)}')" title="Close this pane">&#10005;</button>`;
   const composeEnabled = (st === 'running' || st === 'completed' || st === 'stopped' || st === 'idle' || st === 'error');
+  // Attachments. sendFollowup already uploads from the `fu_<sid>` key for ANY
+  // pane, but this composer used to render none of the affordances that fill
+  // it — no drop zone, no ＋, and crucially no onpaste — so a conversation
+  // opened in split view silently swallowed Ctrl+V of an image while the same
+  // chat in the single pane accepted it (reported 2026-09-20). Mirror the
+  // single-pane composer; caps come from the pane's own session provider.
+  const _spCaps = _getProviderCaps(s.provider || p.provider || 'claude');
+  const _spKey = 'fu_' + sid;
+  const _spPreviews = renderAgentImagePreviews(_spKey);
+  const _spAttachInput = _spCaps.image_attach ? `
+        <input type="file" multiple id="agent-attach-input-${esc(_spKey)}" class="agent-attach-input"
+          onchange="handleAgentAttachPick(event,'${esc(_spKey)}')">` : '';
+  const _spPlusBtn = _spCaps.image_attach ? `
+        <button class="btn-composer-plus" type="button" title="Attach files or take a photo"
+          onclick="triggerAgentAttach('${esc(_spKey)}')">&#43;</button>` : '';
   const compose = composeEnabled ? `
       <div class="agent-chat-separator"></div>
-      <div class="agent-chat-input"><div class="agent-chat-input-row">
+      <div class="agent-chat-input">
+        ${_spPreviews}
+        <div class="agent-chat-input-row agent-drop-zone"
+          ondragover="handleAgentDragOver(event,this)"
+          ondragenter="handleAgentDragOver(event,this)"
+          ondragleave="handleAgentDragLeave(event,this)"
+          ondrop="${_spCaps.image_attach ? `handleAgentDrop(event,'${esc(_spKey)}')` : 'event.preventDefault()'}">
+        ${_spAttachInput}
+        ${_spPlusBtn}
         <textarea spellcheck="true" class="agent-task-input" id="agent-followup-${esc(sid)}" rows="1"
           data-project="${esc(p.id)}"
           placeholder="${isRunning ? 'Redirect…' : 'Reply…'}"
-          onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"></textarea>
+          onkeydown="handleInputEnter(event,()=>sendFollowup('${esc(p.id)}','${esc(sid)}'),'${esc(p.id)}')"
+          onpaste="${_spCaps.image_attach ? `handleAgentPaste(event,'${esc(_spKey)}')` : ''}"></textarea>
         <button class="btn-dispatch" onclick="sendFollowup('${esc(p.id)}','${esc(sid)}')">Send</button>
       </div></div>` : '';
   return `<div class="agent-split-pane${isPrimary ? ' primary' : ''}" data-sid="${esc(sid)}">
