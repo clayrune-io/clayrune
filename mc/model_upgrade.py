@@ -161,6 +161,13 @@ def evaluate_pin(provider: str, model: str) -> UpgradeDecision:
         return UpgradeDecision(provider, model, reason='no_head')
     if head == value:
         return UpgradeDecision(provider, model, reason='already_head')
+    # "Newer" is the catalog's own newest-first order, not the family match
+    # alone: a pin the catalog doesn't list (a custom id typed ahead of the
+    # CLI's cache, e.g. next generation's -sol) shares the family but may be
+    # NEWER than today's head, and moving it would be a silent downgrade.
+    ids = [m for m, _ in runtime.model_choices()]
+    if value not in ids or ids.index(value) < ids.index(head):
+        return UpgradeDecision(provider, model, new_model=head, reason='not_older_than_head')
     old_price = get_price(provider, value)
     new_price = get_price(provider, head)
     if not old_price:

@@ -112,6 +112,18 @@ class TestEvaluatePin:
                                       'source_url': '', 'verified_at': decision.old_price['verified_at']}
         assert decision.new_price['input'] == 2.0
 
+    def test_uncatalogued_same_family_pin_is_never_downgraded(self, monkeypatch, tmp_path):
+        """A custom id newer than the CLI's cache (gpt-7-sol) shares the -sol
+        family with today's head; even priced higher than the head, it must
+        not be 'upgraded' backwards to gpt-6-sol."""
+        monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
+        self._head_stub(monkeypatch)
+        mu.set_price('codex', 'gpt-7-sol', 4.0, 20.0)
+        mu.set_price('codex', 'gpt-6-sol', 2.0, 10.0)
+        decision = mu.evaluate_pin('codex', 'gpt-7-sol')
+        assert decision.action != 'upgrade'
+        assert decision.reason == 'not_older_than_head'
+
     def test_more_expensive_blocks_upgrade(self, monkeypatch, tmp_path):
         monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
         self._head_stub(monkeypatch)
