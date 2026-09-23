@@ -174,16 +174,19 @@ def resolve_model_full(
 ) -> ModelResolution:
     """Resolve a model (or the tier it tracks) without crossing providers.
 
-    `override=None` inherits through project > global; an empty GLOBAL value
-    defaults to tracking 'best' — the shipped out-of-box tier (model-hierarchy-
-    simplification, 2026-09-22). `override=''` is an explicit ask for the
-    native default and never inherits. A value is rejected only when it is a
-    KNOWN id belonging to a DIFFERENT provider (model_provider_mismatch) —
-    catalog membership is not a custom-model ban, so an unrecognized-but-not-
-    foreign string (custom/future id) is always accepted. An explicit mismatch
-    raises (the caller asked for something incoherent); an inherited one is
-    silently omitted, never translated — legacy config was never validated at
-    write time.
+    `override=None` inherits through project > global; an unset/empty GLOBAL
+    value resolves to the CLI native default ('' model, source 'native') —
+    an upgraded install that never saw the first-run model question must not
+    start sending `--model opus` (model-hierarchy-simplification, 2026-09-22).
+    An explicit `tier:*` global or project value still tracks that tier.
+    `override=''` is an explicit ask for the native default and never
+    inherits. A value is rejected only when it is a KNOWN id belonging to a
+    DIFFERENT provider (model_provider_mismatch) — catalog membership is not
+    a custom-model ban, so an unrecognized-but-not-foreign string
+    (custom/future id) is always accepted. An explicit mismatch raises (the
+    caller asked for something incoherent); an inherited one is silently
+    omitted, never translated — legacy config was never validated at write
+    time.
     """
     runtime = agent_runtime.get_runtime(provider)
 
@@ -214,7 +217,7 @@ def resolve_model_full(
         kind, value = classify_value(config.get('agent_model'))
         source = 'global'
         if kind == 'inherit':
-            kind, value = 'tier', 'best'
+            return ModelResolution('', 'native', '')
     if kind == 'tier':
         return _tier(value, source)
     return _pin(value, source, explicit=False)

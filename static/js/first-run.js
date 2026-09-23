@@ -18,6 +18,9 @@ let setupForced = false;            // re-run from Settings: never skip a step
 let setupSelectedProviders = new Set();
 let setupExplicitDefault = '';
 let setupProviderChoiceVisited = false;
+let setupModelTier = 'balanced';    // default tier pre-selection; provider-neutral
+let setupModelTierVisited = false;
+const MODEL_TIER_LABEL = { best: 'Best', balanced: 'Balanced', fast: 'Fast' };
 
 const SETUP_STEPS = [
   {
@@ -56,7 +59,25 @@ const SETUP_STEPS = [
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="setupInstallSelected(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="providerRefreshAll()">Check setup status</button>
-        </div><div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`;
+        </div><div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`
+        + `<div style="margin-top:16px;text-align:left">
+          <div style="font-weight:600;color:var(--text)">Default model</div>
+          <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">Applies across every agent unless overridden per project or per chat.</div>
+          <div class="mc-seg" id="setup-model-tier-seg">`
+        + Object.keys(MODEL_TIER_LABEL).map(t => `<button type="button" class="${setupModelTier === t ? 'active' : ''}" data-tier="${t}" onclick="setupPickModelTier('${t}',this)">${MODEL_TIER_LABEL[t]}</button>`).join('')
+        + `</div>
+          <div style="font-size:11px;color:var(--text-faint);margin-top:6px">Balanced is recommended — you can change it later in Settings.</div>
+        </div>`;
+    },
+    onEnter: () => {
+      // Balanced is pre-selected: persist it the moment the step is first
+      // shown so a user who never touches the control still gets an explicit
+      // global tier saved, not silent inherit-to-native (engine_selection
+      // treats an unset global as the CLI native default, not a tier).
+      if (!setupModelTierVisited) {
+        setupModelTierVisited = true;
+        setupPickModelTier(setupModelTier);
+      }
     },
     // Skip ONLY when the installer already wrote default_provider into
     // config.json before this first launch (install.sh / install.ps1,
@@ -188,6 +209,16 @@ async function setupSetDefaultProvider(name) {
   await applyDefaultProvider(name);
 }
 
+// Provider-neutral: the server resolves each tier per runtime via
+// latest_for() (engine_selection.py), so this never names a model id.
+// `btn` is omitted on the initial auto-persist (onEnter) — only a real click
+// moves the highlight.
+async function setupPickModelTier(tier, btn) {
+  setupModelTier = tier;
+  if (btn) _setupHighlight(btn);
+  await saveSetting('agent_model', 'tier:' + tier);
+}
+
 function setupInstallSelected(btn) {
   return providerInstallSelected(btn, Array.from(setupSelectedProviders));
 }
@@ -226,6 +257,8 @@ function startFirstRun(opts) {
   setupSelectedProviders = new Set();
   setupExplicitDefault = '';
   setupProviderChoiceVisited = false;
+  setupModelTier = 'balanced';
+  setupModelTierVisited = false;
   showDesktop();
   setupShow(0);
 }
@@ -373,6 +406,7 @@ window.setupFinish = setupFinish;
 window.setupTakeTour = setupTakeTour;
 window.setupSelectProvider = setupSelectProvider;         // interop: provider row checkbox onchange (provider-auth.js _renderProviderRow)
 window.setupSetDefaultProvider = setupSetDefaultProvider; // interop: provider row Default radio onchange
+window.setupPickModelTier = setupPickModelTier;           // interop: model tier segmented control onclick
 window.setupInstallSelected = setupInstallSelected;
 window.setupPickTone = setupPickTone;
 window.setupPickAccent = setupPickAccent;

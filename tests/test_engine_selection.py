@@ -131,11 +131,25 @@ def test_classify_value(value, expected):
     assert es.classify_value(value) == expected
 
 
-# ── resolve_model_full: tier tracking + the 'global empty -> best' default ──
+# ── resolve_model_full: tier tracking + the 'global empty -> native' default ─
 
-def test_global_empty_tracks_best_tier():
+def test_global_empty_resolves_to_native_default():
+    """An unset/empty global agent_model must NOT start tracking a tier —
+
+    upgraded installs never saw the first-run model question and must not
+    silently begin sending --model opus."""
     result = es.resolve_model_full('claude', {'agent_model': ''})
-    assert (result.model, result.source, result.tracking) == ('opus', 'global', 'best')
+    assert (result.model, result.source, result.tracking) == ('', 'native', '')
+
+
+def test_global_and_project_both_empty_resolves_to_native_default():
+    result = es.resolve_model_full('claude', {'agent_model': ''}, {'agent_model': ''})
+    assert (result.model, result.source, result.tracking) == ('', 'native', '')
+
+
+def test_global_missing_key_resolves_to_native_default():
+    result = es.resolve_model_full('claude', {})
+    assert (result.model, result.source, result.tracking) == ('', 'native', '')
 
 
 def test_global_tier_balanced():
@@ -191,7 +205,18 @@ def test_effort_no_config_is_native_default():
 # ── resolve_engine: tracking + effort surfaced on ResolvedEngine ────────────
 
 def test_resolve_engine_carries_tracking_and_effort():
+    """An unset global agent_model resolves to the CLI native default, not a
+    tracked tier — only effort is global here."""
     result = es.resolve_engine({'default_provider': 'claude', 'agent_effort': 'high'})
+    assert result.tracking == ''
+    assert result.model == ''
+    assert result.model_source == 'native'
+    assert (result.effort, result.effort_source) == ('high', 'global')
+
+
+def test_resolve_engine_carries_tracking_when_global_tier_set():
+    result = es.resolve_engine(
+        {'default_provider': 'claude', 'agent_model': 'tier:best', 'agent_effort': 'high'})
     assert result.tracking == 'best'
     assert result.model == 'opus'
     assert result.model_source == 'global'

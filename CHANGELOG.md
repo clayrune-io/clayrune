@@ -17,10 +17,15 @@
   same chain `resolve_engine` already used for provider.
 - Three kinds of value at each level: empty inherits, `'tier:best'` /
   `'tier:balanced'` / `'tier:fast'` tracks that tier, anything else is an exact
-  pin (unchanged, backward compatible). An empty GLOBAL model now means
-  `tier:best` — no more silent `'sonnet'` default. `engine_selection.classify_value`
-  does the split; `resolve_model_full`/`ResolvedEngine` carry the result plus a
-  `tracking` field and a `model_source`/`effort_source` label for each.
+  pin (unchanged, backward compatible). An empty/unset GLOBAL model resolves to
+  the CLI NATIVE default (`''` model, source `'native'`) — an upgraded install
+  that never saw the first-run model question must not start sending
+  `--model opus` (revised same day: an earlier draft of this change had empty
+  global default to `tier:best`; reverted before ship, per Ron 2026-09-22). An
+  explicit `tier:*` value at project or global still tracks that tier.
+  `engine_selection.classify_value` does the split; `resolve_model_full`/
+  `ResolvedEngine` carry the result plus a `tracking` field and a
+  `model_source`/`effort_source` label for each.
 - `AgentRuntime.latest_for(tier)` added per runtime. Claude maps tiers to the
   CLI's own `opus`/`sonnet`/`haiku` aliases — VERIFIED live against this box's
   CLI 2.1.280 by reading the `stream-json` init event's `model` field back:

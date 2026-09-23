@@ -136,6 +136,7 @@ try {
   page.on('pageerror', (e) => pageErrors.push(e.message || String(e)));
 
   let installLaunchCalls = 0;
+  const configPuts = [];
   await page.route('**/*', (route) => {
     const req = route.request();
     const path = new URL(req.url()).pathname;
@@ -144,7 +145,13 @@ try {
     if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
     // Fresh install: only the onboarding project exists (realProjectCount === 0).
     if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([CLAYRUNE_PROJECT]) });
-    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{"setup_completed":false}' }); // no default_provider saved; setup never completed
+    if (path === '/api/config') {
+      if (req.method() === 'PUT') {
+        try { configPuts.push(JSON.parse(req.postData() || '{}')); } catch (_) {}
+        return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+      }
+      return route.fulfill({ status: 200, contentType: 'application/json', body: '{"setup_completed":false}' }); // no default_provider/agent_model saved; setup never completed
+    }
     if (path === '/api/walkthrough/sample-project') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({ ok: true, id: 'clayrune', existed: true }) });
     if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
     if (path === '/api/agent/providers') return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify(PROVIDERS_FIXTURE) });
@@ -203,6 +210,36 @@ try {
     if (geminiIdx !== -1 && geminiIdx !== order.length - 1)
       fail(`not-installed provider should sort last, got order: ${order.join(', ')}`);
     else ok(`installed providers sort first: ${order.join(', ')}`);
+
+    // Default model tier control: next to the default-provider pick, a
+    // provider-neutral Best/Balanced/Fast chooser with Balanced pre-selected
+    // (model-hierarchy-simplification, 2026-09-22). Persisted automatically
+    // on step entry (onEnter), so it must already be in configPuts here —
+    // no click needed to exercise the save path.
+    const tierState = await page.evaluate(() => {
+      const overlay = document.getElementById('setup-overlay');
+      const seg = overlay && overlay.querySelector('#setup-model-tier-seg');
+      if (!seg) return null;
+      return Array.from(seg.querySelectorAll('button[data-tier]')).map((b) => ({
+        tier: b.dataset.tier, active: b.classList.contains('active'),
+      }));
+    });
+    if (!tierState) {
+      fail('default-model tier control (#setup-model-tier-seg) did not render in the connections step');
+    } else {
+      const tiers = tierState.map((b) => b.tier);
+      if (!['best', 'balanced', 'fast'].every((t) => tiers.includes(t)))
+        fail(`expected best/balanced/fast tier buttons, got: ${tiers.join(', ')}`);
+      else ok('model tier control renders Best/Balanced/Fast');
+
+      const balanced = tierState.find((b) => b.tier === 'balanced');
+      if (!balanced || !balanced.active) fail(`Balanced should be pre-selected, got: ${JSON.stringify(tierState)}`);
+      else ok('Balanced is pre-selected');
+    }
+    const tierPut = configPuts.find((p) => 'agent_model' in p);
+    if (!tierPut || tierPut.agent_model !== 'tier:balanced')
+      fail(`expected a PUT /api/config with agent_model='tier:balanced', got: ${JSON.stringify(configPuts)}`);
+    else ok("saving the pre-selected default writes agent_model='tier:balanced'");
 
     // Click gemini's Install button and confirm it hits the real endpoint.
     await page.evaluate(() => {
