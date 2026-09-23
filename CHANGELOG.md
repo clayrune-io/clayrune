@@ -6,6 +6,43 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — The project record no longer loses concurrent writes
+
+- **A queued social draft could vanish after a `200`.** `data/projects/<id>.json`
+  is one document every subsystem writes, and 45 call sites mutated it as
+  `load_project()` -> mutate -> `save_project()` with no lock across the pair.
+  The server runs `threaded=True`, so a writer holding a copy taken *before* an
+  insert could save it *after* and erase the insert — silently, with both
+  requests returning 200. Traced from Posy's 2026-09-10 session `7184503faba3`:
+  `POST /api/project/mission_control/social/queue` returned 200 with
+  `created_at` `2026-09-10T22:32:32.888441Z`, and no code path deletes queue
+  items. Widest window is `generate_project_summary` (load, provider CLI call,
+  save — seconds to a minute); highest-frequency is `_log_agent_activity`.
+- `save_project` now re-reads the record under a per-project lock and reconciles
+  against the row-key sets the calling thread saw at load time: an item on disk
+  that is absent from the caller's copy AND absent from its baseline was added
+  by someone else and is restored (logged `LOST UPDATE AVERTED`); one that IS in
+  the baseline was deleted by the caller and stays deleted. Tracked collections
+  are `social_queue`, `backlog` and `roster` (keyed on `character`);
+  `activity_log` is excluded, being id-less and capped at 20 by design.
+  Baselines are key-sets, never record copies — a deepcopy per load of a 2.31 MB
+  record is the cost the standing "don't cache `load_project`" position ruled
+  out.
+- The read-back is gated on a fingerprint so it is not paid when nothing can
+  have changed: measured 4.9 us to stat versus 11.1 ms to parse
+  `mission_control.json`. The fingerprint leads with an in-process write counter
+  because Windows file times move at the ~15 ms system timer granularity, so two
+  same-size saves in one tick are indistinguishable on mtime alone.
+- **`/api/desk/overview.pending_drafts` reported 0 while 3 drafts were pending.**
+  `social_pending_count` was computed only inside the `/api/projects` route, so
+  every other caller of `load_projects()` — including the Desk overview — read
+  the key as absent. Now computed in `load_projects()`, and stripped again on
+  save (`_DERIVED_RUNTIME_KEYS`) so a display-only count cannot go stale in the
+  file. `tests/test_desk_routes.py` never caught it because its fixture stubbed
+  `load_projects` with dicts that already carried the key.
+- `tests/test_project_record_concurrency.py` — 8 cases, 7 of which fail on the
+  previous code, including the two-thread reproduction of the vanished draft.
+
 ## [2026-09-22] — First-run SETUP decoupled from the guided TOUR (`d3d5eb6`)
 
 - Provider setup used to be a step inside the tour (`WT_STEPS` `'provider-choice'`),
