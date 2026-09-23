@@ -30,8 +30,36 @@ from __future__ import annotations
 import json
 import os
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
+
+# WinError 5 (Access is denied) / 32 (used by another process): an AV
+# scanner or the Windows Search indexer briefly holding an exclusive handle
+# on the just-written temp file or the target — milliseconds, not a real
+# conflict. os.replace has no built-in retry for this on Windows (MC-959,
+# 2026-09-18: a dispatch's project-record save hit WinError 5 mid-rename,
+# the caller retried believing dispatch had failed, and the already-spawned
+# child ran anyway — doubling spend). POSIX rename doesn't hit this class of
+# error, so non-Windows callers should never see a retry fire in practice.
+_RETRY_WINERRORS = (5, 32)
+_RETRY_ATTEMPTS = 5
+_RETRY_BASE_DELAY_S = 0.05
+
+
+def _replace_with_retry(tmp: str, path: Path) -> None:
+    delay = _RETRY_BASE_DELAY_S
+    for attempt in range(_RETRY_ATTEMPTS):
+        try:
+            os.replace(tmp, path)
+            return
+        except OSError as e:
+            if getattr(e, 'winerror', None) not in _RETRY_WINERRORS:
+                raise
+            if attempt == _RETRY_ATTEMPTS - 1:
+                raise
+            time.sleep(delay)
+            delay *= 2
 
 
 def write_json_atomic(path, obj: Any, encoding: str = 'utf-8', **dumps_kw) -> None:
@@ -68,7 +96,7 @@ def write_json_atomic(path, obj: Any, encoding: str = 'utf-8', **dumps_kw) -> No
             f.write(text)
             f.flush()
             os.fsync(f.fileno())
-        os.replace(tmp, path)
+        _replace_with_retry(tmp, path)
     except Exception:
         try:
             os.unlink(tmp)

@@ -65,6 +65,80 @@ def test_failed_serialization_leaves_the_previous_content_intact(data_dir):
         'no temp file may survive a failed write'
 
 
+def test_replace_retries_a_transient_windows_lock_then_succeeds(data_dir, monkeypatch):
+    """MC-959: `os.replace` can raise WinError 5 (Access is denied) or 32
+    (used by another process) for a few milliseconds while an AV scanner or
+    the Windows Search indexer holds the just-written temp file open. A
+    dispatch's project-record save hit exactly this on 2026-09-18, and the
+    caller retried believing dispatch itself had failed -- but it had
+    already spawned the child. A short retry here should clear a transient
+    lock without the caller ever seeing an exception."""
+    import mc.atomic_json as aj
+
+    real_replace = aj.os.replace
+    calls = {'n': 0}
+
+    def flaky(src, dst):
+        calls['n'] += 1
+        if calls['n'] < 3:
+            err = OSError('Access is denied')
+            err.winerror = 5
+            raise err
+        return real_replace(src, dst)
+
+    monkeypatch.setattr(aj.os, 'replace', flaky)
+    monkeypatch.setattr(aj.time, 'sleep', lambda s: None)  # don't actually wait in tests
+
+    target = data_dir / 'p.json'
+    write_json_atomic(target, {'id': 'p'}, indent=2)
+
+    assert calls['n'] == 3
+    assert json.loads(target.read_text(encoding='utf-8')) == {'id': 'p'}
+
+
+def test_replace_gives_up_after_max_attempts_and_cleans_up_the_temp(data_dir, monkeypatch):
+    """A permanently-locked target (not just a transient one) must still
+    raise eventually -- the retry is a bounded mitigation, not a hang -- and
+    must not strand its temp file when it does."""
+    import mc.atomic_json as aj
+
+    def always_locked(src, dst):
+        err = OSError('used by another process')
+        err.winerror = 32
+        raise err
+
+    monkeypatch.setattr(aj.os, 'replace', always_locked)
+    monkeypatch.setattr(aj.time, 'sleep', lambda s: None)
+
+    target = data_dir / 'p.json'
+    with pytest.raises(OSError):
+        write_json_atomic(target, {'id': 'p'}, indent=2)
+
+    assert list(data_dir.iterdir()) == [], \
+        'a permanently-locked replace must not strand a temp file'
+
+
+def test_replace_does_not_retry_a_non_transient_oserror(data_dir, monkeypatch):
+    """Retrying is scoped to the two known-transient Windows codes -- any
+    other OSError (disk full, a genuine permission denial with no winerror,
+    etc.) must raise immediately rather than burn through the retry budget."""
+    import mc.atomic_json as aj
+
+    calls = {'n': 0}
+
+    def other_error(src, dst):
+        calls['n'] += 1
+        raise OSError('disk full')  # no winerror attribute at all
+
+    monkeypatch.setattr(aj.os, 'replace', other_error)
+
+    target = data_dir / 'p.json'
+    with pytest.raises(OSError):
+        write_json_atomic(target, {'id': 'p'}, indent=2)
+
+    assert calls['n'] == 1, 'a non-transient OSError must not be retried'
+
+
 def test_temp_file_is_never_mistaken_for_a_project_record(data_dir, monkeypatch):
     """The temp lands in DATA_DIR, which load_projects globs for `*.json`.
 
