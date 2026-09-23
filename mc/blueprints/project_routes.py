@@ -38,6 +38,10 @@ import re
 import subprocess
 import threading
 import uuid
+# Bound directly, not reached through the `threading` module object: the
+# project-record store must keep working when a test monkeypatches
+# `project_routes.threading` to stub Thread (tests/test_project_routes.py).
+from threading import RLock as _RLock, local as _thread_local
 from pathlib import Path
 from typing import Any, Callable
 
@@ -142,6 +146,197 @@ def _decorate_attachments(project):
     return project
 
 
+# ── Lost-update guard for the shared project record ─────────────────────────
+#
+# THE BUG THIS EXISTS FOR (traced 2026-09-22, Desk plan step 0).
+# `data/projects/<id>.json` is ONE document holding every subsystem's state —
+# backlog, social queue, activity log, roster, settings. Forty-five call sites
+# across ten modules mutate it as load_project() -> mutate -> save_project(),
+# and NONE of them held a lock across that pair. The server runs
+# `threaded=True` (server.py:2951/2993), so two requests genuinely interleave:
+#
+#   T0  writer B: p_b = load_project()          # queue == [a, b]
+#   T1  writer A: p_a = load_project()          # queue == [a, b]
+#   T2  writer A: queue.insert(0, new); save()  # disk queue == [new, a, b]
+#   T3  writer B: p_b['activity_log'] = ...; save()   # disk queue == [a, b]
+#
+# `new` is gone. Both requests returned 200. Nothing logged. There is no
+# DELETE route and no pruning for `social_queue` (verified by grep), so this
+# whole-record overwrite is the only way an item can leave the file.
+#
+# The widest window in the tree is `generate_project_summary` (load at :648,
+# provider CLI call, save at :717) — seconds to a minute of exposure. The
+# highest-frequency one is `_log_agent_activity`, which fires on every agent
+# event. Neither is "the" culprit; every unlocked writer is.
+#
+# THE FIX. Serializing save_project alone would not help — the stale read
+# already happened. So save_project re-reads the record under a per-project
+# lock and performs a three-way reconcile against the ID SETS the calling
+# thread saw at load time:
+#
+#   on disk, not in my copy, NOT in my baseline -> another writer ADDED it
+#                                                  while I held a stale copy
+#                                                  -> restore it (and log)
+#   on disk, not in my copy, IS in my baseline  -> I deleted it -> honour that
+#
+# The baseline is id-sets only, never a record copy: the record reaches
+# megabytes and a per-load deepcopy is the cost the standing "don't cache
+# load_project" position was recorded against.
+#
+# Tracked collections are the key-addressable, append-heavy ones where a lost
+# insert is silent data loss, mapped to the field that identifies a row.
+# `roster` is keyed on `character`, not `id` — a re-hire revives the existing
+# row rather than appending a second one (apply_roster_hires). `activity_log`
+# is excluded on purpose: no ids, capped at 20, lossy by design.
+_MERGE_TRACKED_COLLECTIONS = {
+    'social_queue': 'id',
+    'backlog': 'id',
+    'roster': 'character',
+}
+
+# Derived-for-display keys computed on the way out (load_projects /
+# api_projects). They are recomputed on every read and must never reach the
+# file, where they would go stale and be believed. Same contract as
+# _ATTACHMENT_RUNTIME_FIELDS.
+_DERIVED_RUNTIME_KEYS = (
+    'social_pending_count',
+    'backlog_open_count',
+    'backlog_done_count',
+    'backlog_total_count',
+    'backlog_next_text',
+    'last_updated_relative',
+    'live_agent',
+)
+
+_project_write_locks = {}
+_project_write_locks_guard = _RLock()
+# Bumped on every save, under that project's write lock. See _record_fingerprint.
+_project_write_seq = {}
+# Per-thread {project_id: {collection: frozenset(ids)}} as of this thread's
+# last load_project(). Flask spawns a thread per request, so a baseline never
+# outlives the request that took it.
+_load_baselines = _thread_local()
+
+
+def _project_write_lock(project_id):
+    """The write lock for one project record. Cheap to call."""
+    with _project_write_locks_guard:
+        lk = _project_write_locks.get(project_id)
+        if lk is None:
+            lk = _RLock()
+            _project_write_locks[project_id] = lk
+        return lk
+
+
+def _collection_ids(record, collection, key):
+    """The set of row keys in `record[collection]`, or None when the caller is
+    not carrying that collection at all.
+
+    None and set() are deliberately different answers: an ABSENT key means "I
+    never loaded this", an EMPTY list means "I emptied it".
+    """
+    items = record.get(collection) if isinstance(record, dict) else None
+    if not isinstance(items, list):
+        return None
+    return {it.get(key) for it in items if isinstance(it, dict)}
+
+
+def _record_fingerprint(project_id):
+    """(in-process write count, mtime_ns, size) — "has anyone written since?".
+
+    Measured on this box: 4.9 us, against 11.1 ms to parse mission_control's
+    2.31 MB record. That ratio is the whole reason save_project can afford a
+    read-back at all — an unchanged fingerprint means nobody wrote since this
+    thread loaded, so there is nothing to reconcile and the parse is skipped.
+
+    The write counter leads because mtime alone is not sufficient on Windows:
+    file times update at the system timer granularity (~15 ms), so two saves
+    inside one tick that happen to produce the same byte count would look
+    identical and the reconcile would be skipped on a record that really did
+    change. Every racing writer in the bug this guards is a thread of ONE
+    process, so an in-process counter closes that hole exactly. mtime+size
+    stays for the cross-process case (the restart overlap spawns a second
+    server that writes these same files).
+    """
+    try:
+        st = os.stat(DATA_DIR / f'{project_id}.json')
+    except OSError:
+        return None
+    return (_project_write_seq.get(project_id, 0), st.st_mtime_ns, st.st_size)
+
+
+def _record_load_baseline(project_id, record, fingerprint=None):
+    """Remember what this thread saw, so save_project can tell an item another
+    writer ADDED from one this caller DELETED."""
+    store = getattr(_load_baselines, 'by_project', None)
+    if store is None:
+        store = {}
+        _load_baselines.by_project = store
+    if record is None:
+        store.pop(project_id, None)
+        return
+    store[project_id] = {
+        'fingerprint': fingerprint,
+        'collections': {c: _collection_ids(record, c, key)
+                        for c, key in _MERGE_TRACKED_COLLECTIONS.items()},
+    }
+
+
+def _read_record_raw(project_id):
+    """The on-disk record with no decoration, or None if absent/unparseable."""
+    filepath = DATA_DIR / f'{project_id}.json'
+    if not filepath.exists():
+        return None
+    try:
+        raw = json.loads(filepath.read_text(encoding='utf-8'))
+    except Exception:
+        return None
+    return raw if isinstance(raw, dict) else None
+
+
+def _reconcile_concurrent_additions(project_id, data, disk):
+    """Fold back items another writer added while `data` was stale.
+
+    Mutates `data` in place. Returns the number of items restored. Loud by
+    design: a rescue means a lost update really happened, and the only reason
+    this class of bug survived is that it never said anything.
+    """
+    baseline = ((getattr(_load_baselines, 'by_project', None) or {})
+                .get(project_id) or {}).get('collections')
+    restored = 0
+    for coll, key in _MERGE_TRACKED_COLLECTIONS.items():
+        disk_items = disk.get(coll)
+        if not isinstance(disk_items, list) or not disk_items:
+            continue
+        mine = data.get(coll)
+        if not isinstance(mine, list):
+            # The caller is not carrying this collection (e.g. api_projects
+            # pops `social_queue` off the dicts it trims). Absent is not empty:
+            # writing that record back would erase the whole collection.
+            data[coll] = list(disk_items)
+            _log(f"[projects] {project_id}: save without `{coll}` loaded — kept "
+                 f"the {len(disk_items)} item(s) already on disk", flush=True)
+            restored += len(disk_items)
+            continue
+        mine_ids = {it.get(key) for it in mine if isinstance(it, dict)}
+        base_ids = baseline.get(coll) if baseline else None
+        rescued = [it for it in disk_items
+                   if isinstance(it, dict)
+                   and it.get(key) not in mine_ids
+                   and not (base_ids is not None and it.get(key) in base_ids)]
+        if rescued:
+            # Every writer of these lists inserts at index 0, so prepending
+            # keeps the newest-first order both copies already assume.
+            data[coll] = rescued + list(mine)
+            _log(f"[projects] LOST UPDATE AVERTED on {project_id}: a concurrent "
+                 f"writer added {len(rescued)} `{coll}` item(s) "
+                 f"({', '.join(str(it.get(key)) for it in rescued[:5])}) after "
+                 f"this caller loaded the record; restored instead of overwritten",
+                 flush=True)
+            restored += len(rescued)
+    return restored
+
+
 def load_project(project_id):
     """The project record, or None when there isn't a usable one.
 
@@ -155,13 +350,22 @@ def load_project(project_id):
     """
     filepath = DATA_DIR / f'{project_id}.json'
     if not filepath.exists():
+        _record_load_baseline(project_id, None)
         return None
+    # Read the fingerprint FIRST: if it were taken after the parse, a write
+    # landing in between would be stamped as "already seen" and the reconcile
+    # in save_project would skip the very overwrite it exists to catch.
+    fingerprint = _record_fingerprint(project_id)
     try:
         raw = json.loads(filepath.read_text(encoding='utf-8'))
     except Exception as e:
         _log(f"[projects] CORRUPT RECORD {filepath.name}: {e} — reporting the "
              f"project as absent; the file is NOT rewritten", level='error')
+        _record_load_baseline(project_id, None)
         return None
+    # Taken BEFORE decoration/mutation: this is what the caller is about to
+    # start editing, and save_project needs it to tell an add from a delete.
+    _record_load_baseline(project_id, raw, fingerprint)
     return _decorate_attachments(raw)
 
 
@@ -173,12 +377,52 @@ def save_project(project_id, data):
             for att in item.get('attachments', []) or []:
                 for k in _ATTACHMENT_RUNTIME_FIELDS:
                     att.pop(k, None)
+        for k in _DERIVED_RUNTIME_KEYS:
+            data.pop(k, None)
     filepath = DATA_DIR / f'{project_id}.json'
-    # Atomic (MC-946): this record reaches megabytes and is written by both
-    # processes during the restart overlap. A truncated one makes the whole
-    # project vanish from the dashboard — load_projects skips what it cannot
-    # parse — so it must never be observable half-written.
-    write_json_atomic(filepath, data, indent=2, ensure_ascii=False)
+    # The whole read-back-reconcile-write runs under the project's write lock,
+    # so two savers cannot both read the pre-state and both write over it.
+    # See the "Lost-update guard" block above for the race and the rule.
+    with _project_write_lock(project_id):
+        if isinstance(data, dict):
+            base = ((getattr(_load_baselines, 'by_project', None) or {})
+                    .get(project_id) or {})
+            seen = base.get('fingerprint')
+            base_colls = base.get('collections')
+            now_fp = _record_fingerprint(project_id)
+            # Read the disk copy back only when it can actually matter:
+            #   * the file changed since this thread read it (another writer
+            #     landed — the lost-update case), or
+            #   * this thread never read it at all (no baseline — e.g. a dict
+            #     from load_projects(), which api_projects strips), or
+            #   * this caller dropped a collection it DID load (absent is not
+            #     empty; writing that back would erase it).
+            # Otherwise nothing can have been added and the 11 ms parse of a
+            # multi-MB record is pure waste on the common uncontended save.
+            dropped = base_colls is not None and any(
+                base_colls.get(c) is not None and not isinstance(data.get(c), list)
+                for c in _MERGE_TRACKED_COLLECTIONS)
+            if now_fp is not None and (seen is None or now_fp != seen or dropped):
+                disk = _read_record_raw(project_id)
+                if disk is not None:
+                    try:
+                        _reconcile_concurrent_additions(project_id, data, disk)
+                    except Exception as e:
+                        # Never let the guard block a write — a reconcile
+                        # failure must degrade to the old behaviour, not to no
+                        # save at all.
+                        _log(f"[projects] reconcile failed for {project_id}: {e}",
+                             flush=True)
+        # Atomic (MC-946): this record reaches megabytes and is written by both
+        # processes during the restart overlap. A truncated one makes the whole
+        # project vanish from the dashboard — load_projects skips what it cannot
+        # parse — so it must never be observable half-written.
+        write_json_atomic(filepath, data, indent=2, ensure_ascii=False)
+        _project_write_seq[project_id] = _project_write_seq.get(project_id, 0) + 1
+        # The record this thread just wrote is now its baseline: a second
+        # save in the same request must not re-rescue what it deliberately
+        # removed a moment ago.
+        _record_load_baseline(project_id, data, _record_fingerprint(project_id))
 
 
 # LOAD-BEARING: every per-project sidecar file MUST be listed here, OR be
@@ -226,6 +470,15 @@ def load_projects():
             p.setdefault('blocked_reason', None)
             p.setdefault('backlog', [])
             p.setdefault('social_queue', [])
+            # Derived here, NOT in the /api/projects route, because it is not
+            # that route's number — /api/desk/overview sums it across projects
+            # (desk_routes.py) and read 0 for every project for as long as it
+            # existed, because load_projects() never set the key. Any caller of
+            # load_projects() is entitled to the count; stripped again on save
+            # by _DERIVED_RUNTIME_KEYS so it cannot go stale in the file.
+            p['social_pending_count'] = sum(
+                1 for i in (p.get('social_queue') or [])
+                if isinstance(i, dict) and i.get('status') == 'pending')
             p.setdefault('project_path', '')
             # Phase 4 Distiller per-project defaults (v2.1 §11 — I5 closure).
             # Mirrors the current_task / next_action precedent. Written through
@@ -398,8 +651,8 @@ def api_projects():
         p.pop('backlog', None)
         # Same trim, same reason, for the social queue — the Social tab
         # lazy-loads full bodies from GET .../social/queue on modal open.
-        social_queue = p.get('social_queue') or []
-        p['social_pending_count'] = sum(1 for i in social_queue if i.get('status') == 'pending')
+        # The count itself is set by load_projects(), so every caller gets it,
+        # not just this route.
         p.pop('social_queue', None)
     return jsonify(projects)
 
