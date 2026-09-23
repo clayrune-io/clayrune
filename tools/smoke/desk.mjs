@@ -195,7 +195,7 @@ try {
     if (path === '/api/config') return J({});
     if (path === '/api/characters') return J([]);
     if (path.endsWith('/posted') && req.method() === 'POST') {
-      postedCalls.push(path);
+      postedCalls.push({ path, body: JSON.parse(req.postData() || '{}') });
       return J({ ok: true, item: { id: 'd3', status: 'posted' }, post_id: 'post-9',
                  ledger_written: true, reactions_readable: true });
     }
@@ -283,6 +283,11 @@ try {
     if (path === '/api/desk/ledger') return J(LEDGER);
     return route.abort();
   });
+
+  // "Open in X"/"Open in LinkedIn" must call window.open — the real browser,
+  // a NEW TAB, never the Clayrune browser pane. Stub it to record calls
+  // instead of actually popping windows in headless Chromium.
+  await page.addInitScript(() => { window.__openCalls = []; window.open = (url, target, feats) => { window.__openCalls.push({ url, target, feats }); return null; }; });
 
   await page.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
   await page.waitForSelector('#projects-col .card', { timeout: 15000 });
@@ -460,25 +465,121 @@ try {
 
   // The oldest draft (d3, already `approved`) is selected by default (UI
   // brief §8 acceptance step 2) — and an approved draft still owes a receipt,
-  // so its rail offers "Mark posted" rather than Release.
+  // so its rail offers post-it-yourself routes and a permalink field, not
+  // Release.
   await page.waitForSelector('.desk-review-rail', { timeout: 8000 });
   const defaultSelected = await page.getAttribute('.desk-qrow.selected', 'data-item-id');
   if (defaultSelected === 'd3') ok('the oldest draft is selected by default');
   else fail(`expected d3 selected by default, got ${JSON.stringify(defaultSelected)}`);
 
-  const postedBtnSel = '.desk-review-rail button:has-text("Mark posted")';
-  const postedBtn = await page.$(postedBtnSel);
-  if (postedBtn) ok('an approved draft\'s rail offers "Mark posted" — it still owes a receipt');
-  else fail('approved draft\'s rail did not offer "Mark posted"');
+  // ── Step 2b: "post it yourself" routes on an approved draft ──────────────
+  // d3 is platform x, no account connected — its rail must offer exactly
+  // "Open in X" and "Copy", never LinkedIn's button or "Post via API".
+  const d3RouteBtns = await page.$$eval('.desk-review-rail .desk-postroute-btn',
+    els => els.map(e => e.textContent.trim()));
+  if (d3RouteBtns.length === 2 && d3RouteBtns.some(t => t.startsWith('Open in X'))
+      && d3RouteBtns.some(t => t === 'Copy')) {
+    ok(`an approved X draft's rail offers exactly: ${d3RouteBtns.join(' / ')}`);
+  } else {
+    fail(`expected ["Open in X ›","Copy"], got ${JSON.stringify(d3RouteBtns)}`);
+  }
+  const d3OverWarn = await page.$('.desk-postroute-warn');
+  if (!d3OverWarn) ok('no over-280 warning on a short body');
+  else fail('unexpected over-280 warning on a short draft');
 
-  // A selector-based click (not the handle above) — an async platform-rules
-  // fetch triggered on selection can re-render the rail before the click
-  // lands, detaching a held ElementHandle; page.click() re-queries.
-  page.once('dialog', d => d.accept('https://x.com/RanLevi15/status/1'));
-  await page.click(postedBtnSel);
+  // "Open in X" — window.open (own browser, new tab), never the browser pane
+  // or an outbound call from mc/. The URL must be exactly the documented
+  // web-intent form with the draft body as `text`, url-encoded.
+  await page.click('.desk-review-rail .desk-postroute-btn:has-text("Open in X")');
+  await page.waitForTimeout(150);
+  const xCall = await page.evaluate(() => window.__openCalls[window.__openCalls.length - 1]);
+  const expectedXUrl = `https://x.com/intent/post?text=${encodeURIComponent('The Desk reads your projects.')}`;
+  if (xCall && xCall.url === expectedXUrl && xCall.target === '_blank') {
+    ok(`"Open in X" opens the exact intent URL in a new tab: ${xCall.url}`);
+  } else {
+    fail(`"Open in X" call wrong: ${JSON.stringify(xCall)}, expected url ${expectedXUrl}`);
+  }
+
+  // Replaces the old window.prompt() flow: an inline field + Record button,
+  // POSTing to the SAME existing /posted route.
+  await page.fill('#desk-permalink-d3', 'https://x.com/RanLevi15/status/1');
+  await page.click('.desk-permalink-row button:has-text("Record")');
   await page.waitForTimeout(400);
-  if (postedCalls.length === 1) ok('"Mark posted" POSTs the receipt that writes the ledger');
-  else fail(`Mark posted did not call the receipt route: ${JSON.stringify(postedCalls)}`);
+  if (postedCalls.length === 1 && postedCalls[0].body.url === 'https://x.com/RanLevi15/status/1') {
+    ok('pasting the permalink and clicking Record POSTs the receipt that writes the ledger');
+  } else {
+    fail(`permalink Record did not call the receipt route as expected: ${JSON.stringify(postedCalls)}`);
+  }
+
+  // ── Edge-case routes not reachable through this fixture's rendered rows:
+  // the 280-char warning, LinkedIn's personal-voice prefill, and the Company
+  // Page copy-and-open-admin path. Exercised directly against the real,
+  // window-bridged functions against a synthetic item spliced into the SAME
+  // allProjects state the UI reads, rather than adding fixture rows that
+  // would shift every hardcoded row-count/order assertion in this file.
+  const edgeResults = await page.evaluate(async () => {
+    const proj = allProjects.find(p => p.id === 'smoke_desk');
+    const longBody = 'x'.repeat(300);
+    proj.social_queue.push(
+      { id: 'edge-x-long', project_id: proj.id, platform: 'x', status: 'approved', body: longBody },
+      { id: 'edge-li-personal', project_id: proj.id, platform: 'linkedin', status: 'approved', body: 'Personal LinkedIn body.', voice: 'personal' },
+      { id: 'edge-li-company', project_id: proj.id, platform: 'linkedin', status: 'approved', body: 'Company page body.', voice: 'product' },
+    );
+    document.querySelectorAll('.toast').forEach(t => t.remove());
+    window.deskOpenInX(proj.id, 'edge-x-long');
+    const xLongCall = window.__openCalls[window.__openCalls.length - 1];
+    await new Promise(r => setTimeout(r, 50));
+    const xLongToast = (document.querySelector('.toast .toast-msg') || {}).textContent || '';
+
+    document.querySelectorAll('.toast').forEach(t => t.remove());
+    window.deskOpenInLinkedIn(proj.id, 'edge-li-personal');
+    const liPersonalCall = window.__openCalls[window.__openCalls.length - 1];
+
+    document.querySelectorAll('.toast').forEach(t => t.remove());
+    window.deskOpenInLinkedIn(proj.id, 'edge-li-company');
+    await new Promise(r => setTimeout(r, 50));
+    // The Company Page path fires TWO toasts (copy confirmation, then the
+    // "no admin URL saved" honesty note) — join every toast currently in the
+    // tray so both assertions below can check the combined text.
+    const companyToast = Array.from(document.querySelectorAll('.toast .toast-msg'))
+      .map(el => el.textContent).join(' | ');
+
+    // Clean up: pop the synthetic items back off so the row-count/order
+    // assertions later in this file (which assume the original fixture set)
+    // still hold against the SAME array reference.
+    const edgeIds = new Set(['edge-x-long', 'edge-li-personal', 'edge-li-company']);
+    proj.social_queue = proj.social_queue.filter(i => !edgeIds.has(i.id));
+
+    return { longBody, xLongCall, xLongToast, liPersonalCall, companyToast };
+  });
+  const expectedLongUrl = `https://x.com/intent/post?text=${encodeURIComponent(edgeResults.longBody)}`;
+  if (edgeResults.xLongCall && edgeResults.xLongCall.url === expectedLongUrl) {
+    ok('a 300-char X draft still opens the correctly-encoded intent URL (it opens anyway, warning is separate)');
+  } else {
+    fail(`long-body Open in X call wrong: ${JSON.stringify(edgeResults.xLongCall)}`);
+  }
+  if (/300 characters/.test(edgeResults.xLongToast) && /280 limit/.test(edgeResults.xLongToast)) {
+    ok(`"Open in X" warns on a 300-char body: "${edgeResults.xLongToast}"`);
+  } else {
+    fail(`expected an over-280 toast, got ${JSON.stringify(edgeResults.xLongToast)}`);
+  }
+  const expectedLiPersonalUrl = 'https://www.linkedin.com/feed/?shareActive=true&text='
+    + encodeURIComponent('Personal LinkedIn body.');
+  if (edgeResults.liPersonalCall && edgeResults.liPersonalCall.url === expectedLiPersonalUrl) {
+    ok(`the personal LinkedIn voice opens the prefilled feed-share URL: ${edgeResults.liPersonalCall.url}`);
+  } else {
+    fail(`personal LinkedIn call wrong: ${JSON.stringify(edgeResults.liPersonalCall)}, expected ${expectedLiPersonalUrl}`);
+  }
+  if (/Copied/.test(edgeResults.companyToast) && /No admin page URL/.test(edgeResults.companyToast)) {
+    ok('the Company Page voice copies the body and says plainly there is no prefill/admin URL saved yet');
+  } else {
+    fail(`Company Page toast wrong: ${JSON.stringify(edgeResults.companyToast)}`);
+  }
+
+  // Now that the review pane re-rendered mid-test (deskQueueRecordPermalink
+  // calls renderDesk()), re-select d3 for the sections below that assume it.
+  await page.click('.desk-qrow[data-item-id="d3"]');
+  await page.waitForSelector('.desk-review-rail', { timeout: 8000 });
 
   // ── Select d1: teaching pane is a DELIBERATE hole (step 4), not built here ─
   await page.click('.desk-qrow[data-item-id="d1"]');

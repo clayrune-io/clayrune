@@ -8730,6 +8730,22 @@
   .desk-kill-btn { border: 1px solid var(--red); color: var(--red-text); }
   .desk-kill-btn:hover { background: var(--red-dim); }
 
+  /* Post it yourself (plan step 2b) — the route buttons on a released draft. */
+  .desk-post-routes { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+  .desk-postroute-btn {
+    flex: 1 1 auto; padding: 8px 10px; border-radius: 8px; font-size: 12px; cursor: pointer;
+    background: none; font-family: inherit; border: 1px solid var(--border); color: var(--text-dim);
+  }
+  .desk-postroute-btn:hover { border-color: var(--accent); color: var(--accent); }
+  .desk-postroute-warn { font-size: 10.5px; color: var(--red-text); line-height: 1.5; margin-bottom: 6px; }
+  .desk-permalink-row { display: flex; gap: 6px; margin-bottom: 4px; }
+  .desk-permalink-input {
+    flex: 1; min-width: 0; padding: 8px 10px; border-radius: 8px; border: 1px solid var(--border);
+    background: var(--surface2); color: var(--text); font-size: 12px; font-family: inherit;
+  }
+  .desk-permalink-skip { font-size: 10.5px; color: var(--text-faint); margin-bottom: 8px; }
+  .desk-permalink-skip a { color: var(--text-dim); text-decoration: underline; cursor: pointer; }
+
   .desk-checks-card, .desk-other-voice-card {
     border-radius: 10px; padding: 12px 13px; font-size: 11.5px;
   }

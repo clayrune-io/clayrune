@@ -1323,6 +1323,7 @@ let _deskQueueSelectedId = null;   // `${projectId}:${itemId}`, or null
 let _deskQueueFilters = { voice: 'all', project: 'all' };
 let _deskQueueChecks = {};         // itemId -> {loading, body, repeat, error}
 let _deskPlatformRulesCache = {};  // platform -> rules | null (in flight)
+let _deskSecretsCache = null;      // null = not loaded yet; else /api/secrets' `secrets` array
 
 function _deskQueueAllItems() {
   const rows = [];
@@ -1408,6 +1409,29 @@ async function _deskLoadPlatformRules(platform) {
     _deskPlatformRulesCache[platform] = {};
   }
   if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+// "Post via API" (plan step 2b) shows only once an account is connected —
+// step 3 (the Accounts panel) hasn't shipped, so today this is always false
+// and the button never renders. Read via the vault's own metadata route
+// (GET /api/secrets, never a value) rather than inventing a second
+// connected/disconnected store — see secrets_routes.py's own "no route
+// returns a plaintext value" rule.
+async function _deskLoadSecrets() {
+  if (_deskSecretsCache !== null) return;
+  _deskSecretsCache = [];
+  try {
+    const data = await _deskFetch('/api/secrets');
+    _deskSecretsCache = data.secrets || [];
+  } catch (e) {
+    _deskSecretsCache = [];
+  }
+  if (openModals.has(DESK_MODAL_ID)) renderDesk();
+}
+
+function _deskXConnected() {
+  if (_deskSecretsCache === null) { _deskLoadSecrets(); return false; }
+  return _deskSecretsCache.some(s => s.name === 'x.oauth-token' && s.readable !== false);
 }
 
 // The repeat-check hits the ledger's real similarity route (mc.desk.similar_published)
@@ -1555,6 +1579,133 @@ function deskQueueReleaseUnedited(projectId, itemId) {
   deskQueueRelease(projectId, itemId);
 }
 
+// ── Post it yourself (plan step 2b, Ron 2026-09-23) ─────────────────────────
+// The Desk writes the content and offers every way to get it onto the
+// platform; a HUMAN always clicks Post. Nothing below makes an outbound call
+// to X or LinkedIn — Open-in-X/LinkedIn build a URL and hand it to
+// window.open, which opens a NEW TAB in Ron's own browser (never the
+// Clayrune browser pane an agent could drive). "Post via API" stays a toast
+// stub: mc/desk_publish.py exists but step 4's human-only approval gate does
+// not, so nothing here may call it yet (see THE_DESK_SIMPLIFICATION_PLAN.md
+// §4, "why the Desk cannot grant itself release").
+function _deskFindQueueItem(projectId, itemId) {
+  const proj = (typeof allProjects !== 'undefined' ? allProjects : []).find(x => x.id === projectId);
+  return proj && Array.isArray(proj.social_queue)
+    ? proj.social_queue.find(i => i.id === itemId) : null;
+}
+
+// Verified against docs.x.com/x-for-websites/web-intents (2026-09-23): the
+// documented composer is `https://x.com/intent/tweet`; `/intent/post` is the
+// same composer under X's Tweet -> Post rename and is confirmed live (X's own
+// dev community references it directly). `text` is the only parameter set —
+// no url/via/hashtags, because the draft body is the whole post.
+const _DESK_X_INTENT_BASE = 'https://x.com/intent/post';
+
+function deskOpenInX(projectId, itemId) {
+  const item = _deskFindQueueItem(projectId, itemId);
+  if (!item) return;
+  const body = item.body || '';
+  if (body.length > 280 && typeof showToast === 'function') {
+    showToast(`This post is ${body.length} characters — over X's 280 limit. It opens anyway; shorten it before you click Post.`, 6000);
+  }
+  window.open(`${_DESK_X_INTENT_BASE}?text=${encodeURIComponent(body)}`, '_blank', 'noopener');
+}
+
+// LinkedIn has no documented equivalent of X's web intent — Microsoft Learn's
+// own "Share on LinkedIn" doc (checked 2026-09-23) covers only the OAuth
+// w_member_social API; there is no unauthenticated URL LinkedIn documents for
+// prefilling a text post. `feed/?shareActive=true&text=` is a long-standing
+// but UNDOCUMENTED, unguaranteed URL that does prefill the personal feed
+// composer in practice — used here because it is the only route that gets
+// Ron to a prefilled personal post without an API app, and said plainly to
+// him as best-effort, not a platform contract.
+const _DESK_LINKEDIN_PERSONAL_BASE = 'https://www.linkedin.com/feed/?shareActive=true';
+
+// Which LinkedIn voice is "personal" vs the Company Page: mc/desk.py's
+// STARTER_VOICES seeds exactly one voice per platform today ('personal' on
+// x, 'product' on linkedin), and the standing position on this project
+// ("X carries the Ron voice... the Clayrune voice publishes to the Company
+// Page") never puts a personal voice on LinkedIn. If Ron adds one, naming it
+// 'personal' routes it here; every other LinkedIn voice is treated as the
+// Company Page, because that is the only other kind the platform ships.
+function _deskIsPersonalVoice(name) {
+  return name === 'personal';
+}
+
+function deskOpenInLinkedIn(projectId, itemId) {
+  const item = _deskFindQueueItem(projectId, itemId);
+  if (!item) return;
+  const body = item.body || '';
+  if (_deskIsPersonalVoice(item.voice || '')) {
+    window.open(`${_DESK_LINKEDIN_PERSONAL_BASE}&text=${encodeURIComponent(body)}`, '_blank', 'noopener');
+    return;
+  }
+  // Company Page: no URL prefills its composer (verified above), so this is
+  // copy, then open the admin composer Ron has saved on the voice's own
+  // `destination` field (Voices -> destination — the same field the platform
+  // badge next to the voice name already edits). No destination saved yet is
+  // a real, honest state: say so rather than guessing a page URL, which would
+  // be exactly the operator-specific data this repo never hardcodes.
+  if (typeof copyToClipboardSafe === 'function') {
+    copyToClipboardSafe(body, 'Copied. Paste it into the Company Page composer.');
+  }
+  const voice = (_deskAllVoices || []).find(v => v.name === item.voice);
+  const dest = ((voice && voice.destination) || '').trim();
+  if (dest) {
+    window.open(dest, '_blank', 'noopener');
+  } else if (typeof showToast === 'function') {
+    showToast('Copied to clipboard. No admin page URL is saved for this voice yet — '
+      + 'add one under Voices → destination, or open the Company Page yourself and paste.', 7000);
+  }
+}
+
+function deskCopyBody(projectId, itemId) {
+  const item = _deskFindQueueItem(projectId, itemId);
+  if (!item) return;
+  if (typeof copyToClipboardSafe === 'function') copyToClipboardSafe(item.body || '', 'Copied.');
+}
+
+function deskPostViaApi() {
+  // Reachable only if _deskXConnected() ever reads true before step 4 (the
+  // human-only approval gate) ships — refuse rather than call
+  // desk_publish.publish() with no approval bounds behind it.
+  if (typeof showToast === 'function') {
+    showToast('An account is connected, but publishing via API is not wired yet — post it yourself for now.', 5000);
+  }
+}
+
+// Replaces the old window.prompt() flow for the Desk's own review pane with
+// an inline field, wired to the SAME existing route
+// (mark_social_queue_item_posted -> mc.desk.record_published) social-
+// actions.js's markSocialItemPosted already uses — no second write path.
+// That function still serves the pre-Desk Social tab (cross-social.js,
+// render-core.js) unchanged.
+async function deskQueueRecordPermalink(projectId, itemId, skip) {
+  const input = document.getElementById(`desk-permalink-${itemId}`);
+  const url = skip ? '' : ((input && input.value) || '').trim();
+  if (!skip && !url) {
+    if (typeof showToast === 'function') showToast('Paste the link, or use "record without it" below.', 4000);
+    return;
+  }
+  const res = await fetch(API_BASE + `/api/project/${projectId}/social/queue/${itemId}/posted`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ url }),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) {
+    if (typeof showToast === 'function') showToast(data.error || 'Could not record this as posted.', 4000);
+    return;
+  }
+  if (typeof showToast === 'function') {
+    if (data.already) showToast('Already recorded.');
+    else if (!data.ledger_written) showToast('Marked posted, but the ledger write failed.', 5000);
+    else if (!data.reactions_readable) showToast('Recorded. No link, so reactions cannot be read later.', 5000);
+    else showToast('Recorded in the ledger.');
+  }
+  if (typeof refreshProjectSocialQueue === 'function') await refreshProjectSocialQueue(projectId);
+  renderDesk();
+}
+
 async function deskQueueKill(projectId, itemId) {
   if (!confirm('Kill this draft? This cannot be undone.')) return;
   await patchSocialItem(projectId, itemId, { status: 'rejected' });
@@ -1661,12 +1812,37 @@ function _deskReviewPaneHTML(row) {
       </div>
       <button class="desk-schedule-btn" onclick="restoreSocialItem(event,'${esc(p.id)}','${esc(item.id)}')">Restore to pending</button>`;
   } else if (item.status === 'approved') {
+    // Which routes appear is entirely the platform's call, per item — X gets
+    // Open in X, LinkedIn gets Open in LinkedIn, and Post via API only once
+    // _deskXConnected() is true (never, until step 3 ships the Accounts
+    // panel). Copy always works, for any platform.
+    const routeBtns = [
+      platform === 'x'
+        ? `<button class="desk-postroute-btn" onclick="deskOpenInX('${esc(p.id)}','${esc(item.id)}')">Open in X ›</button>` : '',
+      platform === 'linkedin'
+        ? `<button class="desk-postroute-btn" onclick="deskOpenInLinkedIn('${esc(p.id)}','${esc(item.id)}')">Open in LinkedIn ›</button>` : '',
+      `<button class="desk-postroute-btn" onclick="deskCopyBody('${esc(p.id)}','${esc(item.id)}')">Copy</button>`,
+      (platform === 'x' && _deskXConnected())
+        ? `<button class="desk-postroute-btn" onclick="deskPostViaApi()">Post via API ›</button>` : '',
+    ].filter(Boolean).join('');
+    const overLimitHTML = (platform === 'x' && len > 280)
+      ? `<div class="desk-postroute-warn">${len} characters — over X's 280 limit. Shorten it before you post.</div>` : '';
     railHTML = `
       <div class="desk-checks-card" style="color:var(--green-text)">
-        <b>Released</b> — recorded${item.released_unedited ? ' (unedited)' : ''}. Publishing is not wired
-        yet: post it yourself, then record the link below.
+        <b>Released</b> — recorded${item.released_unedited ? ' (unedited)' : ''}. Pick a route below, then
+        click Post on the platform yourself — nothing here posts for you.
       </div>
-      <button class="desk-schedule-btn" onclick="markSocialItemPosted(event,'${esc(p.id)}','${esc(item.id)}')">Mark posted ›</button>
+      ${overLimitHTML}
+      <div class="desk-post-routes">${routeBtns}</div>
+      <div class="desk-permalink-row">
+        <input type="text" class="desk-permalink-input" id="desk-permalink-${esc(item.id)}"
+          placeholder="Paste the post's link once it's live">
+        <button class="desk-schedule-btn" style="width:auto"
+          onclick="deskQueueRecordPermalink('${esc(p.id)}','${esc(item.id)}')">Record ›</button>
+      </div>
+      <div class="desk-permalink-skip">
+        <a onclick="deskQueueRecordPermalink('${esc(p.id)}','${esc(item.id)}',true)">I don't have the link — record without it</a>
+      </div>
       <button class="desk-kill-btn" onclick="deskQueueKill('${esc(p.id)}','${esc(item.id)}')">Kill this draft</button>`;
   } else {
     railHTML = `
@@ -2020,6 +2196,11 @@ window.deskQueueSetFilter = deskQueueSetFilter;
 window.deskQueueSaveBody = deskQueueSaveBody;
 window.deskQueueRelease = deskQueueRelease;
 window.deskQueueReleaseUnedited = deskQueueReleaseUnedited;
+window.deskOpenInX = deskOpenInX;
+window.deskOpenInLinkedIn = deskOpenInLinkedIn;
+window.deskCopyBody = deskCopyBody;
+window.deskPostViaApi = deskPostViaApi;
+window.deskQueueRecordPermalink = deskQueueRecordPermalink;
 window.deskQueueKill = deskQueueKill;
 window.deskQueueSchedule = deskQueueSchedule;
 window.deskQueueAttachAsset = deskQueueAttachAsset;
