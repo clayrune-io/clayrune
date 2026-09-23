@@ -251,3 +251,25 @@ def test_unwired_receipts_path_fails_closed_before_any_post(monkeypatch):
          patch.object(desk_publish, '_post_tweet', _no_call):
         with pytest.raises(desk_publish.PublishError, match='RECEIPTS_PATH is not wired'):
             desk_publish.publish(_item())
+
+
+def test_corrupt_receipts_store_refuses_to_post(store):
+    # An unreadable store cannot prove an item was NOT already posted, so it
+    # must never read as "no receipt yet" on the publish path.
+    store.RECEIPTS_PATH.write_text('{not json', encoding='utf-8')
+
+    def _no_call(token, body):
+        raise AssertionError('must not POST when the receipts store is unreadable')
+
+    with patch.object(secrets_store, 'get_secret_value', return_value='tok'), \
+         patch.object(desk_publish, '_post_tweet', _no_call):
+        with pytest.raises(desk_publish.PublishError, match='unreadable'):
+            store.publish(_item())
+    assert store.RECEIPTS_PATH.read_text(encoding='utf-8') == '{not json'
+
+
+def test_timeout_error_warns_the_post_may_have_gone_out(store):
+    with patch.object(secrets_store, 'get_secret_value', return_value='tok'), \
+         patch('urllib.request.urlopen', side_effect=TimeoutError('timed out')):
+        with pytest.raises(desk_publish.PublishError, match='MAY have gone out'):
+            store.publish(_item())

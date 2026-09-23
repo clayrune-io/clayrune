@@ -120,22 +120,29 @@ def _empty_store() -> dict[str, Any]:
     return {'version': STORE_VERSION, 'receipts': {}}
 
 
-def _read_store() -> dict[str, Any]:
+def _read_store(*, strict: bool = False) -> dict[str, Any]:
+    """The receipts store. `strict=True` (the publish path) RAISES on an
+    unreadable or malformed file instead of returning an empty store: an
+    empty store there means "no receipt yet", which would let a corrupt file
+    re-post every item it used to guard. Read-only callers keep the lenient
+    default."""
     if RECEIPTS_PATH is None or not RECEIPTS_PATH.exists():
         return _empty_store()
     try:
         data = json.loads(RECEIPTS_PATH.read_text(encoding='utf-8'))
     except Exception as e:
-        # A corrupt file must never look like "no receipt yet" to the
-        # idempotency check on a WRITE path -- but this is a READ, and the
-        # write path below re-reads-and-merges rather than trusting this
-        # blindly, so treating a bad file as empty here costs at most a
-        # duplicate-post *risk* the write path is about to re-check for real
-        # via `RECEIPTS_PATH.exists()` failing loudly if truly unwritable.
+        if strict:
+            raise PublishError(
+                f'receipts store {RECEIPTS_PATH} is unreadable ({e}) -- refusing '
+                f'to post, because an unreadable store cannot prove this item '
+                f'was not already posted') from e
         _log(f'[desk_publish] receipts store unreadable, treating as empty: {e}')
         return _empty_store()
-    if not isinstance(data, dict):
-        _log('[desk_publish] receipts store is not an object, treating as empty')
+    if not isinstance(data, dict) or not isinstance(data.get('receipts', {}), dict):
+        if strict:
+            raise PublishError(
+                f'receipts store {RECEIPTS_PATH} is malformed -- refusing to post')
+        _log('[desk_publish] receipts store is malformed, treating as empty')
         return _empty_store()
     data.setdefault('version', STORE_VERSION)
     data.setdefault('receipts', {})
@@ -210,7 +217,7 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
         raise PublishError(f"item {item_id} has no body to publish")
 
     with _lock:
-        existing = _read_store()['receipts'].get(item_id)
+        existing = _read_store(strict=True)['receipts'].get(item_id)
         if existing is not None:
             return existing
 
@@ -234,7 +241,12 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             detail = e.read().decode('utf-8', errors='replace')[:500]
             raise PublishError(f'X API HTTP {e.code}: {detail}') from e
         except (urllib.error.URLError, TimeoutError) as e:
-            raise PublishError(f'X API request failed: {e}') from e
+            # No response is NOT proof nothing posted: X may have accepted the
+            # request before the connection dropped. Say so, so whoever
+            # retries checks the account first instead of double-posting.
+            raise PublishError(
+                f'X API request failed with no response ({e}) -- the post MAY '
+                f'have gone out; check the account before retrying') from e
         except Exception as e:
             raise PublishError(f'X API request failed unexpectedly: {e}') from e
 
@@ -262,11 +274,13 @@ def publish(item: dict[str, Any], *, consumer: str = 'desk_publish',
             'body': body,
         }
 
-        store = _read_store()
-        store['receipts'][item_id] = receipt
         try:
+            store = _read_store(strict=True)
+            store['receipts'][item_id] = receipt
             _write_store(store)
         except Exception as e:
+            # Never overwrite a store we could not read: that would erase every
+            # other item's receipt and re-arm them all for a duplicate post.
             # See module docstring: the post already happened, so this is
             # reported loudly, never as a PublishError -- doing so would tell
             # the caller a real post failed.
