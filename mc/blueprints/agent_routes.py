@@ -9057,7 +9057,19 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _log(f"[dispatch] cmd: {' '.join(cmd)}")
     except (UnicodeEncodeError, UnicodeDecodeError):
         _log(f"[dispatch] cmd: {' '.join(cmd).encode('ascii', 'replace').decode()}")
-    _log_agent_activity(project_id, f"Agent dispatched{resume_label}: {task[:100]}")
+    # MC-959: the child is already Popen'd and registered in agent_sessions
+    # above — a failure here (the project record save can still hit a
+    # transient Windows file lock even after write_json_atomic's retry) must
+    # never turn a successful spawn into a raised exception. The bare
+    # `except Exception` in the agent_dispatch() HTTP handler around this
+    # call would otherwise return an error response while a live child is
+    # already running the task, inviting the caller to retry and spawn a
+    # SECOND agent for the same work (doubled spend, 2026-09-18).
+    try:
+        _log_agent_activity(project_id, f"Agent dispatched{resume_label}: {task[:100]}")
+    except Exception as e:
+        _log(f"[dispatch] activity-log write failed for session {session_id[:12]} "
+             f"(child already spawned and running): {e}")
     return session_id
 
 @bp.route('/api/project/<project_id>/agent/dispatch', methods=['POST'])
