@@ -7015,45 +7015,119 @@ class CodexRuntime(AgentRuntime):
     # §8b checklist's live pass.
     tool_free_transform_enforced = False
     display_name = 'Codex CLI'
-    # Verified 2026-08-31 against ~/.codex/models_cache.json from codex 0.151.
-    # Internal/special-purpose entries (gpt-reserve, codex-auto-review) are not
-    # general chat choices and intentionally stay out of the composer.
+    # Static fallback only — used when ~/.codex/models_cache.json is missing,
+    # unreadable, or malformed (see model_choices() below, which reads the
+    # live cache on every real run). Verified 2026-09-23 against that cache
+    # (codex-cli 0.155.1): gpt-5.4/gpt-5.4-mini have dropped off the CLI's own
+    # list entirely, so they are gone from here too — model_supported() below
+    # still accepts them explicitly, since a catalog drop is not the same as
+    # the id going invalid. Kept newest-first: catalog_head_for() relies on
+    # that ordering, same as the live cache path (sorted by `priority`).
     MODEL_CHOICES = [
-        # Verified 2026-09-08 against the live CLI (codex-cli 0.153.4): the
-        # operator's own ~/.codex/config.toml already selects gpt-6-astra, so
-        # the picker was offering a strictly older set than the CLI runs by
-        # default. `codex --help` documents -m/--model but does not enumerate
-        # ids, so this list is maintained by hand and drifts silently.
         ('gpt-6-astra', 'GPT-6 Astra'),
+        ('gpt-6-sol', 'GPT-6 Sol'),
+        ('gpt-6-luna', 'GPT-6 Luna'),
         ('gpt-5.6-sol', 'GPT-5.6 Sol'),
         ('gpt-5.6-terra', 'GPT-5.6 Terra'),
         ('gpt-5.6-luna', 'GPT-5.6 Luna'),
         ('gpt-5.5', 'GPT-5.5'),
-        ('gpt-5.4', 'GPT-5.4'),
-        ('gpt-5.4-mini', 'GPT-5.4 Mini'),
     ]
 
-    # Codex has no gemini-style `-latest` / claude-style bare-alias handle —
-    # `codex --help` doesn't enumerate ids at all (see MODEL_CHOICES comment
-    # above), so there is nothing dynamic to point at. latest_for() here is a
-    # static pin of TODAY's head per tier, picked from this hand-maintained,
-    # newest-first list: 'best' = the list's own head (gpt-6-astra, the
-    # current flagship); 'fast' = the one `-mini` entry (the deliberately
-    # cheap/fast variant); 'balanced' = the next entry after the flagship
-    # still in the CURRENT generation (gpt-5.6-sol) rather than a prior
-    # generation's flagship. Whoever updates MODEL_CHOICES for a new release
-    # must update this mapping in the same edit, same as the catalog itself.
-    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-5.6-sol', 'fast': 'gpt-5.4-mini'}
+    # Ids the live catalog no longer lists but that remain valid to pass
+    # explicitly (an existing config/pin must not start getting silently
+    # dropped to native-default just because the picker stopped offering it —
+    # see model_supported() override below).
+    _LEGACY_MODEL_IDS = frozenset({'gpt-5.4', 'gpt-5.4-mini'})
+
+    # Per-file mtime cache for model_choices(), keyed by path so switching
+    # (or monkeypatching, in tests) the cache path never serves another
+    # path's stale entry. Class-level: the catalog is process-global, not
+    # per-instance.
+    _model_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
+
+    # codex has no gemini-style `-latest` / claude-style bare-alias handle —
+    # `codex --help` doesn't enumerate ids at all — so there is nothing
+    # dynamic to point at for the native default. TIER_ALIASES is the static
+    # fallback latest_for()/is_stale_pin() use when the live catalog can't be
+    # read; when it can, catalog_head_for() (driven by tier_family() below)
+    # takes precedence, so a new OpenAI generation lands with zero code edits
+    # here as long as it keeps the same -astra/-sol/-luna suffix convention.
+    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-6-sol', 'fast': 'gpt-6-luna'}
+
+    # GPT-6 (2026-09-22) settled on a reliable per-tier suffix convention —
+    # -astra/-sol/-luna name the tier itself, not a one-off variant, so unlike
+    # the pre-GPT-6 catalog this can match any id, not just the three curated
+    # heads. -terra and bare/unsuffixed ids (gpt-5.5, gpt-5.4) intentionally
+    # return '' — they don't occupy a tier.
+    _TIER_SUFFIXES = {'-astra': 'best', '-sol': 'balanced', '-luna': 'fast'}
 
     def tier_family(self, model: str) -> str:
-        """Only the three curated tier heads are recognized — Codex ids don't
-        share a reliable size-coded naming pattern (sol/terra/luna are
-        variants, not tiers), so guessing family membership from the string
-        for arbitrary ids would produce false "stale pin" positives."""
-        for tier, head in self.TIER_ALIASES.items():
-            if model == head:
+        for suffix, tier in self._TIER_SUFFIXES.items():
+            if model.endswith(suffix):
                 return tier
         return ''
+
+    def latest_for(self, tier: str) -> str:
+        """Prefer today's live-catalog head for `tier`; fall back to the
+        static TIER_ALIASES pin when the catalog can't be read at all."""
+        return self.catalog_head_for(tier) or self.TIER_ALIASES.get(tier, '')
+
+    def model_supported(self, model: str) -> bool:
+        if not model:
+            return False
+        if any(m == model for m, _ in self.model_choices()):
+            return True
+        return model in self._LEGACY_MODEL_IDS
+
+    @staticmethod
+    def _model_cache_path() -> Path:
+        return Path.home() / '.codex' / 'models_cache.json'
+
+    @staticmethod
+    def _label_from_display_name(display_name: str) -> str:
+        """'GPT-6-Astra' -> 'GPT-6 Astra': keep the 'GPT-<version>' head's own
+        hyphen, turn the rest into spaces. Matches the static list's labels."""
+        parts = display_name.split('-')
+        if len(parts) <= 2:
+            return display_name
+        return '-'.join(parts[:2]) + ' ' + ' '.join(parts[2:])
+
+    def model_choices(self) -> List[Tuple[str, str]]:
+        """Live Codex model catalog, read from the CLI's own cache file so the
+        picker stops drifting behind hand-maintained MODEL_CHOICES. Falls
+        back to the static list on any missing/unreadable/malformed file."""
+        from mc.core import _log
+        path = self._model_cache_path()
+        try:
+            mtime = path.stat().st_mtime
+        except OSError as e:
+            _log(f"[codex] models cache stat failed ({path}): {e}")
+            return list(self.MODEL_CHOICES)
+        key = str(path)
+        cached = CodexRuntime._model_cache.get(key)
+        if cached is not None and cached[0] == mtime:
+            return list(cached[1])
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            entries = data.get('models') if isinstance(data, dict) else None
+            if not isinstance(entries, list):
+                raise ValueError('models field missing or not a list')
+            listed = [m for m in entries
+                      if isinstance(m, dict) and m.get('visibility') == 'list'
+                      and m.get('slug')]
+            listed.sort(key=lambda m: m.get('priority', 0))
+            choices = [
+                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
+                for m in listed
+            ]
+            if not choices:
+                raise ValueError('no list-visibility models in cache')
+        except Exception as e:
+            _log(f"[codex] models cache read/parse failed ({path}): {e}")
+            return list(self.MODEL_CHOICES)
+        CodexRuntime._model_cache[key] = (mtime, choices)
+        return list(choices)
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False

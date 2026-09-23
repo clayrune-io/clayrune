@@ -173,6 +173,39 @@ def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
                         lambda self: state, raising=False)
 
 
+# Mirrors the live ~/.codex/models_cache.json shape as of codex-cli 0.155.1
+# (2026-09-23): 'list' entries in priority order, plus two 'hide' entries that
+# must never reach the picker.
+_LIVE_CODEX_CACHE_MODELS = [
+    {'slug': 'gpt-6-astra', 'display_name': 'GPT-6-Astra', 'visibility': 'list', 'priority': 1},
+    {'slug': 'gpt-6-sol', 'display_name': 'GPT-6-Sol', 'visibility': 'list', 'priority': 2},
+    {'slug': 'gpt-6-luna', 'display_name': 'GPT-6-Luna', 'visibility': 'list', 'priority': 3},
+    {'slug': 'gpt-reserve', 'display_name': 'GPT-Reserve', 'visibility': 'hide', 'priority': 3},
+    {'slug': 'gpt-5.6-sol', 'display_name': 'GPT-5.6-Sol', 'visibility': 'list', 'priority': 4},
+    {'slug': 'gpt-5.6-terra', 'display_name': 'GPT-5.6-Terra', 'visibility': 'list', 'priority': 7},
+    {'slug': 'gpt-5.6-luna', 'display_name': 'GPT-5.6-Luna', 'visibility': 'list', 'priority': 8},
+    {'slug': 'gpt-5.5', 'display_name': 'GPT-5.5', 'visibility': 'list', 'priority': 12},
+    {'slug': 'codex-auto-review', 'display_name': 'Codex Auto Review', 'visibility': 'hide', 'priority': 43},
+]
+
+
+def stub_codex_models_cache(monkeypatch, tmp_path, models=_LIVE_CODEX_CACHE_MODELS, *, missing=False):
+    """Point CodexRuntime.model_choices() at a throwaway fixture file instead
+    of the operator's real ~/.codex/models_cache.json (AGENT_RULES.md: tests
+    must not read live operator state). `missing=True` simulates no cache file
+    at all, to exercise the static-fallback path; `models=None` writes a
+    fixture with an empty/malformed `models` field for the same purpose.
+    """
+    from mc.agent_runtime import CodexRuntime
+    path = tmp_path / 'codex_models_cache_fixture.json'
+    if not missing:
+        payload = {'models': models} if models is not None else {'models': 'not-a-list'}
+        path.write_text(json.dumps(payload), encoding='utf-8')
+    monkeypatch.setattr(CodexRuntime, '_model_cache_path', lambda self: path, raising=False)
+    CodexRuntime._model_cache.clear()
+    return path
+
+
 # ── No test may launch a REAL model CLI ──────────────────────────────────────
 # Precedent: af7e0a3 (pytest spawned a real `claude auth login`). Measured
 # 2026-09-18: a daemon `_do_respawn` thread leaked out of a rollover test

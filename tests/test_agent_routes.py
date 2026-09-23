@@ -111,11 +111,13 @@ EXPECTED_ROUTES = {
 
 
 @pytest.fixture(autouse=True)
-def _no_real_codex_auth_probe(monkeypatch):
+def _no_real_codex_auth_probe(monkeypatch, tmp_path):
     """See tests/conftest.py::stub_codex_auth_state — /api/providers must not
-    shell out to the operator's real `codex login status`."""
-    from conftest import stub_codex_auth_state
+    shell out to the operator's real `codex login status`, nor read the
+    operator's real ~/.codex/models_cache.json (stub_codex_models_cache)."""
+    from conftest import stub_codex_auth_state, stub_codex_models_cache
     stub_codex_auth_state(monkeypatch)
+    stub_codex_models_cache(monkeypatch, tmp_path)
 
 
 @pytest.fixture()
@@ -935,10 +937,13 @@ def test_providers_endpoint_carries_per_provider_model_catalog(client):
     by_name = {p['name']: p for p in provs}
     assert 'models' in by_name['claude']
     assert any(m['id'] == 'claude-opus-5' for m in by_name['claude']['models'])
+    # From the stubbed cache fixture (conftest._LIVE_CODEX_CACHE_MODELS), not
+    # the hand-maintained static list — model_choices() now reads the live
+    # Codex catalog. Order is priority order; 'hide' entries are excluded.
     assert [m['id'] for m in by_name['codex']['models']] == [
-        'gpt-6-astra',
+        'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna',
         'gpt-5.6-sol', 'gpt-5.6-terra', 'gpt-5.6-luna',
-        'gpt-5.5', 'gpt-5.4', 'gpt-5.4-mini',
+        'gpt-5.5',
     ]
     # No claude id may appear in a non-claude catalog — that cross-contamination
     # is exactly what produced `codex -m claude-opus-5`.

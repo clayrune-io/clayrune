@@ -6,6 +6,37 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-23] — Codex model catalog reads the live CLI cache; GPT-6 is default
+
+- **The Codex picker drifted behind the CLI by hand.** `CodexRuntime.MODEL_CHOICES`
+  was a manually-maintained list re-verified every few weeks against
+  `~/.codex/models_cache.json` and always a release or two stale by the next
+  check — most recently missing GPT-6 Sol/Luna/Astra (OpenAI, 2026-09-22) the
+  day after release, while still offering `gpt-5.4`/`gpt-5.4-mini`, which the
+  live CLI (codex-cli 0.155.1) had already dropped.
+- `CodexRuntime.model_choices()` now reads that cache directly — `visibility
+  == 'list'` entries sorted by `priority`, label built from `display_name`
+  (`'GPT-6-Astra'` → `'GPT-6 Astra'`) — cached per file mtime so it's parsed
+  once per change, not per call. Falls back to a static newest-first list
+  (now headed by GPT-6) on any missing/unreadable/malformed cache, logged via
+  `mc.core._log`, never a silent `pass`.
+- `TIER_ALIASES` moved to the GPT-6 heads (`best` → `gpt-6-astra`, `balanced`
+  → `gpt-6-sol`, `fast` → `gpt-6-luna`). `tier_family()` now matches by
+  suffix (`-astra`/`-sol`/`-luna`) instead of exact-head-only, since GPT-6
+  settled on a reliable per-tier naming convention the prior generation
+  didn't have — so `is_stale_pin()` correctly flags e.g. a stored
+  `gpt-5.6-sol` pin as stale against today's `gpt-6-sol` head, and the same
+  suffix match keeps working for the *next* OpenAI generation with no code
+  change, as long as it keeps the convention.
+- `model_supported()` still accepts `gpt-5.4`/`gpt-5.4-mini` explicitly even
+  though they're gone from the offered catalog — dropping from the picker is
+  not the same as the id becoming invalid; a stored pin/config value naming
+  either must not start silently falling back to native-default.
+- Tests never touch the operator's real `~/.codex` (`tests/conftest.py`
+  `stub_codex_models_cache`, a fixture cache mirroring the live shape) —
+  AGENT_RULES.md forbids agents reading live operator state in the test
+  suite.
+
 ## [2026-09-22] — The project record no longer loses concurrent writes
 
 - **A queued social draft could vanish after a `200`.** `data/projects/<id>.json`

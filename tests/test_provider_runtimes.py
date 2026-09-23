@@ -14,6 +14,7 @@ Providers not installed on this machine are tested via the not-installed path.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
@@ -2250,9 +2251,11 @@ def test_gemini_auth_probe_keychain_api_key_failure_surfaces_cli_error(monkeypat
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-def test_every_runtime_exposes_a_model_catalog():
+def test_every_runtime_exposes_a_model_catalog(monkeypatch, tmp_path):
     """model_choices() is what the composer's Model picker renders. Shape must
     hold for every runtime — a bad entry would break the picker for all."""
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
     for rt in agent_runtime.available_runtimes():
         for entry in rt.model_choices():
             assert isinstance(entry, tuple) and len(entry) == 2, (rt.name, entry)
@@ -2268,10 +2271,12 @@ def test_kiro_catalog_empty_because_it_has_no_model_flag():
     assert '--model' not in rt.build_command(model='gpt-5')
 
 
-def test_model_catalogs_do_not_cross_providers():
+def test_model_catalogs_do_not_cross_providers(monkeypatch, tmp_path):
     """The bug this guards: a project's `agent_model` is always a claude id, and
     it used to be forwarded verbatim to every runtime — `codex -m claude-opus-5`
     fails at the CLI. model_supported() is the gate that stops the inherit."""
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
     codex = agent_runtime.get_runtime('codex')
     assert not codex.model_supported('claude-opus-5')
     assert codex.model_supported('gpt-5.6-sol')
@@ -2286,23 +2291,116 @@ def test_model_catalogs_do_not_cross_providers():
     assert not oc.model_supported('claude-sonnet-5')
 
 
-def test_codex_catalog_matches_current_cli_models():
-    """The picker must not keep retired model ids after Codex moves on."""
+# ── Codex live model-catalog cache (GPT-6, MC dynamic-catalog change) ─────────
+
+def test_codex_catalog_reads_the_live_cache_ordered_by_priority(monkeypatch, tmp_path):
+    """model_choices() must read ~/.codex/models_cache.json (stubbed here, per
+    AGENT_RULES.md — tests never touch the real one), ordered by `priority`,
+    excluding 'hide'-visibility entries, with a readable label built from
+    display_name."""
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
     codex = agent_runtime.get_runtime('codex')
-    assert [model_id for model_id, _label in codex.model_choices()] == [
-        # Added 2026-09-08: the live CLI (0.153.4) defaults to this, and the
-        # picker had gone a release behind without anything failing.
-        'gpt-6-astra',
-        'gpt-5.6-sol',
-        'gpt-5.6-terra',
-        'gpt-5.6-luna',
-        'gpt-5.5',
-        'gpt-5.4',
-        'gpt-5.4-mini',
+    assert codex.model_choices() == [
+        ('gpt-6-astra', 'GPT-6 Astra'),
+        ('gpt-6-sol', 'GPT-6 Sol'),
+        ('gpt-6-luna', 'GPT-6 Luna'),
+        ('gpt-5.6-sol', 'GPT-5.6 Sol'),
+        ('gpt-5.6-terra', 'GPT-5.6 Terra'),
+        ('gpt-5.6-luna', 'GPT-5.6 Luna'),
+        ('gpt-5.5', 'GPT-5.5'),
     ]
 
 
-def test_model_supported_rejects_empty():
+def test_codex_catalog_caches_by_file_mtime(monkeypatch, tmp_path):
+    """A second call must not re-read the file while mtime is unchanged, and
+    must pick up an edit once mtime moves."""
+    from conftest import stub_codex_models_cache
+    path = stub_codex_models_cache(monkeypatch, tmp_path)
+    codex = agent_runtime.get_runtime('codex')
+    first = codex.model_choices()
+    assert first[0] == ('gpt-6-astra', 'GPT-6 Astra')
+
+    # Same mtime: edit the bytes but don't touch the clock — must still see
+    # the cached (stale) result.
+    stat = path.stat()
+    new_models = [{'slug': 'gpt-7-nova', 'display_name': 'GPT-7-Nova',
+                   'visibility': 'list', 'priority': 1}]
+    path.write_text(json.dumps({'models': new_models}), encoding='utf-8')
+    os.utime(path, (stat.st_atime, stat.st_mtime))
+    assert codex.model_choices() == first
+
+    # New mtime: must reparse.
+    os.utime(path, (stat.st_atime, stat.st_mtime + 5))
+    assert codex.model_choices() == [('gpt-7-nova', 'GPT-7 Nova')]
+
+
+@pytest.mark.parametrize('missing,models', [
+    (True, None),           # no cache file at all
+    (False, None),          # cache file present, `models` field malformed
+    (False, []),            # cache file present, no 'list'-visibility entries
+])
+def test_codex_catalog_falls_back_to_static_list_on_bad_cache(monkeypatch, tmp_path, missing, models):
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path, models=models, missing=missing)
+    codex = agent_runtime.get_runtime('codex')
+    assert codex.model_choices() == codex.MODEL_CHOICES
+    assert codex.MODEL_CHOICES[0] == ('gpt-6-astra', 'GPT-6 Astra')
+    assert ('gpt-5.4', 'GPT-5.4') not in codex.MODEL_CHOICES
+    assert ('gpt-5.4-mini', 'GPT-5.4 Mini') not in codex.MODEL_CHOICES
+
+
+def test_codex_model_supported_still_accepts_retired_ids(monkeypatch, tmp_path):
+    """Catalog membership is a display concern, not a whitelist (base-class
+    contract at AgentRuntime.MODEL_CHOICES' own docstring): gpt-5.4/-mini
+    dropped out of the live catalog but a stored pin/config value naming them
+    must not suddenly start being treated as unrecognized."""
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
+    codex = agent_runtime.get_runtime('codex')
+    assert codex.model_supported('gpt-5.4')
+    assert codex.model_supported('gpt-5.4-mini')
+    assert not codex.model_supported('')
+    assert not codex.model_supported('claude-opus-5')
+
+
+def test_codex_tier_heads_follow_gpt6_naming(monkeypatch, tmp_path):
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
+    codex = agent_runtime.get_runtime('codex')
+    assert codex.tier_family('gpt-6-astra') == 'best'
+    assert codex.tier_family('gpt-6-sol') == 'balanced'
+    assert codex.tier_family('gpt-6-luna') == 'fast'
+    # -terra is a variant, not a tier; bare/unsuffixed ids occupy no tier.
+    assert codex.tier_family('gpt-5.6-terra') == ''
+    assert codex.tier_family('gpt-5.5') == ''
+    assert codex.latest_for('best') == 'gpt-6-astra'
+    assert codex.latest_for('balanced') == 'gpt-6-sol'
+    assert codex.latest_for('fast') == 'gpt-6-luna'
+
+
+def test_codex_latest_for_falls_back_to_tier_aliases_when_cache_unreadable(monkeypatch, tmp_path):
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path, missing=True)
+    codex = agent_runtime.get_runtime('codex')
+    assert codex.latest_for('best') == codex.TIER_ALIASES['best']
+    assert codex.latest_for('balanced') == codex.TIER_ALIASES['balanced']
+    assert codex.latest_for('fast') == codex.TIER_ALIASES['fast']
+
+
+def test_codex_is_stale_pin_flags_prior_generation_balanced_pin(monkeypatch, tmp_path):
+    """A pin from before GPT-6 (gpt-5.6-sol, the old 'balanced' head) must be
+    flagged stale against today's catalog; the current head must not be."""
+    from conftest import stub_codex_models_cache
+    from mc.engine_selection import is_stale_pin
+    stub_codex_models_cache(monkeypatch, tmp_path)
+    assert is_stale_pin('codex', 'gpt-5.6-sol') is True
+    assert is_stale_pin('codex', 'gpt-6-sol') is False
+
+
+def test_model_supported_rejects_empty(monkeypatch, tmp_path):
+    from conftest import stub_codex_models_cache
+    stub_codex_models_cache(monkeypatch, tmp_path)
     assert not agent_runtime.get_runtime('codex').model_supported('')
 
 
@@ -2310,8 +2408,11 @@ def test_model_supported_rejects_empty():
     ('gemini', '--model'), ('codex', '-m'), ('opencode', '--model'),
     ('goose', '--model'), ('aider', '--model'),
 ])
-def test_catalog_ids_reach_the_cli_flag(provider, flag):
+def test_catalog_ids_reach_the_cli_flag(provider, flag, monkeypatch, tmp_path):
     """Every catalogued id must actually survive into the spawn command."""
+    if provider == 'codex':
+        from conftest import stub_codex_models_cache
+        stub_codex_models_cache(monkeypatch, tmp_path)
     rt = agent_runtime.get_runtime(provider)
     mid = rt.model_choices()[0][0]
     cmd = rt.build_command(model=mid)
