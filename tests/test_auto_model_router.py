@@ -28,7 +28,23 @@ def _fresh_server(tmp_data_dir, monkeypatch):
 
     Mirrors the pattern in test_telemetry.py — each test gets a virgin
     module so DATA_DIR + CONFIG are reset.
+
+    `server.py` does a bare `mc.state.CONFIG = CONFIG` at import time (not
+    through monkeypatch), so re-importing it here permanently swaps the
+    process-wide `mc.state.CONFIG` singleton for this tmp/empty one — every
+    OTHER test file that reads `state.CONFIG` afterward in the same pytest
+    session then inherits an `agent_model`-less config. Harmless before
+    model-hierarchy-simplification's "empty global -> tier:best" default;
+    after it, that leak made engine_selection call `runtime.latest_for()` on
+    unrelated tests' duck-typed runtime stubs that don't implement it
+    (surfaced as 7 failures in tests/test_authorized_runtime_bridge.py,
+    order-dependent on this file running first). Registering the swap with
+    monkeypatch — capturing the ORIGINAL object before reimport — makes the
+    fixture's teardown put the real one back, containing the leak to this
+    file's own tests.
     """
+    from mc import state as _mc_state
+    monkeypatch.setattr(_mc_state, 'CONFIG', _mc_state.CONFIG)
     monkeypatch.setenv('MC_DATA_DIR', str(tmp_data_dir))
     monkeypatch.setenv('MC_PORT', '0')
     if 'server' in sys.modules:
@@ -137,12 +153,16 @@ class TestResolveDispatchModel:
         assert model == 'sonnet'
         assert source == 'manual'
 
-    def test_no_model_at_all_defaults_to_sonnet(self, tmp_path, monkeypatch):
+    def test_no_model_at_all_tracks_best_tier(self, tmp_path, monkeypatch):
+        """model-hierarchy-simplification (2026-09-22): an empty global no
+        longer hard-codes 'sonnet' — it tracks the 'best' tier, which for
+        claude is the 'opus' alias (verified live: resolves to
+        claude-opus-5-5, see mc/agent_runtime.py ClaudeRuntime.TIER_ALIASES)."""
         s = _fresh_server(tmp_path, monkeypatch)
         s.CONFIG['auto_model_enabled'] = False
         s.CONFIG['agent_model'] = ''
         model, source = s._resolve_dispatch_model({}, 'anything')
-        assert model == 'sonnet'
+        assert model == 'opus'
         assert source == 'manual'
 
 

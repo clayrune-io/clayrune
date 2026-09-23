@@ -41,6 +41,9 @@ def test_model_lookup_prefers_live_choice_and_is_provider_scoped(ar, monkeypatch
 def test_unknown_native_model_does_not_apply_current_defaults(ar, monkeypatch):
     captured = {}
     class Runtime:
+        def model_supported(self, model):
+            return False
+
         def build_command(self, **kwargs):
             captured.update(kwargs)
             return ['claude']

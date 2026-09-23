@@ -114,6 +114,144 @@ def test_skills_use_inherited_global_provider(monkeypatch):
     assert ar._skills_catalog_block(dict(project, provider='claude')) == ''
 
 
+# ── classify_value ───────────────────────────────────────────────────────────
+
+@pytest.mark.parametrize('value,expected', [
+    (None, ('inherit', '')),
+    ('', ('inherit', '')),
+    ('   ', ('inherit', '')),
+    ('tier:best', ('tier', 'best')),
+    ('tier:balanced', ('tier', 'balanced')),
+    ('tier:fast', ('tier', 'fast')),
+    ('tier:nonsense', ('pin', 'tier:nonsense')),  # unrecognized tier name -> pin, not silently dropped
+    ('opus', ('pin', 'opus')),  # bare alias: self-updating already, doesn't need 'tier:' spelling
+    ('claude-opus-5-5', ('pin', 'claude-opus-5-5')),
+])
+def test_classify_value(value, expected):
+    assert es.classify_value(value) == expected
+
+
+# ── resolve_model_full: tier tracking + the 'global empty -> best' default ──
+
+def test_global_empty_tracks_best_tier():
+    result = es.resolve_model_full('claude', {'agent_model': ''})
+    assert (result.model, result.source, result.tracking) == ('opus', 'global', 'best')
+
+
+def test_global_tier_balanced():
+    result = es.resolve_model_full('claude', {'agent_model': 'tier:balanced'})
+    assert (result.model, result.source, result.tracking) == ('sonnet', 'global', 'balanced')
+
+
+def test_project_tier_overrides_global_pin():
+    result = es.resolve_model_full(
+        'claude', {'agent_model': 'claude-opus-5-5'}, {'agent_model': 'tier:fast'})
+    assert (result.model, result.source, result.tracking) == ('haiku', 'project', 'fast')
+
+
+def test_explicit_tier_override_beats_project_and_global():
+    result = es.resolve_model_full(
+        'claude', {'agent_model': 'tier:best'}, {'agent_model': 'tier:fast'},
+        override='tier:balanced')
+    assert (result.model, result.source, result.tracking) == ('sonnet', 'explicit', 'balanced')
+
+
+def test_exact_pin_is_unaffected_by_tier_machinery():
+    """Backward compatible: an existing exact-id pin behaves exactly as before."""
+    result = es.resolve_model_full('claude', {}, {'agent_model': 'claude-opus-5'})
+    assert (result.model, result.source, result.tracking) == ('claude-opus-5', 'project', '')
+
+
+def test_tier_resolution_for_non_claude_runtime():
+    result = es.resolve_model_full('gemini', {'agent_model': 'tier:fast'})
+    assert result.model == 'gemini-flash-lite-latest'
+    assert result.tracking == 'fast'
+
+
+def test_resolve_model_2tuple_backcompat_view():
+    model, source = es.resolve_model('claude', {'agent_model': 'tier:best'})
+    assert (model, source) == ('opus', 'global')
+
+
+# ── resolve_effort ───────────────────────────────────────────────────────────
+
+def test_effort_inherits_project_then_global():
+    assert es.resolve_effort({'agent_effort': 'high'}, {}) == ('high', 'global')
+    assert es.resolve_effort({'agent_effort': 'high'}, {'agent_effort': 'low'}) == ('low', 'project')
+
+
+def test_effort_explicit_empty_selects_native_default():
+    assert es.resolve_effort({'agent_effort': 'high'}, override='') == ('', 'native')
+
+
+def test_effort_no_config_is_native_default():
+    assert es.resolve_effort({}) == ('', 'native')
+
+
+# ── resolve_engine: tracking + effort surfaced on ResolvedEngine ────────────
+
+def test_resolve_engine_carries_tracking_and_effort():
+    result = es.resolve_engine({'default_provider': 'claude', 'agent_effort': 'high'})
+    assert result.tracking == 'best'
+    assert result.model == 'opus'
+    assert result.model_source == 'global'
+    assert (result.effort, result.effort_source) == ('high', 'global')
+
+
+def test_resolve_engine_character_effort_source():
+    result = es.resolve_engine({'default_provider': 'claude'},
+                               character={'effort': 'max'})
+    assert (result.effort, result.effort_source) == ('max', 'character')
+
+
+def test_resolve_engine_explicit_effort_beats_character():
+    result = es.resolve_engine({'default_provider': 'claude'},
+                               character={'effort': 'max'}, effort_override='low')
+    assert (result.effort, result.effort_source) == ('low', 'explicit')
+
+
+def test_resolve_engine_pin_has_no_tracking():
+    result = es.resolve_engine({'default_provider': 'claude'}, model_override='claude-opus-5')
+    assert result.tracking == ''
+
+
+# ── is_stale_pin ─────────────────────────────────────────────────────────────
+
+def test_stale_pin_true_for_outdated_concrete_id():
+    assert es.is_stale_pin('claude', 'claude-opus-5') is True
+
+
+def test_stale_pin_false_for_current_head():
+    assert es.is_stale_pin('claude', 'claude-opus-5-5') is False
+
+
+def test_stale_pin_false_for_tier_value():
+    assert es.is_stale_pin('claude', 'tier:best') is False
+
+
+def test_stale_pin_false_for_bare_alias():
+    assert es.is_stale_pin('claude', 'opus') is False
+
+
+def test_stale_pin_false_for_empty_or_unknown_provider():
+    assert es.is_stale_pin('claude', '') is False
+    assert es.is_stale_pin('does-not-exist', 'claude-opus-5') is False
+
+
+def test_stale_pin_false_for_model_outside_any_tier_family():
+    """A Fable id (no opus/sonnet/haiku substring) has no tier_family, so it's
+    never flagged stale by is_stale_pin() even though it's a concrete pin."""
+    assert es.is_stale_pin('claude', 'claude-fable-5-1') is False
+
+
+def test_stale_pin_never_rewrites_the_stored_value():
+    """Detection only: calling is_stale_pin does not mutate anything it's
+    passed, and resolve_model_full still returns the stale pin verbatim."""
+    result = es.resolve_model_full('claude', {}, {'agent_model': 'claude-opus-5'})
+    assert result.model == 'claude-opus-5'
+    assert es.is_stale_pin('claude', result.model) is True
+
+
 def test_explicit_runtime_context_does_not_mutate_project_seed(monkeypatch, tmp_path):
     from mc.blueprints import agent_routes as ar
     from types import SimpleNamespace

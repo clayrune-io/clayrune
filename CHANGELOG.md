@@ -6,6 +6,62 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — Model-hierarchy resolver unification (backend, MC plan `model-hierarchy-simplification.md`)
+
+- ONE resolver: every spawn/respawn/revive/dispatch path (`_build_claude_flags`,
+  `_resolve_dispatch_model`, `_dispatch_with_routing_parallel`,
+  `_resolve_runtime_model`, `_requested_effort`) now calls
+  `mc/engine_selection.py` instead of reading `project.get('agent_model')` /
+  `state.CONFIG.get('agent_model')` directly. The old project-then-global-then-
+  hard-coded-`'sonnet'` fallback is gone — chat > agent type > project > global,
+  same chain `resolve_engine` already used for provider.
+- Three kinds of value at each level: empty inherits, `'tier:best'` /
+  `'tier:balanced'` / `'tier:fast'` tracks that tier, anything else is an exact
+  pin (unchanged, backward compatible). An empty GLOBAL model now means
+  `tier:best` — no more silent `'sonnet'` default. `engine_selection.classify_value`
+  does the split; `resolve_model_full`/`ResolvedEngine` carry the result plus a
+  `tracking` field and a `model_source`/`effort_source` label for each.
+- `AgentRuntime.latest_for(tier)` added per runtime. Claude maps tiers to the
+  CLI's own `opus`/`sonnet`/`haiku` aliases — VERIFIED live against this box's
+  CLI 2.1.280 by reading the `stream-json` init event's `model` field back:
+  `opus` → `claude-opus-5-5`, `sonnet` → `claude-sonnet-5`, `haiku` →
+  `claude-haiku-4-5-20251001`. Gemini reuses its own `-latest` catalog ids
+  (already self-updating). Codex has no such handle (`codex --help` doesn't
+  enumerate ids), so its three tiers are a hand-maintained pin of today's
+  catalog head, updated in the same edit as `MODEL_CHOICES`. Qwen has no
+  verified catalog to pick a head from, so tracking any tier there resolves to
+  the native default — same as any other runtime lacking `TIER_ALIASES`.
+- Resume re-resolves: an unpinned/auto conversation (`model_auto_requested`)
+  calls the SAME live resolver on every resume/respawn via `_continuation_model`
+  → `_resolve_dispatch_model`, so a newer tier head is picked up on the next
+  resume with no MC edit. A pinned chat (`pinned_model` set, `model_auto_requested`
+  False) is untouched by config changes — verified with a global tier flip
+  between two calls in the same test. Provider is never switched on resume
+  (unchanged — resume was already same-provider-only).
+- `is_stale_pin(provider, model)` added: true only for an EXACT pin sitting in
+  a runtime's recognized tier family (name-pattern match) whose catalog head has
+  since moved past it. Detection only — never rewrites a stored pin; migration
+  is a human call.
+- Auto-router unaffected: `_resolve_dispatch_model`'s classifier gate
+  (`auto_model_enabled`) and `_route_dispatch_model` are untouched, only their
+  fallback value now comes from the unified resolver.
+- Test fallout from the unification itself: several test suites faked
+  `agent_runtime.get_runtime()` with bare stand-ins (a `SimpleNamespace` or a
+  hand-rolled class) that implemented only `build_command`/`model_supported`.
+  Because `_build_claude_flags` and friends now route every inherited value
+  through `model_provider_mismatch` (which every real runtime already
+  satisfies), those stand-ins needed `model_supported`/`latest_for` added too
+  — fixed in `tests/test_continuation_model.py`, `test_effort_continuity.py`,
+  `test_agent_routes.py`, `test_hivemind_routes.py`,
+  `test_hivemind_worker_model_default.py`. One PRE-EXISTING test
+  (`test_auto_model_router.py::test_no_model_at_all_defaults_to_sonnet`)
+  encoded the retired hard-coded-`'sonnet'` behavior and is now
+  `test_no_model_at_all_tracks_best_tier`, asserting `'opus'`.
+- Scope: backend only, per the plan. `config.json`/project/character records
+  were not migrated — an existing exact-ID pin (e.g. project `claude-opus-5`)
+  keeps behaving exactly as it did before this change. Settings UI showing
+  "Opus 5.5 · tracking Best · from Global" is Marlow's follow-up spec.
+
 ## [2026-09-22] — codex/gemini/qwen sign-in works from a phone
 
 - The PTY sign-in branch launched the bare CLI binary with no env, so all three

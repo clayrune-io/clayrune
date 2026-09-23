@@ -793,6 +793,86 @@ def test_model_pin_session_not_found(client):
     assert r.status_code == 404
 
 
+# ── resume re-resolves a tracked tier; a pin never moves (model-hierarchy-
+# simplification, 2026-09-22) ───────────────────────────────────────────────
+# `_continuation_model` is the function `_dispatch_agent_internal`'s resume
+# branch calls (agent_routes.py ~8511) to decide what `--model` a resumed
+# conversation gets. An unpinned/auto conversation must re-run
+# engine_selection's tier lookup on every call — never memorize a snapshot —
+# so a new release is picked up the next time the chat is resumed. A pinned
+# conversation must ignore config changes entirely.
+#
+# `state.CONFIG` is the same process-wide singleton every other test file
+# reads (not reset by the `client` fixture, which only touches
+# agent_sessions/DATA_DIR) — a bare `.pop('agent_model', None)` teardown
+# DELETES whatever value was there before this test ran instead of restoring
+# it, permanently flipping later tests' config from "concrete pin" to
+# "absent -> tier:best" for the rest of the pytest session. Root-caused a
+# cross-file failure in tests/test_authorized_runtime_bridge.py (its
+# duck-typed FakeRuntime has no latest_for(), so the tier path it never used
+# to hit started raising AttributeError). Snapshot-and-restore the exact
+# prior value/absence, same as the `client` fixture already does for
+# agent_sessions.
+_MISSING = object()
+
+
+def _set_config(ar, **values):
+    """Set state.CONFIG keys, returning a restore() that undoes exactly this
+    call — even when a key was absent before, never leaving a stale value."""
+    originals = {k: ar.state.CONFIG.get(k, _MISSING) for k in values}
+    ar.state.CONFIG.update(values)
+
+    def restore():
+        for k, v in originals.items():
+            if v is _MISSING:
+                ar.state.CONFIG.pop(k, None)
+            else:
+                ar.state.CONFIG[k] = v
+    return restore
+
+
+def test_continuation_model_reresolves_tracked_tier_on_each_call(client):
+    from mc.blueprints import agent_routes as ar
+    session = {'model_auto_requested': True, 'agent_model': 'claude-opus-5-5'}
+    restore = _set_config(ar, agent_model='tier:best', auto_model_enabled=False)
+    try:
+        assert ar._continuation_model(session, {}) == 'opus'
+        # A new global tier choice takes effect on the VERY NEXT resume —
+        # nothing about the prior resolution is cached on the session.
+        ar.state.CONFIG['agent_model'] = 'tier:fast'
+        assert ar._continuation_model(session, {}) == 'haiku'
+    finally:
+        restore()
+
+
+def test_continuation_model_pinned_chat_never_moves(client):
+    from mc.blueprints import agent_routes as ar
+    session = {'model_auto_requested': False, 'pinned_model': 'claude-opus-5',
+               'agent_model': 'claude-opus-5'}
+    restore = _set_config(ar, agent_model='tier:best')
+    try:
+        # Global tracking changed underneath it; a pinned chat ignores it.
+        assert ar._continuation_model(session, {}) == 'claude-opus-5'
+        ar.state.CONFIG['agent_model'] = 'tier:fast'
+        assert ar._continuation_model(session, {}) == 'claude-opus-5'
+    finally:
+        restore()
+
+
+def test_resolve_dispatch_model_reresolves_tier_between_calls():
+    """The dispatch-time fallback (used by both fresh dispatch and the auto/
+    tracked resume branch) is a live lookup, not a cached value: a global
+    tier change is visible on the very next call, no restart required."""
+    from mc.blueprints import agent_routes as ar
+    restore = _set_config(ar, agent_model='tier:best', auto_model_enabled=False)
+    try:
+        assert ar._resolve_dispatch_model({}, '')[0] == 'opus'
+        ar.state.CONFIG['agent_model'] = 'tier:balanced'
+        assert ar._resolve_dispatch_model({}, '')[0] == 'sonnet'
+    finally:
+        restore()
+
+
 # ── Auth probe: "Reached max turns" must not be read as an auth failure ───────
 
 def _run_probe_with(monkeypatch, *, returncode, stdout='', stderr=''):
@@ -1030,6 +1110,12 @@ class _StubCodexRuntime:
     def model_supported(self, model):
         return False
 
+    def latest_for(self, tier):
+        """Stand-in for AgentRuntime.latest_for: these tests exercise
+        dispatch-flag plumbing, not model-hierarchy tier tracking, so an
+        empty tier head (native default) keeps them independent of it."""
+        return ''
+
     def __init__(self):
         self.dispatch_kwargs = None
 
@@ -1136,6 +1222,10 @@ class _StubMissingCLIRuntime:
 
     def model_supported(self, model):
         return False
+
+    def latest_for(self, tier):
+        """See _StubCodexRuntime.latest_for — same reasoning."""
+        return ''
 
     def build_command(self, **kwargs):
         return ['codex', 'exec']

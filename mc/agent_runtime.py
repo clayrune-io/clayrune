@@ -782,6 +782,50 @@ class AgentRuntime(ABC):
         whose catalog is dynamic (read from config, probed from the CLI)."""
         return list(self.MODEL_CHOICES)
 
+    # ── Tier tracking (model-hierarchy-simplification, 2026-09-22) ───────────
+    # A config value of 'tier:best'/'tier:balanced'/'tier:fast' asks to TRACK
+    # that tier rather than pin an exact id — see mc/engine_selection.py. Each
+    # runtime maps the three tiers to whatever its own catalog offers as
+    # "resolves to the newest automatically"; TIER_ALIASES holds that mapping.
+    # Empty (the base default) means this runtime has no such handle — Qwen's
+    # MODEL_CHOICES is empty for the same reason (no verified catalog to pick
+    # a head from), so tracking any tier there resolves to the native default.
+    TIER_ALIASES: Dict[str, str] = {}
+
+    def latest_for(self, tier: str) -> str:
+        """The value to pass as --model to TRACK `tier` at spawn time.
+
+        Deliberately the CLI's own always-resolves-to-newest handle (an alias
+        or a `-latest`-style catalog id) rather than a concrete model id MC
+        would have to keep updated by hand — that hand-updating is exactly the
+        staleness bug this feature replaces. '' means no such handle exists
+        for this provider/tier; caller falls back to native default.
+        """
+        return self.TIER_ALIASES.get(tier, '')
+
+    def tier_family(self, model: str) -> str:
+        """Which tier `model` currently occupies, or '' when unknown.
+
+        Used only for is_stale_pin() / display — never for spawn resolution.
+        Base default is '' (no family signal): overridden only where a
+        runtime's catalog groups ids by a reliable name pattern.
+        """
+        return ''
+
+    def catalog_head_for(self, tier: str) -> str:
+        """The newest CONCRETE catalog id currently occupying `tier`.
+
+        Distinct from latest_for(): that returns a dynamic, self-updating
+        handle for spawning; this returns today's static snapshot for
+        comparing against a stored exact pin (is_stale_pin). Relies on
+        model_choices() being ordered newest-first within each family, same
+        assumption the catalogs already document for themselves.
+        """
+        for model_id, _label in self.model_choices():
+            if self.tier_family(model_id) == tier:
+                return model_id
+        return ''
+
     def model_supported(self, model: str) -> bool:
         """True when `model` is one this provider is known to accept.
 
@@ -1673,6 +1717,31 @@ class ClaudeRuntime(AgentRuntime):
         ('claude-opus-5', 'Opus 5'),
         ('claude-haiku-4-5-20251001', 'Haiku 4.5'),
     ]
+
+    # Verified LIVE 2026-09-22 against this box's claude CLI: spawned
+    # `--model <alias> -p "say hi" --output-format stream-json` for each of
+    # the three and read the `system`/`init` event's own `model` field back
+    # (not assumed) —
+    #   --model opus   -> claude-opus-5-5
+    #   --model sonnet -> claude-sonnet-5
+    #   --model haiku  -> claude-haiku-4-5-20251001
+    # Storing the ALIAS here (not the concrete id) is the point: the CLI
+    # re-resolves it to its own newest match on every spawn, so a future
+    # Opus release is picked up automatically with no MC edit required.
+    TIER_ALIASES = {'best': 'opus', 'balanced': 'sonnet', 'fast': 'haiku'}
+
+    def tier_family(self, model: str) -> str:
+        """Name-pattern match against MODEL_CHOICES' own naming (opus/sonnet/
+        haiku) — Fable ids intentionally return '' (a separate line, not a
+        tier), so a Fable pin is never flagged stale by is_stale_pin()."""
+        low = (model or '').lower()
+        if 'opus' in low:
+            return 'best'
+        if 'sonnet' in low:
+            return 'balanced'
+        if 'haiku' in low:
+            return 'fast'
+        return ''
 
     # Why the last oneshot() returned None (rc + stderr tail / timeout / spawn
     # failure). Callers raise/log it instead of an anonymous "call failed".
@@ -3202,6 +3271,27 @@ class GeminiRuntime(AgentRuntime):
         ('gemini-3.1-pro-preview', 'Gemini 3.1 Pro (Preview)'),
         ('gemini-3.1-flash-lite', 'Gemini 3.1 Flash-Lite'),
     ]
+
+    # The `-latest` ids above ARE gemini's own self-updating handles (the
+    # comment on MODEL_CHOICES already treats them as the ones that "cannot
+    # go stale") — reused directly rather than inventing a second alias
+    # layer. Family sizing (pro=highest capability, flash=mainline,
+    # flash-lite=cheapest/fastest) maps onto best/balanced/fast.
+    TIER_ALIASES = {
+        'best': 'gemini-pro-latest',
+        'balanced': 'gemini-flash-latest',
+        'fast': 'gemini-flash-lite-latest',
+    }
+
+    def tier_family(self, model: str) -> str:
+        low = (model or '').lower()
+        if 'flash-lite' in low:
+            return 'fast'
+        if 'pro' in low:
+            return 'best'
+        if 'flash' in low:
+            return 'balanced'
+        return ''
 
     _bin_cache: Optional[str] = None
 
@@ -6808,6 +6898,28 @@ class CodexRuntime(AgentRuntime):
         ('gpt-5.4', 'GPT-5.4'),
         ('gpt-5.4-mini', 'GPT-5.4 Mini'),
     ]
+
+    # Codex has no gemini-style `-latest` / claude-style bare-alias handle —
+    # `codex --help` doesn't enumerate ids at all (see MODEL_CHOICES comment
+    # above), so there is nothing dynamic to point at. latest_for() here is a
+    # static pin of TODAY's head per tier, picked from this hand-maintained,
+    # newest-first list: 'best' = the list's own head (gpt-6-astra, the
+    # current flagship); 'fast' = the one `-mini` entry (the deliberately
+    # cheap/fast variant); 'balanced' = the next entry after the flagship
+    # still in the CURRENT generation (gpt-5.6-sol) rather than a prior
+    # generation's flagship. Whoever updates MODEL_CHOICES for a new release
+    # must update this mapping in the same edit, same as the catalog itself.
+    TIER_ALIASES = {'best': 'gpt-6-astra', 'balanced': 'gpt-5.6-sol', 'fast': 'gpt-5.4-mini'}
+
+    def tier_family(self, model: str) -> str:
+        """Only the three curated tier heads are recognized — Codex ids don't
+        share a reliable size-coded naming pattern (sol/terra/luna are
+        variants, not tiers), so guessing family membership from the string
+        for arbitrary ids would produce false "stale pin" positives."""
+        for tier, head in self.TIER_ALIASES.items():
+            if model == head:
+                return tier
+        return ''
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False
