@@ -15,7 +15,9 @@ from tests.test_runtime_completion_log import env
 @pytest.fixture
 def captured_flags(ar, monkeypatch):
     captured = []
-    runtime = SimpleNamespace(build_command=lambda **kw: captured.append(kw) or ['fake'])
+    runtime = SimpleNamespace(
+        model_supported=lambda model: False,
+        build_command=lambda **kw: captured.append(kw) or ['fake'])
     monkeypatch.setattr(ar._agent_runtime, 'get_runtime', lambda _: runtime)
     monkeypatch.setattr(ar, '_resolve_project_mcp_config', lambda _: '')
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'fake')

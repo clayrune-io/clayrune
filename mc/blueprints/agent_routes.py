@@ -728,12 +728,16 @@ def _build_claude_flags(project=None, streaming=False, model_override=None,
     Every spawn/respawn/revive site must pass it, or that path silently reverts
     to the full skill listing — see tests/test_skill_scoping.py.
     """
-    model = model_override if model_override is not None else (
-        (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '')
-    )
-    effort = (effort_override if effort_override is not None else
-              ((project or {}).get('agent_effort', '')
-               or state.CONFIG.get('agent_effort', '')))
+    # ONE resolver (model-hierarchy-simplification, 2026-09-22): project >
+    # global, tier-aware ('tier:best' etc. resolve to the runtime's current
+    # tracking alias at spawn time; an empty global tracks 'best'). Chat- and
+    # character-level picks are already merged into `model_override` /
+    # `effort_override` by the caller before this point — see
+    # `_dispatch_agent_internal`'s `_char_model` merge and `_requested_effort`.
+    model, _model_source = engine_selection.resolve_model(
+        'claude', state.CONFIG, project, override=model_override)
+    effort, _effort_source = engine_selection.resolve_effort(
+        state.CONFIG, project, override=effort_override)
     return _agent_runtime.get_runtime('claude').build_command(
         model=model,
         max_turns=(max_turns_override if max_turns_override is not None
@@ -788,7 +792,7 @@ def _resolve_dispatch_model(project, prompt):
     Synchronous path. For parallel classification overlapping with
     `_build_agent_context`, use `_dispatch_with_routing_parallel`.
     """
-    fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
+    fallback, _source = engine_selection.resolve_model('claude', state.CONFIG, project)
     if not prompt or not state.CONFIG.get('auto_model_enabled', False):
         return fallback, 'manual'
     return _route_dispatch_model(prompt, fallback)
@@ -839,7 +843,7 @@ def _dispatch_with_routing_parallel(project, prompt, context_builder, streaming=
                                                       character_skills=character_skills)
         return model, source, flags, context, ''
 
-    fallback = (project or {}).get('agent_model', '') or state.CONFIG.get('agent_model', '') or 'sonnet'
+    fallback, _source = engine_selection.resolve_model('claude', state.CONFIG, project)
     fut = _classifier_pool.submit(_route_dispatch_model, prompt, fallback)
     context = context_builder() if context_builder else ''
     timeout = max(1, int(state.CONFIG.get('auto_model_classifier_timeout_secs', 8) or 8))
@@ -7840,9 +7844,11 @@ def _requested_effort(project, character=None, override=None, prior=None):
         return override
     if prior is not None:
         return _continuation_effort(prior)
-    return (_character_engine(character, 'effort')
-            or (project or {}).get('agent_effort', '')
-            or state.CONFIG.get('agent_effort', '') or '')
+    character_effort = _character_engine(character, 'effort')
+    if character_effort:
+        return character_effort
+    effort, _source = engine_selection.resolve_effort(state.CONFIG, project)
+    return effort
 
 
 def _continuation_model(session, project=None):
