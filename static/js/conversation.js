@@ -1151,7 +1151,17 @@ function agentPanelHTML(p) {
   </div>`;
   // Mobile compose = flex column: the preview / starter chips / resume picker
   // SCROLL in the top area, and the composer stays pinned to the BOTTOM edge
-  // (Issue A). Desktop keeps the flat, top-anchored layout.
+  // (Issue A). Desktop used to be a flat, top-anchored layout inside
+  // .agent-main (overflow:hidden, no scroll) — with a big enough persona
+  // roster the grid overflowed the pane, the composer's autofocus
+  // (newAgentTab/dispatchAgent's `.focus()`, both `window.innerWidth > 960`
+  // gated) scrolled that hidden-overflow ancestor to reveal itself, and the
+  // top rows landed above scrollTop 0 with no scrollbar to get back — visible
+  // clip, unrecoverable (Ron, 2026-09-22 screenshot, short viewport). Same
+  // compose-scroll/compose-bottom split as mobile fixes it: the grid scrolls,
+  // the composer stays pinned. `.agent-3pane .compose-scroll` (app.css) adds
+  // the centering wrapper — margin:auto centers it when short, collapses to 0
+  // (top-anchored, scrollable) when it overflows.
   const dispatchRow = (noActiveTab && !_mobileListMode)
     ? (mobileMode
         ? `<div class="mobile-compose-view">
@@ -1164,7 +1174,8 @@ function agentPanelHTML(p) {
             </div>
             ${_mobileSheet}
           </div>`
-        : `${_threadShellHeader}${_leadResume}${resumeIndicator}${emptyStateHTML}${_composerBlock}${_trailControls}${dispatchPreviews}${_trailSearchPaneBelow}`)
+        : `<div class="compose-scroll"><div class="compose-scroll-inner">${_threadShellHeader}${_leadResume}${resumeIndicator}${emptyStateHTML}</div></div>
+            <div class="compose-bottom">${_composerBlock}${_trailControls}${dispatchPreviews}</div>${_trailSearchPaneBelow}`)
     : '';
 
   // Active tab content
