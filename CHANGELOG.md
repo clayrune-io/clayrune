@@ -6,6 +6,35 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-22] — First-run SETUP decoupled from the guided TOUR (`d3d5eb6`)
+
+- Provider setup used to be a step inside the tour (`WT_STEPS` `'provider-choice'`),
+  so there was no way to configure agent connections without running the tour,
+  and no way to skip the tour without skipping setup. New `static/js/first-run.js`
+  owns its own flow instead: Welcome → Agent connections → Essentials (theme,
+  conversation flow, connectivity, LAN passcode, advanced level) → optional tour
+  offer. `walkthrough.js` loses the `provider-choice`/`advanced-picker` steps and
+  their `wt*` helpers; it starts at `sidebar` and never reads/writes
+  `default_provider`.
+- First run is now gated on server-side `config.setup_completed`, not a
+  per-browser `localStorage` flag — setup writes server state (providers,
+  default provider, the LAN passcode), so "have I been set up?" is a property of
+  the install, not of one browser. A browser that already finished the OLD
+  combined tour (`walkthrough_done` set) is treated as already set up and the
+  flag is migrated onto the server once. Settings gains "Run setup again" next
+  to "Take Tour", which forces every step to show regardless of what's already
+  configured.
+- Same step also adds a provider-neutral default-model tier picker
+  (Best/Balanced/Fast) to the Agent connections step, Balanced pre-selected and
+  persisted the moment the step is first shown. Pairs with the model-hierarchy
+  resolver below: an unset global model now resolves to the CLI's own native
+  default rather than silently becoming Opus, so this step is the only place
+  that ever writes an explicit global tier.
+- Verification gap closed: `tools/smoke/first-run-setup-gate.mjs` covers the
+  gate itself (boot trigger, already-set-up, the migration case, `/api/config`
+  hydration failure fails closed) and both tour-offer exits ("Not now" / "Take
+  the tour"), which no existing smoke reached.
+
 ## [2026-09-22] — Model-hierarchy resolver unification (backend, MC plan `model-hierarchy-simplification.md`)
 
 - ONE resolver: every spawn/respawn/revive/dispatch path (`_build_claude_flags`,
