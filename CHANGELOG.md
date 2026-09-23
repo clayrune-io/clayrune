@@ -26,7 +26,8 @@
   configured.
 - Same step also adds a provider-neutral default-model tier picker
   (Best/Balanced/Fast) to the Agent connections step, Balanced pre-selected and
-  persisted the moment the step is first shown. Pairs with the model-hierarchy
+  persisted when the step is first shown, but only if no global model is set
+  (an existing tier or exact pin is never overwritten, `3ae30c5`). Pairs with the model-hierarchy
   resolver below: an unset global model now resolves to the CLI's own native
   default rather than silently becoming Opus, so this step is the only place
   that ever writes an explicit global tier.
