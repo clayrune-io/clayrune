@@ -146,6 +146,48 @@ const main = async () => {
   check('stale-vv: the tap blurred the field',
         await page.evaluate(() => document.activeElement === document.getElementById('composer') ? 1 : 0), 0, 0);
 
+  // ── 2b. stale-vv dismissed by BACKGROUNDING, not a tap ──────────────────────
+  // The recurring report (2026-09-22): a COMPLETED chat sat stuck at ~60%
+  // height with no tap ever happening — the user backgrounded the app (or the
+  // screen locked) while the keyboard was open, then came back to just READ
+  // the finished reply. Android/iOS both force-dismiss the IME on backgrounding
+  // and never reopen it on their own on resume, but focus stays on the field
+  // and vv.height stays exactly as stale as the down-button case — so nothing
+  // in the old code could ever tell the two apart, and there is no tap to
+  // break the deadlock this time.
+  await page.evaluate(kb => {
+    document.getElementById('composer').focus();
+    window.__vv.height = window.innerHeight - kb;
+    window.__vv.dispatchEvent(new Event('resize'));
+  }, KB);
+  await page.waitForTimeout(900);
+  check('bg-resume setup: pinned at keyboard height', await appVh(page), layout - KB);
+
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForTimeout(200);
+  await page.evaluate(() => window.dispatchEvent(new Event('pageshow')));
+  await page.waitForTimeout(900);
+  check('bg-resume: foreground return recovers full height with NO tap',
+        await appVh(page), layout);
+
+  // ── 2c. resume where the keyboard genuinely reopens (e.g. autofocus) ───────
+  // forceFull's distrust of vv must not become permanent — a REAL fresh resize
+  // after resume (the OS actually reopening the IME) has to shrink the app
+  // again like normal.
+  await page.evaluate(() => document.dispatchEvent(new Event('visibilitychange')));
+  await page.waitForTimeout(50);
+  await page.evaluate(kb => {
+    window.__vv.height = window.innerHeight - kb;
+    window.__vv.dispatchEvent(new Event('resize'));
+  }, KB);
+  await page.waitForTimeout(900);
+  check('bg-resume: a genuinely reopened keyboard still shrinks the app',
+        await appVh(page), layout - KB);
+
+  await tapContent(page);
+  await page.waitForTimeout(900);
+  check('bg-resume cleanup: tap recovers full height', await appVh(page), layout);
+
   // ── 3. resizes-content / adjustResize: the whole window resizes ────────────
   // Nothing to infer here — innerHeight itself shrinks, so the inset is zero
   // and the app simply follows the window.

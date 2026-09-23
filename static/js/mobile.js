@@ -33,6 +33,14 @@
       });
     } catch (e) { /* best-effort relayout — never block the height write */ }
   }
+  // Whether the current vv.height reading is known-fresh rather than a
+  // leftover from before the app was backgrounded. Sets false only around a
+  // background/foreground cycle (forceFull, below) and flips back true the
+  // moment vv reports ANYTHING new — a real keyboard reopening on resume
+  // (e.g. an autofocus) always fires a genuine resize, so that path still
+  // shrinks correctly; it just can't be assumed true from an untouched
+  // pre-background reading.
+  let _vvTrusted = true;
   function apply() {
     _raf = 0;
     const lh = layoutH();
@@ -43,7 +51,7 @@
     // enough to be one, and it is capped so a bad reading can never eat the
     // screen. Previously a stale short vv.height became the app height outright
     // and nothing could walk it back — the reported half-window.
-    let inset = Math.max(0, lh - vh - (vv ? vv.offsetTop : 0));
+    let inset = _vvTrusted ? Math.max(0, lh - vh - (vv ? vv.offsetTop : 0)) : 0;
     if (inset < MIN_KB || !_isField(document.activeElement)) inset = 0;
     inset = Math.min(inset, Math.round(lh * 0.6));
     const h = Math.round(lh - inset);
@@ -66,13 +74,40 @@
   // on a programmatic blur (e.g. sending a follow-up that interrupts the agent),
   // which left the modal stuck at keyboard height (the "split screen").
   function settle() { schedule(); setTimeout(apply, 120); setTimeout(apply, 350); setTimeout(apply, 700); }
+  // Every recovery above still depends on either the FOCUSED element changing
+  // or vv/layout actually reporting a new number — both of which a stale-vv
+  // dismiss (2c7e42a) can permanently deny. Until now the only way out was a
+  // tap on non-control content (see the touchend handler below), which never
+  // fires if the user just backgrounds the app / locks the screen with the
+  // keyboard open and comes back to read, not type (the 2026-09-22 report: a
+  // COMPLETED chat stuck at ~60% height with no interaction in between).
+  // Backgrounding is unconditional proof the keyboard is gone — both Android
+  // and iOS force-dismiss it, and neither reopens it on its own on return — so
+  // treat "visible again" as an authority stale focus/vv can't override:
+  // write the full layout height immediately, bypassing the focus/inset gate
+  // for this one write, then let settle() reassert a real inset shortly after
+  // if resuming genuinely re-opened the keyboard (e.g. an autofocus).
+  function forceFull() {
+    _vvTrusted = false;  // don't let apply()'s own settle() calls undo this with the same stale reading
+    const lh = layoutH();
+    _lastApplied = -1;  // defeat the h === _lastApplied no-op guard in apply()
+    document.documentElement.style.setProperty('--mc-app-vh', lh + 'px');
+    _lastApplied = lh;
+    _renudgeOpenModals();
+    settle();
+  }
   apply();
   if (vv) {
-    vv.addEventListener('resize', schedule);
-    vv.addEventListener('scroll', schedule);
+    vv.addEventListener('resize', () => { _vvTrusted = true; schedule(); });
+    vv.addEventListener('scroll', () => { _vvTrusted = true; schedule(); });
   }
   window.addEventListener('resize', schedule);
-  window.addEventListener('orientationchange', () => setTimeout(apply, 200));
+  // A one-shot apply() at a guessed 200ms couldn't help if the post-rotation
+  // layout/vv values hadn't settled yet — same flakiness settle() already
+  // exists to cover, so use it here too instead of a single fixed-delay guess.
+  window.addEventListener('orientationchange', () => setTimeout(settle, 200));
+  document.addEventListener('visibilitychange', () => { if (document.visibilityState === 'visible') forceFull(); });
+  window.addEventListener('pageshow', forceFull);
   // Keyboard show/hide tracks focus entering/leaving a text field — the most
   // reliable signal when the vv event is flaky. Settle on both.
   document.addEventListener('focusin', e => { if (_isField(e.target)) settle(); });
