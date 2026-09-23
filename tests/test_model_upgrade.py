@@ -230,6 +230,19 @@ class TestPriceGaps:
         )
         assert gaps == []
 
+    def test_alias_not_in_catalog_is_not_a_gap(self, monkeypatch, tmp_path):
+        monkeypatch.setattr(mu, 'clayrune_home', lambda: tmp_path)
+        config = {'default_provider': 'claude'}
+        project = {'id': 'p1', 'agent_model': 'opus'}
+
+        gaps = mu.price_gaps(
+            load_projects_fn=lambda: [project],
+            load_project_fn=lambda pid: project,
+            save_project_fn=lambda pid, data: None,
+            config=config, config_path=tmp_path / 'config.json',
+        )
+        assert ('claude', 'opus') not in {(g['provider'], g['model']) for g in gaps}
+
 
 # ── run_upgrade_gate: project + global pins via in-memory DI ─────────────────
 

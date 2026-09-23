@@ -445,7 +445,6 @@ def price_gaps(load_projects_fn: Callable[[], list],
             gaps.append({'provider': provider, 'model': model})
 
     for pin in _all_pins(load_projects_fn, load_project_fn, save_project_fn, config, config_path):
-        _maybe(pin.provider, pin.model)
         kind, value = _es.classify_value(pin.model)
         if kind != 'pin':
             continue
@@ -453,6 +452,11 @@ def price_gaps(load_projects_fn: Callable[[], list],
             runtime = agent_runtime.get_runtime(pin.provider)
         except KeyError:
             continue
+        # Only a catalog id can carry a vendor price. A CLI shorthand alias
+        # ('opus') has none, and evaluate_pin skips it as not_older_than_head
+        # anyway — listing it sent the daily run hunting for it every day.
+        if value in {m for m, _ in runtime.model_choices()}:
+            _maybe(pin.provider, pin.model)
         family = runtime.tier_family(value)
         if not family:
             continue
