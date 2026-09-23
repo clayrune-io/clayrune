@@ -440,31 +440,47 @@ class TestCodexAuthStateReportsWhatActuallyWins:
     real chatgpt.com `usage_limit_exceeded` response) that a stored ChatGPT
     login is used REGARDLESS of OPENAI_API_KEY/OPENAI_BASE_URL/OPENAI_MODEL
     being present in the environment.
+
+    UPDATED 2026-09-22: `_codex_auth_state` now asks `codex login status`
+    first instead of guessing from auth.json/env, so a stray OPENAI_API_KEY
+    can no longer produce a false 'ok' at all — live-verified codex-cli
+    0.155.1 never sends a bare OPENAI_API_KEY as bearer auth (`codex exec`
+    fails "Missing bearer or basic authentication in header", not an
+    invalid-key error), so the old 'env:OPENAI_API_KEY' branch is gone.
     """
 
-    def test_stored_chatgpt_login_wins_over_a_stray_openai_api_key(self, monkeypatch, tmp_path):
+    def test_probe_not_logged_in_wins_over_a_stray_openai_api_key(self, monkeypatch, tmp_path):
         monkeypatch.setenv('OPENAI_API_KEY', 'sk-some-other-vendors-stray-key')
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
         monkeypatch.setenv('USERPROFILE', str(tmp_path))
-        auth = tmp_path / '.codex' / 'auth.json'
-        auth.parent.mkdir(parents=True)
-        auth.write_text('{"OPENAI_API_KEY": null, "tokens": {"access_token": "real-chatgpt-token"}}',
-                        encoding='utf-8')
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: agent_runtime.subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=1, stdout='Not logged in\n', stderr=''))
         rt = CodexRuntime()
 
         status, method = rt._codex_auth_state()
 
-        assert status == 'ok'
-        assert method == 'chatgpt oauth'
+        assert status == 'not_logged_in'
+        assert method is None
 
-    def test_falls_back_to_env_var_when_no_stored_login_exists(self, monkeypatch, tmp_path):
+    def test_bare_openai_api_key_never_reports_ok(self, monkeypatch, tmp_path):
+        """Pinned regression: env OPENAI_API_KEY set + status probe says
+        not logged in => not_logged_in (not the old false-positive 'ok,
+        env:OPENAI_API_KEY')."""
         monkeypatch.setenv('OPENAI_API_KEY', 'sk-a-real-configured-key')
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
         monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: agent_runtime.subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=1, stdout='Not logged in\n', stderr=''))
         rt = CodexRuntime()
 
         status, method = rt._codex_auth_state()
 
-        assert status == 'ok'
-        assert method == 'env:OPENAI_API_KEY'
+        assert status == 'not_logged_in'
+        assert method is None
 
 
 class TestNothingWrittenToRealClayruneHome:
