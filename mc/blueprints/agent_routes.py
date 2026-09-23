@@ -4546,7 +4546,9 @@ def _read_agent_stream(proc, session):
     # Snapshot the proc we were launched with so we can detect if a follow-up
     # replaced us with a newer process while we were still draining stdout.
     my_proc = proc
-    # total_cost_usd is cumulative per CLI process; this reader IS the process.
+    # Last total_cost_usd THIS process reported, plus its CLI version and, on
+    # CLI >= 2.1.277, the total its resume carried over (read from the
+    # transcript at init). This reader IS the process. See accumulate_result_cost.
     proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
@@ -4578,6 +4580,8 @@ def _read_agent_stream(proc, session):
                 # `system/init` and `rate_limit_event` messages (every claude
                 # session emits these). No-op for any other message type.
                 _capture_system_init(msg)
+                if msg_type == 'system' and msg.get('subtype') == 'init':
+                    _agent_runtime.note_cli_init(proc_cost, msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
                 # Live stop-hook boundary: stream-json never carries the hook's
                 # feedback turn, so confirm a resend against the transcript.
@@ -4819,7 +4823,9 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
-    # total_cost_usd is cumulative per CLI process; this reader IS the process.
+    # Last total_cost_usd THIS process reported, plus its CLI version and, on
+    # CLI >= 2.1.277, the total its resume carried over (read from the
+    # transcript at init). This reader IS the process. See accumulate_result_cost.
     proc_cost = {}
     # Turns THIS process produced (num_turns itself is per turn; see
     # accumulate_result_turns). The failed-resume guard reads it.
@@ -4844,6 +4850,8 @@ def _read_agent_stream_b(proc, session):
                     _note_claude_sid(session, msg['session_id'])
                 # See Mode A reader: refresh the system-status cache.
                 _capture_system_init(msg)
+                if msg_type == 'system' and msg.get('subtype') == 'init':
+                    _agent_runtime.note_cli_init(proc_cost, msg)
                 _mc_state._LAST_SYSTEM_STATUS['provider'] = session.get('provider', 'claude')
                 # Live stop-hook boundary: stream-json never carries the hook's
                 # feedback turn, so confirm a resend against the transcript.
