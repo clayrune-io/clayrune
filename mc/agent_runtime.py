@@ -7855,27 +7855,57 @@ class CodexRuntime(AgentRuntime):
     def _codex_auth_state(self) -> Tuple[str, Optional[str]]:
         """Where codex actually keeps its credentials.
 
-        The common path is `codex login` (ChatGPT sign-in), which writes OAuth
-        tokens to ~/.codex/auth.json — NOT an env var. Checking only
-        CODEX_API_KEY/OPENAI_API_KEY reported a fully signed-in install as
-        'unknown', which the settings UI renders as needing authentication.
+        Primary signal is `codex login status` — the CLI's own answer, local
+        and network-free (no quota cost), so it matches whatever credential
+        `codex exec` will actually use instead of us guessing from files/env.
+        `auth.json` parsing is now only a FALLBACK for when the probe itself
+        cannot run (binary unresolved, spawn error, timeout).
 
-        `auth.json` is checked BEFORE bare env vars — reordered 2026-09-18
-        (live regression, third fix on this branch, Dave's fix (c)): OPENAI_*
-        are generic OpenAI-compatible names Qwen reads too, so a Qwen/
-        DashScope key left in the environment made this report
-        'ok, env:OPENAI_API_KEY' even on a box logged into Codex via ChatGPT
-        OAuth. Live-verified 2026-09-18 (`codex exec`, real dispatch, real
-        `usage_limit_exceeded` response from chatgpt.com) that a stored
-        ChatGPT login is used REGARDLESS of OPENAI_API_KEY/OPENAI_BASE_URL/
-        OPENAI_MODEL being present in the environment — a broken env value
-        for a DIFFERENT vendor cannot hijack Codex's own login when one is
-        stored, so no env-stripping is needed for that case. This function
-        must report the credential that will actually be used, matching
-        that precedence, not just whichever it finds first.
+        Live-verified 2026-09-22 (codex-cli 0.155.1, real `codex exec`
+        against api.openai.com) the two things that made this necessary:
+          - A bare OPENAI_API_KEY is NEVER sent as bearer auth by this CLI —
+            `codex exec` fails "Missing bearer or basic authentication in
+            header", not an invalid-key error. The old code reported 'ok,
+            env:OPENAI_API_KEY' from its mere presence, so Settings showed
+            "signed in" while every dispatch 401'd. Do not resurrect that
+            branch.
+          - CODEX_API_KEY IS sent as bearer auth (a bad key gets a real
+            `invalid_api_key` response from the server), but `codex login
+            status` does not reflect it — it still prints "Not logged in"
+            with CODEX_API_KEY set. So it stays as an explicit fallback
+            check after the probe, not folded into trusting the probe alone.
+
+        Earlier history (kept for the fallback path): the common path is
+        `codex login` (ChatGPT sign-in), which writes OAuth tokens to
+        ~/.codex/auth.json — NOT an env var. `auth.json` was checked BEFORE
+        bare env vars — reordered 2026-09-18 (live regression, third fix on
+        this branch, Dave's fix (c)): OPENAI_* are generic OpenAI-compatible
+        names Qwen reads too, so a Qwen/DashScope key left in the environment
+        made this report 'ok, env:OPENAI_API_KEY' even on a box logged into
+        Codex via ChatGPT OAuth. That ordering still applies within the
+        fallback below.
 
         Returns (status, method) with status 'ok' | 'not_logged_in'.
         """
+        try:
+            prefix = self._cmd_prefix()
+            r = subprocess.run(prefix + ['login', 'status'], capture_output=True,
+                               text=True, encoding='utf-8', errors='replace',
+                               timeout=10, creationflags=_POPEN_FLAGS,
+                               startupinfo=_STARTUPINFO)
+            out = ((r.stdout or '') + (r.stderr or '')).strip()
+            if r.returncode == 0:
+                return ('ok', out.splitlines()[0].strip() if out else 'chatgpt oauth')
+            # Probe ran and says not logged in. CODEX_API_KEY is a separate,
+            # verified-working mechanism it doesn't see — check it before
+            # giving up. Do NOT fall back to a bare OPENAI_API_KEY (see
+            # docstring above).
+            if os.environ.get('CODEX_API_KEY'):
+                return ('ok', 'env:CODEX_API_KEY')
+            return ('not_logged_in', None)
+        except Exception as e:
+            print(f"[codex] login status probe failed: {e}", flush=True)
+        # Probe couldn't run at all — fall back to reading auth.json directly.
         try:
             home = (os.environ.get('USERPROFILE') or os.environ.get('HOME')
                     or str(Path.home()))
@@ -7891,12 +7921,9 @@ class CodexRuntime(AgentRuntime):
                         return ('ok', 'api key (auth.json)')
         except Exception as e:
             print(f"[codex] reading auth.json failed: {e}", flush=True)
-        # No stored login at all — an env var is the ONLY thing that could
-        # authenticate this dispatch, so (and only so) it is reported here.
         if os.environ.get('CODEX_API_KEY'):
             return ('ok', 'env:CODEX_API_KEY')
-        if os.environ.get('OPENAI_API_KEY'):
-            return ('ok', 'env:OPENAI_API_KEY')
+        # No bare-OPENAI_API_KEY fallback here either — see docstring above.
         return ('not_logged_in', None)
 
     def health_check(self) -> HealthStatus:

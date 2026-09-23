@@ -762,12 +762,58 @@ class TestCodexRuntime:
         assert self.rt.resolve_binary() == native / 'codex.exe'
         assert self.rt._npx_fallback is False
 
-    def test_auth_state_reads_chatgpt_oauth(self, monkeypatch, tmp_path):
-        """`codex login` writes OAuth tokens to ~/.codex/auth.json, not an env var.
+    def test_auth_state_ok_from_login_status_probe(self, monkeypatch):
+        """`codex login status` is the primary signal: exit 0 means logged
+        in, whatever mechanism is behind it."""
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
+        monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=0,
+                stdout='Logged in using ChatGPT\n', stderr=''))
+        assert self.rt._codex_auth_state() == ('ok', 'Logged in using ChatGPT')
 
-        Regression: checking only CODEX_API_KEY/OPENAI_API_KEY reported a fully
-        signed-in install as 'unknown', which the settings UI shows as needing auth.
+    def test_auth_state_not_logged_in_without_credentials(self, monkeypatch, tmp_path):
+        """Regression (2026-09-22): probe says not logged in, no
+        CODEX_API_KEY, and a bare OPENAI_API_KEY set — must still report
+        not_logged_in. This codex CLI never sends that env var as bearer
+        auth (live-verified: `codex exec` fails "Missing bearer or basic
+        authentication in header", not an invalid-key error), so trusting
+        its mere presence hid real 401s behind a false "signed in" badge.
         """
+        monkeypatch.setenv('OPENAI_API_KEY', 'sk-not-actually-usable-by-codex')
+        monkeypatch.delenv('CODEX_API_KEY', raising=False)
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setenv('HOME', str(tmp_path))
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=1,
+                stdout='Not logged in\n', stderr=''))
+        assert self.rt._codex_auth_state() == ('not_logged_in', None)
+
+    def test_auth_state_env_codex_api_key_wins_when_probe_says_not_logged_in(self, monkeypatch, tmp_path):
+        """CODEX_API_KEY is a real, separate auth path `codex login status`
+        doesn't see (live-verified 2026-09-22: status still prints "Not
+        logged in" with CODEX_API_KEY set, but `codex exec` sends it as
+        bearer auth — a bad key gets `invalid_api_key` from the server, not
+        "missing bearer"), so it must still win even when the probe says no.
+        """
+        monkeypatch.setenv('CODEX_API_KEY', 'sk-real-codex-key')
+        monkeypatch.delenv('OPENAI_API_KEY', raising=False)
+        monkeypatch.setenv('USERPROFILE', str(tmp_path))
+        monkeypatch.setattr(
+            agent_runtime.subprocess, 'run',
+            lambda *a, **k: subprocess.CompletedProcess(
+                args=a[0] if a else [], returncode=1,
+                stdout='Not logged in\n', stderr=''))
+        assert self.rt._codex_auth_state() == ('ok', 'env:CODEX_API_KEY')
+
+    def test_auth_state_falls_back_to_auth_json_when_probe_cannot_run(self, monkeypatch, tmp_path):
+        """If the login-status probe itself can't execute (binary missing,
+        spawn error, timeout), fall back to reading ~/.codex/auth.json
+        directly — the detection this probe now takes priority over."""
         monkeypatch.delenv('CODEX_API_KEY', raising=False)
         monkeypatch.delenv('OPENAI_API_KEY', raising=False)
         cdir = tmp_path / '.codex'
@@ -778,14 +824,11 @@ class TestCodexRuntime:
         }), encoding='utf-8')
         monkeypatch.setenv('USERPROFILE', str(tmp_path))
         monkeypatch.setenv('HOME', str(tmp_path))
-        assert self.rt._codex_auth_state() == ('ok', 'chatgpt oauth')
 
-    def test_auth_state_not_logged_in_without_credentials(self, monkeypatch, tmp_path):
-        monkeypatch.delenv('CODEX_API_KEY', raising=False)
-        monkeypatch.delenv('OPENAI_API_KEY', raising=False)
-        monkeypatch.setenv('USERPROFILE', str(tmp_path))
-        monkeypatch.setenv('HOME', str(tmp_path))
-        assert self.rt._codex_auth_state() == ('not_logged_in', None)
+        def _raise(*a, **k):
+            raise FileNotFoundError('codex binary not found')
+        monkeypatch.setattr(agent_runtime.subprocess, 'run', _raise)
+        assert self.rt._codex_auth_state() == ('ok', 'chatgpt oauth')
 
     def test_health_check_surfaces_missing_codex_login(self, monkeypatch):
         monkeypatch.setattr(self.rt, 'resolve_binary', lambda: Path('/usr/local/bin/codex'))
