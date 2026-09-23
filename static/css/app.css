@@ -6996,6 +6996,9 @@
   .wt-btn-primary:hover { background: #5db3ff; }
   .wt-btn-skip { background: transparent; border: none; color: var(--text-faint); padding: 7px 10px; }
   .wt-btn-skip:hover { color: var(--text); }
+  .wt-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .wt-btn-primary:disabled:hover { background: var(--accent); }
+  .wt-next-reason { margin-top: -8px; margin-bottom: 16px; font-size: 11px; color: var(--amber); text-align: left; }
   .wt-dismiss {
     display: flex; align-items: center; gap: 6px;
     margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);

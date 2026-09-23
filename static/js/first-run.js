@@ -249,6 +249,28 @@ function _setupProviderBlockReason(p) {
   }
 }
 
+// One-line reason the connections step's Next is disabled, or '' when it's
+// clear to proceed. Same validation setupNext() already runs on click — kept
+// there too as a defense-in-depth net now that the button is also disabled.
+function _setupConnectionsBlockReason() {
+  const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
+  if (!selected.length) return 'Select at least one vendor to continue.';
+  const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
+  if (!setupSelectedProviders.has(defaultProvider)) return 'Choose a default from your selected vendors.';
+  const bad = selected.find(p => !p.installed || p.auth_status !== 'ok');
+  if (bad) return `${bad.display_name || bad.name}: ${_setupProviderBlockReason(bad)}.`;
+  return '';
+}
+
+// Escape hatch for a user with genuinely no vendor to connect right now.
+// Requires an explicit confirm naming the consequence, then ends setup the
+// same way the old blanket "Skip setup" button did — setupFinish() persists
+// setup_completed so Clayrune stops re-opening setup on every load.
+function setupConnectLater() {
+  if (!confirm('Clayrune cannot run agents until at least one AI vendor is connected and signed in. You can finish this any time from Settings → Providers. Continue without connecting one now?')) return;
+  setupFinish();
+}
+
 // ── Flow ─────────────────────────────────────────────────────────────────────
 function _setupVisible() { return SETUP_STEPS.filter(s => !(s.skip && s.skip())); }
 
@@ -324,6 +346,15 @@ async function setupShow(idx) {
   const pos = visible.findIndex(s => s.id === step.id);
   const isFirst = pos === 0;
   const isLast = pos === visible.length - 1;
+  const isConnStep = step.id === 'connections';
+  // step.body() must run BEFORE the block-reason check: the connections
+  // step's body() is what seeds setupSelectedProviders with the
+  // already-installed+signed-in default on its first render (the pre-tick
+  // in SETUP_STEPS[1].body). Checking the reason first read an empty set and
+  // showed Next as falsely blocked on that very first render.
+  const bodyHtml = step.body();
+  const connReason = isConnStep ? _setupConnectionsBlockReason() : '';
+  const nextBlocked = isConnStep && !!connReason;
 
   let btns = '';
   if (!isFirst) btns += `<button class="wt-btn" onclick="setupBack()">Back</button>`;
@@ -331,8 +362,19 @@ async function setupShow(idx) {
     btns += `<button class="wt-btn wt-btn-skip" onclick="setupFinish()">Not now</button>`;
     btns += `<button class="wt-btn wt-btn-primary" onclick="setupTakeTour()">Take the tour</button>`;
   } else {
-    btns += `<button class="wt-btn wt-btn-skip" onclick="setupSkip()">Skip setup</button>`;
-    btns += `<button class="wt-btn wt-btn-primary" onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
+    // First run cannot be skipped: setup_completed is written ONLY from the
+    // final step's own button (setupFinish/setupTakeTour below). A rerun
+    // from Settings ("Run setup again", setupForced) is already a set-up
+    // install, so it keeps a plain close — setupSkip->setupFinish is a no-op
+    // re-persist there (_setupPersistCompleted only fires when not already
+    // completed). The connections step additionally blocks Next until a
+    // vendor is installed+signed in and a default is chosen; its only exit
+    // for a genuinely vendor-less user is the explicit-confirm link below,
+    // which — like the old "Skip setup" — still ends setup and persists
+    // setup_completed, so Clayrune stops re-nagging on every load.
+    if (setupForced) btns += `<button class="wt-btn wt-btn-skip" onclick="setupSkip()">Close</button>`;
+    else if (nextBlocked) btns += `<button type="button" class="wt-btn wt-btn-skip" onclick="setupConnectLater()">I'll connect one later</button>`;
+    btns += `<button class="wt-btn wt-btn-primary"${nextBlocked ? ' disabled' : ''} onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
   }
 
   const card = document.createElement('div');
@@ -341,9 +383,10 @@ async function setupShow(idx) {
   // HTML (esc()'d at the source), same contract as walkthrough.js.
   card.innerHTML = `
     <div class="wt-title">${esc(step.title)}</div>
-    <div class="wt-body">${step.body()}</div>
+    <div class="wt-body">${bodyHtml}</div>
+    ${nextBlocked ? `<div class="wt-next-reason">${esc(connReason)}</div>` : ''}
     <div class="wt-actions">
-      <span class="wt-progress">${pos + 1} / ${visible.length}</span>
+      <span class="wt-progress">Setup — step ${pos + 1} of ${visible.length}</span>
       ${btns}
     </div>`;
   overlay.appendChild(card);
@@ -400,6 +443,17 @@ function setupTakeTour() {
   startWalkthrough();
 }
 
+// The header '?' button (index.html) and the command-palette "Take Tour"
+// entry (modal-manager.js) both used to call startWalkthrough() directly.
+// The tour's last step is now the only place it's offered (point 4 of the
+// first-run fix) — redirect into setup instead of hiding either control,
+// since a static header button can't cheaply track async config-load state
+// but a click-time check can.
+function startTourOrSetup() {
+  if (setupActive || (typeof firstRunNeeded === 'function' && firstRunNeeded())) { startFirstRun(); return; }
+  startWalkthrough();
+}
+
 // ── interop: page-called surface ─────────────────────────────────────────────
 // Invoked from OUTSIDE this module — the inline boot script (first-run gate)
 // and generated onclick/onchange attributes — all of which resolve against the
@@ -419,3 +473,5 @@ window.setupPickTone = setupPickTone;
 window.setupPickAccent = setupPickAccent;
 window.setupPickChatStyle = setupPickChatStyle;
 window.setupOpenConnectivity = setupOpenConnectivity;
+window.setupConnectLater = setupConnectLater;   // interop: connections-step escape link generated onclick
+window.startTourOrSetup = startTourOrSetup;     // interop: header '?' button + command-palette "Take Tour" entry

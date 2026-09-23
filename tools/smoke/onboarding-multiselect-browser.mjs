@@ -92,10 +92,18 @@ try {
   await page.locator('#setup-overlay input[name="setup-provider"][value="codex"]').check();
   await page.locator('#setup-overlay input[name="setup-provider"][value="claude"]').check();
   await page.locator('#setup-overlay input[name="setup-provider-default"]').first().check();
-  await page.getByRole('button', {name: 'Next'}).click();
-  // F2: the gate names every unfinished vendor and its exact problem.
-  const gate = await page.locator('#setup-provider-validation').innerText();
-  if (!gate.includes('Codex: not installed') || !gate.includes('Claude: not installed')) throw new Error(`incomplete selection advanced or gate did not name vendors: ${gate}`);
+  // Connections can't be passed with an unfinished vendor selected: Next is
+  // disabled outright (not just gated on click), with a one-line reason
+  // naming the first unfinished vendor.
+  // Picking the default radio round-trips through applyDefaultProvider's own
+  // async refresh (saveSetting + _ensureAgentProviders) before its repaint
+  // fires — wait for the reason to settle past "Choose a default" rather
+  // than reading it mid-flight.
+  await page.waitForFunction(() => (document.querySelector('#setup-overlay .wt-next-reason')?.textContent || '').includes('not installed'));
+  const nextBtn0 = page.getByRole('button', {name: 'Next'});
+  if (!(await nextBtn0.isDisabled())) throw new Error('Next should stay disabled while codex+claude are both selected but not installed');
+  const reason0 = await page.locator('#setup-overlay .wt-next-reason').innerText();
+  if (!reason0.includes('not installed')) throw new Error(`disabled-Next reason did not name an unfinished vendor: ${reason0}`);
   await page.getByRole('button', {name: 'Install selected'}).click();
   await page.waitForFunction(() => /PowerShell script policy/.test(document.getElementById('prov-install-msg-codex')?.textContent || ''));
   // F6: the policy note the server returned is shown next to the install message.
@@ -119,9 +127,10 @@ try {
   if (await page.locator('#setup-overlay #settings-prov-key-qwen').count()) throw new Error('key field shown for an unselected vendor');
   await page.locator('#setup-overlay input[name="setup-provider"][value="qwen"]').check();
   await page.locator('#setup-overlay input[name="setup-provider-default"]').first().waitFor();
-  await page.getByRole('button', {name: 'Next'}).click();
-  const qwenGate = await page.locator('#setup-provider-validation').innerText();
-  if (!qwenGate.includes('Qwen Code: not signed in')) throw new Error(`gate did not name unsigned Qwen: ${qwenGate}`);
+  const nextBtn1 = page.getByRole('button', {name: 'Next'});
+  if (!(await nextBtn1.isDisabled())) throw new Error('Next should stay disabled while Qwen is selected but not signed in');
+  const qwenGate = await page.locator('#setup-overlay .wt-next-reason').innerText();
+  if (!qwenGate.includes('Qwen Code: not signed in')) throw new Error(`disabled-Next reason did not name unsigned Qwen: ${qwenGate}`);
   const keyBox = page.locator('#setup-overlay #settings-prov-key-qwen');
   if (!(await keyBox.count())) throw new Error('setup Qwen row has no API-key field');
   if (!(await page.locator('#setup-overlay .prov-row[data-provider="qwen"]').innerText()).includes('DASHSCOPE_API_KEY')) throw new Error('Qwen key field is not labelled DASHSCOPE_API_KEY');
