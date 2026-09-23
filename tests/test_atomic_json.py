@@ -233,3 +233,106 @@ def test_no_new_non_atomic_json_writers(repo_root):
     assert not offenders, (
         'non-atomic JSON writes found -- use mc.atomic_json.write_json_atomic:\n'
         + '\n'.join(offenders))
+
+
+# ── MC-965: on Windows a concurrent READER breaks the WRITE ────────────────
+# `os.replace` is atomic everywhere, but on Windows it refuses to land on a
+# target any other handle has open (CPython's open() omits FILE_SHARE_DELETE).
+# Measured on this box before the fix -- 2 writer threads, 3 reader threads,
+# 5 seconds: 344 successful writes against 5090 PermissionError/WinError 5.
+# Every caller wraps this in a swallowing `except`, so the loss was silent.
+
+def test_write_survives_a_reader_holding_the_target_open(tmp_path):
+    """The exact shape that failed: the target is open when replace fires.
+
+    The reader releases after 150ms, well inside the retry deadline -- a
+    bare `os.replace` raises on the FIRST attempt and loses the write.
+    A handle held past the deadline is still a hard failure, on purpose.
+    """
+    import threading
+    import time as _t
+    from mc.atomic_json import write_json_atomic
+    p = tmp_path / 'state.json'
+    write_json_atomic(p, {'v': 0})
+    opened = threading.Event()
+
+    def _hold():
+        with open(p, encoding='utf-8') as holder:
+            holder.read(1)
+            opened.set()
+            _t.sleep(0.15)
+
+    t = threading.Thread(target=_hold)
+    t.start()
+    try:
+        assert opened.wait(timeout=5)
+        write_json_atomic(p, {'v': 1})             # bare os.replace -> WinError 5
+    finally:
+        t.join(timeout=5)
+    assert json.loads(p.read_text(encoding='utf-8')) == {'v': 1}
+
+
+def test_concurrent_readers_do_not_drop_writes(tmp_path):
+    """End to end under real thread contention: zero writes may be lost."""
+    import threading
+    import time as _t
+    from mc.atomic_json import write_json_atomic
+    p = tmp_path / 'agent_log.json'
+    write_json_atomic(p, [])
+    stop = threading.Event()
+    failures: list[BaseException] = []
+
+    def _read():
+        while not stop.is_set():
+            try:
+                p.read_text(encoding='utf-8')
+            except OSError:
+                pass                                # reader-side, not under test
+
+    readers = [threading.Thread(target=_read, daemon=True) for _ in range(3)]
+    for t in readers:
+        t.start()
+    try:
+        deadline = _t.monotonic() + 2.0
+        n = 0
+        while _t.monotonic() < deadline:
+            try:
+                write_json_atomic(p, [{'i': n}])
+                n += 1
+            except BaseException as e:              # noqa: BLE001 - recording it IS the test
+                failures.append(e)
+    finally:
+        stop.set()
+        for t in readers:
+            t.join(timeout=2)
+    assert n > 0, 'no writes attempted -- the loop never ran'
+    assert not failures, f'{len(failures)} of {n + len(failures)} writes lost: {failures[0]!r}'
+
+
+def test_read_retry_surfaces_a_persistent_error_rather_than_empty_text(tmp_path):
+    """`read_text_with_retry` must RAISE, never return '' -- the caller's
+    whole ability to tell "unreadable" from "corrupt" depends on it."""
+    from mc.atomic_json import read_text_with_retry
+    missing = tmp_path / 'nope.json'
+    with pytest.raises(OSError):
+        read_text_with_retry(missing, attempts=1)
+
+
+def test_read_retry_rides_out_a_transient_sharing_violation(tmp_path, monkeypatch):
+    from pathlib import Path as _P
+
+    from mc import atomic_json
+    p = tmp_path / 'state.json'
+    p.write_text('{"v": 1}', encoding='utf-8')
+    calls = {'n': 0}
+    real = _P.read_text
+
+    def _flaky(self, *a, **k):
+        calls['n'] += 1
+        if calls['n'] < 3:
+            raise PermissionError(13, 'Permission denied')
+        return real(self, *a, **k)
+
+    monkeypatch.setattr(_P, 'read_text', _flaky)
+    assert atomic_json.read_text_with_retry(p) == '{"v": 1}'
+    assert calls['n'] == 3

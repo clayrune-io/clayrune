@@ -48,6 +48,14 @@ class FakeRT:
         return ar.OneshotResult(text=self.reply)
 
 
+@pytest.fixture(autouse=True)
+def _no_real_codex_auth_probe(monkeypatch):
+    """See tests/conftest.py::stub_codex_auth_state — /api/providers must not
+    shell out to the operator's real `codex login status`."""
+    from conftest import stub_codex_auth_state
+    stub_codex_auth_state(monkeypatch)
+
+
 @pytest.fixture
 def registry(monkeypatch):
     reg = {}

@@ -110,6 +110,14 @@ EXPECTED_ROUTES = {
 }
 
 
+@pytest.fixture(autouse=True)
+def _no_real_codex_auth_probe(monkeypatch):
+    """See tests/conftest.py::stub_codex_auth_state — /api/providers must not
+    shell out to the operator's real `codex login status`."""
+    from conftest import stub_codex_auth_state
+    stub_codex_auth_state(monkeypatch)
+
+
 @pytest.fixture()
 def client(tmp_path, monkeypatch):
     """Flask test client; agent_routes global-scope deps patched on the MODULE."""

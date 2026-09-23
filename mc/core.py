@@ -58,11 +58,14 @@ def _log(*args, level='info', **kw):
 def _atomic_write_text(path, text, encoding='utf-8'):
     """Write via temp-file + os.replace so a crash mid-write can't leave a
     torn MEMORY.md/archive (SPEC §3.A.MID atomicity). Same-dir temp so
-    os.replace is atomic on the same filesystem."""
+    os.replace is atomic on the same filesystem. The replace is retried on a
+    Windows sharing violation -- a concurrent READER of the target makes the
+    bare call fail there; see mc/atomic_json.replace_with_retry."""
+    from mc.atomic_json import replace_with_retry
     path = Path(path)
     tmp = path.with_name(f'.{path.name}.tmp{os.getpid()}')
     tmp.write_text(text, encoding=encoding)
-    os.replace(tmp, path)
+    replace_with_retry(tmp, path)
 
 
 def sweep_orphan_tmpfiles(roots, max_age_hours=24):
