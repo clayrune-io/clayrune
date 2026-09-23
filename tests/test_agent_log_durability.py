@@ -21,6 +21,7 @@ could not read. Plus the persona discriminator that puts the faces back.
 from __future__ import annotations
 
 import json
+import pathlib
 import sys
 from pathlib import Path
 
@@ -81,6 +82,51 @@ def test_readable_check_separates_empty_from_corrupt(data_dir):
     # And asking must not itself move the file — the question is not an action.
     assert (data_dir / 'pid_agent_log.json').exists()
 
+
+
+# ── MC-965: an I/O error is not corruption, and must not quarantine ─────────
+# `_load_agent_log` caught `Exception` around read_text + json.loads together,
+# so a transient Windows sharing violation (a concurrent writer's os.replace
+# leaves the target delete-pending for microseconds; 397 of 83,411 concurrent
+# reads, measured) was filed as a parse failure and the log was RENAMED AWAY.
+# It happened: mission_control_agent_log.json.corrupt-20260919T034524Z is
+# 1.16 MB of 500 rows that parse cleanly.
+
+def _unreadable(monkeypatch, target):
+    """Make exactly `target` raise EACCES on every read, forever."""
+    from mc import atomic_json
+    real = atomic_json.read_text_with_retry
+
+    def _fake(path, *a, **k):
+        if pathlib.Path(path) == target:
+            raise PermissionError(13, 'Permission denied')
+        return real(path, *a, **k)
+
+    monkeypatch.setattr(A, 'read_text_with_retry', _fake)
+
+
+def test_an_unreadable_log_is_not_quarantined_as_corrupt(data_dir, monkeypatch,
+                                                         capsys):
+    log = data_dir / 'pid_agent_log.json'
+    log.write_text(json.dumps([{'ts': 'real-row'}]), encoding='utf-8')
+    _unreadable(monkeypatch, log)
+
+    assert A._load_agent_log('pid') == []          # same conservative return
+    assert not list(data_dir.glob('pid_agent_log.json.corrupt-*')),         'an I/O error must never move a log that was never shown to be corrupt'
+    assert log.exists() and json.loads(log.read_text(encoding='utf-8')) ==         [{'ts': 'real-row'}], 'the rows must still be there'
+
+    out = capsys.readouterr().out
+    assert 'could not be read' in out and 'NOT quarantined' in out
+    assert 'failed to parse' not in out
+
+
+def test_an_unreadable_log_still_blocks_a_rewrite(data_dir, monkeypatch):
+    """False, like corrupt -- refusing to rewrite is the safe direction."""
+    log = data_dir / 'pid_agent_log.json'
+    log.write_text('[]', encoding='utf-8')
+    _unreadable(monkeypatch, log)
+    assert A._agent_log_is_readable('pid') is False
+    assert not list(data_dir.glob('pid_agent_log.json.corrupt-*'))
 
 # ── link 1: the write is atomic ─────────────────────────────────────────────
 

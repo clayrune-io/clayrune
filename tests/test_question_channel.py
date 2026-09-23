@@ -21,6 +21,19 @@ from mc import question_channel as qc
 
 
 @pytest.fixture(autouse=True)
+def _no_real_mail_credentials(tmp_path, monkeypatch):
+    """`_deliver_if_still_unattended` resolves the reply-to address through
+    `_creds()`, which falls back to reading `~/.clayrune/night-mail.json` — the
+    operator's real Gmail app password (MC-965, measured 2026-09-22). Unlike
+    everything else in ~/.clayrune this path is a module-level constant that
+    does not honour CLAYRUNE_HOME, so point it somewhere empty per test.
+    """
+    monkeypatch.setattr(qc, '_CREDS', tmp_path / 'night-mail.json')
+    monkeypatch.delenv('NIGHT_MAIL_USER', raising=False)
+    monkeypatch.delenv('NIGHT_MAIL_APP_PASSWORD', raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _clean():
     qc._delivered.clear()
     qc._answered.clear()

@@ -74,7 +74,7 @@ from mc import media as _media
 from mc import obs, state
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
-from mc.atomic_json import write_json_atomic
+from mc.atomic_json import read_text_with_retry, write_json_atomic
 from mc.core import _harden_secret_perms, _log, now_iso, time_ago
 from mc.state import (
     _backlog_sync_lock,
@@ -5210,8 +5210,16 @@ def _agent_log_is_readable(project_id):
     if not filepath.exists():
         return True
     try:
-        json.loads(filepath.read_text(encoding='utf-8'))
+        json.loads(read_text_with_retry(filepath))
         return True
+    except OSError as e:
+        # NOT corruption: the file could not be READ (a writer mid-replace,
+        # an AV scan). Still False, because that is the safe direction for
+        # the only question this answers -- "may I rewrite it?" -- but it
+        # must never reach _quarantine_agent_log. See _load_agent_log.
+        _log(f"[agent-log] {filepath.name} unreadable ({e}) — refusing to "
+             f"treat an I/O error as authority to rewrite", level='error')
+        return False
     except Exception:
         return False
 
@@ -5247,7 +5255,21 @@ def _load_agent_log(project_id):
     if not filepath.exists():
         return []
     try:
-        return json.loads(filepath.read_text(encoding='utf-8'))
+        return json.loads(read_text_with_retry(filepath))
+    except OSError as e:
+        # A read that never happened is not a parse failure, and must not be
+        # quarantined as one. On Windows a concurrent writer's os.replace
+        # leaves the target delete-pending for microseconds and a reader in
+        # that window gets EACCES (0.48% of reads, measured) -- which this
+        # `except` used to file as corruption and RENAME THE LOG AWAY. It
+        # did: mission_control_agent_log.json.corrupt-20260919T034524Z is
+        # 1.16 MB of 500 rows that parse cleanly. Same [] return (callers
+        # gate rewrites on _agent_log_is_readable, which also returns False
+        # here), but the file stays where it is.
+        _log(f"[agent-log] {filepath.name} could not be read ({e}) — treating "
+             f"as EMPTY for this read; NOT quarantined (I/O, not corruption)",
+             level='error')
+        return []
     except Exception as e:
         _log(f"[agent-log] {filepath.name} failed to parse ({e}) — treating as "
              f"EMPTY for this read, not as authority to overwrite", level='error')

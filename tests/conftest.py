@@ -55,6 +55,123 @@ os.environ.setdefault("MC_REMOTE_ENABLED", "0")
 os.environ.pop("MC_RESTART_FROM_PID", None)
 
 _REPO_ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+
+# ── pytest's temp root is per-USER, not per-checkout (MC-965) ────────────────
+# `%TEMP%/pytest-of-<user>` is shared by every checkout and every worktree on
+# the box, so concurrent agent runs land in one numbered-dir space and one run
+# can garbage-collect another's dirs. Worse, it only takes one unremovable
+# entry to break EVERY later run on the machine: measured 2026-09-22, a
+# `pytest-current` symlink pointing at `..` had become unreadable (WinError 5
+# on readlink AND on rmdir), so pytest's `cleanup_dead_symlinks` raised inside
+# `pytest_sessionfinish` — every run since exited 1 with NO summary printed,
+# whatever the tests actually did. Give each checkout its own root; pytest
+# reads PYTEST_DEBUG_TEMPROOT at getbasetemp() time, so setting it here works
+# and the numbered-dir/retention behaviour is unchanged.
+if not os.environ.get("PYTEST_DEBUG_TEMPROOT"):
+    import hashlib as _hashlib
+    import tempfile as _tempfile
+    _tag = _hashlib.sha1(str(_REPO_ROOT).encode()).hexdigest()[:10]
+    _temproot = Path(_tempfile.gettempdir()) / f"clayrune-pytest-{_tag}"
+    _temproot.mkdir(parents=True, exist_ok=True)
+    os.environ["PYTEST_DEBUG_TEMPROOT"] = str(_temproot)
+
+# ── ~/.clayrune is LIVE operator state; the suite gets its own (MC-965) ──────
+# `mc.secrets_store.clayrune_home()` is the one resolution every reader in
+# `mc/` funnels through, and it already honours CLAYRUNE_HOME. Without this,
+# measured 2026-09-22 with MC_LIVE_STATE_TRACE_READS=1, 60 reads across 15 test
+# modules went to the operator's real dir — 52 of them to
+# `incognito_sessions.json`, which the RUNNING Clayrune appends to every time a
+# session is marked incognito. Those tests build agent context, and an entry
+# there changes what gets injected, so their input was whatever the box had
+# done that hour. Per-test monkeypatching cannot fix this: the reads happen in
+# modules imported at collection.
+os.environ.setdefault(
+    "CLAYRUNE_HOME",
+    str(Path(os.environ["PYTEST_DEBUG_TEMPROOT"]) / "clayrune-home"))
+Path(os.environ["CLAYRUNE_HOME"]).mkdir(parents=True, exist_ok=True)
+
+# ── the whole session runs against a THROWAWAY data root (MC-965) ───────────
+# `server.py` binds CONFIG_PATH, DATA_DIR, SCHEDULES_PATH, the delegation
+# SQLite db and ~20 more constants off `_DATA_ROOT` at IMPORT time, and in dev
+# mode `_DATA_ROOT` is the repo root. 94 test modules `import server` at module
+# level, so whichever one collection reaches first decides for the entire
+# session — and it decided "the operator's live files". In an agent worktree
+# `data/projects` and `data/uploads` are symlinks back into the main checkout,
+# so even a throwaway worktree read the live records.
+#
+# The `tmp_data_dir` fixture cannot fix this (63 of the 94 use it): by the time
+# a fixture runs, the module constants are already bound. MC_DATA_DIR has to be
+# set before the first import, which is here.
+#
+# Measured 2026-09-22: with the root isolated, the full suite is 4251 passed /
+# 12 skipped — identical to running against the live tree. Nothing in the suite
+# wanted the operator's data; it was reading it by accident.
+#
+# `data/agent_reference` and `data/skills` are tracked REPO assets, not state,
+# so they are copied in. Everything else starts empty, every run.
+if not os.environ.get("MC_DATA_DIR"):
+    import shutil as _shutil
+
+    _iso_parent = Path(os.environ["PYTEST_DEBUG_TEMPROOT"])
+    # PID-suffixed: two concurrent runs in one checkout must not share a root.
+    _iso_root = _iso_parent / f"data-root-{os.getpid()}"
+    _shutil.rmtree(_iso_root, ignore_errors=True)
+    (_iso_root / "data").mkdir(parents=True, exist_ok=True)
+    for _asset in ("agent_reference", "skills"):
+        _src = _REPO_ROOT / "data" / _asset
+        if _src.is_dir():
+            _shutil.copytree(_src, _iso_root / "data" / _asset, dirs_exist_ok=True,
+                             ignore=_shutil.ignore_patterns("_proposed"))
+    os.environ["MC_DATA_DIR"] = str(_iso_root)
+    # Best-effort GC of roots left behind by earlier runs (a crash skips the
+    # rmtree above, and these are never read again).
+    for _old in _iso_parent.glob("data-root-*"):
+        if _old != _iso_root:
+            _shutil.rmtree(_old, ignore_errors=True)
+
+# ── No test may write the operator's LIVE state (MC-965) ─────────────────────
+# Mechanism, roots and escape hatches: tests/live_state_guard.py. Installed
+# HERE, at initial-conftest import, because server.py binds DATA_DIR /
+# SCHEDULES_PATH / CONFIG_PATH off `_DATA_ROOT` at IMPORT time — a fixture that
+# runs later is already too late for the module-level constants.
+import live_state_guard as _live_guard  # noqa: E402
+
+_live_guard.install()
+
+
+@pytest.fixture(autouse=True)
+def _no_live_state_writes():
+    """Fail the test that (or whose leaked thread) wrote live operator state."""
+    before = len(_live_guard.VIOLATIONS)
+    yield
+    new = _live_guard.VIOLATIONS[before:]
+    if new:
+        raise AssertionError("live operator state written:\n  " + "\n  ".join(new))
+
+
+def stub_codex_auth_state(monkeypatch, state=('not_logged_in', None)):
+    """Stop a test from asking the operator's real Codex CLI who is signed in.
+
+    `CodexRuntime._codex_auth_state` shells out to `codex login status`
+    (mc/agent_runtime.py, 3195f02 -- a correct product fix: a bare
+    OPENAI_API_KEY is not bearer auth, so the badge has to ask the CLI). Any
+    test that hits `GET /api/providers` therefore spawns the REAL codex.CMD
+    and trips the CLI guard below: measured 2026-09-23 on pristine master,
+    `tests/test_agent_routes.py -k providers_endpoint` plus
+    test_vision_bridge gives "7 passed, 7 errors", every error an ERROR at
+    teardown. Those assertions never look at the answer -- they were reading
+    the box's live sign-in state for nothing, and the result differed between
+    a signed-in box and a signed-out one.
+
+    NOT autouse, on purpose: tests/test_provider_runtimes.py tests this exact
+    method and must see the real implementation. Call it from a module-level
+    autouse fixture in the files that only need the endpoint to answer.
+    """
+    from mc.agent_runtime import CodexRuntime
+    monkeypatch.setattr(CodexRuntime, '_codex_auth_state',
+                        lambda self: state, raising=False)
+
 
 # ── No test may launch a REAL model CLI ──────────────────────────────────────
 # Precedent: af7e0a3 (pytest spawned a real `claude auth login`). Measured
@@ -167,6 +284,10 @@ def pytest_sessionfinish(session, exitstatus):
         session.exitstatus = 1
         print("\nreal model CLI launch attempted after test teardown:\n  "
               + "\n  ".join(_REAL_CLI_ATTEMPTS))
+    if _live_guard.VIOLATIONS or _live_guard.READS:
+        _live_guard.dump()
+        if _live_guard.VIOLATIONS and session.exitstatus == 0:
+            session.exitstatus = 1
 
 
 # Make the app modules importable when running `pytest` from anywhere.
