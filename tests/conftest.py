@@ -290,6 +290,26 @@ def _no_real_cli_spawn():
 
 
 @pytest.fixture(autouse=True)
+def _isolated_codex_models_cache(tmp_path, monkeypatch):
+    """CodexRuntime.model_choices() reads the operator's REAL
+    ~/.codex/models_cache.json, which the Codex CLI rewrites whenever OpenAI
+    ships a model — so any test touching the Codex catalog (model_supported,
+    is_stale_pin, latest_for) would change verdict on a vendor release. Every
+    test starts pointed at a path that does not exist (static fallback); a
+    test that wants the live-cache path calls stub_codex_models_cache()."""
+    _ar = sys.modules.get('mc.agent_runtime')
+    if _ar is None:
+        yield
+        return
+    missing = tmp_path / 'no_codex_models_cache.json'
+    monkeypatch.setattr(_ar.CodexRuntime, '_model_cache_path',
+                        lambda self=None: missing, raising=False)
+    _ar.CodexRuntime._model_cache.clear()
+    yield
+    _ar.CodexRuntime._model_cache.clear()
+
+
+@pytest.fixture(autouse=True)
 def _isolated_allowance_state():
     """Importing server.py wires mc.allowance_state to the REAL
     data/allowance_state.json, so a vendor that is genuinely out of quota on

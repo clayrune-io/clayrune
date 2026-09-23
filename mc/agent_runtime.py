@@ -7044,6 +7044,7 @@ class CodexRuntime(AgentRuntime):
     # path's stale entry. Class-level: the catalog is process-global, not
     # per-instance.
     _model_cache: Dict[str, Tuple[float, List[Tuple[str, str]]]] = {}
+    _model_cache_missing_logged: set = set()
 
     # codex has no gemini-style `-latest` / claude-style bare-alias handle —
     # `codex --help` doesn't enumerate ids at all — so there is nothing
@@ -7101,7 +7102,12 @@ class CodexRuntime(AgentRuntime):
         try:
             mtime = path.stat().st_mtime
         except OSError as e:
-            _log(f"[codex] models cache stat failed ({path}): {e}")
+            # No Codex CLI (or never run) is a normal install state, and this
+            # runs on every picker render and cross-provider mismatch check —
+            # log once per path, not once per call.
+            if str(path) not in CodexRuntime._model_cache_missing_logged:
+                CodexRuntime._model_cache_missing_logged.add(str(path))
+                _log(f"[codex] models cache unavailable ({path}): {e}; using static catalog")
             return list(self.MODEL_CHOICES)
         key = str(path)
         cached = CodexRuntime._model_cache.get(key)
