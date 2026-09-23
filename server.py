@@ -689,6 +689,11 @@ AUTOMATION_SUGGESTIONS_PATH = _DATA_ROOT / 'data' / 'automation_suggestions.json
 # note API's 2000-byte/50-entry silent truncation is the lesson being applied).
 DESK_STORE_PATH = _DATA_ROOT / 'data' / 'desk.json'
 DESK_SIGNALS_PATH = _DATA_ROOT / 'data' / 'desk_signals.jsonl'
+# mc.desk_publish's receipts (simplification plan §5 step 2) -- same shelf,
+# same reason. Nothing calls desk_publish.publish() yet (see that module's
+# docstring); this only gives it somewhere durable to write once something
+# does.
+DESK_RECEIPTS_PATH = _DATA_ROOT / 'data' / 'desk_receipts.json'
 
 # Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) — same reasoning as
 # the Desk above: definitions are a small JSON object, siblings of DATA_DIR
@@ -1969,6 +1974,12 @@ _bp_desk.wire(
     projects_dir=DATA_DIR,
 )
 app.register_blueprint(_bp_desk.bp)
+
+# mc.desk_publish (simplification plan §5 step 2) is a plain module, not a
+# blueprint -- no route calls it yet (step 4's approval gate has to exist
+# first), so this only gives it a durable path for its idempotency receipts.
+import mc.desk_publish as _desk_publish  # noqa: E402
+_desk_publish.RECEIPTS_PATH = DESK_RECEIPTS_PATH
 
 
 # ── Workflow builder (docs/WORKFLOW_BUILDER_SPEC.md, MC-871) ─────────────────
