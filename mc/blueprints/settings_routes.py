@@ -139,6 +139,9 @@ _CONFIG_EDITABLE_KEYS = {
     # Artifact coverage advisory (mc/artifact_coverage.py). Read live at turn
     # end — no respawn needed.
     'artifact_coverage_enabled',
+    # Model auto-upgrade gate (mc/model_upgrade.py). Read live by
+    # POST /api/model-upgrades/run — no respawn needed.
+    'model_auto_upgrade_enabled',
     'long_session_advisory_enabled', 'long_session_advisory_turns',
     'context_rollover_tokens', 'midturn_rollover_enabled',
     # Per-agent skill scoping (mc/skill_scoping.py). Read at each spawn.

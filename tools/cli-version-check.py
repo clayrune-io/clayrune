@@ -35,8 +35,12 @@ import re
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.request
 
 _VER = re.compile(r'(\d+\.\d+\.\d+)')
+
+DEFAULT_HOST = 'http://localhost:5199'
 
 
 class CLI:
@@ -207,11 +211,57 @@ def check_one(cli, apply_updates=False):
     return row
 
 
+def model_upgrades_check(host, apply_updates) -> dict:
+    """POST /api/model-upgrades/run on the running Clayrune server and return
+    its report dict, or an {'error': ...} dict when the server can't be
+    reached -- never raises, matching this tool's report-only-by-default
+    contract for the daily scheduled run that calls --model-upgrades.
+
+    This is the ONLY way a model pin is auto-upgraded: the gate itself (which
+    pin, which price, whether it's a genuine improvement) lives entirely in
+    mc/model_upgrade.py and runs server-side. This function does not decide
+    anything -- it just asks the server to run its own gate and prints what
+    came back.
+    """
+    url = f'{host}/api/model-upgrades/run'
+    body = json.dumps({'apply': apply_updates}).encode('utf-8')
+    req = urllib.request.Request(url, data=body, method='POST',
+                                 headers={'Content-Type': 'application/json'})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as r:
+            return json.load(r)
+    except urllib.error.URLError as e:
+        return {'error': f'could not reach {url}: {e}'}
+    except Exception as e:
+        return {'error': f'{type(e).__name__}: {e}'}
+
+
 def main():
     ap = argparse.ArgumentParser(description='Check/update Clayrune agent CLIs.')
     ap.add_argument('--apply', action='store_true', help='perform updates, not just report')
     ap.add_argument('--json', action='store_true', help='machine-readable output')
+    ap.add_argument('--model-upgrades', action='store_true',
+                    help='run the model pin auto-upgrade gate on the running '
+                         'Clayrune server instead of checking CLI versions; '
+                         '--apply applies what the gate approves (default: '
+                         'preview only, same as the server\'s '
+                         'model_auto_upgrade_enabled=false path)')
+    ap.add_argument('--host', default=DEFAULT_HOST,
+                    help=f'Clayrune server base URL (default: {DEFAULT_HOST})')
     args = ap.parse_args()
+
+    if args.model_upgrades:
+        report = model_upgrades_check(args.host, args.apply)
+        print(json.dumps(report, indent=2))
+        if report.get('error'):
+            return 1
+        # Needs a human: a price gap the daily run couldn't fill, or a
+        # vendor-announced retirement priced against a NOW-more-expensive
+        # successor (the "email Ron" case in the spec -- this script only
+        # reports it, the scheduled AGENT sends the email per AGENT_RULES.md).
+        needs_human = bool(report.get('unknown_price')) or any(
+            row.get('retirement_urgent') for row in report.get('more_expensive') or [])
+        return 1 if needs_human else 0
 
     # Report every row, including not_installed. Hiding those was how a
     # resolution failure looked identical to "we don't run that CLI here".

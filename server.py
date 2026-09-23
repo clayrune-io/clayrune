@@ -368,6 +368,15 @@ def _load_config():
         # answered without ever touching something the user specified. Read
         # live per turn; false silences the line with no respawn.
         'artifact_coverage_enabled': True,
+        # Model auto-upgrade gate (mc/model_upgrade.py, Piece 2 of the
+        # 2026-09-23 model-auto-upgrade spec). ON by default per Ron's rule:
+        # a pin auto-upgrades to the newer model in its tier family whenever
+        # the newer model's price is known and <= the old one's on both
+        # input and output. Applied server-side only, via
+        # POST /api/model-upgrades/run; never through an agent writing a
+        # character/workflow file directly. False disables the route's
+        # apply path (still previews) with no respawn needed — read live.
+        'model_auto_upgrade_enabled': True,
         # Mobile brief replies — when on, messages POSTed with client="mobile"
         # get a hidden directive prepended on the way to the claude stdin
         # stream so the agent answers in Telegram-style: short, conversational,
@@ -1896,6 +1905,15 @@ app.register_blueprint(_bp_settings.bp)
 # Inbound shim: test_p2_3_log_shim reads server._CONFIG_EDITABLE_KEYS off the
 # module (the _project_attachment_usage precedent; handlers run on the blueprint).
 _CONFIG_EDITABLE_KEYS = _bp_settings._CONFIG_EDITABLE_KEYS
+
+# ── Model pin auto-upgrade gate (Piece 2, docs/... model-auto-upgrade spec,
+# 2026-09-23). All policy in mc/model_upgrade.py; this blueprint just wires
+# CONFIG_PATH (same wired-not-cached pattern as settings_routes above — the
+# module reads project state and state.CONFIG live on every call).
+from mc.blueprints import model_upgrade_routes as _bp_model_upgrade  # noqa: E402
+
+_bp_model_upgrade.wire(config_path=CONFIG_PATH)
+app.register_blueprint(_bp_model_upgrade.bp)
 
 
 # ── Project order + grid layout ── moved to mc/blueprints/project_routes.py (1.11).

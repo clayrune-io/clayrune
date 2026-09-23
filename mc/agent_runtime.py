@@ -826,6 +826,21 @@ class AgentRuntime(ABC):
                 return model_id
         return ''
 
+    def discover_models(self) -> Optional[List[Tuple[str, str]]]:
+        """Live catalog this install can currently read for this provider, or
+        None when there is no discovery source at all.
+
+        Distinct from model_choices(): that always returns SOMETHING (falling
+        back to the static MODEL_CHOICES list) because the new-chat picker
+        must never render empty. This is for the model-auto-upgrade gate
+        (mc/model_upgrade.py), which needs to tell "verified live today" from
+        "guessed from a snapshot that may already be stale" — a runtime with
+        no live discovery format returns None here, never a guess. Base
+        default is None; override only where a runtime has a real live source
+        (CodexRuntime reads ~/.codex/models_cache.json).
+        """
+        return None
+
     def model_supported(self, model: str) -> bool:
         """True when `model` is one this provider is known to accept.
 
@@ -7134,6 +7149,29 @@ class CodexRuntime(AgentRuntime):
             return list(self.MODEL_CHOICES)
         CodexRuntime._model_cache[key] = (mtime, choices)
         return list(choices)
+
+    def discover_models(self) -> Optional[List[Tuple[str, str]]]:
+        """Live cache only -- None on anything model_choices() would have
+        fallen back from (missing/unreadable/malformed file), never the
+        static MODEL_CHOICES guess. See AgentRuntime.discover_models()."""
+        path = self._model_cache_path()
+        try:
+            with open(path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            entries = data.get('models') if isinstance(data, dict) else None
+            if not isinstance(entries, list):
+                return None
+            listed = [m for m in entries
+                      if isinstance(m, dict) and m.get('visibility') == 'list'
+                      and m.get('slug')]
+            listed.sort(key=lambda m: m.get('priority', 0))
+            choices = [
+                (str(m['slug']), self._label_from_display_name(str(m.get('display_name') or m['slug'])))
+                for m in listed
+            ]
+            return choices or None
+        except Exception:
+            return None
 
     _bin_cache: Optional[str] = None
     _npx_fallback: bool = False

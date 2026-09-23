@@ -6,6 +6,52 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-23] — Model pin auto-upgrade gate (Piece 2 of the model-auto-upgrade spec)
+
+- **A stale model pin only ever got noticed by hand.** Piece 1 (below) fixed
+  the *picker* drifting behind the vendor catalog; nothing fixed a pin
+  already saved on a character, project, the global default, a schedule, or
+  a workflow step. Ron's rule: a pin auto-upgrades to the newer model in its
+  tier family whenever the newer model's price is known and no higher than
+  the old one's, on both input and output — fail closed on every unknown.
+- New `mc/model_upgrade.py`: a vendor-agnostic gate (`evaluate_pin`) plus
+  scanners for every kind of pin the spec names (`_character_pins`,
+  `_project_pins`, `_global_pins`, `_schedule_pins`, `_workflow_pins`).
+  `AgentRuntime.discover_models()` (new hook, default `None`) tells "a live
+  catalog this install can read today" apart from `model_choices()`'s
+  always-something picker fallback — `CodexRuntime` overrides it against the
+  same `~/.codex/models_cache.json` Piece 1 reads, never guessing when the
+  file is missing or malformed.
+- Prices live in `~/.clayrune/model_prices.json` — market data, not source,
+  never committed. `price_gaps()` reports which (provider, model) pairs a
+  pin (or its would-be upgrade target) needs a price for; a daily scheduled
+  run looks those up and calls `POST /api/model-upgrades/prices` to record
+  them.
+- **The write path never goes through an agent-refused route.** New
+  `mc/blueprints/model_upgrade_routes.py` (`GET /api/model-upgrades/discovery`,
+  `GET .../price-gaps`, `POST .../prices`, `GET .../report` [preview],
+  `POST .../run` [apply, gated on new config `model_auto_upgrade_enabled`,
+  default ON]) calls `mc.characters.write_character` /
+  `mc.workflows.update_workflow` / `project_routes.save_project` directly —
+  the same "internal callers bypass the HTTP route" precedent the builtin
+  character installer already uses. `character_routes.py`'s
+  `_refuse_if_agent_caller` (PUT `/api/characters/<scope>/<name>`) is
+  untouched; this module writes nothing an agent request body ever supplies
+  — only a catalog id the gate itself computed and priced.
+- Every applied upgrade appends one line to `~/.clayrune/model_upgrade_log.jsonl`
+  (old model, new model, both prices, source). No email code was added here —
+  the daily scheduled run reads the endpoint's JSON and, per AGENT_RULES.md's
+  existing unattended-decision-channel rule, sends its own FYI through
+  `tools/night-review/send_mail.py` when something changed.
+- `tools/cli-version-check.py --model-upgrades [--apply] [--host URL]` calls
+  the running server's `/api/model-upgrades/run` and prints its JSON —
+  exits 1 when a price gap or an urgent (vendor-retirement) more-expensive
+  case still needs a human, so the daily schedule can act on the exit code
+  as well as the JSON body.
+- First verified candidate end-to-end (`tests/test_model_upgrade.py`,
+  against a throwaway `GLOBAL_AGENTS_DIR`): `gpt-5.6-sol` ($4/$20) →
+  `gpt-6-sol` ($2/$10).
+
 ## [2026-09-23] — Codex model catalog reads the live CLI cache; GPT-6 is default
 
 - **The Codex picker drifted behind the CLI by hand.** `CodexRuntime.MODEL_CHOICES`
