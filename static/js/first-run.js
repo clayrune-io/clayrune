@@ -74,9 +74,12 @@ const SETUP_STEPS = [
       // shown so a user who never touches the control still gets an explicit
       // global tier saved, not silent inherit-to-native (engine_selection
       // treats an unset global as the CLI native default, not a tier).
+      // Only when NOTHING is set: a re-run from Settings must never replace
+      // an existing tier or exact pin just because the step was shown.
       if (!setupModelTierVisited) {
         setupModelTierVisited = true;
-        setupPickModelTier(setupModelTier);
+        const cur = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+        if (!cur) setupPickModelTier(setupModelTier);
       }
     },
     // Skip ONLY when the installer already wrote default_provider into
@@ -257,7 +260,11 @@ function startFirstRun(opts) {
   setupSelectedProviders = new Set();
   setupExplicitDefault = '';
   setupProviderChoiceVisited = false;
-  setupModelTier = 'balanced';
+  // Reflect what is already saved; a pin (non-tier value) highlights nothing
+  // and is left alone unless the user clicks a tier.
+  const curModel = String((_globalConfig && _globalConfig.agent_model) || '').trim();
+  setupModelTier = curModel.startsWith('tier:') ? curModel.slice(5)
+    : (curModel ? '' : 'balanced');
   setupModelTierVisited = false;
   showDesktop();
   setupShow(0);
