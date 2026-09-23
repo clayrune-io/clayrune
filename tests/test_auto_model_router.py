@@ -153,14 +153,22 @@ class TestResolveDispatchModel:
         assert model == 'sonnet'
         assert source == 'manual'
 
-    def test_no_model_at_all_tracks_best_tier(self, tmp_path, monkeypatch):
-        """model-hierarchy-simplification (2026-09-22): an empty global no
-        longer hard-codes 'sonnet' — it tracks the 'best' tier, which for
-        claude is the 'opus' alias (verified live: resolves to
-        claude-opus-5-5, see mc/agent_runtime.py ClaudeRuntime.TIER_ALIASES)."""
+    def test_no_model_at_all_uses_native_default(self, tmp_path, monkeypatch):
+        """An empty global no longer hard-codes 'sonnet', and it does NOT
+        track a tier either (Ron, 2026-09-22): it leaves the choice to the
+        CLI's native default. Tracking is opt-in via 'tier:*', which first-run
+        writes for new installs."""
         s = _fresh_server(tmp_path, monkeypatch)
         s.CONFIG['auto_model_enabled'] = False
         s.CONFIG['agent_model'] = ''
+        model, source = s._resolve_dispatch_model({}, 'anything')
+        assert model == ''
+        assert source == 'manual'
+
+    def test_explicit_tier_best_tracks_opus_alias(self, tmp_path, monkeypatch):
+        s = _fresh_server(tmp_path, monkeypatch)
+        s.CONFIG['auto_model_enabled'] = False
+        s.CONFIG['agent_model'] = 'tier:best'
         model, source = s._resolve_dispatch_model({}, 'anything')
         assert model == 'opus'
         assert source == 'manual'
