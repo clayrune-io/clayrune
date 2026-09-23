@@ -68,7 +68,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
-from flask import Blueprint, Flask, Response, jsonify, request
+from flask import Blueprint, Flask, Response, jsonify, make_response, request
 
 from mc import media as _media
 from mc import obs, state
@@ -9396,7 +9396,14 @@ def agent_send(project_id):
     # the same body we got. We tag the response so the frontend can log the
     # route taken (useful for debugging; FE doesn't act on it).
     if decision == 'interrupt':
-        resp = agent_interrupt(project_id)
+        # agent_interrupt returns jsonify(payload) for its 200 path but
+        # (jsonify(payload), status) — a plain tuple, not a Response — for
+        # every error path (its internal _ret() helper). Reading
+        # .status_code / .get_json() straight off that tuple raised
+        # AttributeError: 'tuple' object has no attribute 'status_code'
+        # (500, observed in log 2026-09-23). make_response() normalizes
+        # either shape to a real Response.
+        resp = make_response(agent_interrupt(project_id))
         # Race recovery: if the agent transitioned to a state interrupt
         # rejects (e.g., 'completed' between decision and handler entry),
         # fall back to followup so the user's message actually gets
@@ -9410,12 +9417,15 @@ def agent_send(project_id):
                     # (the pop in agent_interrupt only ran if it reached the
                     # log_lines line; on early-bail at the status check, the
                     # flag is still set).
-                    resp = agent_followup(project_id)
+                    resp = make_response(agent_followup(project_id))
                     decision = 'interrupt_to_followup'
             except Exception:
                 pass
     elif decision == 'followup':
-        resp = agent_followup(project_id)
+        # agent_followup has the same jsonify(...), status tuple pattern on
+        # its error returns — normalize here too (see the interrupt branch
+        # above).
+        resp = make_response(agent_followup(project_id))
     else:  # fresh_or_revive
         if session_id:
             try:
@@ -9808,53 +9818,26 @@ def agent_followup(project_id):
     def _write_mode_b_stdin(content, sess, project, msg):
         if durable_ack and sess.get('_stdin_write_uncertain'):
             return {'ack': 'unknown', 'error': 'previous stdin write outcome requires review'}
-        result = {}
-        done = threading.Event()
 
-        def _writer():
-            write_started = False
-            try:
-                refresh = _memory_turn.refresh_for_turn(project, sess, msg)
-                out = (refresh['block'] + '\n\n' + content
-                       if refresh['block'] else content)
-                stdin_msg = json.dumps({
-                    "type": "user",
-                    "message": {"role": "user", "content": out}
-                }) + '\n'
-                lock = sess.get('stdin_lock')
-                if lock:
-                    lock.acquire()
-                try:
-                    write_started = True
-                    sess['proc'].stdin.write(stdin_msg)
-                    sess['proc'].stdin.flush()
-                finally:
-                    if lock:
-                        lock.release()
-            except Exception as exc:
-                result['error'] = str(exc)
-                result['ack'] = 'unknown' if write_started else 'failed'
-                if write_started:
-                    sess['_stdin_write_uncertain'] = True
-                sess['log_lines'].append(f'[stdin write error: {exc}]')
-                sess['status'] = 'error'
-                sess['last_status_change_time'] = _time.time()
-                sess['process_alive'] = False
-            else:
-                result['written'] = True
-            finally:
-                done.set()
+        def _build():
+            refresh = _memory_turn.refresh_for_turn(project, sess, msg)
+            out = (refresh['block'] + '\n\n' + content
+                   if refresh['block'] else content)
+            return json.dumps({
+                "type": "user",
+                "message": {"role": "user", "content": out}
+            }) + '\n'
 
-        threading.Thread(target=_writer, daemon=True).start()
-        if not durable_ack:
-            return None
-        if not done.wait(timeout=10.0):
-            sess['_stdin_write_uncertain'] = True
-            return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
-        if result.get('written'):
-            return {'ack': 'written'}
-        return {'ack': result.get('ack', 'failed'),
-                'error': result.get('error', 'stdin write failed')}
+        # Bounded: a hung claude.exe on the other end of this pipe can block
+        # the write forever, which (via the internal BufferedWriter lock)
+        # can later hang an unrelated stdin.close() too — see
+        # _bounded_stdin_write for the 2026-09-23 deadlock this guards
+        # against. `wait_for_ack` preserves durable-delivery callers'
+        # synchronous outcome without letting a stuck write leak forever
+        # once they've stopped waiting on it.
+        return _bounded_stdin_write(
+            sess['proc'], _build, session=sess, lock=sess.get('stdin_lock'),
+            wait_for_ack=10.0 if durable_ack else None, context='followup-B')
 
     # Pre-check: if session is gone from agent_sessions (server restart, tab close,
     # 24h purge), try reviving from agent_log via -r <claude_session_id>.
@@ -10381,10 +10364,15 @@ def agent_followup(project_id):
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
                 }) + '\n'
-                lock = rb['existing']['stdin_lock']
-                with lock:
-                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                # Bounded: a respawned claude.exe that hangs at startup never
+                # reads stdin, so this write can block forever — see
+                # _bounded_stdin_write for the 2026-09-23 incident this fixes
+                # (the stuck write here held stdin_lock forever, which then
+                # made agent_interrupt's stdin.close() hang while it held the
+                # project manager lock).
+                _bounded_stdin_write(proc, stdin_msg, session=rb['existing'],
+                                      lock=rb['existing']['stdin_lock'],
+                                      context='respawn-B')
             except Exception as e:
                 _log(f"[respawn-B] {rb['project_id']}: FAILED — {e}")
                 rb['existing']['log_lines'].append(f'[respawn error: {e}]')
@@ -10519,6 +10507,154 @@ def _kill_proc_background(proc):
         except Exception:
             pass
     threading.Thread(target=_do_kill, daemon=True).start()
+
+
+# Default bound for a stdin write/close on a claude child process before we
+# give up on it and kill it. See _bounded_stdin_write below for why this
+# exists — 20s comfortably covers a slow-but-alive startup while still
+# recovering well inside the frontend's own timeouts.
+_STDIN_WRITE_KILL_TIMEOUT = 20.0
+
+
+def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=False,
+                          timeout=_STDIN_WRITE_KILL_TIMEOUT, wait_for_ack=None, context=''):
+    """Write `data` to `proc.stdin` (then flush, and optionally close) on a
+    helper thread, so the calling thread is never blocked by it directly.
+
+    Why this exists (diagnosed via py-spy 2026-09-23): a respawned claude.exe
+    that hangs at startup never reads stdin, so a large message (an image
+    reference pushed the pipe over its buffer) fills the OS pipe and
+    write()/flush() blocks FOREVER — and that block holds both `lock` (the
+    session's stdin_lock, if given) and BufferedWriter's own internal lock.
+    Anything that later calls proc.stdin.close() on the SAME proc, from ANY
+    thread, blocks on that same internal lock too — that's how
+    agent_interrupt's stdin.close() ended up hanging while it held the
+    project manager lock, freezing every /agent/send for the project.
+
+    `data` may be the string to write, or a zero-arg callable that builds
+    and returns it — the callable runs on the helper thread too, inside the
+    same try/except, so a failure building the payload (e.g. a memory-turn
+    lookup) is handled exactly like a failed write.
+
+    A background watchdog kills `proc` if the write/close hasn't finished
+    within `timeout` seconds. Killing breaks the pipe, which unblocks the
+    stuck writer thread (instead of it leaking forever) and lets any later
+    stdin.close() on this proc return immediately. We only log + leave a
+    visible chat line here on a timeout — the normal reader/exit path marks
+    the session failed once the killed proc's stdout actually closes.
+
+    `close_after=True` closes stdin after the write attempt (success or
+    not) — Mode A's piped-prompt case, which signals end-of-prompt via EOF.
+    It runs on the same helper thread so ordering vs. the write is kept
+    even though the caller doesn't wait for either.
+
+    If `wait_for_ack` (seconds) is given, the CALLER blocks for up to that
+    long and gets back {'ack': 'written'|'failed'|'unknown', ...} — used by
+    the durable-delivery path, which must answer its own caller with the
+    real outcome. Otherwise returns None immediately (fire-and-forget, the
+    normal interactive path).
+    """
+    done = threading.Event()
+    result = {}
+
+    def _writer():
+        write_started = False
+        try:
+            payload = data() if callable(data) else data
+            if lock:
+                lock.acquire()
+            try:
+                write_started = True
+                proc.stdin.write(payload)  # pyright: ignore[reportOptionalMemberAccess]
+                proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]
+                result['ok'] = True
+            finally:
+                if lock:
+                    lock.release()
+        except Exception as e:
+            result['error'] = e
+            result['write_started'] = write_started
+            if session is not None:
+                if write_started:
+                    session['_stdin_write_uncertain'] = True
+                session.setdefault('log_lines', []).append(f'[stdin write error: {e}]')
+                session['status'] = 'error'
+                session['last_status_change_time'] = _time.time()
+                session['process_alive'] = False
+        finally:
+            if close_after:
+                try:
+                    proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
+                except Exception:
+                    pass
+            done.set()
+
+    threading.Thread(target=_writer, daemon=True).start()
+
+    def _watchdog():
+        if done.wait(timeout):
+            return
+        _log(f"[stdin-write] PID {proc.pid}{f' ({context})' if context else ''} "
+             f"did not drain stdin within {timeout}s — child never read it; "
+             f"killing the process so the pipe breaks")
+        if session is not None:
+            session['_stdin_write_uncertain'] = True
+            session.setdefault('log_lines', []).append(
+                '[Agent process stopped responding while receiving your '
+                'message — it has been terminated]')
+        _kill_proc_background(proc)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
+
+    if wait_for_ack is None:
+        return None
+    if not done.wait(wait_for_ack):
+        if session is not None:
+            session['_stdin_write_uncertain'] = True
+        return {'ack': 'unknown', 'error': 'stdin write did not complete before timeout'}
+    if result.get('ok'):
+        return {'ack': 'written'}
+    err = result.get('error')
+    return {'ack': 'unknown' if result.get('write_started') else 'failed',
+            'error': str(err) if err else 'stdin write failed'}
+
+
+def _bounded_stdin_close(proc, timeout=_STDIN_WRITE_KILL_TIMEOUT, context=''):
+    """Close `proc.stdin` off the calling thread — never call
+    `proc.stdin.close()` directly from code holding `get_manager(...).lock`.
+
+    BufferedWriter.close() flushes any pending data before closing, which
+    can block indefinitely if the child never drained its stdin pipe — the
+    same hang class _bounded_stdin_write guards against. Diagnosed
+    2026-09-23: agent_interrupt's inline `old_proc.stdin.close()` froze
+    while holding the project lock (another thread was stuck inside a write
+    on the same proc, holding the internal lock close() also needs), and
+    every subsequent /agent/send for the project piled up behind that lock.
+
+    Fire-and-forget: never blocks the caller. A watchdog kills `proc` if the
+    close hasn't returned within `timeout`s, so it (and anything else stuck
+    on this proc) eventually unblocks.
+    """
+    done = threading.Event()
+
+    def _closer():
+        try:
+            proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
+        except Exception:
+            pass
+        finally:
+            done.set()
+
+    threading.Thread(target=_closer, daemon=True).start()
+
+    def _watchdog():
+        if done.wait(timeout):
+            return
+        _log(f"[stdin-close] PID {proc.pid}{f' ({context})' if context else ''} "
+             f"did not close within {timeout}s — killing it")
+        _kill_proc_background(proc)
+
+    threading.Thread(target=_watchdog, daemon=True).start()
 
 
 @bp.route('/api/project/<project_id>/agent/stop', methods=['POST'])
@@ -10701,10 +10837,13 @@ def agent_interrupt(project_id, *, _internal=None):
         session['waiting_for_question'] = False
         session.pop('pending_questions', None)
         if session.get('mode') == 'B':
-            try:
-                old_proc.stdin.close()
-            except Exception:
-                pass
+            # Non-blocking: old_proc.stdin.close() can hang indefinitely if
+            # the old process never drained its stdin (2026-09-23 respawn
+            # deadlock — this call used to be inline here and froze while
+            # holding get_manager(project_id).lock, wedging every
+            # /agent/send for the project behind it). See
+            # _bounded_stdin_close.
+            _bounded_stdin_close(old_proc, context='interrupt-stop-old-proc')
         _unregister_process(old_proc.pid)
 
         # Immediately set status to running for the new prompt
@@ -10825,9 +10964,12 @@ def agent_interrupt(project_id, *, _internal=None):
                     "type": "user",
                     "message": {"role": "user", "content": claude_content}
                 }) + '\n'
-                with session['stdin_lock']:
-                    proc.stdin.write(stdin_msg)  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
-                    proc.stdin.flush()  # pyright: ignore[reportOptionalMemberAccess]  # moved-verbatim typing debt (1.12)
+                # Bounded — same respawn-hang risk as _do_respawn_b's write
+                # (this is the interrupt-triggered twin of that path). See
+                # _bounded_stdin_write.
+                _bounded_stdin_write(proc, stdin_msg, session=session,
+                                      lock=session['stdin_lock'],
+                                      context='interrupt-resume-B')
             else:
                 # Mode A
                 claude_respawn_msg = _apply_mobile_brief(respawn_msg, data)
@@ -10877,10 +11019,13 @@ def agent_interrupt(project_id, *, _internal=None):
                 if is_midturn:
                     # After the reader is draining stdout: a prompt larger than
                     # the pipe buffer must not block against an unread pipe.
-                    try:
-                        proc.stdin.write(claude_respawn_msg)  # pyright: ignore[reportOptionalMemberAccess]
-                    finally:
-                        proc.stdin.close()  # pyright: ignore[reportOptionalMemberAccess]
+                    # Also bounded (close_after=True keeps the write-then-EOF
+                    # ordering `claude -p` with no prompt arg relies on) — a
+                    # child that never reads stdin at all is the same
+                    # respawn-hang class _bounded_stdin_write guards against.
+                    _bounded_stdin_write(proc, claude_respawn_msg, session=session,
+                                          close_after=True,
+                                          context='interrupt-resume-A-midturn')
 
         except Exception as e:
             session['log_lines'].append(f'[interrupt-resume error: {e}]')
