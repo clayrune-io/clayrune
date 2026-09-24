@@ -789,6 +789,72 @@ def test_glob_of_the_vault_directory_itself_is_blocked(tmp_path, monkeypatch):
     assert not d.blocked
 
 
+# ── LAN passcode store (local_auth.json) — Wren's follow-up review of
+#    MC 503edfe4: the passcode gates vault-lock/set and /change, so it's a
+#    stepping-stone to the vault, not a separate, lower-stakes file ─────────
+
+def test_local_auth_data_root_defaults_to_install_dir(monkeypatch):
+    import steward.fence as fence_mod
+    monkeypatch.delenv('MC_DATA_DIR', raising=False)
+    assert fence_mod._local_auth_data_root() == fence_mod._INSTALL_DIR
+
+
+def test_local_auth_data_root_honors_mc_data_dir_override(tmp_path, monkeypatch):
+    import steward.fence as fence_mod
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    assert fence_mod._local_auth_data_root() == tmp_path
+
+
+def test_read_of_local_auth_json_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    d = check_vault_file_access(
+        'Read', {'file_path': str(tmp_path / 'data' / 'local_auth.json')})
+    assert d.blocked
+    assert 'passcode' in d.reason.lower()
+
+
+def test_read_of_an_unrelated_file_named_local_auth_json_elsewhere_is_allowed(tmp_path, monkeypatch):
+    """Same asymmetric-risk precedent as the vault's own secrets.json case:
+    only a path that actually resolves under the real data dir is blocked."""
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    other = tmp_path / 'some-project' / 'local_auth.json'
+    d = check_vault_file_access('Read', {'file_path': str(other)})
+    assert not d.blocked
+
+
+def test_grep_glob_filter_naming_local_auth_json_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    d = check_vault_file_access(
+        'Grep', {'pattern': 'x', 'path': str(tmp_path), 'glob': 'local_auth.json'})
+    assert d.blocked
+
+
+def test_glob_pattern_naming_local_auth_json_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    d = check_vault_file_access('Glob', {'pattern': '**/local_auth.json'})
+    assert d.blocked
+
+
+def test_bash_cat_of_local_auth_json_is_blocked(tmp_path, monkeypatch):
+    monkeypatch.setenv('MC_DATA_DIR', str(tmp_path))
+    d = check_vault_file_access(
+        'Bash', {'command': f'cat {tmp_path}/data/local_auth.json'})
+    assert d.blocked
+
+
+def test_bash_mention_of_local_auth_json_without_a_read_verb_but_with_data_path_is_blocked():
+    """Same fail-toward-BLOCK bias as the vault's own ~/.clayrune check."""
+    d = check_vault_file_access(
+        'Bash', {'command': 'ls -la data/local_auth.json'})
+    assert d.blocked
+
+
+def test_bash_grep_for_the_word_local_auth_in_source_is_not_blocked():
+    d = check_vault_file_access(
+        'Bash', {'command': 'grep -rn "local_auth" mc/blueprints/local_auth.py'})
+    assert not d.blocked
+
+
 # ── Same guard, exercised through the real hook subprocess — proves it is
 #    UNCONDITIONAL like check_install_dir_write ────────────────────────────
 
