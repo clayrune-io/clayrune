@@ -42,6 +42,13 @@ jobs:
       - name: Run install.sh from clayrune.io (auth-gated parts will exit 3)
         env:
           CLAYRUNE_NO_CONFIRM: '1'
+          # Since e939ebd (2026-09-18) a default install leaves provider CLIs
+          # to Clayrune's first-run chooser, so nothing puts `claude` on PATH
+          # and the PATH-persistence check below went red once that script
+          # reached clayrune.io (run 36053004128, 2026-09-24). The explicit
+          # unattended override still installs it, so pin it here to keep
+          # exercising the PATH-persist code this workflow exists for.
+          CLAYRUNE_PROVIDER: 'claude'
         run: |
           set +e
           curl -sSL https://clayrune.io/install.sh | sh
@@ -83,6 +90,9 @@ jobs:
       - name: Run install.sh from clayrune.io
         env:
           CLAYRUNE_NO_CONFIRM: '1'
+          # See the ubuntu job: pins the explicit provider so `claude` is
+          # installed and the PATH check below has something to find.
+          CLAYRUNE_PROVIDER: 'claude'
         shell: zsh -l {0}
         run: |
           set +e
