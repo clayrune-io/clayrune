@@ -4225,22 +4225,34 @@
     border: none;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
   }
-  /* Day separator (MC-954) — a centered, subtle date pill inserted between
-     bubbles from different local calendar days ("Today" / "Yesterday" / "Mon,
-     Sep 21"). Purely a display artifact (see conversation.js's
-     _maybeInsertDateDivider): never part of agentOutputBuffers, never sent to
-     the agent. Styled quieter than the tool/status chips above it (no
-     monospace, lower contrast) so it reads as a passive timeline marker, not
-     an event. */
+  /* Day separator (MC-954, sticky follow-up) — a centered, subtle date pill
+     inserted between bubbles from different local calendar days ("Today" /
+     "Yesterday" / "Mon, Sep 21"). Purely a display artifact (see
+     conversation.js's _maybeInsertDateDivider): never part of
+     agentOutputBuffers, never sent to the agent.
+     `position: sticky` (no scroll-listener JS) pins each divider to the top
+     of .agent-output — its OWN scrolling ancestor (flex:1, overflow-y:auto,
+     no intermediate scroll container) — for as long as its day's messages
+     are on screen; the next divider in DOM order naturally pushes the
+     current one out when it reaches the top. This is the standard
+     "sticky list section header" pattern and needs a background (not the
+     original transparent chip) since bubbles now scroll underneath it. */
   .agent-output .chat-date-divider {
     align-self: center;
+    position: sticky;
+    top: 0;
+    z-index: 5;
     font-family: 'Inter', -apple-system, system-ui, sans-serif;
     font-size: 11px;
     font-weight: 600;
     letter-spacing: 0.02em;
-    color: var(--text-faint);
-    padding: 4px 10px;
-    margin: 2px 0;
+    color: var(--text-dim);
+    background: var(--surface2);
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    box-shadow: 0 1px 3px rgba(0, 0, 0, 0.15);
+    padding: 4px 12px;
+    margin: 2px 0 8px;
   }
   /* Wide blocks stretch full width so they remain readable.
      flex-shrink:0 is LOAD-BEARING: .agent-output is a flex column with a
