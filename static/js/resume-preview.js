@@ -567,14 +567,16 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
       }
     }
     const serverLines = sess.log_lines || [];
+    const serverTs = sess.log_line_ts || [];
     const have = agentServerLines[sessionId] || 0;
     if (serverLines.length < have) {
       // Server buffer shrank under our cursor (log_lines rebuilt by a
       // revive after restart/purge, capped server-side, or a forked copy).
       // Re-anchor the cursor so the slice recovery below can fire again, but
       // keep the rendered history when it is longer (_mergeShorterHistory).
-      if (!_mergeShorterHistory(sessionId, serverLines, 'reconcile')) {
+      if (!_mergeShorterHistory(sessionId, serverLines, 'reconcile', serverTs)) {
         agentOutputBuffers[sessionId] = serverLines.slice();
+        agentOutputTimestamps[sessionId] = serverTs.slice();
         _repaintAgentOutput(sessionId);
       }
       _advanceAgentServerCursor(sessionId, serverLines.length);
@@ -582,12 +584,16 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
     }
     if (serverLines.length === have) return;  // buffer in sync — nothing more to recover
     const missing = serverLines.slice(have);
+    const missingTs = serverTs.slice(have);
     for (const text of missing) {
+      const _mi = missing.indexOf(text);
       // Race guard: SSE may have delivered the same line between fetch start
       // and now. Re-check our cursor against the index this iteration targets.
-      if ((agentServerLines[sessionId] || 0) >= have + missing.indexOf(text) + 1) continue;
+      if ((agentServerLines[sessionId] || 0) >= have + _mi + 1) continue;
       if (!agentOutputBuffers[sessionId]) agentOutputBuffers[sessionId] = [];
+      if (!agentOutputTimestamps[sessionId]) agentOutputTimestamps[sessionId] = [];
       agentOutputBuffers[sessionId].push(text);
+      agentOutputTimestamps[sessionId].push(missingTs[_mi] || null);
       agentServerLines[sessionId] = (agentServerLines[sessionId] || 0) + 1;
       // Mirror the SSE onmessage echo-dedup so a recovered `> Ron:` line
       // wipes the local echo that sendFollowup left in the DOM.
@@ -598,7 +604,9 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
           if (echo) echo.remove();
         }
       }
-      appendAgentLine(sessionId, text);
+      // null/undefined ts → `false` (no date known — never guess "now" for
+      // a reconciled historical line).
+      appendAgentLine(sessionId, text, missingTs[_mi] || false);
     }
   } catch (_) {
     // silent — reconciliation is best-effort
@@ -614,9 +622,12 @@ async function _reconcileAgentBuffer(projectId, sessionId) {
 // next message. Keep what is shown, append whatever the incoming copy has past
 // the last line both share, and log the mismatch. Returns true when it kept the
 // rendered history (caller must NOT adopt `incoming`), false to adopt normally.
+// `incomingTs`: optional parallel per-line timestamp array (MC-954), same
+// index as `incoming` — the appended tail's dates ride along with it so a
+// day divider can still land correctly after a shrink-guard recovery.
 const _historyShrinkWarned = {};
 window._historyShrinkLog = window._historyShrinkLog || [];
-function _mergeShorterHistory(sessionId, incoming, source) {
+function _mergeShorterHistory(sessionId, incoming, source, incomingTs) {
   const shown = agentOutputBuffers[sessionId] || [];
   if (!Array.isArray(incoming) || incoming.length >= shown.length) return false;
   let anchor = -1;
@@ -629,6 +640,7 @@ function _mergeShorterHistory(sessionId, incoming, source) {
     break;
   }
   const tail = anchor >= 0 ? incoming.slice(anchor + 1) : [];
+  const tailTs = anchor >= 0 && Array.isArray(incomingTs) ? incomingTs.slice(anchor + 1) : [];
   const key = `${source}:${shown.length}:${incoming.length}`;
   if (_historyShrinkWarned[sessionId] !== key) {
     _historyShrinkWarned[sessionId] = key;
@@ -637,7 +649,14 @@ function _mergeShorterHistory(sessionId, incoming, source) {
     if (window._historyShrinkLog.length > 50) window._historyShrinkLog.shift();
     console.warn(`[history-guard] ${source}: server sent ${incoming.length} lines for ${String(sessionId).slice(0, 8)} but ${shown.length} are on screen; keeping the rendered history` + (tail.length ? `, appending ${tail.length} new` : ''));
   }
-  for (const line of tail) { shown.push(line); appendAgentLine(sessionId, line); }
+  if (!agentOutputTimestamps[sessionId]) agentOutputTimestamps[sessionId] = [];
+  tail.forEach((line, i) => {
+    shown.push(line);
+    agentOutputTimestamps[sessionId].push(tailTs[i] || null);
+    // null/undefined ts → `false` ("no date known", never guess "now" for a
+    // reconciled historical line — see _maybeInsertDateDivider's contract).
+    appendAgentLine(sessionId, line, tailTs[i] || false);
+  });
   agentOutputBuffers[sessionId] = shown;
   return true;
 }
@@ -655,8 +674,9 @@ function _settleHistoryReplay(sessionId) {
   const rp = _historyReplay[sessionId];
   if (!rp) return;
   delete _historyReplay[sessionId];
-  if (_mergeShorterHistory(sessionId, rp.lines, 'stream-reset')) return;
+  if (_mergeShorterHistory(sessionId, rp.lines, 'stream-reset', rp.ts)) return;
   agentOutputBuffers[sessionId] = rp.lines;
+  agentOutputTimestamps[sessionId] = rp.ts;
   _repaintAgentOutput(sessionId);
 }
 
@@ -677,7 +697,20 @@ function _repaintAgentOutput(sessionId) {
   // the header lands on the first narration bubble again, same as a cold open.
   // See the _msgAttrPending state-machine comment in conversation.js.
   if (window._msgAttrResetPending) window._msgAttrResetPending(sessionId);
-  for (const line of buf) appendAgentLine(sessionId, line);
+  // Date dividers for the replayed history (MC-954): real per-line server
+  // timestamps ride in agentOutputTimestamps[sessionId], same index as buf —
+  // populated from the SSE `ts` field and from every reconstruct/status
+  // response's `log_line_ts`. `null`/missing → `false` (no date known, never
+  // guess "now" for a historical line). Falls back to the session's own
+  // start time for line 0 only when no per-line ts array exists at all (an
+  // older server, or a path that hasn't been backfilled) — better than
+  // stamping nothing on a conversation that's otherwise entirely undated.
+  const _ts = agentOutputTimestamps[sessionId];
+  const _replayAnchor = (agentStatusCache[sessionId] || {}).startedAt || false;
+  buf.forEach((line, i) => {
+    const hint = Array.isArray(_ts) ? (_ts[i] || false) : (i === 0 ? _replayAnchor : false);
+    appendAgentLine(sessionId, line, hint);
+  });
   // An unanswered mc:question form is a DOM element, not a buffered log line, so
   // the clear above destroys it and the append loop cannot bring it back — the
   // agent then sits parked with no form on screen until some later event forces a
@@ -785,14 +818,18 @@ function connectAgentStream(projectId, sessionId) {
         if (_historyReplay[sessionId]) {
           // Replay after a `reset`: hold it, decide once it settles (see reset).
           _historyReplay[sessionId].lines.push(msg.text);
+          _historyReplay[sessionId].ts.push(msg.ts || null);
           _scheduleReplaySettle(sessionId);
           return;
         }
         if (!agentOutputBuffers[sessionId]) agentOutputBuffers[sessionId] = [];
+        if (!agentOutputTimestamps[sessionId]) agentOutputTimestamps[sessionId] = [];
         agentOutputBuffers[sessionId].push(msg.text);
+        agentOutputTimestamps[sessionId].push(msg.ts || null);
         // Cap buffer to prevent unbounded memory growth
         if (agentOutputBuffers[sessionId].length > 2000) {
           agentOutputBuffers[sessionId] = agentOutputBuffers[sessionId].slice(-1500);
+          agentOutputTimestamps[sessionId] = agentOutputTimestamps[sessionId].slice(-1500);
         }
         // Detect terminal launch marker from agent
         const termMatch = msg.text && msg.text.match(/^\[terminal:([^:]+):(.+)\]$/);
@@ -838,7 +875,11 @@ function connectAgentStream(projectId, sessionId) {
             if (echo) echo.remove();
           }
         }
-        appendAgentLine(sessionId, msg.text);
+        // Real server ts (SSE `ts` field, MC-954) drives the day divider —
+        // never Date.now(): a reconnect can deliver a line seconds-to-minutes
+        // after the server actually produced it, close enough to matter right
+        // at a midnight boundary.
+        appendAgentLine(sessionId, msg.text, msg.ts || undefined);
         // §4 fix: appendAgentLine removed the typing indicator above. While the
         // turn is still running (e.g. after an interrupt ack like "[Got your
         // message]", or between streamed lines), re-add it so it trails the
@@ -900,10 +941,11 @@ function connectAgentStream(projectId, sessionId) {
         // as what is shown, otherwise keep the rendered history.
         agentServerLines[sessionId] = 0;
         if ((agentOutputBuffers[sessionId] || []).length) {
-          _historyReplay[sessionId] = { lines: [], timer: null };
+          _historyReplay[sessionId] = { lines: [], ts: [], timer: null };
           _scheduleReplaySettle(sessionId);
         } else {
           agentOutputBuffers[sessionId] = [];
+          agentOutputTimestamps[sessionId] = [];
           _repaintAgentOutput(sessionId);
         }
       } else if (msg.type === 'turn_start') {

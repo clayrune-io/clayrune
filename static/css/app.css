@@ -4225,6 +4225,23 @@
     border: none;
     font-family: 'JetBrains Mono', ui-monospace, monospace;
   }
+  /* Day separator (MC-954) — a centered, subtle date pill inserted between
+     bubbles from different local calendar days ("Today" / "Yesterday" / "Mon,
+     Sep 21"). Purely a display artifact (see conversation.js's
+     _maybeInsertDateDivider): never part of agentOutputBuffers, never sent to
+     the agent. Styled quieter than the tool/status chips above it (no
+     monospace, lower contrast) so it reads as a passive timeline marker, not
+     an event. */
+  .agent-output .chat-date-divider {
+    align-self: center;
+    font-family: 'Inter', -apple-system, system-ui, sans-serif;
+    font-size: 11px;
+    font-weight: 600;
+    letter-spacing: 0.02em;
+    color: var(--text-faint);
+    padding: 4px 10px;
+    margin: 2px 0;
+  }
   /* Wide blocks stretch full width so they remain readable.
      flex-shrink:0 is LOAD-BEARING: .agent-output is a flex column with a
      constrained height (flex:1 inside .agent-chat) and overflow-y:auto. Any
@@ -4302,7 +4319,8 @@
   body.chat-flow .agent-output .agent-line-coverage,
   body.chat-flow .agent-output .agent-line-error,
   body.chat-flow .agent-output .agent-line-queued,
-  body.chat-flow .agent-output .agent-line-followup {
+  body.chat-flow .agent-output .agent-line-followup,
+  body.chat-flow .agent-output .chat-date-divider {
     margin: 8px 0 !important;
   }
 

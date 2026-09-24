@@ -75,7 +75,7 @@ from mc import obs, state
 from mc import workflows as _workflows  # leaf module (no Flask import); see _notify_workflow_step
 from mc import state as _mc_state  # readers write _mc_state._LAST_SYSTEM_STATUS verbatim
 from mc.atomic_json import read_text_with_retry, write_json_atomic
-from mc.core import _harden_secret_perms, _log, now_iso, time_ago
+from mc.core import _harden_secret_perms, _log, now_iso, time_ago, TimestampedLines
 from mc.state import (
     _backlog_sync_lock,
     _claude_auth_lock,
@@ -3255,7 +3255,7 @@ def _track_stop_hook_boundary(session, msg) -> None:
         blocks = [b for b in (m.get('content') or []) if isinstance(b, dict)]
         last = session.get('_sh_last_msg')
         if last and mid and mid != last['id'] and last['text'] and not last['tool']:
-            lines = session.setdefault('log_lines', [])
+            lines = session.setdefault('log_lines', TimestampedLines())
             already = bool(lines) and lines[-1].strip() == '[stop-hook-redo]'
             if not already and _hook_blocked_before(session, msg.get('uuid')):
                 lines.append('[stop-hook-redo]')
@@ -3347,7 +3347,7 @@ def _record_permission_denials(session, msg):
     if not isinstance(denials, list) or not denials:
         return
     bucket = session.setdefault('permission_denials', [])
-    lines = session.setdefault('log_lines', [])
+    lines = session.setdefault('log_lines', TimestampedLines())
     for d in denials:
         if not isinstance(d, dict):
             continue
@@ -3378,7 +3378,7 @@ def _emit_coverage_advisory(session) -> None:
         line = _artifact_coverage.advisory_line(
             _coverage_last_user_message(session), blobs)
         if line:
-            session.setdefault('log_lines', []).append(line)
+            session.setdefault('log_lines', TimestampedLines()).append(line)
             session['last_output_time'] = _time.time()
     except Exception as e:
         _log(f"[coverage] advisory failed: {e}")
@@ -5024,7 +5024,10 @@ def _read_agent_stream_b(proc, session):
                     _mark_claude_auth_error(_auth_reason, line)
                 session['log_lines'].append(line)
                 session['last_output_time'] = _time.time()
-            # Cap log_lines to prevent unbounded memory growth
+            # Cap log_lines to prevent unbounded memory growth. `log_lines`
+            # is a TimestampedLines (mc/core.py) — slicing it returns another
+            # TimestampedLines with `.ts` sliced in lock-step automatically,
+            # so no separate ts-trim is needed here (MC-954).
             if len(session['log_lines']) > 2000:
                 session['log_lines'] = session['log_lines'][-1500:]
     except Exception as e:
@@ -5449,11 +5452,17 @@ def _revive_history_lines(project_path, claude_sid, user_label, max_messages=Non
     last `max_messages` turns from the transcript in the same buffer format the
     live stream uses ('> Label: ...' for user turns, raw text for assistant).
 
-    Returns [] on any failure (no transcript, parse error) — revival still
-    proceeds, just without restored history.
+    Returns ([], []) on any failure (no transcript, parse error) — revival
+    still proceeds, just without restored history.
+
+    Returns (lines, ts): `ts` is the parallel per-line source timestamp list
+    `_transcript_buffer_lines_and_ts` produces (MC-954), with a None entry
+    for the two synthetic lines this function inserts/appends (the
+    truncation notice and the "restored from transcript" marker — neither
+    is a real message with its own timestamp).
     """
-    lines = _transcript_buffer_lines(project_path, claude_sid, user_label,
-                                     max_messages=max_messages)
+    lines, ts = _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label,
+                                                max_messages=max_messages)
     if lines:
         # Say so at the TOP when there is more above. Scrolling up and simply
         # running out of conversation is indistinguishable from having lost it.
@@ -5462,8 +5471,10 @@ def _revive_history_lines(project_path, claude_sid, user_label, max_messages=Non
             max_messages if max_messages is not None else _transcript_buffer_default())
         if notice:
             lines.insert(0, notice)
+            ts.insert(0, None)
         lines.append('[— restored from transcript; conversation continues below —]')
-    return lines
+        ts.append(None)
+    return lines, ts
 
 
 def _buffer_truncation_notice(project_path, claude_sid, shown):
@@ -5491,15 +5502,32 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
     raw text for assistant turns. tool_call/error rows are skipped — the chat
     renders user/assistant bubbles and tool noise isn't wanted here. Returns
     [] on any failure so callers can degrade gracefully.
+
+    Thin wrapper over `_transcript_buffer_lines_and_ts` for the (majority of)
+    callers that only need the lines, not per-line dates.
+    """
+    return _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label,
+                                           max_messages=max_messages)[0]
+
+
+def _transcript_buffer_lines_and_ts(project_path, claude_sid, user_label, max_messages=None):
+    """Same rendering as `_transcript_buffer_lines`, plus a parallel list of
+    each line's source timestamp (the transcript entry's own `timestamp`
+    field, ISO string, or None when a line has no 1:1 source message — e.g.
+    the stop-hook-redo marker). MC-954: real per-line dates so a reopened
+    past conversation gets an accurate day divider at every day boundary,
+    not just one anchored to the session's start time. `lines[i]`/`ts[i]`
+    are always the same length and index together.
     """
     if max_messages is None:
         max_messages = _transcript_buffer_default()
     try:
         f = _find_transcript_file(project_path, claude_sid)
         if not f:
-            return []
+            return [], []
         msgs = _parse_transcript_messages(f, max_messages=max_messages)
         lines = []
+        ts = []
         for m in msgs:
             role = m.get('role')
             if role == 'user':
@@ -5516,10 +5544,12 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
                 txt = _agent_runtime.strip_injected_preamble(m.get('text') or '')
                 if txt and not _agent_runtime.is_nonuser_message(txt):
                     lines.append(f"\n> {user_label}: {txt}\n")
+                    ts.append(m.get('timestamp') or None)
             elif role == 'assistant':
                 txt = (m.get('text') or '').strip()
                 if txt:
                     lines.append(txt)
+                    ts.append(m.get('timestamp') or None)
             elif role == 'stop_hook_redo':
                 # A blocked Stop hook's synthetic re-ask (see
                 # agent_runtime.is_stop_hook_feedback) — not a real user turn.
@@ -5527,10 +5557,11 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
                 # into a "show earlier draft" toggle when it sees this marker,
                 # same convention the live stream reader uses.
                 lines.append('[stop-hook-redo]')
-        return lines
+                ts.append(None)
+        return lines, ts
     except Exception as e:
         _log(f"[transcript-render] failed: {e}")
-        return []
+        return [], []
 
 def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
@@ -5697,8 +5728,12 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
     # (about the agent's pre-restart reply) doesn't land on a one-sided chat.
     # Skipped when the transcript was too large to resume directly (we started
     # fresh, so there's no coherent -r history to show anyway).
-    history_lines = [] if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
+    history_lines, history_ts = ([], []) if _af_reason else _revive_history_lines(pp, claude_sid, user_label)
     seed_lines = history_lines + [revive_note, f"\n> {user_label}: {message}\n"]
+    # MC-954: the revive_note/new-message lines are genuinely happening NOW
+    # (revival time), unlike the restored history above them which carries
+    # its own real per-line dates.
+    seed_ts = history_ts + [now_iso(), now_iso()]
 
     if use_streaming:
         cmd = [_resolve_claude(), *resume_flags,
@@ -5732,7 +5767,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             'proc': proc,
             'status': 'running',
             'task': entry.get('task', ''),
-            'log_lines': list(seed_lines),
+            'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -5835,7 +5870,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'proc': proc,
         'status': 'running',
         'task': entry.get('task', ''),
-        'log_lines': list(seed_lines),
+        'log_lines': TimestampedLines(seed_lines, ts=seed_ts),
         'started_at': now_iso(),
         'session_id': session_id,
         'project_id': project_id,
@@ -7488,7 +7523,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         session = {
             'status': 'running',
             'task': task,
-            'log_lines': [f"> {user_label}: {_seed_task}"],
+            'log_lines': TimestampedLines([f"> {user_label}: {_seed_task}"]),
             'started_at': now_iso(),
             'session_id': session_id,
             'project_id': project_id,
@@ -8222,7 +8257,7 @@ def _mode_a_token_rollover(pp, project_id, session_id, session, provider, messag
         pp, provider, native_id, project_id, session_id,
         reason='tokens', detail=int(ctx))
     _log_agent_activity(project_id, activity_line)
-    session.setdefault('log_lines', []).append(log_line)
+    session.setdefault('log_lines', TimestampedLines()).append(log_line)
     session.pop('provider_session_id', None)
     session.pop('context_tokens', None)
     return f"{handoff_text}\n\n{message}"
@@ -8688,6 +8723,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # server's log_lines (transcript only) which overwrites its local
     # `[prefix]` seed — and the user's new prompt disappears from the view.
     _seed_log_lines = []
+    # Parallel per-line source timestamp (MC-954), same index as
+    # _seed_log_lines — None where no real per-line date is known.
+    _seed_log_ts = []
     user_label = state.CONFIG.get('user_name') or 'User'
     # `display_task` is the user-visible original (caller-supplied so the mobile
     # brief-reply directive doesn't leak into the chat bubble). When not given,
@@ -8695,9 +8733,10 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     _seed_task = display_task if display_task is not None else task
     if resume_id:
         try:
-            _seed_log_lines = _transcript_buffer_lines(
+            _seed_log_lines, _seed_log_ts = _transcript_buffer_lines_and_ts(
                 pp, resume_id, user_label, max_messages=300)
             _seed_log_lines.append(f"\n> {user_label}: {_seed_task}\n")
+            _seed_log_ts.append(now_iso())  # this continuation prompt is happening now
         except Exception as e:
             _log(f"[dispatch] transcript preload failed for {resume_id[:12]}: {e}")
     else:
@@ -8706,6 +8745,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         # Without this, the locally-seeded `> {task}` prefix gets wiped on the
         # first poll and the user only sees the agent's reply (no question).
         _seed_log_lines.append(f"> {user_label}: {_seed_task}")
+        _seed_log_ts.append(now_iso())
 
     # ── Auto-router + context build, OUTSIDE mgr.lock ───────────────────────
     # RC-2 constraint (ws_003): the classifier subprocess + context build are
@@ -8921,7 +8961,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'proc': proc,
                 'status': 'running',
                 'task': task,
-                'log_lines': list(_seed_log_lines),
+                'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
@@ -9054,7 +9094,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'proc': proc,
                 'status': 'running',
                 'task': task,
-                'log_lines': list(_seed_log_lines),
+                'log_lines': TimestampedLines(_seed_log_lines, ts=_seed_log_ts),
                 'started_at': now_iso(),
                 'session_id': session_id,
                 'project_id': project_id,
@@ -9700,6 +9740,18 @@ def agent_stream(project_id):
         while True:
             session['_last_sse_poll_time'] = _time.time()
             lines = session['log_lines']
+            # MC-954: `lines` is a TimestampedLines (mc/core.py) — every
+            # append/extend call site across the codebase already stamped
+            # `.ts` at PRODUCTION time, not observation time. This loop only
+            # reads it; it must never backfill "now" here, or a line produced
+            # by an unattended run with nobody's chat open gets stamped with
+            # whenever a human first connects and reads it (the bug found in
+            # review of d7a2062 — an overnight steward run showed every line
+            # as "Today" at the hour Ron opened the chat). A plain list here
+            # (a session dict built by a path this fix hasn't reached) has no
+            # `.ts` at all — None for every line, per the "no divider rather
+            # than a wrong one" rule, never a fabricated now().
+            ts_list = getattr(lines, 'ts', None) or [None] * len(lines)
             # Cursor-overshoot guard: `sent` can exceed len(lines) whenever
             # log_lines was REBUILT shorter under the same session_id —
             # revive-from-agent-log reseeds from the transcript (40 msgs, no
@@ -9719,7 +9771,8 @@ def agent_stream(project_id):
                 # browser discard that late duplicate without text-deduping
                 # legitimate repeated messages.
                 for line_index, line in enumerate(lines[sent:], start=sent + 1):
-                    yield f"data: {json.dumps({'type': 'output', 'text': line, 'line_index': line_index})}\n\n"
+                    _ts = ts_list[line_index - 1] if line_index - 1 < len(ts_list) else None
+                    yield f"data: {json.dumps({'type': 'output', 'text': line, 'line_index': line_index, 'ts': _ts})}\n\n"
                 sent = len(lines)
 
             # Send pending AskUserQuestion data. We keep `pending_questions`
@@ -10675,7 +10728,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
             if session is not None:
                 if write_started:
                     session['_stdin_write_uncertain'] = True
-                session.setdefault('log_lines', []).append(f'[stdin write error: {e}]')
+                session.setdefault('log_lines', TimestampedLines()).append(f'[stdin write error: {e}]')
                 session['status'] = 'error'
                 session['last_status_change_time'] = _time.time()
                 session['process_alive'] = False
@@ -10697,7 +10750,7 @@ def _bounded_stdin_write(proc, data, *, session=None, lock=None, close_after=Fal
              f"killing the process so the pipe breaks")
         if session is not None:
             session['_stdin_write_uncertain'] = True
-            session.setdefault('log_lines', []).append(
+            session.setdefault('log_lines', TimestampedLines()).append(
                 '[Agent process stopped responding while receiving your '
                 'message — it has been terminated]')
         _kill_proc_background(proc)
@@ -11477,6 +11530,19 @@ def agent_status(project_id):
             _live_by_csid.setdefault(_ls['claude_session_id'], []).append(_lsid)
     for sid, s in agent_sessions.items():
         if s['project_id'] == project_id:
+            # Filter log_lines and its parallel per-line timestamp array
+            # (MC-954) in lock-step — a plain list-comp on log_lines alone
+            # would desync log_line_ts's indices from the lines the client
+            # actually receives.
+            _raw_lines = s['log_lines']
+            _raw_ts = getattr(_raw_lines, 'ts', None) or []
+            _kept_lines = []
+            _kept_ts = []
+            for _li, _l in enumerate(_raw_lines):
+                if _l.startswith('[terminal:') and _l.split(':')[1] not in terminal_sessions:
+                    continue
+                _kept_lines.append(_l)
+                _kept_ts.append(_raw_ts[_li] if _li < len(_raw_ts) else None)
             sessions.append({
                 'session_id': s['session_id'],
                 'claude_session_id': s.get('claude_session_id', ''),
@@ -11486,9 +11552,8 @@ def agent_status(project_id):
                 'provider_session_id': s.get('provider_session_id', ''),
                 'status': s['status'],
                 'task': s['task'],
-                'log_lines': [l for l in s['log_lines']
-                              if not l.startswith('[terminal:')
-                              or l.split(':')[1] in terminal_sessions],
+                'log_lines': _kept_lines,
+                'log_line_ts': _kept_ts,
                 'started_at': s['started_at'],
                 'plan_file': s.get('plan_file', ''),
                 'plan_files': _session_plan_files(s),
@@ -11917,17 +11982,19 @@ def reconstruct_dead_session(project_id, session_id):
     claude_sid = entry.get('claude_session_id')
     if claude_sid:
         user_label = state.CONFIG.get('user_name') or 'User'
-        lines = _transcript_buffer_lines(p.get('project_path', ''), claude_sid,
-                                         user_label, max_messages=300)
+        lines, ts = _transcript_buffer_lines_and_ts(p.get('project_path', ''), claude_sid,
+                                                    user_label, max_messages=300)
         if not lines:
             return jsonify({'error': 'transcript not found or empty'}), 404
         lines.append('[— read-only history; send a message to resume this session —]')
+        ts.append(None)
         return jsonify({
             'session_id': session_id,
             'claude_session_id': claude_sid,
             'task': entry.get('task', ''),
             'started_at': entry.get('timestamp', '') or entry.get('started_at', ''),
             'log_lines': lines,
+            'log_line_ts': ts,
             'read_only': True,
             'resumable': True,
         })
@@ -11978,22 +12045,25 @@ def reconstruct_dead_session(project_id, session_id):
                 tpath = runtime.transcript_path(p.get('project_path', ''), _p)
                 if not tpath:
                     continue
-                # Only CodexRuntime/QwenRuntime declare extract_chat_turns (the
-                # two members of _COLD_RESUMABLE_PROVIDERS this branch is gated
-                # on) — duck-typed like the list_sessions() call below; pyright
-                # can't see the gate.
-                turns.extend(runtime.extract_chat_turns(tpath))  # pyright: ignore[reportAttributeAccessIssue]
+                # Only CodexRuntime/QwenRuntime declare extract_chat_turns_with_ts
+                # (the two members of _COLD_RESUMABLE_PROVIDERS this branch is
+                # gated on) — duck-typed like the list_sessions() call below;
+                # pyright can't see the gate.
+                turns.extend(runtime.extract_chat_turns_with_ts(tpath))  # pyright: ignore[reportAttributeAccessIssue]
         except Exception as e:
             _log(f"[reconstruct] {provider} transcript render failed for {psid[:12]}: {e}")
             turns = []
         if turns:
             lines = []
-            for role, text in turns:
+            ts = []
+            for role, text, turn_ts in turns:
                 if role == 'user':
                     lines.append(f"\n> {user_label}: {text}\n")
                 else:
                     lines.append(text)
+                ts.append(turn_ts)
             lines.append('[— read-only history; send a message to resume this session —]')
+            ts.append(None)
             return jsonify({
                 'session_id': session_id,
                 'claude_session_id': '',
@@ -12001,6 +12071,7 @@ def reconstruct_dead_session(project_id, session_id):
                 'task': entries[0].get('task', ''),
                 'started_at': entries[0].get('started_at', '') or entries[0].get('ts', ''),
                 'log_lines': lines,
+                'log_line_ts': ts,
                 'read_only': True,
                 'resumable': True,
                 'provider': provider,
@@ -12106,11 +12177,11 @@ def get_transcript_full_buffer(project_id, claude_session_id):
     if not p:
         return jsonify({'error': 'project not found'}), 404
     user_label = state.CONFIG.get('user_name') or 'User'
-    lines = _transcript_buffer_lines(p.get('project_path', ''), claude_session_id,
-                                     user_label, max_messages=100000)
+    lines, ts = _transcript_buffer_lines_and_ts(p.get('project_path', ''), claude_session_id,
+                                                user_label, max_messages=100000)
     if not lines:
         return jsonify({'error': 'transcript not found or empty'}), 404
-    return jsonify({'claude_session_id': claude_session_id, 'log_lines': lines})
+    return jsonify({'claude_session_id': claude_session_id, 'log_lines': lines, 'log_line_ts': ts})
 
 
 @bp.route('/api/project/<project_id>/conversation/<claude_session_id>', methods=['DELETE'])

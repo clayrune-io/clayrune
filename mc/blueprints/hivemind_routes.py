@@ -47,7 +47,7 @@ import mc.agent_runtime as _agent_runtime  # Multi-provider abstraction
 
 from mc import engine_selection, obs, state
 from mc.atomic_json import write_json_atomic
-from mc.core import _log, now_iso, time_ago
+from mc.core import _log, now_iso, time_ago, TimestampedLines
 from mc.state import (
     _hivemind_orch_lock,
     _hivemind_orchestrating,
@@ -1059,7 +1059,7 @@ def _hm_spawn_worker_session(manifest, ws, p, hivemind_id, ws_id):
     pre_session = {
         'status': 'running',
         'task': task,
-        'log_lines': [],
+        'log_lines': TimestampedLines(),
         'started_at': now_iso(),
         'session_id': session_id,
         'project_id': project_id,
@@ -1323,7 +1323,7 @@ def _hm_dispatch_orchestrator(hivemind_id, task_type, extra_context=''):
 
     pre_session = {
         'status': 'running', 'task': f'Hivemind orchestrator: {task_type}',
-        'log_lines': [], 'started_at': now_iso(),
+        'log_lines': TimestampedLines(), 'started_at': now_iso(),
         'session_id': session_id, 'project_id': project_id, 'mode': 'A',
         'housekeeping': True, 'hivemind_id': hivemind_id,
         'hivemind_role': 'orchestrator',

@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mc import state
-from mc.core import _log
+from mc.core import _log, TimestampedLines
 
 RECENT_TOOLS_KEEP = 10
 # A roll that lands on a fresh prefix already over the threshold (threshold set
@@ -199,7 +199,7 @@ def _observe_failures(session):
                 f"this session will not roll again, so its context keeps growing "
                 f"until the next message arrives.]")
         try:
-            session.setdefault('log_lines', []).append(note)
+            session.setdefault('log_lines', TimestampedLines()).append(note)
         except Exception as e:
             _log(f"[midturn-rollover] session log write failed: {e}")
         _log(f"[midturn-rollover] {session.get('project_id', '')}/"

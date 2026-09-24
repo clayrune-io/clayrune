@@ -1035,6 +1035,12 @@ let bgColor = localStorage.getItem('mc_bg_color') || '#0c0e14';
 let bgDim   = parseInt(localStorage.getItem('mc_bg_dim') || '40', 10); // scrim alpha %, 0..80
 let agentEventSources = {};   // session_id → EventSource
 let agentOutputBuffers = {};   // session_id → string[]
+// session_id → (string|null)[], SAME index as agentOutputBuffers[sid]. Each
+// entry is the source ISO timestamp for that buffer line (server-provided,
+// from the live SSE `ts` field or a reconstructed transcript's per-message
+// `timestamp`), or null when no real timestamp is known for that line (MC-954
+// day dividers only render where a real date is known — never guessed).
+let agentOutputTimestamps = {};
 let agentServerLines = {};     // session_id → count of lines received from server (for SSE since param)
 let agentStatusCache = {};     // session_id → {status, task, projectId, startedAt}
 let agentHistory = [];         // [{projectId, sessionId, projectName, task, status, startedAt}]

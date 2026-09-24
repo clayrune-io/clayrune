@@ -1208,9 +1208,18 @@ function agentPanelHTML(p) {
       _msgAttrResetPending(activeSessionId);
       const _attrChar = activeSession && activeSession.character;
       const fullBuf = (agentOutputBuffers[activeSessionId] || []).flatMap(l => l.trimStart().startsWith('> ') ? [l] : l.split('\n'));
+      // Parallel per-line ts (MC-954), same flatMap shape as fullBuf — a raw
+      // buffer line split into several sub-lines shares its single source
+      // timestamp across all of them.
+      const _rawTs = agentOutputTimestamps[activeSessionId] || [];
+      const fullBufTs = (agentOutputBuffers[activeSessionId] || []).flatMap((l, _j) => {
+        const segs = l.trimStart().startsWith('> ') ? [l] : l.split('\n');
+        return segs.map(() => _rawTs[_j] || null);
+      });
       const forceAll = expandedOutputSessions.has(activeSessionId);
       const truncated = !forceAll && fullBuf.length > MAX_RENDER_LINES;
       const buf = truncated ? fullBuf.slice(-MAX_RENDER_LINES) : fullBuf;
+      const bufTs = truncated ? fullBufTs.slice(-MAX_RENDER_LINES) : fullBufTs;
       // §7: the latest ExitPlanMode gets the actionable plan card ONLY when the
       // session is genuinely plan-pending (server-authoritative live_agent, or
       // the client cache flag). Earlier/stale ExitPlanModes keep the inert
@@ -1219,6 +1228,25 @@ function agentPanelHTML(p) {
       for (let _j = buf.length - 1; _j >= 0; _j--) { if (buf[_j].trim() === '[tool: ExitPlanMode]') { _lastExitPlanIdx = _j; break; } }
       const _planPending = (p.live_agent && p.live_agent.reason === 'plan') || !!(agentStatusCache[activeSessionId] && agentStatusCache[activeSessionId].waitingForPlanApproval);
       let result = '';
+      // Date dividers (MC-954) for a full cold-render — one per real day
+      // boundary found in bufTs, not just one at the top. Falls back to the
+      // session's own start time for line 0 ONLY when no per-line ts is
+      // known at all (older data with no log_line_ts) and the render isn't
+      // truncated (a truncated slice starts mid-conversation, so stamping it
+      // with the session's original start date would mislabel recent
+      // lines). Tracked with a variable local to this single render call —
+      // never a JS Set surviving a refreshModal rebuild (the dedup-against-
+      // DOM bug class in discovery_askuserquestion_dom_dedup.md); the DOM is
+      // rebuilt from scratch by this same `result` string every time, so
+      // there is nothing stale to dedupe against.
+      let _lastDividerKey = null;
+      if (buf.length > 0 && !bufTs.some(t => t) && !truncated && activeSession && activeSession.startedAt) {
+        const _dDate = new Date(activeSession.startedAt);
+        if (!isNaN(_dDate.getTime())) {
+          _lastDividerKey = _dateKeyLocal(_dDate);
+          result += `<div class="chat-date-divider" data-date="${esc(_lastDividerKey)}">${esc(_formatDateDivider(_dDate))}</div>`;
+        }
+      }
       let tableLines = [];
       let planBlock = '';   // accumulates non-tool lines for plan detection
       let planRawLines = []; // raw text for plan viewer
@@ -1235,6 +1263,21 @@ function agentPanelHTML(p) {
       }
       for (let _i = 0; _i < buf.length; _i++) {
         const line = buf[_i];
+        // Per-line day boundary (MC-954): insert before this line's own
+        // content whenever its known date differs from the last divider
+        // emitted. A line with no known ts (`bufTs[_i]` falsy) never starts
+        // or breaks a day — it simply renders under whichever divider (or
+        // none) already applies.
+        if (bufTs[_i]) {
+          const _lDate = new Date(bufTs[_i]);
+          if (!isNaN(_lDate.getTime())) {
+            const _lKey = _dateKeyLocal(_lDate);
+            if (_lKey !== _lastDividerKey) {
+              _lastDividerKey = _lKey;
+              result += `<div class="chat-date-divider" data-date="${esc(_lKey)}">${esc(_formatDateDivider(_lDate))}</div>`;
+            }
+          }
+        }
         // Mermaid block detection: ```mermaid ... ``` becomes a placeholder
         // div that's later rendered by _renderAllMermaidPlaceholders.
         if (mermaidLines === null && /^\s*```\s*mermaid\b/.test(line)) {
@@ -3525,6 +3568,7 @@ async function openConversation(projectId, csid, mcSessionId, isLive) {
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
+        agentOutputTimestamps[mcSessionId] = rd.log_line_ts || [];
         agentServerLines[mcSessionId] = (rd.log_lines || []).length;
         if (!agentHistory.find(h => h.sessionId === mcSessionId)) {
           const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
@@ -3584,6 +3628,7 @@ async function _openConversationByCsid(projectId, csid) {
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
+      agentOutputTimestamps[csid] = rd.log_line_ts || [];
       agentServerLines[csid] = (rd.log_lines || []).length;
       if (!agentHistory.find(h => h.sessionId === csid)) {
         const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
@@ -3862,6 +3907,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
           _readOnlyRevived: true,
         };
         agentOutputBuffers[mcSessionId] = rd.log_lines || [];
+        agentOutputTimestamps[mcSessionId] = rd.log_line_ts || [];
         agentServerLines[mcSessionId] = (rd.log_lines || []).length;
         if (!agentHistory.find(h => h.sessionId === mcSessionId)) {
           const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
@@ -3897,6 +3943,7 @@ async function _resolveConversationSid(projectId, csid, mcSessionId, isLive) {
         _readOnlyRevived: true,
       };
       agentOutputBuffers[csid] = rd.log_lines || [];
+      agentOutputTimestamps[csid] = rd.log_line_ts || [];
       agentServerLines[csid] = (rd.log_lines || []).length;
       if (!agentHistory.find(h => h.sessionId === csid)) {
         const pName = (allProjects.find(x => x.id === projectId) || {}).name || projectId;
@@ -4341,7 +4388,49 @@ function _subagentPollStart(projectId) {
   }, 4000);
 }
 
-function appendAgentLine(sessionId, text) {
+// Day-separator divider (MC-954): a centered "Today"/"Yesterday"/"Mon, Sep 21"
+// pill inserted whenever a rendered line's day differs from the last divider
+// already in the DOM. Deduped against the live DOM (querying `.chat-date-
+// divider` children), never a JS Set — a Set surviving a refreshModal rebuild
+// while the container it described doesn't is the exact bug class in
+// discovery_askuserquestion_dom_dedup.md. Purely a display artifact: never
+// written into agentOutputBuffers, never sent to the agent.
+const _DIVIDER_WEEKDAY = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
+const _DIVIDER_MONTH = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+function _dateKeyLocal(d) {
+  return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+function _formatDateDivider(d) {
+  const now = new Date();
+  const key = _dateKeyLocal(d);
+  if (key === _dateKeyLocal(now)) return 'Today';
+  const yest = new Date(now);
+  yest.setDate(yest.getDate() - 1);
+  if (key === _dateKeyLocal(yest)) return 'Yesterday';
+  const base = `${_DIVIDER_WEEKDAY[d.getDay()]}, ${_DIVIDER_MONTH[d.getMonth()]} ${d.getDate()}`;
+  return d.getFullYear() === now.getFullYear() ? base : `${base}, ${d.getFullYear()}`;
+}
+// `dateHint`: omitted/undefined = "this line is happening now" (live stream,
+// Date.now()); an ISO string/Date = a known historical anchor (e.g. session
+// startedAt for the first replayed line); `false` = "no date known for this
+// line" — skip the check entirely rather than guess (see appendAgentLine's
+// history-replay callers, which only know the date of the FIRST line).
+function _maybeInsertDateDivider(container, dateHint) {
+  if (!container || dateHint === false) return;
+  const d = dateHint ? new Date(dateHint) : new Date();
+  if (isNaN(d.getTime())) return;
+  const key = _dateKeyLocal(d);
+  const dividers = container.querySelectorAll(':scope > .chat-date-divider');
+  const last = dividers[dividers.length - 1];
+  if (last && last.dataset.date === key) return;
+  const div = document.createElement('div');
+  div.className = 'chat-date-divider';
+  div.dataset.date = key;
+  div.textContent = _formatDateDivider(d);
+  container.appendChild(div);
+}
+
+function appendAgentLine(sessionId, text, dateHint) {
   const el = document.getElementById(`agent-output-${sessionId}`);
   if (!el) return;
   // The instant any real line streams in, the typing indicator is stale — drop
@@ -4349,6 +4438,7 @@ function appendAgentLine(sessionId, text) {
   hideTypingIndicator(sessionId);
   const freshMount = !el.dataset.scrollInitialized;
   const wasPinned = freshMount || _isAgentOutputPinned(el, sessionId);
+  _maybeInsertDateDivider(el, dateHint);
   // NOTE: do NOT set `el.style.display = 'block'` here. That inline style
   // wins over CSS and clobbers the mobile `@media (max-width: 960px)` rule
   // that sets `.agent-output { display: flex }` for chat-bubble layout —
@@ -4362,7 +4452,7 @@ function appendAgentLine(sessionId, text) {
   // But keep user prompts (> ) as a single block so styling covers all lines
   if (text.includes('\n') && !text.trimStart().startsWith('> ')) {
     for (const line of text.split('\n')) {
-      appendAgentLine(sessionId, line);
+      appendAgentLine(sessionId, line, dateHint);
     }
     return;
   }
@@ -5292,11 +5382,17 @@ async function fetchAgentStatus(projectId) {
         // missing so the chat survives a refresh.
         const _hasPrompt = s.log_lines.some(l => (l || '').trimStart().startsWith('> '));
         const _incoming = (!_hasPrompt && s.task) ? [`> ${s.task}`, ...s.log_lines] : s.log_lines;
+        // Parallel per-line ts (MC-954) — the prepended synthetic prompt line
+        // above has no server-side timestamp of its own (`null`, same
+        // "unknown" contract as any other unstamped line).
+        const _incomingTs = (!_hasPrompt && s.task)
+          ? [null, ...(s.log_line_ts || [])] : (s.log_line_ts || []);
         // Never replace rendered history with a shorter copy: a forked or
         // rebuilt server buffer made a reply vanish until the next message.
         // See _mergeShorterHistory (resume-preview.js).
-        if (!window._mergeShorterHistory?.(sid, _incoming, 'status-poll')) {
+        if (!window._mergeShorterHistory?.(sid, _incoming, 'status-poll', _incomingTs)) {
           agentOutputBuffers[sid] = _incoming;
+          agentOutputTimestamps[sid] = _incomingTs;
         }
         // Anchor the SSE since= cursor to the server's authoritative count so
         // a subsequent connectAgentStream() resumes at the right index instead

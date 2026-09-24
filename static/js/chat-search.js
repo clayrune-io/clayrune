@@ -49,6 +49,10 @@ async function _csEnsureComplete(projectId, sid) {
         const clientLines = agentOutputBuffers[sid] || [];
         if (serverLines.length > clientLines.length) {
           agentOutputBuffers[sid] = serverLines;
+          // Parallel per-line ts (MC-954) — adopted alongside the lines so the
+          // day dividers in the forced full-render below stay accurate for the
+          // earlier history this search just pulled in.
+          agentOutputTimestamps[sid] = rd.log_line_ts || [];
         }
         st.partial = false;
       } else {
