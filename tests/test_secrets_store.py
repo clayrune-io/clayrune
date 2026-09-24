@@ -470,6 +470,11 @@ class _FakeKeyringBackend:
     def set_password(self, service, account, value):
         self.store[(service, account)] = value
 
+    def delete_password(self, service, account):
+        if (service, account) not in self.store:
+            raise KeyError(f'no entry for {(service, account)}')
+        del self.store[(service, account)]
+
     def wipe(self):
         self.store.clear()
 
@@ -517,6 +522,7 @@ def fake_keyring_vault(tmp_path, monkeypatch):
     fake = _FakeKeyringBackend()
     monkeypatch.setattr(keyring_pkg, 'get_password', fake.get_password)
     monkeypatch.setattr(keyring_pkg, 'set_password', fake.set_password)
+    monkeypatch.setattr(keyring_pkg, 'delete_password', fake.delete_password)
     from mc import secrets_store
     secrets_store._dispensed.clear()
     fake_dpapi = _FakeDpapi()
@@ -913,10 +919,61 @@ def test_set_passphrase_migrates_existing_secret_and_auto_unlocks(vault):
     assert vault.lock_state() == 'unlocked'
     assert vault.wrapped_key_path().is_file()
     assert isinstance(recovery_key, str) and len(recovery_key) > 10
-    # Migration never destroyed the pre-lock key material.
-    assert vault.key_file_path().is_file()
+    # The live plaintext key file is gone — leaving it live would make the
+    # lock cosmetic (Dave's review, MC 503edfe4) — but it was MOVED, not
+    # destroyed: a copy survives under the quarantine dir.
+    assert not vault.key_file_path().is_file()
+    quarantined = list(vault.legacy_key_quarantine_dir().rglob('secrets.key'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding='utf-8').strip()
     # The record sealed before the lock existed must still read back clean.
     assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantine_survives_a_restart(vault):
+    """The quarantined file must not be something load_master_key() (or any
+    other code path) ever reads again — simulate a restart (in-memory key
+    gone) and confirm the vault still unlocks and reads purely off the
+    wrapped file, never falling back to the quarantined copy."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantines_the_keyring_entry(fake_keyring_vault):
+    """Keyring backend (not the file fallback): the live keyring entry must
+    be gone after set_passphrase, its value preserved in quarantine."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    assert fake.get_password(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT) is not None
+    vault.set_passphrase('correct horse battery staple')
+    assert fake.get_password(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT) is None
+    quarantined = list(vault.legacy_key_quarantine_dir().rglob('keyring_secrets-master-key.b64'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding='utf-8').strip()
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantine_failure_does_not_block_the_lock(vault, monkeypatch, tmp_path):
+    """A quarantine step failing (e.g. an unwritable quarantine dir) must not
+    unwind the already-durable wrapped-key write — the lock still takes
+    effect even if a legacy copy could not be moved this time."""
+    from mc import secrets_store
+    # A plain FILE sitting where the quarantine dir wants to be: mkdir(...)
+    # then reliably raises FileExistsError, cross-platform, no permissions
+    # hackery needed.
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: blocker)
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    assert isinstance(recovery_key, str) and len(recovery_key) > 10
+    assert vault.lock_state() == 'unlocked'
+    # The legacy file is still live in this failure case — quarantining it
+    # is best-effort, but the lock itself must never depend on it succeeding.
+    assert vault.key_file_path().is_file()
 
 
 def test_set_passphrase_refuses_short_passphrase(vault):

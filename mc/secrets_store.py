@@ -157,6 +157,14 @@ def wrapped_key_path() -> Path:
     return clayrune_home() / 'secrets.key.wrapped'
 
 
+def legacy_key_quarantine_dir() -> Path:
+    """Where pre-passphrase-lock master-key copies go once retired by
+    ``_quarantine_legacy_key_material`` — outside every path this module (or
+    a bare ``keyring.get_password``/``open()`` one-liner using the well-known
+    names) would ever read from again."""
+    return clayrune_home() / 'legacy_key_quarantine'
+
+
 def audit_path() -> Path:
     return clayrune_home() / 'secrets_audit.jsonl'
 
@@ -792,6 +800,78 @@ def _notify_vault_locked() -> None:
         _log(f"[secrets] vault-locked notification failed: {e}")
 
 
+def _quarantine_legacy_key_material() -> None:
+    """Retire every pre-passphrase-lock copy of the master key, once the
+    wrapped key is durably written AND both its legs have been verified to
+    open (called only from :func:`set_passphrase`, after that check).
+
+    Dave's review of d3516a2 (MC 503edfe4): ``set_passphrase`` used to leave
+    the OS keyring entry, the Windows DPAPI mirror, and the plaintext
+    ``secrets.key`` fallback file all live — so the lock was cosmetic.
+    Anyone running as this OS user (a same-user agent, not only the
+    dashboard) could still fetch K straight from any of those three
+    well-known locations, ignoring the lock entirely.
+
+    Never an outright delete: file-based copies are MOVED into a
+    timestamped, owner-only-permissioned quarantine directory outside every
+    lookup path this module (or a bare ``keyring.get_password(...)``/
+    ``open(...)`` one-liner against the well-known names) would ever
+    consult again — so a bug discovered later still has something to
+    recover from. The OS keyring has no per-entry "move" primitive, so its
+    value is written into the same quarantine directory FIRST, and only
+    then is the live entry deleted via ``keyring.delete_password`` — the
+    value survives in quarantine, only the well-known-name copy is gone.
+
+    Best-effort per copy, deliberately: one legacy location failing to
+    quarantine must not unwind the wrapped-key write that already
+    succeeded, and a half-retired legacy set is still strictly safer than
+    the pre-fix all-of-them-live state. Every step is logged so a partial
+    failure is visible, not silent."""
+    ts = now_iso().replace(':', '').replace('+00:00', 'Z')
+    qdir = legacy_key_quarantine_dir() / ts
+    try:
+        qdir.mkdir(parents=True, exist_ok=True)
+        _harden_secret_perms(qdir)
+    except OSError as e:
+        _log(f"[secrets] could not create legacy-key quarantine dir "
+             f"({qdir}) — leaving legacy key copies in place: {e}")
+        return
+
+    kp = key_file_path()
+    try:
+        if kp.is_file():
+            dest = qdir / kp.name
+            os.replace(kp, dest)
+            _harden_secret_perms(dest)
+            _log(f"[secrets] quarantined plaintext key file to {dest}")
+    except OSError as e:
+        _log(f"[secrets] could not quarantine plaintext key file {kp}: {e}")
+
+    dp = dpapi_mirror_path()
+    try:
+        if dp.is_file():
+            dest = qdir / dp.name
+            os.replace(dp, dest)
+            _harden_secret_perms(dest)
+            _log(f"[secrets] quarantined DPAPI key mirror to {dest}")
+    except OSError as e:
+        _log(f"[secrets] could not quarantine DPAPI key mirror {dp}: {e}")
+
+    if not _keyring_disabled():
+        try:
+            import keyring
+            encoded = keyring.get_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+            if encoded:
+                dest = qdir / 'keyring_secrets-master-key.b64'
+                _write_private_text(dest, encoded)
+                keyring.delete_password(KEYRING_SERVICE, KEYRING_ACCOUNT)
+                _log(f"[secrets] quarantined OS keyring master-key entry to "
+                     f"{dest} and removed the live keyring entry")
+        except Exception as e:
+            _log(f"[secrets] could not quarantine/remove the OS keyring "
+                 f"master-key entry: {e}")
+
+
 def set_passphrase(passphrase: str) -> str:
     """First-time setup only (refuses if already configured — use
     :func:`change_passphrase` instead). Migrates whatever key currently
@@ -801,10 +881,13 @@ def set_passphrase(passphrase: str) -> str:
     the ONLY time it is ever available in this format; the caller must show
     it to the human now.
 
-    Never destroys the legacy key material (OS keyring entry, DPAPI mirror,
-    plaintext key file) — this is additive only, matching every other
-    migration path in this module. Auto-unlocks: the human who just typed
-    the passphrase should not have to immediately retype it.
+    Once the wrapped key is written and both legs verified to open, retires
+    every legacy copy of the key (OS keyring entry, DPAPI mirror, plaintext
+    key file) via :func:`_quarantine_legacy_key_material` — MOVED to a
+    quarantine directory, never destroyed outright (MC 503edfe4, Dave's
+    review: leaving them live made the lock cosmetic). Auto-unlocks: the
+    human who just typed the passphrase should not have to immediately
+    retype it.
     """
     passphrase = (passphrase or '').strip()
     if not passphrase:
@@ -836,6 +919,10 @@ def set_passphrase(passphrase: str) -> str:
         _write_wrapped_key(data)
         _unlocked_key = key_bytes
         _lock_notified = False
+        # Only now: both legs verified in-memory against key_bytes (the same
+        # key load_master_key() just proved protects the store), and the
+        # wrapped file is durably on disk. Safe to retire the legacy copies.
+        _quarantine_legacy_key_material()
     _audit('vault_passphrase_set')
     _log("[secrets] passphrase lock configured; vault auto-unlocked "
          "for this process")
