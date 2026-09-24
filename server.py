@@ -210,6 +210,11 @@ def _load_config():
         # enable after validation, same posture as scribe_checkpoint. [2026-06-03]
         'idle_eviction_enabled': False,
         'idle_eviction_minutes': 60,    # idle minutes before a warm session is evicted
+        # MC-958: how long a Mode B turn that ended with a background job still
+        # running may hold its spawner callback (and dodge idle-eviction) while
+        # the CLI waits to wake itself. Past it the spawner gets an interim
+        # report. 0 = no cap. See mc/background_tasks.py.
+        'background_wait_max_minutes': 120,
         # Phase 4 Distiller (v2.1 §11 global keys).
         # Self-learning observer parallel to Scribe — extracts cross-session
         # patterns into _proposed/ for human review. Best-effort, never load-
