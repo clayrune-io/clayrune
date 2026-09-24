@@ -853,11 +853,38 @@ def _quarantine_legacy_key_material() -> None:
     qdir = legacy_key_quarantine_dir() / ts
     try:
         qdir.mkdir(parents=True, exist_ok=True)
-        _harden_secret_perms(qdir)
     except OSError as e:
         _log(f"[secrets] could not create legacy-key quarantine dir "
              f"({qdir}) — leaving legacy key copies in place: {e}")
         return
+    if os.name == 'nt':
+        # Fail CLOSED, SID-based (Wren's review of MC 503edfe4): this dir is
+        # about to receive retired copies of the master key, so hardening it
+        # with the bare-%USERNAME% _harden_secret_perms helper (best-effort,
+        # swallows its own failure, names the grantee by a string that fails
+        # open on a domain-joined box or resolves the wrong account — the
+        # exact blocker D shape _write_wrapped_key already fixed for the
+        # wrapped key file itself) would risk moving key material into a
+        # directory left on a default/inherited ACL with no signal that it
+        # happened. If the ACL can't be resolved and verified, abort the
+        # quarantine and leave the legacy copies where they already are —
+        # a known-working location — rather than "protect" them by moving
+        # them into an unverified one.
+        try:
+            sid, account = _current_user_sid_and_name()
+        except Exception as e:
+            _log(f"[secrets] could not resolve current user SID to harden "
+                 f"the legacy-key quarantine dir {qdir} — leaving legacy "
+                 f"key copies in place: {e}")
+            return
+        ok, detail = _icacls_grant_and_verify(qdir, sid, account)
+        if not ok:
+            _log(f"[secrets] could not secure the legacy-key quarantine "
+                 f"dir {qdir}'s ACL — leaving legacy key copies in place: "
+                 f"{detail}")
+            return
+    else:
+        _harden_secret_perms(qdir)
 
     kp = key_file_path()
     try:
