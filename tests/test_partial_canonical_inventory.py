@@ -20,7 +20,7 @@ def test_rail_keeps_legacy_and_live_metadata_during_partial_adoption(client, mon
     monkeypatch.setattr(ar, 'load_project', lambda pid: {'id': pid, 'project_path': '/unused'})
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [])
     monkeypatch.setattr(ar, '_recent_claude_transcripts', lambda *a, **kw: [])
-    monkeypatch.setattr(ar, '_recent_codex_conversation_rows', lambda *a: ([], set()))
+    monkeypatch.setattr(ar, '_recent_codex_conversation_rows', lambda *a, **kw: ([], set()))
     legacy = [{'mc_session_id': 'old', 'mtime': 5, 'live': True, 'provider': 'codex', 'resumable': True}]
     monkeypatch.setattr(ar, '_non_claude_conversation_rows', lambda *a, **kw: legacy)
     monkeypatch.setattr(ar, '_conversation_cutover', SimpleNamespace(conversation_rows=lambda *a, **kw: [
