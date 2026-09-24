@@ -486,7 +486,7 @@ def test_claude_cold_revival_uses_saved_native_identity_and_lineage(monkeypatch,
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
     monkeypatch.setattr(ar, '_prior_character', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_resume_cwd_for', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_revive_history_lines', lambda *a, **k: [])
+    monkeypatch.setattr(ar, '_revive_history_lines', lambda *a, **k: ([], []))
     monkeypatch.setattr(ar, '_refuse_duplicate_spawn', lambda *a, **k: False)
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'fake-claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [
@@ -566,7 +566,7 @@ def test_interrupted_claude_parent_is_fully_revived(monkeypatch, tmp_path):
     monkeypatch.setattr(ar, '_session_too_large', lambda *a, **k: (False, 0))
     monkeypatch.setattr(ar, '_prior_character', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_resume_cwd_for', lambda *a, **k: None)
-    monkeypatch.setattr(ar, '_revive_history_lines', lambda *a, **k: [])
+    monkeypatch.setattr(ar, '_revive_history_lines', lambda *a, **k: ([], []))
     monkeypatch.setattr(ar, '_refuse_duplicate_spawn', lambda *a, **k: False)
     monkeypatch.setattr(ar, '_resolve_claude', lambda: 'fake-claude')
     monkeypatch.setattr(ar, '_build_claude_flags', lambda *a, **k: [

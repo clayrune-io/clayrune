@@ -71,7 +71,7 @@ def ar(tmp_path, monkeypatch):
     monkeypatch.setattr(_ar, '_refuse_duplicate_spawn', lambda *a, **k: None)
     monkeypatch.setattr(_ar, '_resume_cwd_for', lambda *a, **k: None)
     monkeypatch.setattr(_ar, '_prior_character', lambda *a, **k: None)
-    monkeypatch.setattr(_ar, '_revive_history_lines', lambda *a, **k: [])
+    monkeypatch.setattr(_ar, '_revive_history_lines', lambda *a, **k: ([], []))
     monkeypatch.setattr(_ar, '_register_process', lambda *a, **k: None)
     monkeypatch.setattr(_ar, '_hide_windows_delayed', lambda *a, **k: None)
     monkeypatch.setattr(_ar, '_read_agent_stream', lambda *a, **k: None)
