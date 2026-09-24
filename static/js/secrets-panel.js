@@ -191,6 +191,22 @@ async function refreshSecretsList() {
 
 let _secUseRecoveryKey = false;
 
+function _secToggleUseRecoveryKey() {
+  _secUseRecoveryKey = !_secUseRecoveryKey;
+  refreshSecretsList();
+}
+
+// `_require_human_passcode` (secrets_routes.py) reads this field on every
+// set/change/unlock/lock POST — re-entered here rather than trusted from a
+// cookie/session, for the forged-Origin reason documented there. `message`
+// carries the friendlier server text for passcode_required/too_many_attempts;
+// bad_passcode has none, so it gets one here.
+function _vaultLockErrorText(out) {
+  if (!out) return 'Request failed.';
+  if (out.error === 'bad_passcode') return 'Wrong dashboard passcode.';
+  return out.message || out.error || 'Request failed.';
+}
+
 function _renderVaultLockbar(state) {
   const bar = document.getElementById('secrets-lockbar');
   if (!bar) return;
@@ -212,12 +228,18 @@ function _renderVaultLockbar(state) {
                    background:var(--surface2);border:1px solid var(--border);
                    border-radius:4px;color:var(--text);font-family:var(--mono)"
             onkeydown="if(event.key==='Enter')submitVaultUnlock()">
+          <input type="password" id="vault-unlock-passcode" autocomplete="off"
+            placeholder="dashboard passcode"
+            style="flex:1;min-width:160px;padding:7px 10px;font-size:13px;
+                   background:var(--surface2);border:1px solid var(--border);
+                   border-radius:4px;color:var(--text);font-family:var(--mono)"
+            onkeydown="if(event.key==='Enter')submitVaultUnlock()">
           <button class="btn-add" style="padding:6px 14px;font-size:11px"
                   onclick="submitVaultUnlock()">Unlock</button>
         </div>
         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:8px">
           <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
-                  onclick="_secUseRecoveryKey=!_secUseRecoveryKey;refreshSecretsList()">
+                  onclick="_secToggleUseRecoveryKey()">
             ${_secUseRecoveryKey ? 'Use passphrase instead' : 'Use recovery key instead'}
           </button>
           <span id="vault-unlock-status" style="font-size:11px;color:var(--danger,#c94a3a)"></span>
@@ -239,21 +261,47 @@ function _renderVaultLockbar(state) {
       </div>`;
   } else if (state === 'unlocked') {
     bar.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:6px">
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:6px">
+        <span style="font-size:10px;color:var(--text-faint)">&#x1F513; Vault unlocked</span>
         <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
-                onclick="openVaultChangePassphrase()">&#x1F513; Vault unlocked — change passphrase</button>
+                onclick="lockVaultNow()">Lock now</button>
+        <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
+                onclick="openVaultChangePassphrase()">Change passphrase</button>
       </div>`;
   } else {
     bar.innerHTML = '';
   }
 }
 
+async function lockVaultNow() {
+  // Same human-passcode gate as set/change/unlock (_require_human_passcode) —
+  // re-entered here rather than trusted from a cookie/session, for the same
+  // forged-Origin reason those routes do it (see secrets_routes.py).
+  const passcode = prompt('Re-enter your dashboard passcode to lock the vault now:');
+  if (!passcode) return;
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/lock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const out = await res.json();
+    if (!res.ok) { showToast(_vaultLockErrorText(out), 4000); return; }
+    showToast('Vault locked');
+    await refreshSecretsList();
+  } catch (e) {
+    showToast('Lock failed: ' + e.message, 4000);
+  }
+}
+
 async function submitVaultUnlock() {
   const input = document.getElementById('vault-unlock-input');
+  const passcodeInput = document.getElementById('vault-unlock-passcode');
   const statusEl = document.getElementById('vault-unlock-status');
   const value = (input && input.value || '').trim();
+  const passcode = (passcodeInput && passcodeInput.value || '').trim();
   if (!value) return;
-  const body = _secUseRecoveryKey ? { recovery_key: value } : { passphrase: value };
+  if (!passcode) { if (statusEl) statusEl.textContent = 'Dashboard passcode required.'; return; }
+  const body = _secUseRecoveryKey ? { recovery_key: value, passcode } : { passphrase: value, passcode };
   try {
     const res = await fetch(API_BASE + '/api/secrets/vault-lock/unlock', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
@@ -261,8 +309,9 @@ async function submitVaultUnlock() {
     });
     const out = await res.json();
     if (!res.ok) {
-      if (statusEl) statusEl.textContent = out.error || 'wrong ' + (_secUseRecoveryKey ? 'recovery key' : 'passphrase');
+      if (statusEl) statusEl.textContent = _vaultLockErrorText(out);
       if (input) { input.value = ''; input.focus(); }
+      if (passcodeInput) passcodeInput.value = '';
       return;
     }
     showToast('Vault unlocked');
@@ -306,6 +355,12 @@ function openVaultSetPassphrase() {
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">3. Dashboard passcode</label>
+        <input type="password" id="vsp-passcode" autocomplete="off"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
       <div id="vsp-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
@@ -325,16 +380,18 @@ function openVaultSetPassphrase() {
 async function submitVaultSetPassphrase(modalId) {
   const pass = document.getElementById('vsp-pass').value;
   const pass2 = document.getElementById('vsp-pass2').value;
+  const passcode = document.getElementById('vsp-passcode').value.trim();
   const statusEl = document.getElementById('vsp-status');
   if (pass.length < 8) { statusEl.textContent = 'At least 8 characters.'; return; }
   if (pass !== pass2) { statusEl.textContent = "Passphrases don't match."; return; }
+  if (!passcode) { statusEl.textContent = 'Dashboard passcode required.'; return; }
   try {
     const res = await fetch(API_BASE + '/api/secrets/vault-lock/set', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ passphrase: pass }),
+      body: JSON.stringify({ passphrase: pass, passcode }),
     });
     const out = await res.json();
-    if (!res.ok) { statusEl.textContent = out.error || 'Failed to set passphrase.'; return; }
+    if (!res.ok) { statusEl.textContent = _vaultLockErrorText(out); return; }
     closeModalById(modalId);
     _showVaultRecoveryKey(out.recovery_key);
     await refreshSecretsList();
@@ -412,6 +469,12 @@ function openVaultChangePassphrase() {
           style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
                  border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
       </div>
+      <div>
+        <label style="display:block;font-size:11px;color:var(--text-faint);margin-bottom:4px">3. Dashboard passcode</label>
+        <input type="password" id="vcp-passcode" autocomplete="off"
+          style="width:100%;padding:7px 10px;font-size:13px;background:var(--surface2);
+                 border:1px solid var(--border);border-radius:4px;color:var(--text);font-family:var(--mono)">
+      </div>
       <div id="vcp-status" style="font-size:11px;color:var(--danger,#c94a3a);min-height:14px"></div>
       <div style="display:flex;gap:8px;justify-content:flex-end">
         <button class="btn-secondary" onclick="closeModalById('${modalId}')">Cancel</button>
@@ -431,15 +494,17 @@ function openVaultChangePassphrase() {
 async function submitVaultChangePassphrase(modalId) {
   const oldPass = document.getElementById('vcp-old').value;
   const newPass = document.getElementById('vcp-new').value;
+  const passcode = document.getElementById('vcp-passcode').value.trim();
   const statusEl = document.getElementById('vcp-status');
   if (newPass.length < 8) { statusEl.textContent = 'New passphrase: at least 8 characters.'; return; }
+  if (!passcode) { statusEl.textContent = 'Dashboard passcode required.'; return; }
   try {
     const res = await fetch(API_BASE + '/api/secrets/vault-lock/change', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ old_passphrase: oldPass, new_passphrase: newPass }),
+      body: JSON.stringify({ old_passphrase: oldPass, new_passphrase: newPass, passcode }),
     });
     const out = await res.json();
-    if (!res.ok) { statusEl.textContent = out.error || 'Failed to change passphrase.'; return; }
+    if (!res.ok) { statusEl.textContent = _vaultLockErrorText(out); return; }
     closeModalById(modalId);
     showToast('Passphrase changed');
   } catch (e) {
@@ -785,3 +850,16 @@ window.copySecretPlaceholder = copySecretPlaceholder;
 window.toggleSecretsAudit = toggleSecretsAudit;
 window._secToggleReveal = _secToggleReveal;
 window._secScopeChanged = _secScopeChanged;
+// This module's `<script type="module">` tag means none of its top-level
+// functions are implicitly global — every onclick="fnName()" below needs an
+// explicit window.fnName export or it ReferenceErrors and does nothing.
+// These six (plus the recovery-key toggle) were missing entirely: the whole
+// passphrase-lock UI (set/unlock/change/lock) was unclickable in a real
+// browser. Found 2026-09-24 building the vault-lock passcode smoke test.
+window.submitVaultUnlock = submitVaultUnlock;
+window.openVaultSetPassphrase = openVaultSetPassphrase;
+window.submitVaultSetPassphrase = submitVaultSetPassphrase;
+window.openVaultChangePassphrase = openVaultChangePassphrase;
+window.submitVaultChangePassphrase = submitVaultChangePassphrase;
+window.lockVaultNow = lockVaultNow;
+window._secToggleUseRecoveryKey = _secToggleUseRecoveryKey;

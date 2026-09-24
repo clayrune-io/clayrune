@@ -21,6 +21,7 @@ Routes:
     POST   /api/secrets/vault-lock/set         first-time passphrase setup (human-only)
     POST   /api/secrets/vault-lock/change      rotate the passphrase (human-only)
     POST   /api/secrets/vault-lock/unlock      unlock with passphrase or recovery key (human-only)
+    POST   /api/secrets/vault-lock/lock        lock now, immediately (human-only)
 
 The TOTP probe returns a boolean, never our own code — a route that minted live
 second factors would be the plaintext hole this design otherwise refuses.
@@ -431,6 +432,24 @@ def api_vault_lock_unlock():
         return _err(e, 403)
     except vault.SecretsError as e:
         return _err(e)
+    return jsonify({'ok': True, 'state': vault.lock_state()})
+
+
+@bp.route('/api/secrets/vault-lock/lock', methods=['POST'])
+def api_vault_lock_lock():
+    """Manual immediate lock — the dashboard's "Lock now" control. Human-only,
+    same guard as unlock/set/change: an agent that could lock the vault on
+    demand could also unlock it, since both paths depend on the same
+    passcode gate to prove a human is asking. No-op (still 200) if the vault
+    is already locked or was never configured — the button doesn't need to
+    know the current state first."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    vault.lock_now(caller_addr=request.remote_addr or '')
     return jsonify({'ok': True, 'state': vault.lock_state()})
 
 

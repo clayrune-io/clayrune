@@ -378,3 +378,39 @@ def test_vault_lock_manual_chat_session_still_needs_the_passcode(client):
         assert res.get_json()['error'] == 'passcode_required'
     finally:
         agent_sessions.clear()
+
+
+# ── 'Lock now' route (MC-949 follow-up) ──────────────────────────────────────
+
+def test_vault_lock_lock_route_locks_now(client):
+    from mc import secrets_store as vault
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'unlocked'
+    res = client.post('/api/secrets/vault-lock/lock', json={'passcode': passcode})
+    assert res.status_code == 200
+    assert res.get_json()['state'] == 'locked'
+    assert vault.lock_state() == 'locked'
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+
+
+def test_vault_lock_lock_route_refused_without_the_passcode(client):
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    res = client.post('/api/secrets/vault-lock/lock', json={})
+    assert res.status_code == 403
+    assert res.get_json()['error'] == 'bad_passcode'
+    from mc import secrets_store as vault
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_vault_lock_lock_route_is_a_no_op_when_already_locked(client):
+    """The button doesn't need to check state first — locking an already-
+    locked (or never-configured) vault is a harmless 200, not an error."""
+    passcode = _set_passcode()
+    res = client.post('/api/secrets/vault-lock/lock', json={'passcode': passcode})
+    assert res.status_code == 200
+    assert res.get_json()['state'] == 'unconfigured'

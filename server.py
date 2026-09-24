@@ -215,6 +215,13 @@ def _load_config():
         # the CLI waits to wake itself. Past it the spawner gets an interim
         # report. 0 = no cap. See mc/background_tasks.py.
         'background_wait_max_minutes': 120,
+        # Secrets vault idle auto-lock (MC-949 follow-up, mc/secrets_store.py):
+        # minutes of no key use before the unwrapped master key is cleared
+        # from memory and a human must unlock again. 0 = never auto-lock
+        # (the pre-existing behavior — unlock lasts the rest of the process
+        # life). Only takes effect once a passphrase is actually configured;
+        # a no-op otherwise.
+        'vault_idle_lock_minutes': 120,
         # Phase 4 Distiller (v2.1 §11 global keys).
         # Self-learning observer parallel to Scribe — extracts cross-session
         # patterns into _proposed/ for human review. Best-effort, never load-
@@ -3199,6 +3206,14 @@ def boot(check_port=True):
     # firing a 12s git operation on every page load. Frontend polls
     # /api/system/update/cached.
     threading.Thread(target=_update_check_loop, daemon=True, name='update-check').start()
+    # Secrets vault idle-lock sweeper (MC-949 follow-up): clears the unwrapped
+    # master key from memory after vault_idle_lock_minutes even if nothing
+    # reads it in the meantime — the lazy check in load_master_key() only
+    # fires on a read. Server-process-only, same posture as
+    # browser_routes.SWEEP_ENABLED; a test importing mc.secrets_store never
+    # gets this thread as a side effect. Roll back: delete this line.
+    from mc import secrets_store as _secrets_store
+    _secrets_store.start_idle_lock_sweeper()
     # Keep-awake reconciler: holds an OS wake lock while any agent is running, so
     # the machine doesn't sleep out from under a working agent. Off by default
     # (keep_awake_enabled); the reconciler reads the flag live so the toggle

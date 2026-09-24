@@ -77,6 +77,7 @@ import os
 import re
 import subprocess
 import threading
+import time
 import urllib.parse
 import urllib.request
 from pathlib import Path
@@ -187,6 +188,14 @@ _unlocked_key: bytes | None = None
 # lock sends one notification, not one per job. Reset to False by every
 # successful unlock.
 _lock_notified = False
+
+# Monotonic timestamp (time.monotonic() — immune to wall-clock/NTP/DST jumps)
+# of the last successful key use while unlocked, or of the unlock itself.
+# None whenever nothing has unlocked yet this process lifetime. Drives the
+# idle auto-lock below; reset by every unlock and cleared to irrelevance by
+# every relock (the key is gone, so idle tracking restarts at the next
+# unlock).
+_last_key_use: float | None = None
 
 
 # ── Name validation ──────────────────────────────────────────────────────────
@@ -596,7 +605,12 @@ def load_master_key() -> tuple[bytes, str]:
     global _key_mismatch
     with _lock:
         if wrapped_key_path().is_file():
+            # Idle auto-lock (MC-949 follow-up): clear the key BEFORE
+            # deciding, so a read that lands exactly at the idle boundary
+            # never gets handed back a key that should already be gone.
+            _idle_relock_if_due()
             if _unlocked_key is not None:
+                _mark_key_used()
                 return _unlocked_key, 'passphrase'
             _notify_vault_locked()
             raise VaultLocked(
@@ -777,6 +791,116 @@ def lock_state() -> str:
 
 def is_locked() -> bool:
     return lock_state() == 'locked'
+
+
+# ── Idle auto-lock + manual "Lock now" (MC-949 follow-up, Ron 2026-09-24) ───
+#
+# `_unlocked_key` otherwise lives for the rest of the process's life once a
+# human unlocks it — the passphrase lock only ever protected a restart. Two
+# ways the key now leaves memory sooner: (1) lazily, the next time anything
+# calls load_master_key() after the configured idle window has elapsed
+# (below, wired into load_master_key() above); (2) a background sweeper
+# (start_idle_lock_sweeper) so the key is cleared even if nothing reads it in
+# the meantime. `vault_idle_lock_minutes` (config.json, default 120) is the
+# threshold; 0 disables auto-lock entirely, same convention as every other
+# 0-disables minutes/bytes knob in this codebase.
+
+def _monotonic() -> float:
+    """Indirection so tests can inject a fake clock without real sleeps."""
+    return time.monotonic()
+
+
+def _idle_lock_minutes() -> float:
+    """Live config read, never cached — a Settings change applies to the
+    very next check, not the next restart. <= 0 disables auto-lock. Falls
+    back to the config.json default if ``mc.state`` hasn't been wired (a
+    script importing this module standalone, same posture as every other
+    ``state.CONFIG.get(..., default)`` call site)."""
+    try:
+        from mc import state
+        return float(state.CONFIG.get('vault_idle_lock_minutes', 120) or 0)
+    except Exception:
+        return 120.0
+
+
+def _mark_key_used() -> None:
+    """Record that the key was just read or just unlocked — the idle clock
+    restarts from here."""
+    global _last_key_use
+    _last_key_use = _monotonic()
+
+
+def _do_relock(reason: str, *, caller_addr: str = '') -> None:
+    """Clear the unlocked key (no-op if already locked) and reset the
+    once-per-period lock notification so the NEXT blocked job fires exactly
+    one push alert for this NEW lock period — same throttle
+    ``_notify_vault_locked`` already relies on. Caller must hold ``_lock``.
+    ``reason`` is ``'idle'`` or ``'manual'``, recorded in both the audit log
+    and the log line so a relock is traceable to which path caused it."""
+    global _unlocked_key, _lock_notified
+    if _unlocked_key is None:
+        return
+    _unlocked_key = None
+    _lock_notified = False
+    _audit('vault_relocked', reason=reason, caller_addr=caller_addr)
+    _log(f"[secrets] vault relocked ({reason})"
+         + (f" — {caller_addr}" if caller_addr else ""))
+
+
+def _idle_relock_if_due() -> bool:
+    """Caller must hold ``_lock``. Returns True if this call just relocked."""
+    if _unlocked_key is None:
+        return False
+    minutes = _idle_lock_minutes()
+    if minutes <= 0 or _last_key_use is None:
+        return False
+    if _monotonic() - _last_key_use >= minutes * 60:
+        _do_relock('idle')
+        return True
+    return False
+
+
+def check_idle_lock() -> bool:
+    """Relock if the configured idle window has elapsed since the last key
+    use. Safe to call anytime (locked, unconfigured, or unlocked) — a no-op
+    unless currently unlocked with a positive idle threshold configured.
+    Shared by the lazy check in load_master_key() and the background
+    sweeper below."""
+    with _lock:
+        return _idle_relock_if_due()
+
+
+def lock_now(*, caller_addr: str = '') -> None:
+    """Human-triggered immediate lock — the dashboard's "Lock now" control
+    (``POST /api/secrets/vault-lock/lock``). No-op if already locked or
+    unconfigured, so a caller doesn't need to check state first."""
+    with _lock:
+        _do_relock('manual', caller_addr=caller_addr)
+
+
+_idle_lock_stop = threading.Event()
+
+
+def _idle_lock_sweep_loop() -> None:
+    while not _idle_lock_stop.wait(60):
+        try:
+            check_idle_lock()
+        except Exception as e:
+            _log(f"[secrets] idle-lock sweep failed: {e}")
+
+
+def start_idle_lock_sweeper() -> threading.Thread:
+    """Start the background idle-lock sweeper — clears the unwrapped master
+    key from memory after the configured idle window even if nothing reads
+    it in the meantime (the lazy check inside load_master_key() only fires
+    on a read). Call ONCE, from server.py's boot() only: nothing else in
+    this module calls it, so a test or one-off script that merely imports
+    mc.secrets_store never gets a background thread as a side effect — the
+    same server-process-only posture as browser_routes.SWEEP_ENABLED."""
+    t = threading.Thread(target=_idle_lock_sweep_loop, daemon=True,
+                          name='vault-idle-lock-sweep')
+    t.start()
+    return t
 
 
 def _notify_vault_locked() -> None:
@@ -968,6 +1092,7 @@ def set_passphrase(passphrase: str, *, caller_addr: str = '') -> str:
         _write_wrapped_key(data)
         _unlocked_key = key_bytes
         _lock_notified = False
+        _mark_key_used()
         # Only now: both legs verified in-memory against key_bytes (the same
         # key load_master_key() just proved protects the store), and the
         # wrapped file is durably on disk. Safe to retire the legacy copies.
@@ -1007,6 +1132,7 @@ def change_passphrase(old_passphrase: str, new_passphrase: str, *,
             raise SecretsError("passphrase wrap verification failed")
         _write_wrapped_key(data)
         _unlocked_key = key_bytes
+        _mark_key_used()
     _audit('vault_passphrase_changed', caller_addr=caller_addr)
     _notify_vault_tamper('changed', caller_addr)
     _log("[secrets] passphrase changed")
@@ -1034,6 +1160,7 @@ def unlock_with_passphrase(passphrase: str) -> None:
         _unlocked_key = key_bytes
         _lock_notified = False
         _key_mismatch = False
+        _mark_key_used()
     _audit('vault_unlocked', method='passphrase')
     _log("[secrets] vault unlocked (passphrase)")
 
@@ -1056,6 +1183,7 @@ def unlock_with_recovery_key(recovery_key: str, *, caller_addr: str = '') -> Non
         _unlocked_key = key_bytes
         _lock_notified = False
         _key_mismatch = False
+        _mark_key_used()
     _audit('vault_unlocked', method='recovery_key', caller_addr=caller_addr)
     _notify_vault_tamper('unlocked with the recovery key', caller_addr)
     _log("[secrets] vault unlocked (recovery key)")
