@@ -124,11 +124,14 @@ async function overlayState(page) {
   return page.evaluate(() => {
     const setup = document.getElementById('setup-overlay');
     const tour = document.getElementById('wt-overlay');
+    const card = setup ? setup.querySelector('.wt-card') : null;
     return {
       setupVisible: !!(setup && setup.style.display !== 'none'),
       tourVisible: !!(tour && tour.style.display !== 'none'),
       title: setup ? (setup.querySelector('.wt-title') || {}).textContent : null,
-      progress: setup ? (setup.querySelector('.wt-progress') || {}).textContent : null,
+      progress: setup ? (setup.querySelector('.setup-band-progress') || {}).textContent : null,
+      isMarkedAsSetup: !!(card && card.classList.contains('wt-card-setup')),
+      cardText: card ? card.textContent : '',
     };
   });
 }
@@ -175,7 +178,7 @@ try {
     providers: ONE_PROVIDER_OK,
   }, async (page, { configPuts }) => {
     if (!(await walkToTourOffer(page))) return;
-    await page.click('#setup-overlay .wt-btn-skip'); // "Not now"
+    await page.click('#setup-overlay .setup-btn-secondary'); // "Not now"
     await page.waitForTimeout(200);
     const st = await overlayState(page);
     if (st.setupVisible) fail('setup overlay still open after "Not now"');
@@ -204,24 +207,118 @@ try {
     else ok('PUT /api/config {setup_completed:true} sent before handing off to the tour');
   });
 
-  // ── 4. "Skip setup" on step 1 ────────────────────────────────────────────
-  await scenario('"Skip setup" on step 1 records setup_completed', {
+  // ── 4. First run cannot be skipped: no skip control on any step ─────────
+  // Clean-VM incident (2026-09-23): "Skip setup" sat on the very first card,
+  // styled identically to the tour's own skip control, so one click ended
+  // setup for good. First run now offers no skip anywhere; setup_completed
+  // is written only from the final step's own two buttons.
+  await scenario('first run: no skip control on any step, gated connections blocks Next', {
     config: { setup_completed: false },
     providers: TWO_PROVIDERS_UNSET,
   }, async (page, { configPuts }) => {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
-    const st = await overlayState(page);
+    let st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`expected Welcome first, got: ${st.title}`); return; }
-    const skipBtn = page.locator('#setup-overlay .wt-btn-skip');
-    if ((await skipBtn.textContent() || '').trim() !== 'Skip setup') fail(`expected a "Skip setup" button on step 1, got: "${await skipBtn.textContent()}"`);
-    await skipBtn.click();
+    if (await page.locator('#setup-overlay .wt-btn-skip, #setup-overlay .setup-btn-secondary').count()) fail('a skip-style control is present on step 1 of a first run');
+    else ok('no skip control on step 1 (Welcome)');
+    if (!st.isMarkedAsSetup) fail('setup card does not carry the wt-card-setup marker (would render visually identical to the tour)');
+    else ok('setup card carries the wt-card-setup marker, distinguishing it from the tour');
+    if (/\btour\b/i.test(st.cardText)) fail(`the word "tour" appears on a non-final setup card: "${st.cardText}"`);
+    else ok('no "tour" text on the Welcome step');
+
+    await page.click('#setup-overlay .wt-btn-primary'); // "Get started"
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (st.title !== 'Which AI do you work with?') { fail(`expected the connections step (no vendor installed+signed-in), got: ${st.title}`); return; }
+    if (await page.locator('#setup-overlay .wt-btn-skip:has-text("Skip setup"), #setup-overlay .setup-btn-secondary:has-text("Skip setup")').count()) fail('"Skip setup" is present on the connections step of a first run');
+    else ok('no "Skip setup" control on the connections step');
+    if (/\btour\b/i.test(st.cardText)) fail(`the word "tour" appears on the connections step: "${st.cardText}"`);
+    else ok('no "tour" text on the connections step');
+
+    // Nothing selected yet: Next must be disabled with a visible one-line reason.
+    const nextBtn = page.locator('#setup-overlay .wt-btn-primary');
+    if (!(await nextBtn.isDisabled())) fail('Next is not disabled on the connections step before a vendor is selected+installed+signed in');
+    else ok('Next is disabled on the connections step until a vendor qualifies');
+    const reasonTxt = (await page.locator('#setup-overlay .wt-next-reason').textContent().catch(() => '')) || '';
+    if (!reasonTxt.trim()) fail('no visible reason shown while Next is disabled on the connections step');
+    else ok(`reason shown while blocked: "${reasonTxt.trim()}"`);
+
+    // The escape link is present while blocked, confirms before acting, and
+    // declining the confirm leaves setup open and uncompleted.
+    const laterLink = page.locator('#setup-overlay .setup-btn-secondary:has-text("I\'ll connect one later")');
+    if (!(await laterLink.count())) { fail('no "I\'ll connect one later" escape link while Next is blocked'); return; }
+    ok('"I\'ll connect one later" escape link is present while blocked');
+    await page.evaluate(() => { window.__confirmCalls = []; window.confirm = (msg) => { window.__confirmCalls.push(msg); return false; }; });
+    await laterLink.click();
+    await page.waitForTimeout(150);
+    st = await overlayState(page);
+    if (!st.setupVisible) fail('setup overlay closed after declining the "connect one later" confirm');
+    else ok('declining the confirm leaves setup open');
+    if ((await page.evaluate(() => window.__confirmCalls.length)) !== 1) fail('"I\'ll connect one later" did not show a confirm dialog');
+    else ok('"I\'ll connect one later" requires an explicit confirm');
+    if (configPuts.some((p) => p.setup_completed === true)) fail('setup_completed was written despite declining the confirm');
+    else ok('setup_completed not written while declined');
+
+    // Accepting the confirm ends setup and DOES persist setup_completed —
+    // same effect the old blanket "Skip setup" had, but explicit and gated.
+    await page.evaluate(() => { window.confirm = () => true; });
+    await laterLink.click();
     await page.waitForTimeout(200);
-    const st2 = await overlayState(page);
-    if (st2.setupVisible) fail('setup overlay still open after "Skip setup"');
-    else ok('setup overlay closes on "Skip setup"');
+    st = await overlayState(page);
+    if (st.setupVisible) fail('setup overlay still open after accepting "connect one later"');
+    else ok('setup overlay closes after accepting "connect one later"');
     const completes = configPuts.filter((p) => p.setup_completed === true);
-    if (completes.length !== 1) fail(`"Skip setup" on step 1 should record setup_completed:true, got PUTs: ${JSON.stringify(configPuts)}`);
-    else ok('"Skip setup" on step 1 records setup_completed:true (setupSkip() -> setupFinish())');
+    if (completes.length !== 1) fail(`"connect one later" (accepted) should record setup_completed:true, got PUTs: ${JSON.stringify(configPuts)}`);
+    else ok('accepting "connect one later" records setup_completed:true');
+  });
+
+  // ── 4b. Essentials step (middle, non-last): no skip control either ──────
+  await scenario('first run: no skip control on the essentials (middle) step', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+    providers: ONE_PROVIDER_OK, // connections step auto-skips
+  }, async (page) => {
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials (connections skipped)
+    await page.waitForTimeout(150);
+    const st = await overlayState(page);
+    if (st.title !== 'A few essentials') { fail(`expected Essentials, got: ${st.title}`); return; }
+    if (await page.locator('#setup-overlay .wt-btn-skip, #setup-overlay .setup-btn-secondary').count()) fail('a skip-style control is present on the essentials step of a first run');
+    else ok('no skip control on the essentials step');
+    if (/\btour\b/i.test(st.cardText)) fail(`the word "tour" appears on the essentials step: "${st.cardText}"`);
+    else ok('no "tour" text on the essentials step');
+  });
+
+  // ── 4c. Reload mid-setup resumes setup, not the dashboard ───────────────
+  await scenario('reload mid-setup (essentials step, not yet completed) resumes setup', {
+    config: { setup_completed: false, default_provider: 'claude', agent_model: 'tier:balanced' },
+    providers: ONE_PROVIDER_OK,
+  }, async (page) => {
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+    await page.click('#setup-overlay .wt-btn-primary'); // Get started -> essentials
+    await page.waitForTimeout(150);
+    let st = await overlayState(page);
+    if (st.title !== 'A few essentials') { fail(`expected Essentials before reload, got: ${st.title}`); return; }
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+    st = await overlayState(page);
+    if (!st.setupVisible) fail('setup did not resume after a reload mid-setup — setup_completed was never written, so the boot gate should re-trigger it');
+    else ok('reload mid-setup brings setup back (setup_completed still false server-side)');
+  });
+
+  // ── 4d. The tour cannot start before setup completes ─────────────────────
+  await scenario('startTourOrSetup() redirects into setup while first-run is not yet completed', {
+    config: { setup_completed: false },
+  }, async (page) => {
+    await page.waitForSelector('#setup-overlay', { timeout: 5000 }).catch(() => {});
+    await page.evaluate(() => { document.getElementById('setup-overlay').remove(); window.setupActive = false; });
+    // Simulates the header '?' button / command-palette "Take Tour" entry.
+    await page.evaluate(() => window.startTourOrSetup());
+    await page.waitForTimeout(200);
+    const st = await overlayState(page);
+    if (st.tourVisible) fail('the tour started via startTourOrSetup() before first-run setup completed');
+    else ok('startTourOrSetup() does not start the tour before setup completes');
+    if (!st.setupVisible) fail('startTourOrSetup() did not fall back to opening setup');
+    else ok('startTourOrSetup() opens setup instead');
   });
 
   // ── 5. setup_completed already true: nothing auto-starts ────────────────
@@ -301,8 +398,10 @@ try {
     await page.waitForSelector('#setup-overlay', { timeout: 5000 });
     st = await overlayState(page);
     if (st.title !== 'Welcome to Clayrune') { fail(`"Run setup again" should start at Welcome, got: ${st.title}`); return; }
-    if (st.progress !== '1 / 4') fail(`forced re-run should show all 4 steps (none skipped), got progress "${st.progress}"`);
-    else ok('forced re-run shows all 4 steps (progress "1 / 4") despite an already-configured install');
+    if (st.progress !== 'Step 1 of 4') fail(`forced re-run should show all 4 steps (none skipped), got progress "${st.progress}"`);
+    else ok('forced re-run shows all 4 steps (progress "Step 1 of 4") despite an already-configured install');
+    if (!st.isMarkedAsSetup) fail('forced re-run card does not carry the wt-card-setup marker');
+    else ok('forced re-run card also carries the wt-card-setup marker');
 
     await page.click('#setup-overlay .wt-btn-primary'); // Get started
     await page.waitForTimeout(150);

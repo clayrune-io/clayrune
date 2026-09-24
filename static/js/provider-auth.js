@@ -588,6 +588,13 @@ async function applyDefaultProvider(name) {
   _agentProviders = null;
   try { await _ensureAgentProviders(); } catch (e) { /* auth refresh still uses config */ }
   if (typeof refreshAuthStatus === 'function') refreshAuthStatus();
+  // First-run's connections step disables Next off a reason computed at
+  // render time (first-run.js _setupConnectionsBlockReason); without a
+  // repaint here that state goes stale the moment a default is picked — the
+  // OTHER two provider-state mutations (install, check-status) already
+  // repaint, this one didn't need to until Next's disabled state started
+  // depending on live selection state.
+  _repaintProviderRows();
 }
 
 // F6 (clean-VM run 2026-09-18): the install route may have changed (or

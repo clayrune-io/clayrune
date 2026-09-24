@@ -1027,7 +1027,7 @@ function renderCommandResults(query) {
     { text: 'Shared Rules', icon: '<svg class="menu-svg"><use href="#ic-rules"/></svg>', action: () => { toggleCommandPalette(); openSharedRulesEditor(); } },
     { text: 'Processes', icon: '<svg class="menu-svg"><use href="#ic-processes"/></svg>', action: () => { toggleCommandPalette(); openProcessManager(); } },
     { text: 'Minimize All', icon: '<svg class="menu-svg"><use href="#ic-minimize-all"/></svg>', action: () => { toggleCommandPalette(); showDesktop(); } },
-    { text: 'Take Tour', icon: '?', action: () => { toggleCommandPalette(); startWalkthrough(); } },
+    { text: 'Take Tour', icon: '?', action: () => { toggleCommandPalette(); startTourOrSetup(); } },
   ];
   const matchingActions = actions.filter(a => !q || a.text.toLowerCase().includes(q));
   if (matchingActions.length) {

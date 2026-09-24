@@ -6996,6 +6996,33 @@
   .wt-btn-primary:hover { background: #5db3ff; }
   .wt-btn-skip { background: transparent; border: none; color: var(--text-faint); padding: 7px 10px; }
   .wt-btn-skip:hover { color: var(--text); }
+  .wt-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
+  .wt-btn-primary:disabled:hover { background: var(--accent); }
+  .wt-next-reason { margin-top: -8px; margin-bottom: 16px; font-size: 11px; color: var(--amber); text-align: left; }
+
+  /* First-run setup cards (first-run.js) share .wt-card/.wt-overlay scaffolding
+     with the guided tour (walkthrough.js), which made them visually identical —
+     a clean-VM user mistook a setup step for the tour and skipped it via a
+     control that read like the tour's "Skip" (Ron, 2026-09-23). Setup gets its
+     own accent band + progress meter + secondary-button look; the tour's own
+     .wt-card/.wt-btn-skip appearance is unchanged. */
+  .wt-card-setup { border-color: var(--amber); padding-top: 0; }
+  .setup-band {
+    display: flex; align-items: center; gap: 10px;
+    margin: 0 -28px 18px -28px; padding: 10px 20px;
+    background: var(--amber); border-radius: 11px 11px 0 0;
+  }
+  .setup-band-label { font-size: 11px; font-weight: 800; letter-spacing: 1.5px; text-transform: uppercase; color: #241a02; white-space: nowrap; }
+  .setup-band-progress { font-size: 11px; color: #241a02; opacity: 0.8; white-space: nowrap; }
+  .setup-band-track { flex: 1; height: 4px; background: rgba(0,0,0,0.18); border-radius: 2px; overflow: hidden; }
+  .setup-band-fill { height: 100%; background: #241a02; border-radius: 2px; transition: width 0.25s; }
+  .wt-card-setup .wt-title { color: var(--amber); }
+  .setup-btn-secondary {
+    background: transparent; border: 1px solid var(--border); color: var(--text-dim);
+    font-family: 'Inter', sans-serif; font-size: 12px; font-weight: 600;
+    padding: 7px 14px; border-radius: 6px; cursor: pointer; transition: all 0.15s;
+  }
+  .setup-btn-secondary:hover { color: var(--text); border-color: var(--text-faint); }
   .wt-dismiss {
     display: flex; align-items: center; gap: 6px;
     margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--border);
