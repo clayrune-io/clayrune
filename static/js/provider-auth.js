@@ -13,6 +13,16 @@ let _claudeAuthOk = null;
 let _authProbeKicked = false;
 const _providerAuthKnown = {};
 
+// _providerInstallMsg / _providerInstallPolicyNoteText are STORE vars
+// (static/index.html) — declared there, not here, because provider-settings.js
+// and first-run.js also read them back on render. Dave review, 2026-09-24:
+// first-run's install-watch poll rebuilds the whole connections step from
+// scratch every 4s while a terminal is live (_setupRepaint -> setupShow), and
+// _renderProviderRow/​_renderProviderSettings always emitted an EMPTY message
+// div — writing the text straight into that node in providerInstallSelected
+// meant it survived only until the next poll tick, then silently vanished.
+// Both render functions below now read these back in on every render instead.
+
 // Track the last-known CLAUDE auth verdict so the dispatch path can refuse to
 // fire a doomed run. Only claude states update it (other providers pass through
 // _renderAuthBanner too). "ok" only counts when a probe actually verified it
@@ -620,7 +630,21 @@ async function providerInstallSelected(button, only) {
     .map((p) => p.name);
   if (!names.length) return;
   if (button) button.disabled = true;
-  const msgFor = (name) => document.getElementById(`prov-install-msg-${name}`);
+  // Cleared up front, not just set on success — a stale URL from a PRIOR
+  // batch must never be polled as if it belonged to this one (MC-959).
+  _providerInstallStatusUrl = '';
+  // Writes into the persistent state maps (survives the next setupShow
+  // rebuild the install-watch poll triggers) AND the live DOM node when one
+  // exists, for immediate feedback without waiting on that rebuild.
+  const setMsg = (name, text) => {
+    _providerInstallMsg[name] = text;
+    const el = document.getElementById(`prov-install-msg-${name}`);
+    if (el) el.textContent = text;
+  };
+  const setPolicyNote = (text) => {
+    _providerInstallPolicyNoteText = text;
+    document.querySelectorAll('.prov-install-policy-note').forEach((el) => { el.textContent = text; });
+  };
   try {
     const res = await fetch(API_BASE + '/api/agent/providers/install-launch', {
       method: 'POST',
@@ -636,29 +660,36 @@ async function providerInstallSelected(button, only) {
       if (data.session_id) {
         openTerminalPopout(window.currentProjectId, data.session_id, data.command || 'install', data.pty);
       }
+      // MC-959: this batch's own per-vendor result feed (empty string = none,
+      // e.g. an older server without the route) — first-run's install-watch
+      // polls it to show FAILED vendors and to know when the batch itself is
+      // done, rather than guessing from whether the terminal is still open.
+      _providerInstallStatusUrl = data.status_url || '';
+      // The execution-policy note is a property of the ONE batch install, not
+      // of each vendor row — showing it per row repeated it once per selected
+      // vendor (4x on a clean-VM run with everything ticked, 2026-09-24).
+      // Shown once, in whichever shared note element the calling surface
+      // rendered (setup and Settings each have their own instance of it).
+      const policyNote = _providerPolicyNote(data);
+      if (policyNote) setPolicyNote(policyNote.trim());
       for (const name of (data.installed || names)) {
-        const el = msgFor(name);
-        if (el) el.textContent = 'A terminal opened to install it. Once it finishes, click "Check setup status".' + _providerPolicyNote(data);
+        setMsg(name, 'A terminal opened to install it. Once it finishes, click "Check setup status".');
       }
       for (const name of (data.unsupported || [])) {
-        const el = msgFor(name);
-        if (el) el.textContent = 'No automatic install available for this vendor — see its own Install button.';
+        setMsg(name, 'No automatic install available for this vendor — see its own Install button.');
       }
     } else if (data.command) {
       for (const name of names) {
-        const el = msgFor(name);
-        if (el) el.textContent = `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`;
+        setMsg(name, `Couldn't start that here (${data.error || 'no runnable install'}) — run this yourself: ${data.command}`);
       }
     } else {
       for (const name of names) {
-        const el = msgFor(name);
-        if (el) el.textContent = data.error || 'Could not start the install.';
+        setMsg(name, data.error || 'Could not start the install.');
       }
     }
   } catch (e) {
     for (const name of names) {
-      const el = msgFor(name);
-      if (el) el.textContent = 'Install failed: ' + e;
+      setMsg(name, 'Install failed: ' + e);
     }
   } finally {
     if (button) button.disabled = false;
@@ -704,6 +735,10 @@ function _renderProviderRow(p, opts) {
   const state = _providerStateLabel(p);
   const installed = !!p.installed;
   const authOk = p.auth_status === 'ok';
+  // Once a row reaches its own done state, the transient "a terminal
+  // opened..." message from an earlier install is stale — drop it instead of
+  // showing it forever next to a row that's already fully set up.
+  if (installed && authOk) delete _providerInstallMsg[p.name];
   const isDefault = opts.defaultName === p.name;
   const showActions = setup ? !!opts.selected : installed;
   const box = setup
@@ -779,7 +814,7 @@ function _renderProviderRow(p, opts) {
             ${allowance}
             ${detail}
             ${extra}
-            <div id="prov-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0"></div>
+            <div id="prov-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0">${esc(_providerInstallMsg[p.name] || '')}</div>
           </div>`;
 }
 

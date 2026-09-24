@@ -59,7 +59,7 @@ const SETUP_STEPS = [
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="setupInstallSelected(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="providerRefreshAll()">Check setup status</button>
-        </div><div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`
+        </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
         + `<div style="margin-top:16px;text-align:left">
           <div style="font-weight:600;color:var(--text)">Default model</div>
           <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">Applies across every agent unless overridden per project or per chat.</div>
@@ -222,8 +222,10 @@ async function setupPickModelTier(tier, btn) {
   await saveSetting('agent_model', 'tier:' + tier);
 }
 
-function setupInstallSelected(btn) {
-  return providerInstallSelected(btn, Array.from(setupSelectedProviders));
+async function setupInstallSelected(btn) {
+  _setupStartInstallWatch();
+  await providerInstallSelected(btn, Array.from(setupSelectedProviders));
+  _setupDockLiveTerminals();
 }
 
 // Repaint hook for provider-auth.js _repaintProviderRows: only the connections
@@ -231,6 +233,93 @@ function setupInstallSelected(btn) {
 window._setupRepaint = () => {
   if (setupActive && SETUP_STEPS[setupStep] && SETUP_STEPS[setupStep].id === 'connections') setupShow(setupStep);
 };
+
+// ── Install-terminal visibility + live polling (clean-VM run 2026-09-24) ────
+// The setup overlay (.wt-overlay, z-2000) painted over the install terminal
+// pop-out (a .modal-window inside #modal-layer, z-300) — the terminal it just
+// opened was fully hidden behind the card, so a user who clicked "Install
+// selected" had no way to see the install running or tell it apart from a
+// hang. While a terminal is live: raise #modal-layer above the overlay (same
+// mechanism app.css already uses for maximize, body.mc-modal-maximized), dock
+// the setup card to the left so the two don't sit exactly on top of each
+// other, and poll provider status the same way "Check setup status" does so
+// the row flips from "not installed" without the user hunting for a button.
+let _setupInstallWatchTimer = null;
+let _setupInstallWatchRunning = false; // separate from the timer ID: setInterval's return value must never be truthiness-tested (0 is a legal id in a synthetic/non-browser host)
+
+function _setupInstallComplete() {
+  const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
+  return selected.length > 0 && selected.every(p => p.installed && p.auth_status === 'ok');
+}
+
+// DOM presence, not terminal.js's own lifecycle state — decoupled on purpose
+// so this holds regardless of HOW the terminal went away (user hit its own
+// Close, or it auto-closed on the child process exiting). Checked ONLY as the
+// stop condition, never to gate starting: right after "Install selected" the
+// terminal can take a beat to mount, and the first tick is 4s out — plenty.
+function _setupInstallTerminalOpen() {
+  return !!document.querySelector('#modal-layer .modal-window[data-modal-id^="__terminal_"]');
+}
+
+// Polls MC-959's per-batch GET .../install-status (set by providerInstallSelected
+// into _providerInstallStatusUrl). Marks any vendor the batch itself reports as
+// failed with a short row message and reports whether the BATCH says it is
+// done — the authoritative signal, since a failed install's terminal now stays
+// open (terminal.js, MC-959) so its output can be read, and the DOM-presence
+// check below can no longer tell "still running" from "failed and left open".
+// Returns false (never finished) on any fetch/shape problem — an older server
+// without the route, a dropped connection — so the caller falls back to the
+// DOM check instead of hanging on a signal that will never arrive.
+async function _setupPollInstallStatus() {
+  if (!_providerInstallStatusUrl) return false;
+  try {
+    const res = await fetch(API_BASE + _providerInstallStatusUrl);
+    const data = await res.json().catch(() => null);
+    if (!data || !data.ok) return false;
+    for (const name of (data.failed || [])) {
+      const text = 'Install failed — see terminal.';
+      _providerInstallMsg[name] = text;
+      const el = document.getElementById(`prov-install-msg-${name}`);
+      if (el) el.textContent = text;
+    }
+    return data.running === false;
+  } catch (e) {
+    return false;
+  }
+}
+
+function _setupStartInstallWatch() {
+  document.body.classList.add('setup-terminal-live');
+  if (_setupInstallWatchRunning) return;
+  _setupInstallWatchRunning = true;
+  _setupInstallWatchTimer = setInterval(async () => {
+    await providerRefreshAll();
+    const batchFinished = await _setupPollInstallStatus();
+    // Stop on success (nothing left to watch), OR the batch itself reporting
+    // finished (MC-959 — solves the case below for a FAILED install too, since
+    // its terminal now stays open), OR — fallback for a server too old to
+    // carry status_url — the terminal itself going away (Dave review,
+    // 2026-09-24: a failed/cancelled install used to poll forever with the
+    // live class stuck on, since the old check only fired on full success).
+    if (_setupInstallComplete() || batchFinished || !_setupInstallTerminalOpen()) _setupStopInstallWatch();
+  }, 4000);
+}
+
+function _setupStopInstallWatch() {
+  if (_setupInstallWatchRunning) { clearInterval(_setupInstallWatchTimer); _setupInstallWatchTimer = null; _setupInstallWatchRunning = false; }
+  document.body.classList.remove('setup-terminal-live');
+  _providerInstallStatusUrl = '';
+}
+
+// Move any terminal pop-out(s) opened from setup off to the top-right corner
+// so they don't land exactly under the (now left-docked) setup card. Purely a
+// reposition of the existing element — terminal.js's own centering already ran.
+function _setupDockLiveTerminals() {
+  document.querySelectorAll('#modal-layer .modal-window[data-modal-id^="__terminal_"]').forEach((win) => {
+    win.style.left = Math.max(20, window.innerWidth - win.offsetWidth - 24) + 'px';
+    win.style.top = '24px';
+  });
+}
 
 // Human-readable reason a selected provider is blocking Next — F2 (clean-VM
 // run 2026-09-18): the old message was the step's own static hint repeated
@@ -249,17 +338,27 @@ function _setupProviderBlockReason(p) {
   }
 }
 
-// One-line reason the connections step's Next is disabled, or '' when it's
-// clear to proceed. Same validation setupNext() already runs on click — kept
-// there too as a defense-in-depth net now that the button is also disabled.
+// Reason(s) the connections step's Next is disabled, or '' when it's clear to
+// proceed. This is the SOLE source of truth for the disabled-Next banner
+// (.wt-next-reason, rendered next to the footer) — setupNext() below reuses
+// it rather than re-deriving its own list, so there is exactly one place a
+// blocked reason can ever be shown (Dave review, 2026-09-24: a second, richer
+// version of this used to live only in setupNext()'s dead click-handler code,
+// writing into a div far above the footer that a disabled button can never
+// actually trigger from a real click).
+// Names EVERY unfinished selected vendor, not just the first — with 4
+// providers ticked and none installed (the clean-VM run that started this),
+// the user needs to see all 4 problems, not just Codex's.
 function _setupConnectionsBlockReason() {
   const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
   if (!selected.length) return 'Select at least one vendor to continue.';
   const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-  if (!setupSelectedProviders.has(defaultProvider)) return 'Choose a default from your selected vendors.';
-  const bad = selected.find(p => !p.installed || p.auth_status !== 'ok');
-  if (bad) return `${bad.display_name || bad.name}: ${_setupProviderBlockReason(bad)}.`;
-  return '';
+  const problems = [];
+  if (!setupSelectedProviders.has(defaultProvider)) problems.push('Choose a default from your selected vendors.');
+  for (const p of selected) {
+    if (!p.installed || p.auth_status !== 'ok') problems.push(`${p.display_name || p.name}: ${_setupProviderBlockReason(p)}.`);
+  }
+  return problems.join(' ');
 }
 
 // Escape hatch for a user with genuinely no vendor to connect right now.
@@ -399,7 +498,7 @@ async function setupShow(idx) {
     </div>
     <div class="wt-title">${esc(step.title)}</div>
     <div class="wt-body">${bodyHtml}</div>
-    ${nextBlocked ? `<div class="wt-next-reason">${esc(connReason)}</div>` : ''}
+    ${nextBlocked ? `<div class="wt-next-reason" id="wt-next-reason">${esc(connReason)}</div>` : ''}
     <div class="wt-actions">
       <span style="flex:1"></span>
       ${btns}
@@ -412,24 +511,14 @@ async function setupShow(idx) {
 
 function setupNext() {
   if (SETUP_STEPS[setupStep].id === 'connections') {
-    const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
-    const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-    const problems = [];
-    if (!selected.length) {
-      problems.push('Select at least one vendor.');
-    } else {
-      if (!setupSelectedProviders.has(defaultProvider)) {
-        problems.push('Choose a default from your selected vendors.');
-      }
-      for (const p of selected) {
-        if (!p.installed || p.auth_status !== 'ok') {
-          problems.push(`${p.display_name || p.name}: ${_setupProviderBlockReason(p)}`);
-        }
-      }
-    }
-    if (problems.length) {
-      const el = document.getElementById('setup-provider-validation');
-      if (el) el.textContent = problems.join(' · ') + ' — or skip setup and finish it later in Settings → Providers.';
+    // Defense-in-depth only — the Next button is already `disabled` whenever
+    // this returns non-empty, so a real click can't reach here. Reuses the
+    // SAME reason the footer banner (#wt-next-reason) already shows, instead
+    // of writing a second copy into its own div (Dave review, 2026-09-24).
+    const reason = _setupConnectionsBlockReason();
+    if (reason) {
+      const el = document.getElementById('wt-next-reason');
+      if (el) el.textContent = reason;
       return;
     }
   }
@@ -448,6 +537,7 @@ function setupSkip() { setupFinish(); }
 
 function setupFinish() {
   setupActive = false;
+  _setupStopInstallWatch();
   const el = document.getElementById('setup-overlay');
   if (el) el.remove();
   if (!(_globalConfig && _globalConfig.setup_completed)) _setupPersistCompleted();

@@ -1101,6 +1101,21 @@ const _transcriptCache = {};  // csid -> {messages, size, message_count}
 // visible chat recovers sooner than a backgrounded one.
 const SSE_ZOMBIE_MS = 25000;
 const modalZoomLevels = {}; // modalId → current font-size in px
+// Batch-install status text (provider-auth.js writes; provider-auth.js,
+// provider-settings.js and first-run.js all render it back — spans ≥2
+// families, so it's STORE, not module-private). Kept out of the DOM because
+// first-run's install-watch poll rebuilds the whole connections step from
+// scratch every 4s while a terminal is live, which would otherwise wipe a
+// message written directly into a row/note div before the next tick.
+let _providerInstallMsg = {};            // provider name -> per-row message text
+let _providerInstallPolicyNoteText = ''; // one shared batch note
+// MC-959's GET .../install-status URL for the batch providerInstallSelected
+// (provider-auth.js) just launched — set there, polled by first-run.js's
+// install-watch so it can show per-vendor FAILED and stop the watch the
+// moment the batch itself reports finished, instead of guessing from DOM
+// presence (the pop-out now stays open after a failure so its output stays
+// readable, so "terminal gone" is no longer a reliable finished signal).
+let _providerInstallStatusUrl = '';
 // ── /STORE ──────────────────────────────────────────────────────────────────
 
 
