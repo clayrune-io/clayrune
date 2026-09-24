@@ -41,6 +41,7 @@ from contextvars import ContextVar
 import mc.agent_runtime as _agent_runtime  # multi-provider runtime (transcript + oneshot)
 import mc.skills as _skills                # frontmatter parse for position notes
 import mc.distiller as _distiller          # Phase 4 learning observer (best-effort)
+import mc.allowance_state as _allowance_state  # live vendor exhaustion state (MC-964 Step D.1)
 
 from mc import state
 from mc.core import _atomic_write_text, _log, now_iso, TimestampedLines
@@ -1105,7 +1106,12 @@ _HOLDS_WHILE_SIMPLE_METRICS = {
     'index_bytes', 'index_headroom_bytes', 'corpus_units', 'topic_notes',
     'positions', 'broken_links', 'days_since_decided',
 }
-_HOLDS_WHILE_METRIC_REGISTRY = _HOLDS_WHILE_SIMPLE_METRICS | {'delivered'}
+# MC-964 Step D.1: the first EXTERNAL-state metric (source is allowance_state,
+# not the corpus itself) — 'allowance_exhausted(<vendor>) >= 1' lets a
+# position's holds_while reopen on a live vendor-allowance record instead of
+# only on corpus-shape numbers. Argument-required, same as `delivered`.
+_HOLDS_WHILE_ARG_METRICS = {'delivered', 'allowance_exhausted'}
+_HOLDS_WHILE_METRIC_REGISTRY = _HOLDS_WHILE_SIMPLE_METRICS | _HOLDS_WHILE_ARG_METRICS
 
 _HOLDS_WHILE_OPS = {
     '<': lambda a, b: a < b, '<=': lambda a, b: a <= b,
@@ -1114,6 +1120,11 @@ _HOLDS_WHILE_OPS = {
 
 _HOLDS_WHILE_CLAUSE_RE = re.compile(
     r'^\s*([a-z_]+)(?:\(([^()]*)\))?\s*(<=|>=|<|>)\s*(-?\d+(?:\.\d+)?)\s*$')
+
+# Vendor args of `allowance_exhausted(<vendor>)` clauses within a raw
+# holds_while expression — used to look up live allowance_state per position
+# (see evaluate_positions_holds_while) without re-parsing the whole grammar.
+_HOLDS_WHILE_ALLOWANCE_ARG_RE = re.compile(r'allowance_exhausted\(([^()]*)\)')
 
 
 class HoldsWhileError(ValueError):
@@ -1154,8 +1165,8 @@ def _parse_holds_while(expr):
                 f"unknown holds_while metric {metric!r} in {raw!r} — "
                 f"registry: {sorted(_HOLDS_WHILE_METRIC_REGISTRY)}; consider "
                 f"`revisit_if` (free prose) instead")
-        if metric == 'delivered' and not (arg or '').strip():
-            raise HoldsWhileError(f"delivered(...) needs a unit argument in {raw!r}")
+        if metric in _HOLDS_WHILE_ARG_METRICS and not (arg or '').strip():
+            raise HoldsWhileError(f"{metric}(...) needs an argument in {raw!r}")
         clauses.append((metric, (arg or '').strip(), op, float(num)))
     return join, clauses
 
@@ -1261,6 +1272,22 @@ def evaluate_positions_holds_while(project):
         if not expr:
             continue
         metrics = dict(base)
+        # `allowance_exhausted(<vendor>)` (MC-964 Step D.1) is EXTERNAL
+        # state, not corpus shape — read fresh per position from the vendors
+        # THIS expression actually names, never folded into
+        # `_holds_while_global_metrics`'s cache (which only invalidates on
+        # the memory dir's *.md signature and would never notice a vendor
+        # clearing). Unlike `delivered(<unit>)`'s "no sidecar yet" gap, a
+        # real answer (0.0/1.0) exists for every vendor named here, so it is
+        # populated rather than left absent-and-unevaluable.
+        for _vendor in set(_HOLDS_WHILE_ALLOWANCE_ARG_RE.findall(expr)):
+            try:
+                exhausted = _allowance_state.is_exhausted(_vendor)
+            except Exception as e:
+                _log(f'[holds_while] allowance_state read failed for '
+                     f'{_vendor!r}: {e}')
+                continue
+            metrics[f'allowance_exhausted({_vendor})'] = 1.0 if exhausted else 0.0
         decided = (rec.get('decided') or '').strip()
         if decided:
             try:
@@ -3555,25 +3582,42 @@ def _checkpoint_prev_offset(p, sid):
     return int(_checkpoint_watermark(p, sid).get('byte_offset', 0) or 0)
 
 
-def _maybe_checkpoint(session):
+def _maybe_checkpoint(session, force=False):
     """Mode-B turn-boundary hook (clones the _auto_snapshot_notes_on_turn
     precedent). FAST gate only — no model call here: config flags,
     incognito/housekeeping, real-boundary, KB-delta debounce, one-in-flight
     per session. Spawns the worker on a daemon thread. Never raises (must not
-    break the reader)."""
+    break the reader).
+
+    `force=True` (MC-964 Step C, `agent_routes._maybe_midturn_roll` only)
+    bypasses the two POLICY gates — the `scribe_checkpoint_enabled` flag and
+    the KB-delta debounce — because a mid-turn roll abandons the outgoing
+    transcript for good: the fresh session gets a new `claude_session_id`, so
+    the next checkpoint's watermark lookup sees a different `transcript_path`
+    and restarts its offset (see `_checkpoint_worker`'s "resume opened a new
+    .jsonl" branch) rather than ever coming back for what the old one hadn't
+    flushed yet. It does NOT bypass any CORRECTNESS gate (scribe_enabled,
+    incognito, missing ids, no-new-content since the last watermark) — those
+    stay true regardless of who's asking. Runs the worker INLINE instead of on
+    a thread so the caller can learn whether anything actually landed before
+    the roll proceeds; returns that as a bool. The non-forced path keeps
+    firing the worker on a daemon thread and returns False unconditionally
+    (no caller used `_maybe_checkpoint`'s return value until now)."""
     try:
-        if not state.CONFIG.get('scribe_checkpoint_enabled', False):
-            return
+        if not force and not state.CONFIG.get('scribe_checkpoint_enabled', False):
+            return False
+        if not state.CONFIG.get('scribe_enabled', True):
+            return False
         kb = int(state.CONFIG.get('scribe_checkpoint_kb', 0) or 0)
-        if kb <= 0 or not state.CONFIG.get('scribe_enabled', True):
-            return
+        if not force and kb <= 0:
+            return False
         if session.get('incognito') or session.get('housekeeping'):
-            return
+            return False
         if (session.get('waiting_for_question')
                 or session.get('waiting_for_plan_approval')):
-            return  # not a real work boundary
+            return False  # not a real work boundary
         if not session.get('process_alive', True):
-            return
+            return False
         pid = session.get('project_id', '')
         sid = session.get('session_id') or session.get('id')
         provider = str(session.get('provider') or '').strip().lower()
@@ -3581,19 +3625,19 @@ def _maybe_checkpoint(session):
         provider_sid = (csid if provider in ('', 'claude') else
                         str(session.get('provider_session_id') or '').strip())
         if not (pid and sid):
-            return
+            return False
         # Claude's historical field remains authoritative only for Claude (or
         # an old session with no provider stamp).  Other runtimes expose their
         # own native thread/session id and must not be gated by a missing
         # claude_session_id.
         if provider in ('', 'claude'):
             if not csid:
-                return
+                return False
         elif not provider_sid:
-            return
+            return False
         p = load_project(pid)
         if not p:
-            return
+            return False
         canonical_lines = None
         canonical_sequence = 0
         if _canonical_scribe_reader is not None:
@@ -3609,11 +3653,11 @@ def _maybe_checkpoint(session):
         if canonical_lines:
             previous = _checkpoint_watermark(p, sid)
             if canonical_sequence <= int(previous.get('canonical_sequence', 0) or 0):
-                return
+                return False
             with _checkpoint_guard:
                 if sid in _checkpoint_inflight:
                     _scribe_stat(pid, 'checkpoint_coalesced')
-                    return
+                    return False
                 _checkpoint_inflight.add(sid)
             snap = {'pid': pid, 'sid': sid, 'csid': csid,
                     'provider_session_id': provider_sid,
@@ -3623,9 +3667,11 @@ def _maybe_checkpoint(session):
                     'owner': _session_owner(session), 'tf': '',
                     'canonical_lines': canonical_lines,
                     'canonical_sequence': canonical_sequence}
+            if force:
+                return bool(_checkpoint_worker(snap))
             threading.Thread(target=_checkpoint_worker, args=(snap,),
                              daemon=True).start()
-            return
+            return False
         pp = p.get('project_path', '')
         if provider in ('', 'claude'):
             tf = _find_transcript_file(pp, csid)
@@ -3635,19 +3681,19 @@ def _maybe_checkpoint(session):
                     pp, provider_sid)
             except Exception as e:
                 _log(f'[scribe] {provider} checkpoint transcript lookup failed: {e}')
-                return
+                return False
         if not tf:
-            return
+            return False
         try:
             size = os.path.getsize(tf)
         except OSError:
-            return
-        if size - _checkpoint_prev_offset(p, sid) < kb * 1024:
-            return  # not enough new transcript yet (debounce)
+            return False
+        if not force and size - _checkpoint_prev_offset(p, sid) < kb * 1024:
+            return False  # not enough new transcript yet (debounce)
         with _checkpoint_guard:
             if sid in _checkpoint_inflight:
                 _scribe_stat(pid, 'checkpoint_coalesced')
-                return  # previous worker still running; next boundary covers more
+                return False  # previous worker still running; next boundary covers more
             _checkpoint_inflight.add(sid)
         snap = {'pid': pid, 'sid': sid, 'csid': csid,
                 'provider_session_id': provider_sid,
@@ -3659,16 +3705,26 @@ def _maybe_checkpoint(session):
                 # one — see `_cont_owner_key`.
                 'owner': _session_owner(session),
                 'tf': str(tf)}
+        if force:
+            return bool(_checkpoint_worker(snap))
         threading.Thread(target=_checkpoint_worker, args=(snap,),
                          daemon=True).start()
+        return False
     except Exception:
-        pass
+        return False
 
 
 def _checkpoint_worker(snap):
     """Render the delta since the last watermark, fold it into the running
     summary, append a self-contained `_(live)_` entry + upsert the wm marker
-    in one leaf-locked atomic write. SPEC §3.A.MID. Never raises."""
+    in one leaf-locked atomic write. SPEC §3.A.MID. Never raises.
+
+    Returns True when a checkpoint was actually committed (a new entry, or a
+    thin-delta watermark-only commit that legitimately had nothing new to
+    say) — MC-964 Step C's `_maybe_checkpoint(force=True)` reports this back
+    as `scribe_flushed` on a mid-turn roll. False for every early bail-out
+    (nothing new, gated, or a real failure) and for the async (non-forced)
+    callers, who never look at the return value."""
     pid, sid, csid, task, tf = (snap['pid'], snap['sid'], snap.get('csid', ''),
                                 snap['task'], snap.get('tf', ''))
     provider_sid = str(snap.get('provider_session_id') or csid or '').strip()
@@ -3680,11 +3736,11 @@ def _checkpoint_worker(snap):
         _scribe_stat(pid, 'checkpoint_coalesced')  # project at fan-out cap
         with _checkpoint_guard:
             _checkpoint_inflight.discard(sid)
-        return
+        return False
     try:
         p = load_project(pid)
         if not p:
-            return
+            return False
         prev_off, prev_summary = 0, ''
         try:
             # §16 step 4: markers live in SESSION_LOG.md; a legacy MEMORY.md
@@ -3711,11 +3767,11 @@ def _checkpoint_worker(snap):
             delta, new_off = '\n'.join(canonical_lines), 0
             if not delta.strip() or canonical_sequence <= int(
                     (r or {}).get('canonical_sequence', 0) or 0):
-                return
+                return False
         else:
             delta, new_off = _scribe_render_delta(tf, prev_off, provider=provider)
             if not delta.strip() or new_off == prev_off:
-                return  # nothing new complete; retry next boundary (offset kept)
+                return False  # nothing new complete; retry next boundary (offset kept)
         model = (str(snap['model']) if 'model' in snap
                  else _model_for_provider('scribe_model', provider))
         token = _with_transform_context(provider, cwd=p.get('project_path') or None)
@@ -3737,13 +3793,13 @@ def _checkpoint_worker(snap):
             # Operational/unknown failures leave this source span pending.
             if reason != 'parse_empty':
                 _scribe_stat(pid, f'checkpoint_pending:{reason}')
-                return
+                return False
             # Deterministically thin delta: no entry; retain prior summary.
             rec['running_summary'] = prev_summary
             if _commit_managed_entry(p, wm_upsert=rec):
                 _dispatch_condense(p)
             _scribe_stat(pid, f'checkpoint_skipped:{reason}')
-            return
+            return True
         if prev_summary:
             try:
                 token = _with_transform_context(provider, cwd=p.get('project_path') or None)
@@ -3756,11 +3812,11 @@ def _checkpoint_worker(snap):
                 merged = (merged or '').strip().replace('\n', ' ').strip()
                 if not merged or any(mk in merged.lower() for mk in _SCRIBE_REFUSAL_MARKERS):
                     _scribe_stat(pid, 'checkpoint_pending:reduce_incomplete')
-                    return
+                    return False
             except Exception as e:
                 _log(f'[scribe] checkpoint reduce failed: {e}')
                 _scribe_stat(pid, 'checkpoint_pending:model_error')
-                return
+                return False
         else:
             merged = dsum
         merged = merged[:300]
@@ -3783,8 +3839,10 @@ def _checkpoint_worker(snap):
                                    owner=snap.get('owner'), provider=provider,
                                    cwd=p.get('project_path') or None) is not None:
                 _scribe_stat(pid, 'continuity_updated')
+        return True
     except Exception as e:
         _log(f'[scribe] checkpoint failed: {e}')
+        return False
     finally:
         sema.release()
         with _checkpoint_guard:

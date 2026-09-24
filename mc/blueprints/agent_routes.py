@@ -145,7 +145,7 @@ load_projects: Callable[[], list] = None  # type: ignore[assignment]
 _get_memory_path: Callable[[dict], Path] = None  # type: ignore[assignment]
 _get_archive_path: Callable[[dict], Path] = None  # type: ignore[assignment]
 _memory_search: Callable[..., list] = None  # type: ignore[assignment]
-_maybe_checkpoint: Callable[[dict], None] = None  # type: ignore[assignment]
+_maybe_checkpoint: Callable[..., bool] = None  # type: ignore[assignment]  # (session, force=False) -> flushed
 _write_session_memory: Callable[..., bool] = None  # type: ignore[assignment]
 _dispatch_condense: Callable[[dict], None] = None  # type: ignore[assignment]
 _should_condense: Callable[..., bool] = None  # type: ignore[assignment]
@@ -2859,7 +2859,7 @@ def agent_auth_login(provider):
     return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
 
 
-def _allowance_refusal(vendor, *, user_initiated):
+def _allowance_refusal(vendor, *, user_initiated, project=None):
     """The refusal text for `vendor`, or '' if it may run.
 
     A record is only as good as its evidence (one failed run), and nothing
@@ -2870,14 +2870,158 @@ def _allowance_refusal(vendor, *, user_initiated):
     keeps refusing until the record's reset time or a successful run or the
     user's explicit re-check — never a guess. The refusal itself is unchanged:
     it names the vendor and never falls back to another one.
+
+    MC-964 Step D.2 extends the same re-probe to a NON-user-initiated
+    dispatch (scheduler/workflow/agent-to-agent) when `project` is given and
+    the corpus holds a memory unit dated newer than the standing record that
+    names this vendor — the plan's own fixture ("codex exhausted +5d" plus a
+    newer "Ron topped up" unit must produce one probe, not a refusal") has no
+    user in the loop to type a chat assertion, so the gate must find this on
+    its own. Same `heal()` 30s/vendor throttle bounds repeats; still never a
+    fallback to another vendor.
     """
-    if user_initiated and _allowance_state.get(vendor):
+    entry = _allowance_state.get(vendor)
+    if entry and (user_initiated
+                  or (project and _newer_memory_unit_exists(project, vendor, entry))):
         try:
             rt = _agent_runtime.get_runtime(vendor)
             _allowance_state.heal(vendor, rt.probe_allowance)
         except KeyError:
             pass
     return _allowance_state.refusal_message(vendor)
+
+
+_ALLOWANCE_VENDOR_MENTION_RE_CACHE: dict = {}
+
+
+def _vendor_mention_re(vendor):
+    rx = _ALLOWANCE_VENDOR_MENTION_RE_CACHE.get(vendor)
+    if rx is None:
+        rx = re.compile(r'\b' + re.escape(vendor) + r'\b', re.IGNORECASE)
+        _ALLOWANCE_VENDOR_MENTION_RE_CACHE[vendor] = rx
+    return rx
+
+
+_HIT_DATE_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]')
+
+
+def _hit_date(hit):
+    """The ISO date a memory-search hit carries, or None. Archive lines are
+    `- [YYYY-MM-DD] **task** — ...` (the same leading bracket `_ARCH_LINE_RE`
+    parses at write time), which `head` (the unit's own first 120 chars, only
+    present when the caller passed `keep_internal=True`) or `snippet`
+    reliably carry for a short line. No date found is a real answer, not a
+    gap to guess past — MC-964 Step D.2 only counts a hit that is
+    demonstrably newer than the record, never one merely mentioning the
+    vendor."""
+    m = _HIT_DATE_RE.search(hit.get('head') or hit.get('snippet') or '')
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _hit_is_newer(hit, entry):
+    """True only when `hit` carries a date on/after the exhaustion record's
+    own `recorded_at` day (day-granularity on both sides — archive lines
+    carry a date, not a timestamp, so same-day is treated as newer rather
+    than dropped). A hit with no parseable date, or a record with no
+    parseable `recorded_at`, is never counted."""
+    hd = _hit_date(hit)
+    if hd is None:
+        return False
+    try:
+        recorded = datetime.fromisoformat(
+            str(entry.get('recorded_at') or '').replace('Z', '+00:00'))
+        if recorded.tzinfo is None:
+            recorded = recorded.replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    return hd >= recorded.astimezone(timezone.utc).date()
+
+
+def _newer_memory_unit_exists(project, vendor, entry):
+    """Gate-side counterpart to `_allowance_conflict_block`'s memory-unit
+    trigger (MC-964 Step D.2). A dispatch refusal fires before
+    `_build_agent_context` builds the turn's read-floor hits, so there is no
+    `hits` list to reuse yet — this runs its own small, untelemetered search
+    (`record=None`, so a re-probe gate check never inflates delivery stats)
+    with `keep_internal=True` so `_hit_date` can read `head`, which the
+    read-floor's own (pinned) default call never carries."""
+    try:
+        hits = _memory_search(project, vendor, 8, expand=0, record=None,
+                               keep_internal=True)
+    except Exception as e:
+        _log(f'[allowance-conflict] gate newer-unit search failed for '
+             f'{vendor!r}: {e}')
+        return False
+    return any(_hit_is_newer(h, entry) for h in hits)
+
+
+def _allowance_conflict_block(task_text, hits):
+    """MC-964 Step D.2/D.3 — 'a newer memory unit or a user chat assertion on
+    the same vendor triggers ONE re-probe' (§7 decision 2, adopted position
+    mc964memoryoverhaul...). A live exhausted-vendor record whose name is
+    mentioned either in this turn's own message (`task_text`) or in a memory
+    unit the read-floor just delivered (`hits`) is worth asking the vendor
+    about again — the alternative is the 33-hour Codex blackout this plan's
+    journal measured, where nothing could contradict a stale record. A memory
+    unit must also be NEWER than the record (`_hit_is_newer`) — without that,
+    'codex' appearing in any of the dozens of unrelated units mentioning it
+    would re-probe on nearly every turn while codex is exhausted. The chat
+    assertion path has no such gate: it is the user saying so, in this turn,
+    right now.
+
+    Re-probes through `_allowance_state.heal()`, which already throttles to
+    one vendor call per 30s — that throttle, not anything here, is what keeps
+    a long chat from turning into a probe loop; this function itself never
+    retries within a call. REPORT MODE only (§16 step 2 posture): the result
+    is rendered as two lines per vendor for the human/agent to read, it never
+    blocks or rewrites the turn. Every render is logged so a day of real
+    turns can be grepped for a false-positive count (§ acceptance).
+    """
+    try:
+        states = _allowance_state.all_states()
+    except Exception as e:
+        _log(f'[allowance-conflict] state read failed: {e}')
+        return ''
+    if not states:
+        return ''
+    lines = []
+    for vendor, entry in states.items():
+        rx = _vendor_mention_re(vendor)
+        source = ''
+        if task_text and rx.search(task_text):
+            source = 'this message'
+        else:
+            for h in hits:
+                blob = f"{h.get('file', '')} {h.get('snippet', '')}"
+                if rx.search(blob) and _hit_is_newer(h, entry):
+                    source = f"memory unit [{h.get('file', '')}]"
+                    break
+        if not source:
+            continue
+        try:
+            rt = _agent_runtime.get_runtime(vendor)
+            _allowance_state.heal(vendor, rt.probe_allowance)
+        except KeyError:
+            pass
+        still = _allowance_state.get(vendor)
+        if still:
+            age = _allowance_state.record_age_clause(still)
+            outcome = f'still exhausted{f" ({age})" if age else ""}'
+        else:
+            outcome = 'cleared by the re-probe'
+        _log(f'[allowance-conflict] {vendor}: {source} vs live record -> {outcome}')
+        lines.append(f'  • {vendor}: allowance record says exhausted, but '
+                     f'{source} mentions {vendor}')
+        lines.append(f'    -> re-probed: {outcome}')
+    if not lines:
+        return ''
+    return ("--- ALLOWANCE STATE CONFLICT (report mode; MC-964 Step D) ---\n"
+            + "\n".join(lines))
 
 
 @bp.route('/api/agent/<provider>/allowance/recheck', methods=['POST'])
@@ -4109,6 +4253,19 @@ def _build_agent_context(project, incognito=False, task='', character_body='',
                 "--- RELEVANT MEMORY (auto-surfaced for this task; "
                 "use the mc-memory-search skill to dig deeper) ---\n" + rl)
 
+        # MC-964 Step D.2/D.3 — a live vendor-allowance-exhaustion record
+        # whose vendor this turn's message or a delivered memory unit
+        # mentions gets ONE re-probe (heal()'s own throttle bounds repeats)
+        # and a two-line conflict block, rather than sitting unrefuted next
+        # to evidence that may already contradict it.
+        try:
+            _allowance_conflict = _allowance_conflict_block(task, hits)
+        except Exception as e:
+            _log(f"[allowance-conflict] {project.get('id')}: block build failed: {e}")
+            _allowance_conflict = ''
+        if _allowance_conflict:
+            parts.append(_allowance_conflict)
+
     # Exploration read-floor — closes the learning loop by feeding the
     # Distiller's captured EXPLORATION.md proposals back into context. Without
     # this, _proposed/ explorations are write-only and never change behavior.
@@ -4726,8 +4883,9 @@ def _read_agent_stream(proc, session):
                                 continue
                             _tuid = _block.get('tool_use_id')
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                            _observe_memory_push_result(
-                                session, _tname, _extract_tool_result_text(_block))
+                            _tresult_text = _extract_tool_result_text(_block)
+                            _observe_memory_push_result(session, _tname, _tresult_text)
+                            _midturn.note_tool_result_text(session, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -4985,8 +5143,9 @@ def _read_agent_stream_b(proc, session):
                                 continue
                             _tuid = _block.get('tool_use_id')
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                            _observe_memory_push_result(
-                                session, _tname, _extract_tool_result_text(_block))
+                            _tresult_text = _extract_tool_result_text(_block)
+                            _observe_memory_push_result(session, _tname, _tresult_text)
+                            _midturn.note_tool_result_text(session, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -8613,10 +8772,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # the brief. Follow-up has its own copy — see agent_followup, which does
     # not re-resolve a provider (the session already has one).
     # A user-initiated dispatch re-checks a standing record against the vendor
-    # first (see _allowance_refusal); unattended callers (scheduler, workflow,
-    # agent-to-agent) never spend a probe on a refusal nobody is waiting on.
+    # first (see _allowance_refusal). An unattended caller (scheduler,
+    # workflow, agent-to-agent) only spends a probe when the corpus itself
+    # holds a newer memory unit naming this vendor (MC-964 Step D.2) — passing
+    # `project` lets the gate find that with nobody waiting on the result.
     _allowance_block = _allowance_refusal(
-        provider_name, user_initiated=(trigger_type == 'manual'))
+        provider_name, user_initiated=(trigger_type == 'manual'), project=p)
     if _allowance_block:
         raise ValueError(_allowance_block)
     _resume_auto_requested = False
@@ -11229,13 +11390,24 @@ def _maybe_midturn_roll(session, proc=None):
         session['_mt_roll_requested'] = True
         tokens = session.get('_mt_main_tokens')
         project_id = session.get('project_id', '')
+        # MC-964 Step C: force a Scribe checkpoint of the OUTGOING session
+        # before handing off — the fresh session gets a new claude_session_id,
+        # so anything the old transcript hadn't been checkpointed past is
+        # gone for good once the roll proceeds (see memory._maybe_checkpoint's
+        # `force` docstring). Best-effort: a failed flush must not block the
+        # roll itself, only show up as scribe_flushed=False in the roll log.
+        scribe_flushed = False
+        try:
+            scribe_flushed = bool(_maybe_checkpoint(session, force=True))
+        except Exception as e:
+            _log(f"[midturn-rollover] forced scribe checkpoint failed: {e}")
         payload, status = agent_interrupt(project_id, _internal={
             'session_id': session.get('session_id', ''),
             'message': _midturn.ROLL_MESSAGE, 'midturn': True, 'proc': proc,
             'tokens': tokens,
             'build_state': lambda cwd: _midturn.build_state_block(session, cwd)})
         if status == 200:
-            _midturn.record_roll(session, tokens)
+            _midturn.record_roll(session, tokens, scribe_flushed=scribe_flushed)
             return
         session.pop('_mt_roll_requested', None)
         if status != 409:  # 409 = a newer interrupt got there first: not a failure

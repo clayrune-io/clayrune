@@ -156,13 +156,30 @@ def heal(vendor: str, probe: Callable[[], Optional[bool]]) -> bool:
         usable = probe()
     except Exception as e:
         _log(f"[allowance] {vendor} probe raised: {e}", flush=True)
+        _record_probe_attempt(vendor)
         return False
+    _record_probe_attempt(vendor)
     if usable is True:
         _log(f"[allowance] {vendor} probe reports usable; clearing stale "
              f"exhaustion record", flush=True)
         clear_exhaustion(vendor)
         return True
     return False
+
+
+def _record_probe_attempt(vendor: str) -> None:
+    """Stamp `last_probed_at` on the standing record (MC-964 Step D) — wall
+    clock, persisted, so a refusal can name when it was last re-checked, not
+    just when it was first recorded. `_LAST_PROBE` above is monotonic and
+    in-memory only (throttle math); this is the human-facing counterpart.
+    Runs whether the probe cleared the record or not; a no-op if the record
+    was cleared out from under it (nothing left to stamp).
+    """
+    with _lock:
+        entry = _STATE.get(vendor)
+        if entry is not None:
+            entry['last_probed_at'] = _now_iso()
+            _save()
 
 
 def _is_expired(entry: dict) -> bool:
@@ -250,10 +267,57 @@ def _format_dt(dt: datetime) -> str:
     return f"{dt.strftime('%b')} {dt.day}, {dt.year} {hour12}:{dt.minute:02d} {ampm}"
 
 
+def _age_display(iso_ts: str) -> str:
+    """'3h ago' / '2d ago' style age, for a refusal to name how stale its own
+    evidence is (MC-964 Step D.2) without dumping a raw timestamp."""
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace('Z', '+00:00'))
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        delta = datetime.now(timezone.utc) - dt
+    except Exception:
+        return ''
+    secs = delta.total_seconds()
+    if secs < 0:
+        return ''
+    if secs < 3600:
+        return f'{max(1, int(secs // 60))}m ago'
+    if secs < 86400:
+        return f'{int(secs // 3600)}h ago'
+    return f'{int(secs // 86400)}d ago'
+
+
+def _absolute_display(iso_ts: str) -> str:
+    try:
+        dt = datetime.fromisoformat(str(iso_ts).replace('Z', '+00:00'))
+        return _format_dt(dt if dt.tzinfo else dt.replace(tzinfo=timezone.utc))
+    except Exception:
+        return ''
+
+
+def record_age_clause(entry: dict) -> str:
+    """'record Nh/d old, last probed <date>' (MC-964 Step D.2: the refusal
+    names both the record's age and the date it was last re-checked, so a
+    human reading it can tell a stale record from a recently-confirmed one
+    without opening the state file). '' pieces omitted rather than guessed.
+    `entry` is a dict as returned by `get()`."""
+    recorded = _age_display(entry.get('recorded_at') or '')
+    probed = _absolute_display(entry.get('last_probed_at') or '')
+    parts = []
+    if recorded:
+        parts.append(f'record {recorded}')
+    if probed:
+        parts.append(f'last probed {probed}')
+    return ', '.join(parts)
+
+
 def refusal_message(vendor: str) -> str:
     """'' if the vendor is usable; otherwise the user-facing refusal, naming
     the vendor, the limit and the reset time (VENDOR_AGNOSTIC_PROGRAM §4
-    item 3). Never suggests a fallback — there is none."""
+    item 3). Never suggests a fallback — there is none. Also names the
+    record's own age and, if it's ever been re-probed, when — MC-964 Step D.2:
+    the incident this closes was a 5-day-old record refusing silently with no
+    way to tell it was stale without reading the JSON file by hand."""
     entry = get(vendor)
     if not entry:
         return ''
@@ -262,8 +326,10 @@ def refusal_message(vendor: str) -> str:
         # `record_exhaustion` stores 'unknown' for an unclassified limit;
         # "(unknown)" told the user nothing and read like a missing field.
         limit = 'usage limit'
+    age = record_age_clause(entry)
+    suffix = f' ({age})' if age else ''
     return (f"{vendor} is out of allowance ({limit}), "
-            f"{resets_clause(entry)} — no fallback to another vendor")
+            f"{resets_clause(entry)} — no fallback to another vendor{suffix}")
 
 
 def display_text(vendor: str) -> str:

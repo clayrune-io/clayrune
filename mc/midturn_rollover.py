@@ -33,6 +33,14 @@ from mc import state
 from mc.core import _log, TimestampedLines
 
 RECENT_TOOLS_KEEP = 10
+# MC-964 Step C: the last tool_results' first lines, carried across a roll
+# because the transcript handoff (role/text turns only) drops tool_result
+# content entirely — the exact gap that cost a prior roll its own measurements
+# (docs/_journal/b2d85e51-memory-overhaul.md). Capped, not unlimited: a larger
+# carry raises the fresh session's floor on every roll (plan §7.3).
+TOOL_RESULT_CARRY_CAP_BYTES = 4096
+_TOOL_RESULT_HEAD_CHARS = 300
+_JOURNAL_MARKER = 'docs/_journal/'
 # A roll that lands on a fresh prefix already over the threshold (threshold set
 # below the size of the injected context) would otherwise re-roll at every tool
 # boundary. Re-rolling needs this much growth over the fresh session's first
@@ -88,6 +96,19 @@ def _pending(session):
     return session.setdefault('_mt_pending_tools', set())
 
 
+def _journal_path(tool_input):
+    """The `file_path` a Write/Edit call targeted, if it's under
+    `docs/_journal/` — MC-964 Step C carries these across a roll since a
+    fresh session otherwise has no way to know which journal file already
+    holds this task's log (re-reading the wrong/no file re-derives it)."""
+    if not isinstance(tool_input, dict):
+        return None
+    fp = tool_input.get('file_path')
+    if not isinstance(fp, str) or not fp:
+        return None
+    return fp if _JOURNAL_MARKER in fp.replace('\\', '/') else None
+
+
 def note_tool_use(session, block):
     """Record one `tool_use` content block. While the flag is off this records
     nothing, and drops any pending set left from an earlier enabled stretch:
@@ -110,6 +131,33 @@ def note_tool_use(session, block):
         jobs = session.setdefault('_mt_bg_jobs', [])
         jobs.append({'tool': name, 'input': _preview(tool_input)})
         del jobs[:-_BG_JOBS_KEEP]
+    jp = _journal_path(tool_input)
+    if jp:
+        paths = session.setdefault('_mt_journal_paths', [])
+        if jp not in paths:
+            paths.append(jp)
+
+
+def note_tool_result_text(session, tool_name, text):
+    """Record one tool_result's first line into the rollover carry buffer
+    (MC-964 Step C). Called by the caller's existing extraction (`agent_routes
+    ._extract_tool_result_text`) alongside `note_tool_results`, so this module
+    never needs its own copy of the Claude content-block parsing. Oldest
+    entries drop first once the running total crosses
+    `TOOL_RESULT_CARRY_CAP_BYTES`, so a roll always carries the most RECENT
+    evidence rather than whatever arrived first."""
+    if not enabled() or not text:
+        return
+    head = next((ln.strip() for ln in text.splitlines() if ln.strip()), '')
+    if not head:
+        return
+    head = head[:_TOOL_RESULT_HEAD_CHARS]
+    entries = session.setdefault('_mt_tool_result_heads', [])
+    entries.append({'tool': tool_name or '(tool)', 'head': head})
+    total = sum(len(e['tool']) + len(e['head']) for e in entries)
+    while total > TOOL_RESULT_CARRY_CAP_BYTES and len(entries) > 1:
+        removed = entries.pop(0)
+        total -= len(removed['tool']) + len(removed['head'])
 
 
 def note_tool_results(session, content):
@@ -244,7 +292,14 @@ def _git(cwd, *args):
 
 def build_state_block(session, cwd):
     """The mid-task state the transcript handoff cannot carry. Every section is
-    always present; an unavailable one says so instead of vanishing."""
+    always present; an unavailable one says so instead of vanishing.
+
+    MC-964 Step C adds two sections the plan's replay showed missing: the
+    session's own `docs/_journal/` file(s) (so the fresh session re-reads its
+    own log instead of re-deriving what it already wrote), and the last
+    tool_results' first lines (`note_tool_result_text`, capped at
+    `TOOL_RESULT_CARRY_CAP_BYTES`) — the transcript handoff carries only
+    role/text turns, so command/search OUTPUT otherwise vanishes at the roll."""
     task = session.get('task') or '(original task text unavailable)'
     recent = session.get('_mt_recent_tools') or []
     calls = '\n'.join(f"- {c['name']}: {c['input']}" if c['input'] else f"- {c['name']}"
@@ -257,6 +312,12 @@ def build_state_block(session, cwd):
                     f"any that are still needed.)")
     else:
         job_text = '(none)'
+    journal_paths = session.get('_mt_journal_paths') or []
+    journal_text = ('\n'.join(f"- {jp}" for jp in journal_paths)
+                     or '(none written under docs/_journal/ this session)')
+    heads = session.get('_mt_tool_result_heads') or []
+    heads_text = ('\n'.join(f"- {h['tool']}: {h['head']}" for h in heads)
+                  or '(none captured)')
     return (
         "=== Mid-task rollover state ===\n"
         f"--- Original task (verbatim) ---\n{task}\n\n"
@@ -265,6 +326,8 @@ def build_state_block(session, cwd):
         f"--- git status --short ---\n{_git(cwd, 'status', '--short')}\n\n"
         f"--- git diff --stat ---\n{_git(cwd, 'diff', '--stat')}\n\n"
         f"--- Last {len(recent)} tool call(s) ---\n{calls}\n\n"
+        f"--- Journal file(s) written this session ---\n{journal_text}\n\n"
+        f"--- Recent tool_result heads (<={TOOL_RESULT_CARRY_CAP_BYTES // 1024}KB) ---\n{heads_text}\n\n"
         f"--- Background jobs ---\n{job_text}\n"
         "=== End of mid-task rollover state ===")
 
@@ -303,13 +366,24 @@ def _append_row(session, extra):
         _log(f"[midturn-rollover] log write failed: {e}")
 
 
-def record_roll(session, context_tokens):
+def record_roll(session, context_tokens, *, scribe_flushed=False):
     """Append one JSONL line per roll: server log + a file that survives.
-    Never raises — a failed write must not break the roll."""
+    Never raises — a failed write must not break the roll.
+
+    `scribe_flushed` (MC-964 Step C) records whether the forced pre-roll
+    checkpoint (`agent_routes._maybe_midturn_roll` ->
+    `memory._maybe_checkpoint(session, force=True)`) actually committed
+    something — false covers both "nothing new to flush" and a real failure,
+    which the acceptance test's replay distinguishes by cross-checking
+    against the Scribe's own `checkpoint_*` stats for the same window."""
     pid = session.get('project_id', '') or 'unknown'
     _log(f"[midturn-rollover] {pid}/{session.get('session_id', '')}: context "
-         f"{context_tokens} tokens crossed threshold mid-turn — rolling")
+         f"{context_tokens} tokens crossed threshold mid-turn — rolling "
+         f"(scribe_flushed={scribe_flushed})")
     _append_row(session, {
         'context_tokens': context_tokens,
         'recent_tools': len(session.get('_mt_recent_tools') or []),
+        'journal_paths': len(session.get('_mt_journal_paths') or []),
+        'tool_result_heads': len(session.get('_mt_tool_result_heads') or []),
+        'scribe_flushed': bool(scribe_flushed),
     })

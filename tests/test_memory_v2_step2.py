@@ -257,6 +257,58 @@ def test_days_since_decided_is_computed_per_position(env):
     assert result['position_old.md']['trips'] is True
 
 
+# ── allowance_exhausted(<vendor>) — MC-964 Step D.1, first EXTERNAL metric ──
+
+@pytest.fixture(autouse=True)
+def _isolated_allowance_state(tmp_path):
+    from mc import allowance_state as al
+    al.wire(tmp_path / '_allowance_state_for_holds_while_tests.json')
+    yield
+    al._STATE = {}
+
+
+def test_allowance_exhausted_grammar_requires_a_vendor_arg():
+    import mc.memory as mem
+    with pytest.raises(mem.HoldsWhileError, match='needs an argument'):
+        mem._parse_holds_while('allowance_exhausted() >= 1')
+
+
+def test_allowance_exhausted_trips_when_vendor_is_recorded_exhausted(env):
+    mem, tmp = env
+    from mc import allowance_state as al
+    mem.write_position(
+        P, subject='pause codex-backed automation', verdict='declined',
+        reason='codex is out of allowance', slug='codex-paused',
+        holds_while='allowance_exhausted(codex) >= 1')
+    result = mem.evaluate_positions_holds_while(P)
+    assert result['position_codex-paused.md']['trips'] is False, (
+        'no allowance_state record yet — must not guess True')
+
+    al.record_exhaustion('codex', limit_kind='usage_limit')
+    result2 = mem.evaluate_positions_holds_while(P)
+    assert result2['position_codex-paused.md']['trips'] is True
+
+    al.clear_exhaustion('codex')
+    result3 = mem.evaluate_positions_holds_while(P)
+    assert result3['position_codex-paused.md']['trips'] is False
+
+
+def test_allowance_exhausted_is_not_cached_on_the_corpus_signature(env):
+    """Unlike the corpus-shape metrics, allowance state can change with no
+    memory-dir file touched at all — Step D.1's whole point is that this
+    metric must reflect the LIVE vendor record, not a stale build-time
+    snapshot from `_holds_while_global_metrics`'s own file-signature cache."""
+    mem, tmp = env
+    from mc import allowance_state as al
+    mem.write_position(
+        P, subject='x', verdict='declined', reason='r', slug='x',
+        holds_while='allowance_exhausted(gemini) >= 1')
+    assert mem.evaluate_positions_holds_while(P)['position_x.md']['trips'] is False
+    al.record_exhaustion('gemini', limit_kind='unknown')
+    # No memory-dir file changed — only the corpus-shape cache would miss this.
+    assert mem.evaluate_positions_holds_while(P)['position_x.md']['trips'] is True
+
+
 def test_broken_links_metric_counts_only_class_d(env):
     mem, tmp = env
     (tmp / 'a.md').write_text('see [[missing_note]] and [[b.md]]', encoding='utf-8')

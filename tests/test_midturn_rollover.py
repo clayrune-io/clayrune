@@ -83,6 +83,27 @@ def _tool_result(tool_id, parent=None):
         {'type': 'tool_result', 'tool_use_id': tool_id, 'content': 'ok'}]}}) + '\n'
 
 
+def _tool_result_text(tool_id, text, parent=None):
+    """Like `_tool_result` but with caller-chosen content, for MC-964 Step C's
+    tool-result-head carry (the fixed 'ok' body above never exercises it)."""
+    return json.dumps({'type': 'user', 'parent_tool_use_id': parent,
+                       'message': {'role': 'user', 'content': [
+        {'type': 'tool_result', 'tool_use_id': tool_id, 'content': text}]}}) + '\n'
+
+
+def _assistant_write(tool_id, file_path, ctx, mid, parent=None):
+    """A streamed `Write` tool_use targeting `file_path` — MC-964 Step C's
+    journal-path carry keys off the `file_path` input, which `_assistant`
+    above never produces (it only emits Bash/text blocks)."""
+    block = {'type': 'tool_use', 'id': tool_id, 'name': 'Write',
+             'input': {'file_path': file_path, 'content': 'x'}}
+    return json.dumps({'type': 'assistant', 'session_id': CSID,
+                       'parent_tool_use_id': parent, 'message': {
+        'id': mid, 'content': [block],
+        'usage': {'input_tokens': ctx, 'cache_read_input_tokens': 0,
+                  'cache_creation_input_tokens': 0, 'output_tokens': 10}}}) + '\n'
+
+
 def _wait(pred, timeout=3.0):
     end = time.time() + timeout
     while time.time() < end:
@@ -296,6 +317,110 @@ def test_roll_is_logged_to_a_durable_file(env):
     assert rows[0]['threshold'] == 200_000
     env['join_respawns']()   # the roll's respawn thread is this test's to finish
     assert len(env['spawned']) == 1
+
+
+def test_journal_path_and_tool_result_heads_carried_across_roll(env):
+    """MC-964 Step C: the fresh session's prompt carries the docs/_journal/
+    file(s) this session wrote and the last tool_results' first lines. The
+    plain transcript handoff (role/text turns only) drops tool_result content
+    entirely and has no notion of which journal file already holds this
+    task's log — exactly the gap that cost a prior roll its own measurements
+    (docs/_journal/b2d85e51-memory-overhaul.md)."""
+    def lines():
+        yield _assistant_write('w1', 'docs/_journal/b2d85e51-memory-overhaul.md',
+                               50_000, 'm1')
+        yield _tool_result_text('w1', 'ok')
+        yield _assistant('tool1', 100_000, 'm2')
+        yield _tool_result_text('tool1', 'measured: 79.5% effectiveness\nsecond line')
+        yield _assistant('tool2', 250_000, 'm3')
+        yield _tool_result_text('tool2', 'canary rank None/42')
+
+    _run_reader(env, lines)
+    assert _wait(lambda: env['new_proc'].stdin.written), 'fresh session got no prompt'
+    prompt = json.loads(env['new_proc'].stdin.written[0])['message']['content']
+
+    assert 'docs/_journal/b2d85e51-memory-overhaul.md' in prompt
+    assert 'measured: 79.5% effectiveness' in prompt
+    assert 'canary rank None/42' in prompt
+    assert 'second line' not in prompt, 'only the first line of a result is carried'
+
+
+def test_tool_result_heads_capped_oldest_dropped_first(env):
+    """The rolling carry buffer is capped at TOOL_RESULT_CARRY_CAP_BYTES so a
+    roll never inflates the fresh session's floor without bound (plan §7.3);
+    when it's over budget the OLDEST entries drop, so a roll always carries
+    the most recent evidence."""
+    from mc import midturn_rollover
+    session = _session(_Proc())
+    for i in range(80):
+        midturn_rollover.note_tool_result_text(session, 'Bash', f'result-{i}-' + 'x' * 100)
+    entries = session['_mt_tool_result_heads']
+    total = sum(len(e['tool']) + len(e['head']) for e in entries)
+    assert total <= midturn_rollover.TOOL_RESULT_CARRY_CAP_BYTES
+    assert entries[-1]['head'].startswith('result-79-'), 'newest entry must survive'
+    assert not any(e['head'].startswith('result-0-') for e in entries), \
+        'oldest entry must be the one dropped'
+
+
+def test_scribe_checkpoint_forced_before_roll_and_flushed_flag_logged(env, monkeypatch):
+    """Step C: before the interrupt path fires, the OUTGOING session's Scribe
+    checkpoint is forced (force=True, never the async/debounced kind), and
+    whatever it reports back is exactly what `scribe_flushed` in the durable
+    roll log records."""
+    calls = []
+
+    def fake_checkpoint(session, force=False):
+        calls.append((session.get('session_id'), force))
+        return True
+
+    monkeypatch.setattr(env['ar'], '_maybe_checkpoint', fake_checkpoint)
+
+    def lines():
+        yield _assistant('tool1', 250_000, 'm1')
+        yield _tool_result('tool1')
+
+    _run_reader(env, lines)
+    assert calls == [('worker-1', True)], calls
+
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    assert _wait(log.is_file)
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert rows[0]['scribe_flushed'] is True
+
+
+def test_scribe_checkpoint_nothing_new_or_failure_logs_flushed_false(env, monkeypatch):
+    """A checkpoint that had nothing new to flush, and one that raises
+    outright, both surface as `scribe_flushed: False` — neither blocks the
+    roll itself (best-effort, per the force=True docstring in memory.py)."""
+    monkeypatch.setattr(env['ar'], '_maybe_checkpoint',
+                        lambda session, force=False: False)
+
+    def lines():
+        yield _assistant('tool1', 250_000, 'm1')
+        yield _tool_result('tool1')
+
+    _run_reader(env, lines)
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    assert _wait(log.is_file)
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert rows[0]['scribe_flushed'] is False
+
+
+def test_scribe_checkpoint_raising_does_not_block_the_roll(env, monkeypatch):
+    def boom(session, force=False):
+        raise RuntimeError('boom')
+
+    monkeypatch.setattr(env['ar'], '_maybe_checkpoint', boom)
+
+    def lines():
+        yield _assistant('tool1', 250_000, 'm1')
+        yield _tool_result('tool1')
+
+    _run_reader(env, lines)
+    assert _wait(lambda: len(env['spawned']) == 1), 'roll must proceed despite the failure'
+    log = env['tmp'] / 'midturn_log' / 'p1.jsonl'
+    rows = [json.loads(l) for l in log.read_text().splitlines()]
+    assert rows[0]['scribe_flushed'] is False
 
 
 def test_spawner_callback_still_fires_after_the_roll(env):
