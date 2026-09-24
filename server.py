@@ -493,6 +493,15 @@ def _load_config():
         'memory_push_mode': 'report',
         'memory_push_min_score': 15.0,
         'memory_push_max_per_turn': 2,
+
+        # MC-964 Step A (docs/MEMORY_OVERHAUL_PLAN.md #6, RC1 fix). The legacy
+        # archive dedupe kept only the LAST line per (day, task[:120]) and
+        # silently deleted 62% of the archive, including the 2026-09-17 Codex
+        # top-up fact (superseded by an unrelated later line under the same
+        # chat title). Content-containment dedupe (mc/memory.py
+        # `_dedupe_archive_lines_containment`) is the default now; this flag
+        # is the rollback lever back to last-wins, not a feature to reach for.
+        'archive_dedupe_legacy_enabled': False,
     }
     if CONFIG_PATH.exists():
         try:

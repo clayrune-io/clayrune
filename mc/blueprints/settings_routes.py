@@ -133,6 +133,9 @@ _CONFIG_EDITABLE_KEYS = {
     # Mid-task memory push (MC-944) — mc/memory_push.py. Read live per tool
     # call, no respawn needed.
     'memory_push_mode', 'memory_push_min_score', 'memory_push_max_per_turn',
+    # Archive dedupe semantics (MC-964 Step A). Read at the next corpus build
+    # (per-file cache invalidates like any other memory setting) — no respawn.
+    'archive_dedupe_legacy_enabled',
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
     'behavior_tail_enabled',

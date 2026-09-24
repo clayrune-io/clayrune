@@ -190,6 +190,129 @@ def test_tool_result_with_exception_name_surfaces_matching_note(env, monkeypatch
     assert fired == ['discovery_keyerror_project_id_missing.md']
 
 
+# ── archive-line identity (MC-964 Step B / RC4) ─────────────────────────────
+# RC4: `data/memory_push_log/mission_control.jsonl` recorded archive hits as
+# `note: "MEMORY_ARCHIVE.md"` with no line id — indistinguishable across
+# ~2.5k lines sharing that one filename, so "was the top-up fact ever near"
+# was unanswerable from telemetry alone. These tests pin the fix: an archive
+# row now carries a `line` field (the line's own leading date + first 80
+# chars) alongside the unchanged `note` (container filename).
+
+ARCHIVE_LINE = (
+    "- [2026-09-17] **top-up** — Codex credits added, access problem cleared."
+)
+ARCHIVE_DISTRACTOR = (
+    "- [2026-09-18] **W3 allowance state** — Codex allowance exhausted, "
+    "await reset."
+)
+
+
+def _seed_archive(tmp_path, lines):
+    (tmp_path / 'MEMORY_ARCHIVE.md').write_text(
+        '\n'.join(lines) + '\n', encoding='utf-8')
+
+
+def test_archive_hit_row_carries_line_identity_not_just_filename(env, monkeypatch):
+    mem, mp, tmp_path, data_root = env
+    _seed_archive(tmp_path, [ARCHIVE_LINE, ARCHIVE_DISTRACTOR])
+    from mc import state
+
+    # Built directly (not via extract_result_query's error-signal filter) —
+    # the words the archive line's own content uses, same as
+    # codex_miss_repro.py's oracle query construction.
+    query = "Codex credits added access problem cleared"
+
+    hits = mem._memory_search(P, query, topk=5, expand=0, record=None,
+                               keep_internal=True)
+    target = next(h for h in hits if h['file'] == 'MEMORY_ARCHIVE.md'
+                  and h['head'].startswith('- [2026-09-17]'))
+    # Clear the archive multiplier bar (mp._ARCHIVE_SCORE_MULTIPLIER) with
+    # the real measured score, same calibration discipline as the topic tests.
+    monkeypatch.setitem(state.CONFIG, 'memory_push_min_score',
+                         target['score'] / mp._ARCHIVE_SCORE_MULTIPLIER - 0.01)
+
+    session = {'session_id': 'sess-arch-1', 'project_id': 'p1'}
+    fired = mp.observe(P, session, 'Bash', 'tool_result', query)
+    assert fired == ['MEMORY_ARCHIVE.md']
+
+    rows = [json.loads(l) for l in
+            _log_file(data_root).read_text(encoding='utf-8').splitlines()]
+    fires = [r for r in rows if r['result'] == 'would_send']
+    assert len(fires) == 1
+    row = fires[0]
+    assert row['note'] == 'MEMORY_ARCHIVE.md'
+    assert row['note_class'] == 'archive'
+    # The line id is the ARCHIVE LINE's own date + content, not the
+    # container filename repeated — this is the actual RC4 fix.
+    assert row['line'].startswith('- [2026-09-17]')
+    assert 'Codex credits' in row['line']
+    assert len(row['line']) <= 80
+
+
+def test_topic_and_position_hits_carry_no_line_field(env, monkeypatch):
+    mem, mp, tmp_path, data_root = env
+    _seed_note(tmp_path)
+    from mc import state
+
+    query = mp.extract_result_query(
+        "curl -i http://localhost/api/workflow/cancel\nHTTP/1.1 404 Not Found")
+    score = _measured_score(mem, tmp_path, query)
+    monkeypatch.setitem(state.CONFIG, 'memory_push_min_score', score - 0.01)
+
+    session = {'session_id': 'sess-topic-line', 'project_id': 'p1'}
+    mp.observe(P, session, 'Bash', 'tool_result', query)
+
+    rows = [json.loads(l) for l in
+            _log_file(data_root).read_text(encoding='utf-8').splitlines()]
+    assert rows and all(r.get('line', '') == '' for r in rows), \
+        "a topic hit is already fully identified by its filename alone"
+
+
+def test_step_b_log_alone_answers_whether_a_line_appeared_in_a_window(env, monkeypatch):
+    """The RC4 acceptance test, in miniature: given only the push-log rows
+    from a "window" of tool-stream observations, can a reader tell whether a
+    SPECIFIC archive line appeared — without re-running `_memory_search`?"""
+    mem, mp, tmp_path, data_root = env
+    _seed_archive(tmp_path, [ARCHIVE_LINE, ARCHIVE_DISTRACTOR])
+    from mc import state
+
+    on_topic_query = "Codex credits added access problem cleared"
+    off_topic_query = mp.extract_result_query(
+        "Traceback (most recent call last):\nKeyError: 'unrelated_field'")
+
+    hits = mem._memory_search(P, on_topic_query, topk=5, expand=0,
+                               record=None, keep_internal=True)
+    target = next(h for h in hits if h['head'].startswith('- [2026-09-17]'))
+    monkeypatch.setitem(state.CONFIG, 'memory_push_min_score',
+                         target['score'] / mp._ARCHIVE_SCORE_MULTIPLIER - 0.01)
+
+    # A "window" of tool-stream observations: one on-topic, one that
+    # shares nothing with either archive line.
+    session = {'session_id': 'sess-window', 'project_id': 'p1'}
+    mp.observe(P, session, 'Bash', 'tool_result', on_topic_query)
+    if off_topic_query:
+        mp.observe(P, session, 'Bash', 'tool_result', off_topic_query)
+
+    # "Re-run the window from logs alone": read the jsonl, no corpus access.
+    rows = [json.loads(l) for l in
+            _log_file(data_root).read_text(encoding='utf-8').splitlines()]
+
+    def fired(date_prefix, needle):
+        # 'would_send' == this specific line actually surfaced in a turn,
+        # not merely shared a token with the query as a ranked-but-suppressed
+        # candidate (a near_miss row) — the RC4 question is about DELIVERY.
+        return any(r.get('note') == 'MEMORY_ARCHIVE.md'
+                   and r.get('result') == 'would_send'
+                   and r.get('line', '').startswith(date_prefix)
+                   and needle in r.get('line', '')
+                   for r in rows)
+
+    assert fired('- [2026-09-17]', 'Codex credits'), \
+        "the top-up line's own identity must be recoverable from the log alone"
+    assert not fired('- [2026-09-18]', 'exhausted'), \
+        "a distractor line that never cleared the bar must not read as delivered"
+
+
 # ── the inverse: noise produces nothing ─────────────────────────────────────
 
 def test_noise_output_surfaces_nothing(env):

@@ -150,3 +150,16 @@ def test_internal_keys_never_leak_into_the_public_result(tmp_data_dir):
     _seed(m, p, {"arch_kestrel.md": "kestrelword subject"})
     for h in m._memory_search(p, "kestrelword", record="read_floor"):
         assert set(h) <= {"file", "score", "snippet", "via", "link"}
+
+
+def test_keep_internal_opts_a_caller_into_uid_and_head(tmp_data_dir):
+    """MC-964 Step B / RC4: `mc.memory_push` needs an archive HIT's own
+    `head` (its line identity) to log which of ~2.5k lines fired — the
+    default shape above must stay pinned for every other caller, so this is
+    opt-in, not a shape change."""
+    m = _mem(tmp_data_dir)
+    p = {"id": "delivshape2"}
+    _seed(m, p, {"arch_kestrel.md": "kestrelword subject"})
+    hits = m._memory_search(p, "kestrelword", keep_internal=True)
+    assert hits and hits[0]["uid"] and hits[0]["cls"] == "topic"
+    assert "kestrelword" in hits[0]["head"]
