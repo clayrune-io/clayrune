@@ -136,6 +136,52 @@ try {
   charOf('aged-persona') ? ok('  ...and its character rode through the merge branch too') : fail('  ...but its character was dropped by the merge branch');
   !has('aged-programmatic') ? ok('DROPPED: aged-out genuinely programmatic row from agentLogCache') : fail('KEPT (should be DROPPED): aged-out programmatic row');
 
+  // ── 2026-09-24: Channel thread for a scheduled persona run (Ron) ──────────
+  // Dave's "[Backlog run]" chat (trigger_type 'schedule', character Dave) was
+  // in /conversations but dropped by the noise gate in the Channel drill-down,
+  // so it was nowhere in the UI. A persona's Channel thread keeps its own
+  // scheduled runs; the Chats tab still routes them to the side flow.
+  const CHAR_DAVE = { name: 'dave', scope: 'global', display_name: 'dave', agent_name: 'Dave', avatar: 'fig:guard' };
+  const noise = await page.evaluate((dave) => {
+    const sched = { claude_session_id: 'sched-dave', trigger_type: 'schedule', source: '', character: dave, label: '[Backlog run] cycle', turns: 22 };
+    const schedNoChar = { claude_session_id: 'sched-anon', trigger_type: 'schedule', source: '', character: null, label: 'cron', turns: 3 };
+    const hmChar = { claude_session_id: 'hm-dave', trigger_type: 'hivemind_worker', source: 'agent', character: dave, label: 'worker', turns: 1 };
+    return {
+      schedChannel: window._isNoiseConvoRow(sched, { channel: true }),
+      schedChats: window._isNoiseConvoRow(sched),
+      anonChannel: window._isNoiseConvoRow(schedNoChar, { channel: true }),
+      hmChannel: window._isNoiseConvoRow(hmChar, { channel: true }),
+    };
+  }, CHAR_DAVE);
+  noise.schedChannel === false ? ok("Channel: scheduled run of a hired persona is KEPT in that persona's thread") : fail("Channel: scheduled persona run DROPPED as noise (the '[Backlog run]' defect)");
+  noise.schedChats === true ? ok('Chats tab: scheduled persona run still routed to the side flow') : fail('Chats tab: scheduled persona run leaked into the Chats list');
+  noise.anonChannel === true ? ok('Channel: scheduled run with NO character still dropped') : fail('Channel: characterless scheduled run kept');
+  noise.hmChannel === true ? ok('Channel: hivemind worker with a character still dropped') : fail('Channel: hivemind worker kept by the schedule exception');
+
+  // ── 2026-09-24: rollover chains read as ONE conversation, real labels ─────
+  const merged = await page.evaluate(({ pid, dave }) => {
+    conversationsCache[pid] = [
+      { claude_session_id: 'head', source: '', trigger_type: 'manual', character: dave, label: 'give me the SSH command', last_user: 'give me the SSH command', first_user: 'Hi', turns: 184, rolled_from: ['link-a'] },
+    ];
+    agentLogCache[pid] = [
+      // older link named by the head's rolled_from — must not come back
+      { claude_session_id: 'link-a', session_id: 'mc-a', task: '=== Prior conversation, started on claude, handed off here ===', status: 'interrupted', num_turns: 20, character: dave },
+      // older link flagged by /agent/log itself — must not come back
+      { claude_session_id: 'link-b', session_id: 'mc-b', task: '=== Prior conversation, started on claude, handed off here ===', status: 'interrupted', num_turns: 17, character: dave, rolled_into: 'head' },
+      // standalone aged-out chat: annotated labels win over the raw task
+      { claude_session_id: 'solo', session_id: 'mc-s', task: '=== Prior conversation, started on claude, handed off here ===', first_user: 'where do we stand?', last_user: 'are you still here?', status: 'completed', num_turns: 5, character: dave },
+      // annotated but all-injected: stays empty, never falls back to the raw task
+      { claude_session_id: 'empty', session_id: 'mc-e', task: '=== Mid-task rollover state ===', first_user: '', last_user: '', status: 'completed', num_turns: 2, character: dave },
+    ];
+    return window._userInitiatedConvos(pid, true).map(r => ({ id: r.claude_session_id, label: r.label, first: r.first_user }));
+  }, { pid: PID, dave: CHAR_DAVE });
+  const mIds = merged.map(r => r.id);
+  const mRow = (id) => merged.find(r => r.id === id) || {};
+  !mIds.includes('link-a') ? ok("rollover: head's rolled_from link not re-listed from the agent log") : fail("rollover: head's rolled_from link listed as a second conversation");
+  !mIds.includes('link-b') ? ok('rollover: agent-log row flagged rolled_into not re-listed') : fail('rollover: rolled_into row listed as a second conversation');
+  mRow('solo').label === 'are you still here?' && mRow('solo').first === 'where do we stand?' ? ok('labels: aged-out row uses annotated last_user/first_user, not the handoff task') : fail(`labels: aged-out row label=${JSON.stringify(mRow('solo').label)}`);
+  !String(mRow('empty').label || '').startsWith('===') ? ok('labels: all-injected row does not fall back to the raw injected task') : fail('labels: all-injected row fell back to the raw task');
+
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0 ? '\n✅ PASS — persona sessions unhidden, programmatic threads still filtered.' : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {

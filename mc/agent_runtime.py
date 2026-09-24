@@ -419,9 +419,67 @@ _NONUSER_LABEL_RE = re.compile(
 _CODEX_DISPATCH_SEP_RE = re.compile(r'\r?\n\r?\n---\r?\n\r?\n')
 
 
+# Blocks MC PREPENDS to the user's message, always ahead of it, so they are
+# stripped only when anchored at the start (after the blocks above are gone):
+#  • the per-turn STANDING POSITIONS / RELEVANT MEMORY block
+#    (mc/memory_turn.py `_fit_lines`) and the REPLY SHAPE tail
+#    (mc/behavior_tail.py) — each a `--- X ---` header plus lines, ended by the
+#    blank line MC joins it to the message with;
+#  • the rollover/handoff block (agent_routes `_build_handoff_context`) — a
+#    replay of the prior transcript's turns, header to footer. Greedy to the
+#    LAST footer: a rolled-over chat's handoff quotes the previous handoff
+#    (footer and all) inside its own body;
+#  • the "Still waiting on N dispatched session(s)" list, the mid-task
+#    rollover state block, and the fixed ROLL_MESSAGE sentence.
+# Measured 2026-09-24: none of these was stripped, so 9 of Dave's 15 Channel
+# rows were labelled "=== Prior conversation, sta..." and the rest showed
+# "--- STANDING POSITIONS" / "--- RELEVANT MEMORY" instead of Ron's message.
+HANDOFF_HEADER_RE = re.compile(
+    r'^=== Prior conversation, started on (?P<provider>[\w.-]+)'
+    r'(?: \(session (?P<native_id>[\w.:-]+)\))?, handed off here ===',
+    re.MULTILINE)
+HANDOFF_FOOTER = ('=== End of prior conversation. Continue from here, using '
+                  'the above as real context. ===')
+_LEADING_INJECTED_RE = re.compile(
+    r'\A\s*(?:'
+    r'--- (?:STANDING POSITIONS|RELEVANT MEMORY|REPLY SHAPE)\b[^\n]*---[ \t]*(?:\n(?!\s*\n)[^\n]*)*'
+    r'|=== Prior conversation, started on [^\n]*handed off here ===[\s\S]*'
+    + re.escape(HANDOFF_FOOTER) +
+    r'|=== Still waiting on \d+ dispatched session[^\n]*===(?:\n- [^\n]*)*'
+    r'|=== Mid-task rollover state ===[\s\S]*?=== End of mid-task rollover state ==='
+    r'|Your context was rolled over mid-task because it reached the token limit\.[^\n]*'
+    r')\s*')
+
+
 def strip_injected_preamble(text: str) -> str:
     """Remove MC-injected agent-facing content from a user-message string."""
-    return _INJECTED_PREAMBLE_RE.sub('', text or '').strip()
+    out = _INJECTED_PREAMBLE_RE.sub('', text or '').strip()
+    for _ in range(12):  # each pass peels one leading block; bounded, not a loop risk
+        nxt = _LEADING_INJECTED_RE.sub('', out, count=1)
+        if nxt == out:
+            break
+        out = _INJECTED_PREAMBLE_RE.sub('', nxt).strip()
+    return out
+
+
+def handoff_lineage(raw_first_user: str):
+    """(provider, native_id, body) for a transcript whose first user turn is a
+    rollover/handoff (`_build_handoff_context`), else None. `native_id` is ''
+    for handoffs written before the header carried it; `body` is the replayed
+    prior turns, header and footer excluded, for matching such a legacy
+    handoff to the transcript it was built from."""
+    m = HANDOFF_HEADER_RE.search(raw_first_user or '')
+    if not m or m.start() > 4000:  # must lead the turn, not be quoted in it
+        return None
+    end = (raw_first_user or '').rfind(HANDOFF_FOOTER)
+    body = raw_first_user[m.end():end] if end > m.end() else ''
+    return m.group('provider'), m.group('native_id') or '', body
+
+
+def lineage_tail(text: str) -> str:
+    """Whitespace-normalised last 400 chars — the key a handoff body and the
+    turn it ended on are compared by (see ClaudeRuntime.list_sessions)."""
+    return ' '.join((text or '').split())[-400:]
 
 
 def is_nonuser_message(text: str) -> bool:
@@ -1623,8 +1681,13 @@ def iter_transcript_files_in_dir(dir_path: Path, seen_names: Optional[set] = Non
 # path → (mtime, size, row). Transcripts are append-only, so (mtime, size) pins
 # the content: a hit is exact, not heuristic. Derived data only — losing it
 # costs a re-parse, never correctness. See list_sessions() for the measurement.
+# Sized for the rollover-lineage scan (agent_routes `_conversation_lineage`):
+# /agent/log scans the newest 400 PLUS every csid in the 500-row log — ~880
+# rows on mission_control (2,103 transcripts), 2026-09-24. At 512 every call
+# evicted what it had just parsed and re-read ~300 MB: /agent/log went from
+# 0.03 s to 1.6 s per poll. A row is well under 2 KB, so 4096 is ~8 MB.
 _SESSION_ROW_CACHE: Dict[str, Any] = {}
-_SESSION_ROW_CACHE_MAX = 512
+_SESSION_ROW_CACHE_MAX = 4096
 
 # Same shape and rationale, for list_written_markdown() (MC-939 Documents tab):
 # path → (mtime, size, [{'path','ts','tool','session_id'}, ...]).
@@ -2312,11 +2375,28 @@ class ClaudeRuntime(AgentRuntime):
             first_user = ''
             last_user = ''
             turns = 0
+            first_raw = None
+            # The transcript's final user/assistant turn, rendered exactly as
+            # `_build_handoff_context` renders it into a successor's handoff
+            # (parse_transcript_file's rules: stop-hook re-asks skipped, one
+            # entry per assistant text block, text[:5000]) — how a legacy
+            # rollover transcript is linked back to the one it continued.
+            last_turn = ''
             try:
                 with open(f, 'r', encoding='utf-8', errors='replace') as fh:
                     for raw_line in fh:
                         ev = self.parse_event(raw_line)
-                        if ev is None or ev.type != EventType.USER_MESSAGE:
+                        if ev is None:
+                            continue
+                        if ev.type in (EventType.ASSISTANT_TEXT, EventType.TOOL_USE,
+                                       EventType.THINKING):
+                            for block in ev.payload.get('blocks', []):
+                                if block.get('type') == 'text':
+                                    btxt = str(block.get('text', '')).strip()
+                                    if btxt:
+                                        last_turn = 'Assistant: ' + btxt[:5000]
+                            continue
+                        if ev.type != EventType.USER_MESSAGE:
                             continue
                         if ev.payload.get('role') != 'user':
                             continue
@@ -2333,6 +2413,10 @@ class ClaudeRuntime(AgentRuntime):
                         if not text:
                             continue
                         turns += 1
+                        if first_raw is None:
+                            first_raw = text
+                        if not is_stop_hook_feedback(ev.raw or {}):
+                            last_turn = 'User: ' + text[:5000]
                         # Derive the label from REAL user text only: strip
                         # MC-injected preambles ([BINDING…], resume/continue,
                         # <task-notification>/<system-reminder>) and skip a turn
@@ -2354,7 +2438,12 @@ class ClaudeRuntime(AgentRuntime):
                 'last_user': last_user[:300],
                 'turns': turns,
                 'size': fsize,
+                'last_turn_tail': lineage_tail(last_turn),
             }
+            _lin = handoff_lineage(first_raw or '')
+            if _lin:
+                row['handoff'] = {'provider': _lin[0], 'native_id': _lin[1],
+                                  'body_tail': lineage_tail(_lin[2])}
             if len(_SESSION_ROW_CACHE) >= _SESSION_ROW_CACHE_MAX:
                 # Crude but adequate: this is a read-through cache of derived
                 # data, so dropping the oldest insertions costs a re-parse, not

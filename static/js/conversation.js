@@ -1982,10 +1982,18 @@ window._isStewardConvo = _isStewardConvo;
 // READ-ONLY row under whichever identity a characterless session resolves to
 // (usually the default agent, since c597a56 made that identity roster-
 // visible). Steward threads are the one exception — always real, never noise.
-function _isNoiseConvoRow(c) {
+// `opts.channel` — the caller is ONE persona's Channel thread list. There a
+// scheduled run of a hired persona is that persona's own continuing thread
+// (standing position SPLIT-BY-LIFESPAN: hired staff get their own room), not
+// scheduler noise to route away. Measured 2026-09-24: Dave's "[Backlog run]"
+// chat (trigger_type 'schedule', character Dave, 22 turns) was in the
+// /conversations payload but dropped here, so Ron found it nowhere in the UI.
+// The Chats tab keeps routing scheduled runs to the ⋮ Agent Log side flow.
+function _isNoiseConvoRow(c, opts) {
   const AGENT_TRIGGERS = new Set(['schedule', 'hivemind_worker', 'hivemind_orchestrator', 'hivemind', 'auto', 'housekeeping']);
   const AGENT_SOURCES = new Set(['agent', 'api', 'cron']);  // programmatic dispatch → side flow
   if (_isStewardConvo(c)) return false;
+  if (opts && opts.channel && c.character && (c.trigger_type || '') === 'schedule') return false;
   if (AGENT_TRIGGERS.has(c.trigger_type || '')) return true;
   // MC-938 Phase 0: a persona dispatched without a browser Origin gets
   // auto-tagged source:agent (agent_routes.py:5567-5574) purely so it routes
@@ -2054,18 +2062,31 @@ function _userInitiatedConvos(projectId, includeHidden) {
     return '';
   };
   const seen = new Set(out.map(_durableConvKey).filter(Boolean));
+  // A rollover continues one chat in a new transcript. /conversations lists
+  // the head once and names the older links in `rolled_from`; /agent/log marks
+  // an older link `rolled_into` (server `_rollover_lineage`). Without both, the
+  // older link's agent-log row came back here as a second conversation with
+  // the same last message (Ron, 2026-09-24).
+  for (const c of out) for (const r of (c.rolled_from || [])) seen.add(`claude:${r}`);
   for (const e of (agentLogCache[projectId] || [])) {
     const csid = e.claude_session_id || '';
     const provider = e.provider || 'claude';
     const psid = e.provider_session_id || '';
     const mcsid = e.session_id || '';
     const key = csid ? `claude:${csid}` : (mcsid ? `mc:${mcsid}` : (psid ? `${provider}:${psid}` : ''));
-    if (!key || seen.has(key) || e.hivemind_ws_id) continue;
+    if (!key || seen.has(key) || e.hivemind_ws_id || e.rolled_into) continue;
     const caps = _getProviderCaps(provider);
+    // first_user/last_user: the transcript's real messages, annotated by
+    // /agent/log. `task` on a restart-synthesized row is the raw first turn —
+    // for a rolled transcript, the "=== Prior conversation…" handoff block.
+    // Present-but-empty means the transcript held only injected text: keep it
+    // empty rather than fall back to that same raw text.
+    const _fu = ('first_user' in e) ? (e.first_user || '') : (e.task || '');
+    const _lu = ('last_user' in e) ? (e.last_user || _fu) : (e.task || '');
     const c = {
       claude_session_id: csid, provider_session_id: psid,
       mc_session_id: mcsid, provider,
-      label: e.task || '', last_user: e.task || '', first_user: e.task || '',
+      label: _lu, last_user: _lu, first_user: _fu,
       status: e.status || 'completed', turns: e.num_turns || 0,
       ts_relative: e.ts_relative || e.ts || '', trigger_type: e.trigger_type || '',
       mtime: Date.parse(e.ts || e.started_at || '') / 1000 || 0,
@@ -2751,7 +2772,7 @@ function _railChannelHTML(p) {
     // for it to reveal, because nothing had been concealed. Honour the hide,
     // and honour the per-project reveal toggle that undoes it.
     const _hiddenKeys = _hiddenConvSet(p.id);
-    const _all = _userInitiatedConvos(p.id, true).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c));
+    const _all = _userInitiatedConvos(p.id, true).filter(c => _convCharKey(c) === r.key && !_isNoiseConvoRow(c, { channel: true }));
     const _hiddenHere = _all.filter(c => _hiddenKeys.has(_convHideKey(c)));
     const convos = _showHiddenConvos[p.id] ? _all : _all.filter(c => !_hiddenKeys.has(_convHideKey(c)));
     // Rendered whenever this person has ANY chat at all, hidden ones included —
@@ -2786,7 +2807,7 @@ function openChannelPerson(projectId, key) {
   // provider sessions can appear here without an id this UI can open.
   if (typeof refreshModalById === 'function') refreshModalById(projectId);
   else refreshModal();
-  const convos = _userInitiatedConvos(projectId, true).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c));
+  const convos = _userInitiatedConvos(projectId, true).filter(c => _convCharKey(c) === key && !_isNoiseConvoRow(c, { channel: true }));
   convos.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
   const c = convos.find(c => c.mc_session_id || c.claude_session_id);
   if (c) {
