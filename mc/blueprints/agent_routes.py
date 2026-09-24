@@ -2859,7 +2859,7 @@ def agent_auth_login(provider):
     return jsonify({'ok': True, 'verified': False, 'command': str(bin_path)})
 
 
-def _allowance_refusal(vendor, *, user_initiated):
+def _allowance_refusal(vendor, *, user_initiated, project=None):
     """The refusal text for `vendor`, or '' if it may run.
 
     A record is only as good as its evidence (one failed run), and nothing
@@ -2870,8 +2870,19 @@ def _allowance_refusal(vendor, *, user_initiated):
     keeps refusing until the record's reset time or a successful run or the
     user's explicit re-check — never a guess. The refusal itself is unchanged:
     it names the vendor and never falls back to another one.
+
+    MC-964 Step D.2 extends the same re-probe to a NON-user-initiated
+    dispatch (scheduler/workflow/agent-to-agent) when `project` is given and
+    the corpus holds a memory unit dated newer than the standing record that
+    names this vendor — the plan's own fixture ("codex exhausted +5d" plus a
+    newer "Ron topped up" unit must produce one probe, not a refusal") has no
+    user in the loop to type a chat assertion, so the gate must find this on
+    its own. Same `heal()` 30s/vendor throttle bounds repeats; still never a
+    fallback to another vendor.
     """
-    if user_initiated and _allowance_state.get(vendor):
+    entry = _allowance_state.get(vendor)
+    if entry and (user_initiated
+                  or (project and _newer_memory_unit_exists(project, vendor, entry))):
         try:
             rt = _agent_runtime.get_runtime(vendor)
             _allowance_state.heal(vendor, rt.probe_allowance)
@@ -2891,14 +2902,77 @@ def _vendor_mention_re(vendor):
     return rx
 
 
+_HIT_DATE_RE = re.compile(r'\[(\d{4}-\d{2}-\d{2})\]')
+
+
+def _hit_date(hit):
+    """The ISO date a memory-search hit carries, or None. Archive lines are
+    `- [YYYY-MM-DD] **task** — ...` (the same leading bracket `_ARCH_LINE_RE`
+    parses at write time), which `head` (the unit's own first 120 chars, only
+    present when the caller passed `keep_internal=True`) or `snippet`
+    reliably carry for a short line. No date found is a real answer, not a
+    gap to guess past — MC-964 Step D.2 only counts a hit that is
+    demonstrably newer than the record, never one merely mentioning the
+    vendor."""
+    m = _HIT_DATE_RE.search(hit.get('head') or hit.get('snippet') or '')
+    if not m:
+        return None
+    try:
+        return datetime.strptime(m.group(1), '%Y-%m-%d').date()
+    except ValueError:
+        return None
+
+
+def _hit_is_newer(hit, entry):
+    """True only when `hit` carries a date on/after the exhaustion record's
+    own `recorded_at` day (day-granularity on both sides — archive lines
+    carry a date, not a timestamp, so same-day is treated as newer rather
+    than dropped). A hit with no parseable date, or a record with no
+    parseable `recorded_at`, is never counted."""
+    hd = _hit_date(hit)
+    if hd is None:
+        return False
+    try:
+        recorded = datetime.fromisoformat(
+            str(entry.get('recorded_at') or '').replace('Z', '+00:00'))
+        if recorded.tzinfo is None:
+            recorded = recorded.replace(tzinfo=timezone.utc)
+    except Exception:
+        return False
+    return hd >= recorded.astimezone(timezone.utc).date()
+
+
+def _newer_memory_unit_exists(project, vendor, entry):
+    """Gate-side counterpart to `_allowance_conflict_block`'s memory-unit
+    trigger (MC-964 Step D.2). A dispatch refusal fires before
+    `_build_agent_context` builds the turn's read-floor hits, so there is no
+    `hits` list to reuse yet — this runs its own small, untelemetered search
+    (`record=None`, so a re-probe gate check never inflates delivery stats)
+    with `keep_internal=True` so `_hit_date` can read `head`, which the
+    read-floor's own (pinned) default call never carries."""
+    try:
+        hits = _memory_search(project, vendor, 8, expand=0, record=None,
+                               keep_internal=True)
+    except Exception as e:
+        _log(f'[allowance-conflict] gate newer-unit search failed for '
+             f'{vendor!r}: {e}')
+        return False
+    return any(_hit_is_newer(h, entry) for h in hits)
+
+
 def _allowance_conflict_block(task_text, hits):
     """MC-964 Step D.2/D.3 — 'a newer memory unit or a user chat assertion on
     the same vendor triggers ONE re-probe' (§7 decision 2, adopted position
     mc964memoryoverhaul...). A live exhausted-vendor record whose name is
-    mentioned either in this turn's own message (`task_text`) or in a
-    memory unit the read-floor just delivered (`hits`) is worth asking the
-    vendor about again — the alternative is the 33-hour Codex blackout this
-    plan's journal measured, where nothing could contradict a stale record.
+    mentioned either in this turn's own message (`task_text`) or in a memory
+    unit the read-floor just delivered (`hits`) is worth asking the vendor
+    about again — the alternative is the 33-hour Codex blackout this plan's
+    journal measured, where nothing could contradict a stale record. A memory
+    unit must also be NEWER than the record (`_hit_is_newer`) — without that,
+    'codex' appearing in any of the dozens of unrelated units mentioning it
+    would re-probe on nearly every turn while codex is exhausted. The chat
+    assertion path has no such gate: it is the user saying so, in this turn,
+    right now.
 
     Re-probes through `_allowance_state.heal()`, which already throttles to
     one vendor call per 30s — that throttle, not anything here, is what keeps
@@ -2916,7 +2990,7 @@ def _allowance_conflict_block(task_text, hits):
     if not states:
         return ''
     lines = []
-    for vendor, _entry in states.items():
+    for vendor, entry in states.items():
         rx = _vendor_mention_re(vendor)
         source = ''
         if task_text and rx.search(task_text):
@@ -2924,7 +2998,7 @@ def _allowance_conflict_block(task_text, hits):
         else:
             for h in hits:
                 blob = f"{h.get('file', '')} {h.get('snippet', '')}"
-                if rx.search(blob):
+                if rx.search(blob) and _hit_is_newer(h, entry):
                     source = f"memory unit [{h.get('file', '')}]"
                     break
         if not source:
@@ -8663,10 +8737,12 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     # the brief. Follow-up has its own copy — see agent_followup, which does
     # not re-resolve a provider (the session already has one).
     # A user-initiated dispatch re-checks a standing record against the vendor
-    # first (see _allowance_refusal); unattended callers (scheduler, workflow,
-    # agent-to-agent) never spend a probe on a refusal nobody is waiting on.
+    # first (see _allowance_refusal). An unattended caller (scheduler,
+    # workflow, agent-to-agent) only spends a probe when the corpus itself
+    # holds a newer memory unit naming this vendor (MC-964 Step D.2) — passing
+    # `project` lets the gate find that with nobody waiting on the result.
     _allowance_block = _allowance_refusal(
-        provider_name, user_initiated=(trigger_type == 'manual'))
+        provider_name, user_initiated=(trigger_type == 'manual'), project=p)
     if _allowance_block:
         raise ValueError(_allowance_block)
     _resume_auto_requested = False
