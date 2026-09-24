@@ -8684,11 +8684,15 @@ def _build_handoff_context(project_path, owning_provider, native_id, project_id=
         kept_chars += len(line)
     kept.reverse()
     omitted = total - len(kept)
-    header = f"=== Prior conversation, started on {owning_provider}, handed off here ==="
+    # The native id rides in the header so the successor transcript names the
+    # one it continues — `_rollover_lineage` collapses the pair into ONE
+    # conversation row instead of two (Ron, 2026-09-24).
+    header = (f"=== Prior conversation, started on {owning_provider} "
+              f"(session {native_id}), handed off here ===")
     if omitted:
         header += f"\n[{omitted} earlier turn(s) omitted for length]"
     body = '\n\n'.join(kept)
-    footer = "=== End of prior conversation. Continue from here, using the above as real context. ==="
+    footer = _agent_runtime.HANDOFF_FOOTER
     context = f"{header}\n\n{body}\n\n{footer}"
     return context, {'owning_provider': owning_provider, 'total_turns': total,
                      'included_turns': len(kept), 'omitted_turns': omitted}
@@ -12330,9 +12334,42 @@ def get_agent_log(project_id):
                 if item.get('session_id') not in seen:
                     log.append(item)
                     seen.add(item.get('session_id'))
+    # The chat rail merges these rows in as conversations (conversation.js
+    # `_userInitiatedConvos`). Two things only the transcripts know:
+    #  • `rolled_into` — this csid is an older link of a rollover chain; the
+    #    head is listed instead (see `_rollover_lineage`);
+    #  • `first_user`/`last_user` — the chain's real messages. `task` on a
+    #    backfill-synthesized row is the transcript's raw first turn, which for
+    #    a rolled transcript is the handoff block ("=== Prior conversation…").
+    # Annotated per response, never written back to the log.
+    p = load_project(project_id)
+    _log_csids = {e.get('claude_session_id') for e in log
+                  if e.get('claude_session_id') and (e.get('provider') or 'claude') == 'claude'}
+    lin_by_csid, lin_heads = _conversation_lineage(
+        (p or {}).get('project_path', ''), must_include_csids=_log_csids)
+    # Hide an older link only when its head is guaranteed a row of its own —
+    # in this log, or live (/conversations force-includes live transcripts).
+    # A head that is neither could fall past /conversations' limit, and hiding
+    # its predecessor would then make the whole chat vanish.
+    _reachable = _log_csids | {s.get('claude_session_id') for s in list(agent_sessions.values())
+                               if s.get('project_id') == project_id and s.get('claude_session_id')}
     for entry in log:
         entry['ts_relative'] = time_ago(entry.get('ts'))
         entry['started_relative'] = time_ago(entry.get('started_at'))
+        csid = entry.get('claude_session_id') or ''
+        if not csid or (entry.get('provider') or 'claude') != 'claude':
+            continue
+        if csid in lin_heads and lin_heads[csid] in _reachable:
+            entry['rolled_into'] = lin_heads[csid]
+        row = lin_by_csid.get(csid)
+        if row:
+            chain = _chain_members(lin_heads, csid, lin_by_csid)
+            entry['first_user'], entry['last_user'] = _chain_labels(row, chain, lin_by_csid)
+        elif entry.get('synthesized'):
+            # Transcript gone or unreadable: the stored task is still the raw
+            # first turn, so at least strip what MC injected into it.
+            entry['first_user'] = entry['last_user'] = _agent_runtime.strip_injected_preamble(
+                entry.get('task') or '')[:300]
     return jsonify(log)
 
 
@@ -13519,6 +13556,95 @@ def _non_claude_conversation_rows(project_id, p, limit, exclude_sids=None, by_si
     return rows[:limit]
 
 
+def _rollover_lineage(transcripts):
+    """{predecessor_csid: head_csid} for Claude transcripts a rollover or
+    same-vendor handoff continued in a NEW transcript.
+
+    Auto-fresh / mid-task rollover keeps the MC session but mints a fresh
+    claude_session_id, and nothing recorded the link: the old transcript got
+    a synthesized agent-log row on the next restart and listed as its own
+    conversation. Measured 2026-09-24: one Dave chat was 10+ Channel rows.
+
+    A successor names its predecessor in the handoff header since
+    2026-09-24. Older handoffs don't, so they are matched by content: the
+    handoff body ends with the predecessor's final turn, rendered the same
+    way (`last_turn_tail`), and the predecessor can't be newer than the
+    successor. Several successors of one predecessor (a handoff retried) —
+    the newest wins; the rest stay rows of their own.
+    """
+    by_id = {t.get('session_id'): t for t in transcripts if t.get('session_id')}
+    succ = {}
+    for c in transcripts:
+        h = c.get('handoff') or {}
+        cid = c.get('session_id')
+        if not h or not cid or (h.get('provider') or 'claude') != 'claude':
+            continue
+        pred = h.get('native_id') or ''
+        if not pred:
+            tail = h.get('body_tail') or ''
+            if not tail:
+                continue
+            cands = [t for t in transcripts
+                     if t.get('session_id') not in (None, cid) and t.get('last_turn_tail')
+                     and t.get('mtime', 0) <= c.get('mtime', 0)
+                     and tail.endswith(t['last_turn_tail'])]
+            if not cands:
+                continue
+            pred = max(cands, key=lambda t: t.get('mtime', 0))['session_id']
+        if pred == cid:
+            continue
+        prev = succ.get(pred)
+        if prev is None or (by_id.get(cid) or {}).get('mtime', 0) > (by_id.get(prev) or {}).get('mtime', 0):
+            succ[pred] = cid
+    heads = {}
+    for p in succ:
+        cur, seen = p, {p}
+        while cur in succ and succ[cur] not in seen:
+            cur = succ[cur]
+            seen.add(cur)
+        heads[p] = cur
+    return heads
+
+
+def _conversation_lineage(project_path, must_include_csids=None):
+    """(transcripts_by_csid, {pred_csid: head_csid}) over a scan WIDER than a
+    list's own row limit — a chain's older links are exactly the rows past
+    it, and the agent-log merge would otherwise list them again. Rows come
+    from list_sessions' (mtime, size) cache, so this re-reads nothing that
+    hasn't changed. `must_include_csids` (the agent log's csids) are scanned
+    on top of the newest `n`: the log reaches back past that window, and a row
+    outside it would keep its raw handoff label. Never raises: a failure lists
+    conversations uncollapsed, as before."""
+    try:
+        n = int(state.CONFIG.get('conversation_lineage_scan', 400) or 0)
+        if n <= 0 or not project_path:
+            return {}, {}
+        must = set(must_include_csids or ())
+        transcripts = _recent_claude_transcripts(
+            project_path, limit=n + len(must), must_include_csids=must or None) or []
+        return ({t['session_id']: t for t in transcripts if t.get('session_id')},
+                _rollover_lineage(transcripts))
+    except Exception as e:
+        _log(f"[conversations] rollover lineage failed: {e}")
+        return {}, {}
+
+
+def _chain_members(heads, head_csid, by_csid):
+    """A head's predecessors, oldest first."""
+    return sorted((p for p, h in heads.items() if h == head_csid),
+                  key=lambda p: (by_csid.get(p) or {}).get('mtime', 0))
+
+
+def _chain_labels(head_row, chain, by_csid):
+    """(first_user, last_user) for a conversation spanning `chain` + head: the
+    chat's first real message and its latest one, since a rolled transcript's
+    own turns can be nothing but the handoff (stripped to '')."""
+    rows = [by_csid.get(p) or {} for p in chain] + [head_row or {}]
+    first = next((r.get('first_user') for r in rows if r.get('first_user')), '')
+    last = next((r.get('last_user') for r in reversed(rows) if r.get('last_user')), '')
+    return first, last
+
+
 @bp.route('/api/project/<project_id>/conversations')
 def get_project_conversations(project_id):
     """Return recent conversations for a project — Claude transcripts UNION
@@ -13605,12 +13731,32 @@ def get_project_conversations(project_id):
                       and c['session_id'] not in live_by_csid
                       and (log_by_csid.get(c['session_id']) or {}).get('synthesized', True))]
 
+    # A rollover continues ONE conversation in a new transcript: list the head
+    # (newest link) once, carrying the chain, and drop the older links.
+    lin_by_csid, lin_heads = _conversation_lineage(project_path)
+    # Only fold a link into a head this response actually lists — otherwise
+    # the chat would vanish instead of collapsing.
+    _listed = {c['session_id'] for c in convos}
+    lin_heads = {k: v for k, v in lin_heads.items() if v in _listed}
+
     from datetime import datetime, timezone
     out = []
     for c in convos:
         sid = c['session_id']
         live = live_by_csid.get(sid)
+        if sid in lin_heads and not live:
+            continue
+        chain = _chain_members(lin_heads, sid, lin_by_csid) if lin_heads else []
         log_entry = log_by_csid.get(sid, {})
+        # Persona / trigger / source live on the agent-log row, which after a
+        # roll points at the NEW csid only — borrow from the chain when the
+        # head's own row can't say (a synthesized row, or none at all).
+        chain_entry = next((log_by_csid[p_] for p_ in reversed(chain) if p_ in log_by_csid), {})
+        if chain:
+            c = dict(c)
+            c['first_user'], c['last_user'] = _chain_labels(c, chain, lin_by_csid)
+            c['turns'] = c.get('turns', 0) + sum(
+                (lin_by_csid.get(p_) or {}).get('turns', 0) for p_ in chain)
         if live:
             status = live['status']
             mc_session_id = live.get('session_id', '')
@@ -13635,10 +13781,12 @@ def get_project_conversations(project_id):
             ts_iso = datetime.fromtimestamp(c['mtime'], tz=timezone.utc).isoformat()
         except Exception:
             ts_iso = ''
-        _row_source = (log_entry.get('source') or '') if log_entry else ''
+        _row_source = ((log_entry.get('source') if log_entry else '')
+                       or chain_entry.get('source') or '')
         _row_character = _conversation_character_display(log_entry, p) or (
             _conversation_character_display({'character': live.get('character')}, p)
-            if live else None)
+            if live else None) or (
+            _conversation_character_display(chain_entry, p) if chain_entry else None)
         _row_spawned = _row_spawned_by(log_entry, live, by_sid)
         out.append({
             'claude_session_id': sid,
@@ -13662,7 +13810,8 @@ def get_project_conversations(project_id):
             # trigger_type + source let the mobile list show ONLY user-initiated
             # chats and route agent/scheduled runs to the Agent Log side flow.
             # Empty (transcript-only / manual, no 'agent' source) = user-initiated.
-            'trigger_type': (log_entry.get('trigger_type') or '') if log_entry else '',
+            'trigger_type': ((log_entry.get('trigger_type') if log_entry else '')
+                             or chain_entry.get('trigger_type') or ''),
             'source': _row_source,
             'steward': is_steward,
             'steward_objective': (p.get('steward_objective') or '') if is_steward else '',
@@ -13694,6 +13843,9 @@ def get_project_conversations(project_id):
             'provider': 'claude',
             'resumable': True,
             'resume_mode': 'live',
+            # Older transcripts of this same conversation (rollover chain,
+            # oldest first) — the client drops their agent-log rows too.
+            'rolled_from': chain,
         })
 
     # UNION: Codex conversations backed by real rollout transcripts, THEN
