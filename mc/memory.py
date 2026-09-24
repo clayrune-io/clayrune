@@ -2239,13 +2239,23 @@ def corpus_uids(project):
     return out
 
 
-def _memory_search(project, query, topk=3, expand=None, record=None):
+def _memory_search(project, query, topk=3, expand=None, record=None,
+                    keep_internal=False):
     """BM25 ranking over the project's memory corpus (SPEC §3 Leg B).
 
     Corpus = the memory dir's topic *.md files + MEMORY_ARCHIVE.md entries +
     the MANAGED region of MEMORY.md. The curated MEMORY.md index is excluded
     by construction — the agent already auto-loads it. Deterministic, no
     model. Returns [{file, score, snippet}] sorted by score desc.
+
+    `keep_internal` (MC-964 Step B/RC4): when True, `cls`/`uid`/`head` are
+    NOT stripped from the returned hits. Default False preserves the public
+    shape every existing caller (and `test_internal_keys_never_leak_into_
+    the_public_result`) is pinned to. The one caller that needs a specific
+    ARCHIVE LINE's own identity — `mc.memory_push`'s push-log observer,
+    which RC4 found logging only the container filename
+    (`note: "MEMORY_ARCHIVE.md"`, indistinguishable across ~2.5k lines) —
+    opts in explicitly rather than the shape changing for everyone.
 
     WHY BM25 (2026-08-05). The previous scorer was raw term frequency over the
     whole file — `sum(text.count(t))` — with no document-length normalization.
@@ -2404,12 +2414,14 @@ def _memory_search(project, query, topk=3, expand=None, record=None):
             _log(f'[delivery] telemetry skipped: {e}')
 
     # `cls`/`uid`/`head` are internal bookkeeping — read-floor callers unpack
-    # these dicts and a test pins the exact key set, so they must not leak out.
+    # these dicts and a test pins the exact key set, so they must not leak out
+    # unless a caller explicitly opted in via `keep_internal`.
     for _h in hits:
-        _h.pop('cls', None)
         _h.pop('_cover', None)
-        _h.pop('uid', None)
-        _h.pop('head', None)
+        if not keep_internal:
+            _h.pop('cls', None)
+            _h.pop('uid', None)
+            _h.pop('head', None)
     return hits
 
 

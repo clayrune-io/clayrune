@@ -51,7 +51,12 @@ def summarize(rows: list) -> dict:
     misses = [r for r in rows if r.get('result') == 'near_miss']
 
     per_session = Counter(r.get('session_id', '') for r in fires)
-    top_notes = Counter(r.get('note', '') for r in fires)
+    # MC-964 Step B / RC4: an archive fire's `note` is the shared filename —
+    # group by (note, line) so distinct archive lines don't collapse into one
+    # bucket ("MEMORY_ARCHIVE.md" was previously indistinguishable across
+    # ~2.5k lines). `line` is '' for topic/position fires, so those group by
+    # filename exactly as before.
+    top_notes = Counter((r.get('note', ''), r.get('line', '')) for r in fires)
     duplicate_of_per_turn = sum(1 for r in fires if r.get('already_delivered_by_per_turn'))
     by_source = Counter(r.get('source', '') for r in fires)
     by_class = Counter(r.get('note_class', '') for r in fires)
@@ -101,15 +106,17 @@ def main():
 
     if summary['top_notes']:
         print('\ntop notes by fire count:')
-        for note, n in summary['top_notes']:
-            print(f'  {n:3d}  {note}')
+        for (note, line), n in summary['top_notes']:
+            label = f'{note}  ::  {line}' if line else note
+            print(f'  {n:3d}  {label}')
 
     fires = [r for r in rows if r.get('result') == 'would_send']
     if fires and args.sample:
         print(f'\nsample of up to {args.sample} would_send row(s) to grade:')
         for r in fires[-args.sample:]:
+            target = r.get('line') or r.get('note', '')
             print(f"  [{r.get('ts', '')}] {r.get('tool', '')} ({r.get('source', '')}) "
-                  f"score={r.get('score')} -> {r.get('note', '')}")
+                  f"score={r.get('score')} -> {target}")
             print(f"      query: {r.get('query', '')[:160]!r}")
 
     print('\nRead-only. Nothing here was promoted, delivered, or edited.')

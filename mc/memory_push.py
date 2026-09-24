@@ -282,8 +282,12 @@ def _write_log(project_id, row: dict) -> None:
         _log(f"[memory-push] log write failed for {project_id}: {e}")
 
 
+_LINE_HEAD = 80
+
+
 def _row(project_id, session_id, provider, tool_name, source, query, result,
-         note_file, cls, score, rank, threshold, already_delivered) -> dict:
+         note_file, cls, score, rank, threshold, already_delivered,
+         line='') -> dict:
     return {
         'ts': _now_iso(),
         'project_id': project_id,
@@ -295,6 +299,14 @@ def _row(project_id, session_id, provider, tool_name, source, query, result,
         'result': result,                  # 'would_send' | 'near_miss'
         'note': note_file,
         'note_class': cls,                 # 'topic' | 'position' | 'archive'
+        # MC-964 Step B / RC4: the container filename alone cannot say WHICH
+        # of ~2.5k archive lines this row is about (RC4 measured 83 unusable
+        # archive rows in a 09-18/19 window for exactly this reason) — a
+        # line's own leading `- [DATE] ...` plus its first 80 chars, so a
+        # later grep of this log can answer "did line X appear" without a
+        # corpus replay. Empty for non-archive/managed hits, which are
+        # already fully identified by `note` (one file = one unit).
+        'line': line,
         'score': score,
         'rank': rank,
         'threshold': threshold,
@@ -336,7 +348,8 @@ def _observe(project, session, tool_name, source, query, provider) -> list:
     prov = provider or session.get('provider') or 'claude'
     min_score = _min_score()
 
-    hits = _mem._memory_search(project, query, topk=_SEARCH_TOPK, expand=0, record=None)
+    hits = _mem._memory_search(project, query, topk=_SEARCH_TOPK, expand=0,
+                                record=None, keep_internal=True)
     if not hits:
         return []
 
@@ -351,6 +364,10 @@ def _observe(project, session, tool_name, source, query, provider) -> list:
             continue
         score = h.get('score', 0.0)
         already = fname in turn_delivered
+        # A whole topic/position file is already one identifiable unit via
+        # `note`; only archive lines share a filename with ~2.5k neighbours
+        # (RC4) and need their own identity carried alongside it.
+        line = (h.get('head') or '')[:_LINE_HEAD] if cls == 'archive' else ''
         if _passes(cls, score, min_score):
             if fname in sent_set:
                 # Dedupe: never log the same note twice this session via this
@@ -361,11 +378,11 @@ def _observe(project, session, tool_name, source, query, provider) -> list:
                 continue
             fires.append((fname, _row(pid, sid, prov, tool_name, source, query,
                                        'would_send', fname, cls, score, rank,
-                                       min_score, already)))
+                                       min_score, already, line=line)))
         else:
             _write_log(pid, _row(pid, sid, prov, tool_name, source, query,
                                   'near_miss', fname, cls, score, rank,
-                                  min_score, already))
+                                  min_score, already, line=line))
 
     fires = fires[:_max_per_turn()]
     new_files = []
