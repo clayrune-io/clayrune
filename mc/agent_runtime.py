@@ -6347,8 +6347,18 @@ class QwenRuntime(AgentRuntime):
         for Claude) drop it the same way.
 
         Returns [] on any read/parse failure or an empty file.
+
+        Thin wrapper over `extract_chat_turns_with_ts` for callers that only
+        need the role/text pairs, not per-turn dates.
         """
-        turns: List[Tuple[str, str]] = []
+        return [(role, text) for role, text, _ts in self.extract_chat_turns_with_ts(path)]
+
+    def extract_chat_turns_with_ts(self, path: Path) -> List[Tuple[str, str, Optional[str]]]:
+        """Same rendering as `extract_chat_turns`, plus each record's own
+        top-level `timestamp` (ISO string, live-verified present on every
+        record — MC-954 per-message day dividers for a reopened past Qwen
+        conversation)."""
+        turns: List[Tuple[str, str, Optional[str]]] = []
         try:
             with open(path, encoding='utf-8', errors='replace') as fh:
                 for raw in fh:
@@ -6375,7 +6385,7 @@ class QwenRuntime(AgentRuntime):
                         text = strip_injected_preamble(text)
                         if not text or is_nonuser_message(text):
                             continue
-                    turns.append((role, text))
+                    turns.append((role, text, rec.get('timestamp') or None))
         except Exception:
             return []
         return turns
@@ -7929,8 +7939,18 @@ class CodexRuntime(AgentRuntime):
 
         Returns [] on any read/parse failure or if the rollout holds no real
         exchange, so callers can fall back to whatever they already have.
+
+        Thin wrapper over `extract_chat_turns_with_ts` for callers that only
+        need the role/text pairs, not per-turn dates.
         """
-        turns: List[Tuple[str, str]] = []
+        return [(role, text) for role, text, _ts in self.extract_chat_turns_with_ts(path)]
+
+    def extract_chat_turns_with_ts(self, path: Path) -> List[Tuple[str, str, Optional[str]]]:
+        """Same rendering as `extract_chat_turns`, plus each record's own
+        top-level `timestamp` (ISO string, live-verified present on every
+        `session_meta`/`response_item` record — MC-954 per-message day
+        dividers for a reopened past Codex conversation)."""
+        turns: List[Tuple[str, str, Optional[str]]] = []
         try:
             with open(path, encoding='utf-8', errors='replace') as fh:
                 for raw in fh:
@@ -7965,7 +7985,7 @@ class CodexRuntime(AgentRuntime):
                         text = _strip_codex_system_prefix(text)
                         if not text:
                             continue
-                    turns.append((role, text))
+                    turns.append((role, text, rec.get('timestamp') or None))
         except Exception:
             return []
         return turns
