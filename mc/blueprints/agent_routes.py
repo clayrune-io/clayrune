@@ -145,7 +145,7 @@ load_projects: Callable[[], list] = None  # type: ignore[assignment]
 _get_memory_path: Callable[[dict], Path] = None  # type: ignore[assignment]
 _get_archive_path: Callable[[dict], Path] = None  # type: ignore[assignment]
 _memory_search: Callable[..., list] = None  # type: ignore[assignment]
-_maybe_checkpoint: Callable[[dict], None] = None  # type: ignore[assignment]
+_maybe_checkpoint: Callable[..., bool] = None  # type: ignore[assignment]  # (session, force=False) -> flushed
 _write_session_memory: Callable[..., bool] = None  # type: ignore[assignment]
 _dispatch_condense: Callable[[dict], None] = None  # type: ignore[assignment]
 _should_condense: Callable[..., bool] = None  # type: ignore[assignment]
@@ -4726,8 +4726,9 @@ def _read_agent_stream(proc, session):
                                 continue
                             _tuid = _block.get('tool_use_id')
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                            _observe_memory_push_result(
-                                session, _tname, _extract_tool_result_text(_block))
+                            _tresult_text = _extract_tool_result_text(_block)
+                            _observe_memory_push_result(session, _tname, _tresult_text)
+                            _midturn.note_tool_result_text(session, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -4985,8 +4986,9 @@ def _read_agent_stream_b(proc, session):
                                 continue
                             _tuid = _block.get('tool_use_id')
                             _tname = (session.get('_tool_id_name') or {}).get(_tuid, '')
-                            _observe_memory_push_result(
-                                session, _tname, _extract_tool_result_text(_block))
+                            _tresult_text = _extract_tool_result_text(_block)
+                            _observe_memory_push_result(session, _tname, _tresult_text)
+                            _midturn.note_tool_result_text(session, _tname, _tresult_text)
                         if _midturn.note_tool_results(session, msg['message'].get('content')):
                             _maybe_midturn_roll(session, my_proc)
                 elif msg_type == 'result':
@@ -11176,13 +11178,24 @@ def _maybe_midturn_roll(session, proc=None):
         session['_mt_roll_requested'] = True
         tokens = session.get('_mt_main_tokens')
         project_id = session.get('project_id', '')
+        # MC-964 Step C: force a Scribe checkpoint of the OUTGOING session
+        # before handing off — the fresh session gets a new claude_session_id,
+        # so anything the old transcript hadn't been checkpointed past is
+        # gone for good once the roll proceeds (see memory._maybe_checkpoint's
+        # `force` docstring). Best-effort: a failed flush must not block the
+        # roll itself, only show up as scribe_flushed=False in the roll log.
+        scribe_flushed = False
+        try:
+            scribe_flushed = bool(_maybe_checkpoint(session, force=True))
+        except Exception as e:
+            _log(f"[midturn-rollover] forced scribe checkpoint failed: {e}")
         payload, status = agent_interrupt(project_id, _internal={
             'session_id': session.get('session_id', ''),
             'message': _midturn.ROLL_MESSAGE, 'midturn': True, 'proc': proc,
             'tokens': tokens,
             'build_state': lambda cwd: _midturn.build_state_block(session, cwd)})
         if status == 200:
-            _midturn.record_roll(session, tokens)
+            _midturn.record_roll(session, tokens, scribe_flushed=scribe_flushed)
             return
         session.pop('_mt_roll_requested', None)
         if status != 409:  # 409 = a newer interrupt got there first: not a failure
