@@ -59,7 +59,7 @@ def test_unknown_project_404s(client):
 
 def test_no_transcript_on_disk_404s(client, monkeypatch):
     from mc.blueprints import agent_routes as ar
-    monkeypatch.setattr(ar, '_transcript_buffer_lines', lambda pp, cs, ul, max_messages=None: [])
+    monkeypatch.setattr(ar, '_transcript_buffer_lines_and_ts', lambda pp, cs, ul, max_messages=None: ([], []))
     resp = client.get('/api/project/proj1/transcript/csid123/full-buffer')
     assert resp.status_code == 404
 
@@ -67,7 +67,7 @@ def test_no_transcript_on_disk_404s(client, monkeypatch):
 def test_happy_path_returns_full_log_lines(client, monkeypatch):
     from mc.blueprints import agent_routes as ar
     lines = ['\n> Ron: what did we decide about the cap?\n', 'We capped it at 1500 lines.']
-    monkeypatch.setattr(ar, '_transcript_buffer_lines', lambda pp, cs, ul, max_messages=None: lines)
+    monkeypatch.setattr(ar, '_transcript_buffer_lines_and_ts', lambda pp, cs, ul, max_messages=None: (lines, [None] * len(lines)))
     resp = client.get('/api/project/proj1/transcript/csid123/full-buffer')
     assert resp.status_code == 200
     body = resp.get_json()
@@ -83,8 +83,8 @@ def test_uses_the_no_meaningful_cap_convention(client, monkeypatch):
 
     def _fake(pp, cs, ul, max_messages=None):
         seen['max_messages'] = max_messages
-        return ['one line']
-    monkeypatch.setattr(ar, '_transcript_buffer_lines', _fake)
+        return ['one line'], [None]
+    monkeypatch.setattr(ar, '_transcript_buffer_lines_and_ts', _fake)
     resp = client.get('/api/project/proj1/transcript/csid123/full-buffer')
     assert resp.status_code == 200
     assert seen['max_messages'] == 100000
@@ -95,8 +95,8 @@ def test_does_not_409_on_a_live_session(client, monkeypatch):
     a session that is still running, so this route must NOT refuse it."""
     from mc import state as mc_state
     from mc.blueprints import agent_routes as ar
-    monkeypatch.setattr(ar, '_transcript_buffer_lines',
-                        lambda pp, cs, ul, max_messages=None: ['still typing...'])
+    monkeypatch.setattr(ar, '_transcript_buffer_lines_and_ts',
+                        lambda pp, cs, ul, max_messages=None: (['still typing...'], [None]))
     mc_state.agent_sessions['mcsid1'] = {
         'project_id': 'proj1', 'status': 'running', 'claude_session_id': 'csid123',
     }
