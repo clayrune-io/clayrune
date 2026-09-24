@@ -6,6 +6,29 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-24] — Background jobs wake Mode B sessions and reach the spawner (MC-958)
+
+- **The CLI keeps "you will be notified when it completes"; Clayrune did
+  not.** Measured with claude 2.1.281 in the Mode B stream-json shape: when a
+  turn ends with a `run_in_background` job (or a Bash moved to the background
+  at its 120s timeout) still running, the process stays alive, emits
+  `system/task_notification` when the job ends, and runs a new turn on its
+  own. Clayrune fired the spawner callback on the FIRST `result` (the
+  "running in background, will report" turn) and latched, so the answer turn
+  never reached the spawner; ran that turn under status `idle`; and let
+  idle-eviction (60 min) kill the waiting process.
+- New `mc/background_tasks.py` tracks open jobs from the CLI's own
+  `background_tasks_changed` / `task_started` / `task_updated` /
+  `task_notification` events. The Mode B reader holds the spawner callback
+  while jobs are open, flips a self-started turn to `running`, and the
+  guardian keeps eviction off such sessions. New config
+  `background_wait_max_minutes` (default 120, 0 = no cap): past it the
+  spawner gets an interim report and the callback re-arms for the final one.
+- Interrupt/respawn/process death still kill background jobs (the
+  2026-09-18 0-byte output file was an auto-backgrounded Bash killed by
+  `agent_interrupt`), but the chat now names the jobs that died.
+  Tests: `tests/test_background_task_wake.py`.
+
 ## [2026-09-23] — Model pin auto-upgrade gate (Piece 2 of the model-auto-upgrade spec)
 
 - **A stale model pin only ever got noticed by hand.** Piece 1 (below) fixed

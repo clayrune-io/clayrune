@@ -104,6 +104,7 @@ import mc.memory_turn as _memory_turn      # MC-944 per-turn memory delivery (§
 import mc.behavior_tail as _behavior_tail  # per-turn conduct-rule tail (extends §9.6's split)
 import mc.negation_interrupt as _negation_interrupt  # MC-944 plan-time negation interrupt (§5.4)
 import mc.midturn_rollover as _midturn  # mid-turn context rollover bookkeeping
+import mc.background_tasks as _bg_tasks  # MC-958 background-job wake tracking (Mode B)
 import mc.memory_push as _memory_push      # MC-944 mid-task memory push observer, report mode
 import mc.artifact_coverage as _artifact_coverage  # substitution check: did the turn run what was asked
 from mc.delegation_delivery import (DeliveryStore, callback_payload,
@@ -4981,6 +4982,14 @@ def _read_agent_stream_b(proc, session):
     A 'result' message signals the end of a turn, not the end of the process.
     """
     my_proc = proc
+    # MC-958: background jobs belong to the process that started them. A
+    # respawn (followup, eviction, AskUserQuestion) means they are gone —
+    # say so instead of letting the promised wake silently never come.
+    _gone = _bg_tasks.drain(session)
+    if _gone:
+        session['log_lines'].append(
+            f"[{len(_gone)} background task(s) did not survive the previous "
+            f"process: {'; '.join(_gone)}]")
     # Last total_cost_usd THIS process reported, plus its CLI version and, on
     # CLI >= 2.1.277, the total its resume carried over (read from the
     # transcript at init). This reader IS the process. See accumulate_result_cost.
@@ -5014,10 +5023,14 @@ def _read_agent_stream_b(proc, session):
                 # Live stop-hook boundary: stream-json never carries the hook's
                 # feedback turn, so confirm a resend against the transcript.
                 _track_stop_hook_boundary(session, msg)
+                if msg_type == 'system':
+                    _note_background_system_event(session, msg)
                 if msg_type == 'stream_event':
                     _note_activity_state(session, msg)
                     continue
                 if msg_type == 'assistant' and isinstance(msg.get('message'), dict):
+                    if not msg.get('parent_tool_use_id'):
+                        _note_self_started_turn(session)
                     _note_call_context_tokens(session, msg['message'], msg.get('parent_tool_use_id'))
                     # First assistant output proves a `-r` resume loaded OK (not a
                     # fragile resume that dies instantly), so a LATER process death
@@ -5166,7 +5179,12 @@ def _read_agent_stream_b(proc, session):
                     # MC-946: for a dispatched child this IS "done" — Mode B
                     # never exits on its own, so the exit-time hook would fire
                     # late or never. Latched, so the exit path can't repeat it.
-                    _maybe_notify_spawner(session, _last_reply_text(session))
+                    # MC-958: unless a background job is still running — then
+                    # this turn is "started it, waiting", the CLI will run a
+                    # turn of its own when the job ends, and THAT turn's
+                    # result is the answer the spawner is waiting for.
+                    if not _hold_notify_for_background(session):
+                        _maybe_notify_spawner(session, _last_reply_text(session))
                     # Step 6: mid-session note-taker (default-off; fast-gated).
                     _maybe_checkpoint(session)
                 # Web push hook: intercept PushNotification tool_use + turn results.
@@ -5203,6 +5221,11 @@ def _read_agent_stream_b(proc, session):
             # legitimately and there's no point flipping it False between.
             if _session_owned_by(session, my_proc):
                 session['process_alive'] = False
+                _gone = _bg_tasks.drain(session)
+                if _gone:
+                    session['log_lines'].append(
+                        f"[process ended with {len(_gone)} background task(s) still "
+                        f"running — they were stopped with it: {'; '.join(_gone)}]")
                 # Never overwrite 'stopped' — that's a user-initiated terminal state
                 if session['status'] in ('running', 'idle'):
                     if session.get('waiting_for_question'):
@@ -6576,6 +6599,91 @@ def _maybe_notify_spawner(session, summary):
     if has_workflow and not session.get('_notify_workflow_sent'):
         session['_notify_workflow_sent'] = True
         _notify_workflow_step(wf_wait, session, summary)
+
+
+def _note_background_system_event(session, msg):
+    """MC-958: keep the session's open background tasks in step with the CLI.
+
+    A `task_notification` that lands after the turn ended is the CLI about to
+    run a turn of its own (measured, claude 2.1.281) — record that it is
+    coming so the chat says why the agent started talking again.
+    """
+    try:
+        evt = _bg_tasks.note_system_event(session, msg)
+    except Exception as e:
+        _log(f"[bg-tasks] system event not tracked: {e}")
+        return
+    if (evt == 'notification' and session.get('status') == 'idle'
+            and not session.get('waiting_for_question')):
+        session[_bg_tasks.RESUME_PENDING_KEY] = True
+        status = msg.get('status') or 'finished'
+        summary = (msg.get('summary') or msg.get('task_id') or '')[:120]
+        session['log_lines'].append(
+            f"[background task {status}: {summary} — agent resuming]")
+        session['last_output_time'] = _time.time()
+
+
+def _note_self_started_turn(session):
+    """MC-958: main-thread assistant output while the session is `idle` means
+    the CLI started a turn nobody in Clayrune sent — the wake-up after a
+    background job. Mark it `running` so the UI, the guardian and a sender
+    see the truth, and re-arm the spawner callback if the wait cap already
+    spent it on an interim report."""
+    if session.get('status') != 'idle' or session.get('waiting_for_question'):
+        return
+    session['status'] = 'running'
+    session['last_status_change_time'] = _time.time()
+    session.pop(_bg_tasks.RESUME_PENDING_KEY, None)
+    if session.pop(_bg_tasks.INTERIM_KEY, None):
+        try:
+            _rearm_notify_for_new_turn(session)
+        except Exception as e:
+            _log(f"[bg-tasks] could not re-arm spawner callback for "
+                 f"{session.get('session_id', '')}: {e}")
+
+
+def _hold_notify_for_background(session):
+    """MC-958: True when this turn ended with background tasks still open, in
+    which case the spawner callback is held for the CLI's own follow-up turn.
+    False (callback may fire now) otherwise."""
+    tasks = _bg_tasks.open_tasks(session)
+    if not tasks:
+        session.pop(_bg_tasks.DEFERRED_KEY, None)
+        return False
+    if not session.get(_bg_tasks.DEFERRED_KEY):
+        session[_bg_tasks.DEFERRED_KEY] = _time.time()
+        session['log_lines'].append(
+            f"[turn ended with {len(tasks)} background task(s) still running "
+            f"({_bg_tasks.describe(session)}) — the session resumes on its own "
+            f"when they finish]")
+    return True
+
+
+def _release_held_notify_if_expired(session, now):
+    """MC-958 guardian half: a background job that never ends (a server
+    started with run_in_background) must not silence the child forever. Past
+    `background_wait_max_minutes` the spawner gets an interim report; the
+    callback re-arms for the turn the CLI runs if the job does end later."""
+    cap = state.CONFIG.get('background_wait_max_minutes',
+                           _bg_tasks.DEFAULT_WAIT_MAX_MINUTES)
+    if not _bg_tasks.wait_expired(session, now, cap):
+        return False
+    with get_manager(session['project_id']).lock:
+        if not _bg_tasks.wait_expired(session, now, cap):
+            return False
+        session.pop(_bg_tasks.DEFERRED_KEY, None)
+        label = _bg_tasks.describe(session)
+        session['log_lines'].append(
+            f"[background task(s) still running after {cap} min ({label}) — "
+            f"reporting to the spawner now]")
+    was_sent = bool(session.get('_notify_session_sent'))
+    _maybe_notify_spawner(
+        session,
+        f"[interim: still waiting on background task(s) after {cap} min: {label}]\n"
+        + _last_reply_text(session))
+    if session.get('_notify_session_sent') and not was_sent:
+        session[_bg_tasks.INTERIM_KEY] = True
+    return True
 
 
 def _advance_delegation_turn(session):
@@ -11179,6 +11287,14 @@ def agent_interrupt(project_id, *, _internal=None):
             # _bounded_stdin_close.
             _bounded_stdin_close(old_proc, context='interrupt-stop-old-proc')
         _unregister_process(old_proc.pid)
+        # MC-958: killing the CLI kills its background jobs too (2026-09-18,
+        # 3aa45ebf207e: a suite moved to the background at its 120s timeout
+        # died here and left a 0-byte output file, with no trace in the chat).
+        _gone = _bg_tasks.drain(session)
+        if _gone:
+            session['log_lines'].append(
+                f"[interrupt stopped {len(_gone)} background task(s) with the old "
+                f"process: {'; '.join(_gone)}]")
 
         # Immediately set status to running for the new prompt
         user_label = state.CONFIG.get('user_name') or 'User'
@@ -13802,7 +13918,8 @@ def _session_guardian_loop():
     return
 
 
-def _should_evict_idle_session(session, now, enabled, idle_minutes):
+def _should_evict_idle_session(session, now, enabled, idle_minutes,
+                               bg_wait_max_minutes=_bg_tasks.DEFAULT_WAIT_MAX_MINUTES):
     """Pure predicate for guardian idle-eviction (kept separate so it's unit-
     testable without spawning real processes).
 
@@ -13822,6 +13939,10 @@ def _should_evict_idle_session(session, now, enabled, idle_minutes):
     if (session.get('pending_followups') or session.get('_dispatching_followup')
             or session.get('waiting_for_question')
             or session.get('waiting_for_plan_approval')):
+        return False
+    # MC-958: an `idle` session with a background job running is WAITING, not
+    # idle — the CLI wakes it when the job ends, and evicting kills the job.
+    if _bg_tasks.blocks_eviction(session, now, bg_wait_max_minutes):
         return False
     proc = session.get('proc')
     if proc is None or proc.poll() is not None:
@@ -13908,15 +14029,27 @@ def _guardian_check_session(sid, session, now):
     # it via the followup path with `-r <csid>`, so context is preserved. The
     # `evicted` flag makes State 1 skip the now-dead-proc session instead of
     # flagging it 'error'; it is cleared on respawn. Default OFF.
+    # State 9 (MC-958): a spawner callback held for a background job that has
+    # outrun `background_wait_max_minutes` is released as an interim report.
+    if session.get(_bg_tasks.DEFERRED_KEY):
+        try:
+            _release_held_notify_if_expired(session, now)
+        except Exception as e:
+            _log(f"[guardian] held-notify release failed for {sid[:8]}: {e}")
+
+    _bg_cap = state.CONFIG.get('background_wait_max_minutes',
+                               _bg_tasks.DEFAULT_WAIT_MAX_MINUTES)
     if _should_evict_idle_session(session, now,
                                   state.CONFIG.get('idle_eviction_enabled', False),
-                                  state.CONFIG.get('idle_eviction_minutes', 60)):
+                                  state.CONFIG.get('idle_eviction_minutes', 60),
+                                  _bg_cap):
         proc_to_kill = None
         with get_manager(session['project_id']).lock:
             # Re-check under lock — status/proc may have changed since the snapshot.
             if _should_evict_idle_session(session, now,
                                           state.CONFIG.get('idle_eviction_enabled', False),
-                                          state.CONFIG.get('idle_eviction_minutes', 60)):
+                                          state.CONFIG.get('idle_eviction_minutes', 60),
+                                          _bg_cap):
                 idle_min = (now - session.get('last_output_time', now)) / 60
                 session['evicted'] = True
                 session['process_alive'] = False
