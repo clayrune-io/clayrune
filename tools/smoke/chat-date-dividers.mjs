@@ -213,12 +213,78 @@ try {
     ? ok('labels read "Yesterday"/"Today" correctly for the two recent days')
     : fail(`labels wrong: ${JSON.stringify(multiDayDividers.map((d) => d.text))}`);
 
+  // ── 7. MOBILE viewport, through the REAL click + fetch path ───────────────
+  //      Ron reported no date labels on mobile (MC-954 follow-up) even after
+  //      a server restart; every check above runs at a 1400px desktop
+  //      viewport and seeds agentStatusCache/agentOutputTimestamps by direct
+  //      object injection, so neither the mobile drill-down list (WhatsApp-
+  //      Communities layout, isMobileChatList()===true) nor the real
+  //      /conversations + /session/<id>/reconstruct fetch path that populates
+  //      agentOutputTimestamps in production (openConversation, conversation.js
+  //      ~3565-3571) was ever exercised. Reproduces the exact user gesture:
+  //      open the project, land on the conversation list, tap a row.
+  const mobileCtx = await browser.newContext({ viewport: { width: 412, height: 915 } });
+  const mobilePage = await mobileCtx.newPage();
+  const mobilePageErrors = [];
+  mobilePage.on('pageerror', (e) => mobilePageErrors.push(e.message || String(e)));
+  const RECON_SID = 'sess-dividers-mobile-reconstruct';
+  const reconDayBefore = new Date(now);
+  reconDayBefore.setDate(reconDayBefore.getDate() - 1);
+  const reconLogLines = ['Line from yesterday (mobile reconstruct).', 'Line from today (mobile reconstruct).'];
+  const reconLogTs = [reconDayBefore.toISOString(), now.toISOString()];
+  await mobilePage.route('**/*', (route) => {
+    const url = new URL(route.request().url());
+    const path = url.pathname;
+    if (path === '/' || path === '/index.html') return route.fulfill({ status: 200, contentType: 'text/html; charset=utf-8', body: INDEX_HTML });
+    const hit = STATIC[path];
+    if (hit) return route.fulfill({ status: 200, contentType: hit[0], body: hit[1] });
+    if (path === '/api/projects') return route.fulfill({ status: 200, contentType: 'application/json', body: PROJECTS_JSON });
+    if (path === '/api/config') return route.fulfill({ status: 200, contentType: 'application/json', body: '{}' });
+    if (path === '/api/characters') return route.fulfill({ status: 200, contentType: 'application/json', body: '[]' });
+    if (path === `/api/project/${PID}/conversations`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify([{
+        mc_session_id: RECON_SID, claude_session_id: 'csid-mobile-reconstruct', provider: 'claude',
+        live: false, status: 'completed', label: 'mobile reconstruct thread', first_user: 'mobile reconstruct thread',
+        last_user: 'mobile reconstruct thread', ts: reconLogTs[1], ts_relative: '0m ago', turns: 1,
+        waiting_for_question: false, waiting_for_plan_approval: false, resumable: true,
+      }]) });
+    }
+    if (path === `/api/project/${PID}/session/${RECON_SID}/reconstruct`) {
+      return route.fulfill({ status: 200, contentType: 'application/json', body: JSON.stringify({
+        task: 'mobile reconstruct thread', started_at: reconLogTs[0], claude_session_id: 'csid-mobile-reconstruct',
+        log_lines: reconLogLines, log_line_ts: reconLogTs,
+      }) });
+    }
+    return route.abort();
+  });
+  await mobilePage.goto(ORIGIN + '/', { waitUntil: 'domcontentloaded' });
+  await mobilePage.waitForSelector('#projects-col .card, #projects-col .mc-chat-row', { timeout: 15000 });
+  await mobilePage.evaluate((pid) => openProjectModal(pid), PID);
+  const convRowSel = `.modal-window[data-modal-id="${PID}"] .conv-row[data-mcsid="${RECON_SID}"]`;
+  const rowFound = await mobilePage.waitForSelector(convRowSel, { timeout: 5000 }).then(() => true).catch(() => false);
+  rowFound ? ok('mobile drill-down list renders the conversation row (isMobileChatList() path)')
+    : fail('mobile drill-down list never rendered a conv-row for the fixture session — cannot proceed with click-through check');
+  if (rowFound) {
+    await mobilePage.click(convRowSel);
+    await mobilePage.waitForSelector(`.modal-window[data-modal-id="${PID}"] #agent-output-${RECON_SID}`, { timeout: 5000 }).catch(() => {});
+    const mobileDividers = await mobilePage.evaluate((sid) =>
+      [...document.querySelectorAll(`#agent-output-${sid} .chat-date-divider`)].map(d => ({ date: d.dataset.date, text: d.textContent, visible: d.getClientRects().length > 0 })),
+      RECON_SID);
+    mobileDividers.length === 2 ? ok(`mobile real-fetch reconstruct path: 2 dividers render (${JSON.stringify(mobileDividers)})`)
+      : fail(`mobile real-fetch reconstruct path: expected 2 dividers, got ${JSON.stringify(mobileDividers)}`);
+    mobileDividers.every(d => d.visible) ? ok('mobile dividers are actually visible in the DOM (not display:none / zero-size)')
+      : fail(`mobile dividers present but not visible: ${JSON.stringify(mobileDividers)}`);
+  }
+  const uncaughtMobile = mobilePageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
+  if (uncaughtMobile.length) uncaughtMobile.forEach((e) => fail('uncaught page error on mobile: ' + e));
+  await mobileCtx.close();
+
   const uncaught = pageErrors.filter((e) => !/aborted|net::ERR|Failed to fetch|EventSource/i.test(e));
   if (uncaught.length) uncaught.forEach((e) => fail('uncaught exception during interaction: ' + e));
 
   exitCode = bad === 0 ? 0 : 1;
   console.log(bad === 0
-    ? '\n✅ PASS — date dividers render on cold load, cross the day boundary live, dedupe against the DOM, the single-anchor fallback is confirmed, and real per-line server timestamps render all 3 dividers for a 3-day buffer.'
+    ? '\n✅ PASS — date dividers render on cold load, cross the day boundary live, dedupe against the DOM, the single-anchor fallback is confirmed, real per-line server timestamps render all 3 dividers for a 3-day buffer, and the mobile drill-down list + real fetch/reconstruct path (not direct object injection) also renders visible dividers.'
     : `\n❌ FAIL — ${bad} check(s) failed.`);
 } catch (err) {
   console.error('❌ harness error:', err && err.stack ? err.stack : err);
