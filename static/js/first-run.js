@@ -59,8 +59,7 @@ const SETUP_STEPS = [
         })).join('') + `</div><div style="display:flex;gap:8px;margin-top:12px">
           <button type="button" class="btn-add" onclick="setupInstallSelected(this)">Install selected</button>
           <button type="button" class="btn-add" onclick="providerRefreshAll()">Check setup status</button>
-        </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)"></div>
-        <div id="setup-provider-validation" role="status" style="margin-top:8px;color:var(--amber)"></div>`
+        </div><div class="prov-install-policy-note" style="margin-top:6px;font-size:11px;color:var(--text-faint)">${esc(_providerInstallPolicyNoteText || '')}</div>`
         + `<div style="margin-top:16px;text-align:left">
           <div style="font-weight:600;color:var(--text)">Default model</div>
           <div style="font-size:11px;color:var(--text-faint);margin:2px 0 6px">Applies across every agent unless overridden per project or per chat.</div>
@@ -253,13 +252,27 @@ function _setupInstallComplete() {
   return selected.length > 0 && selected.every(p => p.installed && p.auth_status === 'ok');
 }
 
+// DOM presence, not terminal.js's own lifecycle state — decoupled on purpose
+// so this holds regardless of HOW the terminal went away (user hit its own
+// Close, or it auto-closed on the child process exiting). Checked ONLY as the
+// stop condition, never to gate starting: right after "Install selected" the
+// terminal can take a beat to mount, and the first tick is 4s out — plenty.
+function _setupInstallTerminalOpen() {
+  return !!document.querySelector('#modal-layer .modal-window[data-modal-id^="__terminal_"]');
+}
+
 function _setupStartInstallWatch() {
   document.body.classList.add('setup-terminal-live');
   if (_setupInstallWatchRunning) return;
   _setupInstallWatchRunning = true;
   _setupInstallWatchTimer = setInterval(async () => {
     await providerRefreshAll();
-    if (_setupInstallComplete()) _setupStopInstallWatch();
+    // Stop on success (nothing left to watch) OR once the terminal itself is
+    // gone (Dave review, 2026-09-24: a failed/cancelled install — Bram's
+    // Qwen/Codex silent-install-failure fix is separate — used to poll
+    // forever with the live class stuck on, since the old check only fired
+    // on full success).
+    if (_setupInstallComplete() || !_setupInstallTerminalOpen()) _setupStopInstallWatch();
   }, 4000);
 }
 
@@ -295,17 +308,27 @@ function _setupProviderBlockReason(p) {
   }
 }
 
-// One-line reason the connections step's Next is disabled, or '' when it's
-// clear to proceed. Same validation setupNext() already runs on click — kept
-// there too as a defense-in-depth net now that the button is also disabled.
+// Reason(s) the connections step's Next is disabled, or '' when it's clear to
+// proceed. This is the SOLE source of truth for the disabled-Next banner
+// (.wt-next-reason, rendered next to the footer) — setupNext() below reuses
+// it rather than re-deriving its own list, so there is exactly one place a
+// blocked reason can ever be shown (Dave review, 2026-09-24: a second, richer
+// version of this used to live only in setupNext()'s dead click-handler code,
+// writing into a div far above the footer that a disabled button can never
+// actually trigger from a real click).
+// Names EVERY unfinished selected vendor, not just the first — with 4
+// providers ticked and none installed (the clean-VM run that started this),
+// the user needs to see all 4 problems, not just Codex's.
 function _setupConnectionsBlockReason() {
   const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
   if (!selected.length) return 'Select at least one vendor to continue.';
   const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-  if (!setupSelectedProviders.has(defaultProvider)) return 'Choose a default from your selected vendors.';
-  const bad = selected.find(p => !p.installed || p.auth_status !== 'ok');
-  if (bad) return `${bad.display_name || bad.name}: ${_setupProviderBlockReason(bad)}.`;
-  return '';
+  const problems = [];
+  if (!setupSelectedProviders.has(defaultProvider)) problems.push('Choose a default from your selected vendors.');
+  for (const p of selected) {
+    if (!p.installed || p.auth_status !== 'ok') problems.push(`${p.display_name || p.name}: ${_setupProviderBlockReason(p)}.`);
+  }
+  return problems.join(' ');
 }
 
 // Escape hatch for a user with genuinely no vendor to connect right now.
@@ -445,7 +468,7 @@ async function setupShow(idx) {
     </div>
     <div class="wt-title">${esc(step.title)}</div>
     <div class="wt-body">${bodyHtml}</div>
-    ${nextBlocked ? `<div class="wt-next-reason">${esc(connReason)}</div>` : ''}
+    ${nextBlocked ? `<div class="wt-next-reason" id="wt-next-reason">${esc(connReason)}</div>` : ''}
     <div class="wt-actions">
       <span style="flex:1"></span>
       ${btns}
@@ -458,24 +481,14 @@ async function setupShow(idx) {
 
 function setupNext() {
   if (SETUP_STEPS[setupStep].id === 'connections') {
-    const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
-    const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-    const problems = [];
-    if (!selected.length) {
-      problems.push('Select at least one vendor.');
-    } else {
-      if (!setupSelectedProviders.has(defaultProvider)) {
-        problems.push('Choose a default from your selected vendors.');
-      }
-      for (const p of selected) {
-        if (!p.installed || p.auth_status !== 'ok') {
-          problems.push(`${p.display_name || p.name}: ${_setupProviderBlockReason(p)}`);
-        }
-      }
-    }
-    if (problems.length) {
-      const el = document.getElementById('setup-provider-validation');
-      if (el) el.textContent = problems.join(' · ') + ' — or skip setup and finish it later in Settings → Providers.';
+    // Defense-in-depth only — the Next button is already `disabled` whenever
+    // this returns non-empty, so a real click can't reach here. Reuses the
+    // SAME reason the footer banner (#wt-next-reason) already shows, instead
+    // of writing a second copy into its own div (Dave review, 2026-09-24).
+    const reason = _setupConnectionsBlockReason();
+    if (reason) {
+      const el = document.getElementById('wt-next-reason');
+      if (el) el.textContent = reason;
       return;
     }
   }

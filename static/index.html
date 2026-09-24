@@ -1101,6 +1101,14 @@ const _transcriptCache = {};  // csid -> {messages, size, message_count}
 // visible chat recovers sooner than a backgrounded one.
 const SSE_ZOMBIE_MS = 25000;
 const modalZoomLevels = {}; // modalId → current font-size in px
+// Batch-install status text (provider-auth.js writes; provider-auth.js,
+// provider-settings.js and first-run.js all render it back — spans ≥2
+// families, so it's STORE, not module-private). Kept out of the DOM because
+// first-run's install-watch poll rebuilds the whole connections step from
+// scratch every 4s while a terminal is live, which would otherwise wipe a
+// message written directly into a row/note div before the next tick.
+let _providerInstallMsg = {};            // provider name -> per-row message text
+let _providerInstallPolicyNoteText = ''; // one shared batch note
 // ── /STORE ──────────────────────────────────────────────────────────────────
 
 

@@ -35,6 +35,7 @@ const installCalls = [], loginCalls = [], singleInstallCalls = [];
 const POLICY_NOTE = 'PowerShell script policy was Restricted; set to RemoteSigned for your user account.';
 const pageHTML = `<!doctype html><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="stylesheet" href="/static/css/app.css"><body><main id="app"></main><div class="modal-layer" id="modal-layer"></div><script>
 let API_BASE=''; let _agentProviders=${JSON.stringify(providers)}; let _globalConfig={};
+let _providerInstallMsg={}; let _providerInstallPolicyNoteText='';
 const advancedFlags={}, ADV_FEATURES=[]; function esc(s){return String(s??'').replace(/[&<>\"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;',"'":'&#39;'}[c]))}
 function showToast(){} function showDesktop(){} function refreshSilent(){} function refreshAuthStatus(){}
 async function saveSetting(k,v){_globalConfig[k]=v;}
@@ -153,10 +154,34 @@ try {
   if (!stacking.bodyLive) throw new Error('body did not gain setup-terminal-live while the install terminal is running');
   if (!(stacking.modalLayerZ > stacking.overlayZ)) throw new Error(`modal layer (${stacking.modalLayerZ}) is not above the setup overlay (${stacking.overlayZ})`);
   if (!stacking.topElIsTerminal) throw new Error('setup overlay still covers the live install terminal at its own center point');
+  // Gap 3 (Dave review, 2026-09-24): a failed/cancelled install used to poll
+  // forever with setup-terminal-live stuck on, because the watch's stop
+  // condition only fired on full success. Remove the terminal node while
+  // codex+claude are STILL not installed+authed (real failure shape) and wait
+  // for one real 4s poll tick — the watch must notice the terminal is gone
+  // and drop the class on its own, with no further user action.
+  await page.evaluate(() => document.querySelector('.modal-window[data-modal-id="__terminal_smoke-term-1"]').remove());
+  await page.waitForFunction(() => !document.body.classList.contains('setup-terminal-live'), {timeout: 6000});
   await page.evaluate(() => providerRefreshAll());
   await page.waitForTimeout(40);
   if (installCalls.length !== 2 || new Set(installCalls).size !== 2) throw new Error(`selected install calls incorrect: ${installCalls}`);
   if (singleInstallCalls.length) throw new Error(`per-vendor install route used instead of the batch: ${singleInstallCalls}`);
+  // Dave review, 2026-09-24 (gap 2): providerRefreshAll() -> window._setupRepaint()
+  // rebuilds the WHOLE connections-step body via setupShow — exactly what the
+  // 4s install-watch poll does on every tick. The policy note and per-row
+  // messages used to be written straight into a DOM node providerInstallSelected
+  // found once, so they read back empty after the very next repaint. Call the
+  // same repaint path twice (2 simulated poll ticks) and assert both survive.
+  for (let tick = 0; tick < 2; tick++) {
+    await page.evaluate(() => providerRefreshAll());
+    await page.waitForTimeout(40);
+    const noteAfterPoll = await page.locator('#setup-overlay .prov-install-policy-note').innerText();
+    if (!noteAfterPoll.includes('PowerShell script policy'))
+      throw new Error(`policy note lost after poll tick ${tick + 1}: "${noteAfterPoll}"`);
+    const codexMsgAfterPoll = await page.locator('#prov-install-msg-codex').innerText();
+    if (!codexMsgAfterPoll.includes('A terminal opened'))
+      throw new Error(`per-row install message lost after poll tick ${tick + 1}: "${codexMsgAfterPoll}"`);
+  }
   const signIn = page.getByRole('button', {name: 'Sign in'}).first();
   if (await signIn.count()) await page.evaluate(() => document.querySelector('#setup-overlay button[onclick^="settingsProviderTerminalLogin"]').click());
   if (!(await page.evaluate(() => browserLoginCalls.length))) throw new Error(`sign-in action was not wired; body=${await page.locator('#setup-overlay').innerText()}`);

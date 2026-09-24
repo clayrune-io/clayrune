@@ -35,6 +35,9 @@ const context = vm.createContext({
     {name: 'codex', display_name: 'Codex', installed: false},
     {name: 'claude', display_name: 'Claude', installed: false},
   ],
+  // STORE vars (real index.html declares these; provider-auth.js/first-run.js
+  // read+write the bare names) — seeded here the same way _agentProviders is.
+  _providerInstallMsg: {}, _providerInstallPolicyNoteText: '',
   esc: String, API_BASE: '',
   fetch: async (url, init) => { calls.push({url, body: init && init.body ? JSON.parse(init.body) : null}); return {json: async () => installReply}; },
   saveSetting: async (key, value) => { context._globalConfig[key] = value; },
