@@ -398,36 +398,36 @@ function _setupProviderBlockReason(p) {
   }
 }
 
-// Reason(s) the connections step's Next is disabled, or '' when it's clear to
-// proceed. This is the SOLE source of truth for the disabled-Next banner
-// (.wt-next-reason, rendered next to the footer) — setupNext() below reuses
-// it rather than re-deriving its own list, so there is exactly one place a
-// blocked reason can ever be shown (Dave review, 2026-09-24: a second, richer
-// version of this used to live only in setupNext()'s dead click-handler code,
-// writing into a div far above the footer that a disabled button can never
-// actually trigger from a real click).
-// Names EVERY unfinished selected vendor, not just the first — with 4
-// providers ticked and none installed (the clean-VM run that started this),
-// the user needs to see all 4 problems, not just Codex's.
-function _setupConnectionsBlockReason() {
+// What the connections step still lacks, as a warning shown above the footer,
+// or '' when a signed-in default is in place. NEVER a gate (Ron, clean-VM run
+// 2026-09-24): with the network down nothing can install or sign in, and that
+// must not trap the user in setup — they finish now and sign in later from
+// Settings -> Providers. It went gate -> "every ticked vendor must be signed
+// in" (Next greyed out with Claude signed in as default) -> this. The warning
+// leads with the consequence so it reads as the thing to act on; the only
+// friction left is setupNext()'s one confirm when NO vendor is ready at all.
+function _setupConnectionsWarning() {
   const selected = (_agentProviders || []).filter(p => setupSelectedProviders.has(p.name));
-  if (!selected.length) return 'Select at least one vendor to continue.';
-  const defaultProvider = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
-  const problems = [];
-  if (!setupSelectedProviders.has(defaultProvider)) problems.push('Choose a default from your selected vendors.');
-  for (const p of selected) {
-    if (!p.installed || p.auth_status !== 'ok') problems.push(`${p.display_name || p.name}: ${_setupProviderBlockReason(p)}.`);
-  }
-  return problems.join(' ');
+  const label = p => p.display_name || p.name;
+  const later = 'You can continue and sign in later from Settings → Providers.';
+  if (!selected.length) return `No AI vendor selected: agents can't run until you select and sign in to at least one. ${later}`;
+  const ready = selected.filter(p => p.installed && p.auth_status === 'ok');
+  const pending = selected.filter(p => !ready.includes(p));
+  const pendingTxt = pending.map(p => `${label(p)}: ${_setupProviderBlockReason(p)}.`).join(' ');
+  if (!ready.length) return `No vendor is signed in yet: agents can't run until you sign in to at least one. ${pendingTxt} ${later}`;
+  const defaultName = setupExplicitDefault || (_globalConfig && _globalConfig.default_provider);
+  const def = selected.find(p => p.name === defaultName);
+  const readyNames = ready.map(label).join(' or ');
+  const parts = [];
+  if (!def) parts.push(`Pick a default: ${readyNames} is signed in.`);
+  else if (!ready.includes(def)) parts.push(`Your default, ${label(def)}, is ${_setupProviderBlockReason(def)}; make ${readyNames} the default or sign in to it.`);
+  if (pending.length) parts.push(`Not ready yet: ${pendingTxt}`);
+  return parts.length ? `${parts.join(' ')} ${later}` : '';
 }
 
-// Escape hatch for a user with genuinely no vendor to connect right now.
-// Requires an explicit confirm naming the consequence, then ends setup the
-// same way the old blanket "Skip setup" button did — setupFinish() persists
-// setup_completed so Clayrune stops re-opening setup on every load.
-function setupConnectLater() {
-  if (!confirm('Clayrune cannot run agents until at least one AI vendor is connected and signed in. You can finish this any time from Settings → Providers. Continue without connecting one now?')) return;
-  setupFinish();
+function _setupAnyVendorReady() {
+  return (_agentProviders || []).some(p =>
+    setupSelectedProviders.has(p.name) && p.installed && p.auth_status === 'ok');
 }
 
 // ── Flow ─────────────────────────────────────────────────────────────────────
@@ -512,8 +512,7 @@ async function setupShow(idx) {
   // in SETUP_STEPS[1].body). Checking the reason first read an empty set and
   // showed Next as falsely blocked on that very first render.
   const bodyHtml = step.body();
-  const connReason = isConnStep ? _setupConnectionsBlockReason() : '';
-  const nextBlocked = isConnStep && !!connReason;
+  const connWarning = isConnStep ? _setupConnectionsWarning() : '';
 
   let btns = '';
   if (!isFirst) btns += `<button class="wt-btn" onclick="setupBack()">Back</button>`;
@@ -538,8 +537,7 @@ async function setupShow(idx) {
     // "Skip" look (walkthrough.js), and a setup control wearing it is exactly
     // the confusion Ron hit on the clean-VM run (2026-09-23).
     if (setupForced) btns += `<button class="wt-btn setup-btn-secondary" onclick="setupSkip()">Close</button>`;
-    else if (nextBlocked) btns += `<button type="button" class="wt-btn setup-btn-secondary" onclick="setupConnectLater()">I'll connect one later</button>`;
-    btns += `<button class="wt-btn wt-btn-primary"${nextBlocked ? ' disabled' : ''} onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
+    btns += `<button class="wt-btn wt-btn-primary" onclick="setupNext()">${isFirst ? 'Get started' : 'Next'}</button>`;
   }
 
   const pct = Math.round(((pos + 1) / visible.length) * 100);
@@ -558,7 +556,7 @@ async function setupShow(idx) {
     </div>
     <div class="wt-title">${esc(step.title)}</div>
     <div class="wt-body">${bodyHtml}</div>
-    ${nextBlocked ? `<div class="wt-next-reason" id="wt-next-reason">${esc(connReason)}</div>` : ''}
+    ${connWarning ? `<div class="wt-next-reason" id="wt-next-reason" role="status">${esc(connWarning)}</div>` : ''}
     <div class="wt-actions">
       <span style="flex:1"></span>
       ${btns}
@@ -570,17 +568,11 @@ async function setupShow(idx) {
 }
 
 function setupNext() {
-  if (SETUP_STEPS[setupStep].id === 'connections') {
-    // Defense-in-depth only — the Next button is already `disabled` whenever
-    // this returns non-empty, so a real click can't reach here. Reuses the
-    // SAME reason the footer banner (#wt-next-reason) already shows, instead
-    // of writing a second copy into its own div (Dave review, 2026-09-24).
-    const reason = _setupConnectionsBlockReason();
-    if (reason) {
-      const el = document.getElementById('wt-next-reason');
-      if (el) el.textContent = reason;
-      return;
-    }
+  // Never blocks (see _setupConnectionsWarning). Leaving with NO vendor ready
+  // gets one confirm naming the consequence; clicking OK finishes setup
+  // normally, so the user is not re-asked on every load.
+  if (SETUP_STEPS[setupStep].id === 'connections' && !_setupAnyVendorReady()) {
+    if (!confirm('No AI vendor is signed in yet, so Clayrune cannot run agents until you sign in to one. You can do that any time from Settings → Providers. Continue anyway?')) return;
   }
   if (setupStep < SETUP_STEPS.length - 1) setupShow(setupStep + 1); else setupFinish();
 }
@@ -639,5 +631,4 @@ window.setupPickTone = setupPickTone;
 window.setupPickAccent = setupPickAccent;
 window.setupPickChatStyle = setupPickChatStyle;
 window.setupOpenConnectivity = setupOpenConnectivity;
-window.setupConnectLater = setupConnectLater;   // interop: connections-step escape link generated onclick
 window.startTourOrSetup = startTourOrSetup;     // interop: header '?' button + command-palette "Take Tour" entry

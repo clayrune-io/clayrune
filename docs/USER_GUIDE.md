@@ -73,9 +73,10 @@ for individual agents and chats.
 
 After an install terminal finishes, click **Check setup status**. An installed
 vendor may still show **not signed in**; use its **Sign in** button and check
-status again. **Next** stays disabled until every selected vendor is installed
-and signed in and one selected vendor is the default. You can skip the
-walkthrough and complete this later from Settings.
+status again. **Next** is never locked: a highlighted note above it says what
+is still missing (no vendor signed in, no default, or a ticked vendor not
+signed in yet). If no vendor is signed in, Next asks once to confirm, since
+agents cannot run until one is. Sign in any time from Settings → Providers.
 
 The walkthrough also works on narrow/mobile screens. Provider setup opens the
 host terminal for package installation and authentication so progress and any

@@ -212,7 +212,7 @@ try {
   // styled identically to the tour's own skip control, so one click ended
   // setup for good. First run now offers no skip anywhere; setup_completed
   // is written only from the final step's own two buttons.
-  await scenario('first run: no skip control on any step, gated connections blocks Next', {
+  await scenario('first run: no skip control on any step, connections warns but never blocks Next', {
     config: { setup_completed: false },
     providers: TWO_PROVIDERS_UNSET,
   }, async (page, { configPuts }) => {
@@ -235,41 +235,35 @@ try {
     if (/\btour\b/i.test(st.cardText)) fail(`the word "tour" appears on the connections step: "${st.cardText}"`);
     else ok('no "tour" text on the connections step');
 
-    // Nothing selected yet: Next must be disabled with a visible one-line reason.
+    // Nothing selected yet: Next is NEVER disabled (Ron, 2026-09-24 — an
+    // offline user must be able to finish setup and sign in later), but a
+    // visible warning says agents can't run until a vendor is signed in.
     const nextBtn = page.locator('#setup-overlay .wt-btn-primary');
-    if (!(await nextBtn.isDisabled())) fail('Next is not disabled on the connections step before a vendor is selected+installed+signed in');
-    else ok('Next is disabled on the connections step until a vendor qualifies');
+    if (await nextBtn.isDisabled()) fail('Next is disabled on the connections step; it must never gate');
+    else ok('Next stays enabled on the connections step with no vendor ready');
     const reasonTxt = (await page.locator('#setup-overlay .wt-next-reason').textContent().catch(() => '')) || '';
-    if (!reasonTxt.trim()) fail('no visible reason shown while Next is disabled on the connections step');
-    else ok(`reason shown while blocked: "${reasonTxt.trim()}"`);
+    if (!/sign in/i.test(reasonTxt)) fail(`no sign-in warning shown with no vendor ready: "${reasonTxt.trim()}"`);
+    else ok(`warning shown: "${reasonTxt.trim()}"`);
 
-    // The escape link is present while blocked, confirms before acting, and
-    // declining the confirm leaves setup open and uncompleted.
-    const laterLink = page.locator('#setup-overlay .setup-btn-secondary:has-text("I\'ll connect one later")');
-    if (!(await laterLink.count())) { fail('no "I\'ll connect one later" escape link while Next is blocked'); return; }
-    ok('"I\'ll connect one later" escape link is present while blocked');
+    // With no vendor ready, Next confirms once; declining stays on the step.
     await page.evaluate(() => { window.__confirmCalls = []; window.confirm = (msg) => { window.__confirmCalls.push(msg); return false; }; });
-    await laterLink.click();
+    await nextBtn.click();
     await page.waitForTimeout(150);
     st = await overlayState(page);
-    if (!st.setupVisible) fail('setup overlay closed after declining the "connect one later" confirm');
-    else ok('declining the confirm leaves setup open');
-    if ((await page.evaluate(() => window.__confirmCalls.length)) !== 1) fail('"I\'ll connect one later" did not show a confirm dialog');
-    else ok('"I\'ll connect one later" requires an explicit confirm');
+    if (st.title !== 'Which AI do you work with?') fail(`declining the no-vendor confirm left the connections step: ${st.title}`);
+    else ok('declining the confirm stays on the connections step');
+    if ((await page.evaluate(() => window.__confirmCalls.length)) !== 1) fail('Next with no vendor ready did not show a confirm');
+    else ok('Next with no vendor ready asks for an explicit confirm');
     if (configPuts.some((p) => p.setup_completed === true)) fail('setup_completed was written despite declining the confirm');
     else ok('setup_completed not written while declined');
 
-    // Accepting the confirm ends setup and DOES persist setup_completed —
-    // same effect the old blanket "Skip setup" had, but explicit and gated.
+    // Accepting continues to the next step (setup itself is not ended early).
     await page.evaluate(() => { window.confirm = () => true; });
-    await laterLink.click();
+    await nextBtn.click();
     await page.waitForTimeout(200);
     st = await overlayState(page);
-    if (st.setupVisible) fail('setup overlay still open after accepting "connect one later"');
-    else ok('setup overlay closes after accepting "connect one later"');
-    const completes = configPuts.filter((p) => p.setup_completed === true);
-    if (completes.length !== 1) fail(`"connect one later" (accepted) should record setup_completed:true, got PUTs: ${JSON.stringify(configPuts)}`);
-    else ok('accepting "connect one later" records setup_completed:true');
+    if (!st.setupVisible || st.title === 'Which AI do you work with?') fail(`accepting the confirm did not advance setup: ${st.title}`);
+    else ok(`accepting the confirm advances setup to "${st.title}"`);
   });
 
   // ── 4b. Essentials step (middle, non-last): no skip control either ──────

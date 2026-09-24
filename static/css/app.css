@@ -7071,7 +7071,10 @@
   .wt-btn-skip:hover { color: var(--text); }
   .wt-btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
   .wt-btn-primary:disabled:hover { background: var(--accent); }
-  .wt-next-reason { margin-top: -8px; margin-bottom: 16px; font-size: 11px; color: var(--amber); text-align: left; }
+  /* Connections-step warning: a bordered callout, not fine print. A clean-VM
+     user read the old 11px amber line as status text, not as the thing to act
+     on (2026-09-24). Advisory only; Next is never disabled by it. */
+  .wt-next-reason { margin: -4px 0 14px; padding: 8px 10px; border: 1px solid var(--amber); border-radius: 6px; background: color-mix(in srgb, var(--amber) 10%, transparent); font-size: 12.5px; line-height: 1.45; color: var(--text); text-align: left; }
 
   /* First-run setup cards (first-run.js) share .wt-card/.wt-overlay scaffolding
      with the guided tour (walkthrough.js), which made them visually identical —
