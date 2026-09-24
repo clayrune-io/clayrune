@@ -29,8 +29,10 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
-    from mc.blueprints import secrets_routes
+    from mc.blueprints import local_auth, secrets_routes
     from mc.state import agent_sessions
+    monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    secrets_routes._VAULT_LOCK_FAILS.clear()
     secrets_store._dispensed.clear()
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False
@@ -40,6 +42,15 @@ def client(tmp_path, monkeypatch):
     app.register_blueprint(secrets_routes.bp)
     yield app.test_client()
     agent_sessions.clear()
+
+
+VAULT_PASSCODE = 'unlock1234'
+
+
+def _set_vault_passcode():
+    from mc.blueprints import local_auth
+    local_auth._local_auth_set_passcode(VAULT_PASSCODE)
+    return VAULT_PASSCODE
 
 
 def _mark_unattended():
@@ -168,25 +179,32 @@ def test_unattended_cannot_set_passphrase(client):
 
 
 def test_unattended_cannot_unlock(client):
-    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'correct horse battery'})
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
     assert res.status_code == 200
     from mc import secrets_store
     secrets_store._unlocked_key = None  # simulate a server restart: locked again
 
     _mark_unattended()
+    # Correct passcode supplied too — proves the refusal below is the
+    # is_unattended_caller() gate firing, not the passcode gate.
     res = client.post('/api/secrets/vault-lock/unlock',
-                      json={'passphrase': 'correct horse battery'})
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
     assert res.status_code == 403
     assert secrets_store.lock_state() == 'locked'
 
 
 def test_unattended_cannot_change_passphrase(client):
-    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'correct horse battery'})
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
     assert res.status_code == 200
     _mark_unattended()
     res = client.post('/api/secrets/vault-lock/change',
                       json={'old_passphrase': 'correct horse battery',
-                            'new_passphrase': 'a different passphrase'})
+                            'new_passphrase': 'a different passphrase',
+                            'passcode': passcode})
     assert res.status_code == 403
 
 

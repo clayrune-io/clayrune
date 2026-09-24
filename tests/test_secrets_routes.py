@@ -29,7 +29,12 @@ def client(tmp_path, monkeypatch):
     # want to exercise detection mock it explicitly instead.
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
-    from mc.blueprints import secrets_routes
+    from mc.blueprints import local_auth, secrets_routes
+    # Point the local-dashboard-passcode store at a throwaway file so
+    # vault-lock tests can configure/verify a passcode without touching a
+    # real install's ~/.clayrune-adjacent local_auth.json.
+    monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    secrets_routes._VAULT_LOCK_FAILS.clear()
     secrets_store._dispensed.clear()
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False
@@ -44,6 +49,14 @@ def _create(client, **over):
             'description': 'launch account'}
     body.update(over)
     return client.post('/api/secrets', json=body)
+
+
+def _set_passcode(passcode='unlock1234'):
+    """Configure the local dashboard passcode directly (the local_auth
+    blueprint isn't registered on this minimal test app)."""
+    from mc.blueprints import local_auth
+    local_auth._local_auth_set_passcode(passcode)
+    return passcode
 
 
 def test_create_and_list(client):
@@ -267,11 +280,13 @@ def test_check_flags_out_of_scope_and_unattended(client):
 def test_vault_lock_lifecycle_over_http(client):
     from mc import secrets_store as vault
     _create(client)
+    passcode = _set_passcode()
 
     state = client.get('/api/secrets/vault-lock').get_json()
     assert state == {'state': 'unconfigured', 'configured': False}
 
-    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a real passphrase'})
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'a real passphrase', 'passcode': passcode})
     assert res.status_code == 200
     recovery_key = res.get_json()['recovery_key']
     assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'unlocked'
@@ -287,12 +302,14 @@ def test_vault_lock_lifecycle_over_http(client):
     assert SECRET not in str(locked_list)
 
     # Wrong passphrase: refused, still locked.
-    bad = client.post('/api/secrets/vault-lock/unlock', json={'passphrase': 'nope'})
+    bad = client.post('/api/secrets/vault-lock/unlock',
+                      json={'passphrase': 'nope', 'passcode': passcode})
     assert bad.status_code == 403
     assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'locked'
 
     # Recovery key unlocks; the list reads clean again.
-    ok = client.post('/api/secrets/vault-lock/unlock', json={'recovery_key': recovery_key})
+    ok = client.post('/api/secrets/vault-lock/unlock',
+                     json={'recovery_key': recovery_key, 'passcode': passcode})
     assert ok.status_code == 200
     assert client.get('/api/secrets/vault-lock').get_json()['state'] == 'unlocked'
     unlocked_list = client.get('/api/secrets').get_json()
@@ -301,6 +318,63 @@ def test_vault_lock_lifecycle_over_http(client):
 
 
 def test_vault_lock_set_is_refused_a_second_time(client):
-    client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a real passphrase'})
-    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'a different one'})
+    passcode = _set_passcode()
+    client.post('/api/secrets/vault-lock/set',
+               json={'passphrase': 'a real passphrase', 'passcode': passcode})
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'a different one', 'passcode': passcode})
     assert res.status_code == 400
+
+
+def test_vault_lock_set_refused_without_a_configured_passcode(client):
+    """No dashboard passcode has ever been set — there is nothing to verify
+    the caller against, so the vault lock cannot be configured at all, even
+    by a caller `is_unattended_caller()` reads as human (Dave's review of
+    d3516a2, MC 503edfe4: worst case was an agent racing to `/set` first and
+    owning both the passphrase and the recovery key)."""
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'a real passphrase'})
+    assert res.status_code == 403
+    assert res.get_json()['error'] == 'passcode_required'
+    from mc import secrets_store as vault
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_vault_lock_set_refused_with_wrong_passcode(client):
+    _set_passcode('unlock1234')
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'a real passphrase', 'passcode': 'not-it'})
+    assert res.status_code == 403
+    assert res.get_json()['error'] == 'bad_passcode'
+    from mc import secrets_store as vault
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_vault_lock_forged_origin_no_longer_sufficient(client):
+    """A browser Origin header alone used to make `is_unattended_caller()`
+    treat any caller as human. A configured passcode with no correct
+    passcode supplied must still refuse the write, Origin or not."""
+    _set_passcode('unlock1234')
+    for headers in ({'Origin': 'http://localhost:5199'}, {}):
+        res = client.post('/api/secrets/vault-lock/set',
+                          headers=headers,
+                          json={'passphrase': 'a real passphrase'})
+        assert res.status_code == 403
+    from mc import secrets_store as vault
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_vault_lock_manual_chat_session_still_needs_the_passcode(client):
+    """`is_unattended_caller()` exempts `trigger_type == 'manual'` sessions —
+    a real interactive agent chat. That must not be enough on its own to set
+    the vault passphrase; the passcode gate applies regardless."""
+    from mc.state import agent_sessions
+    agent_sessions['manual-1'] = {'status': 'running', 'trigger_type': 'manual',
+                                  'project_id': 'mission_control'}
+    try:
+        res = client.post('/api/secrets/vault-lock/set',
+                          json={'passphrase': 'a real passphrase'})
+        assert res.status_code == 403
+        assert res.get_json()['error'] == 'passcode_required'
+    finally:
+        agent_sessions.clear()
