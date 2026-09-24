@@ -29,14 +29,28 @@ def client(tmp_path, monkeypatch):
     monkeypatch.setenv('CLAYRUNE_SECRETS_KEY_BACKEND', 'file')
     monkeypatch.delenv('CLAUDE_CODE_SESSION_ID', raising=False)
     from mc import secrets_store
-    from mc.blueprints import secrets_routes
+    from mc.blueprints import local_auth, secrets_routes
     from mc.state import agent_sessions
+    monkeypatch.setattr(local_auth, 'LOCAL_AUTH_PATH', tmp_path / 'local_auth.json')
+    secrets_routes._VAULT_LOCK_FAILS.clear()
     secrets_store._dispensed.clear()
+    secrets_store._unlocked_key = None
+    secrets_store._lock_notified = False
+    secrets_store._key_mismatch = False
     agent_sessions.clear()
     app = Flask(__name__)
     app.register_blueprint(secrets_routes.bp)
     yield app.test_client()
     agent_sessions.clear()
+
+
+VAULT_PASSCODE = 'unlock1234'
+
+
+def _set_vault_passcode():
+    from mc.blueprints import local_auth
+    local_auth._local_auth_set_passcode(VAULT_PASSCODE)
+    return VAULT_PASSCODE
 
 
 def _mark_unattended():
@@ -149,3 +163,57 @@ def test_the_preview_half_is_not_gated(client):
     res = client.post('/api/secrets/import-authenticator',
                       json={'uri': _migration_uri() or 'otpauth-migration://offline?data=x'})
     assert res.status_code != 403
+
+
+# ── vault passphrase lock (MC 503edfe4) — same gate, three new routes ───────
+
+def test_unattended_cannot_set_passphrase(client):
+    """The whole point of the lock is that an agent can't be the one who
+    configures it — an agent that could set the passphrase could set one
+    only it knows, then unlock itself forever."""
+    _mark_unattended()
+    res = client.post('/api/secrets/vault-lock/set', json={'passphrase': 'correct horse battery'})
+    assert res.status_code == 403
+    from mc import secrets_store
+    assert secrets_store.lock_state() == 'unconfigured'
+
+
+def test_unattended_cannot_unlock(client):
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
+    assert res.status_code == 200
+    from mc import secrets_store
+    secrets_store._unlocked_key = None  # simulate a server restart: locked again
+
+    _mark_unattended()
+    # Correct passcode supplied too — proves the refusal below is the
+    # is_unattended_caller() gate firing, not the passcode gate.
+    res = client.post('/api/secrets/vault-lock/unlock',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
+    assert res.status_code == 403
+    assert secrets_store.lock_state() == 'locked'
+
+
+def test_unattended_cannot_change_passphrase(client):
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
+    assert res.status_code == 200
+    _mark_unattended()
+    res = client.post('/api/secrets/vault-lock/change',
+                      json={'old_passphrase': 'correct horse battery',
+                            'new_passphrase': 'a different passphrase',
+                            'passcode': passcode})
+    assert res.status_code == 403
+
+
+def test_vault_lock_state_is_readable_by_anyone(client):
+    """The status route reveals only locked/unlocked/unconfigured — never a
+    key or a secret — so agents may read it; a job that hits VaultLocked
+    downstream needs to be able to tell a human, and that requires reading
+    state, not just failing."""
+    _mark_unattended()
+    res = client.get('/api/secrets/vault-lock')
+    assert res.status_code == 200
+    assert res.get_json()['state'] == 'unconfigured'

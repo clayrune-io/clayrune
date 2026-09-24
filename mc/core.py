@@ -124,6 +124,7 @@ def _harden_secret_perms(path) -> None:
             subprocess.run(
                 ['icacls', p, '/inheritance:r', '/grant:r', f'{user}:F'],
                 capture_output=True,
+                stdin=subprocess.DEVNULL,
                 creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0))
         else:
             os.chmod(p, 0o600)

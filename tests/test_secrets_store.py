@@ -33,6 +33,9 @@ def vault(tmp_path, monkeypatch):
     from mc import secrets_store
     # Module-level caches that must not bleed between tests.
     secrets_store._dispensed.clear()
+    secrets_store._unlocked_key = None
+    secrets_store._lock_notified = False
+    secrets_store._key_mismatch = False
     return secrets_store
 
 
@@ -467,6 +470,11 @@ class _FakeKeyringBackend:
     def set_password(self, service, account, value):
         self.store[(service, account)] = value
 
+    def delete_password(self, service, account):
+        if (service, account) not in self.store:
+            raise KeyError(f'no entry for {(service, account)}')
+        del self.store[(service, account)]
+
     def wipe(self):
         self.store.clear()
 
@@ -514,6 +522,7 @@ def fake_keyring_vault(tmp_path, monkeypatch):
     fake = _FakeKeyringBackend()
     monkeypatch.setattr(keyring_pkg, 'get_password', fake.get_password)
     monkeypatch.setattr(keyring_pkg, 'set_password', fake.set_password)
+    monkeypatch.setattr(keyring_pkg, 'delete_password', fake.delete_password)
     from mc import secrets_store
     secrets_store._dispensed.clear()
     fake_dpapi = _FakeDpapi()
@@ -888,3 +897,331 @@ def test_list_secrets_without_check_readable_omits_the_field(vault):
     vault.set_secret('a.b', 'value-value')
     items = vault.list_secrets()
     assert 'readable' not in items[0]
+
+
+# ── Passphrase lock (MC backlog 503edfe4) ────────────────────────────────────
+
+def _relock(vault):
+    """Simulate a server restart: the in-memory key is gone, only the
+    wrapped file on disk remains."""
+    vault._unlocked_key = None
+    vault._lock_notified = False
+
+
+def test_lock_state_starts_unconfigured(vault):
+    assert vault.lock_state() == 'unconfigured'
+    assert vault.is_locked() is False
+
+
+def test_set_passphrase_migrates_existing_secret_and_auto_unlocks(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+    assert vault.wrapped_key_path().is_file()
+    assert isinstance(recovery_key, str) and len(recovery_key) > 10
+    # The live plaintext key file is gone — leaving it live would make the
+    # lock cosmetic (Dave's review, MC 503edfe4) — but it was MOVED, not
+    # destroyed: a copy survives under the quarantine dir.
+    assert not vault.key_file_path().is_file()
+    quarantined = list(vault.legacy_key_quarantine_dir().rglob('secrets.key'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding='utf-8').strip()
+    # The record sealed before the lock existed must still read back clean.
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantine_survives_a_restart(vault):
+    """The quarantined file must not be something load_master_key() (or any
+    other code path) ever reads again — simulate a restart (in-memory key
+    gone) and confirm the vault still unlocks and reads purely off the
+    wrapped file, never falling back to the quarantined copy."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantines_the_keyring_entry(fake_keyring_vault):
+    """Keyring backend (not the file fallback): the live keyring entry must
+    be gone after set_passphrase, its value preserved in quarantine."""
+    vault, fake = fake_keyring_vault
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    assert fake.get_password(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT) is not None
+    vault.set_passphrase('correct horse battery staple')
+    assert fake.get_password(vault.KEYRING_SERVICE, vault.KEYRING_ACCOUNT) is None
+    quarantined = list(vault.legacy_key_quarantine_dir().rglob('keyring_secrets-master-key.b64'))
+    assert len(quarantined) == 1
+    assert quarantined[0].read_text(encoding='utf-8').strip()
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_set_passphrase_quarantine_failure_does_not_block_the_lock(vault, monkeypatch, tmp_path):
+    """A quarantine step failing (e.g. an unwritable quarantine dir) must not
+    unwind the already-durable wrapped-key write — the lock still takes
+    effect even if a legacy copy could not be moved this time."""
+    from mc import secrets_store
+    # A plain FILE sitting where the quarantine dir wants to be: mkdir(...)
+    # then reliably raises FileExistsError, cross-platform, no permissions
+    # hackery needed.
+    blocker = tmp_path / 'quarantine_blocker'
+    blocker.write_text('in the way')
+    monkeypatch.setattr(secrets_store, 'legacy_key_quarantine_dir', lambda: blocker)
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    assert isinstance(recovery_key, str) and len(recovery_key) > 10
+    assert vault.lock_state() == 'unlocked'
+    # The legacy file is still live in this failure case — quarantining it
+    # is best-effort, but the lock itself must never depend on it succeeding.
+    assert vault.key_file_path().is_file()
+
+
+def test_set_passphrase_refuses_short_passphrase(vault):
+    with pytest.raises(vault.SecretsError):
+        vault.set_passphrase('short')
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_set_passphrase_refuses_when_already_configured(vault):
+    vault.set_passphrase('correct horse battery staple')
+    with pytest.raises(vault.SecretsError):
+        vault.set_passphrase('a different passphrase entirely')
+
+
+def test_load_master_key_raises_vault_locked_after_relock(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    assert vault.lock_state() == 'locked'
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+
+
+def test_locked_read_fails_closed(vault):
+    """A locked vault must refuse get_secret_value outright, not return a
+    stale or empty value — the fail-closed posture the read-path rule
+    requires for every read, not just the key-mismatch case."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='test')
+
+
+def test_unlock_with_correct_passphrase_restores_read_access(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_unlock_with_wrong_passphrase_rejected_via_fingerprint(vault):
+    """The fingerprint check is what turns 'garbage bytes that happen to
+    pass AES-GCM's tag check under a coincidentally-matching KEK' (astronomically
+    unlikely, but so is every other crypto failure mode this module guards)
+    into a deterministic reject — the wrap/unwrap round trip alone isn't
+    what's being asserted here, the fingerprint compare is."""
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_passphrase('wrong passphrase entirely')
+    assert vault.lock_state() == 'locked'
+
+
+def test_unlock_with_recovery_key_works(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    vault.unlock_with_recovery_key(recovery_key)
+    assert vault.lock_state() == 'unlocked'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+
+
+def test_unlock_with_recovery_key_tolerates_dashes_case_and_whitespace(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    messy = '  ' + recovery_key.lower().replace('-', ' ') + '  '
+    vault.unlock_with_recovery_key(messy)
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_unlock_with_wrong_recovery_key_rejected(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_recovery_key('AAAA-BBBB-CCCC-DDDD-EEEE')
+    assert vault.lock_state() == 'locked'
+
+
+def test_change_passphrase_requires_correct_old_passphrase(vault):
+    vault.set_passphrase('correct horse battery staple')
+    with pytest.raises(vault.SecretDenied):
+        vault.change_passphrase('wrong old passphrase', 'a brand new passphrase')
+
+
+def test_change_passphrase_rotates_without_touching_recovery_leg(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    recovery_key = vault.set_passphrase('correct horse battery staple')
+    vault.change_passphrase('correct horse battery staple', 'a brand new passphrase')
+    _relock(vault)
+    # Old passphrase no longer works.
+    with pytest.raises(vault.SecretDenied):
+        vault.unlock_with_passphrase('correct horse battery staple')
+    # New passphrase does.
+    vault.unlock_with_passphrase('a brand new passphrase')
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+    _relock(vault)
+    # The recovery key from set_passphrase-time is untouched by the rotation.
+    vault.unlock_with_recovery_key(recovery_key)
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_notification_fires_once_per_lock_period(vault, monkeypatch):
+    """A burst of jobs hitting a locked vault must produce ONE notification,
+    not one per job — see `_lock_notified`."""
+    vault.set_passphrase('correct horse battery staple')
+    _relock(vault)
+    calls = []
+    monkeypatch.setattr(
+        'mc.blueprints.push_mobile._notify_push',
+        lambda title, body, **kw: calls.append((title, body)))
+    for _ in range(3):
+        with pytest.raises(vault.VaultLocked):
+            vault.load_master_key()
+    assert len(calls) == 1
+
+    # A fresh lock period (after an unlock) can notify again.
+    vault.unlock_with_passphrase('correct horse battery staple')
+    _relock(vault)
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+    assert len(calls) == 2
+
+
+class TestTamperEvidence:
+    """Wren's finding on MC 503edfe4: a hijacker who steals the dashboard
+    passcode (see the local-auth fix above) and reaches vault-lock/set or
+    /change would otherwise own the vault silently. Every set / change /
+    recovery-key-unlock must be visible to Ron even if he never opens the
+    dashboard — unlike `_notify_vault_locked`'s once-per-period throttle,
+    this one is NOT deduped: each of the three events fires its own
+    notification and audit line, every time."""
+
+    def test_set_passphrase_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.set_passphrase('correct horse battery staple', caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        title, body = calls[0]
+        assert 'passphrase' in title.lower()
+        assert '10.0.0.7' in body
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_passphrase_set'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_change_passphrase_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        vault.set_passphrase('correct horse battery staple')
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.change_passphrase('correct horse battery staple', 'a brand new passphrase',
+                                caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        assert '10.0.0.7' in calls[0][1]
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_passphrase_changed'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_unlock_with_recovery_key_notifies_and_audits_caller_addr(self, vault, monkeypatch):
+        recovery_key = vault.set_passphrase('correct horse battery staple')
+        _relock(vault)
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.unlock_with_recovery_key(recovery_key, caller_addr='10.0.0.7')
+        assert len(calls) == 1
+        assert '10.0.0.7' in calls[0][1]
+        rec = vault.audit_tail(1)[0]
+        assert rec['event'] == 'vault_unlocked'
+        assert rec['method'] == 'recovery_key'
+        assert rec['caller_addr'] == '10.0.0.7'
+
+    def test_routine_passphrase_unlock_does_not_notify(self, vault, monkeypatch):
+        """A normal daily unlock is not tamper evidence — must not spam Ron
+        on every restart-then-unlock cycle."""
+        vault.set_passphrase('correct horse battery staple')
+        _relock(vault)
+        calls = []
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda title, body, **kw: calls.append((title, body)))
+        vault.unlock_with_passphrase('correct horse battery staple')
+        assert calls == []
+
+    def test_notification_failure_does_not_break_the_underlying_action(self, vault, monkeypatch):
+        """Best-effort: a broken notifier must not turn a legitimate
+        set/change/unlock into an error for the human doing it."""
+        monkeypatch.setattr(
+            'mc.blueprints.push_mobile._notify_push',
+            lambda *a, **kw: (_ for _ in ()).throw(RuntimeError('boom')))
+        recovery_key = vault.set_passphrase('correct horse battery staple',
+                                            caller_addr='10.0.0.7')
+        assert vault.lock_state() == 'unlocked'
+        assert recovery_key
+
+
+def test_unconfigured_vault_behaves_exactly_as_before(vault):
+    """The whole point of gating on `wrapped_key_path().is_file()` is that a
+    box which has never called set_passphrase must be unaffected — this is
+    the regression guard for that promise."""
+    vault.set_secret('reddit.password', 'never-locked')
+    assert vault.lock_state() == 'unconfigured'
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'never-locked'
+
+
+# ── icacls retry-once (Dave's review, MC 503edfe4, blocker 4) ──────────────
+# A transient icacls hiccup during set_passphrase/change_passphrase used to
+# strand Ron mid-setup with no recourse but to start over. One retry gives a
+# transient failure a second chance without weakening the fail-closed
+# guarantee on a REAL failure (both attempts denied/erroring).
+
+def test_icacls_grant_and_verify_retries_once_after_a_transient_failure(monkeypatch, tmp_path):
+    from mc import secrets_store
+    calls = []
+
+    def fake_once(path, sid, account):
+        calls.append(1)
+        if len(calls) == 1:
+            return False, "icacls exited 1332: some element(s) could not be translated"
+        return True, ''
+
+    monkeypatch.setattr(secrets_store, '_icacls_grant_and_verify_once', fake_once)
+    ok, detail = secrets_store._icacls_grant_and_verify(tmp_path / 'x', 'S-1-5-21-fake', 'user')
+    assert ok is True
+    assert detail == ''
+    assert len(calls) == 2
+
+
+def test_icacls_grant_and_verify_still_fails_closed_after_two_failures(monkeypatch, tmp_path):
+    from mc import secrets_store
+    calls = []
+
+    def fake_once(path, sid, account):
+        calls.append(1)
+        return False, f"attempt {len(calls)} denied"
+
+    monkeypatch.setattr(secrets_store, '_icacls_grant_and_verify_once', fake_once)
+    ok, detail = secrets_store._icacls_grant_and_verify(tmp_path / 'x', 'S-1-5-21-fake', 'user')
+    assert ok is False
+    assert len(calls) == 2
+    assert 'attempt 1 denied' in detail
+    assert 'attempt 2 denied' in detail

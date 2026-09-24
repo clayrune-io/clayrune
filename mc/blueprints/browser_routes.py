@@ -105,6 +105,11 @@ _register_process: Callable[..., Any] = None  # type: ignore[assignment]
 _unregister_process: Callable[..., Any] = None  # type: ignore[assignment]
 _POPEN_FLAGS: int = 0
 _STARTUPINFO: Any = None
+# This server's own listening port — used only to recognise a URL that points
+# BACK at Clayrune itself (see _is_clayrune_own_origin below). None until
+# wired means "unknown", which the check below treats as "block every
+# loopback URL" rather than silently skipping the guard.
+_SERVER_PORT: int | None = None
 # One-shot guard: the orphan-profile sweep runs on first real browser launch.
 _swept_orphans: bool = False
 # Second guard: the sweep decides what is an orphan by diffing the throwaway
@@ -118,12 +123,65 @@ _swept_orphans: bool = False
 SWEEP_ENABLED: bool = False
 
 
-def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo):
-    global _register_process, _unregister_process, _POPEN_FLAGS, _STARTUPINFO
+def wire(*, register_process_fn, unregister_process_fn, popen_flags, startupinfo,
+         server_port=None):
+    global _register_process, _unregister_process, _POPEN_FLAGS, _STARTUPINFO, _SERVER_PORT
     _register_process = register_process_fn
     _unregister_process = unregister_process_fn
     _POPEN_FLAGS = popen_flags
     _STARTUPINFO = startupinfo
+    _SERVER_PORT = server_port
+
+
+_LOOPBACK_HOSTS = ('localhost', '127.0.0.1', '::1')
+
+
+def _own_remote_access_hostname() -> str | None:
+    """The enrolled remote-access (tunnel) hostname, if this box has one —
+    lazily resolved so an install with no `mc_remote` package (or no
+    enrollment yet) just returns None, matching how every other `mc_remote`
+    touch in this codebase treats the optional-dependency case."""
+    try:
+        from mc_remote import device_keys
+        identity = device_keys.load_identity()
+    except Exception:
+        return None
+    host = (getattr(identity, 'hostname', '') or '').strip().lower()
+    return host or None
+
+
+def _is_clayrune_own_origin(url: str) -> bool:
+    """True if `url` points at THIS Clayrune instance's own origin — its
+    loopback port, or its enrolled remote-access hostname.
+
+    The browser pane must never navigate to, or read, Clayrune's own origin
+    (Wren, 2026-09-15 security review, blocker B, ported from f6a8159 under
+    MC 503edfe4): an agent that writes an .html file into a project and opens
+    it here gets a real browser `Origin` header on a same-origin `fetch()`,
+    which is indistinguishable from a human's own browser tab to any route
+    that trusts Origin as a human-signal. Blocking the pane from ever
+    reaching this origin closes that whole class of attack at its only entry
+    point, independent of what any individual route does with Origin.
+
+    Scoped to the loopback+PORT / enrolled-hostname pair, not "all of
+    localhost" — a dev server on some other local port is legitimate
+    browsing, not a way to reach Clayrune itself."""
+    try:
+        parts = _urlsplit(url if '//' in url else f'//{url}')
+    except Exception:
+        return False
+    host = (parts.hostname or '').strip().lower()
+    if not host:
+        return False
+    if host in _LOOPBACK_HOSTS or host.startswith('::ffff:127.') or host.startswith('127.'):
+        # Unknown own-port (never wired, e.g. an ad-hoc test import) fails
+        # CLOSED: block every loopback URL rather than silently let one
+        # through because the guard doesn't know its own port yet.
+        if _SERVER_PORT is None:
+            return True
+        return parts.port in (None, _SERVER_PORT)
+    remote_host = _own_remote_access_hostname()
+    return bool(remote_host) and host == remote_host
 
 
 def _profiles_root():
@@ -695,6 +753,9 @@ def browser_launch():
     url = (data.get('url') or 'about:blank').strip()
     if url and not url.startswith(('http://', 'https://', 'about:')):
         url = 'https://' + url
+    if _is_clayrune_own_origin(url):
+        return jsonify({'error': "the browser pane may not navigate to "
+                                 "Clayrune's own origin"}), 403
     profile = data.get('profile')
     session, err = _launch_browser(project_id, url, profile=profile or None,
                                    ephemeral=bool(data.get('ephemeral')))
@@ -882,6 +943,9 @@ def browser_input():
             url = (data.get('url') or '').strip()
             if url and not url.startswith(('http://', 'https://', 'about:')):
                 url = 'https://' + url
+            if _is_clayrune_own_origin(url):
+                return jsonify({'error': "the browser pane may not navigate "
+                                         "to Clayrune's own origin"}), 403
             session['url'] = url
             q.put(('Page.navigate', {'url': url}))
         else:
@@ -1231,6 +1295,16 @@ def browser_read():
         return jsonify(body), status
 
     url = session.get('live_url') or session.get('url') or ''
+    if _is_clayrune_own_origin(url):
+        # Defense in depth on top of the launch/navigate guards above: a page
+        # can reach Clayrune's own origin from INSIDE the browser (a link
+        # click, `window.location`) without ever going through our navigate
+        # command, so this has to be checked again against wherever the page
+        # actually ended up, not just where we sent it.
+        body, status = _read_error(
+            'own_origin_blocked',
+            "the browser pane may not read Clayrune's own origin", 403)
+        return jsonify(body), status
     expression = (_READ_JS_TEMPLATE
                   .replace('__SEL__', json.dumps(selector))
                   .replace('__CAP__', json.dumps(_JS_SAFETY_CHAR_CAP)))

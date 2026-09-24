@@ -125,3 +125,45 @@ class TestPasscodeLifecycle:
                         environ_base=LAN)
         assert r.status_code == 429
         assert r.get_json()['error'] == 'too_many_attempts'
+
+
+class TestExemptCallerStillProvesCurrentToChange:
+    """Wren's finding: exemption skips the LOGIN gate, not proof of the
+    existing passcode. Before this fix any loopback caller (any co-resident
+    agent, not just the human host) could overwrite a configured passcode
+    with no proof of the old one, then use it to reach the vault-lock
+    passphrase. First-time bootstrap (nothing configured yet) stays
+    host/tunnel-only, unchanged."""
+
+    def test_first_bootstrap_from_host_still_works_with_no_current(self, client):
+        # Nothing configured yet — host may set it with no `current` field.
+        r = client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        assert r.status_code == 200
+        assert r.get_json() == {'ok': True, 'configured': True}
+
+    def test_loopback_change_without_current_is_refused(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        # Same host (loopback-exempt from the gate) tries to overwrite it
+        # blind, with no `current` — must be refused, not honored.
+        r = client.post('/api/local-auth/set', json={'passcode': 'stolen99'})
+        assert r.status_code == 403
+        assert r.get_json()['error'] == 'bad_current_passcode'
+
+    def test_loopback_change_with_wrong_current_is_refused(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'stolen99', 'current': 'nope-nope'})
+        assert r.status_code == 403
+        assert r.get_json()['error'] == 'bad_current_passcode'
+
+    def test_loopback_change_with_correct_current_is_allowed(self, client):
+        client.post('/api/local-auth/set', json={'passcode': 'hunter22'})
+        r = client.post('/api/local-auth/set',
+                        json={'passcode': 'newpass77', 'current': 'hunter22'})
+        assert r.status_code == 200
+        assert r.get_json() == {'ok': True, 'configured': True}
+        # And the new passcode is the one actually in effect for a LAN caller.
+        client.delete_cookie('mc_local_auth')
+        r = client.post('/api/local-auth/login', json={'passcode': 'newpass77'},
+                        environ_base=LAN)
+        assert r.status_code == 200

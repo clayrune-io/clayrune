@@ -17,6 +17,10 @@ Routes:
                                                and are they all resolvable?
     POST   /api/secrets/import-authenticator   Google Authenticator export QR
     POST   /api/secrets/totp/<name>            does this code match? (yes/no)
+    GET    /api/secrets/vault-lock             passphrase-lock state (any caller)
+    POST   /api/secrets/vault-lock/set         first-time passphrase setup (human-only)
+    POST   /api/secrets/vault-lock/change      rotate the passphrase (human-only)
+    POST   /api/secrets/vault-lock/unlock      unlock with passphrase or recovery key (human-only)
 
 The TOTP probe returns a boolean, never our own code — a route that minted live
 second factors would be the plaintext hole this design otherwise refuses.
@@ -24,15 +28,45 @@ second factors would be the plaintext hole this design otherwise refuses.
 
 import hmac
 import re
+import time
 
 from flask import Blueprint, jsonify, request
 
 from mc import secrets_store as vault
 from mc import totp as _totp
+from mc.blueprints import local_auth
 from mc.core import _log
 from mc.unattended import is_unattended_caller
 
 bp = Blueprint('secrets_routes', __name__)
+
+# Per-source-IP throttle on vault-lock passcode attempts (set/change/unlock) —
+# same shape as local_auth's own login throttle and f6a8159's recovery-key
+# throttle, kept as a separate dict because a wrong passcode here is an
+# attempt to own or relock the key that opens every secret, not just the
+# dashboard session. Best-effort; resets on restart.
+_VAULT_LOCK_FAIL_CAP = 5
+_VAULT_LOCK_FAIL_WINDOW = 300  # seconds
+_VAULT_LOCK_FAILS: dict[str, list[float]] = {}
+
+
+def _vault_lock_throttled(ip: str) -> bool:
+    rec = _VAULT_LOCK_FAILS.get(ip)
+    if not rec:
+        return False
+    if time.time() - rec[1] > _VAULT_LOCK_FAIL_WINDOW:
+        _VAULT_LOCK_FAILS.pop(ip, None)
+        return False
+    return rec[0] >= _VAULT_LOCK_FAIL_CAP
+
+
+def _vault_lock_note_fail(ip: str) -> None:
+    now = time.time()
+    rec = _VAULT_LOCK_FAILS.get(ip)
+    if not rec or now - rec[1] > _VAULT_LOCK_FAIL_WINDOW:
+        _VAULT_LOCK_FAILS[ip] = [1, now]
+    else:
+        rec[0] += 1
 
 
 def _err(e: Exception, code: int = 400):
@@ -50,9 +84,61 @@ def _unattended_refusal():
                              'ask the user to do it from the Settings UI'}), 403
 
 
+def _require_human_passcode(data: dict):
+    """Gate on the LOCAL DASHBOARD PASSCODE, re-entered in the request body
+    and verified server-side — NOT on ``is_unattended_caller()`` alone.
+
+    Dave's review of d3516a2 (MC 503edfe4): ``is_unattended_caller()``
+    returns False (i.e. "looks human") for ANY request carrying a browser
+    ``Origin`` header — forgeable by a plain agent ``curl`` — and for every
+    manual-chat agent session (``trigger_type == 'manual'`` is exempt by
+    design). Exactly the forged-Origin gap Wren's review closed for the
+    recovery-key display in f6a8159; the vault-lock set/change/unlock routes
+    shipped in d3516a2 never got the same fix. Worst case before this:
+    an agent calls ``/set`` on an unconfigured vault first and owns both the
+    passphrase and the recovery key.
+
+    Returns ``None`` on success (caller proceeds), or a Flask response tuple
+    to return immediately on refusal. If no passcode is configured yet, the
+    action is refused outright — nothing else on this local,
+    unauthenticated API surface proves a human, as opposed to an agent
+    sharing the same machine, is the one asking."""
+    ip = request.remote_addr or '?'
+    if _vault_lock_throttled(ip):
+        return jsonify({'error': 'too_many_attempts',
+                        'message': 'too many attempts — wait a few minutes '
+                                   'and try again'}), 429
+    if not local_auth._local_auth_is_configured():
+        return jsonify({'error': 'passcode_required',
+                        'message': 'set a local dashboard passcode in '
+                                   'Settings > Connectivity > Network access '
+                                   'before changing the vault lock'}), 403
+    passcode = (data.get('passcode') or '').strip()
+    if not passcode or not local_auth._local_auth_verify_passcode(passcode):
+        _vault_lock_note_fail(ip)
+        return jsonify({'error': 'bad_passcode'}), 403
+    _VAULT_LOCK_FAILS.pop(ip, None)
+    return None
+
+
 @bp.route('/api/secrets')
 def api_secrets_list():
     project_id = request.args.get('project_id') or None
+    if vault.is_locked():
+        # Deliberately short-circuit before list_secrets(check_readable=True):
+        # that path decrypts nothing when locked (is_readable() swallows
+        # VaultLocked and reports False), which would render as EVERY secret
+        # looking permanently broken instead of the vault being locked.
+        # Metadata (names/scope) is still safe to show — only values are gated.
+        items = vault.list_secrets(project_id, check_readable=False)
+        return jsonify({
+            'secrets': items,
+            'key_backend': 'locked',
+            'locked': True,
+            'key_at_rest_warning': '',
+            'unreadable_count': 0,
+            'key_mismatch': False,
+        })
     try:
         # check_readable actually decrypts each entry to prove it, rather
         # than just confirming it exists — the 2026-09-14 silent-remint
@@ -76,6 +162,7 @@ def api_secrets_list():
     return jsonify({
         'secrets': items,
         'key_backend': backend,
+        'locked': False,
         # The UI badges this: a file-backed key is readable by anything running
         # as this user, whereas the OS keyring is at least gated by the login
         # session. Worth telling the operator which one they're on.
@@ -264,6 +351,87 @@ def api_secrets_audit():
     except ValueError:
         limit = 100
     return jsonify({'records': vault.audit_tail(limit)})
+
+
+@bp.route('/api/secrets/vault-lock')
+def api_vault_lock_state():
+    """Read-only status — safe for any caller, including agents: it never
+    reveals the key or a secret, only which of the three states the vault
+    is in (see ``vault.lock_state()``)."""
+    return jsonify({
+        'state': vault.lock_state(),
+        'configured': vault.lock_state() != 'unconfigured',
+    })
+
+
+@bp.route('/api/secrets/vault-lock/set', methods=['POST'])
+def api_vault_lock_set():
+    """First-time passphrase setup. Human-only (MC 503edfe4): an agent that
+    could set the passphrase could just as easily set one only it knows.
+    Gated on the re-entered dashboard passcode, not just
+    ``is_unattended_caller()`` — see ``_require_human_passcode``."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    passphrase: str = str(data.get('passphrase') or '')
+    try:
+        recovery_key = vault.set_passphrase(passphrase, caller_addr=request.remote_addr or '')
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True, 'recovery_key': recovery_key})
+
+
+@bp.route('/api/secrets/vault-lock/change', methods=['POST'])
+def api_vault_lock_change():
+    """Gated on the re-entered dashboard passcode as well as the old
+    passphrase — see ``_require_human_passcode``."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    try:
+        vault.change_passphrase(
+            str(data.get('old_passphrase') or ''),
+            str(data.get('new_passphrase') or ''),
+            caller_addr=request.remote_addr or '')
+    except vault.SecretDenied as e:
+        return _err(e, 403)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True})
+
+
+@bp.route('/api/secrets/vault-lock/unlock', methods=['POST'])
+def api_vault_lock_unlock():
+    """Passcode-gated unlock. Human-only: an agent calling this would defeat
+    the whole point of a lock an agent can't read past on its own. Gated on
+    the re-entered dashboard passcode as well as the passphrase/recovery key
+    — see ``_require_human_passcode``."""
+    if is_unattended_caller():
+        return _unattended_refusal()
+    data = request.get_json(silent=True) or {}
+    refusal = _require_human_passcode(data)
+    if refusal is not None:
+        return refusal
+    passphrase: str = str(data.get('passphrase') or '')
+    recovery_key: str = str(data.get('recovery_key') or '')
+    if not passphrase and not recovery_key:
+        return jsonify({'error': 'passphrase or recovery_key is required'}), 400
+    try:
+        if recovery_key:
+            vault.unlock_with_recovery_key(recovery_key, caller_addr=request.remote_addr or '')
+        else:
+            vault.unlock_with_passphrase(passphrase)
+    except vault.SecretDenied as e:
+        return _err(e, 403)
+    except vault.SecretsError as e:
+        return _err(e)
+    return jsonify({'ok': True, 'state': vault.lock_state()})
 
 
 @bp.route('/api/secrets/check', methods=['POST'])

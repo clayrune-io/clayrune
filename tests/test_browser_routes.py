@@ -430,3 +430,85 @@ def test_read_route_success_end_to_end_with_faked_cdp(app_client, monkeypatch):
     assert body['content']['text'] == 'Real page text'
     assert body['hidden_content_flagged'] is True
     assert body['url'] == 'https://example.com'
+
+
+# ── Clayrune-own-origin block (Wren, 2026-09-15 security review, blocker B;
+# ported from f6a8159 under MC 503edfe4) ──
+# An agent-written .html page opened in the pane on Clayrune's own origin gets
+# a real browser Origin header on a same-origin fetch() -- exactly the signal
+# is_unattended_caller() and the old recovery-key check both trusted as proof
+# of a human. The pane must never reach that origin at all.
+
+@pytest.fixture(autouse=True)
+def _known_server_port(monkeypatch):
+    """Every test in this module runs as though Clayrune is wired to port
+    5199, matching production wire(server_port=PORT) -- the fail-closed
+    "unknown port blocks everything loopback" branch gets its own dedicated
+    test below instead of silently applying to the whole suite."""
+    monkeypatch.setattr(br, '_SERVER_PORT', 5199)
+
+
+@pytest.mark.parametrize('url', [
+    'http://localhost:5199/api/serve-file?path=x&inline=1',
+    'http://127.0.0.1:5199/',
+    'https://127.0.0.1:5199/anything',
+    'http://[::1]:5199/',
+])
+def test_is_clayrune_own_origin_matches_loopback_on_the_server_port(url):
+    assert br._is_clayrune_own_origin(url) is True
+
+
+@pytest.mark.parametrize('url', [
+    'http://localhost:3000/',          # different local dev server, different port
+    'https://example.com/',
+    'about:blank',
+    '',
+])
+def test_is_clayrune_own_origin_allows_everything_else(url):
+    assert br._is_clayrune_own_origin(url) is False
+
+
+def test_is_clayrune_own_origin_fails_closed_when_port_unknown(monkeypatch):
+    monkeypatch.setattr(br, '_SERVER_PORT', None)
+    assert br._is_clayrune_own_origin('http://localhost:3000/') is True
+
+
+def test_is_clayrune_own_origin_matches_enrolled_remote_hostname(monkeypatch):
+    monkeypatch.setattr(br, '_own_remote_access_hostname', lambda: 'my-device.clayrune.io')
+    assert br._is_clayrune_own_origin('https://my-device.clayrune.io/api/secrets') is True
+    assert br._is_clayrune_own_origin('https://someone-elses-device.clayrune.io/') is False
+
+
+def test_launch_route_refuses_clayrunes_own_origin(app_client):
+    resp = app_client.post('/api/browser/launch',
+                           json={'project_id': 'p', 'url': 'http://localhost:5199/'})
+    assert resp.status_code == 403
+    assert 'own origin' in resp.get_json()['error']
+
+
+def test_input_navigate_refuses_clayrunes_own_origin(app_client):
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'cmd_queue': __import__('queue').Queue()}
+    resp = app_client.post('/api/browser/input',
+                           json={'session_id': 'sid-1', 'type': 'navigate',
+                                 'url': 'http://127.0.0.1:5199/api/secrets'})
+    assert resp.status_code == 403
+    assert 'own origin' in resp.get_json()['error']
+    # Refused before the command ever reached the CDP queue.
+    assert browser_sessions['sid-1']['cmd_queue'].empty()
+
+
+def test_read_route_refuses_when_the_live_page_is_clayrunes_own_origin(app_client):
+    """Covers a page that reached Clayrune's origin some way OTHER than our
+    own navigate command (an in-page link, window.location) — the launch and
+    navigate guards can't see that, so read has to check again against
+    wherever the session actually ended up."""
+    browser_sessions['sid-1'] = {'session_id': 'sid-1', 'status': 'running',
+                                 'url': 'https://example.com',
+                                 'live_url': 'http://localhost:5199/api/serve-file?path=evil.html&inline=1'}
+    resp = app_client.post('/api/browser/read', json={'session_id': 'sid-1'})
+    assert resp.status_code == 403
+    body = resp.get_json()
+    assert body['error'] == 'own_origin_blocked'
+    assert body['guidance'] == br._NO_DOWNGRADE_GUIDANCE
