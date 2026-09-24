@@ -375,6 +375,10 @@ async function settingsProviderTerminalLogin(provider, btnEl) {
       // account picker needs arrow keys. Was missing on the old
       // remote-login path; it matters now that this IS the Sign in path.
       openTerminalPopout(window.currentProjectId, data.session_id, data.command || provider, true);
+      // Setup's own terminal-visibility/live-polling (first-run.js) covers
+      // install already; a sign-in terminal opened from the SAME setup card
+      // painted over just the same way until this hook (2026-09-24).
+      if (typeof window._setupOnTerminalOpened === 'function') window._setupOnTerminalOpened();
       showToast(`Sign in to ${provider} in the terminal that just opened.`, 8000);
       return;
     }
@@ -633,6 +637,10 @@ async function providerInstallSelected(button, only) {
   // Cleared up front, not just set on success — a stale URL from a PRIOR
   // batch must never be polled as if it belonged to this one (MC-959).
   _providerInstallStatusUrl = '';
+  // Seed every row 'queued' immediately, before the first status poll lands —
+  // otherwise the progress bar is blank for up to 4s after the click. The
+  // first poll corrects whichever one is actually running_now.
+  for (const name of names) _providerInstallProgress[name] = { result: 'pending', started_at: null, running_now: false };
   // Writes into the persistent state maps (survives the next setupShow
   // rebuild the install-watch poll triggers) AND the live DOM node when one
   // exists, for immediate feedback without waiting on that rebuild.
@@ -735,10 +743,16 @@ function _renderProviderRow(p, opts) {
   const state = _providerStateLabel(p);
   const installed = !!p.installed;
   const authOk = p.auth_status === 'ok';
-  // Once a row reaches its own done state, the transient "a terminal
-  // opened..." message from an earlier install is stale — drop it instead of
-  // showing it forever next to a row that's already fully set up.
-  if (installed && authOk) delete _providerInstallMsg[p.name];
+  // The stale "A terminal opened to install it..." message is about the
+  // INSTALL only — clear it once the row itself says installed, not once
+  // sign-in is also done too. Ron, clean-VM run 2026-09-24: Claude/Gemini/Qwen
+  // all showed it forever once installed, because the old condition required
+  // authOk as well and an installed-but-not-signed-in row never clears that.
+  if (installed) delete _providerInstallMsg[p.name];
+  // The per-vendor progress bar likewise stops being useful once the row is
+  // fully done (installed AND signed in) — drop it so a much later Settings
+  // visit doesn't show a stale green "installed" sliver forever.
+  if (installed && authOk) delete _providerInstallProgress[p.name];
   const isDefault = opts.defaultName === p.name;
   const showActions = setup ? !!opts.selected : installed;
   const box = setup
@@ -815,7 +829,36 @@ function _renderProviderRow(p, opts) {
             ${detail}
             ${extra}
             <div id="prov-install-msg-${n}" style="font-size:11px;color:var(--text-faint);padding:2px 8px 0">${esc(_providerInstallMsg[p.name] || '')}</div>
+            <div id="prov-install-progress-${n}">${_providerProgressHTML(p.name)}</div>
           </div>`;
+}
+
+// Per-vendor install progress bar — queued -> installing (indeterminate sweep,
+// elapsed seconds; npm gives no percentage) -> installed (full green) / failed
+// (full red). Driven entirely by GET .../install-status's per-vendor
+// `result`/`started_at`/`running_now` (stored into `_providerInstallProgress`
+// by first-run.js's _setupPollInstallStatus), never a client-side timer guess —
+// see the CSS comment in app.css for why "installing" is indeterminate.
+// Renders '' once nothing is tracked for this vendor (never started this
+// session, or already cleared by _renderProviderRow once fully done).
+function _providerProgressHTML(name) {
+  const p = _providerInstallProgress[name];
+  if (!p) return '';
+  const wrap = (label, color, indeterminate) => `<div style="font-size:11px;color:var(--text-faint);padding:2px 8px 0">${esc(label)}</div>
+    <div class="prov-install-bar" style="margin:0 8px">
+      <div class="prov-install-bar-fill${indeterminate ? ' indeterminate' : ''}" style="width:${indeterminate ? '40' : '100'}%;background:${color}"></div>
+    </div>`;
+  if (p.result === 'ok') return wrap('Installed', 'var(--green)', false);
+  if (p.result === 'failed') return wrap('Install failed', 'var(--red)', false);
+  if (p.result === 'no_result') return '';
+  // 'pending': the one vendor with running_now:true is actually installing
+  // (vendors install strictly sequentially — see the server route's own
+  // docstring); every other pending vendor is still queued behind it.
+  if (p.running_now) {
+    const elapsed = p.started_at ? Math.max(0, Math.round(Date.now() / 1000 - p.started_at)) : 0;
+    return wrap(`Installing… ${elapsed}s`, 'var(--accent)', true);
+  }
+  return wrap('Queued', 'var(--surface3)', false);
 }
 
 // "Re-check allowance" button — shared by the provider row and the composer's
@@ -944,6 +987,7 @@ async function providerRefreshAll() {
 //    _authBannerMessage / _renderClaudeAuthStatusLine / refreshProviderAuthStatus
 //    are module-private. ──
 window._renderProviderRow = _renderProviderRow;                  // Settings -> Providers (provider-settings.js) + first-run setup render rows with it
+window._repaintProviderRows = _repaintProviderRows;               // first-run.js's install-watch calls this cross-module (ES modules don't share top-level scope)
 window.providerCheckStatus = providerCheckStatus;               // per-row Check status button onclick
 window.providerAllowanceRecheck = providerAllowanceRecheck;     // provider row + composer warning onclick
 window._allowanceRecheckBtn = _allowanceRecheckBtn;             // composer warning (conversation.js)

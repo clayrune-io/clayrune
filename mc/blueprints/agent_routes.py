@@ -2096,9 +2096,16 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
 
 # One marker line per vendor, echoed by the composed batch command itself so the
 # server can read back which installs actually exited 0 (MC-959, clean-VM run
-# 2026-09-24). Parsed by `_install_batch_results`.
+# 2026-09-24). Parsed by `_install_batch_results`. `start` (added for per-vendor
+# progress, same clean-VM run) is echoed the instant a vendor's own segment
+# begins — vendors install strictly sequentially (`_compose_install_batch`
+# joins groups unconditionally, never backgrounds them), so at most one name
+# ever has a `start` marker with no matching `ok`/`FAILED` yet; that name is
+# the one actually running right now, everything after it in batch order is
+# still queued.
 _INSTALL_MARKER = '[clayrune-install]'
 _INSTALL_MARKER_RE = re.compile(r'\[clayrune-install\] ([a-z0-9_-]+) (ok|FAILED)')
+_INSTALL_START_MARKER_RE = re.compile(r'\[clayrune-install\] ([a-z0-9_-]+) start')
 _SAFE_VENDOR_NAME_RE = re.compile(r'[a-z0-9_-]+')
 
 
@@ -2216,7 +2223,7 @@ def _compose_install_batch(prereqs: List[Tuple[str, str]],
             parts.append(f'({snippet}) || (echo {m} {label}-prerequisite FAILED'
                          f' & set "CR_INSTALL_FAILED=1")')
         for name, seg in items:
-            parts.append(f'({seg}) && (echo {m} {name} ok) || '
+            parts.append(f'(echo {m} {name} start) & ({seg}) && (echo {m} {name} ok) || '
                          f'(echo {m} {name} FAILED & set "CR_INSTALL_FAILED=1")')
         parts.append(f'if defined CR_INSTALL_FAILED (echo {m} finished - one or more installs '
                      f'FAILED, see the error above each FAILED line & exit 1) '
@@ -2227,7 +2234,7 @@ def _compose_install_batch(prereqs: List[Tuple[str, str]],
         parts.append(f'{{ {snippet}; }} || {{ echo "{m} {label}-prerequisite FAILED"; '
                      f'CR_INSTALL_FAILED=1; }}')
     for name, seg in items:
-        parts.append(f'{{ {seg}; }} && echo "{m} {name} ok" || '
+        parts.append(f'echo "{m} {name} start"; {{ {seg}; }} && echo "{m} {name} ok" || '
                      f'{{ echo "{m} {name} FAILED"; CR_INSTALL_FAILED=1; }}')
     parts.append(f'if [ -n "$CR_INSTALL_FAILED" ]; then echo "{m} finished - one or more '
                  f'installs FAILED, see the error above each FAILED line"; exit 1; '
@@ -2273,7 +2280,18 @@ def _remember_install_batch(session_id: str, names: List[str]) -> None:
     # vanish with it. The reader thread keeps writing into this same object.
     with _install_batches_lock:
         _install_batches[session_id] = {'names': list(names), 'started': _time.time(),
-                                        'session': terminal_sessions.get(session_id)}
+                                        'session': terminal_sessions.get(session_id),
+                                        # name -> epoch this server FIRST observed that
+                                        # vendor's `start` marker, filled once by
+                                        # agent_providers_install_status below. This is
+                                        # an approximation of the real start time (bounded
+                                        # by the client's ~4s poll interval, not the
+                                        # instant the shell echoed the marker) — output
+                                        # chunks carry no per-line timestamp to read the
+                                        # real one back from, and an install takes minutes,
+                                        # not seconds, so a few seconds of slop doesn't
+                                        # matter for an "elapsed" display.
+                                        'vendor_started_at': {}}
         while len(_install_batches) > _INSTALL_BATCHES_KEEP:
             oldest = min(_install_batches, key=lambda k: _install_batches[k]['started'])
             _install_batches.pop(oldest, None)
@@ -2284,6 +2302,12 @@ def _install_batch_results(output: str) -> Dict[str, str]:
     Output arrives in raw 4 KB chunks, so callers must pass the JOINED text —
     a marker can straddle two chunks."""
     return {n: r for n, r in _INSTALL_MARKER_RE.findall(output or '')}
+
+
+def _install_batch_started(output: str) -> set:
+    """Vendor names whose `start` marker has appeared anywhere in a batch's
+    terminal output so far — see `_INSTALL_START_MARKER_RE`."""
+    return set(_INSTALL_START_MARKER_RE.findall(output or ''))
 
 
 # ── PowerShell execution policy (F6, clean-VM run 2026-09-18) ────────────────
@@ -2522,14 +2546,23 @@ def agent_providers_install_status():
     not installed was to re-check and notice.
 
     Returns ``{'ok': True, 'running': bool, 'exit_code', 'vendors': [{name,
-    result, installed, version}], 'failed': [...]}``. ``result`` is
-    ``pending`` (no marker yet, still running), ``ok`` / ``failed`` (the
-    vendor's own install command exited 0 / non-zero), or ``no_result`` (the
-    terminal ended without that vendor reporting — killed or stopped).
-    Once the terminal has ended, ``installed``/``version`` come from a fresh
-    health check, because an install that exited 0 but left no runnable CLI is
-    still a failure; ``failed`` lists every vendor that is not both ``ok`` and
-    installed.
+    result, installed, version, started_at, running_now}], 'failed': [...]}``.
+    ``result`` is ``pending`` (no `ok`/`FAILED` marker yet, still running or
+    not yet started), ``ok`` / ``failed`` (the vendor's own install command
+    exited 0 / non-zero), or ``no_result`` (the terminal ended without that
+    vendor reporting — killed or stopped). Once the terminal has ended,
+    ``installed``/``version`` come from a fresh health check, because an
+    install that exited 0 but left no runnable CLI is still a failure;
+    ``failed`` lists every vendor that is not both ``ok`` and installed.
+
+    Vendors install strictly sequentially in one composed shell command
+    (`_compose_install_batch`), so at most one ever has ``running_now: true``
+    — the first `pending` name (in the order the batch was launched with)
+    whose `start` marker has appeared. Every `pending` name after it is still
+    queued. ``started_at`` (epoch seconds, or null) is this server's own
+    first-observed time for that vendor's `start` marker — an approximation
+    bounded by how often the caller polls, not the shell's own clock; good
+    enough for an elapsed-seconds display on an install that takes minutes.
     """
     session_id = str(request.args.get('session_id', '')).strip()
     with _install_batches_lock:
@@ -2541,18 +2574,31 @@ def agent_providers_install_status():
         return jsonify({'ok': False, 'error': 'install terminal is gone (server restarted or '
                         'the terminal was closed); click Check setup status'}), 410
     running = session.get('status') == 'running'
-    results = _install_batch_results(''.join(session.get('output_lines') or []))
+    output = ''.join(session.get('output_lines') or [])
+    results = _install_batch_results(output)
+    started_names = _install_batch_started(output)
+    vendor_started_at = batch.setdefault('vendor_started_at', {})
+    now = _time.time()
+    for name in started_names:
+        if name not in vendor_started_at:
+            vendor_started_at[name] = now
     if not running:
         _merge_registry_path()
         if 'claude' in batch['names']:
             _reconcile_claude_cli_not_found()
     vendors = []
     failed = []
+    running_now_assigned = False
     for name in batch['names']:
         marker = results.get(name)
         result = ('ok' if marker == 'ok' else 'failed' if marker == 'FAILED'
                   else 'pending' if running else 'no_result')
-        entry = {'name': name, 'result': result, 'installed': None, 'version': None}
+        running_now = False
+        if result == 'pending' and not running_now_assigned and name in started_names:
+            running_now = True
+            running_now_assigned = True
+        entry = {'name': name, 'result': result, 'installed': None, 'version': None,
+                 'started_at': vendor_started_at.get(name), 'running_now': running_now}
         if not running:
             try:
                 h = _agent_runtime.get_runtime(name).health_check()

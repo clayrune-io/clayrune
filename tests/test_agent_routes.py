@@ -1605,6 +1605,9 @@ def test_install_launch_batch_still_one_terminal_with_real_launcher(monkeypatch,
 # pinned shape is now the per-vendor-independent one `_compose_install_batch`
 # builds; the pass-through property below (byte-for-byte to Popen, no
 # `start "" cmd /k` re-wrap) is unchanged and still what this pins.
+# Per-vendor progress (same clean-VM run): each segment now also echoes its
+# own `start` marker the instant it begins, so a poller can tell "running now"
+# apart from "still queued" among several still-`pending` vendors.
 _VERBATIM_COMPOUND_INSTALL_COMMAND = (
     'set "CR_INSTALL_FAILED=" & '
     '(set "PATH=%ProgramFiles%\\nodejs;%APPDATA%\\npm;%PATH%" '
@@ -1612,11 +1615,13 @@ _VERBATIM_COMPOUND_INSTALL_COMMAND = (
     '-e --silent --source winget '
     '--accept-source-agreements --accept-package-agreements)) '
     '|| (echo [clayrune-install] node-prerequisite FAILED & set "CR_INSTALL_FAILED=1") & '
+    '(echo [clayrune-install] claude start) & '
     '(for /f "tokens=1 delims=." %v in (\'npm -v\') do '
     '(if %v GEQ 12 (npm install -g --allow-scripts=@anthropic-ai/claude-code @anthropic-ai/claude-code) '
     'else (npm install -g @anthropic-ai/claude-code))) '
     '&& (echo [clayrune-install] claude ok) '
     '|| (echo [clayrune-install] claude FAILED & set "CR_INSTALL_FAILED=1") & '
+    '(echo [clayrune-install] gemini start) & '
     '(for /f "tokens=1 delims=." %v in (\'npm -v\') do '
     '(if %v GEQ 12 (npm install -g --allow-scripts=@google/gemini-cli @google/gemini-cli) '
     'else (npm install -g @google/gemini-cli))) '
@@ -1881,11 +1886,17 @@ class _StatusRuntime:
 def test_install_status_reports_per_vendor_outcome(monkeypatch, client):
     """/api/agent/providers/install-status turns the markers into a per-vendor
     result, cross-checked against a fresh health check, and survives the
-    finished session being purged from terminal_sessions."""
+    finished session being purged from terminal_sessions. Also covers the
+    per-vendor progress fields (`start` marker -> `started_at`/`running_now`)
+    added alongside it for the setup UI's progress bars."""
     from mc import state as mc_state
     from mc.blueprints import agent_routes as ar
+    # claude already finished; gemini's `start` marker has landed but not its
+    # own ok/FAILED yet — it is the one vendor actually running right now.
+    # qwen/codex have no marker at all yet: still queued behind it.
     session = {'status': 'running', 'exit_code': None,
-               'output_lines': ['[clayrune-install] claude ok\n[clayrune-inst']}
+               'output_lines': ['[clayrune-install] claude ok\n'
+                                '[clayrune-install] gemini start\n[clayrune-inst']}
     monkeypatch.setitem(mc_state.terminal_sessions, 'sess-959', session)
     monkeypatch.setattr(ar, '_merge_registry_path', lambda: None)
     monkeypatch.setattr(ar, '_reconcile_claude_cli_not_found', lambda: False)
@@ -1898,6 +1909,21 @@ def test_install_status_reports_per_vendor_outcome(monkeypatch, client):
     assert body['running'] is True
     assert [v['result'] for v in body['vendors']] == ['ok', 'pending', 'pending', 'pending']
     assert body['failed'] == []
+    by = {v['name']: v for v in body['vendors']}
+    # Only gemini is running_now — the FIRST still-pending vendor with a seen
+    # `start` marker; qwen/codex are pending too but never got a start marker,
+    # so they stay queued, not running_now.
+    assert by['gemini']['running_now'] is True and by['gemini']['started_at'] is not None
+    assert by['qwen']['running_now'] is False and by['qwen']['started_at'] is None
+    assert by['codex']['running_now'] is False and by['codex']['started_at'] is None
+    gemini_started_at = by['gemini']['started_at']
+
+    # A second poll with gemini still mid-install (no new marker) must reuse
+    # the SAME started_at — it is recorded once, on first observation, never
+    # overwritten while the vendor keeps running.
+    body2 = client.get('/api/agent/providers/install-status?session_id=sess-959').get_json()
+    by2 = {v['name']: v for v in body2['vendors']}
+    assert by2['gemini']['started_at'] == gemini_started_at
 
     session['output_lines'].append('all] gemini ok\n[clayrune-install] qwen FAILED\n'
                                    '[clayrune-install] codex ok\n')
@@ -1906,10 +1932,13 @@ def test_install_status_reports_per_vendor_outcome(monkeypatch, client):
     body = client.get('/api/agent/providers/install-status?session_id=sess-959').get_json()
     assert body['running'] is False and body['exit_code'] == 1
     by = {v['name']: v for v in body['vendors']}
-    assert by['claude'] == {'name': 'claude', 'result': 'ok', 'installed': True, 'version': '2.1.281'}
+    assert by['claude'] == {'name': 'claude', 'result': 'ok', 'installed': True, 'version': '2.1.281',
+                            'started_at': None, 'running_now': False}
     assert by['qwen']['result'] == 'failed'
     # codex's install exited 0 but left no runnable CLI: still a failure.
     assert by['codex']['result'] == 'ok' and by['codex']['installed'] is False
+    # Once the batch has finished, nothing is "running now" any more.
+    assert all(v['running_now'] is False for v in body['vendors'])
     assert body['failed'] == ['qwen', 'codex']
 
 

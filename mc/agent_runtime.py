@@ -7279,9 +7279,13 @@ class CodexRuntime(AgentRuntime):
     _npx_path: str = ''
 
     def resolve_binary(self) -> Optional[Path]:
-        if self._bin_cache is not None:
-            if self._bin_cache == '__npx__':
-                return None
+        # '__npx__' is NOT a cached miss -- it means "codex wasn't found last
+        # time, but npm/npx was, so we can still run via npx". A binary
+        # installed after that (e.g. mid-session by the first-run chooser)
+        # must be picked up on the next call, so re-probe every time we're
+        # sitting on the npx fallback instead of trusting it forever. Only a
+        # real resolved path short-circuits.
+        if self._bin_cache is not None and self._bin_cache != '__npx__':
             return Path(self._bin_cache) if self._bin_cache else None
 
         found = shutil.which('codex')
