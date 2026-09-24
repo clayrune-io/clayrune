@@ -157,6 +157,70 @@ class TestReviveCarriesNotifySession:
         assert captured['notify_session'] == 'parent-4'
 
 
+class TestReviveDoesNotRearm:
+    """MC-970, measured 2026-09-23: a human typing into a purged, already-
+    notified dispatch used to come back with `_notify_session` carried
+    forward from the durable log row unconditionally -- the revived session
+    has no `_notify_session_sent` (a brand-new dict has never latched
+    anything), so its NEXT completion fires the callback again even though
+    the original dispatch already reported in. `/agent/send` and
+    `agent_followup`'s revive-precheck -- the only two callers a human's
+    typed message can reach -- pass `carry_notify=False` for exactly this
+    reason; only `_revive_parent_for_delegation` (agent-to-agent delegation
+    delivery, never a human keystroke) keeps the default `True`.
+    """
+
+    def test_carry_notify_false_drops_the_callback_on_claude_revive(self, ar, tmp_path, monkeypatch):
+        entries = [{'session_id': 's5', 'claude_session_id': CSID,
+                    'spawned_by_session_id': 'parent-1', 'ts': '2026-09-23T00:00:00Z'}]
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+
+        session = ar._revive_from_agent_log(
+            'p5', 's5', 'are you still there?', _project(tmp_path), carry_notify=False)
+
+        assert session is not None
+        assert session['_notify_session'] == ''
+
+    def test_carry_notify_false_drops_the_workflow_callback_too(self, ar, tmp_path, monkeypatch):
+        entries = [{'session_id': 's6', 'claude_session_id': CSID,
+                    'trigger_type': 'workflow', 'trigger_id': 'run-y:market-scout',
+                    'ts': '2026-09-23T00:00:00Z'}]
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+
+        session = ar._revive_from_agent_log(
+            'p6', 's6', 'go', _project(tmp_path), carry_notify=False)
+
+        assert session is not None
+        assert session['_notify_workflow'] is None
+
+    def test_carry_notify_true_is_still_the_default(self, ar, tmp_path, monkeypatch):
+        """`_revive_parent_for_delegation` calls this with no `carry_notify`
+        kwarg at all -- the default must stay True or delegation delivery to
+        a dead, nested parent silently breaks."""
+        entries = [{'session_id': 's7', 'claude_session_id': CSID,
+                    'spawned_by_session_id': 'grandparent-1', 'ts': '2026-09-23T00:00:00Z'}]
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+
+        session = ar._revive_from_agent_log('p7', 's7', 'go', _project(tmp_path))
+
+        assert session is not None
+        assert session['_notify_session'] == 'grandparent-1'
+
+    def test_non_claude_carry_notify_false_drops_the_callback(self, ar, monkeypatch):
+        entries = [{'session_id': 's8', 'provider': 'gemini', 'claude_session_id': '',
+                    'spawned_by_session_id': 'parent-8', 'ts': '2026-09-23T00:00:00Z'}]
+        monkeypatch.setattr(ar, '_load_agent_log', lambda pid: entries)
+        captured = {}
+        monkeypatch.setattr(ar, '_dispatch_agent_internal',
+                            lambda pid, msg, **kw: captured.update(kw) or 's8')
+
+        out = ar._revive_non_claude_from_agent_log(
+            'p8', 's8', 'go', {'id': 'p8'}, carry_notify=False)
+
+        assert out == 's8'
+        assert captured['notify_session'] == ''
+
+
 def test_rearm_clears_only_the_session_latch():
     """`_rearm_notify_for_new_turn` must re-arm the spawner callback for a new
     turn without ever re-arming a workflow step's -- a workflow step completes
@@ -201,3 +265,51 @@ def test_notify_fires_again_after_rearm_but_not_workflow(monkeypatch):
     assert len(spawner_calls) == 2, 'spawner must hear about the follow-up turn too'
     assert spawner_calls[-1][3] == 'second answer'
     assert len(workflow_calls) == 1, 'a workflow step must not re-complete on a later follow-up'
+
+
+def test_advance_delegation_turn_leaves_the_latch_untouched(monkeypatch):
+    """`_advance_delegation_turn` is the MC-970 counterpart to
+    `_rearm_notify_for_new_turn`: same turn bookkeeping (durable turn id,
+    dispatch-pending log row), but a human-typed turn must not clear
+    `_notify_session_sent` the way an agent-armed one does."""
+    from mc.blueprints import agent_routes as ar
+
+    calls = []
+    monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: calls.append('turn') or 2)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False: calls.append('pending'))
+
+    session = {'_notify_session_sent': True, '_notify_workflow_sent': True}
+    ar._advance_delegation_turn(session)
+
+    assert session['_notify_session_sent'] is True
+    assert session['_notify_workflow_sent'] is True
+    assert calls == ['turn', 'pending'], 'must still do the same turn bookkeeping as the rearm path'
+
+
+def test_human_followup_after_completion_does_not_refire_the_callback(monkeypatch):
+    """MC-970's exact reported symptom, at the notify layer: a dispatched
+    child completes and notifies its spawner once, then a HUMAN continues the
+    same chat. That must advance the turn (so the conversation keeps working)
+    without re-arming the latch -- so when this new turn also completes,
+    `_maybe_notify_spawner` stays a no-op instead of reporting a second time
+    for a task the spawner already knows is done."""
+    from mc.blueprints import agent_routes as ar
+
+    spawner_calls = []
+    monkeypatch.setattr(ar, '_notify_agent_spawner', lambda *a, **k: spawner_calls.append(a))
+    monkeypatch.setattr(ar, '_allocate_delegation_turn', lambda session: 2)
+    monkeypatch.setattr(ar, '_log_agent_dispatch_pending', lambda session, strict=False: None)
+
+    session = {
+        'project_id': 'p1', 'session_id': 'child-1',
+        '_notify_session': 'parent-1',
+    }
+
+    ar._maybe_notify_spawner(session, 'first answer, merged the PR')
+    assert len(spawner_calls) == 1
+
+    # Ron types a follow-up question into the now-finished child chat.
+    ar._advance_delegation_turn(session)
+    ar._maybe_notify_spawner(session, 'sure, here is more detail')
+
+    assert len(spawner_calls) == 1, 'a human-typed follow-up must not refire the dispatch callback'

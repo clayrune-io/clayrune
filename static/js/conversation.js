@@ -1576,6 +1576,7 @@ function agentPanelHTML(p) {
       </div>
       <div class="agent-chat">
         ${(typeof chatSearchBarHTML === 'function') ? chatSearchBarHTML(p.id, activeSessionId) : ''}
+        ${_dispatchedByBannerHTML(activeSessionId)}
         ${_forkNoticeHTML(activeSessionId)}
         <div class="agent-output" id="agent-output-${esc(activeSessionId)}">${outputLines}${_subagentCardsHTML(activeSessionId)}${typingHTML}</div>
         ${chatInput ? `<div class="agent-chat-separator"></div>${chatInput}` : ''}
@@ -3822,6 +3823,7 @@ function splitPaneHTML(p, sid, isPrimary) {
       ${statusLbl}${stopBtn}${closeBtn}
     </div>
     <div class="agent-chat">
+      ${_dispatchedByBannerHTML(sid)}
       ${_forkNoticeHTML(sid)}
       <div class="agent-output" id="agent-output-${esc(sid)}"></div>
       ${compose}
@@ -4279,6 +4281,38 @@ function _renderForkNotice(sessionId) {
 }
 window._forkNoticeHTML = _forkNoticeHTML;
 window._renderForkNotice = _renderForkNotice;
+
+// MC-970 part 2: `spawnedBySessionId` (see agent_routes.py /agent/status)
+// names the session that dispatched THIS one. The bug this guards against:
+// a human typed follow-ups directly into a dispatched child's chat, mistaking
+// it for a conversation they'd opened themselves, and each follow-up re-fired
+// the one-shot dispatch-completion callback at the parent as if it were the
+// task's own result (backend fix: the callback now fires once and disarms).
+// This banner is the other half — make the child's identity and its spawner
+// unmistakable BEFORE a human types into it. Best-effort: the parent's name
+// only resolves if its own status has been fetched into agentStatusCache at
+// some point this session (true for anything the user can currently see);
+// a parent that's aged out of that cache still gets a clearly-labelled,
+// if nameless, notice rather than silence.
+function _dispatchedByBannerHTML(sessionId) {
+  const c = agentStatusCache[sessionId] || {};
+  const parentId = c.spawnedBySessionId || '';
+  if (!parentId) return '';
+  const parent = agentStatusCache[parentId];
+  const pChar = parent && parent.character;
+  const pName = pChar ? (pChar.agent_name || pChar.display_name || pChar.name || '')
+    : (parent ? _providerDisplayName(parent.provider || 'claude') : '');
+  const pFace = pChar && pChar.avatar ? window.avatarHTML(pChar.avatar, 18, 'av-pill') : '';
+  const openLink = parent
+    ? ` <a href="#" class="dispatched-by-link" data-sid="${esc(parentId)}" onclick="event.preventDefault();switchAgentTab('${esc(parent.projectId || '')}','${esc(parentId)}')">Open its chat</a>`
+    : '';
+  const who = pName ? `${pFace}<strong>${esc(pName)}</strong>` : `another session (${esc(parentId.slice(0, 8))}, since ended)`;
+  const possessive = pName ? `${esc(pName)}'s` : 'the dispatcher\'s';
+  return `<div class="dispatched-by-notice" id="dispatched-by-${esc(sessionId)}" role="note">
+    &#128257; Dispatched by ${who} — this is that task's own chat, separate from ${possessive} conversation.${openLink}
+  </div>`;
+}
+window._dispatchedByBannerHTML = _dispatchedByBannerHTML;
 
 // Self-canceling poll (mirrors agent-console.js's _wfStartPolling for the
 // Workflows tab): active_subagents' elapsed_seconds/tool_calls are a
@@ -5197,7 +5231,7 @@ async function fetchAgentStatus(projectId) {
       // nag. The server still computes `s.long_session_advisory`; nothing
       // consumes it now. To bring the nudge back, render it somewhere
       // non-intrusive (e.g. an inline session-panel hint) rather than a toast.
-      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive };
+      agentStatusCache[sid] = { status: s.status, task: s.task, projectId, startedAt: s.started_at, planFile: s.plan_file || '', usage: s.usage || {}, cost_usd: s.cost_usd || 0, num_turns: s.num_turns || 0, contextTokens: (typeof s.context_tokens === 'number' ? s.context_tokens : null), contextWindow: (typeof s.context_window === 'number' ? s.context_window : null), hivemindId: s.hivemind_id || '', hivemindWsId: s.hivemind_ws_id || '', hivemindRole: s.hivemind_role || '', triggerType: s.trigger_type || 'manual', triggerId: s.trigger_id || '', waitingForPlanApproval: s.waiting_for_plan_approval || false, waitingForQuestion: s.waiting_for_question || false, guardianState: s.guardian_state || null, circuitBreakerTripped: s.circuit_breaker_tripped || false, claudeSessionId: s.claude_session_id || '', providerSessionId: s.provider_session_id || '', incognito: !!s.incognito, provider: s.provider || 'claude', agentModel: s.agent_model || '', model: s.model || '', modelSource: s.model_source || 'manual', pinnedModel: s.pinned_model || '', character: s.character || null, identity: s.identity || null, pinned: !!s.pinned, activeSubagents: s.active_subagents || [], liveCopies: s.live_copies || [], cwdMovedFrom: s.cwd_moved_from || '', processAlive: !!s.process_alive, spawnedBySessionId: s.spawned_by_session_id || '' };
       // MC-937 Phase 4 (frontend): patch this session's nested subagent
       // card(s) + its rail helper-count badge in place from server truth —
       // same discipline as the pendingQuestions reconciliation below (touch

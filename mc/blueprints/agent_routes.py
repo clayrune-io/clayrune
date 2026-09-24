@@ -5532,7 +5532,7 @@ def _transcript_buffer_lines(project_path, claude_sid, user_label, max_messages=
         _log(f"[transcript-render] failed: {e}")
         return []
 
-def _revive_from_agent_log(project_id, session_id, message, p):
+def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
     """Revive a finalized/purged session by spawning a fresh process with -r <claude_session_id>.
 
     Looks up the most recent agent_log entry whose session_id matches; if it has a
@@ -5542,6 +5542,23 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     Roll back: set CONFIG['agent_revive_from_log'] = False (the only call site checks
     this flag before calling). Or delete this function and the gated block in
     agent_followup.
+
+    `carry_notify` (MC-970): a revive builds the session dict from scratch, so
+    the completion callback either survives via the durable
+    `spawned_by_session_id`/`trigger_id` fields on the log entry, or is lost
+    for good. There is no durable record of whether that callback ALREADY
+    fired for this conversation (`_notify_session_sent` lives only on the
+    in-memory dict this revive is replacing), so carrying it forward
+    unconditionally means a human typing into a purged, already-notified
+    dispatch re-arms the same callback for its spawner on this session's next
+    completion — indistinguishable, from the spawner's side, from the exact
+    bug this ticket reports. Callers driven by a human typing into a chat
+    (`/agent/send`, `agent_followup`'s revive-precheck) must pass
+    `carry_notify=False` and let an explicit `notify_session` in the request
+    override afterward if the caller wants the callback anyway. Callers that
+    ARE the delegation-completion machinery reviving a dead PARENT so it can
+    receive its own callback (`_revive_parent_for_delegation`) keep the
+    default `True` -- that path is agent-to-agent, never a human keystroke.
 
     Returns the new session dict on success, None if not revivable (no matching
     log entry, no claude_session_id, missing project_path, or spawn failure).
@@ -5581,9 +5598,9 @@ def _revive_from_agent_log(project_id, session_id, message, p):
     # ~5256). `_notify_workflow` has no durable field of its own, but a
     # workflow-triggered dispatch's trigger_id IS "{run_id}:{step}"
     # (mc/workflows.py:1006) — reconstruct it the same way for parity.
-    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip()
+    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip() if carry_notify else ''
     _revive_notify_workflow = None
-    if entry.get('trigger_type') == 'workflow':
+    if carry_notify and entry.get('trigger_type') == 'workflow':
         _trig = entry.get('trigger_id') or ''
         _run_id, _sep, _step = _trig.partition(':')
         if _sep and _run_id and _step:
@@ -5894,7 +5911,7 @@ def _revive_from_agent_log(project_id, session_id, message, p):
 _COLD_RESUMABLE_PROVIDERS = {'codex', 'qwen', 'gemini'}
 
 
-def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
+def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, carry_notify=True):
     """Continue (or, for a provider with no cold resume, restart) a dead
     non-Claude conversation (MC-929; cold-resume support added 2026-09-16,
     extended to gemini W4/MC-947 2026-09-18).
@@ -5949,12 +5966,14 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p):
     character_ref = (f'{_char_scope}:{_char_name}'
                      if _char_name and _char_scope in ('project', 'global') else '')
     # Same carry-across-revive as `_revive_from_agent_log` (see its top-of-
-    # function comment) — this path also builds a brand-new session dict via
-    # `_dispatch_agent_internal`, so without passing these through explicitly
-    # a revived non-Claude child with a spawner would lose the callback too.
-    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip()
+    # function comment, including the `carry_notify=False` requirement for a
+    # human-driven caller, MC-970) — this path also builds a brand-new
+    # session dict via `_dispatch_agent_internal`, so without passing these
+    # through explicitly a revived non-Claude child with a spawner would lose
+    # the callback too.
+    _revive_notify_session = (entry.get('spawned_by_session_id') or '').strip() if carry_notify else ''
     _revive_notify_workflow = None
-    if entry.get('trigger_type') == 'workflow':
+    if carry_notify and entry.get('trigger_type') == 'workflow':
         _trig = entry.get('trigger_id') or ''
         _run_id, _sep, _step = _trig.partition(':')
         if _sep and _run_id and _step:
@@ -6043,6 +6062,11 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
     character = f'{scope}:{name}' if scope in ('global', 'project') and name else ''
     try:
         if provider == 'claude':
+            # carry_notify defaults True: this revive is delivering a
+            # dispatch's OWN completion callback to a dead parent, not a
+            # human continuing a chat, so it must keep the parent's own
+            # `_notify_session` intact (MC-970's carry_notify=False rule is
+            # for /agent/send and agent_followup only).
             revived = _revive_from_agent_log(project_id, session_id, message, p)
             if not revived:
                 raise DeliveryBlocked('Claude parent could not be safely revived')
@@ -6360,26 +6384,51 @@ def _maybe_notify_spawner(session, summary):
         _notify_workflow_step(wf_wait, session, summary)
 
 
+def _advance_delegation_turn(session):
+    """Turn-bookkeeping for a new turn on an existing session, WITHOUT
+    touching the `_notify_session_sent` latch.
+
+    Call this from a HUMAN-initiated continuation (agent_followup,
+    agent_interrupt, the guardian's replay of a queued human message) so the
+    durable turn id and dispatch-pending log row are still correct, but a
+    completed dispatch's callback does not fire again for a turn the human
+    typed, not the spawner. See `_rearm_notify_for_new_turn` for the one case
+    that SHOULD re-arm the latch.
+
+    MC-970, measured 2026-09-23: Ron typed two follow-up questions into a
+    finished dispatch (session 5a0329df3958, spawned by Dave). Both went
+    through this exact turn-start code, which used to unconditionally call
+    `_rearm_notify_for_new_turn` — so Dave got '[dispatched agent finished]
+    ... Continue the work' twice for a task already merged, and Ron read it
+    as Clayrune having a cross-chat memory bug.
+    """
+    _allocate_delegation_turn(session)
+    # Turn identity must be durable before provider execution begins; a cold
+    # revive can then reconstruct the same child/session turn without collision.
+    _log_agent_dispatch_pending(session, strict=True)
+
+
 def _rearm_notify_for_new_turn(session):
     """Re-arm the spawner-chat completion callback for a NEW turn.
 
-    Call this whenever a followup/interrupt/revive is about to start a
-    genuinely new turn on a session that may already have completed once
-    before (and so may already carry a spent `_notify_session_sent` latch).
-    Without it, only the FIRST turn of a dispatched child ever reported back
-    to its spawner — every follow-up after that finished silently. Measured
-    2026-09-15: Tilda (session 77fc8166f11e) answered a follow-up Dave sent
-    her, landed commit 0c43e91, and Dave never heard about it.
+    Only call this when an AGENT (not a human) is explicitly sending the
+    dispatched child new work through the API `notify_session` again — a
+    followup/interrupt whose request body names `notify_session` (see the
+    call sites in `agent_followup`/`agent_interrupt`). Every other new turn
+    on an existing session must go through `_advance_delegation_turn` instead,
+    which does the same turn bookkeeping without re-arming — see MC-970.
+
+    Without this, only the FIRST turn of a dispatched child ever reported back
+    to its spawner — every agent-sent follow-up after that finished silently.
+    Measured 2026-09-15: Tilda (session 77fc8166f11e) answered a follow-up
+    Dave sent her, landed commit 0c43e91, and Dave never heard about it.
 
     Deliberately does not touch `_notify_workflow_sent` -- see
     `_maybe_notify_spawner`'s docstring for why that latch must stay
     permanent.
     """
     session.pop('_notify_session_sent', None)
-    _allocate_delegation_turn(session)
-    # Turn identity must be durable before provider execution begins; a cold
-    # revive can then reconstruct the same child/session turn without collision.
-    _log_agent_dispatch_pending(session, strict=True)
+    _advance_delegation_turn(session)
 
 
 def _notify_workflow_step(wf_wait, session, summary):
@@ -7088,7 +7137,9 @@ def _auto_dispatch_followup(session, message):
     if old_proc:
         _unregister_process(old_proc.pid)
     session['proc'] = proc
-    _rearm_notify_for_new_turn(session)
+    # Guardian/queue replay of an already-received message, not a fresh
+    # caller decision -- never re-arms (see _advance_delegation_turn).
+    _advance_delegation_turn(session)
     session['status'] = 'running'
     session['last_status_change_time'] = _time.time()
     session['last_output_time'] = _time.time()
@@ -9427,13 +9478,24 @@ def agent_send(project_id):
         # above).
         resp = make_response(agent_followup(project_id))
     else:  # fresh_or_revive
+        # MC-970: /agent/send is the chat composer's endpoint -- a human
+        # typed this message. A revive here must not silently re-arm a
+        # completed dispatch's callback to its spawner (see `carry_notify`
+        # on `_revive_from_agent_log`); an explicit `notify_session` in the
+        # body (an agent calling this API directly, not the chat UI) is the
+        # only thing that re-arms it.
+        _explicit_notify_session = (data.get('notify_session') or '').strip()
         if session_id:
             try:
-                revived = _revive_from_agent_log(project_id, session_id, message, p)
+                revived = _revive_from_agent_log(
+                    project_id, session_id, message, p,
+                    carry_notify=bool(_explicit_notify_session))
             except Exception as e:
                 revived = None
                 _log_agent_activity(project_id, f"Revive error in /send: {e}")
             if revived:
+                if _explicit_notify_session:
+                    revived['_notify_session'] = _explicit_notify_session
                 return jsonify({'ok': True, 'session_id': session_id,
                                 'revived': True, 'route': 'revive'})
             # `_revive_from_agent_log` only handles Claude rows (it needs a
@@ -9446,11 +9508,17 @@ def agent_send(project_id):
             # does this same fallback (agent_routes.py:6304); /agent/send is
             # the route the chat composer actually uses, so it needs it too.
             try:
-                fresh_sid = _revive_non_claude_from_agent_log(project_id, session_id, message, p)
+                fresh_sid = _revive_non_claude_from_agent_log(
+                    project_id, session_id, message, p,
+                    carry_notify=bool(_explicit_notify_session))
             except Exception as e:
                 fresh_sid = None
                 _log_agent_activity(project_id, f"Non-claude revive error in /send: {e}")
             if fresh_sid:
+                if _explicit_notify_session:
+                    _fresh_sess = agent_sessions.get(fresh_sid)
+                    if _fresh_sess is not None:
+                        _fresh_sess['_notify_session'] = _explicit_notify_session
                 return jsonify({'ok': True, 'session_id': fresh_sid,
                                 'revived': False, 'fresh': True,
                                 'route': 'revive-non-claude'})
@@ -9806,6 +9874,22 @@ def agent_followup(project_id):
         return jsonify({'error': 'message required'}), 400
     if not session_id:
         return jsonify({'error': 'session_id required'}), 400
+    # MC-970: this endpoint is answered by a human (chat form, plan-approval
+    # click, the emailed-question-reply relay in question_channel.py) far more
+    # often than by an agent, and none of those callers should re-fire a
+    # dispatch's completion callback for THIS turn. Re-arming requires an
+    # explicit, opt-in signal from the caller -- naming `notify_session` in
+    # the request body, the same field `/agent/dispatch` uses to arm it the
+    # first time. Absent that, every turn here advances turn state without
+    # touching the latch. See `_rearm_notify_for_new_turn` / MC-970 journal.
+    _explicit_notify_session = (data.get('notify_session') or '').strip()
+
+    def _start_new_turn(sess):
+        if _explicit_notify_session:
+            sess['_notify_session'] = _explicit_notify_session
+            _rearm_notify_for_new_turn(sess)
+        else:
+            _advance_delegation_turn(sess)
 
     _respawn_b = None  # set if Mode B needs to respawn outside lock
     _model_route_state = None  # set when alive+auto_model_enabled; handled post-lock
@@ -9857,16 +9941,30 @@ def agent_followup(project_id):
             session_id = _owner
             _has_session = True
     if not _has_session:
-        revived = _revive_from_agent_log(project_id, session_id, message, p)
+        # MC-970: this is a human follow-up into a purged/finalized session --
+        # same rule as `/agent/send` (see `carry_notify` on
+        # `_revive_from_agent_log`). Only an explicit `notify_session` in the
+        # request re-arms the dispatch callback across the revive.
+        revived = _revive_from_agent_log(
+            project_id, session_id, message, p,
+            carry_notify=bool(_explicit_notify_session))
         if revived:
+            if _explicit_notify_session:
+                revived['_notify_session'] = _explicit_notify_session
             _log_agent_activity(project_id, f"Agent revived from log: {message[:100]}")
             return jsonify({'ok': True, 'session_id': session_id, 'revived': True})
         # Not a Claude conversation (no claude_session_id) — no `-r` to revive
         # with, so start fresh instead of 404ing. This is what makes the
         # read-only reconstruct's "sending a message starts a brand-new
         # session" line (MC-929) true rather than a lie.
-        fresh_sid = _revive_non_claude_from_agent_log(project_id, session_id, message, p)
+        fresh_sid = _revive_non_claude_from_agent_log(
+            project_id, session_id, message, p,
+            carry_notify=bool(_explicit_notify_session))
         if fresh_sid:
+            if _explicit_notify_session:
+                _fresh_sess = agent_sessions.get(fresh_sid)
+                if _fresh_sess is not None:
+                    _fresh_sess['_notify_session'] = _explicit_notify_session
             _log_agent_activity(project_id, f"Agent follow-up started a new session (no transcript to resume): {message[:100]}")
             return jsonify({'ok': True, 'session_id': fresh_sid, 'revived': False, 'fresh': True})
         # No revivable entry — fall through to original 404 below.
@@ -9904,7 +10002,7 @@ def agent_followup(project_id):
             user_label = state.CONFIG.get('user_name') or 'User'
             if not existing.pop('_send_already_logged', False):
                 existing['log_lines'].append(f"\n> {user_label}: {message}\n")
-            _rearm_notify_for_new_turn(existing)
+            _start_new_turn(existing)
             existing['status'] = 'running'
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
@@ -10039,7 +10137,7 @@ def agent_followup(project_id):
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
-                _rearm_notify_for_new_turn(existing)
+                _start_new_turn(existing)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
@@ -10097,7 +10195,7 @@ def agent_followup(project_id):
                 user_label = state.CONFIG.get('user_name') or 'User'
                 if not existing.pop('_send_already_logged', False):
                     existing['log_lines'].append(f"\n> {user_label}: {message}\n")
-                _rearm_notify_for_new_turn(existing)
+                _start_new_turn(existing)
                 existing['status'] = 'running'
                 existing['last_status_change_time'] = _time.time()
                 existing['last_output_time'] = _time.time()
@@ -10217,7 +10315,7 @@ def agent_followup(project_id):
                 return jsonify({'ok': True, 'queued': True, 'session_id': session_id})
 
             # Mark as running and return quickly — spawn process in background
-            _rearm_notify_for_new_turn(existing)
+            _start_new_turn(existing)
             existing['status'] = 'running'
             existing['last_status_change_time'] = _time.time()
             existing['last_output_time'] = _time.time()
@@ -10730,6 +10828,19 @@ def agent_interrupt(project_id, *, _internal=None):
     if not message:
         return _ret({'error': 'message required'}, 400)
 
+    # MC-970: same rule as agent_followup -- a human interrupting a running
+    # turn (or a Clayrune-internal midturn rollover, `_internal` above) must
+    # not re-fire a completed dispatch's callback. Only an explicit
+    # `notify_session` in the request body re-arms it.
+    _explicit_notify_session = (data.get('notify_session') or '').strip()
+
+    def _start_new_turn(sess):
+        if _explicit_notify_session:
+            sess['_notify_session'] = _explicit_notify_session
+            _rearm_notify_for_new_turn(sess)
+        else:
+            _advance_delegation_turn(sess)
+
     with get_manager(project_id).lock:
         session = agent_sessions.get(session_id)
         if not session or session['project_id'] != project_id:
@@ -10759,7 +10870,7 @@ def agent_interrupt(project_id, *, _internal=None):
             if not session.pop('_send_already_logged', False):
                 session['log_lines'].append('[Got your message]')
                 session['log_lines'].append(f"\n> {user_label}: {message}\n")
-            _rearm_notify_for_new_turn(session)
+            _start_new_turn(session)
             session.pop('pending_followups', None)
             # Refresh stashed context (see the followup path for rationale).
             if not session.get('incognito'):
@@ -10806,17 +10917,19 @@ def agent_interrupt(project_id, *, _internal=None):
         # Cleared by the respawn thread once the new proc replaces session['proc'].
         #
         # The flag goes up FIRST so the old reader (a different thread on the
-        # HTTP path) cannot deliver a turn-end notify while the rearm below
-        # clears the sent-latch - that would hand the spawner the old turn's
-        # reply under the new turn number and swallow the real one. The rearm
-        # writes the delegation DB and can raise; on a raise the flag is
-        # cleared again so the still-live old reader is not gated out of every
-        # status write (session stuck 'running', spawner never notified).
+        # HTTP path) cannot deliver a turn-end notify while the turn-start
+        # below clears the sent-latch (only when `notify_session` was passed
+        # explicitly — see MC-970) - that would hand the spawner the old
+        # turn's reply under the new turn number and swallow the real one.
+        # It always writes the delegation DB and can raise; on a raise the
+        # flag is cleared again so the still-live old reader is not gated out
+        # of every status write (session stuck 'running', spawner never
+        # notified).
         _unset = object()
         _prior_interrupting = session.get('_interrupting', _unset)
         session['_interrupting'] = True
         try:
-            _rearm_notify_for_new_turn(session)
+            _start_new_turn(session)
         except Exception:
             if _prior_interrupting is _unset:
                 session.pop('_interrupting', None)
@@ -11444,6 +11557,13 @@ def agent_status(project_id):
                 # does this for the persona case; the no-persona case needed the
                 # key to exist at all).
                 'identity': _identity.resolve_identity(s.get('character'), s.get('source', '')),
+                # MC-970 part 2 — this session's dispatch parent, if any (same
+                # value `_notify_session` carries, not just whether the
+                # one-shot callback has fired). The chat header uses this to
+                # render "dispatched by <parent>" so a human can't mistake a
+                # dispatched child's chat for a conversation they opened
+                # themselves. '' for an ordinary user-opened chat.
+                'spawned_by_session_id': (s.get('_notify_session') or '').strip(),
                 # Chat-level pin marker — server-authoritative (see _pinned_csids).
                 'pinned': bool(s.get('claude_session_id')
                                and s.get('claude_session_id') in _pinned_csids),

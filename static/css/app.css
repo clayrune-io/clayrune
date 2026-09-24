@@ -4371,6 +4371,18 @@
   }
   .fork-notice a { color: #ef4444; font-weight: 600; }
 
+  /* Dispatched-by notice (MC-970 part 2): this chat belongs to a task another
+     session dispatched — sits above the transcript, same slot as fork-notice,
+     amber rather than red since it's identification, not a warning. */
+  .dispatched-by-notice {
+    flex-shrink: 0; margin: 0 0 8px; padding: 8px 12px; border-radius: 8px;
+    border: 1px solid rgba(217,119,6,.4); background: rgba(217,119,6,.10);
+    color: inherit; font-size: 13px; line-height: 1.45;
+    display: flex; align-items: center; gap: 6px; flex-wrap: wrap;
+  }
+  .dispatched-by-notice .av-pill { vertical-align: middle; }
+  .dispatched-by-notice a.dispatched-by-link { color: #d97706; font-weight: 600; }
+
   /* Nested subagent card (MC-937 Phase 4, channel spec §7): "a collapsed card
      inside the message of whoever spawned it" — indented under the narration
      bubble it belongs to (never a top-level bubble, no avatar — a subagent's

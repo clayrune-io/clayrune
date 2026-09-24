@@ -270,14 +270,14 @@ class _InertThread:
         pass
 
 
-def test_followup_on_alive_process_rearms_the_spawner_latch(env, monkeypatch):
-    """Dispatch callback follow-up gap (2026-09-15): a dispatched child that
-    already reported back to its spawner once must be able to report back
-    again on its NEXT turn. Simulates the state right after a first turn
-    completed and notified (`_notify_session_sent=True`) and checks that a
-    plain /agent/followup on the still-alive process clears the latch before
-    the new turn's stdin write, so `_maybe_notify_spawner` isn't a no-op when
-    this turn finishes."""
+def test_plain_followup_does_not_rearm_the_spawner_latch(env, monkeypatch):
+    """MC-970, measured 2026-09-23: Ron typed two follow-up questions into a
+    finished dispatched child and its spawner got the '[dispatched agent
+    finished]' callback TWICE for a task already merged -- because the prior
+    fix for the 2026-09-15 gap (below) re-armed the latch on EVERY followup,
+    including ones a human typed, not just ones an agent sent to hand the
+    child new work. A plain /agent/followup (no `notify_session` in the
+    request body) must advance the turn WITHOUT touching the latch."""
     ar = env['ar']
     monkeypatch.setattr(ar.threading, 'Thread', _InertThread)
     sess = _session('a', csid=FAKE_CSID)
@@ -289,11 +289,33 @@ def test_followup_on_alive_process_rearms_the_spawner_latch(env, monkeypatch):
         'session_id': 'a', 'message': 'and then?'})
 
     assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert sess['_notify_session_sent'] is True
+
+
+def test_followup_with_explicit_notify_session_rearms_the_latch(env, monkeypatch):
+    """The 2026-09-15 gap this replaces: a dispatched child that already
+    reported back to its spawner once must still be able to report back
+    again on a LATER turn -- but only when an agent (not a human) is the one
+    sending that turn, signalled by `notify_session` in the request body
+    (the same field `/agent/dispatch` uses to arm it the first time)."""
+    ar = env['ar']
+    monkeypatch.setattr(ar.threading, 'Thread', _InertThread)
+    sess = _session('a', csid=FAKE_CSID)
+    sess['_notify_session'] = 'parent-1'
+    sess['_notify_session_sent'] = True
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/followup', json={
+        'session_id': 'a', 'message': 'and then?', 'notify_session': 'parent-1'})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
     assert '_notify_session_sent' not in sess
 
 
-def test_interrupt_rearms_the_spawner_latch(env, monkeypatch):
-    """Same gap as above, on the interrupt-and-resume path."""
+def test_plain_interrupt_does_not_rearm_the_spawner_latch(env, monkeypatch):
+    """Same rule as the plain-followup case above, on the interrupt-and-resume
+    path -- a human interrupting a running turn with a new message must not
+    re-fire a completed dispatch's callback either."""
     ar = env['ar']
     monkeypatch.setattr(ar, '_kill_proc_background', lambda *a, **k: None)
     monkeypatch.setattr(ar, '_unregister_process', lambda *a, **k: None)
@@ -305,6 +327,25 @@ def test_interrupt_rearms_the_spawner_latch(env, monkeypatch):
 
     resp = env['client'].post('/api/project/p1/agent/interrupt', json={
         'session_id': 'a', 'message': 'stop, do this instead'})
+
+    assert resp.status_code == 200, resp.get_data(as_text=True)
+    assert sess['_notify_session_sent'] is True
+
+
+def test_interrupt_with_explicit_notify_session_rearms_the_latch(env, monkeypatch):
+    """Same gap as the followup case, on the interrupt-and-resume path."""
+    ar = env['ar']
+    monkeypatch.setattr(ar, '_kill_proc_background', lambda *a, **k: None)
+    monkeypatch.setattr(ar, '_unregister_process', lambda *a, **k: None)
+    monkeypatch.setattr(ar.threading, 'Thread', _InertThread)
+    sess = _session('a', csid=FAKE_CSID)
+    sess['_notify_session'] = 'parent-1'
+    sess['_notify_session_sent'] = True
+    env['sessions']['a'] = sess
+
+    resp = env['client'].post('/api/project/p1/agent/interrupt', json={
+        'session_id': 'a', 'message': 'stop, do this instead',
+        'notify_session': 'parent-1'})
 
     assert resp.status_code == 200, resp.get_data(as_text=True)
     assert '_notify_session_sent' not in sess
