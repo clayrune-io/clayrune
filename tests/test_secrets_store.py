@@ -1110,3 +1110,42 @@ def test_unconfigured_vault_behaves_exactly_as_before(vault):
     vault.set_secret('reddit.password', 'never-locked')
     assert vault.lock_state() == 'unconfigured'
     assert vault.get_secret_value('reddit.password', consumer='test') == 'never-locked'
+
+
+# ── icacls retry-once (Dave's review, MC 503edfe4, blocker 4) ──────────────
+# A transient icacls hiccup during set_passphrase/change_passphrase used to
+# strand Ron mid-setup with no recourse but to start over. One retry gives a
+# transient failure a second chance without weakening the fail-closed
+# guarantee on a REAL failure (both attempts denied/erroring).
+
+def test_icacls_grant_and_verify_retries_once_after_a_transient_failure(monkeypatch, tmp_path):
+    from mc import secrets_store
+    calls = []
+
+    def fake_once(path, sid, account):
+        calls.append(1)
+        if len(calls) == 1:
+            return False, "icacls exited 1332: some element(s) could not be translated"
+        return True, ''
+
+    monkeypatch.setattr(secrets_store, '_icacls_grant_and_verify_once', fake_once)
+    ok, detail = secrets_store._icacls_grant_and_verify(tmp_path / 'x', 'S-1-5-21-fake', 'user')
+    assert ok is True
+    assert detail == ''
+    assert len(calls) == 2
+
+
+def test_icacls_grant_and_verify_still_fails_closed_after_two_failures(monkeypatch, tmp_path):
+    from mc import secrets_store
+    calls = []
+
+    def fake_once(path, sid, account):
+        calls.append(1)
+        return False, f"attempt {len(calls)} denied"
+
+    monkeypatch.setattr(secrets_store, '_icacls_grant_and_verify_once', fake_once)
+    ok, detail = secrets_store._icacls_grant_and_verify(tmp_path / 'x', 'S-1-5-21-fake', 'user')
+    assert ok is False
+    assert len(calls) == 2
+    assert 'attempt 1 denied' in detail
+    assert 'attempt 2 denied' in detail

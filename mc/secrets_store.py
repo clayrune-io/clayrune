@@ -1108,10 +1108,9 @@ def _current_user_sid_and_name() -> tuple[str, str]:
         kernel32.CloseHandle(h_token)
 
 
-def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, str]:
-    """Strip inheritance and grant only (owner SID, SYSTEM) full control on
-    `path`, then re-read the ACL to confirm both grants actually landed.
-    Never raises; returns (ok, detail)."""
+def _icacls_grant_and_verify_once(path: Path, sid: str, account: str) -> tuple[bool, str]:
+    """One attempt at :func:`_icacls_grant_and_verify` — see that function for
+    the retry wrapper callers actually use. Never raises; returns (ok, detail)."""
     p = str(path)
     try:
         grant = subprocess.run(
@@ -1138,6 +1137,30 @@ def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, 
     if not (owner_present and system_present):
         return False, f"unexpected ACL after icacls grant: {(verify.stdout or '').strip()!r}"
     return True, ''
+
+
+def _icacls_grant_and_verify(path: Path, sid: str, account: str) -> tuple[bool, str]:
+    """Strip inheritance and grant only (owner SID, SYSTEM) full control on
+    `path`, then re-read the ACL to confirm both grants actually landed.
+
+    Retries ONCE on failure (Dave's review, MC 503edfe4, blocker 4): a
+    transient icacls hiccup (the CreateProcess-under-captured-stdin failure
+    this same module hit under pytest is one concrete shape of "transient")
+    would otherwise strand Ron mid set_passphrase/change_passphrase with no
+    recourse but to start over. Still fails CLOSED if the retry also fails —
+    this is a retry, not a fallback to a weaker guarantee; the caller's
+    fail-closed behavior on a False return is unchanged.
+
+    Never raises; returns (ok, detail)."""
+    ok, detail = _icacls_grant_and_verify_once(path, sid, account)
+    if ok:
+        return True, detail
+    retry_ok, retry_detail = _icacls_grant_and_verify_once(path, sid, account)
+    if retry_ok:
+        _log(f"[secrets] icacls grant on {path} failed once ({detail}) but "
+             f"succeeded on retry")
+        return True, retry_detail
+    return False, f"failed twice (retried once): first={detail!r} retry={retry_detail!r}"
 
 
 def _harden_clayrune_home_windows(home: Path) -> None:
