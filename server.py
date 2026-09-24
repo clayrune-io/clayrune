@@ -2793,6 +2793,9 @@ def _claude_health_check_hook():
     """Bridge: ClaudeRuntime.health_check() → server.py auth state."""
     from mc.agent_runtime import HealthStatus, AuthState
     import time as _t
+    # A cli_not_found latched before the CLI was installed must not be
+    # reported next to the version this same call finds (MC-959).
+    _bp_agent._reconcile_claude_cli_not_found()
     with _claude_auth_lock:
         state = dict(_claude_auth_state)
     resolved = _resolve_claude()

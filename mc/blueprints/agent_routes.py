@@ -1474,6 +1474,46 @@ def _mark_claude_auth_ok():
         _claude_auth_state['last_probe_at'] = _time.time()
 
 
+def _start_background_claude_probe():
+    """Seam for tests: a real probe runs `claude -p ok`, which spends a turn."""
+    threading.Thread(target=_run_claude_auth_probe, name='claude-auth-reprobe',
+                     daemon=True).start()
+
+
+def _reconcile_claude_cli_not_found() -> bool:
+    """Drop a `cli_not_found` latch that the machine has since contradicted.
+
+    MC-959 (clean-VM run 2026-09-24): the startup probe runs before first-run
+    setup has installed anything, so on a fresh machine it latches
+    reason='cli_not_found'. Nothing ever cleared that latch except another
+    full probe, so after "Install selected" the Providers row showed
+    "installed, v2.1.281" (the health check resolves the binary live, every
+    call) next to "claude CLI not on PATH" (the latch), and the banner said
+    the same. Both came from one request; PATH was not the problem.
+
+    Resets the state to the never-probed default (so nothing claims signed-in)
+    and starts one background probe for the real answer. Returns True when it
+    cleared a latch.
+    """
+    with _claude_auth_lock:
+        if _claude_auth_state.get('reason') != 'cli_not_found':
+            return False
+    _merge_registry_path()
+    if not _agent_runtime.claude_installed():
+        return False
+    with _claude_auth_lock:
+        if _claude_auth_state.get('reason') != 'cli_not_found':
+            return False
+        _claude_auth_state.update(ok=True, reason=None, last_error_text=None,
+                                  detected_at=None, last_probe_at=None)
+    _log('[auth] claude now resolves; cleared stale cli_not_found, re-probing', flush=True)
+    try:
+        _start_background_claude_probe()
+    except Exception as e:
+        _log(f'[auth] re-probe launch failed: {e}', flush=True)
+    return True
+
+
 def _scan_result_event_for_auth(msg):
     """Detect auth failure from a Mode-A/B `result` stream-json event.
 
@@ -1805,6 +1845,9 @@ def agent_provider_auth_status(name):
         rt = _agent_runtime.get_runtime(name)
     except KeyError:
         return jsonify({'error': f'unknown provider {name}'}), 404
+    _merge_registry_path()
+    if name == 'claude':
+        _reconcile_claude_cli_not_found()
     try:
         h = rt.health_check()
     except Exception as e:
@@ -2051,34 +2094,29 @@ def _provider_install_command(name: str, hint: str) -> tuple[str, str]:
     return hint, ''
 
 
-def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], bool]:
-    """Compose ONE shell command that installs every provider in ``names``
-    sequentially, running each platform prerequisite (Node/npm, or pip's uv
-    bootstrap) at most ONCE no matter how many selected vendors need it.
+# One marker line per vendor, echoed by the composed batch command itself so the
+# server can read back which installs actually exited 0 (MC-959, clean-VM run
+# 2026-09-24). Parsed by `_install_batch_results`.
+_INSTALL_MARKER = '[clayrune-install]'
+_INSTALL_MARKER_RE = re.compile(r'\[clayrune-install\] ([a-z0-9_-]+) (ok|FAILED)')
+_SAFE_VENDOR_NAME_RE = re.compile(r'[a-z0-9_-]+')
 
-    Returns ``(command, unsupported, prerequisite_added)`` — ``unsupported``
-    lists any name whose install_hint didn't match the allowlisted npm/pip
-    shape (same fail-closed discipline as `_provider_install_command`); those
-    names are just skipped from `command` rather than aborting the whole
-    batch. `command` is ``''`` when nothing in `names` was installable this
-    way. `prerequisite_added` mirrors the single-provider function's
-    `prerequisite` return: True when a Node/npm or uv bootstrap segment was
-    embedded, so the caller's PATH preflight (which would otherwise reject
-    a command whose first token is that bootstrap's own shell builtin, e.g.
-    Windows `set`) knows to skip itself exactly as it already does for the
-    single-provider route.
 
-    F7 (clean-VM run 2026-09-18): "Install selected" used to call
-    `_provider_install_command` once per selected vendor and open a
-    SEPARATE terminal for each — so ticking Claude + Gemini launched two
-    concurrent `winget install ... NodeJS` calls that raced each other. One
-    combined command in one terminal, with the prerequisite check run once
-    up front, removes the race without changing the single-provider path
-    (`_provider_install_command` itself, used by the unchanged
-    single-vendor `install-launch` route) at all.
+def _provider_install_plan(names: List[str]) -> dict:
+    """Resolve ``names`` into the pieces `_provider_install_command_batch`
+    composes: ``{'prereqs': [(label, snippet)], 'items': [(name, segment)],
+    'unsupported': [...], 'prerequisite_added': bool}``.
+
+    ``unsupported`` lists any name whose install_hint didn't match the
+    allowlisted npm/pip shape (same fail-closed discipline as
+    `_provider_install_command`); those names are skipped rather than
+    aborting the whole batch. `prerequisite_added` is True when a Node/npm or
+    uv bootstrap segment is embedded, so the caller's PATH preflight knows to
+    skip itself exactly as it already does for the single-provider route.
     """
-    npm_expected: List[str] = []
-    pip_packages: List[str] = []
+    npm_items: List[Tuple[str, str]] = []
+    pip_items: List[Tuple[str, str]] = []
+    other_items: List[Tuple[str, str]] = []
     unsupported: List[str] = []
     needs_npm_prereq = False
     needs_pip_prereq = False
@@ -2087,6 +2125,11 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
     have_pip = bool(shutil.which('pip') or shutil.which('pip3'))
     have_uv = bool(shutil.which('uv'))
     for name in names:
+        # The name is echoed into the composed shell command as a marker, so
+        # it must be a plain registry key — never anything a caller typed.
+        if not _SAFE_VENDOR_NAME_RE.fullmatch(name or ''):
+            unsupported.append(name)
+            continue
         try:
             rt = _agent_runtime.get_runtime(name)
             hint = rt.health_check().install_hint or ''
@@ -2103,7 +2146,7 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
             if not package or hint.strip() != expected:
                 unsupported.append(name)
                 continue
-            npm_expected.append(_npm_install_g_segment(package, npm_bin=npm_bin))
+            npm_items.append((name, _npm_install_g_segment(package, npm_bin=npm_bin)))
             if not have_npm:
                 needs_npm_prereq = True
         elif required == 'pip':
@@ -2113,28 +2156,134 @@ def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], b
             if not package or hint.strip() not in (expected, expected_with_alt):
                 unsupported.append(name)
                 continue
-            pip_packages.append(package)
+            pip_items.append((name, package))
             if not have_pip:
                 needs_pip_prereq = True
         else:
             # Already runnable as-is (no prerequisite gap) — nothing to
             # dedupe or batch; run it standalone in this same terminal.
-            npm_expected.append(hint)
-    segments: List[str] = []
-    if npm_expected:
+            other_items.append((name, hint))
+    prereqs: List[Tuple[str, str]] = []
+    items: List[Tuple[str, str]] = []
+    if npm_items:
         if needs_npm_prereq:
-            segments.append(_node_prereq_snippet())
-        segments.extend(npm_expected)
-    if pip_packages:
+            prereqs.append(('node', _node_prereq_snippet()))
+        items.extend(npm_items)
+    items.extend(other_items)
+    if pip_items:
         if needs_pip_prereq:
-            segments.append(_uv_prereq_snippet())
-            segments.extend(f'uv tool install {p}' for p in pip_packages)
+            prereqs.append(('uv', _uv_prereq_snippet()))
+            items.extend((n, f'uv tool install {p}') for n, p in pip_items)
         elif have_uv:
-            segments.extend(f'uv tool install {p}' for p in pip_packages)
+            items.extend((n, f'uv tool install {p}') for n, p in pip_items)
         else:
-            segments.extend(f'pip install {p}' for p in pip_packages)
-    prerequisite_added = needs_npm_prereq or needs_pip_prereq
-    return ' && '.join(segments), unsupported, prerequisite_added
+            items.extend((n, f'pip install {p}') for n, p in pip_items)
+    return {'prereqs': prereqs, 'items': items, 'unsupported': unsupported,
+            'prerequisite_added': needs_npm_prereq or needs_pip_prereq}
+
+
+def _compose_install_batch(prereqs: List[Tuple[str, str]],
+                           items: List[Tuple[str, str]]) -> str:
+    """Join prerequisite + per-vendor segments so each vendor installs
+    INDEPENDENTLY and reports its own outcome.
+
+    MC-959 (clean-VM run 2026-09-24): segments used to be joined with ` && `,
+    so the first vendor whose `npm install` exited non-zero silently skipped
+    every vendor after it — Ron ticked four, two installed, and nothing said
+    which one failed or that the rest never ran. Reproduced with a fake
+    npm.cmd built like the real one (batch file whose last line runs an exe,
+    no `exit /b`): with gemini failing, qwen and codex were never attempted;
+    with every install exiting 0 all four ran, so npm.cmd returning control
+    was never the problem. Now each segment is its own group whose success or
+    failure echoes a `[clayrune-install] <name> ok|FAILED` marker, groups are
+    joined unconditionally, and the shell still exits 1 at the end if any
+    failed, so the terminal's own status is honest too.
+
+    A prerequisite failure (Node/uv bootstrap) is reported but does not stop
+    the vendor installs — each then fails on its own and says so.
+    """
+    if not items:
+        return ''
+    m = _INSTALL_MARKER
+    parts: List[str] = []
+    if sys.platform == 'win32':
+        # cmd: `&` joins unconditionally; `( )` groups WITHOUT a subshell, so
+        # the Node snippet's `set "PATH=..."` still reaches later groups.
+        # `if defined` is evaluated when it RUNS, unlike %VAR%, which cmd
+        # expands for the whole line before anything executes.
+        parts.append('set "CR_INSTALL_FAILED="')
+        for label, snippet in prereqs:
+            parts.append(f'({snippet}) || (echo {m} {label}-prerequisite FAILED'
+                         f' & set "CR_INSTALL_FAILED=1")')
+        for name, seg in items:
+            parts.append(f'({seg}) && (echo {m} {name} ok) || '
+                         f'(echo {m} {name} FAILED & set "CR_INSTALL_FAILED=1")')
+        parts.append(f'if defined CR_INSTALL_FAILED (echo {m} finished - one or more installs '
+                     f'FAILED, see the error above each FAILED line & exit 1) '
+                     f'else (echo {m} finished - all installs ok & exit 0)')
+        return ' & '.join(parts)
+    parts.append('CR_INSTALL_FAILED=')
+    for label, snippet in prereqs:
+        parts.append(f'{{ {snippet}; }} || {{ echo "{m} {label}-prerequisite FAILED"; '
+                     f'CR_INSTALL_FAILED=1; }}')
+    for name, seg in items:
+        parts.append(f'{{ {seg}; }} && echo "{m} {name} ok" || '
+                     f'{{ echo "{m} {name} FAILED"; CR_INSTALL_FAILED=1; }}')
+    parts.append(f'if [ -n "$CR_INSTALL_FAILED" ]; then echo "{m} finished - one or more '
+                 f'installs FAILED, see the error above each FAILED line"; exit 1; '
+                 f'else echo "{m} finished - all installs ok"; fi')
+    return '; '.join(parts)
+
+
+def _provider_install_command_batch(names: List[str]) -> tuple[str, List[str], bool]:
+    """Compose ONE shell command that installs every provider in ``names``,
+    running each platform prerequisite (Node/npm, or pip's uv bootstrap) at
+    most ONCE no matter how many selected vendors need it, and each vendor
+    independently of the others (`_compose_install_batch`).
+
+    Returns ``(command, unsupported, prerequisite_added)`` — see
+    `_provider_install_plan`. `command` is ``''`` when nothing in `names` was
+    installable this way.
+
+    F7 (clean-VM run 2026-09-18): "Install selected" used to call
+    `_provider_install_command` once per selected vendor and open a
+    SEPARATE terminal for each — so ticking Claude + Gemini launched two
+    concurrent `winget install ... NodeJS` calls that raced each other. One
+    combined command in one terminal, with the prerequisite check run once
+    up front, removes the race without changing the single-provider path
+    (`_provider_install_command` itself, used by the unchanged
+    single-vendor `install-launch` route) at all.
+    """
+    plan = _provider_install_plan(names)
+    command = _compose_install_batch(plan['prereqs'], plan['items'])
+    return command, plan['unsupported'], plan['prerequisite_added']
+
+
+# session_id -> {'names': [...], 'started': epoch} for batch installs this
+# server launched, so /api/agent/providers/install-status can tell "no marker
+# yet" (pending) apart from "never ran". Bounded: only the newest few matter.
+_install_batches: Dict[str, dict] = {}
+_install_batches_lock = threading.Lock()
+_INSTALL_BATCHES_KEEP = 20
+
+
+def _remember_install_batch(session_id: str, names: List[str]) -> None:
+    # Hold the session dict itself: /api/terminal/sessions purges finished
+    # sessions from `terminal_sessions`, and the per-vendor markers must not
+    # vanish with it. The reader thread keeps writing into this same object.
+    with _install_batches_lock:
+        _install_batches[session_id] = {'names': list(names), 'started': _time.time(),
+                                        'session': terminal_sessions.get(session_id)}
+        while len(_install_batches) > _INSTALL_BATCHES_KEEP:
+            oldest = min(_install_batches, key=lambda k: _install_batches[k]['started'])
+            _install_batches.pop(oldest, None)
+
+
+def _install_batch_results(output: str) -> Dict[str, str]:
+    """``{name: 'ok'|'FAILED'}`` from the markers in a batch's terminal output.
+    Output arrives in raw 4 KB chunks, so callers must pass the JOINED text —
+    a marker can straddle two chunks."""
+    return {n: r for n, r in _INSTALL_MARKER_RE.findall(output or '')}
 
 
 # ── PowerShell execution policy (F6, clean-VM run 2026-09-18) ────────────────
@@ -2334,27 +2483,90 @@ def agent_providers_install_launch_batch():
     # duplicate its install line in the composed command.
     seen = set()
     names = [n for n in names if not (n in seen or seen.add(n))]
-    command, unsupported, prereq_added = _provider_install_command_batch(names)
+    plan = _provider_install_plan(names)
+    unsupported, prereq_added = plan['unsupported'], plan['prerequisite_added']
+    command = _compose_install_batch(plan['prereqs'], plan['items'])
     installed = [n for n in names if n not in unsupported]
     if not command:
         return jsonify({'ok': False,
                         'error': 'no supported install command for the selected providers',
                         'command': '', 'unsupported': unsupported}), 200
-    required = _install_command_required_binary(command)
-    if required and not shutil.which(required) and not prereq_added:
-        return jsonify({'ok': False,
-                        'error': f'{required} not found on PATH',
-                        'command': command, 'unsupported': unsupported}), 200
+    # Preflight each vendor's own tool (the composed command now starts with
+    # a shell builtin, so its first token says nothing).
+    if not prereq_added:
+        for _name, seg in plan['items']:
+            required = _install_command_required_binary(seg)
+            if required and not shutil.which(required):
+                return jsonify({'ok': False,
+                                'error': f'{required} not found on PATH',
+                                'command': command, 'unsupported': unsupported}), 200
     session_id, err = _launch_install_terminal(command)
     if err:
         return jsonify({'ok': False, 'error': err, 'command': command,
                         'unsupported': unsupported}), 200
+    _remember_install_batch(session_id, installed)
     policy = (_ensure_powershell_execution_policy()
               if any(n in _PROVIDER_NPM_PACKAGES for n in installed) else None)
     return jsonify({'ok': True, 'command': command,
                     'installed': installed, 'unsupported': unsupported,
                     'execution_policy': policy,
+                    'status_url': f'/api/agent/providers/install-status?session_id={session_id}',
                     'session_id': session_id, 'pty': False})
+
+
+@bp.route('/api/agent/providers/install-status')
+def agent_providers_install_status():
+    """Per-vendor outcome of a batch install launched by the route above
+    (MC-959). The batch used to report nothing back: the UI said "a terminal
+    opened" for every vendor and the only way to learn that two of four had
+    not installed was to re-check and notice.
+
+    Returns ``{'ok': True, 'running': bool, 'exit_code', 'vendors': [{name,
+    result, installed, version}], 'failed': [...]}``. ``result`` is
+    ``pending`` (no marker yet, still running), ``ok`` / ``failed`` (the
+    vendor's own install command exited 0 / non-zero), or ``no_result`` (the
+    terminal ended without that vendor reporting — killed or stopped).
+    Once the terminal has ended, ``installed``/``version`` come from a fresh
+    health check, because an install that exited 0 but left no runnable CLI is
+    still a failure; ``failed`` lists every vendor that is not both ``ok`` and
+    installed.
+    """
+    session_id = str(request.args.get('session_id', '')).strip()
+    with _install_batches_lock:
+        batch = _install_batches.get(session_id)
+    if not batch:
+        return jsonify({'ok': False, 'error': 'unknown install session'}), 404
+    session = terminal_sessions.get(session_id) or batch.get('session')
+    if session is None:
+        return jsonify({'ok': False, 'error': 'install terminal is gone (server restarted or '
+                        'the terminal was closed); click Check setup status'}), 410
+    running = session.get('status') == 'running'
+    results = _install_batch_results(''.join(session.get('output_lines') or []))
+    if not running:
+        _merge_registry_path()
+        if 'claude' in batch['names']:
+            _reconcile_claude_cli_not_found()
+    vendors = []
+    failed = []
+    for name in batch['names']:
+        marker = results.get(name)
+        result = ('ok' if marker == 'ok' else 'failed' if marker == 'FAILED'
+                  else 'pending' if running else 'no_result')
+        entry = {'name': name, 'result': result, 'installed': None, 'version': None}
+        if not running:
+            try:
+                h = _agent_runtime.get_runtime(name).health_check()
+                entry['installed'] = bool(h.installed)
+                entry['version'] = h.version
+            except Exception as e:
+                _log(f'[provider-install] health check for {name} failed: {e}', flush=True)
+                entry['installed'] = False
+            if not (result == 'ok' and entry['installed']):
+                failed.append(name)
+        vendors.append(entry)
+    return jsonify({'ok': True, 'session_id': session_id, 'running': running,
+                    'exit_code': session.get('exit_code'),
+                    'vendors': vendors, 'failed': failed})
 
 
 def _auth_probe_cwd() -> str:
@@ -2424,6 +2636,9 @@ def _run_claude_auth_probe() -> dict:
     Extracted so both the legacy shim and the new generic /api/agent/claude/auth-probe
     share the same implementation. Returns a snapshot of _claude_auth_state.
     """
+    # Same PATH refresh /api/agent/providers does: a CLI installed after the
+    # server started must resolve here too, or this latches cli_not_found.
+    _merge_registry_path()
     try:
         cmd = [_resolve_claude(), '-p', 'ok', '--max-turns', '1']
         # RUN IT SOMEWHERE THAT ISN'T A PROJECT.
@@ -2818,6 +3033,8 @@ def agent_auth_status(provider):
         rt = _agent_runtime.get_runtime(provider)
     except KeyError:
         return jsonify({'error': f'unknown provider: {provider}'}), 404
+    if provider == 'claude':
+        _reconcile_claude_cli_not_found()
     return jsonify(rt.auth_status())
 
 
@@ -3081,6 +3298,7 @@ def agent_auth_logout(provider):
 @bp.route('/api/claude/auth-status')
 def claude_auth_status():
     """Backward-compat shim → /api/agent/claude/auth-status."""
+    _reconcile_claude_cli_not_found()
     with _claude_auth_lock:
         return jsonify(dict(_claude_auth_state))
 

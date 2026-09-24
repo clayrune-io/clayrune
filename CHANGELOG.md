@@ -6,6 +6,30 @@
 > Cloud Run service, keystore namespace) intentionally remain "mission-control"
 > to avoid breaking existing installs.
 
+## [2026-09-24] — "Install selected" installs every vendor and says which failed; stale "claude CLI not on PATH" cleared
+
+- **One failing vendor silently skipped the rest.** The batch install joined
+  every segment with `&&`. Reproduced in a real cmd.exe with a fake npm.cmd
+  shaped like the real one: with qwen's install failing, npm saw
+  `[claude, gemini, qwen]` and codex never ran — Ron's clean-VM result. Every
+  install exiting 0 ran all four, so npm.cmd-without-CALL was not the cause;
+  the Node snippet's `set "PATH=..."` already reaches later segments.
+  `_compose_install_batch` now runs each vendor independently, echoes
+  `[clayrune-install] <name> ok|FAILED`, and exits 1 if any failed.
+- New `GET /api/agent/providers/install-status?session_id=` (the launch
+  response carries `status_url`): per-vendor `pending|ok|failed|no_result`,
+  cross-checked with a fresh health check once the terminal ends. The UI
+  does not call it yet.
+- The terminal pop-out no longer auto-closes on an SSE `error` (session gone
+  server-side) once it has shown output — it says the output is final.
+- **"installed, v2.1.281" next to "claude CLI not on PATH"** was a stale
+  latch, not PATH: the startup probe latched `cli_not_found` before first-run
+  installed claude, and only another full probe cleared it, while the version
+  comes from a live binary lookup. `_reconcile_claude_cli_not_found` clears
+  the latch (and re-probes once) wherever claude state is read; the auth
+  probe and per-provider auth-status now refresh PATH from the registry too.
+  Tests: `tests/test_agent_routes.py` (MC-959 block).
+
 ## [2026-09-24] — Background jobs wake Mode B sessions and reach the spawner (MC-958)
 
 - **The CLI keeps "you will be notified when it completes"; Clayrune did
