@@ -10499,7 +10499,7 @@ def agent_followup(project_id):
                     # existing `_refresh['block'] + '\n\n' + _content`
                     # assembly below unchanged and stays the last STATIC
                     # block before the per-message directive/message text.
-                    _tail_text = _behavior_tail.render()
+                    _tail_text = _behavior_tail.render(session=existing)
                     if _tail_text:
                         claude_content = _tail_text + '\n\n' + claude_content
 
@@ -10601,7 +10601,7 @@ def agent_followup(project_id):
             # Per-turn conduct tail — see the router-off site above for why
             # this is baked into `claude_content` rather than threaded
             # through `_out` separately.
-            _tail_text = _behavior_tail.render()
+            _tail_text = _behavior_tail.render(session=_rs_existing)
             if _tail_text:
                 claude_content = _tail_text + '\n\n' + claude_content
 
@@ -10665,6 +10665,13 @@ def agent_followup(project_id):
                     rb['existing']['stdin_lock'] = threading.Lock()
                     rb['existing']['pending_recovery_message'] = None
                     rb['existing']['_resume_id'] = None  # clear resume context for future follow-ups
+                    # The respawned process's system prompt was just built
+                    # fresh (full read floor, full behaviour tail) — reset the
+                    # live-turn compact state so the NEXT direct stdin write
+                    # doesn't render a position/tail compact against a turn
+                    # counter that predates this new process.
+                    _memory_turn.reset_conversation_state(rb['existing'])
+                    _behavior_tail.reset_conversation_state(rb['existing'])
 
                 threading.Thread(target=_read_agent_stream_b,
                                  args=(proc, rb['existing']), daemon=True).start()
@@ -11279,6 +11286,14 @@ def agent_interrupt(project_id, *, _internal=None):
                     # interrupt gate so its reader's writes are accepted.
                     session.pop('_interrupting', None)
                     session.pop('_mt_roll_requested', None)
+                    # Same reset as the model-switch respawn above: this
+                    # process (manual interrupt, auto-fresh, or a mid-turn
+                    # roll) just got a fresh system-prompt build, so the next
+                    # direct stdin write should treat positions/tail as
+                    # freshly delivered rather than compact against a stale
+                    # turn counter.
+                    _memory_turn.reset_conversation_state(session)
+                    _behavior_tail.reset_conversation_state(session)
 
                 threading.Thread(target=_read_agent_stream_b,
                                  args=(proc, session), daemon=True).start()

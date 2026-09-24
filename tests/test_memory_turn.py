@@ -166,6 +166,122 @@ def test_a_position_re_surfaces_every_turn_unlike_a_note(tmp_data_dir):
     assert "DECLINED" in second["block"]
 
 
+# ── position full/compact trim (2026-09-24) ─────────────────────────────────
+
+def _seed_position(m, p):
+    """One position, matched by 'should we use obsidian for this' on every
+    turn — the fixture the full/compact tests below share."""
+    fname = m.write_position(
+        p, subject="Adopt Obsidian as the memory substrate", verdict="declined",
+        reason="already evaluated and rejected on portability grounds",
+        expires_when="a native export tool ships", triggers="obsidian")
+    return fname
+
+
+def test_first_delivery_is_full_repeat_match_is_compact(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "poscompactproj"}
+    _seed(m, p, {})
+    fname = _seed_position(m, p)
+    session = {}
+
+    first = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert "already evaluated and rejected" in first["block"], (
+        "first delivery this conversation must be the full reason/expiry text")
+
+    second = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert fname in second["positions"]
+    assert "DECLINED" in second["block"], "verdict+subject survive in compact form"
+    assert "already evaluated and rejected" not in second["block"], (
+        "an unchanged repeat match must not pay for the reason/expiry text again")
+    assert second["bytes"] < first["bytes"], (
+        "a compact repeat must cost fewer bytes than the full first delivery")
+
+
+def test_hash_change_forces_a_full_re_render(tmp_data_dir):
+    """A position's reason/verdict can change without a new file (write_position
+    supersedes in place) — the next turn must render it full again even though
+    it's not the first match, because the compact reminder would otherwise
+    describe a ruling that no longer exists."""
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "poshashproj"}
+    _seed(m, p, {})
+    fname = _seed_position(m, p)
+    session = {}
+
+    mt.refresh_for_turn(p, session, "should we use obsidian for this")   # full
+    compact = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert "already evaluated" not in compact["block"]
+
+    m.write_position(
+        p, subject="Adopt Obsidian as the memory substrate", verdict="declined",
+        reason="reversed the earlier reasoning after a fresh portability test",
+        triggers="obsidian")
+    changed = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert fname in changed["positions"]
+    assert "reversed the earlier reasoning" in changed["block"], (
+        "a changed position must render full on its next match, not stay compact")
+
+
+def test_every_n_turns_forces_a_full_re_render_even_with_no_change(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "posfulleveryproj"}
+    _seed(m, p, {})
+    _seed_position(m, p)
+    from mc import state
+    state.CONFIG['memory_turn_position_full_every'] = 3
+    session = {}
+
+    r1 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 1: full
+    r2 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 2: compact
+    r3 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 3: compact
+    r4 = mt.refresh_for_turn(p, session, "should we use obsidian for this")  # turn 4: full (every-3)
+    assert "already evaluated" in r1["block"]
+    assert "already evaluated" not in r2["block"]
+    assert "already evaluated" not in r3["block"]
+    assert "already evaluated" in r4["block"], (
+        "the every-N floor must force a full render even with no hash change")
+
+
+def test_reset_conversation_state_restores_full_on_the_next_match(tmp_data_dir):
+    """What a respawn/rollover does to the session dict: the position state
+    this module keeps must clear, same as memory_turn's note delivered-set is
+    a per-conversation thing that respawn never re-seeds."""
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "posresetproj"}
+    _seed(m, p, {})
+    _seed_position(m, p)
+    session = {}
+
+    mt.refresh_for_turn(p, session, "should we use obsidian for this")   # full
+    mt.refresh_for_turn(p, session, "should we use obsidian for this")   # compact
+    mt.reset_conversation_state(session)
+    restarted = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert "already evaluated" in restarted["block"], (
+        "a reset conversation must render the next match full again")
+
+
+def test_position_compact_disabled_keeps_todays_full_every_turn_behaviour(tmp_data_dir):
+    m = _mem(tmp_data_dir)
+    mt = _turn(m)
+    p = {"id": "poscompactoffproj"}
+    _seed(m, p, {})
+    _seed_position(m, p)
+    from mc import state
+    state.CONFIG['memory_turn_position_compact_enabled'] = False
+    session = {}
+
+    mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    second = mt.refresh_for_turn(p, session, "should we use obsidian for this")
+    assert "already evaluated and rejected" in second["block"], (
+        "flag off must restore full text on every match, exactly like before "
+        "this feature existed")
+
+
 # ── cold probe on a true warm miss ──────────────────────────────────────────
 
 def _write_transcript(path, session_id, turns):
@@ -244,6 +360,31 @@ def test_the_per_turn_block_never_exceeds_the_configured_budget(tmp_data_dir):
     result = mt.refresh_for_turn(p, session, "memory design redesign prompt budget")
     assert result["bytes"] <= 300
     assert len(result["block"].encode("utf-8")) <= 300
+
+
+def test_position_flags_registered_in_defaults_and_editable_keys():
+    import ast
+    from pathlib import Path
+    root = Path(__file__).resolve().parent.parent
+    tree = ast.parse((root / 'server.py').read_text(encoding='utf-8'))
+    defaults = {}
+    for node in ast.walk(tree):
+        if isinstance(node, ast.FunctionDef) and node.name == '_load_config':
+            for stmt in ast.walk(node):
+                if (isinstance(stmt, ast.Assign)
+                        and any(getattr(t, 'id', '') == 'defaults' for t in stmt.targets)
+                        and isinstance(stmt.value, ast.Dict)):
+                    for k, v in zip(stmt.value.keys, stmt.value.values):
+                        if isinstance(k, ast.Constant):
+                            try:
+                                defaults[k.value] = ast.literal_eval(v)
+                            except Exception:
+                                pass
+    assert defaults.get('memory_turn_position_compact_enabled') is True
+    assert defaults.get('memory_turn_position_full_every') == 15
+    settings_src = (root / 'mc' / 'blueprints' / 'settings_routes.py').read_text(encoding='utf-8')
+    assert "'memory_turn_position_compact_enabled'" in settings_src
+    assert "'memory_turn_position_full_every'" in settings_src
 
 
 def test_disabling_the_feature_is_a_full_bypass(tmp_data_dir):

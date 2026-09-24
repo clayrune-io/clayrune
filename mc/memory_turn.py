@@ -58,6 +58,7 @@ at risk by anything importing THIS module either.
 """
 from __future__ import annotations
 
+import hashlib
 import os as _os
 
 from mc.core import _log
@@ -74,6 +75,24 @@ DEFAULT_TURN_BUDGET_BYTES = 3200
 # Never persisted to disk: a per-turn refresh is a report-mode convenience,
 # not a record (P8 — nothing here is memory, it is a delivery cursor).
 _DELIVERED_KEY = '_mem_turn_delivered'
+
+# Per-position full/compact tracking (Ron, 2026-09-24): a position is exempt
+# from the delivered-set above by design (Kill 3 — presence once did not
+# stop a re-proposal), so it re-matches and re-renders in FULL every turn it
+# fires, which is most of the 2-4KB/turn this trims. This state does NOT
+# suppress a position — it still shows up, every turn — it only trims a
+# position that keeps matching UNCHANGED down to a one-line reminder after
+# its first full render, the same "presence matters, repetition of the same
+# bytes doesn't" logic memory_turn already applies to notes via suppression.
+# {file: {'hash': str, 'full_turn': int}}, scoped to the live session dict
+# exactly like _DELIVERED_KEY.
+_POS_STATE_KEY = '_mem_turn_pos_state'
+# One live-turn refresh = one increment; used to force a full re-render every
+# N turns regardless of hash, so a long-lived compact reminder doesn't drift
+# out of the model's effective attention window forever.
+_TURN_IDX_KEY = '_mem_turn_turn_index'
+DEFAULT_POSITION_FULL_EVERY = 15
+_COMPACT_LINE_MAX_BYTES = 160
 
 
 def _cfg(key, default):
@@ -101,6 +120,46 @@ def turn_budget_bytes() -> int:
         return DEFAULT_TURN_BUDGET_BYTES
 
 
+def position_compact_enabled() -> bool:
+    """Rollback lever for JUST the position full/compact trim — independent
+    of `enabled()` (the whole per-turn refresh) and `behavior_tail`'s own
+    lever. False restores today's behaviour: every matching position full,
+    every turn, no state kept. Read live, no respawn needed."""
+    try:
+        return bool(_cfg('memory_turn_position_compact_enabled', True))
+    except Exception:
+        return True
+
+
+def position_full_every() -> int:
+    """Force a full re-render at least this often even when the hash hasn't
+    changed (`memory_turn_position_full_every`, default 15) — a compact
+    reminder that never expires would itself drift out of the attention
+    window the whole feature exists to fight."""
+    try:
+        return max(1, int(_cfg('memory_turn_position_full_every',
+                               DEFAULT_POSITION_FULL_EVERY)
+                          or DEFAULT_POSITION_FULL_EVERY))
+    except (TypeError, ValueError):
+        return DEFAULT_POSITION_FULL_EVERY
+
+
+def reset_conversation_state(session) -> None:
+    """Clear the per-conversation turn counter and position full/compact
+    state. Call this at every point a session dict is REUSED across a
+    context rebuild (a respawn or a mid-turn rollover) rather than replaced
+    — dispatch and revival hand refresh_for_turn a brand-new dict, which is
+    already 'first turn' with these keys simply absent, so they need no
+    explicit reset. Without this at a respawn, the next live turn would
+    render a position compact even though the system prompt the respawn just
+    built (a fresh, full read-floor render) makes that turn functionally a
+    new first turn. Never raises."""
+    if not isinstance(session, dict):
+        return
+    session.pop(_TURN_IDX_KEY, None)
+    session.pop(_POS_STATE_KEY, None)
+
+
 def _cold_probe_enabled() -> bool:
     try:
         return bool(_cfg('memory_turn_cold_probe_enabled', True))
@@ -123,6 +182,46 @@ def _is_position_hit(h: dict) -> bool:
         return _mem._is_position_file(_os.path.basename(str(h.get('file', ''))))
     except Exception:
         return False
+
+
+def _position_file_hash(project, h: dict) -> str:
+    """Content hash of the position file this hit came from — '' on any read
+    failure, which the caller treats as 'changed' (fail toward a full
+    re-render, never toward silently going stale compact)."""
+    try:
+        fp = _mem._get_memory_path(project).parent / _os.path.basename(str(h.get('file')))
+        return hashlib.sha1(fp.read_bytes()).hexdigest()
+    except Exception:
+        return ''
+
+
+def _render_position_compact(project, h: dict) -> str:
+    """<=160B reminder for a position that already got its full render this
+    conversation and hasn't changed since: verdict + subject + the file
+    pointer (Kill 3 — presence must still register every turn), without the
+    reason/expiry text a full render pays for again on every match."""
+    try:
+        fp = _mem._get_memory_path(project).parent / _os.path.basename(str(h.get('file')))
+        rec = _mem._parse_position(fp.read_text(encoding='utf-8', errors='replace'))
+    except Exception:
+        rec = {}
+    file_tag = f"[{h.get('file')}]"
+    if rec:
+        verdict = (rec.get('verdict') or 'decided').upper()
+        subject = rec.get('subject') or ''
+        line = f"  • {verdict}: {subject}  {file_tag}"
+    else:
+        line = f"  • {file_tag} {h.get('snippet', '')}"
+    encoded = line.encode('utf-8')
+    if len(encoded) <= _COMPACT_LINE_MAX_BYTES:
+        return line
+    # Hard-truncate at a UTF-8-safe boundary, keeping the file pointer intact
+    # — that pointer is how a later turn (or Ron) finds the full record.
+    tag_bytes = (' ' + file_tag).encode('utf-8')
+    keep = encoded[:max(0, _COMPACT_LINE_MAX_BYTES - len(tag_bytes))]
+    while keep and (keep[-1] & 0xC0) == 0x80:  # mid-codepoint continuation byte
+        keep = keep[:-1]
+    return keep.decode('utf-8', errors='ignore').rstrip() + ' ' + file_tag
 
 
 def _render_position_line(project, h: dict) -> str:
@@ -273,6 +372,8 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
     budget = turn_budget_bytes()
 
     delivered_set = session.setdefault(_DELIVERED_KEY, set())
+    turn_idx = session.get(_TURN_IDX_KEY, 0) + 1
+    session[_TURN_IDX_KEY] = turn_idx
 
     # Ask for more candidates than we'll keep so a suppressed hit can be
     # backfilled from the next-ranked one instead of the block silently
@@ -311,7 +412,26 @@ def _refresh_for_turn(project, session, message, *, topk, expand, context):
             kept = cold
             cold_used = True
 
-    pos_lines = [f"  • {_render_position_line(project, h)}" for h in pos_hits]
+    if position_compact_enabled():
+        pos_state = session.setdefault(_POS_STATE_KEY, {})
+        every_n = position_full_every()
+        pos_lines = []
+        for h in pos_hits:
+            fname = str(h.get('file'))
+            cur_hash = _position_file_hash(project, h)
+            prev = pos_state.get(fname)
+            full_needed = (
+                prev is None
+                or prev.get('hash') != cur_hash
+                or (turn_idx - prev.get('full_turn', 0)) >= every_n
+            )
+            if full_needed:
+                pos_lines.append(f"  • {_render_position_line(project, h)}")
+                pos_state[fname] = {'hash': cur_hash, 'full_turn': turn_idx}
+            else:
+                pos_lines.append(_render_position_compact(project, h))
+    else:
+        pos_lines = [f"  • {_render_position_line(project, h)}" for h in pos_hits]
     note_lines = []
     for h in kept:
         tag = ' [cold tier — a real past session excerpt, not a curated note]' \

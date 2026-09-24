@@ -336,6 +336,19 @@ def _load_config():
         'memory_turn_refresh_enabled': True,
         'memory_turn_budget_bytes': 3200,
         'memory_turn_cold_probe_enabled': True,
+        # Position full/compact trim (Ron, 2026-09-24): a STANDING POSITIONS
+        # hit is exempt from the delivered-set above (Kill 3 — it must
+        # re-surface every turn it matches), so before this it rendered in
+        # FULL every single time, which was most of the 2-4KB/turn preamble
+        # measured on session 87d02846ecc6. `memory_turn_position_compact_
+        # enabled` trims a repeat match (same file content hash) to a <=160B
+        # one-line reminder after its first full render this conversation;
+        # `memory_turn_position_full_every` forces a full re-render at least
+        # this often regardless, so a long-lived reminder doesn't drift out
+        # of the model's effective attention window forever. False on the
+        # first restores today's behaviour (always full) with no respawn.
+        'memory_turn_position_compact_enabled': True,
+        'memory_turn_position_full_every': 15,
         # Plan-time negation interrupt (MC-944, MEMORY_DESIGN_V2_SPEC.md §5.4,
         # build-sequence step 8, Condition 15). Watches an Agent dispatch
         # prompt or a Write/Edit under docs/**/~/.claude/plans/** for text
@@ -361,6 +374,13 @@ def _load_config():
         # SHARED_RULES.md block) with no respawn needed — both injection
         # sites read this live.
         'behavior_tail_enabled': True,
+        # Compact-after-first-turn trim for the tail above (same 2026-09-24
+        # change as memory_turn_position_compact_enabled): the two direct-
+        # stdin-write sites render the full ~700B block only on the first
+        # live turn since the session was created or last respawned/rolled
+        # over; every call after that gets the ~250B `_TAIL_COMPACT`
+        # reminder instead. False restores full text on every turn.
+        'behavior_tail_compact_enabled': True,
         # Artifact coverage (mc/artifact_coverage.py) — at turn end, compare
         # the literal artifacts the user's message named (URL query params,
         # file paths, backticked tokens, ids) against the ACTUAL tool inputs

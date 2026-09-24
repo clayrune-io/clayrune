@@ -126,6 +126,9 @@ _CONFIG_EDITABLE_KEYS = {
     # next stdin write, no respawn needed (like read_floor_topk).
     'memory_turn_refresh_enabled', 'memory_turn_budget_bytes',
     'memory_turn_cold_probe_enabled',
+    # Position full/compact trim (2026-09-24) — same module. Read live at
+    # the next stdin write, no respawn needed.
+    'memory_turn_position_compact_enabled', 'memory_turn_position_full_every',
     # Plan-time negation interrupt (MC-944) — mc/negation_interrupt.py. Read
     # live per scan, no respawn needed.
     'negation_interrupt_mode', 'negation_interrupt_max_hits',
@@ -138,7 +141,7 @@ _CONFIG_EDITABLE_KEYS = {
     'archive_dedupe_legacy_enabled',
     # Per-turn conduct-rule tail (mc/behavior_tail.py). Read live at the next
     # context build / stdin write — no respawn needed (like read_floor_topk).
-    'behavior_tail_enabled',
+    'behavior_tail_enabled', 'behavior_tail_compact_enabled',
     # Artifact coverage advisory (mc/artifact_coverage.py). Read live at turn
     # end — no respawn needed.
     'artifact_coverage_enabled',

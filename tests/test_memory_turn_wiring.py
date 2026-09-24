@@ -116,9 +116,12 @@ def test_same_tier_direct_write_refreshes_and_prepends_the_block():
 def test_the_two_respawn_sites_are_not_touched():
     """The model-tier-switch respawn and the interrupt-respawn spawn a BRAND
     NEW process via _fresh_context_for/_respawn_sysprompt_args, which already
-    rebuilds the read floor for that turn — wiring memory_turn onto them too
-    would double-inject. Pin that neither respawn's stdin-write block calls
-    memory_turn."""
+    rebuilds the read floor for that turn — wiring memory_turn's refresh onto
+    them too would double-inject. reset_conversation_state() is a DIFFERENT
+    call (clears the position full/compact + turn-counter state, injects no
+    text) and IS expected at both sites — see test_both_respawn_sites_reset_
+    conversation_state below — so this only guards against seed_delivered/
+    refresh_for_turn reappearing in that 1200-char window."""
     src = _source()
     for marker, label in (
         ("_do_respawn_b():", "model-switch respawn (_do_respawn_b)"),
@@ -127,6 +130,23 @@ def test_the_two_respawn_sites_are_not_touched():
         idx = src.find(marker)
         assert idx != -1, f'{label} marker moved — update this test'
         window = src[idx:idx + 1200]
-        assert '_memory_turn' not in window, (
-            f'{label} must not call memory_turn — it already gets a fresh '
-            f'context rebuild, so this would double-inject the block')
+        assert not re.search(r'_memory_turn\.(seed_delivered|refresh_for_turn)\(', window), (
+            f'{label} must not call memory_turn seed/refresh — it already '
+            f'gets a fresh context rebuild, so this would double-inject the '
+            f'block')
+
+
+def test_both_respawn_sites_reset_conversation_state():
+    """The system prompt a respawn/rollover just built already carries a full
+    STANDING POSITIONS render — without this reset, the session dict's
+    position full/compact state would carry over from before the respawn, so
+    a position due for its next full render (hash unchanged, under the
+    every-N floor) could get trimmed to compact on the FIRST live turn after
+    the respawn, when the model has in fact just seen it in full via the
+    fresh system prompt. Ron's 2026-09-24 spec: 'reset the per-conversation
+    state wherever the context is rebuilt'."""
+    src = _source()
+    assert "_memory_turn.reset_conversation_state(rb['existing'])" in src, (
+        'model-switch respawn (_do_respawn_b) no longer resets position state')
+    assert '_memory_turn.reset_conversation_state(session)' in src, (
+        'interrupt-respawn no longer resets position state')
