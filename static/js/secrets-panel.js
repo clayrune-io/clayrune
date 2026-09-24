@@ -239,12 +239,35 @@ function _renderVaultLockbar(state) {
       </div>`;
   } else if (state === 'unlocked') {
     bar.innerHTML = `
-      <div style="display:flex;align-items:center;justify-content:flex-end;margin-bottom:6px">
+      <div style="display:flex;align-items:center;justify-content:flex-end;gap:6px;margin-bottom:6px">
+        <span style="font-size:10px;color:var(--text-faint)">&#x1F513; Vault unlocked</span>
         <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
-                onclick="openVaultChangePassphrase()">&#x1F513; Vault unlocked — change passphrase</button>
+                onclick="lockVaultNow()">Lock now</button>
+        <button class="btn-header-action" style="padding:3px 8px;font-size:10px"
+                onclick="openVaultChangePassphrase()">Change passphrase</button>
       </div>`;
   } else {
     bar.innerHTML = '';
+  }
+}
+
+async function lockVaultNow() {
+  // Same human-passcode gate as set/change/unlock (_require_human_passcode) —
+  // re-entered here rather than trusted from a cookie/session, for the same
+  // forged-Origin reason those routes do it (see secrets_routes.py).
+  const passcode = prompt('Re-enter your dashboard passcode to lock the vault now:');
+  if (!passcode) return;
+  try {
+    const res = await fetch(API_BASE + '/api/secrets/vault-lock/lock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ passcode }),
+    });
+    const out = await res.json();
+    if (!res.ok) { showToast(out.error || 'Lock failed', 4000); return; }
+    showToast('Vault locked');
+    await refreshSecretsList();
+  } catch (e) {
+    showToast('Lock failed: ' + e.message, 4000);
   }
 }
 

@@ -258,9 +258,11 @@ read unattended, an agent can read too — the keyring/DPAPI/file backends
 above all share that property. The passphrase lock closes it: the key is
 never written to disk unwrapped. It exists in plaintext only in a
 process-memory variable (`mc.secrets_store._unlocked_key`), set by a
-**human-only** unlock call, for the life of the process. The server starts
-**locked** after every restart until a human unlocks it from the dashboard
-(Settings → Vault).
+**human-only** unlock call, and now leaves memory sooner than "the life of
+the process": an idle auto-lock and a manual "Lock now" control (MC-949
+follow-up, both below) can relock it before a restart ever happens. The
+server starts **locked** after every restart until a human unlocks it from
+the dashboard (Settings → Vault).
 
 This is opt-in and additive — a box that has never called `set_passphrase()`
 behaves exactly as every section above describes, unchanged. Setting a
@@ -285,13 +287,44 @@ without raising), `GET /api/secrets` (reports `locked: true` and metadata
 only). A locked vault fires **one** push notification per lock period
 (`_lock_notified`), not one per job that hits it.
 
-The unlock, set-passphrase, and change-passphrase routes all refuse an
-unattended caller the same way every other vault write route does (see
+The unlock, set-passphrase, change-passphrase, and lock-now routes all refuse
+an unattended caller the same way every other vault write route does (see
 "Policy controls" above) — an agent that could unlock the vault would defeat
-the whole point of a lock it can't read past on its own. The status route
+the whole point of a lock it can't read past on its own, and an agent that
+could lock it on demand could just as easily unlock it, since both depend on
+the same passcode gate to prove a human is asking. The status route
 (`GET /api/secrets/vault-lock`) is the one exception: it reveals only
 `unconfigured` / `locked` / `unlocked`, never a key or a value, so a job that
 hits `VaultLocked` downstream can at least report *why* to a human.
+
+### Idle auto-lock and manual "Lock now" (MC-949 follow-up)
+
+Two ways the key now leaves memory before a restart:
+
+- **Idle auto-lock.** `vault_idle_lock_minutes` (Settings → System → Security,
+  `config.json`, default 120) — minutes of no credential use before the
+  vault relocks itself. Idle is measured from the last successful
+  `load_master_key()` read (or the unlock itself), tracked as a monotonic
+  timestamp under the module's existing lock. `0` disables auto-lock
+  entirely, same convention as every other 0-disables minutes knob in this
+  codebase. Enforced in two places so the key can't outlive the window by
+  accident: lazily, the next time anything calls `load_master_key()` after
+  the window has elapsed (checked and cleared *before* deciding whether to
+  hand back the key); and by a background sweeper
+  (`mc.secrets_store.start_idle_lock_sweeper()`, started once from
+  `server.py`'s `boot()`, server-process only) that ticks every 60s so the
+  key is cleared even if nothing reads it in the meantime.
+- **Manual lock.** `POST /api/secrets/vault-lock/lock` clears the key right
+  now — the "Lock now" button next to the lock state in the Secrets window,
+  shown only while unlocked. Human-only, same passcode gate as
+  unlock/set/change. A no-op (still `200`) if the vault is already locked or
+  was never configured.
+
+Either path resets `_lock_notified`, so the next job that hits the newly
+relocked vault fires exactly one push alert for the new lock period — the
+same once-per-period throttle the restart-triggered lock already relies on.
+Both are logged and audited with a `reason` of `idle` or `manual` so a relock
+is traceable to which path caused it.
 
 ### Residual risk — stated plainly
 
@@ -337,6 +370,7 @@ window is visible to him even if he didn't do the setting himself.
 | POST | `/api/secrets/vault-lock/set` | first-time passphrase setup — human-only |
 | POST | `/api/secrets/vault-lock/change` | rotate the passphrase — human-only |
 | POST | `/api/secrets/vault-lock/unlock` | unlock with passphrase or recovery key — human-only |
+| POST | `/api/secrets/vault-lock/lock` | lock now, immediately (idle auto-lock also does this in the background) — human-only |
 
 **There is deliberately no route that returns a plaintext value.** A value only
 ever leaves the process into a child process's environment or a resolved

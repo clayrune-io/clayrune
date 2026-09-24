@@ -710,6 +710,17 @@ async function _renderSettings() {
     </div>
 
     <div class="settings-section">
+      <div class="settings-section-title">Security</div>
+      <div class="settings-row">
+        <div>
+          <div class="settings-label">Vault idle auto-lock</div>
+          <div class="settings-hint">Minutes of no credential use before the secrets vault relocks itself and a human has to unlock it again. 0 = never auto-lock. Takes effect immediately, no restart.</div>
+        </div>
+        ${numInput('vault_idle_lock_minutes', cfg.vault_idle_lock_minutes ?? 120)}
+      </div>
+    </div>
+
+    <div class="settings-section">
       <div class="settings-section-title">Advanced features</div>
       <div class="settings-hint" style="margin-bottom:10px">Mostly off by default for a simpler view. Enable what you need.</div>
       ${ADV_FEATURES.map(f => `

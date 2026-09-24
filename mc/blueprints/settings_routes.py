@@ -157,6 +157,10 @@ _CONFIG_EDITABLE_KEYS = {
     # rendered OFF and silently failed to save (found 2026-07-16).
     'keep_awake_enabled', 'keep_awake_poll_s',
     'idle_eviction_enabled', 'idle_eviction_minutes',
+    # Secrets vault idle auto-lock (MC-949 follow-up, mc/secrets_store.py).
+    # Read live via state.CONFIG.get() on every load_master_key() call and
+    # every 60s sweeper tick — no respawn, no restart.
+    'vault_idle_lock_minutes',
     'projects_base', 'shared_rules_path', 'port', 'log_level',
     # Delivery payload accounting is advisory only: 0 disables the warning,
     # and this setting never gates dispatch or completion.

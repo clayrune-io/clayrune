@@ -208,6 +208,24 @@ def test_unattended_cannot_change_passphrase(client):
     assert res.status_code == 403
 
 
+def test_unattended_cannot_lock_now(client):
+    """The 'Lock now' route (MC-949 follow-up) is a human-only action for the
+    same reason set/change/unlock are: an agent that could lock the vault on
+    demand could also unlock it, since both depend on the same passcode gate
+    to prove a human is asking."""
+    passcode = _set_vault_passcode()
+    res = client.post('/api/secrets/vault-lock/set',
+                      json={'passphrase': 'correct horse battery', 'passcode': passcode})
+    assert res.status_code == 200
+    _mark_unattended()
+    # Correct passcode supplied too — proves the refusal is the
+    # is_unattended_caller() gate firing, not the passcode gate.
+    res = client.post('/api/secrets/vault-lock/lock', json={'passcode': passcode})
+    assert res.status_code == 403
+    from mc import secrets_store
+    assert secrets_store.lock_state() == 'unlocked'
+
+
 def test_vault_lock_state_is_readable_by_anyone(client):
     """The status route reveals only locked/unlocked/unconfigured — never a
     key or a secret — so agents may read it; a job that hits VaultLocked

@@ -36,6 +36,7 @@ def vault(tmp_path, monkeypatch):
     secrets_store._unlocked_key = None
     secrets_store._lock_notified = False
     secrets_store._key_mismatch = False
+    secrets_store._last_key_use = None
     return secrets_store
 
 
@@ -1098,6 +1099,114 @@ def test_notification_fires_once_per_lock_period(vault, monkeypatch):
     # A fresh lock period (after an unlock) can notify again.
     vault.unlock_with_passphrase('correct horse battery staple')
     _relock(vault)
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+    assert len(calls) == 2
+
+
+# ── Idle auto-lock + manual 'Lock now' (MC-949 follow-up, Ron 2026-09-24) ────
+#
+# `_monotonic()` is the injectable-clock seam (mc.secrets_store._monotonic) —
+# every test here patches it to a plain list-backed counter instead of
+# sleeping real seconds.
+
+def test_idle_expiry_relocks_and_raises_vault_locked(vault, monkeypatch):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 10)
+    clock = [0.0]
+    monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+
+    clock[0] += 10 * 60  # exactly at the configured threshold
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+    assert vault.lock_state() == 'locked'
+    with pytest.raises(vault.SecretsUnavailable):
+        vault.get_secret_value('reddit.password', consumer='test')
+
+
+def test_read_inside_the_idle_window_extends_it(vault, monkeypatch):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 10)
+    clock = [0.0]
+    monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+
+    clock[0] += 9 * 60  # inside the window — a read here restarts the clock
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+    clock[0] += 9 * 60  # 18 min since unlock, but only 9 since the last read
+    assert vault.get_secret_value('reddit.password', consumer='test') == 'pre-lock-value'
+    assert vault.lock_state() == 'unlocked'
+
+
+def test_idle_lock_minutes_zero_disables_auto_lock(vault, monkeypatch):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 0)
+    clock = [0.0]
+    monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
+    vault.set_passphrase('correct horse battery staple')
+
+    clock[0] += 10_000 * 60  # absurdly idle
+    assert vault.lock_state() == 'unlocked'
+    vault.load_master_key()  # must not raise
+
+
+def test_check_idle_lock_relocks_even_without_a_read(vault, monkeypatch):
+    """The sweeper calls check_idle_lock() directly, not load_master_key() —
+    it must clear the key on its own, since its whole point is catching the
+    case where nothing ever reads again to trigger the lazy check."""
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 5)
+    clock = [0.0]
+    monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
+    vault.set_passphrase('correct horse battery staple')
+
+    clock[0] += 5 * 60
+    assert vault.check_idle_lock() is True
+    assert vault.lock_state() == 'locked'
+    # A second sweep with nothing unlocked is a no-op, not an error.
+    assert vault.check_idle_lock() is False
+
+
+def test_lock_now_clears_the_key_immediately(vault):
+    vault.set_secret('reddit.password', 'pre-lock-value')
+    vault.set_passphrase('correct horse battery staple')
+    assert vault.lock_state() == 'unlocked'
+    vault.lock_now()
+    assert vault.lock_state() == 'locked'
+    with pytest.raises(vault.VaultLocked):
+        vault.load_master_key()
+
+
+def test_lock_now_is_a_no_op_when_already_locked(vault):
+    assert vault.lock_state() == 'unconfigured'
+    vault.lock_now()  # must not raise
+    assert vault.lock_state() == 'unconfigured'
+
+
+def test_notification_fires_once_after_idle_relock(vault, monkeypatch):
+    from mc import state
+    monkeypatch.setitem(state.CONFIG, 'vault_idle_lock_minutes', 10)
+    clock = [0.0]
+    monkeypatch.setattr(vault, '_monotonic', lambda: clock[0])
+    vault.set_passphrase('correct horse battery staple')
+    calls = []
+    monkeypatch.setattr(
+        'mc.blueprints.push_mobile._notify_push',
+        lambda title, body, **kw: calls.append((title, body)))
+
+    clock[0] += 10 * 60
+    for _ in range(3):
+        with pytest.raises(vault.VaultLocked):
+            vault.load_master_key()
+    assert len(calls) == 1
+
+    # A fresh unlock + a fresh idle period can notify again.
+    vault.unlock_with_passphrase('correct horse battery staple')
+    clock[0] += 10 * 60
     with pytest.raises(vault.VaultLocked):
         vault.load_master_key()
     assert len(calls) == 2
