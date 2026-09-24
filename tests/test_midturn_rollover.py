@@ -470,7 +470,8 @@ def test_finding4_a_roll_decided_before_a_newer_interrupt_is_dropped(env):
 
 
 def test_finding5_failure_before_the_kill_does_not_leave_the_session_gated(env, monkeypatch):
-    """`_interrupting` used to be set BEFORE `_rearm_notify_for_new_turn`, which
+    """`_interrupting` used to be set BEFORE the turn-start call (rearm or,
+    since MC-970, `_advance_delegation_turn` for a mid-turn roll), which
     writes the delegation DB and can raise. Left set, the still-live old reader
     is gated out of every status write: stuck 'running', spawner never told."""
     ar = env['ar']
@@ -478,7 +479,7 @@ def test_finding5_failure_before_the_kill_does_not_leave_the_session_gated(env, 
     def _boom(session):
         raise RuntimeError('delegation db locked')
 
-    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn', _boom)
+    monkeypatch.setattr(ar, '_advance_delegation_turn', _boom)
     old = _Proc(pid=1)
     session = _session(old, _mt_main_tokens=250_000)
     env['sessions']['worker-1'] = session
@@ -567,13 +568,20 @@ def test_low_toggling_the_flag_off_and_on_drops_stale_pending_ids(env):
 
 
 def test_n1_interrupting_is_raised_before_the_rearm_runs(env, monkeypatch):
-    """The rearm clears the notify sent-latch. If the old reader (another thread
-    on the HTTP path) can still deliver a turn-end notify during it, the spawner
-    gets the old reply under the new turn and never hears the real one. So the
-    flag must already be up when the rearm runs."""
+    """The turn-start call clears/advances the notify latch bookkeeping. If the
+    old reader (another thread on the HTTP path) can still deliver a turn-end
+    notify during it, the spawner gets the old reply under the new turn and
+    never hears the real one. So the flag must already be up when that call
+    runs.
+
+    MC-970: a mid-turn roll is Clayrune's OWN mechanical respawn of a turn
+    already in flight, not a human or agent decision to start a new one -- so
+    it goes through `_advance_delegation_turn` (bookkeeping only), not
+    `_rearm_notify_for_new_turn` (which would force-clear a latch this roll
+    has no business touching; see agent_interrupt's `_start_new_turn`)."""
     ar = env['ar']
     seen = []
-    monkeypatch.setattr(ar, '_rearm_notify_for_new_turn',
+    monkeypatch.setattr(ar, '_advance_delegation_turn',
                         lambda s: seen.append(s.get('_interrupting')))
     old = _Proc(pid=1)
     session = _session(old, _mt_main_tokens=250_000)
