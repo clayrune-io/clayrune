@@ -1,13 +1,24 @@
 """MC-946 nesting (Floor conversations rail): a dispatched worker must carry
 its spawner's session id all the way to `/conversations`.
 
-`_log_agent_completion` now writes `spawned_by_session_id` onto the durable
+`_log_agent_completion` now writes `dispatched_by_session_id` onto the durable
 agent-log row (see `test_agent_spawn_notify.py`), but that alone is not
 enough — the row is dead weight until `/api/project/<id>/conversations`
 actually emits it, and a worker still mid-run has no agent-log row at all
 until it finishes. Mirrors the fallback shape `test_conversation_character_
 fallback.py` already proved out for `character`: log row first, live session
-(`_notify_session`) second.
+(`_spawned_by`) second.
+
+Bugfix (Ron 2026-09-24): the emitted API field stays `spawned_by_session_id`
+(unchanged, so the frontend needs no edit), but its SOURCE fields changed —
+it used to read the durable row's `spawned_by_session_id` / the live
+session's `_notify_session`, both of which `/agent/send` and the interrupt
+route legitimately overwrite as a re-armable completion-callback target
+(MC-970). A dispatched child that later messaged its own spawner (naming
+itself as `notify_session`) flipped the PARENT's display to falsely claim it
+was spawned by its own child. The source is now `dispatched_by_session_id`
+(durable row) / `_spawned_by` (live session) — both set once, at dispatch or
+revive, and never touched by send/interrupt. See `_row_spawned_by`.
 """
 import pytest
 
@@ -46,13 +57,13 @@ def _wire(monkeypatch, tmp_path, *, session_notify=None, log_spawner=None):
          'turns': 2, 'size': 10, 'mtime': 1_760_000_000.0}])
     log_row = {'claude_session_id': CSID, 'session_id': 'mc1', 'status': 'running'}
     if log_spawner is not None:
-        log_row['spawned_by_session_id'] = log_spawner
+        log_row['dispatched_by_session_id'] = log_spawner
     monkeypatch.setattr(ar, '_load_agent_log', lambda pid: [log_row])
     monkeypatch.setattr(ar, '_non_claude_conversation_rows', lambda *a, **k: [])
     sess = {'project_id': 'p1', 'claude_session_id': CSID, 'session_id': 'mc1',
             'status': 'running'}
     if session_notify is not None:
-        sess['_notify_session'] = session_notify
+        sess['_spawned_by'] = session_notify
     mc_state.agent_sessions['mc1'] = sess
 
 

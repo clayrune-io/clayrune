@@ -5818,6 +5818,16 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         _run_id, _sep, _step = _trig.partition(':')
         if _sep and _run_id and _step:
             _revive_notify_workflow = {'run_id': _run_id, 'step': _step}
+    # Immutable spawner-of-record (bugfix): carried UNCONDITIONALLY, unlike
+    # `_revive_notify_session` above -- this is identity (who dispatched this
+    # conversation, ever), not a re-armable callback target, so it survives a
+    # revive the same way `character`/persona already does a few lines down.
+    # `dispatched_by_session_id` is the durable field written for exactly
+    # this (see `_log_agent_completion`/`_log_agent_dispatch_pending`);
+    # `spawned_by_session_id` is the legacy fallback for a row written before
+    # that field existed.
+    _revive_spawned_by = (entry.get('dispatched_by_session_id')
+                           or entry.get('spawned_by_session_id') or '').strip()
 
     pp = p.get('project_path', '')
     if not pp or not Path(pp).is_dir():
@@ -5998,6 +6008,8 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
             # this function — carries the completion callback across the
             # revive instead of silently dropping it.
             '_notify_session': _revive_notify_session,
+            # Immutable spawner-of-record — see `_revive_spawned_by` comment above.
+            '_spawned_by': _revive_spawned_by,
             '_delegation_turn': revive_turn,
             '_delivery_generation': revive_generation,
             'project_generation': revive_project_generation,
@@ -6084,6 +6096,7 @@ def _revive_from_agent_log(project_id, session_id, message, p, *, carry_notify=T
         'requested_effort': revive_effort,
         'model_auto_requested': bool(entry.get('model_auto_requested')),
         '_notify_session': _revive_notify_session,   # see top-of-function comment
+        '_spawned_by': _revive_spawned_by,   # see top-of-function comment
         '_delegation_turn': revive_turn,
         '_delivery_generation': revive_generation,
         'project_generation': revive_project_generation,
@@ -6195,6 +6208,10 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
         _run_id, _sep, _step = _trig.partition(':')
         if _sep and _run_id and _step:
             _revive_notify_workflow = {'run_id': _run_id, 'step': _step}
+    # Immutable spawner-of-record, carried unconditionally (bugfix) -- see
+    # `_revive_spawned_by` in `_revive_from_agent_log`.
+    _revive_spawned_by = (entry.get('dispatched_by_session_id')
+                          or entry.get('spawned_by_session_id') or '').strip()
     _resume_id = ''
     if provider in _COLD_RESUMABLE_PROVIDERS:
         _resume_id = (entry.get('provider_session_id') or '').strip()
@@ -6210,7 +6227,8 @@ def _revive_non_claude_from_agent_log(project_id, session_id, message, p, *, car
                                  project_generation=revive_project_generation,
                                  source=entry.get('source') or '',
                                  notify_session=_revive_notify_session,
-                                 notify_workflow=_revive_notify_workflow)
+                                 notify_workflow=_revive_notify_workflow,
+                                 spawned_by=_revive_spawned_by)
     except Exception as e:
         _log(f"[revive-non-claude] {project_id}: dispatch failed: {e}")
         return None
@@ -6300,6 +6318,8 @@ def _revive_parent_for_delegation(project_id, session_id, message, p):
                                      trigger_type=entry.get('trigger_type') or 'manual',
                                      trigger_id=entry.get('trigger_id') or '',
                                      notify_session=entry.get('spawned_by_session_id') or '',
+                                     spawned_by=(entry.get('dispatched_by_session_id')
+                                                 or entry.get('spawned_by_session_id') or ''),
                                      notify_workflow=({'run_id': entry['trigger_id'].split(':', 1)[0],
                                                        'step': entry['trigger_id'].split(':', 1)[1]}
                                                       if entry.get('trigger_type') == 'workflow'
@@ -6453,10 +6473,24 @@ def _log_agent_dispatch_pending(session, *, identity_only=False, strict=False):
         'character': session.get('character'),
         # Same field/guard as _log_agent_completion — kept here too so a
         # dispatch that never reaches completion (killed mid-run) still
-        # carries its spawner in the durable row.
+        # carries its spawner in the durable row. This is the CALLBACK
+        # target (delivery_delivery.recover_outbox reads it as "who to
+        # notify") -- `/agent/send` and the interrupt route are free to
+        # re-arm `_notify_session` to a different session after dispatch
+        # (MC-970), so this field can legitimately differ from who actually
+        # dispatched the session. Display (banner/rail) must NOT read this
+        # one -- see `dispatched_by_session_id` below.
         'spawned_by_session_id': (
             (session.get('_notify_session') or '').strip()
             if (session.get('_notify_session') or '').strip() != sid
+            else ''
+        ),
+        # Immutable spawner-of-record (bugfix): set once at dispatch/revive,
+        # never touched by /agent/send or interrupt. This is what the
+        # banner/rail/`/agent/status` spawner display reads.
+        'dispatched_by_session_id': (
+            (session.get('_spawned_by') or '').strip()
+            if (session.get('_spawned_by') or '').strip() != sid
             else ''
         ),
     }
@@ -7147,6 +7181,15 @@ def _log_agent_completion_body(session):
             if (session.get('_notify_session') or '').strip() != session.get('session_id', '')
             else ''
         ),
+        # Immutable spawner-of-record (bugfix) -- see `_log_agent_dispatch_pending`.
+        # `spawned_by_session_id` above is the re-armable callback target
+        # (MC-970); this is who actually dispatched the session, set once at
+        # dispatch/revive and never touched by /agent/send or interrupt.
+        'dispatched_by_session_id': (
+            (session.get('_spawned_by') or '').strip()
+            if (session.get('_spawned_by') or '').strip() != session.get('session_id', '')
+            else ''
+        ),
         'claude_session_id': session.get('claude_session_id', ''),
         # Provider-neutral equivalent of claude_session_id for Mode-A runtimes
         # (currently Codex). Captured at dispatch/turn time into the session
@@ -7732,6 +7775,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
                           character_body='', model_override='', effort_override=None,
                           resume_id='', source='',
                           notify_session='', notify_workflow=None,
+                          spawned_by=None,
                           project_generation=1,
                           lifecycle_bridge_factory=None):
     """Dispatch a session through the AgentRuntime abstraction (non-claude).
@@ -7743,6 +7787,15 @@ def _dispatch_via_runtime(p, task, *, provider_name,
     accepted both and dropped them on this branch, so every non-claude child
     silently never reported back and a codex workflow step (run-42a3f2aa)
     left its run `running` forever. Pinned by tests/test_workflow_runtime_notify.py.
+
+    `spawned_by` (bugfix, see `_spawned_by` on the claude Mode A/B dicts):
+    the session's spawner, set ONCE here and never touched again. Distinct
+    from `notify_session`, which `/agent/send` and the interrupt route are
+    free to re-arm to a different session for the NEXT completion callback
+    (MC-970) -- conflating the two made a session's spawner-of-record change
+    every time a different agent messaged it. `None` (the default) means "no
+    explicit spawner given" -- fall back to `notify_session`, which is exactly
+    right for a genuine fresh dispatch (the caller IS the spawner there).
 
     `resume_id` (parity audit item 3, "Resume"): the provider's own session
     id to continue — for Codex this is `provider_session_id` (the thread id
@@ -7786,6 +7839,7 @@ def _dispatch_via_runtime(p, task, *, provider_name,
         # Same fix as the claude path — see `_dispatch_agent_internal`.
         user_label = state.CONFIG.get('user_name') or 'User'
         _seed_task = display_task if display_task is not None else task
+        _spawned_by_value = spawned_by if spawned_by is not None else notify_session
         # Pre-create the session dict so SSE clients can attach instantly
         session = {
             'status': 'running',
@@ -7829,6 +7883,9 @@ def _dispatch_via_runtime(p, task, *, provider_name,
             # Completion callbacks -- see the docstring. Same keys as the
             # claude session dicts in _dispatch_agent_internal.
             '_notify_session': notify_session,
+            # Immutable spawner -- see the docstring. Set once, here; never
+            # touched by /agent/send or the interrupt route.
+            '_spawned_by': _spawned_by_value,
             '_delegation_turn': 1,
             '_notify_workflow': notify_workflow,
             'project_generation': project_generation,
@@ -8735,7 +8792,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                              reuse_session_id='', provider_override='',
                              display_task=None, character='', source='',
                              model_override='', strict_character=False, effort_override=None,
-                             notify_session='', notify_workflow=None,
+                             notify_session='', notify_workflow=None, spawned_by=None,
                              preserve_model=False, project_generation=None,
                              system_prompt_suffix='', housekeeping=False,
                              cross_provider_handoff=False,
@@ -8780,6 +8837,16 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
     `_notify_session` already uses (Mode A exit, Mode B turn boundary) — the
     SAME latch, generalised to wake a waiting workflow run instead of (or in
     addition to) a spawning chat. See `mc/workflows.py:on_agent_step_complete`.
+
+    `spawned_by` (bugfix): this session's immutable spawner, stored as
+    `_spawned_by` and read by the banner/rail/`/agent/status` spawner display
+    -- never by `/agent/send` or the interrupt route, which only ever re-arm
+    `_notify_session` (MC-970). `None` (the default) falls back to
+    `notify_session`, correct for a genuine fresh dispatch where the caller
+    naming `notify_session` IS the spawner. A revive passes it explicitly,
+    carried unconditionally from the durable log row's `dispatched_by_session_id`
+    (unlike `notify_session`, which a human-driven revive must NOT re-arm --
+    see `carry_notify` on `_revive_from_agent_log`).
     """
     p = load_project(project_id)
     if not p:
@@ -8939,6 +9006,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                                          source=source,
                                          notify_session=notify_session,
                                          notify_workflow=notify_workflow,
+                                         spawned_by=spawned_by,
                                          project_generation=canonical_project_generation,
                                          lifecycle_bridge_factory=(
                                              _runtime_lifecycle_service.bridge_factory
@@ -9166,6 +9234,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
         _delegation_turn_reserved = (
             _delivery_store.allocate_turn(session_id)
             if (notify_session and not incognito) else 1)
+        # See `spawned_by` on _dispatch_agent_internal's docstring: immutable
+        # spawner-of-record, distinct from the re-armable `notify_session`.
+        _spawned_by_value = spawned_by if spawned_by is not None else notify_session
 
         # The dispatch record is durable before Popen. If Popen or the reader
         # setup fails, reconciliation can see an in-progress launch and retain
@@ -9183,6 +9254,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 'housekeeping': bool(housekeeping),
                 '_runtime_callbacks': dict(runtime_callbacks or {}),
                 '_notify_session': notify_session,
+                '_spawned_by': _spawned_by_value,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
@@ -9248,6 +9320,9 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 # session id here lets _log_agent_completion deliver the
                 # result into that chat.
                 '_notify_session': notify_session,
+                # Immutable spawner-of-record (bugfix) -- see the docstring on
+                # `spawned_by`. Never touched again after this dict is built.
+                '_spawned_by': _spawned_by_value,
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
@@ -9371,6 +9446,7 @@ def _dispatch_agent_internal(project_id, task, resume_id='', incognito=False,
                 '_agent_cwd': _agent_cwd,
                 '_worktree_isolated': _isolated,
                 '_notify_session': notify_session,  # MC-946, see Mode B note
+                '_spawned_by': _spawned_by_value,  # bugfix, see Mode B note
                 '_delegation_turn': _delegation_turn_reserved,
                 '_delivery_generation': _delivery_generation_reserved,
                 'project_generation': canonical_project_generation,
@@ -11925,13 +12001,20 @@ def agent_status(project_id):
                 # does this for the persona case; the no-persona case needed the
                 # key to exist at all).
                 'identity': _identity.resolve_identity(s.get('character'), s.get('source', '')),
-                # MC-970 part 2 — this session's dispatch parent, if any (same
-                # value `_notify_session` carries, not just whether the
-                # one-shot callback has fired). The chat header uses this to
-                # render "dispatched by <parent>" so a human can't mistake a
-                # dispatched child's chat for a conversation they opened
-                # themselves. '' for an ordinary user-opened chat.
-                'spawned_by_session_id': (s.get('_notify_session') or '').strip(),
+                # This session's dispatch parent, if any. The chat header uses
+                # this to render "dispatched by <parent>" so a human can't
+                # mistake a dispatched child's chat for a conversation they
+                # opened themselves. '' for an ordinary user-opened chat.
+                #
+                # Bugfix (Ron 2026-09-24): this used to read `_notify_session`
+                # — the per-turn completion-callback target MC-970 re-arms on
+                # every `/agent/send`/interrupt. A dispatched child that later
+                # messaged its own spawner (naming itself as `notify_session`
+                # so IT gets woken on the NEXT reply) flipped the spawner's
+                # own banner to falsely claim it was "dispatched by" its
+                # child. `_spawned_by` is set once at dispatch/revive and
+                # never touched by send/interrupt — see `_dispatch_agent_internal`.
+                'spawned_by_session_id': (s.get('_spawned_by') or '').strip(),
                 # Chat-level pin marker — server-authoritative (see _pinned_csids).
                 'pinned': bool(s.get('claude_session_id')
                                and s.get('claude_session_id') in _pinned_csids),
@@ -12868,18 +12951,30 @@ def _conversation_character_display(log_entry, project):
 def _row_spawned_by(log_entry, live):
     """MC-946's spawner link for a conversation row — same fallback shape as
     `_conversation_character_display`'s caller-side pattern: the durable
-    agent-log row only gets `spawned_by_session_id` once `_log_agent_completion`
+    agent-log row only gets `dispatched_by_session_id` once `_log_agent_completion`
     or `_log_agent_dispatch_pending` runs, so a worker still mid-run has
-    nothing there yet. The live session dict (`_notify_session`, set at
-    dispatch) fills that gap while it's running. `live` is sometimes the raw
-    `agent_sessions` record (key `_notify_session`) and sometimes the trimmed
-    `live_by_csid` projection (normalized to `notify_session`) — accept both.
+    nothing there yet. The live session dict (`_spawned_by`, set once at
+    dispatch and carried across revive) fills that gap while it's running.
+    `live` is sometimes the raw `agent_sessions` record (key `_spawned_by`)
+    and sometimes the trimmed `live_by_csid` projection (normalized to
+    `spawned_by`) — accept both.
+
+    Bugfix (Ron 2026-09-24): this used to read `spawned_by_session_id` /
+    `_notify_session`, the re-armable completion-callback target MC-970
+    overwrites on every `/agent/send` or interrupt. A dispatched agent that
+    later messaged its own spawner (with `notify_session` pointed back at
+    itself) flipped the spawner's OWN display to "spawned by" its child. The
+    durable/live fields read here are written once, at dispatch or revive,
+    and never touched by send/interrupt — see `_spawned_by` in
+    `_dispatch_agent_internal`/`_dispatch_via_runtime` and
+    `dispatched_by_session_id` in `_log_agent_dispatch_pending`/
+    `_log_agent_completion_body`.
     """
-    sid = ((log_entry or {}).get('spawned_by_session_id') or '').strip()
+    sid = ((log_entry or {}).get('dispatched_by_session_id') or '').strip()
     if sid:
         return sid
     live = live or {}
-    return (live.get('notify_session') or live.get('_notify_session') or '').strip()
+    return (live.get('spawned_by') or live.get('_spawned_by') or '').strip()
 
 
 def _recent_codex_conversation_rows(project_id, p, limit):
@@ -13206,6 +13301,8 @@ def get_project_conversations(project_id):
                 # (agent_log only gets this at completion; a still-running
                 # worker's row has nothing until then).
                 'notify_session': (s.get('_notify_session') or '').strip(),
+                # Immutable spawner-of-record (bugfix) -- see `_row_spawned_by`.
+                'spawned_by': (s.get('_spawned_by') or '').strip(),
             }
 
     convos = _recent_claude_transcripts(project_path, limit=limit,
